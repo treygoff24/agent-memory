@@ -1,0 +1,20 @@
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.envrc
+.direnv/
+
+# Build artifacts (anticipating Stream A in Rust)
+target/
+Cargo.lock
+**/*.rs.bk
+
+# Runtime / local-only
+.memory/
+.memoryd/
+
+# OS junk
+Thumbs.db
