@@ -1,0 +1,14 @@
+{
+  "private": true,
+  "packageManager": "pnpm@10.30.3",
+  "scripts": {
+    "format": "cargo fmt --all && oxfmt .",
+    "format:check": "cargo fmt --all -- --check && oxfmt --check .",
+    "lint": "cargo clippy --workspace --all-targets --all-features -- -D warnings && oxlint .",
+    "check": "bash scripts/check.sh"
+  },
+  "devDependencies": {
+    "oxfmt": "latest",
+    "oxlint": "latest"
+  }
+}

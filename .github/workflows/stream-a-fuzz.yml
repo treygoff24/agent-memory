@@ -1,0 +1,17 @@
+name: stream-a-fuzz
+
+on:
+  schedule:
+    - cron: "0 8 * * *"
+  workflow_dispatch:
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2025-09-18
+      - run: cargo install --locked cargo-fuzz
+      - run: cargo +nightly-2025-09-18 fuzz run merge_driver -- -max_total_time=600

@@ -1,0 +1,764 @@
+//! Index upsert and query helpers.
+//!
+//! Layout (stepdown / newspaper): orchestrator-level methods first, SQL helpers
+//! below.  Column lists, value bindings, and index names are kept in the same
+//! vertical region as the statement that uses them so readers don't scroll.
+
+use rusqlite::{named_params, params, Connection, Transaction};
+
+use crate::error::VectorError;
+use crate::index::chunking::chunk_memory;
+use crate::markdown::hash_bytes;
+use crate::model::{
+    ChunkResult, EmbeddingTriple, EmbeddingUpdate, Memory, MemoryId, MemoryQuery, QueryResult, RepoPath, Sensitivity,
+    SourceKind,
+};
+
+/// Index handle.  Owns a single SQLite connection; all mutating methods take
+/// `&mut self` so the borrow checker prevents concurrent transactions.
+pub struct Index {
+    connection: Connection,
+    active_embedding: EmbeddingTriple,
+}
+
+impl Index {
+    /// Construct an index handle with an explicit active embedding triple.
+    ///
+    /// Spec §10.2.2 #5: the triple is identity, not flavor.  No silent
+    /// fallback — callers must supply the triple loaded from `config.yaml`.
+    pub fn with_active_embedding(connection: Connection, active_embedding: EmbeddingTriple) -> Self {
+        Self { connection, active_embedding }
+    }
+
+    /// Test/fixture constructor using the synthetic embedding triple.
+    ///
+    /// Production code uses [`Self::with_active_embedding`]; callers that need
+    /// the configured triple must load it from `config::load_active_embedding`.
+    /// The synthetic triple is inert (no real embedding worker targets it).
+    ///
+    /// Exposed without `#[cfg(test)]` so integration tests (which compile as
+    /// separate crates) can construct an `Index` without a `config.yaml`.
+    /// Do not use in production write paths.
+    pub fn new(connection: Connection) -> Self {
+        Self::with_active_embedding(
+            connection,
+            EmbeddingTriple {
+                provider: "synthetic".to_string(),
+                model_ref: "stream-a-test".to_string(),
+                dimension: 32,
+            },
+        )
+    }
+
+    /// Borrow the underlying connection (read-only callers).
+    pub fn connection(&self) -> &Connection {
+        &self.connection
+    }
+
+    // -- Write methods -------------------------------------------------------
+
+    /// Upsert a memory, populating all `memories` table columns (spec §10.1).
+    pub fn upsert_memory(&mut self, memory: &Memory, metadata_only: bool) -> rusqlite::Result<()> {
+        upsert_memory_row_with_full_metadata(&mut self.connection, memory, metadata_only, &self.active_embedding)
+    }
+
+    /// Clear all derived rows before a full reindex.
+    pub fn clear_memory_index(&mut self) -> rusqlite::Result<()> {
+        let txn = self.connection.transaction()?;
+        txn.execute("DELETE FROM memory_chunks", [])?;
+        txn.execute("DELETE FROM memories", [])?;
+        txn.execute("DELETE FROM chunk_vectors", [])?;
+        txn.execute("DELETE FROM chunk_embedding_meta", [])?;
+        txn.commit()
+    }
+
+    /// Clear plaintext-derived rows before reindexing Markdown files, preserving encrypted metadata rows.
+    pub fn clear_plaintext_memory_index(&mut self) -> rusqlite::Result<()> {
+        let txn = self.connection.transaction()?;
+        txn.execute(
+            "DELETE FROM memory_chunks
+             WHERE memory_id IN (SELECT id FROM memories WHERE path NOT LIKE 'encrypted/%')",
+            [],
+        )?;
+        txn.execute("DELETE FROM memories WHERE path NOT LIKE 'encrypted/%'", [])?;
+        txn.execute("DELETE FROM chunk_vectors WHERE chunk_id NOT IN (SELECT chunk_id FROM memory_chunks)", [])?;
+        txn.execute("DELETE FROM chunk_embedding_meta WHERE chunk_id NOT IN (SELECT chunk_id FROM memory_chunks)", [])?;
+        txn.execute(
+            "DELETE FROM pending_embedding_jobs WHERE chunk_id NOT IN (SELECT chunk_id FROM memory_chunks)",
+            [],
+        )?;
+        txn.commit()
+    }
+
+    /// Update a chunk embedding.
+    ///
+    /// Spec §10.2.1 step 4 ordering: vector upsert FIRST (outside any txn),
+    /// then a single SQLite transaction for `chunk_embedding_meta` +
+    /// `pending_embedding_jobs`.  Taking `&mut self` prevents concurrent
+    /// transactions on the same connection.
+    pub fn update_embedding(&mut self, update: &EmbeddingUpdate) -> Result<(), VectorError> {
+        // Validate before touching anything.
+        validate_update_preconditions(&self.connection, update)?;
+        let chunk_rowid = read_chunk_rowid(&self.connection, update.chunk_id.as_str())?;
+
+        // Step 1: vector upsert — outside any SQLite transaction.
+        ensure_vector_table(&self.connection, &update.triple)?;
+        upsert_vector_payload(&self.connection, &update.triple, update.chunk_id.as_str(), chunk_rowid, &update.vector)?;
+
+        // Step 2: one SQLite transaction for metadata + job resolution.
+        let txn = self.connection.transaction()?;
+        upsert_chunk_embedding_meta(&txn, update)?;
+        resolve_pending_embedding_job(&txn, update)?;
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// Drop an embedding triple's vector and metadata rows.
+    pub fn drop_embedding_model(&mut self, triple: &EmbeddingTriple) -> Result<usize, VectorError> {
+        Ok(self.drop_embedding_model_report(triple)?.vectors_removed as usize)
+    }
+
+    /// Drop an embedding triple and return the removal report.
+    pub fn drop_embedding_model_report(
+        &mut self,
+        triple: &EmbeddingTriple,
+    ) -> Result<crate::model::DropTripleReport, VectorError> {
+        let vectors_removed = self.connection.execute(
+            "DELETE FROM chunk_vectors WHERE provider=?1 AND model_ref=?2 AND dimension=?3",
+            params![triple.provider, triple.model_ref, i64::from(triple.dimension)],
+        )? as u64;
+        let meta_rows_removed = self.connection.execute(
+            "DELETE FROM chunk_embedding_meta WHERE provider=?1 AND model_ref=?2 AND dimension=?3",
+            params![triple.provider, triple.model_ref, i64::from(triple.dimension)],
+        )? as u64;
+        let pending_jobs_dropped = self.connection.execute(
+            "DELETE FROM pending_embedding_jobs WHERE provider=?1 AND model_ref=?2 AND dimension=?3",
+            params![triple.provider, triple.model_ref, i64::from(triple.dimension)],
+        )? as u64;
+        let table = crate::index::sqlite_vec::vector_table_name(triple);
+        let table_dropped = table_exists(&self.connection, &table)?;
+        self.connection.execute(
+            "INSERT OR IGNORE INTO dropped_embedding_triples(provider,model_ref,dimension) VALUES (?1,?2,?3)",
+            params![triple.provider, triple.model_ref, i64::from(triple.dimension)],
+        )?;
+        self.connection.execute(&format!("DROP TABLE IF EXISTS {table}"), [])?;
+        Ok(crate::model::DropTripleReport { vectors_removed, meta_rows_removed, pending_jobs_dropped, table_dropped })
+    }
+
+    /// Count vectors stored for a triple.
+    pub fn vector_count(&self, triple: &EmbeddingTriple) -> Result<usize, VectorError> {
+        self.connection
+            .query_row(
+                "SELECT COUNT(*) FROM chunk_vectors WHERE provider=?1 AND model_ref=?2 AND dimension=?3",
+                params![triple.provider, triple.model_ref, i64::from(triple.dimension)],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|count| count as usize)
+            .map_err(Into::into)
+    }
+
+    /// Reconcile chunk/vector metadata and enqueue missing embeddings for the active triple.
+    pub fn reconcile_active_embedding_jobs(&mut self) -> Result<usize, VectorError> {
+        let triple = self.active_embedding.clone();
+        reconcile_active_embedding_jobs_impl(&mut self.connection, &triple)
+    }
+
+    // -- Query methods -------------------------------------------------------
+
+    /// Query chunks through FTS.
+    ///
+    /// R-IX-1 defense-in-depth: the join against `memories` filters out
+    /// encrypted-memory chunks (`metadata_only = 0`) even if upstream forgot.
+    pub fn query_chunks(&self, text: &str) -> rusqlite::Result<Vec<ChunkResult>> {
+        let mut stmt = self.connection.prepare(
+            "SELECT memory_chunks.memory_id, memory_chunks.text, bm25(memory_chunks_fts) AS score
+             FROM memory_chunks_fts
+             JOIN memory_chunks ON memory_chunks_fts.rowid = memory_chunks.chunk_rowid
+             JOIN memories      ON memories.id = memory_chunks.memory_id
+             WHERE memory_chunks_fts MATCH ?1
+               AND memories.metadata_only = 0
+             ORDER BY score
+             LIMIT 20",
+        )?;
+        // Materialize before stmt drops (E0597 — stmt lifetime).
+        let rows = stmt
+            .query_map([text], |row| {
+                Ok(ChunkResult {
+                    memory_id: MemoryId::new(row.get::<_, String>(0)?),
+                    text: row.get(1)?,
+                    score: row.get(2)?,
+                })
+            })?
+            .collect();
+        rows
+    }
+
+    /// Query chunks through sqlite-vec nearest-neighbor search.
+    ///
+    /// R-IX-1 defense-in-depth: filters out encrypted-memory chunks.
+    pub fn query_vector_chunks(
+        &self,
+        triple: &EmbeddingTriple,
+        vector: &[f32],
+        limit: usize,
+    ) -> Result<Vec<ChunkResult>, VectorError> {
+        crate::index::sqlite_vec::validate_dimension(triple, vector)?;
+        let table = crate::index::sqlite_vec::vector_table_name(triple);
+        if is_dropped_triple(&self.connection, triple)? || !table_exists(&self.connection, &table)? {
+            return Err(VectorError::UnknownEmbeddingTriple(triple.clone()));
+        }
+        let sql = format!(
+            "SELECT memory_chunks.memory_id, memory_chunks.text, {table}.distance
+             FROM {table}
+             JOIN memory_chunks ON memory_chunks.chunk_rowid = {table}.rowid
+             JOIN memories      ON memories.id = memory_chunks.memory_id
+             WHERE embedding MATCH ?1
+               AND k = ?2
+               AND memories.metadata_only = 0
+             ORDER BY {table}.distance"
+        );
+        let blob = crate::index::sqlite_vec::serialize_f32(vector);
+        let mut stmt = self.connection.prepare(&sql)?;
+        // Materialize before stmt drops (E0597 — stmt lifetime).
+        let rows = stmt
+            .query_map(params![blob, limit as i64], |row| {
+                Ok(ChunkResult {
+                    memory_id: MemoryId::new(row.get::<_, String>(0)?),
+                    text: row.get(1)?,
+                    score: row.get(2)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into);
+        rows
+    }
+
+    /// Return the stored `file_hash` for a repo path, or `None` if not indexed.
+    ///
+    /// Used by phase 6 index-consistency check to avoid a full reindex on every
+    /// startup. If the stored hash equals the on-disk hash, the memory is clean.
+    pub fn file_hash_for(&self, path: &RepoPath) -> Option<crate::model::Sha256> {
+        self.connection
+            .query_row("SELECT file_hash FROM memories WHERE path = ?1", [path.as_str()], |row| row.get::<_, String>(0))
+            .ok()
+            .map(crate::model::Sha256::new)
+    }
+
+    /// Query memories by structured filter.
+    pub fn query_memory(&self, query: &MemoryQuery) -> rusqlite::Result<Vec<QueryResult>> {
+        let mut stmt = self.connection.prepare(
+            "SELECT id,path,summary
+                 FROM memories
+                 WHERE (?1 IS NULL OR id = ?1)
+                   AND (?2 OR metadata_only = 0)
+                   AND (?3 IS NULL OR EXISTS (
+                        SELECT 1 FROM memory_tags
+                        WHERE memory_id = memories.id AND tag = ?3
+                   ))
+                 ORDER BY id",
+        )?;
+        // Materialize before stmt drops (E0597 — stmt lifetime).
+        let rows = stmt
+            .query_map(
+                params![query.id.as_ref().map(|id| id.as_str()), query.include_metadata_only, query.tag.as_deref()],
+                row_to_result,
+            )?
+            .collect();
+        rows
+    }
+}
+
+/// Validate: dimension OK, triple not dropped, content hash matches stored hash.
+fn validate_update_preconditions(conn: &Connection, update: &EmbeddingUpdate) -> Result<(), VectorError> {
+    crate::index::sqlite_vec::validate_dimension(&update.triple, &update.vector)?;
+    if is_dropped_triple(conn, &update.triple)? {
+        return Err(VectorError::UnknownEmbeddingTriple(update.triple.clone()));
+    }
+    let actual_hash: rusqlite::Result<String> =
+        conn.query_row("SELECT body_hash FROM memory_chunks WHERE chunk_id=?1", [update.chunk_id.as_str()], |row| {
+            row.get(0)
+        });
+    let actual_hash = actual_hash.map_err(|_| VectorError::StaleChunk {
+        expected: update.expected_chunk_hash.clone(),
+        found: crate::model::Sha256::new("missing"),
+    })?;
+    if actual_hash != update.expected_chunk_hash.as_str() {
+        return Err(VectorError::StaleChunk {
+            expected: update.expected_chunk_hash.clone(),
+            found: crate::model::Sha256::new(actual_hash),
+        });
+    }
+    Ok(())
+}
+
+/// Read the integer rowid for a chunk (needed to address the sqlite-vec table).
+fn read_chunk_rowid(conn: &Connection, chunk_id: &str) -> Result<i64, VectorError> {
+    conn.query_row("SELECT chunk_rowid FROM memory_chunks WHERE chunk_id=?1", [chunk_id], |row| row.get::<_, i64>(0))
+        .map_err(Into::into)
+}
+
+/// Upsert the vector payload: sqlite-vec virtual table + chunk_vectors shadow.
+///
+/// Called OUTSIDE any SQLite transaction (spec §10.2.1 step 4).  If the
+/// subsequent metadata transaction rolls back, the orphan vector row is cleaned
+/// by the startup reconciliation pass.
+#[allow(clippy::too_many_arguments)]
+fn upsert_vector_payload(
+    conn: &Connection,
+    triple: &EmbeddingTriple,
+    chunk_id: &str,
+    chunk_rowid: i64,
+    vector: &[f32],
+) -> Result<(), VectorError> {
+    let table = crate::index::sqlite_vec::vector_table_name(triple);
+    let blob = crate::index::sqlite_vec::serialize_f32(vector);
+    conn.execute(
+        &format!("INSERT OR REPLACE INTO {table}(rowid, embedding) VALUES (?1, ?2)"),
+        params![chunk_rowid, blob],
+    )?;
+    let vector_json = serde_json::to_string(vector).map_err(|e| VectorError::Storage(e.to_string()))?;
+    conn.execute(
+        "INSERT INTO chunk_vectors(chunk_id,provider,model_ref,dimension,vector_json) VALUES (?1,?2,?3,?4,?5)
+         ON CONFLICT(chunk_id,provider,model_ref,dimension) DO UPDATE SET vector_json=excluded.vector_json",
+        params![chunk_id, triple.provider, triple.model_ref, i64::from(triple.dimension), vector_json],
+    )?;
+    Ok(())
+}
+
+/// Record that a chunk was embedded: upsert `chunk_embedding_meta`.
+fn upsert_chunk_embedding_meta(txn: &Transaction<'_>, update: &EmbeddingUpdate) -> Result<(), VectorError> {
+    let vector_table = crate::index::sqlite_vec::vector_table_name(&update.triple);
+    let embedded_at = chrono::Utc::now().to_rfc3339();
+    txn.execute(
+        "INSERT INTO chunk_embedding_meta(
+             chunk_id, provider, model_ref, dimension, vector_table, embedded_at, content_hash
+         ) VALUES (?1,?2,?3,?4,?5,?6,?7)
+         ON CONFLICT(chunk_id,provider,model_ref,dimension) DO UPDATE SET
+           vector_table  = excluded.vector_table,
+           embedded_at   = excluded.embedded_at,
+           content_hash  = excluded.content_hash",
+        params![
+            update.chunk_id.as_str(),
+            update.triple.provider,
+            update.triple.model_ref,
+            i64::from(update.triple.dimension),
+            vector_table,
+            embedded_at,
+            update.expected_chunk_hash.as_str()
+        ],
+    )?;
+    Ok(())
+}
+
+/// Delete the pending job that triggered this embedding update.
+fn resolve_pending_embedding_job(txn: &Transaction<'_>, update: &EmbeddingUpdate) -> Result<(), VectorError> {
+    txn.execute(
+        "DELETE FROM pending_embedding_jobs
+         WHERE chunk_id=?1 AND provider=?2 AND model_ref=?3 AND dimension=?4",
+        params![
+            update.chunk_id.as_str(),
+            update.triple.provider,
+            update.triple.model_ref,
+            i64::from(update.triple.dimension)
+        ],
+    )?;
+    Ok(())
+}
+
+/// Upsert a memory into SQLite, populating all `memories` columns (spec §10.1).
+///
+/// `file_hash` mirrors `body_hash` and `file_mtime_ns` is 0 until the write
+/// path plumbs the real on-disk values (deferred).
+fn upsert_memory_row_with_full_metadata(
+    connection: &mut Connection,
+    memory: &Memory,
+    metadata_only: bool,
+    active_embedding: &EmbeddingTriple,
+) -> rusqlite::Result<()> {
+    let active_embedding_dropped = is_dropped_triple_rusqlite(connection, active_embedding)?;
+    let txn = connection.transaction()?;
+
+    let path = resolve_memory_path(memory);
+    let sensitivity = sensitivity_str(memory.frontmatter.sensitivity);
+    let memory_type = memory_type_str(&memory.frontmatter.memory_type);
+    let scope = scope_str(memory.frontmatter.scope);
+    let trust_level = trust_level_str(memory.frontmatter.trust_level);
+    let status = status_str(memory.frontmatter.status);
+    let author = author_kind_str(memory.frontmatter.author.kind);
+    let source_kind = source_kind_str(memory.frontmatter.source.kind);
+    let body_hash = hash_bytes(memory.body.as_bytes()).to_string();
+    let frontmatter_json = serde_json::to_string(&memory.frontmatter).unwrap_or_else(|_| "{}".to_string());
+    let file_hash = body_hash.clone(); // placeholder; deferred: plumb from fs::metadata
+    let file_mtime_ns: i64 = 0; // placeholder; deferred: plumb from fs::metadata
+    let indexed_at = chrono::Utc::now().to_rfc3339();
+    let created_at = memory.frontmatter.created_at.to_rfc3339();
+    let updated_at = memory.frontmatter.updated_at.to_rfc3339();
+
+    txn.execute(
+        "INSERT INTO memories(
+             id, path, schema_version, type, scope, namespace, canonical_namespace_id,
+             summary, confidence, trust_level, sensitivity, status, review_state,
+             requires_user_confirmation, created_at, updated_at,
+             observed_at, valid_from, valid_until, ttl,
+             author, source_kind, source_harness, source_device,
+             body_hash, frontmatter_json, file_hash, file_mtime_ns, indexed_at, metadata_only
+         ) VALUES (
+             :id, :path, :schema_version, :type, :scope, :namespace, :canonical_namespace_id,
+             :summary, :confidence, :trust_level, :sensitivity, :status, :review_state,
+             :requires_user_confirmation, :created_at, :updated_at,
+             :observed_at, :valid_from, :valid_until, :ttl,
+             :author, :source_kind, :source_harness, :source_device,
+             :body_hash, :frontmatter_json, :file_hash, :file_mtime_ns, :indexed_at, :metadata_only
+         )
+         ON CONFLICT(id) DO UPDATE SET
+             path=excluded.path, schema_version=excluded.schema_version,
+             type=excluded.type, scope=excluded.scope,
+             namespace=excluded.namespace, canonical_namespace_id=excluded.canonical_namespace_id,
+             summary=excluded.summary, confidence=excluded.confidence,
+             trust_level=excluded.trust_level, sensitivity=excluded.sensitivity,
+             status=excluded.status, review_state=excluded.review_state,
+             requires_user_confirmation=excluded.requires_user_confirmation,
+             updated_at=excluded.updated_at, observed_at=excluded.observed_at,
+             valid_from=excluded.valid_from, valid_until=excluded.valid_until,
+             ttl=excluded.ttl, author=excluded.author,
+             source_kind=excluded.source_kind, source_harness=excluded.source_harness,
+             source_device=excluded.source_device, body_hash=excluded.body_hash,
+             frontmatter_json=excluded.frontmatter_json,
+             file_hash=excluded.file_hash, file_mtime_ns=excluded.file_mtime_ns,
+             indexed_at=excluded.indexed_at, metadata_only=excluded.metadata_only",
+        named_params! {
+            ":id":                        memory.frontmatter.id.as_str(),
+            ":path":                      &path,
+            ":schema_version":            memory.frontmatter.schema_version as i64,
+            ":type":                      memory_type,
+            ":scope":                     scope,
+            ":namespace":                 &memory.frontmatter.namespace,
+            ":canonical_namespace_id":    &memory.frontmatter.canonical_namespace_id,
+            ":summary":                   &memory.frontmatter.summary,
+            ":confidence":                memory.frontmatter.confidence,
+            ":trust_level":               trust_level,
+            ":sensitivity":               sensitivity,
+            ":status":                    status,
+            ":review_state":              &memory.frontmatter.review_state,
+            ":requires_user_confirmation": memory.frontmatter.requires_user_confirmation as i64,
+            ":created_at":                &created_at,
+            ":updated_at":                &updated_at,
+            // Deferred: add observed_at, valid_from, valid_until, ttl to Frontmatter model.
+            ":observed_at":               rusqlite::types::Null,
+            ":valid_from":                rusqlite::types::Null,
+            ":valid_until":               rusqlite::types::Null,
+            ":ttl":                       rusqlite::types::Null,
+            ":author":                    author,
+            ":source_kind":               source_kind,
+            ":source_harness":            &memory.frontmatter.source.harness,
+            ":source_device":             &memory.frontmatter.source.device,
+            ":body_hash":                 &body_hash,
+            ":frontmatter_json":          &frontmatter_json,
+            ":file_hash":                 &file_hash,
+            ":file_mtime_ns":             file_mtime_ns,
+            ":indexed_at":                &indexed_at,
+            ":metadata_only":             metadata_only as i64,
+        },
+    )?;
+
+    sync_auxiliary_tables(&txn, memory)?;
+
+    // Rebuild chunks for this memory.
+    txn.execute("DELETE FROM memory_chunks WHERE memory_id = ?1", [memory.frontmatter.id.as_str()])?;
+    if !metadata_only && memory.frontmatter.retrieval_policy.index_body {
+        for chunk in chunk_memory(memory) {
+            txn.execute(
+                "INSERT INTO memory_chunks(memory_id,chunk_id,body_hash,text,start_byte,end_byte)
+                 VALUES (?1,?2,?3,?4,?5,?6)",
+                params![
+                    memory.frontmatter.id.as_str(),
+                    chunk.chunk_id.as_str(),
+                    chunk.body_hash.as_str(),
+                    chunk.text,
+                    chunk.start_byte as i64,
+                    chunk.end_byte as i64
+                ],
+            )?;
+            if memory.frontmatter.retrieval_policy.index_embeddings && !active_embedding_dropped {
+                let enqueued_at = chrono::Utc::now().to_rfc3339();
+                txn.execute(
+                    "INSERT OR IGNORE INTO pending_embedding_jobs(
+                         chunk_id, provider, model_ref, dimension, content_hash, enqueued_at
+                     ) VALUES (?1,?2,?3,?4,?5,?6)",
+                    params![
+                        chunk.chunk_id.as_str(),
+                        active_embedding.provider.as_str(),
+                        active_embedding.model_ref.as_str(),
+                        i64::from(active_embedding.dimension),
+                        chunk.body_hash.as_str(),
+                        enqueued_at
+                    ],
+                )?;
+            }
+        }
+    }
+
+    txn.commit()
+}
+
+/// Sync priority auxiliary tables: tags, aliases, entities, evidence.
+///
+/// Each table is replaced wholesale for this memory_id — safe because these
+/// are derived projections; canonical data lives in the Markdown file.
+///
+/// Deferred: memory_supersession, memory_related, memory_regressions tables.
+fn sync_auxiliary_tables(txn: &Transaction<'_>, memory: &Memory) -> rusqlite::Result<()> {
+    let id = memory.frontmatter.id.as_str();
+    sync_tags(txn, id, &memory.frontmatter.tags)?;
+    sync_aliases(txn, id, &memory.frontmatter.aliases)?;
+    sync_entities(txn, id, &memory.frontmatter.entities)?;
+    sync_evidence(txn, id, &memory.frontmatter.evidence)?;
+    Ok(())
+}
+
+fn sync_tags(txn: &Transaction<'_>, memory_id: &str, tags: &[String]) -> rusqlite::Result<()> {
+    txn.execute("DELETE FROM memory_tags WHERE memory_id = ?1", [memory_id])?;
+    for tag in tags {
+        txn.execute("INSERT OR IGNORE INTO memory_tags(memory_id, tag) VALUES (?1, ?2)", params![memory_id, tag])?;
+    }
+    Ok(())
+}
+
+fn sync_aliases(txn: &Transaction<'_>, memory_id: &str, aliases: &[String]) -> rusqlite::Result<()> {
+    txn.execute("DELETE FROM memory_aliases WHERE memory_id = ?1", [memory_id])?;
+    for alias in aliases {
+        txn.execute(
+            "INSERT OR IGNORE INTO memory_aliases(memory_id, alias) VALUES (?1, ?2)",
+            params![memory_id, alias],
+        )?;
+    }
+    Ok(())
+}
+
+fn sync_entities(txn: &Transaction<'_>, memory_id: &str, entities: &[crate::model::Entity]) -> rusqlite::Result<()> {
+    txn.execute("DELETE FROM memory_entity_aliases WHERE memory_id = ?1", [memory_id])?;
+    txn.execute("DELETE FROM memory_entities WHERE memory_id = ?1", [memory_id])?;
+    for entity in entities {
+        txn.execute(
+            "INSERT OR IGNORE INTO memory_entities(memory_id, entity_id, label) VALUES (?1, ?2, ?3)",
+            params![memory_id, entity.id, entity.label],
+        )?;
+        for alias in &entity.aliases {
+            txn.execute(
+                "INSERT OR IGNORE INTO memory_entity_aliases(memory_id, entity_id, alias) VALUES (?1, ?2, ?3)",
+                params![memory_id, entity.id, alias],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn sync_evidence(txn: &Transaction<'_>, memory_id: &str, evidence: &[crate::model::Evidence]) -> rusqlite::Result<()> {
+    txn.execute("DELETE FROM memory_evidence WHERE memory_id = ?1", [memory_id])?;
+    for ev in evidence {
+        let observed_at = ev.observed_at.as_ref().map(|t| t.to_rfc3339());
+        txn.execute(
+            "INSERT OR IGNORE INTO memory_evidence(
+                 memory_id, evidence_id, quote, quote_norm_hash, ref_text, weight, observed_at
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+            params![memory_id, ev.id, ev.quote, ev.quote_norm_hash, ev.reference, ev.weight, observed_at],
+        )?;
+    }
+    Ok(())
+}
+
+/// Delete orphan vectors/meta rows and enqueue missing embeddings for the active triple.
+///
+/// Takes `&mut Connection` — enforces exclusive access, preventing
+/// `unchecked_transaction` races.  Spec §10.2.1 step 5.
+///
+/// Content-hash check: drops pending jobs whose `content_hash` no longer
+/// matches `memory_chunks.body_hash` (spec §10.2.1 #6 third bullet).
+fn reconcile_active_embedding_jobs_impl(
+    connection: &mut Connection,
+    triple: &EmbeddingTriple,
+) -> Result<usize, VectorError> {
+    if is_dropped_triple_rusqlite(connection, triple).map_err(VectorError::Sqlite)? {
+        return Ok(0);
+    }
+    let txn = connection.transaction()?;
+
+    // Remove orphan rows whose chunk no longer exists.
+    txn.execute("DELETE FROM chunk_vectors WHERE chunk_id NOT IN (SELECT chunk_id FROM memory_chunks)", [])?;
+    txn.execute("DELETE FROM chunk_embedding_meta WHERE chunk_id NOT IN (SELECT chunk_id FROM memory_chunks)", [])?;
+    // Drop stale pending jobs: chunk gone OR content_hash drifted from current body.
+    txn.execute(
+        "DELETE FROM pending_embedding_jobs
+         WHERE chunk_id NOT IN (SELECT chunk_id FROM memory_chunks)
+            OR content_hash != (
+                SELECT mc.body_hash FROM memory_chunks mc
+                WHERE mc.chunk_id = pending_embedding_jobs.chunk_id
+            )",
+        [],
+    )?;
+
+    // Enqueue jobs for chunks missing a vector for this triple.
+    let enqueued_at = chrono::Utc::now().to_rfc3339();
+    let queued = txn.execute(
+        "INSERT OR IGNORE INTO pending_embedding_jobs(
+             chunk_id, provider, model_ref, dimension, content_hash, enqueued_at
+         )
+         SELECT mc.chunk_id, ?1, ?2, ?3, mc.body_hash, ?4
+         FROM memory_chunks mc
+         LEFT JOIN chunk_vectors cv
+           ON cv.chunk_id  = mc.chunk_id
+          AND cv.provider  = ?1
+          AND cv.model_ref = ?2
+          AND cv.dimension = ?3
+         WHERE cv.chunk_id IS NULL",
+        params![triple.provider, triple.model_ref, i64::from(triple.dimension), enqueued_at],
+    )?;
+
+    txn.commit()?;
+    Ok(queued)
+}
+
+/// Check if a triple is in the dropped set.  Returns `VectorError`.
+fn is_dropped_triple(conn: &Connection, triple: &EmbeddingTriple) -> Result<bool, VectorError> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM dropped_embedding_triples
+         WHERE provider=?1 AND model_ref=?2 AND dimension=?3)",
+        params![triple.provider, triple.model_ref, i64::from(triple.dimension)],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|v| v != 0)
+    .map_err(Into::into)
+}
+
+/// Same check but returns `rusqlite::Result` for callers already in that error domain.
+fn is_dropped_triple_rusqlite(conn: &Connection, triple: &EmbeddingTriple) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM dropped_embedding_triples
+         WHERE provider=?1 AND model_ref=?2 AND dimension=?3)",
+        params![triple.provider, triple.model_ref, i64::from(triple.dimension)],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|v| v != 0)
+}
+
+fn table_exists(conn: &Connection, table: &str) -> Result<bool, VectorError> {
+    conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)", [table], |row| {
+        row.get::<_, i64>(0)
+    })
+    .map(|v| v != 0)
+    .map_err(Into::into)
+}
+
+fn ensure_vector_table(conn: &Connection, triple: &EmbeddingTriple) -> Result<(), VectorError> {
+    let table = crate::index::sqlite_vec::vector_table_name(triple);
+    conn.execute(
+        &format!("CREATE VIRTUAL TABLE IF NOT EXISTS {table} USING vec0(embedding float[{}])", triple.dimension),
+        [],
+    )
+    .map(|_| ())
+    .map_err(Into::into)
+}
+
+fn row_to_result(row: &rusqlite::Row<'_>) -> rusqlite::Result<QueryResult> {
+    Ok(QueryResult {
+        id: MemoryId::new(row.get::<_, String>(0)?),
+        // `from_unchecked`: path was validated at index-write time; hydrating from DB row.
+        path: RepoPath::from_unchecked(row.get::<_, String>(1)?),
+        summary: row.get(2)?,
+    })
+}
+
+fn resolve_memory_path(memory: &Memory) -> String {
+    memory
+        .path
+        .as_ref()
+        .map_or_else(|| format!("agent/patterns/{}.md", memory.frontmatter.id.as_str()), |p| p.as_str().to_string())
+}
+
+fn sensitivity_str(s: Sensitivity) -> &'static str {
+    match s {
+        Sensitivity::Public => "public",
+        Sensitivity::Internal => "internal",
+        Sensitivity::Confidential => "confidential",
+        Sensitivity::Personal => "personal",
+    }
+}
+
+fn memory_type_str(t: &crate::model::MemoryType) -> &'static str {
+    match t {
+        crate::model::MemoryType::Project => "project",
+        crate::model::MemoryType::Person => "person",
+        crate::model::MemoryType::Procedure => "procedure",
+        crate::model::MemoryType::Episode => "episode",
+        crate::model::MemoryType::Claim => "claim",
+        crate::model::MemoryType::Artifact => "artifact",
+        crate::model::MemoryType::Prospective => "prospective",
+        crate::model::MemoryType::Pattern => "pattern",
+        crate::model::MemoryType::Playbook => "playbook",
+        crate::model::MemoryType::Postmortem => "postmortem",
+        crate::model::MemoryType::AntiPattern => "anti-pattern",
+        crate::model::MemoryType::Heuristic => "heuristic",
+        crate::model::MemoryType::Regression => "regression",
+        crate::model::MemoryType::Correction => "correction",
+        crate::model::MemoryType::Invariant => "invariant",
+        crate::model::MemoryType::Decision => "decision",
+        crate::model::MemoryType::OpenQuestion => "open-question",
+    }
+}
+
+fn scope_str(s: crate::model::Scope) -> &'static str {
+    match s {
+        crate::model::Scope::User => "user",
+        crate::model::Scope::Project => "project",
+        crate::model::Scope::Org => "org",
+        crate::model::Scope::Agent => "agent",
+        crate::model::Scope::Subagent => "subagent",
+    }
+}
+
+fn trust_level_str(t: crate::model::TrustLevel) -> &'static str {
+    match t {
+        crate::model::TrustLevel::Trusted => "trusted",
+        crate::model::TrustLevel::Untrusted => "untrusted",
+        crate::model::TrustLevel::Candidate => "candidate",
+        crate::model::TrustLevel::Quarantined => "quarantined",
+        crate::model::TrustLevel::Pinned => "pinned",
+    }
+}
+
+fn status_str(s: crate::model::MemoryStatus) -> &'static str {
+    match s {
+        crate::model::MemoryStatus::Candidate => "candidate",
+        crate::model::MemoryStatus::Active => "active",
+        crate::model::MemoryStatus::Pinned => "pinned",
+        crate::model::MemoryStatus::Superseded => "superseded",
+        crate::model::MemoryStatus::Archived => "archived",
+        crate::model::MemoryStatus::Tombstoned => "tombstoned",
+        crate::model::MemoryStatus::Quarantined => "quarantined",
+    }
+}
+
+fn author_kind_str(k: crate::model::AuthorKind) -> &'static str {
+    match k {
+        crate::model::AuthorKind::User => "user",
+        crate::model::AuthorKind::Agent => "agent",
+        crate::model::AuthorKind::Subagent => "subagent",
+        crate::model::AuthorKind::Dreaming => "dreaming",
+        crate::model::AuthorKind::System => "system",
+    }
+}
+
+fn source_kind_str(k: SourceKind) -> &'static str {
+    match k {
+        SourceKind::User => "user",
+        SourceKind::AgentPrimary => "agent-primary",
+        SourceKind::AgentSubagent => "agent-subagent",
+        SourceKind::Tool => "tool",
+        SourceKind::Web => "web",
+        SourceKind::Email => "email",
+        SourceKind::File => "file",
+        SourceKind::Synthesis => "synthesis",
+        SourceKind::Import => "import",
+        SourceKind::System => "system",
+    }
+}

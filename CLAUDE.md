@@ -1,0 +1,101 @@
+# agent-memory
+
+Implementation home for Stream A of the agent-memory system: a Rust substrate that owns canonical Markdown+YAML memory files, derived SQLite/FTS/vector indexes, per-device JSONL event logs, and git as the sync transport. Streams B–I depend on it.
+
+## Who's doing what
+
+- **Codex** is implementing Stream A from `docs/plans/2026-04-26-stream-a-core-substrate-implementation-plan-v0.3.md`. It owns the worktree workflow, task sequencing, and the per-task narrow gates.
+- **Claude (you)** is the architect/reviewer in this repo. Spec authorship, plan critique, plan-reviewer passes, sanity checks, and ad-hoc work Trey hands you. **You do not implement Stream A modules** unless Trey explicitly redirects.
+- **Trey** drives. He'll tell you when Codex is stuck or when he wants you to take something over.
+
+## Authoritative documents (use the latest, ignore older versions for current state)
+
+- **Spec:** `docs/specs/stream-a-core-substrate-v1.1.md` is the live substrate contract. Older versions (`v0.1`, `v0.2`, `v1.0`) are kept for history; do not consult them for current behavior.
+- **Plan:** `docs/plans/2026-04-26-stream-a-core-substrate-implementation-plan-v0.3.md` is the live implementation plan Codex is executing. v0.1 and v0.2 are retained for history.
+- **System spec:** `docs/specs/system-v0.1.md` is the parent system-level spec covering all streams; Stream A is one of them.
+- **Handoff:** `docs/handoff-2026-04-23.md` captures pre-repo design history.
+- **Reference:** `docs/reference/handbook-v2.2.md` and `docs/reference/gpt-deep-research-2026-04-23.md` are background research, not implementation contracts.
+
+When Trey says "the spec" or "the plan" without a version, he means the latest. When asked "where are we," check `git status`, `git worktree list`, `git log --oneline -20`, and the plan's task list — don't infer from older docs.
+
+## Stream model (one-liners)
+
+- **A** Core substrate (this repo). Canonical files, index, events, git, merge driver.
+- **B** Daemon, MCP server, process lifecycle, embedding inference worker.
+- **C** Governance: promotion, contradiction detection, grounding, tombstone matching.
+- **D** Privacy filter: classification, age encryption, masked synthesis. Supplies `ClassificationOutcome` to A.
+- **E** Recall block assembly, harness hooks.
+- **F** Dreaming.
+- **G** Human UI for review/repair.
+- **H** Eval harness.
+- **I** Live event subscriptions.
+
+## Spec/plan conventions
+
+- Spec and plan files are **versioned by suffix** (`-v1.1.md`, `-v0.3.md`). New versions supersede; old versions stay on disk for history. Never mutate an older version.
+- Spec changes that affect the implementation contract get a version bump and a "Revision goal" entry at the top.
+- Plan changes get a "Plan revision history" entry.
+- The current spec ↔ plan pair is **v1.1 spec / v0.3 plan**. If they drift, that's a bug — surface it.
+
+## Codex-isms in the plan (don't try to translate)
+
+The plan was written by Codex for Codex execution. These are intentional and not Claude Code conventions:
+
+- **Subagent type names** like `heavy_worker`, `cli_developer`, `backend_arch`, `code_mapper`, `plan_checker`, `test_hardener`, `performance_engineer`, `security_auditor`, `review_guard`, `reviewer`, `docs_editor`, `docs_researcher`, `fast_worker` — Codex's custom subagent system. Not Claude's.
+- **Slash commands** `/clean-code` and `/tdd` — Codex skill invocation. Not Claude's.
+- **`update_plan`** — Codex CLI's plan tracker.
+- **"Spawn `<agent>`"** — Codex spawn syntax.
+
+When reviewing the plan, treat all of the above as idiomatic for the target runtime; do not flag them as missing/wrong.
+
+## Repository state strategy (Codex's, summarized)
+
+- `main` is the only long-lived branch, fast-forward only.
+- Each task runs in its own git worktree at `../agent-memory-wt/task-<NN>/` on a `stream-a/task-<NN>-<slug>` branch.
+- Workers run only their per-task narrow gate; **`scripts/check.sh` runs only on the integrated trunk after `integrate-task-worktree.sh` fast-forwards `main`**, never inside a task worktree (stub modules from unstarted tasks would fail workspace tests for the wrong reason).
+- `Cargo.lock` and `pnpm-lock.yaml` are orchestrator-merged. Workers update `Cargo.toml` only.
+- Don't touch Codex's in-flight worktrees or branches without checking with Trey.
+
+## Critical invariants (will fail review if violated)
+
+These are spec-mandated, not preferences:
+
+1. **`secret` is never persisted to disk.** It's a `ClassificationOutcome` value supplied per-write by Stream D; Stream A returns `WriteFailureKind::SecretRefused` before any disk effect (spec §8.7).
+2. **Every write request carries a `ClassificationOutcome`.** No defaults. Plaintext writes with `RequiresEncryption` classification get `EncryptionRequired`; `Trusted` with sensitive frontmatter gets `ClassificationSensitivityMismatch`.
+3. **Embedding triple `(provider, model_ref, dimension)` is identity, not flavor.** Mismatch returns typed errors (`DimensionMismatch`, `UnknownEmbeddingTriple`) — never silent fallback (spec §10.2.2).
+4. **Device IDs live only in local runtime state**, never in the synced `config.yaml`. A fresh clone must regenerate device identity via `git::adopt_clone` before any write.
+5. **`MERGE_DRIVER_SUPPORTED_SCHEMA_VERSION`** is the single source of truth for the merge driver's schema gate. No magic numbers (spec §14.2).
+6. **Two-clone convergence** is canonical-content equality per spec §13.6.1, not raw `git diff`.
+7. **Performance baselines** at `bench/baseline.<profile>.json` are updated only by explicit human-authored commits — the bench harness never overwrites them (spec §17.6, §18.9).
+
+## What's already on disk (Task 1 scaffold, as of 2026-04-26)
+
+- `Cargo.toml` workspace with three members: `memory-substrate`, `memory-merge-driver`, `memory-test-support`.
+- `rust-toolchain.toml`, `rustfmt.toml`, `clippy.toml`, `.cargo/`, `.dylint/` — installed from agentlinters SHA `91446bb`.
+- `package.json`, `.oxfmtrc.json`, `.oxlintrc.json` — pnpm-managed Oxfmt/Oxlint.
+- `bench/baseline.linux-x86_64.json` and `bench/baseline.darwin-arm64.json` — placeholder bodies (`runs: 0`); first real values come from Task 11/13 first-release bootstrap path.
+- `scripts/install-agentlinters.sh` — pinned to SHA `91446bb`, no `git pull`.
+- `modules/`, `fixtures/`, `fuzz/` — directories created, contents pending.
+- No commits beyond `ff708ef seed: initial spec drop` yet.
+
+## Running review or sanity-check work
+
+Standard recipe when Trey asks "review this" or "is this ready":
+
+1. Read the live spec (v1.1) and plan (v0.3) sections relevant to the question.
+2. Read the actual files in the repo, not just the plan's description of them.
+3. For plan reviews, brief the `plan-reviewer` subagent with the Codex-conventions caveat (subagent types, slash commands, `update_plan` are intentional).
+4. Report blockers vs risks vs nits separately. Trey wants real adversarial critique, not validation.
+
+## What NOT to do
+
+- Don't run `cargo test --workspace` inside Codex's task worktrees — see "Repository state strategy."
+- Don't run `git pull` on `/Users/treygoff/Code/agentlinters` — the SHA is pinned at `91446bb` and assets are copied from there.
+- Don't overwrite `bench/baseline.*.json` programmatically — they require explicit human commits.
+- Don't bump spec or plan versions without Trey's explicit ask.
+- Don't add `secret` as a frontmatter `sensitivity` value anywhere. It's a runtime `ClassificationOutcome` only.
+- Don't use `cargo generate-lockfile` for any integration work — use `cargo build --workspace --locked` + targeted `cargo update -p <crate>`.
+
+## Project-local agents and skills
+
+None defined yet. If Trey asks for a per-project agent (e.g. a Rust-aware reviewer specific to substrate boundaries), the convention is `.claude/agents/<name>.md`.

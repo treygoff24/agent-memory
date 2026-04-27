@@ -1,0 +1,127 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "semi": true,
+  "singleQuote": true,
+  "singleAttributePerLine": false,
+  "htmlWhitespaceSensitivity": "css",
+  "printWidth": 120,
+  "tabWidth": 4,
+  "trailingComma": "all",
+  "bracketSpacing": true,
+  "arrowParens": "always",
+  "endOfLine": "lf",
+  "ignorePatterns": [
+    "node_modules",
+    "dist",
+    "build",
+    "vendor",
+    "target",
+    "public",
+    ".vscode",
+    "*cache*",
+    ".env",
+    ".env*",
+    "*.sqlite",
+    "*.db",
+    "*.wasm",
+    "*.min.js",
+    "*.min.css",
+    "*.rs",
+    "*.py",
+    "*.rb",
+    "*.php",
+    "src-tauri",
+    "bootstrap/ssr",
+    "Dockerfile",
+    ".codex/skills",
+    "docs/plans",
+    "docs/specs",
+    "docs/reference",
+    "docs/handoff-2026-04-23.md"
+  ],
+  "sortPackageJson": false,
+  "sortImports": {
+    "groups": [
+      "type-import",
+      ["value-builtin", "value-external"],
+      "type-internal",
+      "value-internal",
+      ["type-parent", "type-sibling", "type-index"],
+      ["value-parent", "value-sibling", "value-index"],
+      "unknown"
+    ]
+  },
+  "sortTailwindcss": {
+    "functions": ["clsx", "cn", "cva"]
+  },
+  "overrides": [
+    {
+      "files": ["*.yml", "*.yaml"],
+      "options": {
+        "tabWidth": 2,
+        "singleQuote": false
+      }
+    },
+    {
+      "files": ["*.md", "*.markdown", "*.mdx"],
+      "options": {
+        "proseWrap": "preserve",
+        "tabWidth": 2
+      }
+    },
+    {
+      "files": ["*.html"],
+      "options": {
+        "printWidth": 120,
+        "tabWidth": 2,
+        "singleAttributePerLine": true,
+        "bracketSameLine": false,
+        "htmlWhitespaceSensitivity": "css"
+      }
+    },
+    {
+      "files": ["*.vue"],
+      "options": {
+        "semi": false,
+        "singleQuote": true,
+        "tabWidth": 2,
+        "trailingComma": "none",
+        "printWidth": 120,
+        "bracketSpacing": true,
+        "arrowParens": "avoid",
+        "vueIndentScriptAndStyle": false,
+        "singleAttributePerLine": true,
+        "htmlWhitespaceSensitivity": "ignore"
+      }
+    },
+    {
+      "files": ["*.jsx", "*.tsx"],
+      "options": {
+        "singleQuote": true,
+        "jsxSingleQuote": false,
+        "bracketSameLine": false,
+        "singleAttributePerLine": true
+      }
+    },
+    {
+      "files": ["*.graphql"],
+      "options": {
+        "tabWidth": 2,
+        "printWidth": 80
+      }
+    },
+    {
+      "files": ["*.json", "*.jsonc"],
+      "options": {
+        "tabWidth": 2,
+        "trailingComma": "none"
+      }
+    },
+    {
+      "files": ["*.css"],
+      "options": {
+        "singleQuote": false
+      }
+    }
+  ]
+}

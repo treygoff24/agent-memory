@@ -1,0 +1,17 @@
+name: stream-a-perf
+
+on:
+  schedule:
+    - cron: "0 9 * * *"
+  workflow_dispatch:
+
+jobs:
+  perf-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.90.0
+      - run: ./scripts/bench-gate.sh --tier release --profile linux-x86_64 --output bench/results.linux-x86_64.json
+      - run: ./scripts/bench-regression-check.sh --profile linux-x86_64

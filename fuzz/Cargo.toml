@@ -1,0 +1,28 @@
+[workspace]
+
+[package]
+name = "memory-substrate-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+memory-substrate = { path = "../crates/memory-substrate" }
+
+[[bin]]
+name = "merge_driver"
+path = "fuzz_targets/merge_driver.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "merge_swap_convergence"
+path = "fuzz_targets/merge_swap_convergence.rs"
+test = false
+doc = false
+bench = false

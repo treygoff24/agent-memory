@@ -1,0 +1,6 @@
+version: "2.2"
+module: stream-a/tests-quality
+description: Stream A tests-quality ownership boundary.
+boundaries:
+  path: "{scripts,fixtures,crates/memory-test-support}/**/*"
+constraints: []

@@ -1,10 +1,21 @@
-# Stream A — Core Substrate Spec (v0.1, revised)
+# Stream A — Core Substrate Spec (v1.0)
 
-**Status:** revised implementation spec after adversarial review, 2026-04-24. This version supersedes the prior draft at the same path.
+**Status:** final implementation spec, 2026-04-25. Supersedes `stream-a-core-substrate-v0.2.md`; no open Stream A substrate decisions remain in this document.
 
 **Parent:** `docs/specs/system-v0.1.md`. Stream A implements the canonical storage/index/event/git substrate that every later stream depends on.
 
-**Revision goal:** remove the silent-data-loss and underspecified-contract risks in the first draft: field-level merge must be true 3-way merge, IDs must be globally safe across devices, SQLite must support chunk-level recall, writes must be durable and indexed before acknowledgement, JSONL must be recoverable, clone adoption must be explicit, and public APIs must not let downstream streams bypass substrate invariants.
+**Revision goal (v0.2 → v1.0):** close the last substrate-contract gaps before implementation.
+
+1. Device-sharded IDs must not rely on a collision-prone 16-bit shard.
+2. Duplicate-ID repair must allocate from the repo-visible free ID set, not only local `seq.json`.
+3. Human-edited files may omit known nullable/collection keys; the parser must auto-populate typed defaults and warn.
+4. Committed-but-incomplete write states must have durable repair queues with idempotent replay.
+5. Startup reconciliation must ingest valid offline human edits instead of treating all dirty worktrees as corruption.
+6. Secret material must have a single rule: it is a classification result refused before disk, not a persisted frontmatter enum.
+7. Vector/embedding consistency must be represented as durable embedding jobs plus stale-hash checks, not an impossible rollback claim.
+8. Metadata-only encrypted records must not imply Stream A can decrypt them.
+9. Add/add quarantine must preserve both logical memories in a structured, mechanically recoverable form.
+10. Event kinds, config precedence, watcher races, and public async/blocking contracts must be explicit.
 
 ---
 
@@ -59,12 +70,23 @@ Stream A is **not a daemon**. Stream B owns process lifecycle and calls Stream A
 
 ## 3. Platform assumptions
 
-- macOS 14+ and Linux kernel 5.10+.
+- macOS 14+ and Linux kernel 5.10+. Windows is explicitly out of scope for v1.0; atomic-rename and fsync semantics on NTFS require a separate write strategy.
 - POSIX `rename(2)` atomicity only **within the same filesystem**.
-- Directory fsync support is required for the write durability contract. On platforms/filesystems where parent-directory fsync is unsupported or returns an ignorable platform-specific error, Stream A must detect this at startup and downgrade durability status explicitly in `DoctorReport`; it must not silently claim full durability.
 - Git 2.40+.
 - SQLite 3.45+ with JSON1 and FTS5.
 - Filesystem case-sensitivity is not assumed. All path uniqueness checks compare both exact bytes and case-folded relative paths.
+
+### 3.1 Durability tiers
+
+Parent-directory fsync support is the gating signal for full write durability. Stream A probes for it at startup and pins a tier; behavior depends on the tier:
+
+| Tier | Probe result | Behavior |
+| --- | --- | --- |
+| `Full` | `fsync(parent_dir_fd)` succeeds on the memory root and on `events/` | Default. Writes acknowledged only after the §8.3 sequence completes. |
+| `BestEffort` | parent-dir fsync returns a documented non-fatal error (e.g. older glibc on certain remote filesystems) | Writes acknowledged with `WriteOutcome.durability = BestEffort`. Callers must explicitly opt in via `WriteRequest.allow_best_effort_durability = true`; otherwise `write_memory` returns `WriteFailureKind::DurabilityUnavailable`. |
+| `Refused` | parent-dir fsync returns `EINVAL`/`ENOTSUP` or panics, or the probe cannot be run | `Substrate::open` returns `OpenError::DurabilityUnsupported`. Stream B may force-open with `InitOptions::force_unsafe_durability = true` for tests/CI only; that flag is logged and surfaced in every `WriteOutcome`. |
+
+`DoctorReport.durability_tier` exposes the resolved tier. `Substrate::durability_tier()` is a public read accessor so Stream B can refuse to start if policy requires `Full`.
 
 ---
 
@@ -166,6 +188,10 @@ Per-device runtime state is **not synced**:
 ~/.memoryd/
 ├── local-device.yaml                    # device id, device name, local paths
 ├── seq.json                             # per-device ID sequence state
+├── event-seq.json                       # per-device event sequence state
+├── pending/
+│   ├── index-ops.jsonl                  # durable file→index repair queue
+│   └── events.jsonl                     # durable event-after-commit repair queue
 ├── index.sqlite
 ├── index.sqlite-wal
 ├── index.sqlite-shm
@@ -175,12 +201,12 @@ Per-device runtime state is **not synced**:
 └── tmp/                                 # non-canonical scratch only; not used for atomic final renames
 ```
 
-`config.yaml` in the repo contains portable configuration. `local-device.yaml` contains device identity and any local-only overrides. A fresh clone must never inherit the previous machine's device identity.
+`config.yaml` in the repo contains portable configuration. `local-device.yaml` contains device identity and any local-only overrides. `event-seq.json` contains only `{ "device_id": <device-id>, "next": <u64> }` and is locked/fsynced with the same discipline as `seq.json`. A fresh clone must never inherit the previous machine's device identity or event sequence state.
 
 ### 5.3 Path constraints
 
-- `<memory-id>` matches `^mem_\d{8}_[0-9a-f]{4}_\d{6}$`.
-- The four-hex shard is derived from the local `device_id` and is stable for that device.
+- `<memory-id>` matches `^mem_\d{8}_[0-9a-f]{16}_\d{6}$`.
+- The 16-hex shard is derived from the local `device_id` and is stable for that device.
 - `<slug>` and `<entity-slug>` match `[a-z0-9][a-z0-9-]{0,62}`.
 - `<YYYY-MM-DD>` is a UTC ISO calendar date.
 - `<namespace-segment>` follows slug rules.
@@ -222,21 +248,23 @@ Every memory frontmatter block includes these fields in canonical order:
 | Field | Type | Constraint |
 | --- | --- | --- |
 | `schema_version` | integer | currently `1` |
-| `id` | string | `^mem_\d{8}_[0-9a-f]{4}_\d{6}$` |
+| `id` | string | `^mem_\d{8}_[0-9a-f]{16}_\d{6}$` |
 | `type` | enum | `project`, `person`, `procedure`, `episode`, `claim`, `artifact`, `prospective`, `pattern`, `playbook`, `postmortem`, `anti-pattern`, `heuristic`, `regression`, `correction`, `invariant`, `decision`, `open-question` |
 | `scope` | enum | `user`, `project`, `org`, `agent`, `subagent` |
 | `summary` | string | 1-280 chars |
 | `confidence` | float | 0.0 <= x <= 1.0; no implicit default |
 | `trust_level` | enum | `trusted`, `untrusted`, `candidate`, `quarantined`, `pinned` |
-| `sensitivity` | enum | `public`, `internal`, `confidential`, `secret`, `personal` |
+| `sensitivity` | enum | `public`, `internal`, `confidential`, `personal` |
 | `status` | enum | `candidate`, `active`, `pinned`, `superseded`, `archived`, `tombstoned`, `quarantined` |
 | `created_at` | datetime | RFC3339 UTC `Z` |
 | `updated_at` | datetime | RFC3339 UTC `Z`, >= `created_at` |
-| `author` | string | structured principal, see §6.4 |
+| `author` | object | structured principal, see §6.4 |
 
-### 6.2 Required nullable/collection fields
+### 6.2 Known nullable/collection fields
 
-These keys are always present. Empty values are represented as `[]` or `null`; missing keys are validation errors.
+Every memory's canonical serialization contains every key in this table. The serializer always emits them. The **parser** is permissive: when a known nullable/collection key is absent on read, the parser materializes the field-specific typed default below and emits `ValidationWarning::AutoPopulatedNullableField { field }`. The validator does **not** fail on missing nullable/collection keys; this preserves human-edit affordance while keeping round-trip output canonical.
+
+Wrong types, bad enums, and missing required *scalar/object* fields (§6.1) remain hard errors. If `schema_version` is higher than supported, Stream A refuses mutation for the whole file (§9.3); it does not attempt per-field validation of unknown future requirements.
 
 | Field | Type |
 | --- | --- |
@@ -264,7 +292,18 @@ These keys are always present. Empty values are represented as `[]` or `null`; m
 | `privacy_scan` | object or null, §6.9 |
 | `_merge_diagnostics` | object or null, §6.10 |
 
-Unknown future fields are preserved in `_extras` by the parser and re-emitted after known fields. Unknown fields produce warnings, not errors, unless `schema_version` is higher than the implementation supports and the field is declared required by that schema.
+Field-specific defaults for missing known nullable/collection keys:
+
+| Field class | Default |
+| --- | --- |
+| nullable scalar datetime/string/duration | `null` |
+| arrays (`tags`, `entities`, `aliases`, `evidence`, `supersedes`, `superseded_by`, `related`, `tombstone_events`) | `[]` |
+| `source` | `{ kind: import, ref: null, harness: null, harness_version: null, session_id: null, subagent_id: null, device: null }` |
+| `retrieval_policy` | generated from `scope` and `sensitivity`: `passive_recall=true`; `max_scope=scope` for `user/project/org/agent`, `max_scope=agent` for `subagent`; `mask_personal_for_synthesis=true` when `sensitivity in {confidential, personal}`; `index_body` and `index_embeddings` true only when `sensitivity in {public, internal}` |
+| `write_policy` | `{ human_review_required: false, policy_applied: "default-v1", expected_base_hash: null }` |
+| `regression`, `prospective`, `privacy_scan`, `_merge_diagnostics` | `null` |
+
+Unknown future fields are preserved in `_extras` by the parser and re-emitted after known fields. Unknown fields produce warnings when `schema_version <= supported`; files with higher `schema_version` are read-only (§9.3).
 
 ### 6.3 Lifecycle matrix
 
@@ -284,28 +323,42 @@ The validator rejects invalid combinations. If a merge quarantines a memory, bot
 
 ### 6.4 `author` and `source`
 
-`author` is a principal string:
+`author` is a structured object, not a string. Stringly-typed colon-delimited principals are a parser hazard the moment a session ID, harness name, or subagent ID contains a colon.
 
-- `user:<slug-or-email-hash>`
-- `agent:<harness>:<session-id>`
-- `subagent:<harness>:<session-id>:<subagent-id>`
-- `dreaming:<phase>:<date>`
-- `system:<component>`
+```yaml
+author:
+  kind: user | agent | subagent | dreaming | system
+  user_handle: string | null            # hashed or slugged; never a raw email
+  harness: string | null                # slug; examples: claude-code, codex, cursor, cli
+  harness_version: string | null
+  session_id: string | null
+  subagent_id: string | null
+  phase: string | null                  # for dreaming
+  component: string | null              # for system
+```
 
-The regex must allow email-like user handles only if normalized or hashed; raw email addresses should be avoided in public frontmatter unless policy permits.
+Validator rules:
+
+- `kind == user` requires `user_handle`; all other harness fields must be null.
+- `kind == agent` requires `harness` and `session_id`.
+- `kind == subagent` requires `harness`, `session_id`, and `subagent_id`.
+- `kind == dreaming` requires `phase`.
+- `kind == system` requires `component`.
+- `user_handle`, when set, matches `[a-z0-9][a-z0-9._-]{0,62}` and never embeds an `@`. Hashes are written as `sha256:<hex64>`.
+- `harness`, when set, matches `[a-z0-9][a-z0-9._-]{0,62}`. The validator must not bake in a closed list of harnesses.
 
 ```yaml
 source:
   kind: user | agent-primary | agent-subagent | tool | web | email | file | synthesis | import | system
   ref: string | null
-  harness: claude-code | codex | cursor | cli | null
+  harness: string | null                # same slug rule as author.harness
   harness_version: string | null
   session_id: string | null
   subagent_id: string | null
   device: string | null
 ```
 
-`source` is not overwritten on merge. If both sides changed source differently, the merged file preserves the winning `source` in `source` and records the losing source in `_merge_diagnostics.preserved_sources` unless the same source already exists in evidence provenance.
+`source` is not overwritten on merge. On true 3-way conflict, the merged file preserves the winning `source` and records the losing source in `_merge_diagnostics.preserved_sources` unless the same source already exists in evidence provenance.
 
 ### 6.5 Evidence entries
 
@@ -321,6 +374,23 @@ evidence:
 ```
 
 Evidence identity is `id`. For imported older records without IDs, merge identity is `(quote_norm_hash, ref)`, where normalization trims surrounding whitespace, collapses internal whitespace runs, normalizes Unicode to NFC, and normalizes line endings. If two evidence entries share normalized identity but differ in raw `quote`, preserve the earliest raw quote and append alternates to `_merge_diagnostics.evidence_near_duplicates`.
+
+Tombstone event schema:
+
+```yaml
+tombstone_events:
+  - id: tomb_<ulid>
+    applied_at: datetime
+    actor:
+      kind: user | agent | system
+      ref: string
+    reason: duplicate | wrong | stale | privacy | user-request | policy | other
+    reason_text: string | null
+    reason_hash: sha256:<hex64>
+    prior_status: candidate | active | pinned | superseded | archived | quarantined
+```
+
+Tombstone event identity is `id`. Imported records without IDs merge by `(applied_at, actor.ref, reason_hash)`.
 
 ### 6.6 Policy objects
 
@@ -388,7 +458,7 @@ prospective:
     evidence_ref: string | null
 ```
 
-Stream A does not schedule prospective memories, but it must be able to store and validate them without forcing a v0.2 schema break.
+Stream A does not schedule prospective memories, but it must be able to store and validate them without forcing a v1.x schema break.
 
 ### 6.9 `privacy_scan`
 
@@ -416,11 +486,36 @@ _merge_diagnostics:
   preserved_sources: array
   evidence_near_duplicates: array
   privacy_scans_preserved: array
+  add_add_alternates: array
+  unparsed_sides: array
   lifecycle_notes: array
   human_reason: string
 ```
 
-It is preserved through future merges by unioning array fields by stable IDs or normalized content hashes. It may be cleared only by a human/admin resolution command that emits an event.
+`add_add_alternates[]` is used only for add/add same-path quarantine and contains mechanically recoverable losing blobs:
+
+```yaml
+add_add_alternates:
+  - id: mem_20260424_a1b2c3d4e5f60718_000087
+    original_path: projects/example/decisions/foo.md
+    frontmatter_yaml_b64: string
+    body_sha256: sha256:<hex64>
+    body_b64: string | null
+    body_artifact_ref: string | null
+```
+
+Exactly one of `body_b64` or `body_artifact_ref` is set. It is preserved through future merges by unioning array fields by stable IDs or normalized content hashes. It may be cleared only by a human/admin resolution command that emits an event.
+
+`unparsed_sides[]` stores raw merge inputs that had identifiable frontmatter delimiters but invalid YAML:
+
+```yaml
+unparsed_sides:
+  - side: base | ours | theirs
+    path: string
+    frontmatter_raw_b64: string
+    body_b64: string
+    parse_error: string
+```
 
 ### 6.11 Cross-field constraints
 
@@ -435,10 +530,10 @@ Validated per file:
 7. `id` must not appear in `supersedes`, `superseded_by`, or `related`.
 8. `supersedes` and `superseded_by` must not overlap.
 9. If `superseded_by` is non-empty, status must be `superseded` unless status is `quarantined`.
-10. `sensitivity == secret` is refused by write APIs; existing secret-tier files found during manual edits are validation errors.
+10. `secret` is not a persisted `sensitivity` value. It is a Stream D classification outcome that makes Stream A write APIs return `WriteFailureKind::SecretRefused` before any repo, SQLite, event-log, or temp-file write.
 11. `type == regression` requires `regression` and at least one detection signature.
 12. `type == prospective` requires `prospective`.
-13. `privacy_scan.labels` must include `private_credential` if `sensitivity == secret`; Stream D owns classification, but Stream A validates consistency when scan data exists.
+13. If `privacy_scan.labels` includes `private_credential`, Stream A refuses new writes unless Stream D supplies a non-secret redacted metadata record. Existing files with `private_credential` labels are validation errors unless `status == quarantined` and the body is a redacted stub.
 
 Validated cross-file by `tree::validate`:
 
@@ -462,7 +557,7 @@ Validated cross-file by `tree::validate`:
 - A prospective memory with time trigger, event trigger, and conditional trigger validates.
 - A tombstoned memory with two tombstone events validates and round-trips.
 - A quarantine file produced by the merge driver validates.
-- Unknown v0.2 fields parse, warn, preserve, and reserialize.
+- Unknown v1.x optional fields parse, warn, preserve, and reserialize when `schema_version <= supported`; higher schema versions are read-only.
 - Supersession cycle fixtures fail cross-file validation.
 
 ---
@@ -473,13 +568,13 @@ Validated cross-file by `tree::validate`:
 
 `mem_YYYYMMDD_<device-shard>_<seq>`.
 
-Example: `mem_20260424_a1b2_000087`.
+Example: `mem_20260424_a1b2c3d4e5f60718_000087`.
 
 - `YYYYMMDD` is UTC date at mint time.
-- `device-shard` is the first four lowercase hex chars of SHA256(local `device_id`).
+- `device-shard` is the first 16 lowercase hex chars of SHA256(local `device_id`).
 - `seq` is a six-digit per-device daily sequence from `000001` to `999999`.
 
-This preserves human sortability while removing the broken random-offset collision strategy.
+This preserves human sortability while removing the broken random-offset collision strategy. A 64-bit shard makes accidental same-shard collisions negligible for the intended single-user/multi-device deployment. `git::adopt_clone` and startup preflight still scan known event logs and memory IDs for shard collisions; if the local shard collides with an existing different `device_id`, adoption regenerates `device_id` until the shard is unused.
 
 ### 7.2 Sequence allocation
 
@@ -497,9 +592,10 @@ This preserves human sortability while removing the broken random-offset collisi
 
 1. Open `seq.json` under exclusive lock.
 2. If local device ID differs, return `IdError::DeviceMismatch` and require clone adoption repair.
-3. If date changed, set `date=today_utc`, `next=1`.
-4. If `next > 999999`, return `IdError::SequenceExhausted { date }`.
-5. Return ID with current seq, increment `next`, fsync file, fsync parent directory, release lock.
+3. Scan the in-memory ID high-water mark loaded during `Substrate::open`; if existing IDs for `(today_utc, local_shard)` have sequence >= `next`, advance `next` to max existing sequence + 1 before minting.
+4. If date changed, set `date=today_utc`, `next=max(1, max_existing_sequence(today_utc, local_shard)+1)`.
+5. If `next > 999999`, return `IdError::SequenceExhausted { date }`.
+6. Return ID with current seq, increment `next`, fsync file, fsync parent directory, release lock.
 
 ### 7.3 Duplicate-ID recovery
 
@@ -509,7 +605,7 @@ Repo-level reconciliation (`git::repair_duplicate_ids`) runs after fetch/merge a
 
 1. Detect duplicate frontmatter IDs across paths.
 2. Select canonical survivor by earliest `(created_at, git commit timestamp, device_id, path)`.
-3. For each non-survivor, mint a new valid ID using the current local device shard and next sequence.
+3. For each non-survivor, mint a new valid ID with `ids::mint_next_unused(date, local_shard, reserved_ids)`. `reserved_ids` is the full repo-visible ID set plus IDs already minted in the current repair transaction. The allocator advances `seq.json` past every existing ID for `(date, local_shard)` before returning.
 4. Rename ID-based files to the new ID path; slug-based files keep path unless path collision exists.
 5. Rewrite references in files changed in the same reconciliation transaction: `supersedes`, `superseded_by`, `related`, evidence refs that explicitly point to memory IDs, and known sidecars.
 6. Emit `DuplicateIdRepaired` events with old/new IDs and affected paths.
@@ -520,9 +616,11 @@ If references cannot be rewritten safely, quarantine the affected files with val
 ### 7.4 Acceptance signals
 
 - 10,000 sequential IDs on one device are unique and monotonic by sequence.
-- Two devices with different device IDs mint 50,000 IDs each for the same UTC day with zero collisions.
+- Two devices with different non-colliding 64-bit shards mint 50,000 IDs each for the same UTC day with zero collisions.
+- Adoption detects a forced same-shard collision fixture and regenerates local device identity before any write.
 - Sequence `999999` succeeds; `1000000` returns `SequenceExhausted`.
 - A fixture with duplicate IDs from a copied device is repaired into valid IDs matching the regex, with references rewritten or quarantined.
+- Duplicate repair where local `seq.json.next` lags existing same-shard IDs mints the next unused repo-visible ID, not another duplicate.
 
 ---
 
@@ -544,36 +642,69 @@ Every mutating write takes `WriteRequest`:
 
 ```rust
 struct WriteRequest {
+    operation_id: Option<OperationId>,  // generated by Stream A if None
     memory: Memory,
     expected_base_hash: Option<Sha256>,
     write_mode: WriteMode,          // CreateNew | ReplaceExisting | AdminRepair
     index_projection: Option<IndexProjection>,
     event_context: EventContext,
+    allow_best_effort_durability: bool,
 }
 ```
 
 - `CreateNew` fails if final path already exists.
-- `ReplaceExisting` fails with `WriteError::StaleBase` if `expected_base_hash` does not match current file hash.
+- `ReplaceExisting` fails with `WriteFailureKind::StaleBase` if `expected_base_hash` does not match current file hash.
 - `AdminRepair` bypasses CAS only for explicit repair operations and emits an admin repair event.
 
 ### 8.3 Atomic write sequence
 
 For plaintext indexable writes:
 
-1. Validate frontmatter and path.
-2. Serialize canonical YAML + body.
-3. Compute final path and ensure target parent exists.
-4. Create temp file in the **same directory as the final file**: `<parent>/.<basename>.<op_id>.tmp` with `O_CREAT|O_EXCL`.
-5. Write full buffer with short-write retry loop.
-6. `fsync(temp_fd)`.
-7. `rename(temp, final)` within the same directory.
-8. `fsync(parent_dir_fd)`.
-9. Apply SQLite index transaction directly for this operation.
-10. Append and fsync event log entry.
-11. Record operation ID in watcher suppression ledger.
-12. Return success.
+1. Generate or validate `operation_id`.
+2. Validate frontmatter and path.
+3. Serialize canonical YAML + body.
+4. Compute final path, final file hash, and ensure target parent exists.
+5. Check CAS preconditions from §8.2.
+6. Create temp file in the **same directory as the final file**: `<parent>/.<basename>.<op_id>.tmp` with `O_CREAT|O_EXCL`.
+7. Write full buffer with short-write retry loop.
+8. `fsync(temp_fd)`.
+9. Insert an in-memory watcher suppression entry in state `InFlight { op_id, path, expected_final_hash }` before the rename. This entry expires if the process dies or the write aborts; it exists only to close the notification race between `rename` and committed-ledger insertion.
+10. `rename(temp, final)` within the same directory.
+11. `fsync(parent_dir_fd)` if `DurabilityTier == Full`; skip with explicit best-effort flag if `BestEffort` (see §3.1).
+12. Promote the watcher suppression entry to `Committed { final_file_hash, committed_at, expires_at }`.
+13. Apply SQLite index transaction directly for this operation.
+14. Append and fsync event log entry.
+15. Return success with `WriteOutcome.durability` set to the active tier.
 
-If steps 4-8 fail, remove temp file if present and return error. If step 9 fails after the file is durable, return `WriteError::IndexAfterCommitFailed` and mark startup reconciliation required. If step 10 fails after file/index durability, return `WriteOutcome { committed: true, event_recorded: false }` plus `WriteErrorKind::EventAfterCommitFailed` in the outcome; callers must not blindly retry the file write.
+If steps 6-11 fail, remove temp file if present, remove the in-flight suppression entry if present, and return `Err(WriteFailure { outcome: WriteOutcome::not_committed(), kind })`. If step 13 fails after the file is durable, write `~/.memoryd/startup-reconcile.required`, append a durable `PendingIndexOp` to `~/.memoryd/pending/index-ops.jsonl`, and return `Err(WriteFailure { outcome: WriteOutcome { committed: true, indexed: false, event_recorded: false, durability, repair_required: PendingIndex }, kind: IndexAfterCommitFailed })`. If step 14 fails after file/index durability, append a durable `PendingEventOp` to `~/.memoryd/pending/events.jsonl` and return `Ok(WriteOutcome { committed: true, indexed: true, event_recorded: false, durability, repair_required: PendingEvent })`. Callers must never retry a file write when `outcome.committed == true`.
+
+If appending either pending repair record fails after the file is durable, Stream A fsyncs `~/.memoryd/startup-reconcile.required` with `repair_required: FullStartupScan` and returns `Err(WriteFailure { outcome: committed outcome, kind: RepairQueueFailed })`. If both the pending queue append and the marker write fail, Stream A returns `Err(WriteFailure { outcome: committed outcome, kind: RepairStateNotDurable })`; Stream B must stop accepting writes and surface operator repair. This is the only acknowledged state in which repair metadata may be incomplete, and it is covered by a fault-injection test.
+
+Durable repair queue records:
+
+```rust
+struct PendingIndexOp {
+    op_id: OperationId,
+    kind: PendingIndexKind,      // UpsertPath | DeletePath
+    path: RepoPath,
+    memory_id: Option<MemoryId>,
+    expected_file_hash: Option<Sha256>,
+    enqueued_at: DateTime<Utc>,
+    attempts: u32,
+    last_error: Option<String>,
+}
+
+struct PendingEventOp {
+    op_id: OperationId,
+    event_id: EventId,
+    event: Event,
+    enqueued_at: DateTime<Utc>,
+    attempts: u32,
+    last_error: Option<String>,
+}
+```
+
+Both queue files use the same framed JSONL discipline as §12.3 and are fsynced after append. Replay is idempotent: `PendingIndexOp` is keyed by `(op_id, expected_file_hash)` and no-ops if the indexed row already matches that hash; `PendingEventOp` is keyed by `event_id` and no-ops if that event already exists with the same checksum. Completed records are compacted into `*.compacted.jsonl` with fsync+rename+parent-fsync; compaction never runs until all records in the source file have been replayed or copied forward.
 
 ### 8.4 Sensitive/encrypted writes
 
@@ -586,7 +717,7 @@ For `sensitivity in {confidential, personal}`:
 3. Stream A validates metadata, writes ciphertext atomically under `encrypted/<original-relative-path>`, indexes only the safe projection, and emits events.
 4. If no safe projection exists, the memory remains retrievable by ID/path metadata only; body FTS and embeddings are disabled.
 
-`secret` is refused and must not touch disk.
+If Stream D classifies content as `secret`, Stream A returns `WriteFailureKind::SecretRefused` before creating temp files, pending queues, SQLite rows, or events. `secret` is not a valid on-disk frontmatter sensitivity.
 
 ### 8.5 Delete/tombstone
 
@@ -596,7 +727,7 @@ Hard delete is admin-only. Normal forget operations write a tombstone event and 
 
 - Atomic write tests stage in target parent and prove `EXDEV` cannot occur.
 - Crash tests cover before write, during write, after temp fsync, after rename before parent fsync, after parent fsync before index, after index before event, and after event.
-- Stale-base write returns `WriteError::StaleBase` and leaves the file unchanged.
+- Stale-base write returns `WriteFailureKind::StaleBase` and leaves the file unchanged.
 - Confidential write never writes plaintext bytes to repo path or SQLite FTS/vector tables.
 - Event-after-commit failure produces a committed outcome plus startup reconciliation marker.
 
@@ -616,24 +747,28 @@ Type/required failures short-circuit for a file. Cross-field pass collects all a
 
 ### 9.2 Error structure
 
+The validator distinguishes **errors** (the file is wrong and the author must fix it) from **warnings** (the file is mechanically repairable; the parser/canonicalizer fixed it on read).
+
 ```rust
 enum ValidationError {
     UnsupportedSchemaVersion { found: u32, supported: u32 },
-    MissingRequired { field: FieldPath },
+    MissingRequiredScalar { field: FieldPath },
     WrongType { field: FieldPath, expected: String, found: String },
     EnumOutOfDomain { field: FieldPath, value: String, allowed: Vec<String> },
     RegexMismatch { field: FieldPath, value: String, pattern: String },
     CrossFieldViolation { rule: String, fields: Vec<FieldPath> },
-    SecretSensitivity,
+    SecretRefusedBeforeWrite,
     InvalidId { value: String },
     InvalidSlug { value: String },
     DatetimeFormat { field: FieldPath, value: String },
     DurationFormat { field: FieldPath, value: String },
     SupersessionCycle { ids: Vec<MemoryId> },
     DuplicateId { id: MemoryId, paths: Vec<PathBuf> },
+    UnknownFieldUnderHigherSchema { field: FieldPath, schema_version: u32 },
 }
 
 enum ValidationWarning {
+    AutoPopulatedNullableField { field: FieldPath },     // §6.2
     UnknownField { field: FieldPath },
     MissingReferencePartialSync { id: MemoryId, referenced_by: MemoryId },
     NonCanonicalYaml { path: PathBuf },
@@ -641,7 +776,7 @@ enum ValidationWarning {
 }
 ```
 
-No optional known field may be missing. Missing known nullable fields are errors, not warnings.
+Mechanically repairable conditions (missing known nullable keys, non-canonical YAML, sort order) emit warnings only; the canonical serializer guarantees the on-disk form converges to canonical on the next write through Stream A. Semantic errors (bad enum, regex mismatch, cycle, duplicate ID, missing required scalar) hard-fail.
 
 ### 9.3 Schema evolution
 
@@ -655,7 +790,7 @@ Every memory has `schema_version`. v0.x evolution rules:
 ### 9.4 Acceptance signals
 
 - Every required field, enum, regex, and cross-field rule has positive and negative tests.
-- A memory missing a known nullable key fails validation.
+- A memory missing a known nullable/collection key parses, emits `AutoPopulatedNullableField`, validates if the materialized default satisfies cross-field rules, and canonical serialization re-emits the key.
 - A higher `schema_version` memory is read-only, not mutated.
 - Cross-file validation catches cycles, duplicate IDs, and inverse supersession mismatches.
 
@@ -714,15 +849,22 @@ CREATE INDEX idx_memories_review
 CREATE INDEX idx_memories_path_nocase
     ON memories(path COLLATE NOCASE);
 
+-- chunk_rowid is an explicit INTEGER PRIMARY KEY AUTOINCREMENT so VACUUM
+-- cannot permute it. SQLite VACUUM permutes rowids of tables that lack an
+-- explicit INTEGER PRIMARY KEY; the FTS5 external-content table stores
+-- content rowids internally, so a VACUUM-induced rowid permutation would
+-- silently break every chunk-search join. AUTOINCREMENT additionally
+-- prevents rowid reuse after delete, which would corrupt the FTS link.
 CREATE TABLE memory_chunks (
-    chunk_id       TEXT PRIMARY KEY,
+    chunk_rowid    INTEGER PRIMARY KEY AUTOINCREMENT,
+    chunk_id       TEXT NOT NULL UNIQUE,
     memory_id      TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
     ordinal        INTEGER NOT NULL,
     chunk_text     TEXT NOT NULL,
     token_start    INTEGER NOT NULL,
     token_end      INTEGER NOT NULL,
     byte_start     INTEGER NOT NULL,
-    byte_end        INTEGER NOT NULL,
+    byte_end       INTEGER NOT NULL,
     chunk_hash     TEXT NOT NULL,
     summary        TEXT NOT NULL,
     indexable      INTEGER NOT NULL,
@@ -732,28 +874,29 @@ CREATE TABLE memory_chunks (
 );
 CREATE INDEX idx_chunks_memory ON memory_chunks(memory_id, ordinal);
 CREATE INDEX idx_chunks_indexable ON memory_chunks(indexable);
+CREATE INDEX idx_chunks_chunk_id ON memory_chunks(chunk_id);
 
 CREATE VIRTUAL TABLE memory_chunks_fts USING fts5(
     chunk_text,
     summary,
     content='memory_chunks',
-    content_rowid='rowid',
+    content_rowid='chunk_rowid',
     tokenize='porter unicode61 remove_diacritics 2'
 );
 
 CREATE TRIGGER memory_chunks_ai AFTER INSERT ON memory_chunks WHEN new.indexable = 1 BEGIN
     INSERT INTO memory_chunks_fts(rowid, chunk_text, summary)
-    VALUES (new.rowid, new.chunk_text, new.summary);
+    VALUES (new.chunk_rowid, new.chunk_text, new.summary);
 END;
 CREATE TRIGGER memory_chunks_ad AFTER DELETE ON memory_chunks WHEN old.indexable = 1 BEGIN
     INSERT INTO memory_chunks_fts(memory_chunks_fts, rowid, chunk_text, summary)
-    VALUES('delete', old.rowid, old.chunk_text, old.summary);
+    VALUES('delete', old.chunk_rowid, old.chunk_text, old.summary);
 END;
 CREATE TRIGGER memory_chunks_au AFTER UPDATE ON memory_chunks BEGIN
     INSERT INTO memory_chunks_fts(memory_chunks_fts, rowid, chunk_text, summary)
-    SELECT 'delete', old.rowid, old.chunk_text, old.summary WHERE old.indexable = 1;
+    SELECT 'delete', old.chunk_rowid, old.chunk_text, old.summary WHERE old.indexable = 1;
     INSERT INTO memory_chunks_fts(rowid, chunk_text, summary)
-    SELECT new.rowid, new.chunk_text, new.summary WHERE new.indexable = 1;
+    SELECT new.chunk_rowid, new.chunk_text, new.summary WHERE new.indexable = 1;
 END;
 
 CREATE TABLE memory_tags (
@@ -780,28 +923,36 @@ CREATE TABLE memory_entities (
 CREATE INDEX idx_entities_entity_memory ON memory_entities(entity_id, memory_id);
 
 CREATE TABLE memory_entity_aliases (
+    memory_id TEXT NOT NULL,
     entity_id TEXT NOT NULL,
     alias_norm TEXT NOT NULL,
     alias_raw TEXT NOT NULL,
-    PRIMARY KEY(entity_id, alias_norm)
+    PRIMARY KEY(memory_id, entity_id, alias_norm),
+    FOREIGN KEY(memory_id, entity_id)
+        REFERENCES memory_entities(memory_id, entity_id)
+        ON DELETE CASCADE
 );
-CREATE INDEX idx_entity_aliases_norm ON memory_entity_aliases(alias_norm, entity_id);
+CREATE INDEX idx_entity_aliases_norm ON memory_entity_aliases(alias_norm, memory_id, entity_id);
 
 CREATE TABLE memory_supersession (
-    earlier_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
-    later_id   TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
-    PRIMARY KEY(earlier_id, later_id),
+    source_memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+    earlier_id       TEXT NOT NULL,
+    later_id         TEXT NOT NULL,
+    PRIMARY KEY(source_memory_id, earlier_id, later_id),
     CHECK (earlier_id <> later_id)
 );
 CREATE INDEX idx_supersession_later ON memory_supersession(later_id);
+CREATE INDEX idx_supersession_earlier ON memory_supersession(earlier_id);
 
 CREATE TABLE memory_related (
-    a_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
-    b_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
-    PRIMARY KEY(a_id, b_id),
+    source_memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+    a_id TEXT NOT NULL,
+    b_id TEXT NOT NULL,
+    PRIMARY KEY(source_memory_id, a_id, b_id),
     CHECK(a_id < b_id)
 );
 CREATE INDEX idx_related_b ON memory_related(b_id, a_id);
+CREATE INDEX idx_related_a ON memory_related(a_id, b_id);
 
 CREATE TABLE memory_evidence (
     memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
@@ -851,6 +1002,18 @@ CREATE TABLE chunk_embedding_meta (
     content_hash TEXT NOT NULL
 );
 
+CREATE TABLE pending_embedding_jobs (
+    chunk_id TEXT PRIMARY KEY REFERENCES memory_chunks(chunk_id) ON DELETE CASCADE,
+    provider TEXT NOT NULL,
+    model_ref TEXT NOT NULL,
+    dimension INTEGER NOT NULL,
+    content_hash TEXT NOT NULL,
+    enqueued_at TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT
+);
+CREATE INDEX idx_pending_embedding_jobs_enqueued ON pending_embedding_jobs(enqueued_at);
+
 CREATE TABLE schema_migrations (
     version INTEGER PRIMARY KEY,
     applied_at TEXT NOT NULL
@@ -864,22 +1027,43 @@ trait VectorStore {
     fn create_or_open(model: EmbeddingModelRef, dimension: u32) -> Result<Self, VectorError>;
     fn upsert_chunk(&self, chunk_id: &ChunkId, vector: &[f32], meta: EmbeddingMeta) -> Result<(), VectorError>;
     fn delete_chunk(&self, chunk_id: &ChunkId) -> Result<(), VectorError>;
+    fn list_chunk_ids(&self) -> Result<Vec<ChunkId>, VectorError>;
+    fn contains_chunk(&self, chunk_id: &ChunkId) -> Result<bool, VectorError>;
     fn search(&self, query: &[f32], filter: VectorFilter, limit: usize) -> Result<Vec<VectorHit>, VectorError>;
 }
 ```
 
-The v0.1 default adapter is sqlite-vec if available. Because vector virtual-table DDL is extension-specific, the implementation must pin the tested sqlite-vec version in `Cargo.lock`/build metadata and generate adapter DDL from code, not hand-maintain ambiguous SQL in this spec.
+The v1.0 default adapter is sqlite-vec. Because vector virtual-table DDL is extension-specific, the implementation must pin the tested sqlite-vec version in `Cargo.lock`/build metadata and generate adapter DDL from code, not hand-maintain ambiguous SQL in this spec.
 
 ### 10.2 Indexer behavior
 
 Indexer operations are explicit, transaction-wrapped reconciliations:
 
-- `Created`/`Modified`: read, validate, compute chunks, replace memory row and all derived rows.
-- `Deleted`: delete memory row by path after resolving current ID; cascades remove chunks, FTS rows, tags, aliases, entities, evidence, regressions, and embedding metadata; vector adapter deletes chunk vectors in the same logical operation.
+- `Created`/`Modified`: read, validate, compute chunks, replace memory row and all derived rows; for each indexable chunk with `retrieval_policy.index_embeddings == true`, enqueue or refresh a `pending_embedding_jobs` row keyed by `chunk_id` and `content_hash`.
+- `Deleted`: delete memory row by path after resolving current ID; cascades remove chunks, FTS rows, tags, aliases, entities, evidence, regressions, embedding metadata, and pending embedding jobs. Vector adapter deletion is best-effort inline and guaranteed by startup reconciliation (§10.2.1).
 - `Renamed`: read destination file. If frontmatter ID unchanged, update path and reconcile derived rows. If frontmatter ID changed, delete old ID and upsert new ID. Never path-update blindly.
 - `Tombstoned` or sensitivity changes: purge non-indexable chunks/vectors immediately unless a safe masked projection is provided.
 
 Index transactions never hold a SQLite connection across async await points. Blocking SQLite work is done on a dedicated blocking executor or single index thread owned by Stream B.
+
+### 10.2.1 Vector store consistency
+
+The vector store is an external adapter (§10.1) and may live in a sqlite-vec virtual table, a sidecar SQLite database, or a process-external store. **None of these are guaranteed to honor an enclosing SQLite transaction's rollback.** Stream A therefore models embeddings as durable jobs plus stale-hash-checked updates, not as an atomic extension of the file/index transaction.
+
+Contract:
+
+1. **Chunk indexing.** The indexer writes `memory_chunks` and `pending_embedding_jobs` in the same SQLite transaction. No `chunk_embedding_meta` row exists until a vector has actually been written.
+2. **Embedding worker.** Stream B drains `pending_embedding_jobs`, computes vectors, and calls `Substrate::update_embedding` with `{ chunk_id, expected_content_hash, provider, model_ref, dimension, vector }`.
+3. **Stale protection.** `update_embedding` validates that the chunk exists, is indexable, and `memory_chunks.chunk_hash == expected_content_hash`. Mismatch returns `VectorError::StaleChunk` and does not touch the vector store.
+4. **Update order.** `update_embedding` upserts the vector first, then in one SQLite transaction upserts `chunk_embedding_meta` and deletes the matching `pending_embedding_jobs` row. If SQLite commit fails after vector upsert, startup reconciliation sees an orphan vector and deletes it; the pending job remains or is re-enqueued.
+5. **Delete/tombstone/sensitivity downgrade.** SQLite metadata changes delete chunks/jobs/meta first. Vector deletes are attempted inline; failures are corrected by startup reconciliation.
+6. **Startup pass.** `Substrate::open` runs vector reconciliation before accepting writes:
+   - `VectorStore::list_chunk_ids()` minus `chunk_embedding_meta` → delete orphan vectors.
+   - `chunk_embedding_meta` minus `VectorStore::contains_chunk()` → delete stale meta and enqueue a fresh `pending_embedding_jobs` row.
+   - `pending_embedding_jobs` rows whose chunks no longer exist or whose `content_hash` no longer matches are dropped with `VectorReconciled`.
+   - The pass emits `VectorReconciliationReport { orphan_vectors_deleted, missing_vectors_requeued, stale_jobs_dropped }`.
+
+The §10.5 invariants are stated in terms of the **post-reconciliation** state. Stream B must not treat newly-acknowledged writes as having vector coverage until the corresponding `pending_embedding_jobs` row has been drained and `chunk_embedding_meta` exists with the current `content_hash`.
 
 ### 10.3 Chunking contract
 
@@ -888,6 +1072,7 @@ Default chunking:
 - Target ~400 tokens, 80-token overlap.
 - Chunk boundaries prefer Markdown headings, paragraphs, then sentence boundaries.
 - Chunks include byte offsets into normalized LF body.
+- `chunk_id = chk_<sha256(memory_id || chunker_version || ordinal || chunk_hash)>`. Edits that change chunk text create new chunk IDs; stale embedding updates must fail by content hash.
 - Any body above 1 MiB is artifacted or chunked streaming; it must not be copied into a single SQLite `body` column.
 
 ### 10.4 Query contract
@@ -901,6 +1086,8 @@ Stream A exposes typed read-only query helpers for the MCP shapes Stream B/E nee
 - vector chunk search through adapter;
 - hybrid result assembly with per-hit `score_breakdown` inputs, not final policy ranking.
 
+**Metadata-only memories.** A confidential or personal memory without a Stream D safe projection has zero rows in `memory_chunks` and no vectors. Chunk-level FTS and vector queries must not return it. Metadata queries (`query_memory`) **do** return it with `MemoryHit.body_indexability == MetadataOnly` and `content_state == EncryptedMetadataOnly`. Stream E may surface summary/metadata and may request an authorized Stream D projection/decrypt flow; Stream A's direct read returns ciphertext/envelope metadata, not plaintext. Hybrid result assembly skips metadata-only memories unless the caller sets `MemoryQuery.include_metadata_only = true`.
+
 Raw mutable SQLite access is not exported. A test-only read-only SQL API may exist behind `cfg(test)` or an explicit admin feature.
 
 ### 10.5 Integrity invariants
@@ -908,18 +1095,23 @@ Raw mutable SQLite access is not exported. A test-only read-only SQL API may exi
 - `memories.id == frontmatter_json.id`.
 - Every indexed path exists at transaction time unless processing a delete.
 - Every chunk belongs to one memory.
-- FTS rows are updated with the SQLite FTS5 external-content delete+insert trigger pattern.
+- `memory_chunks.chunk_rowid` is stable across `VACUUM` (it is `INTEGER PRIMARY KEY AUTOINCREMENT`).
+- FTS rows are updated with the SQLite FTS5 external-content delete+insert trigger pattern keyed on `chunk_rowid`.
 - Old unique terms disappear after update/delete.
-- No vector exists for a missing, tombstoned, secret, or non-indexable chunk.
+- No vector exists for a missing, tombstoned, or non-indexable chunk **after the next reconciliation pass completes** (§10.2.1). Newly indexed chunks without vectors are represented by `pending_embedding_jobs`, not by false `chunk_embedding_meta` coverage.
 - Reindex from files produces the same query-visible state as watcher-driven incremental indexing.
 
 ### 10.6 Acceptance signals
 
 - 10K-memory load test includes long bodies, large bodies, aliases, entity aliases, regressions, prospective memories, tombstones, encrypted metadata, and supersession chains.
 - FTS mutation test proves old terms vanish after update/delete.
-- Vector lifecycle test proves delete/tombstone/sensitivity changes purge vectors.
+- **VACUUM regression test:** load 1K chunks, run `VACUUM`, run a chunk FTS query that previously matched, verify the same `chunk_id`s come back. Regression-protects the §10.1 fix.
+- Vector lifecycle test proves delete/tombstone/sensitivity changes purge vectors after reconciliation.
+- **Embedding stale update test:** compute vector for chunk hash A, modify the file to chunk hash B, then call `update_embedding` with expected hash A and verify `VectorError::StaleChunk`.
+- **Vector orphan/missing reconciliation test:** seed an orphan vector and a missing vector before `Substrate::open`, verify orphan deletion and missing-vector job requeue on startup.
 - Query p95 targets are measured for real Stream E shapes: namespace + status + sensitivity cap + entity/alias + updated_at sort.
 - Rename tests cover path-only rename and rename plus ID change.
+- Metadata-only memory test: confidential memory with no Stream D projection appears in metadata query results, never in chunk FTS or vector search results, and `MemoryHit.body_indexability == MetadataOnly`.
 
 ---
 
@@ -955,13 +1147,15 @@ Suppression key:
 struct SuppressionEntry {
     op_id: OperationId,
     path: PathBuf,
-    final_file_hash: Sha256,
-    committed_at: DateTime<Utc>,
+    state: InFlight | Committed,
+    expected_final_hash: Sha256,
+    final_file_hash: Option<Sha256>,
+    committed_at: Option<DateTime<Utc>>,
     expires_at: DateTime<Utc>,
 }
 ```
 
-A watcher event is suppressed only if the current file hash equals `final_file_hash`. If an external editor modifies the same path within the suppression window, the hash differs and the event is processed.
+A watcher event is suppressed only if the current file hash equals `expected_final_hash`/`final_file_hash`. If an external editor modifies the same path within the suppression window, the hash differs and the event is processed. An event arriving between rename and committed-ledger promotion still matches the in-flight entry and is suppressed.
 
 Default expiry is 60 seconds, but correctness does not depend on expiry; hash mismatch wins.
 
@@ -986,7 +1180,7 @@ Each line is one framed event:
 {"schema":1,"id":"evt_01HX...","ts":"2026-04-24T13:14:15.123Z","device":"dev_a1b2...","seq":42,"kind":"WriteCommitted","data":{},"crc32c":"..."}
 ```
 
-`seq` is per-device monotonic and persisted locally. ULID timestamp order is useful for display but not treated as causal truth.
+`seq` is per-device monotonic and persisted in `~/.memoryd/event-seq.json` under exclusive lock. Event append increments the sequence only after the event buffer and sequence file are both fsynced; on recovery, Stream A sets `event-seq.next = max(existing seq for device) + 1`. ULID timestamp order is useful for display but not treated as causal truth.
 
 ### 12.2 Event kinds
 
@@ -1000,13 +1194,20 @@ Each line is one framed event:
 - `Superseded`
 - `IndexUpdated`
 - `IndexFailed`
+- `VectorReconciled`
+- `EmbeddingJobEnqueued`
+- `EventLogRecovered`
 - `MergeQuarantined`
 - `DuplicateIdRepaired`
+- `PendingIndexReplayed`
+- `PendingEventReplayed`
 - `GitCommitted`
 - `GitFetched`
 - `GitPushFailed`
 - `WatcherSuppressed`
+- `OperatorRepairRequired`
 - `ReconciliationRepaired`
+- `StartupReconciliationCompleted`
 
 Every kind has a typed data schema in code and fixtures. Free-form `data` is not permitted in implementation even if rendered schematically in docs.
 
@@ -1015,7 +1216,7 @@ Every kind has a typed data schema in code and fixtures. Free-form `data` is not
 1. Encode event as one bounded UTF-8 buffer. Max line length: 64 KiB; larger payloads must be artifacted and referenced.
 2. Append with file opened `O_APPEND`.
 3. Retry short writes until full buffer is written or an error occurs.
-4. `fsync(log_fd)` after each event for v0.1.
+4. `fsync(log_fd)` after each event for v1.0.
 5. On startup, read line by line, validate JSON and checksum. If the final line is incomplete or checksum-invalid, truncate exactly that trailing line and emit `EventLogRecovered`. Non-final malformed lines quarantine the log and require admin repair.
 
 `O_APPEND` guarantees atomic offset selection, not arbitrary-record crash atomicity. Recovery is part of the contract.
@@ -1084,6 +1285,17 @@ Before any fetch+merge, Stream A checks:
 
 Failure returns `GitError::PreflightFailed`; Stream B must surface a repair command and must not run a text merge.
 
+### 13.3.1 Inspect-only fetch (chicken-and-egg escape)
+
+If preflight fails because `.gitattributes` content or merge-driver config is stale and the user believes the remote ref carries a fix, Stream A exposes `git::fetch_inspect(opts) -> InspectReport`:
+
+1. Run a subset of preflight that only checks for filesystem corruption (unresolved conflict markers, invalid quarantine files). Repository-config issues are **skipped**.
+2. `git fetch origin` into the local refs without merging.
+3. Diff `origin/main`'s `.gitattributes` and any `policies/` files against the working tree. Local merge-driver config is not versioned, so it is checked against the currently installed driver's expected absolute/shim path instead of against a remote file.
+4. Return `InspectReport { remote_fixes: Vec<RepoConfigDelta>, still_required: Vec<PreflightFailure> }`.
+
+Stream B uses the report to drive a guided repair: show the remote-side tracked-file fix, let the user accept it, apply via `git checkout origin/main -- .gitattributes` (or equivalent), run `git::configure_merge_driver` for local config drift, then re-run full preflight. `fetch_inspect` never merges and never modifies the working tree itself.
+
 ### 13.4 Auto-commit
 
 Triggered by durable events, not by raw watcher events. Debounced default 30 seconds.
@@ -1107,7 +1319,27 @@ Commit steps:
 7. Scan for valid `status: quarantined` memories and append `MergeQuarantined` events.
 8. Run repo-level reconciliation: duplicate IDs, missing event log adoption, reference rewrites, cross-file validation.
 9. Reindex changed/repaired paths.
-10. Append `GitFetched`.
+10. Auto-commit any reconciliation changes (via §13.4 path; uses a distinct commit message prefix `reconciliation:` so the audit trail separates merge from repair).
+11. Append `GitFetched`.
+
+### 13.5.1 Startup reconciliation
+
+`Substrate::open` runs reconciliation before accepting writes. The contract:
+
+1. **Crash-recovery scan.** Look for the on-disk markers `~/.memoryd/startup-reconcile.required` (set by §8.3 when index/event commit fails after a durable file write) and `<memory-root>/.git/MERGE_HEAD` (incomplete merge). Either marker forces full reconciliation.
+2. **Working-tree audit.** `git status --porcelain=v1 -z` is classified path by path:
+   - files whose hashes match `pending_reconciliation_files` are resumed as prior repair work;
+   - valid or mechanically repairable memory Markdown edits made while the daemon was down are ingested as human edits, reindexed, and scheduled for auto-commit;
+   - invalid memory files, files with conflict markers, dirty `.gitattributes`, dirty policies, and unknown non-memory paths are copied to `~/.memoryd/quarantine/<startup-ts>/` and produce `OperatorRepairRequired`; substrate refuses writes only while such operator-required items remain.
+3. **Vector reconciliation.** Run §10.2.1 startup pass.
+4. **Event log recovery.** Truncate any trailing partial line per §12.3 and emit `EventLogRecovered` if needed.
+5. **Pending index-after-commit reconciliation.** Replay `~/.memoryd/pending/index-ops.jsonl` idempotently before accepting writes; emit `PendingIndexReplayed` for each completed op.
+6. **Pending event-after-commit reconciliation.** Walk `~/.memoryd/pending/events.jsonl` (events whose append failed after their write committed) and re-append idempotently; emit `PendingEventReplayed`.
+7. **Index/file consistency check.** Compare all `memories.file_hash` values against current file hashes; mismatches enqueue a reindex. Sampling is allowed only for periodic health checks after startup, never for startup reconciliation.
+8. **Auto-commit any post-merge reconciliation work that was never committed.** This is the path that fires when the daemon crashed in the §13.5 step-10 debounce window.
+9. Emit `StartupReconciliationCompleted { phases_run, reindexed, vector_repairs, event_repairs, pending_index_replays, operator_action_required: bool }`.
+
+Substrate must not return from `open` until startup reconciliation completes or returns an explicit operator-required error. There is no path where Stream B begins serving writes against an unreconciled substrate.
 
 ### 13.6 JSONL union merge rules
 
@@ -1138,13 +1370,14 @@ The merge driver is path-local. It may only write the merged content to `<ours>`
 ### 14.2 Core algorithm
 
 1. Parse base/ours/theirs. If base is absent for add/add, represent base as `None`.
-2. If any side cannot parse frontmatter, produce a valid quarantined file if possible; otherwise leave Git conflict markers and exit `1`.
-3. Merge frontmatter using true 3-way field rules (§14.3): compare `base→ours` and `base→theirs`, not just `updated_at`.
-4. Merge body with diff3 semantics.
-5. If body conflicts, keep conflict markers in body, set `status: quarantined`, `trust_level: quarantined`, `review_state: pending`, and populate `_merge_diagnostics`.
-6. Revalidate. If validation fails, try status-aware normalization where specified. If still invalid, quarantine with diagnostics.
-7. Write canonical file to `<ours>`.
-8. Exit `0` for clean merges and semantic quarantines represented as valid files. Exit `1` only when Git still needs to treat the path as unmerged because no valid file could be written.
+2. **Schema-version gate.** If any side's `schema_version` exceeds the driver's supported version, exit `1` with stderr `merge-driver: schema_version=<n> exceeds supported=<m>; upgrade required`. Git surfaces the conflict; the user upgrades the driver before retrying. The driver never silently falls back to "unknown _extras" handling for a higher schema.
+3. If a side cannot parse YAML but frontmatter delimiters are identifiable, produce a valid quarantined file with the unparsable side preserved in `_merge_diagnostics.unparsed_sides[]` as raw base64 plus the parse error. If frontmatter delimiters are not identifiable, leave Git conflict markers and exit `1`.
+4. Merge frontmatter using true 3-way field rules (§14.3): compare `base→ours` and `base→theirs`, not just `updated_at`.
+5. Merge body with diff3 semantics.
+6. If body conflicts, keep conflict markers in body, set `status: quarantined`, `trust_level: quarantined`, `review_state: pending`, and populate `_merge_diagnostics`.
+7. Revalidate. If validation fails, try status-aware normalization where specified. If still invalid, quarantine with diagnostics.
+8. Write canonical file to `<ours>`.
+9. Exit `0` for clean merges and semantic quarantines represented as valid files. Exit `1` only when Git still needs to treat the path as unmerged because no valid file could be written, or for the schema-version gate above.
 
 ### 14.3 Generic 3-way rule
 
@@ -1171,9 +1404,9 @@ For each field, first classify changes:
 | `summary` | true 3-way; same-field conflict selects the side with later `updated_at` and preserves loser in diagnostics |
 | `confidence` | true 3-way; same-field conflict selects the side with later `updated_at` unless values differ by >0.25, then quarantine |
 | `trust_level` | lifecycle matrix aware; conflicts involving `quarantined` quarantine unless both sides agree |
-| `sensitivity` | maximum sensitivity wins by order `secret > personal > confidential > internal > public`; if result would be `secret`, quarantine/refuse commit path |
+| `sensitivity` | true 3-way (so a legitimate downgrade by one side survives if the other is unchanged from base); same-field 3-way conflict selects the maximum by order `personal > confidential > internal > public` and records the loser in `_merge_diagnostics`; `secret` is not a persisted value, so any side with `sensitivity: secret` causes the driver to exit `1` without writing a merged file |
 | `status` | lifecycle merge table (§14.5) |
-| `review_state`, `requires_user_confirmation` | true 3-way; same-field conflict chooses stricter state: pending > approved > null > rejected for review, true > false for confirmation |
+| `review_state`, `requires_user_confirmation` | true 3-way; same-field `approved` vs `rejected` quarantines; otherwise stricter state wins: pending > rejected > approved > null for review, true > false for confirmation |
 | `tags`, `aliases` | normalized set union with deterministic sort |
 | `entities` | union by `id`; label same-field conflict preserves newer label and loser in diagnostics |
 | `evidence` | union by evidence `id`; fallback to `(quote_norm_hash, ref)`; near-duplicates preserved in diagnostics |
@@ -1210,7 +1443,7 @@ The table must have fixtures for every pair.
 
 If both sides created a different file at the same path and base is absent:
 
-- If frontmatter IDs differ: produce a valid quarantined combined file at the contested path with both blobs in diagnostics/body, exit `0` if valid; repo-level repair may later split manually but must not lose either body.
+- If frontmatter IDs differ: produce a valid quarantined combined file at the contested path, with the primary side in normal frontmatter/body and every losing logical memory stored in structured `_merge_diagnostics.add_add_alternates[]` (§6.10). Exit `0` only if every original frontmatter and body is mechanically recoverable from the quarantined file or referenced artifact.
 - If frontmatter IDs match: produce a valid quarantined file and emit diagnostics that duplicate-ID repair is required; do not invent invalid suffix IDs.
 
 ### 14.7 Quarantine marker
@@ -1221,6 +1454,7 @@ A semantic quarantine file has:
 - `trust_level: quarantined`;
 - `review_state: pending`;
 - `_merge_diagnostics.status: quarantined`;
+- structured `_merge_diagnostics.add_add_alternates[]` when quarantine came from add/add same-path conflict;
 - body conflict markers only if the body was the conflict;
 - a short HTML comment at the end of body with human-readable reason.
 
@@ -1235,7 +1469,10 @@ It must validate. It must be preserved by future merges until resolved by admin 
 - Regression counts merge via occurrence IDs/G-counter.
 - Unknown fields use true 3-way per key and do not parent-`updated_at` stomp independent edits.
 - Add/add collisions preserve both logical memories or quarantine validly.
+- Add/add same-path quarantine fixture proves both original frontmatters and bodies can be recovered byte-for-byte from `_merge_diagnostics.add_add_alternates[]` or referenced artifacts.
 - Quarantine output validates and exits `0` for semantic quarantine.
+- **Sensitivity downgrade fixture.** base=`confidential`, ours=`internal` (intentional downgrade), theirs=`confidential` (no change) → result is `internal`. Inverse case must also pass. Same-field 3-way conflict (e.g. base=`internal`, ours=`personal`, theirs=`confidential`) resolves to `personal` with diagnostics.
+- **Schema-version gate fixture.** A file with `schema_version: 2` against a v1 driver causes exit `1` with a `schema_version exceeds supported` stderr line; no merged file is written.
 - Fuzzing never panics and never emits invalid YAML.
 
 ---
@@ -1282,7 +1519,7 @@ schema_version: 1
 device:
   id: dev_a1b2c3d4e5f60718
   name: trey-mbp-2025
-  shard: a1b2
+  shard: a1b2c3d4e5f60718
 paths:
   memory_root: ~/.memory
   runtime_root: ~/.memoryd
@@ -1290,13 +1527,21 @@ paths:
 
 ### 15.3 Environment overrides
 
-Env overrides are for tests/CI and local repair. They must not mutate synced config unless explicitly saved.
+Configuration precedence is:
+
+1. explicit API/CLI roots passed in `Roots`;
+2. environment overrides;
+3. local `~/.memoryd/local-device.yaml`;
+4. synced `config.yaml` defaults.
+
+Synced `config.yaml` may contain default `paths`, but local roots always win on adopted devices. Env overrides are for tests/CI and local repair. They must not mutate synced config unless explicitly saved.
 
 ### 15.4 Acceptance signals
 
 - Fresh clone has synced config but no local device config until adoption.
 - Loading config never copies another machine's device ID from repo state.
 - Env overrides are visible in loaded config but not serialized into `config.yaml` unless asked.
+- A fixture where synced and local roots differ loads local roots and does not mutate synced config.
 
 ---
 
@@ -1316,9 +1561,9 @@ pub struct Substrate {
 }
 
 impl Substrate {
-    pub fn open(roots: Roots) -> Result<Self, OpenError>;
-    pub fn init(roots: Roots, opts: InitOptions) -> Result<Self, InitError>;
-    pub fn adopt_clone(roots: Roots, opts: AdoptOptions) -> Result<Self, AdoptError>;
+    pub async fn open(roots: Roots) -> Result<Self, OpenError>;
+    pub async fn init(roots: Roots, opts: InitOptions) -> Result<Self, InitError>;
+    pub async fn adopt_clone(roots: Roots, opts: AdoptOptions) -> Result<Self, AdoptError>;
     pub fn doctor(&self) -> DoctorReport;
 }
 ```
@@ -1331,19 +1576,31 @@ pub fn validate_frontmatter(raw: FrontmatterRaw) -> Result<Frontmatter, Validati
 pub fn serialize_frontmatter(fm: &Frontmatter) -> Result<String, SerializeError>;
 
 impl Substrate {
-    pub fn read_memory(&self, id: &MemoryId) -> Result<Memory, ReadError>;
-    pub fn read_path(&self, path: &RepoPath) -> Result<Memory, ReadError>;
-    pub fn write_memory(&self, req: WriteRequest) -> Result<WriteOutcome, WriteError>;
-    pub fn write_encrypted(&self, req: EncryptedWriteRequest) -> Result<WriteOutcome, WriteError>;
-    pub fn tombstone_memory(&self, req: TombstoneRequest) -> Result<WriteOutcome, WriteError>;
+    pub async fn read_memory(&self, id: &MemoryId) -> Result<MemoryEnvelope, ReadError>;
+    pub async fn read_path(&self, path: &RepoPath) -> Result<MemoryEnvelope, ReadError>;
+    pub async fn write_memory(&self, req: WriteRequest) -> Result<WriteOutcome, WriteFailure>;
+    pub async fn write_encrypted(&self, req: EncryptedWriteRequest) -> Result<WriteOutcome, WriteFailure>;
+    pub async fn tombstone_memory(&self, req: TombstoneRequest) -> Result<WriteOutcome, WriteFailure>;
 }
 ```
+
+`MemoryEnvelope` distinguishes content availability:
+
+```rust
+enum MemoryContent {
+    Plaintext(String),
+    Ciphertext { bytes: Vec<u8>, encryption: EncryptionEnvelope },
+    MetadataOnly,
+}
+```
+
+Stream A does not decrypt confidential/personal ciphertext. Stream D-mediated APIs may convert `Ciphertext` to a masked or plaintext projection outside this Stream A contract.
 
 ### 16.3 IDs
 
 ```rust
 impl Substrate {
-    pub fn next_memory_id(&self) -> Result<MemoryId, IdError>;
+    pub async fn next_memory_id(&self) -> Result<MemoryId, IdError>;
 }
 pub fn parse_memory_id(s: &str) -> Result<MemoryId, IdError>;
 ```
@@ -1352,12 +1609,14 @@ pub fn parse_memory_id(s: &str) -> Result<MemoryId, IdError>;
 
 ```rust
 impl Substrate {
-    pub fn reindex(&self, opts: ReindexOptions) -> Result<ReindexReport, IndexError>;
-    pub fn query_memory(&self, query: MemoryQuery) -> Result<Vec<MemoryHit>, QueryError>;
-    pub fn query_chunks(&self, query: ChunkQuery) -> Result<Vec<ChunkHit>, QueryError>;
-    pub fn update_embedding(&self, req: EmbeddingUpdate) -> Result<(), VectorError>;
+    pub async fn reindex(&self, opts: ReindexOptions) -> Result<ReindexReport, IndexError>;
+    pub async fn query_memory(&self, query: MemoryQuery) -> Result<Vec<MemoryHit>, QueryError>;
+    pub async fn query_chunks(&self, query: ChunkQuery) -> Result<Vec<ChunkHit>, QueryError>;
+    pub async fn update_embedding(&self, req: EmbeddingUpdate) -> Result<(), VectorError>;
 }
 ```
+
+`EmbeddingUpdate` includes `chunk_id`, `expected_content_hash`, `provider`, `model_ref`, `dimension`, and `vector`. `update_embedding` returns `VectorError::StaleChunk` if the current chunk hash differs from `expected_content_hash`.
 
 No raw mutable SQLite connection is public. A read-only debug query may be feature-gated:
 
@@ -1372,17 +1631,32 @@ Async boundaries are explicit. Stream A itself may be synchronous internally, bu
 
 ```rust
 impl Substrate {
-    pub fn watch(&self) -> Result<impl Stream<Item = Result<FileEvent, WatchError>>, WatchError>;
-    pub fn append_event(&self, event: Event) -> Result<EventAppendOutcome, EventError>;
-    pub fn read_events(&self, query: EventQuery) -> Result<impl Iterator<Item = Result<Event, EventReadError>>, EventError>;
-    pub fn git_preflight(&self) -> Result<(), GitError>;
-    pub fn auto_commit(&self, opts: CommitOptions) -> Result<Option<CommitSha>, GitError>;
+    pub fn watch(&self) -> Result<WatchSubscription, WatchError>;
+    pub async fn append_event(&self, event: Event) -> Result<EventAppendOutcome, EventError>;
+    pub async fn read_events(&self, query: EventQuery) -> Result<impl Stream<Item = Result<Event, EventReadError>>, EventError>;
+    pub async fn git_preflight(&self) -> Result<(), GitError>;
+    pub async fn fetch_inspect(&self, opts: InspectOptions) -> Result<InspectReport, GitError>;
+    pub async fn auto_commit(&self, opts: CommitOptions) -> Result<Option<CommitSha>, GitError>;
     pub async fn fetch_and_merge(&self, opts: FetchOptions) -> Result<FetchOutcome, GitError>;
     pub async fn push(&self, opts: PushOptions) -> Result<PushOutcome, GitError>;
+    pub fn durability_tier(&self) -> DurabilityTier;
+}
+
+/// Owned subscription handle. `WatchSubscription` borrows nothing from
+/// `Substrate`; `Substrate` may be dropped while the subscription is alive,
+/// in which case the underlying watcher continues until the subscription
+/// itself is dropped or `unsubscribe()` is called. Cancellation is explicit;
+/// dropping the handle releases OS watcher resources synchronously.
+pub struct WatchSubscription { /* opaque */ }
+
+impl WatchSubscription {
+    pub fn events(&mut self) -> impl Stream<Item = Result<FileEvent, WatchError>> + '_;
+    pub fn unsubscribe(self);                            // explicit close
+    pub fn rescan_now(&self) -> Result<(), WatchError>;  // forces a RescanRequired emission
 }
 ```
 
-Blocking git operations must run on `spawn_blocking` internally or be documented as blocking with `*_blocking` names. The public API must not hide network/blocking behavior behind cheap-looking sync calls.
+All public `async` methods that perform filesystem, SQLite, git, vector, or network work must run blocking sections on Stream A's configured blocking executor or single index thread. The public API must not hide blocking/network behavior behind cheap-looking sync calls. Test-only synchronous helpers, if any, use a `_blocking` suffix.
 
 ### 16.6 Error taxonomy
 
@@ -1390,21 +1664,24 @@ Errors distinguish:
 
 - validation/schema problems;
 - stale write/concurrency problems;
-- durability/fsync problems;
-- index-after-commit failures;
-- event-after-commit failures;
-- git preflight/config failures;
+- durability/fsync problems (including `DurabilityUnsupported` and `DurabilityUnavailable` per §3.1);
+- index-after-commit failures (with durable pending index repair queue receipt);
+- event-after-commit failures (with durable pending event repair queue receipt);
+- repair-queue/repair-marker failures after durable commit (`RepairQueueFailed`, `RepairStateNotDurable`);
+- git preflight/config failures (`PreflightFailed` distinct from `ConfigDeltaSinceLastInspect`);
 - merge semantic quarantines;
-- vector adapter/model/dimension failures;
+- merge schema-version refusals (`SchemaVersionUnsupportedByMergeDriver`);
+- vector adapter/model/dimension/stale-chunk failures (with explicit pending embedding job receipt when applicable);
+- operator-required repair states (`OperatorRepairRequired` from §13.5.1 step 2);
 - partial-sync cross-reference warnings.
 
-No single `IoError` bucket may hide whether a write was committed before failure.
+No single `IoError` bucket may hide whether a write was committed before failure. `WriteOutcome` always reports `{ committed, indexed, event_recorded, durability, repair_required }`. `WriteFailure` always carries `outcome: WriteOutcome` so callers can distinguish recoverable committed states from non-committed failures.
 
 ### 16.7 Acceptance signals
 
 - Public API has no extra exported mutable internals.
 - Every error variant has at least one test.
-- Async git/watch APIs can be cancelled without corrupting repo/index/event state.
+- Async write/index/git/watch APIs can be cancelled without corrupting repo/index/event state; cancellation after a durable commit returns or records a committed outcome.
 - Write outcomes clearly distinguish `not_committed`, `committed_not_indexed`, `committed_indexed_event_failed`, and `fully_committed`.
 
 ---
@@ -1467,20 +1744,26 @@ Use fault injection, not only kill timing:
 - parent fsync failure;
 - index transaction failure after durable rename;
 - event append failure after index;
+- pending repair queue append failure after durable commit;
 - crash during event append;
 - startup reconciliation after each committed-but-incomplete state.
 
 ### 17.6 Performance tests
 
-Benchmarks must record hardware, OS, filesystem, SQLite pragmas, and memory count. Targets for v0.1 reference hardware are separate from correctness acceptance.
+Benchmarks must record hardware, OS, filesystem, SQLite pragmas, and memory count. v1.0 treats performance as a **release gate**, because Stream E's recall-block budget assumes these p95s; missing them ships a Stream A that downstream streams cannot use.
 
-Default reference target on Apple Silicon laptop / Linux x86_64 CI runner:
+Reference hardware for the gate: Apple Silicon laptop (M-series, 16 GB+) **or** Linux x86_64 CI runner (≥4 vCPU, NVMe-class storage). Both must pass.
 
-- 10K memories cold reindex < 60s;
-- query by ID < 10ms p95;
-- filtered metadata query < 50ms p95;
-- FTS chunk query < 75ms p95;
-- tree validator < 500ms on 10K memory files.
+Gate targets:
+
+- 10K-memory cold reindex p95 ≤ 60s.
+- Query by ID p95 ≤ 10ms.
+- Filtered metadata query p95 ≤ 50ms.
+- FTS chunk query p95 ≤ 75ms.
+- Vector chunk query p95 ≤ 100ms (sqlite-vec adapter, 768-dim vectors, 10K corpus).
+- Tree validator p95 ≤ 500ms on 10K memory files.
+
+Each target is measured with a deterministic fixture seed and captured in `bench/results.json` per run. A regression > 10% on any target blocks merge.
 
 ### 17.7 Overall acceptance
 
@@ -1491,7 +1774,10 @@ Stream A is done when:
 3. Merge-driver fuzzing for 10 minutes produces no panics and no invalid output.
 4. Two-clone multi-device scripted test converges byte-identically after semantic merges and repo-level reconciliation.
 5. Public API docs explain blocking/async behavior and every error outcome.
-6. Independent review has no blocking findings; the review is not itself a test, but a release gate.
+6. **Performance gates from §17.6 pass on both reference hardware profiles.**
+7. **Durability probe behaves per §3.1:** `Full` succeeds on a tmpfs/ext4/apfs fixture; `Refused` on a fixture that monkey-patches parent-dir fsync to `EINVAL`; `BestEffort` on a fixture returning a documented non-fatal error.
+8. **Crash-injection matrix from §17.5 passes** with startup reconciliation cleanly converging to a consistent state.
+9. Independent review has no blocking findings; the review is not itself a test, but a release gate.
 
 ---
 
@@ -1513,7 +1799,19 @@ Mitigation: CAS `expected_base_hash`, hash-based suppression, direct post-write 
 
 Risk: file durable but index/event fails.
 
-Mitigation: explicit write outcomes, repair markers, startup reconciliation, and tests for every injected failure point.
+Mitigation: explicit write outcomes, repair markers (`startup-reconcile.required`, `pending/index-ops.jsonl`, `pending/events.jsonl`), startup reconciliation (§13.5.1), and tests for every injected failure point in §17.5.
+
+### 18.3a Vector store ↔ metadata drift
+
+Risk: SQLite metadata commit succeeds, vector adapter call fails, leaving FTS-but-no-vector or vice-versa drift.
+
+Mitigation: §10.2.1 contract — durable `pending_embedding_jobs`, stale-hash-checked `update_embedding`, startup reconciliation walks both directions, and dedicated event kinds (`EmbeddingJobEnqueued`, `VectorReconciled`) so the audit trail makes drift visible.
+
+### 18.3b Durability degradation
+
+Risk: silently acknowledging writes on a filesystem where parent-directory fsync is best-effort, then losing them on power loss.
+
+Mitigation: §3.1 tiered probe at startup, `Refused` tier blocks `Substrate::open` by default, `BestEffort` tier requires per-write opt-in, every `WriteOutcome` carries the active tier so Stream B can refuse if policy demands `Full`.
 
 ### 18.4 Clone misconfiguration
 
@@ -1529,7 +1827,7 @@ Mitigation: vector adapter keyed by provider/model/dimension and chunk content h
 
 ### 18.6 Forward compatibility
 
-Risk: v0.2 required fields break v0.1 daemons.
+Risk: v1.x required fields break v1.0 daemons.
 
 Mitigation: `schema_version`, additive-only nullable changes without migration, read-only behavior for unsupported versions.
 
@@ -1549,16 +1847,17 @@ Phases 3 and 6 can parallelize after Phase 1 if the frontmatter structs are stab
 
 ---
 
-## 20. Open decisions before implementation lock
+## 20. Locked implementation decisions
 
-These are still open, but the unsafe prior recommendations are replaced by safer defaults:
+The following decisions are locked for v1.0. Later streams may add adapters or policy layers without changing the Stream A substrate contract.
 
-1. **Vector adapter:** default sqlite-vec, but DDL is adapter-generated and version-pinned. Confirm whether sqlite-vec is approved for v0.1 or use a separate local vector store.
-2. **Embedding model:** 768-dim local Gemma remains the default model, but schema supports multiple model/dimension pairs. Confirm default only, not global lock-in.
-3. **Encrypted index projection:** choose default for confidential/personal: `metadata_only` vs. `masked_summary_and_entities`. Stream D must provide masked projection if richer indexing is desired.
-4. **Tombstone retention:** frontmatter tombstone events preserve reasons, but git history still retains old content. Confirm runbook expectations for true privacy erasure.
-5. **Semantic quarantine git exit:** this spec says valid semantic quarantine exits `0`; only unrepresentable conflicts exit `1`. Confirm this operational preference.
-6. **Performance reference hardware:** choose the machine/CI profile for the numeric targets.
+1. **Vector adapter:** sqlite-vec is the default v1.0 adapter. DDL is adapter-generated and version-pinned. Additional adapters may ship later behind the same `VectorStore` trait.
+2. **Embedding model default:** local 768-dim `embeddinggemma-300m-qat-Q8_0` is the default model. The schema supports multiple provider/model/dimension pairs without migration.
+3. **Encrypted index projection default:** confidential/personal writes default to `metadata_only`. Stream D may supply `masked_summary_and_entities` or richer safe projections per write, but Stream A never invents them.
+4. **Tombstone retention:** normal forget uses frontmatter tombstones and tombstone events; git history retention is expected in v1.0. True privacy erasure is an explicit admin/history-rewrite runbook outside normal substrate writes.
+5. **Semantic quarantine git exit:** valid semantic quarantine exits `0`; unrepresentable conflicts and unsupported `schema_version` exit `1`.
+6. **Performance reference hardware:** both reference profiles must pass: Apple Silicon laptop (M-series, 16 GB+) and Linux x86_64 CI runner (>=4 vCPU, NVMe-class storage).
+7. **Durability tier default:** `Full` is required by default. `BestEffort` requires per-write opt-in. `Refused` blocks `Substrate::open` except for explicit test/CI force-open.
 
 ---
 
@@ -1573,4 +1872,4 @@ These are still open, but the unsafe prior recommendations are replaced by safer
 
 ---
 
-*End of revised Stream A — Core Substrate Spec v0.1.*
+*End of Stream A — Core Substrate Spec v1.0.*

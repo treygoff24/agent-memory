@@ -1,0 +1,6 @@
+version: "2.2"
+module: stream-a/tree-config-ids
+description: Stream A tree-config-ids ownership boundary.
+boundaries:
+  path: "crates/memory-substrate/src/{tree,config,ids}/**/*"
+constraints: []

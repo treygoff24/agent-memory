@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "tier": "release",
+  "profile": "linux-x86_64",
+  "runs": 0,
+  "corpus_size": 0,
+  "seed": "0xA175e1ea5e",
+  "corpus_variants": [],
+  "metrics": {},
+  "noise_floor_ms": 2.0,
+  "note": "Placeholder only: populate from the Linux x86_64 release bench harness before enforcing Linux regression thresholds."
+}

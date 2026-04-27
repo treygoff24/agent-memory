@@ -1,0 +1,276 @@
+//! Tree validation.
+
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+
+use once_cell::sync::Lazy;
+use regex::Regex;
+
+use crate::error::{ValidationError, ValidationWarning};
+use crate::frontmatter::parse_document;
+use crate::model::{MemoryId, RepoPath};
+use crate::tree::layout::relative_memory_paths;
+
+/// Slug pattern per spec §5.1: `[a-z0-9][a-z0-9-]{0,62}`.
+#[allow(clippy::expect_used)]
+static SLUG_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[a-z0-9][a-z0-9-]{0,62}$").expect("slug regex literal")); // expect-justified: compile-time regex
+
+/// ISO date pattern for path segments like `2026-04-24`.
+#[allow(clippy::expect_used)]
+static ISO_DATE_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\d{4}-\d{2}-\d{2}$").expect("iso-date regex literal")); // expect-justified: compile-time regex
+
+/// ID-based filename prefix; these are validated separately.
+const MEM_PREFIX: &str = "mem_";
+
+/// Tree validation mode.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TreeValidationMode {
+    /// Partial sync allows missing references as warnings.
+    PartialSync,
+    /// Fully synced mode treats missing references as errors.
+    FullySynced,
+}
+
+/// Tree validation report.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct TreeValidationReport {
+    /// Warnings.
+    pub warnings: Vec<ValidationWarning>,
+    /// Parsed id to path map.
+    pub ids: HashMap<MemoryId, RepoPath>,
+}
+
+/// Validate tree structure and cross-file references.
+pub fn validate_tree(root: &Path, mode: TreeValidationMode) -> Result<TreeValidationReport, ValidationError> {
+    let mut report = TreeValidationReport::default();
+    let mut folded_paths = HashSet::new();
+    let mut refs = Vec::new();
+    let mut supersedes_edges: HashMap<MemoryId, Vec<MemoryId>> = HashMap::new();
+    let mut superseded_by_edges: HashMap<MemoryId, Vec<MemoryId>> = HashMap::new();
+    for relative in relative_memory_paths(root) {
+        let rel = relative.to_string_lossy().replace('\\', "/");
+        validate_no_case_fold_collision(&mut folded_paths, &relative)?;
+
+        // B-FT-4: route through RepoPath::try_new to catch unknown top-level dirs
+        // and paths outside the Stream A tree (replaces bare RepoPath::new).
+        let repo_path = RepoPath::try_new(rel.clone()).map_err(ValidationError::Other)?;
+
+        // B-FT-4: slug/date segment validation on non-ID-based filenames.
+        validate_path_segments(&relative)?;
+
+        let text =
+            std::fs::read_to_string(root.join(&relative)).map_err(|err| ValidationError::Other(err.to_string()))?;
+        let parsed = parse_document(&text, Some(repo_path.clone()))?;
+        let id = parsed.memory.frontmatter.id.clone();
+
+        // B-FT-4: plaintext-under-encrypted/ detection.
+        // Any file under encrypted/ must have an `encryption:` frontmatter block
+        // (per Q6 decision: open-questions-resolved.md §Q6).
+        if rel.starts_with("encrypted/") {
+            validate_encrypted_tier(&parsed.memory.frontmatter, &relative)?;
+        }
+
+        if report.ids.insert(id.clone(), repo_path).is_some() {
+            return Err(ValidationError::DuplicateMemoryId(id));
+        }
+        supersedes_edges.insert(id.clone(), parsed.memory.frontmatter.supersedes.clone());
+        superseded_by_edges.insert(id.clone(), parsed.memory.frontmatter.superseded_by.clone());
+        refs.extend(parsed.memory.frontmatter.supersedes.iter().cloned());
+        refs.extend(parsed.memory.frontmatter.superseded_by.iter().cloned());
+        refs.extend(parsed.memory.frontmatter.related.iter().cloned());
+        if relative
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .is_some_and(|stem| stem.starts_with(MEM_PREFIX) && stem != id.as_str())
+        {
+            return Err(ValidationError::Other("id filename/frontmatter mismatch".to_string()));
+        }
+    }
+    for id in refs {
+        if !report.ids.contains_key(&id) {
+            if matches!(mode, TreeValidationMode::PartialSync) {
+                report.warnings.push(ValidationWarning::PartialSyncMissingReference { id });
+            } else {
+                return Err(ValidationError::MissingReference(id));
+            }
+        }
+    }
+    validate_supersession_graph(&mut report, mode, &supersedes_edges, &superseded_by_edges)?;
+    Ok(report)
+}
+
+/// Validate that a file under `encrypted/` has an encryption frontmatter block.
+///
+/// Per Q6 decision: the `encryption:` key must be present in frontmatter.
+/// Since `Frontmatter::extras` captures unknown fields, the check is:
+/// `extras.contains_key("encryption")`.
+fn validate_encrypted_tier(frontmatter: &crate::model::Frontmatter, path: &Path) -> Result<(), ValidationError> {
+    if !frontmatter.extras.contains_key("encryption") {
+        return Err(ValidationError::PlaintextUnderEncryptedTier { path: path.to_path_buf() });
+    }
+    Ok(())
+}
+
+/// Validate path segments against spec §5.1 slug and date rules.
+///
+/// For non-ID-based filenames (i.e. filenames that do not start with `mem_`),
+/// all path components (including the stem) must match either:
+/// - A slug: `[a-z0-9][a-z0-9-]{0,62}`, or
+/// - A date-prefixed slug: `<YYYY-MM-DD>-<slug>` (used in `decisions/`), or
+/// - An ISO date: `\d{4}-\d{2}-\d{2}` (used as a bare directory component).
+///
+/// ID-based filenames have their own validation via the frontmatter-id mismatch
+/// check; slug rules do not apply to their file stems.
+fn validate_path_segments(relative: &Path) -> Result<(), ValidationError> {
+    let stem = relative.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+
+    // ID-based filenames skip slug validation; they are validated separately.
+    if stem.starts_with(MEM_PREFIX) {
+        return Ok(());
+    }
+
+    // Validate every path component except the final extension-bearing component.
+    // (Directory components must be slugs; the file stem must also be slug-like.)
+    for component in relative.components() {
+        let seg = match component {
+            std::path::Component::Normal(s) => s.to_string_lossy(),
+            _ => continue,
+        };
+        let seg = seg.as_ref();
+
+        // Strip extension for the final component.
+        let without_ext = if let Some(dot) = seg.rfind('.') { &seg[..dot] } else { seg };
+
+        // Accept: pure ISO date, date-prefixed slug (`YYYY-MM-DD-slug`), or slug.
+        if is_valid_path_segment(without_ext) {
+            continue;
+        }
+        return Err(ValidationError::Other(format!(
+            "path segment {without_ext:?} in {:?} does not match slug or date rules",
+            relative
+        )));
+    }
+    Ok(())
+}
+
+/// Return true if a path segment is a valid slug, ISO date, or date-prefixed slug.
+fn is_valid_path_segment(seg: &str) -> bool {
+    if SLUG_REGEX.is_match(seg) {
+        return true;
+    }
+    if ISO_DATE_REGEX.is_match(seg) {
+        return true;
+    }
+    // Date-prefixed slug: `YYYY-MM-DD-<slug>`.
+    if let Some(rest) = seg.strip_prefix(|c: char| c.is_ascii_digit()) {
+        // Full check: must start with valid date then `-` then slug.
+        if seg.len() > 10 && ISO_DATE_REGEX.is_match(&seg[..10]) && seg.as_bytes().get(10) == Some(&b'-') {
+            let slug_part = &seg[11..];
+            if !slug_part.is_empty() && SLUG_REGEX.is_match(slug_part) {
+                return true;
+            }
+        }
+        let _ = rest;
+    }
+    false
+}
+
+/// Validate a list of relative paths has no case-folded collision.
+pub fn validate_case_fold_paths(paths: &[PathBuf]) -> Result<(), ValidationError> {
+    let mut folded_paths = HashSet::new();
+    for path in paths {
+        validate_no_case_fold_collision(&mut folded_paths, path)?;
+    }
+    Ok(())
+}
+
+fn validate_no_case_fold_collision(folded_paths: &mut HashSet<String>, relative: &Path) -> Result<(), ValidationError> {
+    let rel = relative.to_string_lossy().replace('\\', "/");
+    let folded = rel.to_lowercase();
+    if !folded_paths.insert(folded) {
+        return Err(ValidationError::CaseFoldCollision(rel));
+    }
+    Ok(())
+}
+
+fn validate_supersession_graph(
+    report: &mut TreeValidationReport,
+    mode: TreeValidationMode,
+    supersedes_edges: &HashMap<MemoryId, Vec<MemoryId>>,
+    superseded_by_edges: &HashMap<MemoryId, Vec<MemoryId>>,
+) -> Result<(), ValidationError> {
+    for (newer, older_ids) in supersedes_edges {
+        for older in older_ids {
+            if report.ids.contains_key(older)
+                && !superseded_by_edges.get(older).is_some_and(|newer_ids| newer_ids.contains(newer))
+            {
+                record_inverse_mismatch(
+                    report,
+                    mode,
+                    format!("inverse supersession mismatch: {newer} supersedes {older}"),
+                )?;
+            }
+        }
+    }
+    for (older, newer_ids) in superseded_by_edges {
+        for newer in newer_ids {
+            if report.ids.contains_key(newer)
+                && !supersedes_edges.get(newer).is_some_and(|older_ids| older_ids.contains(older))
+            {
+                record_inverse_mismatch(
+                    report,
+                    mode,
+                    format!("inverse supersession mismatch: {older} superseded_by {newer}"),
+                )?;
+            }
+        }
+    }
+
+    let mut semantic_edges: HashMap<MemoryId, Vec<MemoryId>> = supersedes_edges.clone();
+    for (older, newer_ids) in superseded_by_edges {
+        for newer in newer_ids {
+            semantic_edges.entry(newer.clone()).or_default().push(older.clone());
+        }
+    }
+    let mut visited = HashSet::new();
+    let mut stack = HashSet::new();
+    for id in report.ids.keys() {
+        detect_cycle(id, &semantic_edges, &mut visited, &mut stack)?;
+    }
+    Ok(())
+}
+
+fn record_inverse_mismatch(
+    report: &mut TreeValidationReport,
+    mode: TreeValidationMode,
+    message: String,
+) -> Result<(), ValidationError> {
+    if matches!(mode, TreeValidationMode::PartialSync) {
+        report.warnings.push(ValidationWarning::InverseSupersessionMismatch { message });
+        Ok(())
+    } else {
+        Err(ValidationError::Other(message))
+    }
+}
+
+fn detect_cycle(
+    id: &MemoryId,
+    edges: &HashMap<MemoryId, Vec<MemoryId>>,
+    visited: &mut HashSet<MemoryId>,
+    stack: &mut HashSet<MemoryId>,
+) -> Result<(), ValidationError> {
+    if stack.contains(id) {
+        return Err(ValidationError::SupersessionCycle(id.clone()));
+    }
+    if !visited.insert(id.clone()) {
+        return Ok(());
+    }
+    stack.insert(id.clone());
+    if let Some(next_ids) = edges.get(id) {
+        for next_id in next_ids {
+            detect_cycle(next_id, edges, visited, stack)?;
+        }
+    }
+    stack.remove(id);
+    Ok(())
+}

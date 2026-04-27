@@ -7,14 +7,25 @@
 .envrc
 .direnv/
 
-# Build artifacts (anticipating Stream A in Rust)
+# Build artifacts
 target/
-Cargo.lock
 **/*.rs.bk
+
+# JS tooling
+node_modules/
 
 # Runtime / local-only
 .memory/
 .memoryd/
 
+# Generated gate outputs
+bench/results.*.json
+bench/durability-results.json
+bench/*.proposed
+fixtures/generated/
+
 # OS junk
 Thumbs.db
+
+# Atomic-write temp files (spec §13.4 step 3; B-IO-6)
+/.*.tmp

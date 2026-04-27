@@ -1,0 +1,6 @@
+version: "2.2"
+module: stream-a/frontmatter
+description: Stream A frontmatter ownership boundary.
+boundaries:
+  path: "crates/memory-substrate/src/frontmatter/**/*"
+constraints: []

@@ -1,0 +1,16 @@
+spec_dirs:
+  - "modules"
+exclude:
+  - "**/.git/**"
+  - "**/target/**"
+  - "**/node_modules/**"
+  - "**/.dev/**"
+  - "**/coverage/**"
+  - "**/bench/results.*.json"
+  - "**/fixtures/generated/**"
+test_patterns:
+  - "**/tests/**"
+  - "**/*_test.rs"
+  - "**/benches/**"
+strict_ownership: true
+strict_ownership_level: errors

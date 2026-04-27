@@ -1,0 +1,56 @@
+{
+  "corpus_size": 10000,
+  "corpus_variants": [
+    "long_bodies",
+    "large_bodies",
+    "aliases",
+    "entity_aliases",
+    "regressions",
+    "prospective",
+    "tombstones",
+    "encrypted_metadata_only"
+  ],
+  "metrics": {
+    "cold_reindex": {
+      "noise_floor_ms": 9527.044,
+      "p50_ms": 8466.671,
+      "p95_ms": 19054.088,
+      "p99_ms": 19054.088
+    },
+    "filtered_metadata_query": {
+      "noise_floor_ms": 2.0,
+      "p50_ms": 3.414,
+      "p95_ms": 3.768,
+      "p99_ms": 3.768
+    },
+    "fts_chunk_query": {
+      "noise_floor_ms": 2.0,
+      "p50_ms": 2.693,
+      "p95_ms": 2.787,
+      "p99_ms": 2.787
+    },
+    "query_by_id": {
+      "noise_floor_ms": 2.0,
+      "p50_ms": 0.014,
+      "p95_ms": 0.024,
+      "p99_ms": 0.024
+    },
+    "tree_validator": {
+      "noise_floor_ms": 276.289,
+      "p50_ms": 424.727,
+      "p95_ms": 552.578,
+      "p99_ms": 552.578
+    },
+    "vector_chunk_query": {
+      "noise_floor_ms": 2.0,
+      "p50_ms": 0.083,
+      "p95_ms": 0.096,
+      "p99_ms": 0.096
+    }
+  },
+  "profile": "darwin-arm64",
+  "runs": 9,
+  "schema": 1,
+  "seed": "0xa175e1ea5e",
+  "tier": "release"
+}

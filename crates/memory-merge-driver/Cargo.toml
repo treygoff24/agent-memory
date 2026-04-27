@@ -1,0 +1,13 @@
+[package]
+name = "memory-merge-driver"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+clap.workspace = true
+memory-substrate = { path = "../memory-substrate" }
+
+[dev-dependencies]
+tempfile.workspace = true
