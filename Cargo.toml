@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/memory-substrate", "crates/memory-merge-driver", "crates/memory-test-support"]
+members = ["crates/memory-substrate", "crates/memory-merge-driver", "crates/memory-test-support", "crates/memoryd"]
 resolver = "2"
 
 [workspace.package]
