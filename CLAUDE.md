@@ -2,11 +2,17 @@
 
 Implementation home for Stream A of the agent-memory system: a Rust substrate that owns canonical Markdown+YAML memory files, derived SQLite/FTS/vector indexes, per-device JSONL event logs, and git as the sync transport. Streams B–I depend on it.
 
+## Current status (as of 2026-04-27)
+
+**Stream A is shipped.** Codex landed the full substrate in commit `d227dce` on `main` — all 13 tasks from the v0.3 plan integrated in a single commit (~41k LOC, 183 files). `docs/reviews/stream-a-final-review.md` records the release-certification status: no blocking findings after remediation, full release gate green per the listed acceptance evidence.
+
+What's next is open. Streams B–I have not started. When work resumes, expect a new plan doc under `docs/plans/` for whichever stream is up next; Stream A's plan and worktree workflow are historical reference at this point.
+
 ## Who's doing what
 
-- **Codex** is implementing Stream A from `docs/plans/2026-04-26-stream-a-core-substrate-implementation-plan-v0.3.md`. It owns the worktree workflow, task sequencing, and the per-task narrow gates.
-- **Claude (you)** is the architect/reviewer in this repo. Spec authorship, plan critique, plan-reviewer passes, sanity checks, and ad-hoc work Trey hands you. **You do not implement Stream A modules** unless Trey explicitly redirects.
-- **Trey** drives. He'll tell you when Codex is stuck or when he wants you to take something over.
+- **Codex** owned Stream A implementation. If Trey re-engages it for a new stream, the worktree/per-task-gate/orchestrator-merged-lockfile workflow described below is its idiom.
+- **Claude (you)** is the architect/reviewer in this repo. Spec authorship, plan critique, plan-reviewer passes, sanity checks, and ad-hoc work Trey hands you. **Do not modify Stream A modules** unless Trey explicitly redirects — the substrate is a frozen contract for Streams B–I.
+- **Trey** drives. He'll tell you what's next.
 
 ## Authoritative documents (use the latest, ignore older versions for current state)
 
@@ -68,15 +74,24 @@ These are spec-mandated, not preferences:
 6. **Two-clone convergence** is canonical-content equality per spec §13.6.1, not raw `git diff`.
 7. **Performance baselines** at `bench/baseline.<profile>.json` are updated only by explicit human-authored commits — the bench harness never overwrites them (spec §17.6, §18.9).
 
-## What's already on disk (Task 1 scaffold, as of 2026-04-26)
+## What's on disk (Stream A complete, as of 2026-04-27)
 
-- `Cargo.toml` workspace with three members: `memory-substrate`, `memory-merge-driver`, `memory-test-support`.
-- `rust-toolchain.toml`, `rustfmt.toml`, `clippy.toml`, `.cargo/`, `.dylint/` — installed from agentlinters SHA `91446bb`.
-- `package.json`, `.oxfmtrc.json`, `.oxlintrc.json` — pnpm-managed Oxfmt/Oxlint.
-- `bench/baseline.linux-x86_64.json` and `bench/baseline.darwin-arm64.json` — placeholder bodies (`runs: 0`); first real values come from Task 11/13 first-release bootstrap path.
-- `scripts/install-agentlinters.sh` — pinned to SHA `91446bb`, no `git pull`.
-- `modules/`, `fixtures/`, `fuzz/` — directories created, contents pending.
-- No commits beyond `ff708ef seed: initial spec drop` yet.
+The substrate. Full layout:
+
+- **`crates/memory-substrate/`** — public API (`api.rs`), model + error taxonomy, frontmatter (parse/validate/serialize/defaults/schema), tree (layout/validate), config, IDs (sequence/repair), events (log/framing/sequence/recovery), index (schema/migrations/chunking/query, sqlite-vec adapter), git (init/adopt/preflight/commit/sync/command), watcher (subscription/filter/suppression), merge (three_way/quarantine), runtime (reconcile/faults), bench harness binary. ~30 integration test files including `spec_coverage_manifest.rs`, `crash_matrix.rs`, `startup_reconciliation.rs`, `vector_lifecycle.rs`.
+- **`crates/memory-merge-driver/`** — CLI + `tests/merge_driver_cli.rs`.
+- **`crates/memory-test-support/`** — `convergence.rs`, `perf.rs`, `bin/rust_boundary_check.rs`.
+- **`fuzz/`** — `merge_driver` and `merge_swap_convergence` targets.
+- **`scripts/`** — `check.sh` (full release gate), `two-clone-convergence.sh`, `durability-probe-gate.sh`, `bench-gate.sh`, `bench-regression-check.sh`, plus task-worktree helpers.
+- **`bench/baseline.{linux-x86_64,darwin-arm64}.json`** — real baselines, populated during Task 11/13. Per spec §17.6/§18.9, only updated by explicit human commits; the bench harness never overwrites them.
+- **`.github/workflows/`** — `stream-a-ci.yml`, `stream-a-fuzz.yml`, `stream-a-perf.yml`.
+- **`.dylint/custom_lints/`**, `.oxlintrc.json`, `.oxfmtrc.json`, `clippy.toml` — installed from agentlinters SHA `91446bb`.
+- **`docs/api/stream-a-public-api.md`**, **`docs/dev/stream-a-architecture.md`**, **`docs/dev/stream-a-test-matrix.md`** — public surface, architecture, and test matrix references.
+- **`docs/reviews/`** — `stream-a-final-review.md`, plus the `2026-04-25-buildout/` lane reviews + adversarial pass + SUMMARY, plus per-domain final review summaries (performance, security, test-coverage).
+- **`docs/runbooks/`** — `operator-repair.md`, `privacy-leak-response-placeholder.md`.
+- **`modules/stream-a-*.spec.yml`** — specgate module manifests.
+
+The full release gate is `bash scripts/check.sh` (with `BENCH_PROFILE=darwin-arm64` on Trey's machine).
 
 ## Running review or sanity-check work
 

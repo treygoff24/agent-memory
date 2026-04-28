@@ -170,7 +170,7 @@ impl Index {
     /// R-IX-1 defense-in-depth: the join against `memories` filters out
     /// encrypted-memory chunks (`metadata_only = 0`) even if upstream forgot.
     pub fn query_chunks(&self, text: &str) -> rusqlite::Result<Vec<ChunkResult>> {
-        let mut stmt = self.connection.prepare(
+        let mut stmt = self.connection.prepare_cached(
             "SELECT memory_chunks.memory_id, memory_chunks.text, bm25(memory_chunks_fts) AS score
              FROM memory_chunks_fts
              JOIN memory_chunks ON memory_chunks_fts.rowid = memory_chunks.chunk_rowid
@@ -218,7 +218,7 @@ impl Index {
              ORDER BY {table}.distance"
         );
         let blob = crate::index::sqlite_vec::serialize_f32(vector);
-        let mut stmt = self.connection.prepare(&sql)?;
+        let mut stmt = self.connection.prepare_cached(&sql)?;
         // Materialize before stmt drops (E0597 — stmt lifetime).
         let rows = stmt
             .query_map(params![blob, limit as i64], |row| {
@@ -245,6 +245,12 @@ impl Index {
     }
 
     /// Query memories by structured filter.
+    ///
+    /// SQL is built dynamically rather than using `(?N IS NULL OR ...)` patterns
+    /// because the latter defeats SQLite's index seek planner and forces a table
+    /// scan even when a selective filter (e.g. PK lookup by `id`) is bound.
+    /// Each filter combination yields a distinct prepared statement; `prepare_cached`
+    /// keeps the small set of variants warm.
     pub fn query_memory(&self, query: &MemoryQuery) -> rusqlite::Result<Vec<QueryResult>> {
         match (query.id.as_ref(), query.tag.as_deref(), query.include_metadata_only) {
             (Some(id), None, true) => collect_query_results(
@@ -714,7 +720,7 @@ fn collect_query_results<P: rusqlite::Params>(
     sql: &str,
     params: P,
 ) -> rusqlite::Result<Vec<QueryResult>> {
-    let mut stmt = conn.prepare(sql)?;
+    let mut stmt = conn.prepare_cached(sql)?;
     let mut rows = stmt.query(params)?;
     let mut results = Vec::new();
     while let Some(row) = rows.next()? {

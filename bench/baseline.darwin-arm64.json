@@ -12,45 +12,47 @@
   ],
   "metrics": {
     "cold_reindex": {
-      "noise_floor_ms": 9527.044,
-      "p50_ms": 8466.671,
-      "p95_ms": 19054.088,
-      "p99_ms": 19054.088
+      "p50_ms": 7725.518,
+      "p95_ms": 8035.473,
+      "p99_ms": 8035.473,
+      "noise_floor_ms": 9527.044
     },
     "filtered_metadata_query": {
-      "noise_floor_ms": 2.0,
-      "p50_ms": 3.414,
-      "p95_ms": 3.768,
-      "p99_ms": 3.768
+      "p50_ms": 10.831,
+      "p95_ms": 11.246,
+      "p99_ms": 11.246,
+      "noise_floor_ms": 2.0
     },
     "fts_chunk_query": {
-      "noise_floor_ms": 2.0,
-      "p50_ms": 2.693,
-      "p95_ms": 2.787,
-      "p99_ms": 2.787
+      "p50_ms": 11.047,
+      "p95_ms": 11.736,
+      "p99_ms": 11.736,
+      "noise_floor_ms": 2.0
     },
     "query_by_id": {
-      "noise_floor_ms": 2.0,
-      "p50_ms": 0.014,
-      "p95_ms": 0.024,
-      "p99_ms": 0.024
+      "p50_ms": 0.022,
+      "p95_ms": 0.051,
+      "p99_ms": 0.051,
+      "noise_floor_ms": 2.0
     },
     "tree_validator": {
-      "noise_floor_ms": 276.289,
-      "p50_ms": 424.727,
-      "p95_ms": 552.578,
-      "p99_ms": 552.578
+      "p50_ms": 546.977,
+      "p95_ms": 566.611,
+      "p99_ms": 566.611,
+      "noise_floor_ms": 276.289
     },
     "vector_chunk_query": {
-      "noise_floor_ms": 2.0,
-      "p50_ms": 0.083,
-      "p95_ms": 0.096,
-      "p99_ms": 0.096
+      "p50_ms": 0.107,
+      "p95_ms": 0.16,
+      "p99_ms": 0.16,
+      "noise_floor_ms": 2.0
     }
   },
   "profile": "darwin-arm64",
   "runs": 9,
   "schema": 1,
   "seed": "0xa175e1ea5e",
-  "tier": "release"
+  "tier": "release",
+  "captured_at": "2026-04-27T23:40:00-05:00",
+  "captured_method": "characterization run: 4 release-tier iterations on darwin-arm64 after query.rs perf fixes"
 }
