@@ -83,7 +83,7 @@ The substrate. Full layout:
 - **`crates/memory-test-support/`** — `convergence.rs`, `perf.rs`, `bin/rust_boundary_check.rs`.
 - **`fuzz/`** — `merge_driver` and `merge_swap_convergence` targets.
 - **`scripts/`** — `check.sh` (full release gate), `two-clone-convergence.sh`, `durability-probe-gate.sh`, `bench-gate.sh`, `bench-regression-check.sh`, plus task-worktree helpers.
-- **`bench/baseline.{linux-x86_64,darwin-arm64}.json`** — real baselines, populated during Task 11/13. Per spec §17.6/§18.9, only updated by explicit human commits; the bench harness never overwrites them.
+- **`bench/baseline.darwin-arm64.json`** — re-captured 2026-04-27 under realistic system load (post-query.rs perf fixes), with `captured_at`/`captured_method` provenance fields. Codex's original baseline was set on an idle machine and didn't survive contact with normal load (3x slower SQLite query p95s). **`bench/baseline.linux-x86_64.json`** — still `runs: 0` placeholder; first-release bootstrap path emits a `.proposed` file rather than failing. Per spec §17.6/§18.9, baselines are only updated by explicit human commits; the bench harness never overwrites them.
 - **`.github/workflows/`** — `stream-a-ci.yml`, `stream-a-fuzz.yml`, `stream-a-perf.yml`.
 - **`.dylint/custom_lints/`**, `.oxlintrc.json`, `.oxfmtrc.json`, `clippy.toml` — installed from agentlinters SHA `91446bb`.
 - **`docs/api/stream-a-public-api.md`**, **`docs/dev/stream-a-architecture.md`**, **`docs/dev/stream-a-test-matrix.md`** — public surface, architecture, and test matrix references.
