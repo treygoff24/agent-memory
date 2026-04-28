@@ -77,6 +77,7 @@ git -C "$seed" add -A
 git -C "$seed" commit -q -m "seed convergence corpus"
 git -C "$seed" remote add origin "$origin"
 git -C "$seed" push -q -u origin main
+git -C "$origin" symbolic-ref HEAD refs/heads/main
 
 git clone -q "$origin" "$left"
 git clone -q "$origin" "$right"

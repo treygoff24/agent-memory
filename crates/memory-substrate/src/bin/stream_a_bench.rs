@@ -148,7 +148,11 @@ async fn run_iterations(fixture: &Fixture, runs: usize, seed: u64) -> Result<Met
             measure_async(|| async {
                 fixture
                     .substrate
-                    .query_memory(MemoryQuery { id: None, tag: None, include_metadata_only: true })
+                    .query_memory(MemoryQuery {
+                        id: None,
+                        tag: Some("bucket-7".to_string()),
+                        include_metadata_only: true,
+                    })
                     .await
                     .map(|_| ())
             })
@@ -158,7 +162,11 @@ async fn run_iterations(fixture: &Fixture, runs: usize, seed: u64) -> Result<Met
             measure_async(|| async {
                 fixture
                     .substrate
-                    .query_chunks(ChunkQuery { text: Some("needle".to_string()), triple: None, vector: None })
+                    .query_chunks(ChunkQuery {
+                        text: Some(format!("{}", corpus.saturating_sub(1))),
+                        triple: None,
+                        vector: None,
+                    })
                     .await
                     .map(|_| ())
             })

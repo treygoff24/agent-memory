@@ -246,25 +246,75 @@ impl Index {
 
     /// Query memories by structured filter.
     pub fn query_memory(&self, query: &MemoryQuery) -> rusqlite::Result<Vec<QueryResult>> {
-        let mut stmt = self.connection.prepare(
-            "SELECT id,path,summary
+        match (query.id.as_ref(), query.tag.as_deref(), query.include_metadata_only) {
+            (Some(id), None, true) => collect_query_results(
+                &self.connection,
+                "SELECT id,path,summary
                  FROM memories
-                 WHERE (?1 IS NULL OR id = ?1)
-                   AND (?2 OR metadata_only = 0)
-                   AND (?3 IS NULL OR EXISTS (
-                        SELECT 1 FROM memory_tags
-                        WHERE memory_id = memories.id AND tag = ?3
-                   ))
+                 WHERE id = ?1
                  ORDER BY id",
-        )?;
-        // Materialize before stmt drops (E0597 — stmt lifetime).
-        let rows = stmt
-            .query_map(
-                params![query.id.as_ref().map(|id| id.as_str()), query.include_metadata_only, query.tag.as_deref()],
-                row_to_result,
-            )?
-            .collect();
-        rows
+                [id.as_str()],
+            ),
+            (Some(id), None, false) => collect_query_results(
+                &self.connection,
+                "SELECT id,path,summary
+                 FROM memories
+                 WHERE id = ?1 AND metadata_only = 0
+                 ORDER BY id",
+                [id.as_str()],
+            ),
+            (None, None, true) => collect_query_results(
+                &self.connection,
+                "SELECT id,path,summary
+                 FROM memories
+                 ORDER BY id",
+                [],
+            ),
+            (None, None, false) => collect_query_results(
+                &self.connection,
+                "SELECT id,path,summary
+                 FROM memories
+                 WHERE metadata_only = 0
+                 ORDER BY id",
+                [],
+            ),
+            (Some(id), Some(tag), true) => collect_query_results(
+                &self.connection,
+                "SELECT memories.id,memories.path,memories.summary
+                 FROM memories
+                 JOIN memory_tags ON memory_tags.memory_id = memories.id
+                 WHERE memories.id = ?1 AND memory_tags.tag = ?2
+                 ORDER BY memories.id",
+                params![id.as_str(), tag],
+            ),
+            (Some(id), Some(tag), false) => collect_query_results(
+                &self.connection,
+                "SELECT memories.id,memories.path,memories.summary
+                 FROM memories
+                 JOIN memory_tags ON memory_tags.memory_id = memories.id
+                 WHERE memories.id = ?1 AND memory_tags.tag = ?2 AND memories.metadata_only = 0
+                 ORDER BY memories.id",
+                params![id.as_str(), tag],
+            ),
+            (None, Some(tag), true) => collect_query_results(
+                &self.connection,
+                "SELECT memories.id,memories.path,memories.summary
+                 FROM memory_tags
+                 JOIN memories ON memories.id = memory_tags.memory_id
+                 WHERE memory_tags.tag = ?1
+                 ORDER BY memories.id",
+                [tag],
+            ),
+            (None, Some(tag), false) => collect_query_results(
+                &self.connection,
+                "SELECT memories.id,memories.path,memories.summary
+                 FROM memory_tags
+                 JOIN memories ON memories.id = memory_tags.memory_id
+                 WHERE memory_tags.tag = ?1 AND memories.metadata_only = 0
+                 ORDER BY memories.id",
+                [tag],
+            ),
+        }
     }
 }
 
@@ -657,6 +707,20 @@ fn ensure_vector_table(conn: &Connection, triple: &EmbeddingTriple) -> Result<()
     )
     .map(|_| ())
     .map_err(Into::into)
+}
+
+fn collect_query_results<P: rusqlite::Params>(
+    conn: &Connection,
+    sql: &str,
+    params: P,
+) -> rusqlite::Result<Vec<QueryResult>> {
+    let mut stmt = conn.prepare(sql)?;
+    let mut rows = stmt.query(params)?;
+    let mut results = Vec::new();
+    while let Some(row) = rows.next()? {
+        results.push(row_to_result(row)?);
+    }
+    Ok(results)
 }
 
 fn row_to_result(row: &rusqlite::Row<'_>) -> rusqlite::Result<QueryResult> {
