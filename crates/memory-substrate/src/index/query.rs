@@ -167,9 +167,18 @@ impl Index {
 
     /// Query chunks through FTS.
     ///
+    /// Free-form user text is sanitized into a sequence of FTS5 phrase tokens
+    /// before reaching MATCH so that a query like `end-to-end` does not get
+    /// reinterpreted as `end NOT to NOT end` and surface a SQLite error.
+    /// See `sanitize_fts_query` (private) for the exact transformation.
+    ///
     /// R-IX-1 defense-in-depth: the join against `memories` filters out
     /// encrypted-memory chunks (`metadata_only = 0`) even if upstream forgot.
     pub fn query_chunks(&self, text: &str) -> rusqlite::Result<Vec<ChunkResult>> {
+        let sanitized = sanitize_fts_query(text);
+        if sanitized.is_empty() {
+            return Ok(Vec::new());
+        }
         let mut stmt = self.connection.prepare_cached(
             "SELECT memory_chunks.memory_id, memory_chunks.text, bm25(memory_chunks_fts) AS score
              FROM memory_chunks_fts
@@ -182,7 +191,7 @@ impl Index {
         )?;
         // Materialize before stmt drops (E0597 — stmt lifetime).
         let rows = stmt
-            .query_map([text], |row| {
+            .query_map([sanitized.as_str()], |row| {
                 Ok(ChunkResult {
                     memory_id: MemoryId::new(row.get::<_, String>(0)?),
                     text: row.get(1)?,
@@ -830,5 +839,79 @@ fn source_kind_str(k: SourceKind) -> &'static str {
         SourceKind::Synthesis => "synthesis",
         SourceKind::Import => "import",
         SourceKind::System => "system",
+    }
+}
+
+/// Sanitize a free-form user query for FTS5.
+///
+/// FTS5 has its own query syntax — `NOT`, `AND`, `OR`, `"phrase"`, column
+/// qualifiers `col:term`, and the bare `-` prefix that means NOT. Forwarding
+/// raw user text into MATCH means a query like `end-to-end` is parsed as
+/// `end NOT to NOT end`, where `to` is then misread as a column qualifier and
+/// the whole thing returns `sqlite error: no such column: to`.
+///
+/// The substrate's contract with callers is that `query.text` is a search
+/// string, not an FTS5 expression. So at this boundary we transform the input
+/// into a sequence of FTS5 phrase tokens — one quoted phrase per
+/// whitespace-separated chunk, double-quotes escaped by doubling. Multiple
+/// phrases are AND-ed by FTS5's default expression semantics.
+///
+/// Tokens with no alphanumeric content are dropped because FTS5's tokenizer
+/// would reduce them to zero terms inside the phrase, which is a syntax error
+/// in some FTS5 builds. An input that produces no usable tokens yields an
+/// empty string; the caller short-circuits to an empty result set.
+fn sanitize_fts_query(input: &str) -> String {
+    input
+        .split_whitespace()
+        .filter(|token| token.chars().any(|character| character.is_alphanumeric()))
+        .map(|token| format!("\"{}\"", token.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_fts_query;
+
+    #[test]
+    fn sanitize_plain_word_wraps_as_single_phrase() {
+        assert_eq!(sanitize_fts_query("needle"), "\"needle\"");
+    }
+
+    #[test]
+    fn sanitize_multiple_words_ands_via_separate_phrases() {
+        assert_eq!(sanitize_fts_query("daemon socket protocol"), "\"daemon\" \"socket\" \"protocol\"");
+    }
+
+    #[test]
+    fn sanitize_hyphenated_word_stays_intact_inside_phrase() {
+        // Inside FTS5 phrase quoting the tokenizer splits on `-`, so this
+        // matches a body indexed as `end to end` — exactly what we want for
+        // hyphenated agent queries. The key property is no MATCH error.
+        assert_eq!(sanitize_fts_query("end-to-end"), "\"end-to-end\"");
+    }
+
+    #[test]
+    fn sanitize_escapes_internal_double_quotes() {
+        assert_eq!(sanitize_fts_query("say\"hi"), "\"say\"\"hi\"");
+    }
+
+    #[test]
+    fn sanitize_drops_punctuation_only_tokens() {
+        assert_eq!(sanitize_fts_query("hello -- world"), "\"hello\" \"world\"");
+    }
+
+    #[test]
+    fn sanitize_empty_input_yields_empty_string() {
+        assert_eq!(sanitize_fts_query(""), "");
+        assert_eq!(sanitize_fts_query("   "), "");
+        assert_eq!(sanitize_fts_query("--- !@#"), "");
+    }
+
+    #[test]
+    fn sanitize_strips_fts5_operator_intent() {
+        // `NOT to` is operator syntax in FTS5; after sanitization it becomes
+        // two phrase matches, both required, neither one a NOT.
+        assert_eq!(sanitize_fts_query("foo NOT bar"), "\"foo\" \"NOT\" \"bar\"");
     }
 }
