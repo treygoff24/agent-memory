@@ -13,7 +13,7 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Run the local daemon.
-    Serve(SocketArgs),
+    Serve(ServeArgs),
     /// Query daemon health.
     Status(SocketArgs),
     /// Check local substrate and daemon configuration.
@@ -34,6 +34,22 @@ pub struct SocketArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct ServeArgs {
+    /// Unix socket path used to accept memoryd clients.
+    #[arg(long, default_value = "/tmp/memoryd.sock")]
+    pub socket: PathBuf,
+    /// Canonical memory repository root.
+    #[arg(long, default_value = ".")]
+    pub repo: PathBuf,
+    /// Local per-device runtime root.
+    #[arg(long, default_value = ".memoryd")]
+    pub runtime: PathBuf,
+    /// Initialize the substrate if it has not been bootstrapped yet.
+    #[arg(long)]
+    pub init: bool,
+}
+
+#[derive(Debug, Args)]
 pub struct RootArgs {
     /// Canonical memory repository root.
     #[arg(long, default_value = ".")]
@@ -45,6 +61,9 @@ pub struct RootArgs {
 
 #[derive(Debug, Args)]
 pub struct SearchArgs {
+    /// Unix socket path used to reach memoryd.
+    #[arg(long, default_value = "/tmp/memoryd.sock")]
+    pub socket: PathBuf,
     /// Query text.
     pub query: String,
     /// Maximum number of results to return.
@@ -57,6 +76,9 @@ pub struct SearchArgs {
 
 #[derive(Debug, Args)]
 pub struct GetArgs {
+    /// Unix socket path used to reach memoryd.
+    #[arg(long, default_value = "/tmp/memoryd.sock")]
+    pub socket: PathBuf,
     /// Memory id to read.
     pub id: String,
     /// Include provenance details when available.
@@ -66,9 +88,9 @@ pub struct GetArgs {
 
 #[derive(Debug, Args)]
 pub struct WriteNoteArgs {
+    /// Unix socket path used to reach memoryd.
+    #[arg(long, default_value = "/tmp/memoryd.sock")]
+    pub socket: PathBuf,
     /// Note text.
     pub text: String,
-    /// Optional entity labels associated with the note.
-    #[arg(long)]
-    pub entity: Vec<String>,
 }
