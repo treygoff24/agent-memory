@@ -1,24 +1,30 @@
 # agent-memory
 
-Implementation home for Stream A of the agent-memory system: a Rust substrate that owns canonical Markdown+YAML memory files, derived SQLite/FTS/vector indexes, per-device JSONL event logs, and git as the sync transport. Streams B–I depend on it.
+Implementation home for the agent-memory system. Stream A is the Rust substrate (canonical Markdown+YAML files, derived SQLite/FTS/vector indexes, per-device JSONL events, git as sync transport). Stream B is the local `memoryd` daemon and MCP bridge that fronts it. Streams C–I depend on these foundations.
 
-## Current status (as of 2026-04-27)
+## Current status (as of 2026-04-28)
 
-**Stream A is shipped.** Codex landed the full substrate in commit `d227dce` on `main` — all 13 tasks from the v0.3 plan integrated in a single commit (~41k LOC, 183 files). `docs/reviews/stream-a-final-review.md` records the release-certification status: no blocking findings after remediation, full release gate green per the listed acceptance evidence.
+**Streams A and B are shipped.**
 
-What's next is open. Streams B–I have not started. When work resumes, expect a new plan doc under `docs/plans/` for whichever stream is up next; Stream A's plan and worktree workflow are historical reference at this point.
+Stream A: Codex landed the full substrate in `d227dce` on `main` — all 13 tasks from the v0.3 plan integrated in a single commit (~41k LOC, 183 files). `docs/reviews/stream-a-final-review.md` records release-certification with no blocking findings after remediation; full release gate green.
+
+Stream B: Claude landed the daemon + MCP bridge in `f9d9c2b` (2026-04-28). Substrate-backed Status/Doctor/Search/Get/WriteNote handlers, seven-tool MCP forwarder (Search/Get/Note implemented; Write/Supersede/Forget/Startup return structured `not_implemented` pending Streams C and E), idle-frame timeout, watch::Receiver-driven graceful shutdown, panic-aware worker health, SIGINT/SIGTERM handling. 24 tests across 8 suites; full workspace cargo gate green debug + release.
+
+A small Stream A FTS5 sanitization fix landed alongside in `946d75f` — `Substrate::query_chunks` now sanitizes free-form user query text into AND-ed phrase tokens so hyphenated queries (`end-to-end`) and FTS5 keyword queries no longer surface raw SQL errors. Caught in flight by the new memoryd e2e test; Trey explicitly authorized the Stream A touch.
+
+What's next is open. Streams C–I have not started. When work resumes, expect a new plan doc under `docs/plans/`.
 
 ## Who's doing what
 
-- **Codex** owned Stream A implementation. If Trey re-engages it for a new stream, the worktree/per-task-gate/orchestrator-merged-lockfile workflow described below is its idiom.
-- **Claude (you)** is the architect/reviewer in this repo. Spec authorship, plan critique, plan-reviewer passes, sanity checks, and ad-hoc work Trey hands you. **Do not modify Stream A modules** unless Trey explicitly redirects — the substrate is a frozen contract for Streams B–I.
+- **Codex** owned Stream A. If Trey re-engages it for a new stream, the worktree/per-task-gate/orchestrator-merged-lockfile workflow described below is its idiom.
+- **Claude (you)** owns Stream B (shipped 2026-04-28) and remains the architect/reviewer in this repo. Spec authorship, plan critique, plan-reviewer passes, sanity checks, and ad-hoc work Trey hands you. **Do not modify Stream A modules** unless Trey explicitly redirects (he did once, for the FTS5 sanitization fix in `946d75f`); the substrate is otherwise a frozen contract for downstream streams.
 - **Trey** drives. He'll tell you what's next.
 
 ## Authoritative documents (use the latest, ignore older versions for current state)
 
-- **Spec:** `docs/specs/stream-a-core-substrate-v1.1.md` is the live substrate contract. Older versions (`v0.1`, `v0.2`, `v1.0`) are kept for history; do not consult them for current behavior.
-- **Plan:** `docs/plans/2026-04-26-stream-a-core-substrate-implementation-plan-v0.3.md` is the live implementation plan Codex is executing. v0.1 and v0.2 are retained for history.
-- **System spec:** `docs/specs/system-v0.1.md` is the parent system-level spec covering all streams; Stream A is one of them.
+- **Spec:** `docs/specs/stream-a-core-substrate-v1.1.md` is the live Stream A substrate contract. Older versions (`v0.1`, `v0.2`, `v1.0`) are kept for history; do not consult them for current behavior.
+- **Plans:** `docs/plans/2026-04-26-stream-a-core-substrate-implementation-plan-v0.3.md` (Stream A, shipped) and `docs/plans/2026-04-28-stream-b-daemon-mcp.md` (Stream B, shipped). Older Stream A plan revisions are retained for history.
+- **System spec:** `docs/specs/system-v0.1.md` is the parent system-level spec covering all streams.
 - **Handoff:** `docs/handoff-2026-04-23.md` captures pre-repo design history.
 - **Reference:** `docs/reference/handbook-v2.2.md` and `docs/reference/gpt-deep-research-2026-04-23.md` are background research, not implementation contracts.
 
@@ -74,11 +80,10 @@ These are spec-mandated, not preferences:
 6. **Two-clone convergence** is canonical-content equality per spec §13.6.1, not raw `git diff`.
 7. **Performance baselines** at `bench/baseline.<profile>.json` are updated only by explicit human-authored commits — the bench harness never overwrites them (spec §17.6, §18.9).
 
-## What's on disk (Stream A complete, as of 2026-04-27)
+## What's on disk (Streams A and B complete, as of 2026-04-28)
 
-The substrate. Full layout:
-
-- **`crates/memory-substrate/`** — public API (`api.rs`), model + error taxonomy, frontmatter (parse/validate/serialize/defaults/schema), tree (layout/validate), config, IDs (sequence/repair), events (log/framing/sequence/recovery), index (schema/migrations/chunking/query, sqlite-vec adapter), git (init/adopt/preflight/commit/sync/command), watcher (subscription/filter/suppression), merge (three_way/quarantine), runtime (reconcile/faults), bench harness binary. ~30 integration test files including `spec_coverage_manifest.rs`, `crash_matrix.rs`, `startup_reconciliation.rs`, `vector_lifecycle.rs`.
+- **`crates/memory-substrate/`** (Stream A) — public API (`api.rs`), model + error taxonomy, frontmatter (parse/validate/serialize/defaults/schema), tree (layout/validate), config, IDs (sequence/repair), events (log/framing/sequence/recovery), index (schema/migrations/chunking/query — query.rs now sanitizes FTS5 input, sqlite-vec adapter), git (init/adopt/preflight/commit/sync/command), watcher (subscription/filter/suppression), merge (three_way/quarantine), runtime (reconcile/faults), bench harness binary. ~30 integration test files including `spec_coverage_manifest.rs`, `crash_matrix.rs`, `startup_reconciliation.rs`, `vector_lifecycle.rs`, `fts_query_sanitization.rs`.
+- **`crates/memoryd/`** (Stream B) — `cli.rs`, `client.rs`, `handlers.rs`, `main.rs`, `mcp.rs`, `protocol.rs`, `server.rs`, `workers.rs`. Eight integration test files: `cli_contract`, `daemon_e2e`, `handler_contract`, `mcp_forward`, `mcp_manifest`, `protocol_contract`, `server_smoke`, `worker_lifecycle`. Daemon serves newline-delimited JSON over a Unix socket with a 64 KiB frame cap, idle-frame timeout, and watch::Receiver-driven graceful shutdown; `serve_substrate_with(socket, substrate, options, shutdown_rx)` is the supervised entry; SIGINT/SIGTERM wired in `main`. MCP forwarder declares seven agent-facing tools (Search/Get/Note implemented end-to-end; Write/Supersede/Forget/Startup return structured `not_implemented` pending Streams C and E).
 - **`crates/memory-merge-driver/`** — CLI + `tests/merge_driver_cli.rs`.
 - **`crates/memory-test-support/`** — `convergence.rs`, `perf.rs`, `bin/rust_boundary_check.rs`.
 - **`fuzz/`** — `merge_driver` and `merge_swap_convergence` targets.
@@ -113,4 +118,5 @@ Standard recipe when Trey asks "review this" or "is this ready":
 
 ## Project-local agents and skills
 
-None defined yet. If Trey asks for a per-project agent (e.g. a Rust-aware reviewer specific to substrate boundaries), the convention is `.claude/agents/<name>.md`.
+- **Skills (project-active):** `clean-code` and `rust-engineer` are symlinked under `.claude/skills/` via `claude-skill add`. They auto-load each session. Reach for `rust-engineer` proactively for ownership/lifetime/async-tokio work in this repo; reach for `clean-code` when reviewing or hardening.
+- **Agents:** None defined yet. If Trey asks for a per-project agent (e.g. a Rust-aware reviewer specific to substrate boundaries), the convention is `.claude/agents/<name>.md`.

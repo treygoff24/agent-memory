@@ -1,5 +1,7 @@
 # Stream B Daemon + MCP Implementation Plan
 
+**Status (2026-04-28):** Shipped. Landed on `main` in commit `f9d9c2b` with reviewer-recommended hardening (idle-frame timeout, graceful shutdown via watch::Receiver, panic-aware worker health, SIGINT/SIGTERM) and end-to-end test coverage on top of the original task list. A small Stream A FTS5 sanitization fix landed alongside in `946d75f` after the new memoryd e2e test surfaced `sqlite error: no such column: to` from `Substrate::query_chunks` on hyphenated input. See `CLAUDE.md` for running project status; see the commit messages for verification basis.
+
 **Goal:** Build the first daemon-backed control plane for `agent-memory`: a local `memoryd` process, a socket protocol, agent-facing request handlers, and a CLI/MCP bridge foundation.
 
 **Architecture:** Stream A remains the canonical storage and index substrate. Stream B adds a separate `memoryd` crate that owns process lifecycle, one Unix-socket JSON protocol, substrate-backed handlers, and background worker scaffolding. The MCP server is intentionally a thin forwarder over the same daemon protocol so every harness gets identical semantics.
