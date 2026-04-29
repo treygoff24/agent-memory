@@ -4,7 +4,7 @@
 //!
 //!   1. Implemented tools (Search, Get, Note) round-trip through a live daemon
 //!      and produce the expected substrate effect.
-//!   2. Unimplemented tools (Write, Supersede, Forget, Startup) short-circuit
+//!   2. Unimplemented tools (Startup) short-circuit
 //!      with a structured `not_implemented` envelope and never contact the
 //!      daemon, so they can be tested without spinning anything up.
 
@@ -12,10 +12,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use memory_substrate::{InitOptions, Roots, Substrate};
-use memoryd::mcp::{
-    forward_to_daemon, ForgetRequest, GetRequest, NoteRequest, SearchRequest, StartupRequest, SupersedeRequest,
-    ToolRequest, WriteRequest as McpWriteRequest,
-};
+use memoryd::mcp::{forward_to_daemon, GetRequest, NoteRequest, SearchRequest, StartupRequest, ToolRequest};
 use memoryd::protocol::{ResponsePayload, ResponseResult};
 use memoryd::server::{serve_substrate_with, ServerOptions};
 use tokio::net::UnixStream;
@@ -80,62 +77,6 @@ async fn forward_memory_note_then_search_then_get_round_trips_through_daemon() {
     assert!(!record.truncated, "single short note should not exceed the bounded preview");
 
     shutdown(shutdown_tx, server, &socket).await;
-}
-
-/// MemoryWrite refuses with `not_implemented` because the daemon's WriteNote
-/// payload cannot represent structured title/tags. The forwarder must
-/// short-circuit before touching the socket — verified here by passing a
-/// path that points nowhere; if the forwarder did attempt to connect, the
-/// connect would fail and the test would surface that as an `Err`.
-#[tokio::test]
-async fn forward_memory_write_short_circuits_with_not_implemented() {
-    let response = forward_to_daemon(
-        std::path::Path::new("/nonexistent/socket/should/never/be/touched.sock"),
-        "req-write",
-        ToolRequest::MemoryWrite(McpWriteRequest {
-            body: "structured body".to_string(),
-            title: Some("a title".to_string()),
-            tags: vec!["alpha".to_string()],
-        }),
-    )
-    .await
-    .expect("forward returns Ok with structured error, not Err");
-
-    assert_not_implemented(&response, "memory_write");
-    assert_eq!(response.id, "req-write");
-}
-
-#[tokio::test]
-async fn forward_memory_supersede_short_circuits_with_not_implemented() {
-    let response = forward_to_daemon(
-        std::path::Path::new("/nonexistent/socket/should/never/be/touched.sock"),
-        "req-supersede",
-        ToolRequest::MemorySupersede(SupersedeRequest {
-            old_id: "mem_old".to_string(),
-            new_body: "replacement".to_string(),
-            reason: "outdated".to_string(),
-        }),
-    )
-    .await
-    .expect("forward returns Ok with structured error, not Err");
-
-    assert_not_implemented(&response, "memory_supersede");
-}
-
-#[tokio::test]
-async fn forward_memory_forget_short_circuits_with_not_implemented() {
-    let response = forward_to_daemon(
-        std::path::Path::new("/nonexistent/socket/should/never/be/touched.sock"),
-        "req-forget",
-        ToolRequest::MemoryForget(ForgetRequest {
-            id: "mem_to_forget".to_string(),
-            reason: "user requested".to_string(),
-        }),
-    )
-    .await
-    .expect("forward returns Ok with structured error, not Err");
-
-    assert_not_implemented(&response, "memory_forget");
 }
 
 #[tokio::test]

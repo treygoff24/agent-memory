@@ -1,0 +1,9 @@
+name: project-standard
+version: 2
+scope: project
+confidence_floor: 0.7
+requires_grounding: true
+tombstone_enforcement: review
+contradiction_policy: supersede
+review_gates:
+  - low_confidence

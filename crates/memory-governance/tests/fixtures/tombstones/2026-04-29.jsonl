@@ -1,0 +1,2 @@
+{"id":"tomb_20260429_0001","target_memory_id":null,"content_hash":"fnv64:da9b98da458ea38d","entity_hash":"fnv64:7c43cd7ad7a8bd63","reason":"user_forget","reason_text":"user asked to forget this claim","active":true}
+{"id":"tomb_20260429_0002","target_memory_id":"mem_20260429_ignored","content_hash":"fnv64:inactive","entity_hash":"fnv64:inactive","reason":"policy_retention","reason_text":"inactive rules do not match","active":false}

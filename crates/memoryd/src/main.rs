@@ -3,7 +3,7 @@ use memory_substrate::{InitOptions, Roots, Substrate};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::watch;
 
-use memoryd::cli::{Cli, Command};
+use memoryd::cli::{Cli, Command, ReviewCommand};
 use memoryd::client;
 use memoryd::protocol::RequestPayload;
 use memoryd::server::{self, ServerOptions};
@@ -66,6 +66,78 @@ async fn main() -> anyhow::Result<()> {
                 client::request(&args.socket, "cli-write-note", RequestPayload::WriteNote { text: args.text }).await?,
             )?;
         }
+        Command::Write(args) => {
+            print_response(
+                client::request(
+                    &args.socket,
+                    "cli-write",
+                    RequestPayload::WriteMemory {
+                        body: args.body,
+                        title: args.title,
+                        tags: args.tags,
+                        meta: parse_meta(args.meta)?,
+                    },
+                )
+                .await?,
+            )?;
+        }
+        Command::Supersede(args) => {
+            print_response(
+                client::request(
+                    &args.socket,
+                    "cli-supersede",
+                    RequestPayload::Supersede {
+                        old_id: args.old_id,
+                        content: args.content,
+                        reason: args.reason,
+                        meta: parse_meta(args.meta)?,
+                    },
+                )
+                .await?,
+            )?;
+        }
+        Command::Forget(args) => {
+            print_response(
+                client::request(
+                    &args.socket,
+                    "cli-forget",
+                    RequestPayload::Forget { id: args.id, reason: args.reason },
+                )
+                .await?,
+            )?;
+        }
+        Command::Review(args) => match args.command {
+            ReviewCommand::Queue(queue) => {
+                print_response(
+                    client::request(
+                        &queue.socket,
+                        "cli-review-queue",
+                        RequestPayload::ReviewQueue { limit: queue.limit },
+                    )
+                    .await?,
+                )?;
+            }
+            ReviewCommand::Approve(approve) => {
+                print_response(
+                    client::request(
+                        &approve.socket,
+                        "cli-review-approve",
+                        RequestPayload::ReviewApprove { id: approve.id },
+                    )
+                    .await?,
+                )?;
+            }
+            ReviewCommand::Reject(reject) => {
+                print_response(
+                    client::request(
+                        &reject.socket,
+                        "cli-review-reject",
+                        RequestPayload::ReviewReject { id: reject.id, reason: reject.reason },
+                    )
+                    .await?,
+                )?;
+            }
+        },
     }
     Ok(())
 }
@@ -73,6 +145,13 @@ async fn main() -> anyhow::Result<()> {
 fn print_response(response: memoryd::protocol::ResponseEnvelope) -> anyhow::Result<()> {
     println!("{}", serde_json::to_string_pretty(&response)?);
     Ok(())
+}
+
+fn parse_meta(meta: Option<String>) -> anyhow::Result<serde_json::Value> {
+    match meta {
+        Some(meta) => Ok(serde_json::from_str(&meta)?),
+        None => Ok(serde_json::Value::Null),
+    }
 }
 
 /// Wait for the first SIGINT or SIGTERM and signal the daemon to shut down.

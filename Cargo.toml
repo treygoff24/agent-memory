@@ -1,5 +1,11 @@
 [workspace]
-members = ["crates/memory-substrate", "crates/memory-merge-driver", "crates/memory-test-support", "crates/memoryd"]
+members = [
+    "crates/memory-substrate",
+    "crates/memory-merge-driver",
+    "crates/memory-test-support",
+    "crates/memory-governance",
+    "crates/memoryd",
+]
 resolver = "2"
 
 [workspace.package]
@@ -32,7 +38,17 @@ sqlite-vec = "=0.1.9"
 tempfile = "3.14"
 thiserror = "2.0"
 tracing = "0.1"
-tokio = { version = "1.42", features = ["fs", "io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync", "time"] }
+tokio = { version = "1.42", features = [
+    "fs",
+    "io-util",
+    "macros",
+    "net",
+    "rt",
+    "rt-multi-thread",
+    "signal",
+    "sync",
+    "time",
+] }
 ulid = "1.1"
 uuid = { version = "1.11", features = ["v4", "serde"] }
 which = "6"

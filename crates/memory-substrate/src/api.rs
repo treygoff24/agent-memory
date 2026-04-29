@@ -37,6 +37,11 @@ pub struct Substrate {
 }
 
 impl Substrate {
+    /// Roots backing this substrate handle.
+    pub fn roots(&self) -> &Roots {
+        &self.roots
+    }
+
     /// Initialize a new memory repository and open it.
     ///
     /// Q4: `git::adopt_clone` is the sole authority that mints
@@ -96,15 +101,19 @@ impl Substrate {
     /// B-API-7 (resolve via index) is staged behind the envelope API; the legacy
     /// path keeps its O(n) walk to avoid breaking existing callers in this pass.
     pub async fn read_memory(&self, id: &MemoryId) -> Result<Memory, ReadError> {
+        self.read_memory_with_hash(id).await.map(|(memory, _hash)| memory)
+    }
+
+    async fn read_memory_with_hash(&self, id: &MemoryId) -> Result<(Memory, Sha256), ReadError> {
         let paths = crate::tree::relative_memory_paths(&self.roots.repo);
         for path in paths {
             let repo_path = RepoPath::new(path.to_string_lossy().replace('\\', "/"));
             if repo_path.as_str().starts_with("encrypted/") {
                 continue;
             }
-            let (memory, _) = read_memory_file(&self.roots.repo, &repo_path)?;
+            let (memory, hash) = read_memory_file(&self.roots.repo, &repo_path)?;
             if &memory.frontmatter.id == id {
-                return Ok(memory);
+                return Ok((memory, hash));
             }
         }
         // `from_unchecked`: id-shaped string used only for the NotFound diagnostic path.
@@ -380,6 +389,66 @@ impl Substrate {
             repair_required: None,
             operation_id,
         })
+    }
+
+    /// Supersede an existing memory with a replacement memory.
+    ///
+    /// Stream A cannot atomically write two Markdown files, so the visible order
+    /// is explicit: write the replacement first with `supersedes = old_id`, then
+    /// mutate the old memory to `status = superseded` with `superseded_by =
+    /// new_id`. If the second write fails after the replacement committed, the
+    /// returned `WriteFailure.outcome` reports that committed side effect so the
+    /// daemon can stop accepting lifecycle writes until repair is visible.
+    pub async fn supersede_memory(&self, request: SupersedeRequest) -> Result<SupersedeOutcome, WriteFailure> {
+        let operation_id = new_operation_id();
+        let old_id = request.old_id;
+        let mut replacement = request.replacement;
+        let new_id = replacement.frontmatter.id.clone();
+        let (mut old_memory, old_base_hash) =
+            self.read_memory_with_hash(&old_id).await.map_err(|err| WriteFailure {
+                outcome: WriteOutcome::not_committed(operation_id.clone(), self.durability),
+                kind: WriteFailureKind::Validation(err.to_string()),
+            })?;
+
+        if !replacement.frontmatter.supersedes.contains(&old_id) {
+            replacement.frontmatter.supersedes.push(old_id.clone());
+        }
+        replacement.frontmatter.updated_at = lifecycle_updated_at(&replacement.frontmatter);
+
+        let new_outcome = self
+            .write_memory(WriteRequest {
+                operation_id: Some(operation_id.clone()),
+                memory: replacement,
+                expected_base_hash: None,
+                write_mode: WriteMode::CreateNew,
+                index_projection: None,
+                event_context: EventContext { actor: None, reason: Some(request.reason.clone()) },
+                allow_best_effort_durability: request.allow_best_effort_durability,
+                classification: request.classification,
+            })
+            .await?;
+
+        old_memory.frontmatter.status = MemoryStatus::Superseded;
+        old_memory.frontmatter.updated_at = lifecycle_updated_at(&old_memory.frontmatter);
+        if !old_memory.frontmatter.superseded_by.contains(&new_id) {
+            old_memory.frontmatter.superseded_by.push(new_id.clone());
+        }
+
+        let old_outcome = self
+            .write_memory(WriteRequest {
+                operation_id: Some(operation_id),
+                memory: old_memory,
+                expected_base_hash: Some(old_base_hash),
+                write_mode: WriteMode::ReplaceExisting,
+                index_projection: None,
+                event_context: EventContext { actor: None, reason: Some(request.reason) },
+                allow_best_effort_durability: request.allow_best_effort_durability,
+                classification: request.classification,
+            })
+            .await
+            .map_err(|failure| committed_lifecycle_failure(failure, &new_outcome))?;
+
+        Ok(SupersedeOutcome { old_id, new_id, old_outcome, new_outcome })
     }
 
     /// Write encrypted memory metadata plus ciphertext.
@@ -1020,6 +1089,20 @@ impl Substrate {
     }
 }
 
+fn committed_lifecycle_failure(failure: WriteFailure, committed_outcome: &WriteOutcome) -> WriteFailure {
+    if failure.outcome.committed {
+        failure
+    } else {
+        let mut outcome = committed_outcome.clone();
+        outcome.repair_required.get_or_insert(RepairRequired::FullStartupScan);
+        WriteFailure { outcome, kind: failure.kind }
+    }
+}
+
+fn lifecycle_updated_at(frontmatter: &Frontmatter) -> chrono::DateTime<Utc> {
+    Utc::now().max(frontmatter.created_at)
+}
+
 struct BinaryWrite<'a> {
     repo: &'a std::path::Path,
     path: &'a RepoPath,
@@ -1283,4 +1366,33 @@ fn ensure_write_parent_contained(repo: &std::path::Path, path: &RepoPath) -> Res
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn committed_lifecycle_failure_marks_stale_old_mutation_as_repair_required() {
+        let operation_id = OperationId::new("op_supersede_replacement_committed");
+        let replacement_outcome = WriteOutcome {
+            committed: true,
+            indexed: true,
+            event_recorded: true,
+            durability: DurabilityTier::BestEffort,
+            repair_required: None,
+            operation_id: operation_id.clone(),
+        };
+        let stale_old_mutation = WriteFailure {
+            outcome: WriteOutcome::not_committed(operation_id.clone(), DurabilityTier::BestEffort),
+            kind: WriteFailureKind::StaleBase,
+        };
+
+        let failure = committed_lifecycle_failure(stale_old_mutation, &replacement_outcome);
+
+        assert_eq!(failure.kind, WriteFailureKind::StaleBase);
+        assert!(failure.outcome.committed);
+        assert_eq!(failure.outcome.repair_required, Some(RepairRequired::FullStartupScan));
+        assert_eq!(failure.outcome.operation_id, operation_id);
+    }
 }

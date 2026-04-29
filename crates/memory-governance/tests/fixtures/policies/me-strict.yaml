@@ -1,0 +1,10 @@
+name: me-strict
+version: 1
+scope: me
+confidence_floor: 0.9
+requires_grounding: true
+tombstone_enforcement: refuse
+contradiction_policy: quarantine
+review_gates:
+  - low_confidence
+  - missing_grounding

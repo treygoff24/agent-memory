@@ -1,29 +1,30 @@
 # agent-memory
 
-Implementation home for the agent-memory system. Stream A is the Rust substrate (canonical Markdown+YAML files, derived SQLite/FTS/vector indexes, per-device JSONL events, git as sync transport). Stream B is the local `memoryd` daemon and MCP bridge that fronts it. Streams C–I depend on these foundations.
+Implementation home for the agent-memory system. Stream A is the Rust substrate (canonical Markdown+YAML files, derived SQLite/FTS/vector indexes, per-device JSONL events, git as sync transport). Stream B is the local `memoryd` daemon and MCP bridge that fronts it. Stream C adds deterministic governance for structured writes, supersession, forgetting, and review visibility.
 
-## Current status (as of 2026-04-28)
+## Current status (as of 2026-04-29)
 
-**Streams A and B are shipped.**
+**Streams A and B are shipped. Stream C governance is implemented in the current working tree.**
 
 Stream A: Codex landed the full substrate in `d227dce` on `main` — all 13 tasks from the v0.3 plan integrated in a single commit (~41k LOC, 183 files). `docs/reviews/stream-a-final-review.md` records release-certification with no blocking findings after remediation; full release gate green.
 
-Stream B: Claude landed the daemon + MCP bridge in `f9d9c2b` (2026-04-28). Substrate-backed Status/Doctor/Search/Get/WriteNote handlers, seven-tool MCP forwarder (Search/Get/Note implemented; Write/Supersede/Forget/Startup return structured `not_implemented` pending Streams C and E), idle-frame timeout, watch::Receiver-driven graceful shutdown, panic-aware worker health, SIGINT/SIGTERM handling. 24 tests across 8 suites; full workspace cargo gate green debug + release.
+Stream B: Claude landed the daemon + MCP bridge in `f9d9c2b` (2026-04-28). Substrate-backed Status/Doctor/Search/Get/WriteNote handlers, seven-tool MCP forwarder, idle-frame timeout, watch::Receiver-driven graceful shutdown, panic-aware worker health, SIGINT/SIGTERM handling. 24 tests across 8 suites; full workspace cargo gate green debug + release.
 
-A small Stream A FTS5 sanitization fix landed alongside in `946d75f` — `Substrate::query_chunks` now sanitizes free-form user query text into AND-ed phrase tokens so hyphenated queries (`end-to-end`) and FTS5 keyword queries no longer surface raw SQL errors. Caught in flight by the new memoryd e2e test; Trey explicitly authorized the Stream A touch.
+Stream C: current working-tree implementation adds `crates/memory-governance`, disk policy loading with fail-closed validation, built-in policies only when no policy YAML exists, deterministic governance decisions, grounding/tombstone/contradiction/supersession/review queue modules, and `memoryd` wiring for `memory_write`, `memory_supersede`, `memory_forget`, and CLI review commands. `memory_startup` still returns structured `not_implemented` because startup recall block assembly belongs to Stream E.
 
-What's next is open. Streams C–I have not started. When work resumes, expect a new plan doc under `docs/plans/`.
+A small Stream A FTS5 sanitization fix landed alongside Stream B in `946d75f` — `Substrate::query_chunks` now sanitizes free-form user query text into AND-ed phrase tokens so hyphenated queries (`end-to-end`) and FTS5 keyword queries no longer surface raw SQL errors. Caught in flight by the new memoryd e2e test; Trey explicitly authorized the Stream A touch.
 
 ## Who's doing what
 
 - **Codex** owned Stream A. If Trey re-engages it for a new stream, the worktree/per-task-gate/orchestrator-merged-lockfile workflow described below is its idiom.
-- **Claude (you)** owns Stream B (shipped 2026-04-28) and remains the architect/reviewer in this repo. Spec authorship, plan critique, plan-reviewer passes, sanity checks, and ad-hoc work Trey hands you. **Do not modify Stream A modules** unless Trey explicitly redirects (he did once, for the FTS5 sanitization fix in `946d75f`); the substrate is otherwise a frozen contract for downstream streams.
+- **Claude (you)** owns Stream B (shipped 2026-04-28) and remains an architect/reviewer in this repo. Spec authorship, plan critique, plan-reviewer passes, sanity checks, and ad-hoc work Trey hands you. **Do not modify Stream A modules** unless Trey explicitly redirects (he did once, for the FTS5 sanitization fix in `946d75f`); the substrate is otherwise a frozen contract for downstream streams.
 - **Trey** drives. He'll tell you what's next.
 
 ## Authoritative documents (use the latest, ignore older versions for current state)
 
 - **Spec:** `docs/specs/stream-a-core-substrate-v1.1.md` is the live Stream A substrate contract. Older versions (`v0.1`, `v0.2`, `v1.0`) are kept for history; do not consult them for current behavior.
-- **Plans:** `docs/plans/2026-04-26-stream-a-core-substrate-implementation-plan-v0.3.md` (Stream A, shipped) and `docs/plans/2026-04-28-stream-b-daemon-mcp.md` (Stream B, shipped). Older Stream A plan revisions are retained for history.
+- **Plans:** `docs/plans/2026-04-26-stream-a-core-substrate-implementation-plan-v0.3.md` (Stream A, shipped), `docs/plans/2026-04-28-stream-b-daemon-mcp.md` (Stream B, shipped), and `docs/plans/2026-04-29-stream-c-governance.md` (Stream C governance).
+- **Stream C docs:** `docs/api/stream-c-governance-api.md` and `docs/runbooks/governance-review.md` describe the implemented commands and response shapes.
 - **System spec:** `docs/specs/system-v0.1.md` is the parent system-level spec covering all streams.
 - **Handoff:** `docs/handoff-2026-04-23.md` captures pre-repo design history.
 - **Reference:** `docs/reference/handbook-v2.2.md` and `docs/reference/gpt-deep-research-2026-04-23.md` are background research, not implementation contracts.
@@ -83,7 +84,8 @@ These are spec-mandated, not preferences:
 ## What's on disk (Streams A and B complete, as of 2026-04-28)
 
 - **`crates/memory-substrate/`** (Stream A) — public API (`api.rs`), model + error taxonomy, frontmatter (parse/validate/serialize/defaults/schema), tree (layout/validate), config, IDs (sequence/repair), events (log/framing/sequence/recovery), index (schema/migrations/chunking/query — query.rs now sanitizes FTS5 input, sqlite-vec adapter), git (init/adopt/preflight/commit/sync/command), watcher (subscription/filter/suppression), merge (three_way/quarantine), runtime (reconcile/faults), bench harness binary. ~30 integration test files including `spec_coverage_manifest.rs`, `crash_matrix.rs`, `startup_reconciliation.rs`, `vector_lifecycle.rs`, `fts_query_sanitization.rs`.
-- **`crates/memoryd/`** (Stream B) — `cli.rs`, `client.rs`, `handlers.rs`, `main.rs`, `mcp.rs`, `protocol.rs`, `server.rs`, `workers.rs`. Eight integration test files: `cli_contract`, `daemon_e2e`, `handler_contract`, `mcp_forward`, `mcp_manifest`, `protocol_contract`, `server_smoke`, `worker_lifecycle`. Daemon serves newline-delimited JSON over a Unix socket with a 64 KiB frame cap, idle-frame timeout, and watch::Receiver-driven graceful shutdown; `serve_substrate_with(socket, substrate, options, shutdown_rx)` is the supervised entry; SIGINT/SIGTERM wired in `main`. MCP forwarder declares seven agent-facing tools (Search/Get/Note implemented end-to-end; Write/Supersede/Forget/Startup return structured `not_implemented` pending Streams C and E).
+- **`crates/memoryd/`** (Streams B/C) — `cli.rs`, `client.rs`, `handlers.rs`, `main.rs`, `mcp.rs`, `protocol.rs`, `server.rs`, `workers.rs`. Daemon serves newline-delimited JSON over a Unix socket with a 64 KiB frame cap, idle-frame timeout, and watch::Receiver-driven graceful shutdown; `serve_substrate_with(socket, substrate, options, shutdown_rx)` is the supervised entry; SIGINT/SIGTERM wired in `main`. MCP forwarder declares seven agent-facing tools: Search/Get/Note plus governed Write/Supersede/Forget forward to the daemon; Startup remains structured `not_implemented` for Stream E.
+- **`crates/memory-governance/`** (Stream C) — deterministic governance decisions, policy loader/built-in policies, grounding verification, contradiction/tombstone/supersession helpers, and review queue projection.
 - **`crates/memory-merge-driver/`** — CLI + `tests/merge_driver_cli.rs`.
 - **`crates/memory-test-support/`** — `convergence.rs`, `perf.rs`, `bin/rust_boundary_check.rs`.
 - **`fuzz/`** — `merge_driver` and `merge_swap_convergence` targets.

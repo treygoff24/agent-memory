@@ -527,6 +527,34 @@ pub struct WriteRequest {
     pub classification: ClassificationOutcome,
 }
 
+/// Supersession lifecycle request.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SupersedeRequest {
+    /// Existing memory that will become superseded.
+    pub old_id: MemoryId,
+    /// Replacement memory to write before mutating the old memory.
+    pub replacement: Memory,
+    /// Operator/governance reason for the lifecycle transition.
+    pub reason: String,
+    /// Mandatory caller classification for both plaintext writes.
+    pub classification: ClassificationOutcome,
+    /// Allow best-effort durability for both writes.
+    pub allow_best_effort_durability: bool,
+}
+
+/// Supersession lifecycle outcome.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SupersedeOutcome {
+    /// Existing memory that was superseded.
+    pub old_id: MemoryId,
+    /// Replacement memory that supersedes `old_id`.
+    pub new_id: MemoryId,
+    /// Outcome for the old-memory status mutation.
+    pub old_outcome: WriteOutcome,
+    /// Outcome for the replacement write.
+    pub new_outcome: WriteOutcome,
+}
+
 /// Encrypted write request.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EncryptedWriteRequest {

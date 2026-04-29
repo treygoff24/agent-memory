@@ -1,6 +1,6 @@
 # agent-memory
 
-Stream A core memory substrate implementation workspace.
+Local memory substrate, daemon, MCP bridge, and Stream C governance workspace.
 
 ## Local gates
 
@@ -20,3 +20,14 @@ pnpm run lint
 ## Project skill
 
 This repo carries a project-local Rust skill at `.codex/skills/rust-engineer`. Root agents and subagents doing Stream A work must use `clean-code`, `tdd`, and `rust-engineer`.
+
+## Implemented stream docs
+
+- Stream A substrate API: `docs/api/stream-a-public-api.md`
+- Stream C governance API: `docs/api/stream-c-governance-api.md`
+- Governance review runbook: `docs/runbooks/governance-review.md`
+
+Stream C currently governs `memory_write`, `memory_supersede`, and
+`memory_forget` through `memoryd`, plus CLI review queue operations. Startup
+recall block assembly is still Stream E; `memory_startup` returns a structured
+`not_implemented` error that names Stream E.

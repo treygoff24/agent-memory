@@ -72,6 +72,8 @@ pub struct WriteRequest {
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    #[serde(default = "null_value")]
+    pub meta: Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,6 +81,8 @@ pub struct SupersedeRequest {
     pub old_id: String,
     pub new_body: String,
     pub reason: String,
+    #[serde(default = "null_value")]
+    pub meta: Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,11 +136,13 @@ pub fn args_from_request(request: &ToolRequest) -> Result<Value, serde_json::Err
 /// Implemented mappings:
 ///   `MemorySearch`  → `RequestPayload::Search`
 ///   `MemoryGet`     → `RequestPayload::Get`
-///   `MemoryWrite`   → `RequestPayload::WriteNote` (body forwarded as prose note)
+///   `MemoryWrite`   → `RequestPayload::WriteMemory`
+///   `MemorySupersede` → `RequestPayload::Supersede`
+///   `MemoryForget`  → `RequestPayload::Forget`
 ///   `MemoryNote`    → `RequestPayload::WriteNote`
 ///
 /// Not-yet-implemented (returns structured error without contacting daemon):
-///   `MemorySupersede`, `MemoryForget`, `MemoryStartup`
+///   `MemoryStartup`
 pub async fn forward_to_daemon(
     socket_path: &Path,
     id: impl Into<String>,
@@ -152,36 +158,17 @@ pub async fn forward_to_daemon(
         ToolRequest::MemoryGet(args) => {
             RequestPayload::Get { id: args.id, include_provenance: args.include_provenance }
         }
-        ToolRequest::MemoryWrite(_) => {
-            // MemoryWrite carries structured fields (title, tags) that the daemon's
-            // current WriteNote payload cannot represent. Refuse explicitly rather
-            // than silently degrading title+tags into prose; agents would see a
-            // success response and assume the structure persisted.
-            // memory_note remains available for unstructured prose writes.
-            return Ok(ResponseEnvelope::error(
-                id,
-                "not_implemented",
-                "memory_write is not yet implemented; structured write path lands in Stream C. Use memory_note for prose-only writes.",
-                false,
-            ));
+        ToolRequest::MemoryWrite(args) => {
+            RequestPayload::WriteMemory { body: args.body, title: args.title, tags: args.tags, meta: args.meta }
         }
         ToolRequest::MemoryNote(args) => RequestPayload::WriteNote { text: args.text },
-        ToolRequest::MemorySupersede(_) => {
-            return Ok(ResponseEnvelope::error(
-                id,
-                "not_implemented",
-                "memory_supersede is not yet implemented; planned for Stream C",
-                false,
-            ));
-        }
-        ToolRequest::MemoryForget(_) => {
-            return Ok(ResponseEnvelope::error(
-                id,
-                "not_implemented",
-                "memory_forget is not yet implemented; planned for Stream C",
-                false,
-            ));
-        }
+        ToolRequest::MemorySupersede(args) => RequestPayload::Supersede {
+            old_id: args.old_id,
+            content: args.new_body,
+            reason: args.reason,
+            meta: args.meta,
+        },
+        ToolRequest::MemoryForget(args) => RequestPayload::Forget { id: args.id, reason: args.reason },
         ToolRequest::MemoryStartup(_) => {
             return Ok(ResponseEnvelope::error(
                 id,
@@ -264,24 +251,24 @@ fn descriptor(name: ToolName) -> ToolDescriptor {
         ),
         ToolName::Write => (
             "Write a new durable memory from structured agent input.",
-            object_schema(&[("body", "string"), ("title", "string"), ("tags", "array")], &["body"]),
-            object_schema(&[("id", "string"), ("summary", "string")], &["id", "summary"]),
+            object_schema(&[("body", "string"), ("title", "string"), ("tags", "array"), ("meta", "object")], &["body"]),
+            object_schema(
+                &[("status", "string"), ("id", "string"), ("reason", "string"), ("next_actions", "array")],
+                &["status"],
+            ),
         ),
         ToolName::Supersede => (
             "Supersede an existing memory with replacement content and a reason.",
             object_schema(
-                &[("old_id", "string"), ("new_body", "string"), ("reason", "string")],
+                &[("old_id", "string"), ("new_body", "string"), ("reason", "string"), ("meta", "object")],
                 &["old_id", "new_body", "reason"],
             ),
-            object_schema(
-                &[("old_id", "string"), ("new_id", "string"), ("summary", "string")],
-                &["old_id", "new_id", "summary"],
-            ),
+            object_schema(&[("status", "string"), ("old_id", "string"), ("new_id", "string")], &["status"]),
         ),
         ToolName::Forget => (
             "Forget a memory through the agent-facing tombstone path.",
             object_schema(&[("id", "string"), ("reason", "string")], &["id", "reason"]),
-            object_schema(&[("id", "string"), ("summary", "string")], &["id", "summary"]),
+            object_schema(&[("status", "string"), ("id", "string"), ("tombstone_ref", "string")], &["status", "id"]),
         ),
         ToolName::Startup => (
             "Return startup memory context for a new agent session.",
@@ -310,4 +297,8 @@ fn object_schema(properties: &[(&str, &str)], required: &[&str]) -> Value {
         "required": required,
         "additionalProperties": false,
     })
+}
+
+fn null_value() -> Value {
+    Value::Null
 }

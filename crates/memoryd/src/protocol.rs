@@ -1,4 +1,7 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+pub use memory_governance::GovernanceRefusalReason;
 
 /// Maximum byte length of a single newline-delimited request or response frame.
 /// Defined here so both the server-side reader and client-side reader share the same limit.
@@ -32,6 +35,12 @@ pub enum RequestPayload {
     Search { query: String, limit: Option<usize>, include_body: bool },
     Get { id: String, include_provenance: bool },
     WriteNote { text: String },
+    WriteMemory { body: String, title: Option<String>, tags: Vec<String>, meta: Value },
+    Supersede { old_id: String, content: String, reason: String, meta: Value },
+    Forget { id: String, reason: String },
+    ReviewQueue { limit: Option<usize> },
+    ReviewApprove { id: String },
+    ReviewReject { id: String, reason: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -76,6 +85,12 @@ pub enum ResponsePayload {
     Search(SearchResponse),
     Get(GetResponse),
     WriteNote(WriteNoteResponse),
+    GovernanceWrite(GovernanceWriteResponse),
+    GovernanceSupersede(GovernanceSupersedeResponse),
+    GovernanceForget(GovernanceForgetResponse),
+    ReviewQueue(ReviewQueueResponse),
+    ReviewApprove(ReviewDecisionResponse),
+    ReviewReject(ReviewDecisionResponse),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -125,6 +140,69 @@ pub struct GetResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WriteNoteResponse {
     pub id: String,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GovernanceStatus {
+    Promoted,
+    Candidate,
+    Quarantined,
+    Refused,
+    Tombstoned,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GovernanceWriteResponse {
+    pub status: GovernanceStatus,
+    pub id: Option<String>,
+    pub namespace: Option<String>,
+    pub reason: Option<GovernanceRefusalReason>,
+    pub next_actions: Vec<String>,
+    pub policy_applied: Option<String>,
+    pub policy_source: Option<String>,
+    pub existing_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GovernanceSupersedeResponse {
+    pub status: GovernanceStatus,
+    pub new_id: Option<String>,
+    pub old_id: Option<String>,
+    pub reason: Option<GovernanceRefusalReason>,
+    pub chain: Option<Value>,
+    pub policy_applied: Option<String>,
+    pub policy_source: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GovernanceForgetResponse {
+    pub status: GovernanceStatus,
+    pub id: String,
+    pub tombstone_ref: Option<String>,
+    pub reason: Option<GovernanceRefusalReason>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewQueueResponse {
+    pub items: Vec<ReviewQueueItemResponse>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewQueueItemResponse {
+    pub id: String,
+    pub summary: String,
+    pub status: String,
+    pub policy_applied: String,
+    pub reason: Option<String>,
+    pub next_actions: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewDecisionResponse {
+    pub id: String,
+    pub status: String,
     pub summary: String,
 }
 
