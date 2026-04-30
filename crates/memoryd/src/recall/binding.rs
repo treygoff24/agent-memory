@@ -9,17 +9,17 @@ const MAX_BINDING_FIELD_BYTES: usize = 128;
 const MIN_BUDGET_TOKENS: usize = 512;
 const MAX_BUDGET_TOKENS: usize = 8_000;
 
-pub fn validate_startup_request(request: StartupRequest) -> Result<SessionBinding, RecallError> {
+pub async fn validate_startup_request(request: StartupRequest) -> Result<SessionBinding, RecallError> {
     let harness_version = validate_optional_field("harness_version", request.harness_version.as_deref())?;
     validate_budget(request.budget_tokens)?;
 
-    let mut binding = validate_session_fields(&request.cwd, &request.session_id, &request.harness)?;
+    let mut binding = validate_session_fields(&request.cwd, &request.session_id, &request.harness).await?;
     binding.harness_version = harness_version;
 
     Ok(binding)
 }
 
-pub(crate) fn validate_session_fields(
+pub(crate) async fn validate_session_fields(
     cwd: &str,
     session_id: &str,
     harness: &str,
@@ -28,7 +28,7 @@ pub(crate) fn validate_session_fields(
     let session_id = validate_required_field("session_id", session_id)?;
     let harness = validate_required_field("harness", harness)?;
 
-    let project = resolve_project_binding(&cwd)?;
+    let project = resolve_project_binding(&cwd).await?;
     let namespaces_in_scope = namespaces_for(project.as_ref());
 
     Ok(SessionBinding {

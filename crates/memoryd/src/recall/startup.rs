@@ -20,7 +20,7 @@ pub async fn build_startup_response(
     let budget_tokens = request.budget_tokens.unwrap_or(DEFAULT_STARTUP_BUDGET_TOKENS);
     let include_recent = request.include_recent;
     let since_event_id = request.since_event_id.clone();
-    let session_binding = validate_startup_request(request)?;
+    let session_binding = validate_startup_request(request).await?;
 
     if since_event_id.as_ref().is_some_and(|value| !value.trim().is_empty()) {
         return Err(RecallError::not_implemented("event-based startup deltas are not implemented in Stream E v0.5"));

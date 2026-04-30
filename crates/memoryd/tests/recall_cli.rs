@@ -4,9 +4,10 @@ use std::time::Duration;
 
 use memory_substrate::{InitOptions, Roots, Substrate};
 use memoryd::client;
-use memoryd::protocol::{RequestPayload, ResponsePayload, ResponseResult};
+use memoryd::protocol::{RequestPayload, ResponseEnvelope, ResponsePayload, ResponseResult};
 use memoryd::server::{serve_substrate_with, ServerOptions};
-use tokio::net::UnixStream;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
@@ -108,6 +109,43 @@ fn recall_cli_without_daemon_fails_fast_with_recall_unavailable_exit_2_and_no_st
     assert!(String::from_utf8_lossy(&output.stderr).contains("recall_unavailable"));
 }
 
+#[tokio::test]
+async fn recall_cli_maps_daemon_errors_to_exit_codes_1_3_4() {
+    let cases = [("invalid_request", 1), ("privacy_error", 3), ("not_implemented", 4)];
+
+    for (code, expected_exit) in cases {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let socket = temp.path().join(format!("{code}.sock"));
+        let server = spawn_single_error_daemon(&socket, code).await;
+
+        let output = run_memoryd_async([
+            "recall",
+            "startup-block",
+            "--repo",
+            temp.path().to_string_lossy().as_ref(),
+            "--runtime",
+            temp.path().join("runtime").to_string_lossy().as_ref(),
+            "--socket",
+            socket.to_string_lossy().as_ref(),
+            "--cwd",
+            temp.path().to_string_lossy().as_ref(),
+            "--session-id",
+            "sess_cli",
+            "--harness",
+            "codex",
+        ])
+        .await;
+
+        assert_eq!(output.status.code(), Some(expected_exit), "{code} must map to exit {expected_exit}");
+        assert!(output.stdout.is_empty(), "{code} failure stdout must be empty");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(code),
+            "{code} failure stderr must include daemon error code"
+        );
+        server.await.expect("fake daemon joins").expect("fake daemon returns ok");
+    }
+}
+
 fn run_memoryd<const N: usize>(args: [&str; N]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_memoryd")).args(args).output().expect("memoryd command runs")
 }
@@ -127,6 +165,22 @@ fn spawn_daemon(socket: &Path, substrate: Substrate) -> (watch::Sender<bool>, Jo
     let options = ServerOptions { idle_frame_timeout: Duration::from_secs(5) };
     let task = tokio::spawn(serve_substrate_with(socket, substrate, options, shutdown_rx));
     (shutdown_tx, task)
+}
+
+async fn spawn_single_error_daemon(socket: &Path, code: &str) -> JoinHandle<anyhow::Result<()>> {
+    let _ = std::fs::remove_file(socket);
+    let listener = UnixListener::bind(socket).expect("bind fake daemon socket");
+    let code = code.to_owned();
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line).await?;
+        let request = memoryd::protocol::RequestEnvelope::from_json_line(&line)?;
+        let response = ResponseEnvelope::error(request.id, code.clone(), format!("{code} fixture"), false);
+        reader.get_mut().write_all(response.to_json_line()?.as_bytes()).await?;
+        Ok(())
+    })
 }
 
 async fn shutdown(shutdown_tx: watch::Sender<bool>, server: JoinHandle<anyhow::Result<()>>, socket: &Path) {

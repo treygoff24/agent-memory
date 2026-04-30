@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::recall::{DeltaRequest, DeltaResponse, RecallCounters, StartupRequest, StartupResponse};
+use crate::recall::{DeltaRequest, DeltaResponse, RecallStatusCounters, StartupRequest, StartupResponse};
 
 pub use memory_governance::GovernanceRefusalReason;
 
@@ -106,7 +106,7 @@ pub struct StatusResponse {
     pub state: String,
     pub guidance: String,
     #[serde(default)]
-    pub recall: RecallCounters,
+    pub recall: RecallStatusCounters,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

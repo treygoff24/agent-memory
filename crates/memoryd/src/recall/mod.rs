@@ -17,7 +17,7 @@ pub use candidates::{
     collect_recall_candidates, collect_recall_candidates_from_index, CandidateCollection, RecallCandidate,
     RecallCollectionRequest, RecallIndexFuture, RecallIndexReader,
 };
-pub use counters::{RecallCounters, SharedRecallCounters};
+pub use counters::{RecallStatusCounters, SharedRecallCounters};
 pub use delta::build_delta_response;
 pub use entity::{resolve_entity_matches, EntityMatchKind, EntityResolution};
 pub use error::RecallError;

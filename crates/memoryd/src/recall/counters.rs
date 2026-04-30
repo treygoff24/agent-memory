@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RecallCounters {
+pub struct RecallStatusCounters {
     pub startup_invoked_total: u64,
     #[serde(default)]
     pub startup_failed_total: BTreeMap<String, u64>,
@@ -17,11 +17,11 @@ pub struct RecallCounters {
 
 #[derive(Debug, Clone, Default)]
 pub struct SharedRecallCounters {
-    inner: Arc<Mutex<RecallCounters>>,
+    inner: Arc<Mutex<RecallStatusCounters>>,
 }
 
 impl SharedRecallCounters {
-    pub fn snapshot(&self) -> RecallCounters {
+    pub fn snapshot(&self) -> RecallStatusCounters {
         self.inner.lock().expect("recall counters lock not poisoned").clone()
     }
 

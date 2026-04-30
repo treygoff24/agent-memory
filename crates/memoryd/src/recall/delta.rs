@@ -6,7 +6,7 @@ use crate::recall::render::{escape_xml_attr, escape_xml_text};
 use crate::recall::types::{DeltaRequest, DeltaResponse, DEFAULT_DELTA_BUDGET_TOKENS};
 
 pub async fn build_delta_response(substrate: &Substrate, request: DeltaRequest) -> Result<DeltaResponse, RecallError> {
-    validate_delta_request(&request)?;
+    validate_delta_request(&request).await?;
     let budget_tokens = request.budget_tokens.unwrap_or(DEFAULT_DELTA_BUDGET_TOKENS);
     let message = request.message.trim();
     let chunks = substrate
@@ -46,7 +46,7 @@ fn render_delta_item(memory_id: &str, text: &str) -> String {
     format!("  <item id=\"{}\">{}</item>\n", escape_xml_attr(memory_id), escape_xml_text(text))
 }
 
-fn validate_delta_request(request: &DeltaRequest) -> Result<(), RecallError> {
+async fn validate_delta_request(request: &DeltaRequest) -> Result<(), RecallError> {
     if request.message.trim().is_empty() {
         return Err(RecallError::invalid_request("message must be non-empty"));
     }
@@ -54,7 +54,7 @@ fn validate_delta_request(request: &DeltaRequest) -> Result<(), RecallError> {
     if !(128..=8_000).contains(&budget) {
         return Err(RecallError::invalid_request("budget_tokens must be in 128..=8000"));
     }
-    crate::recall::binding::validate_session_fields(&request.cwd, &request.session_id, &request.harness)?;
+    crate::recall::binding::validate_session_fields(&request.cwd, &request.session_id, &request.harness).await?;
     Ok(())
 }
 

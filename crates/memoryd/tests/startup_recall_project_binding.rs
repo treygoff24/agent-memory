@@ -4,13 +4,14 @@ use std::process::Command;
 
 use memoryd::recall::{validate_startup_request, ProjectBindingSource, RecallError, StartupRequest};
 
-#[test]
-fn validates_absolute_cwd_and_trims_session_fields() {
+#[tokio::test]
+async fn validates_absolute_cwd_and_trims_session_fields() {
     let temp = tempfile::tempdir().expect("tempdir");
     let nested = temp.path().join("repo").join("child");
     fs::create_dir_all(&nested).expect("nested");
 
     let binding = validate_startup_request(request(nested.to_string_lossy(), " sess-1 ", " codex ", Some(" 1.0 ")))
+        .await
         .expect("valid binding");
 
     assert_eq!(binding.cwd, canonical(&nested));
@@ -19,30 +20,30 @@ fn validates_absolute_cwd_and_trims_session_fields() {
     assert_eq!(binding.harness_version.as_deref(), Some("1.0"));
 }
 
-#[test]
-fn rejects_relative_and_missing_cwd() {
-    assert_invalid(validate_startup_request(request("relative/path", "sess", "codex", None)));
+#[tokio::test]
+async fn rejects_relative_and_missing_cwd() {
+    assert_invalid(validate_startup_request(request("relative/path", "sess", "codex", None)).await);
 
     let temp = tempfile::tempdir().expect("tempdir");
     let missing = temp.path().join("missing");
-    assert_invalid(validate_startup_request(request(missing.to_string_lossy(), "sess", "codex", None)));
+    assert_invalid(validate_startup_request(request(missing.to_string_lossy(), "sess", "codex", None)).await);
 }
 
-#[test]
-fn rejects_empty_or_overlong_session_fields_after_trim() {
+#[tokio::test]
+async fn rejects_empty_or_overlong_session_fields_after_trim() {
     let temp = tempfile::tempdir().expect("tempdir");
     let cwd = temp.path().to_string_lossy();
     let overlong = "x".repeat(129);
 
-    assert_invalid(validate_startup_request(request(&cwd, " ", "codex", None)));
-    assert_invalid(validate_startup_request(request(&cwd, &overlong, "codex", None)));
-    assert_invalid(validate_startup_request(request(&cwd, "sess", " ", None)));
-    assert_invalid(validate_startup_request(request(&cwd, "sess", &overlong, None)));
-    assert_invalid(validate_startup_request(request(&cwd, "sess", "codex", Some(&overlong))));
+    assert_invalid(validate_startup_request(request(&cwd, " ", "codex", None)).await);
+    assert_invalid(validate_startup_request(request(&cwd, &overlong, "codex", None)).await);
+    assert_invalid(validate_startup_request(request(&cwd, "sess", " ", None)).await);
+    assert_invalid(validate_startup_request(request(&cwd, "sess", &overlong, None)).await);
+    assert_invalid(validate_startup_request(request(&cwd, "sess", "codex", Some(&overlong))).await);
 }
 
-#[test]
-fn yaml_project_binding_wins_over_git_remote_and_orders_namespaces() {
+#[tokio::test]
+async fn yaml_project_binding_wins_over_git_remote_and_orders_namespaces() {
     let temp = tempfile::tempdir().expect("tempdir");
     let repo = temp.path().join("repo");
     fs::create_dir_all(&repo).expect("repo");
@@ -52,7 +53,7 @@ fn yaml_project_binding_wins_over_git_remote_and_orders_namespaces() {
         .expect("project yaml");
 
     let binding =
-        validate_startup_request(request(repo.to_string_lossy(), "sess", "codex", None)).expect("valid binding");
+        validate_startup_request(request(repo.to_string_lossy(), "sess", "codex", None)).await.expect("valid binding");
     let project = binding.project.expect("project binding");
 
     assert_eq!(project.canonical_id, "proj_agent_memory");
@@ -61,8 +62,8 @@ fn yaml_project_binding_wins_over_git_remote_and_orders_namespaces() {
     assert_eq!(binding.namespaces_in_scope, ["me", "project:proj_agent_memory", "agent"]);
 }
 
-#[test]
-fn malformed_project_yaml_fails_closed() {
+#[tokio::test]
+async fn malformed_project_yaml_fails_closed() {
     let cases = [
         ("", "empty"),
         ("[]", "non-mapping"),
@@ -75,14 +76,14 @@ fn malformed_project_yaml_fails_closed() {
         let temp = tempfile::tempdir().expect("tempdir");
         fs::write(temp.path().join(".memory-project.yaml"), yaml).expect("project yaml");
         assert_invalid_named(
-            validate_startup_request(request(temp.path().to_string_lossy(), "sess", "codex", None)),
+            validate_startup_request(request(temp.path().to_string_lossy(), "sess", "codex", None)).await,
             name,
         );
     }
 }
 
-#[test]
-fn rejects_invalid_yaml_canonical_ids_and_overlong_aliases() {
+#[tokio::test]
+async fn rejects_invalid_yaml_canonical_ids_and_overlong_aliases() {
     let invalid_ids = [
         "",
         "ab",
@@ -97,7 +98,7 @@ fn rejects_invalid_yaml_canonical_ids_and_overlong_aliases() {
         fs::write(temp.path().join(".memory-project.yaml"), format!("canonical_id: {canonical_id:?}\n"))
             .expect("project yaml");
         assert_invalid_named(
-            validate_startup_request(request(temp.path().to_string_lossy(), "sess", "codex", None)),
+            validate_startup_request(request(temp.path().to_string_lossy(), "sess", "codex", None)).await,
             canonical_id,
         );
     }
@@ -108,28 +109,28 @@ fn rejects_invalid_yaml_canonical_ids_and_overlong_aliases() {
         format!("canonical_id: proj_valid\nalias: {}\n", "a".repeat(129)),
     )
     .expect("project yaml");
-    assert_invalid(validate_startup_request(request(temp.path().to_string_lossy(), "sess", "codex", None)));
+    assert_invalid(validate_startup_request(request(temp.path().to_string_lossy(), "sess", "codex", None)).await);
 }
 
-#[test]
-fn missing_git_remote_is_not_an_error() {
+#[tokio::test]
+async fn missing_git_remote_is_not_an_error() {
     let temp = tempfile::tempdir().expect("tempdir");
     let repo = temp.path().join("repo");
     fs::create_dir_all(&repo).expect("repo");
     git(&repo, &["init"]);
 
     let binding =
-        validate_startup_request(request(repo.to_string_lossy(), "sess", "codex", None)).expect("valid binding");
+        validate_startup_request(request(repo.to_string_lossy(), "sess", "codex", None)).await.expect("valid binding");
 
     assert!(binding.project.is_none());
     assert_eq!(binding.namespaces_in_scope, ["me", "agent"]);
 }
 
-#[test]
-fn git_remote_forms_canonicalize_to_same_project_id() {
-    let ssh = binding_for_remote("git@GitHub.com:foo/bar.git");
-    let https = binding_for_remote("https://github.com/foo/bar/");
-    let git_protocol = binding_for_remote("git://github.com/foo//bar.git");
+#[tokio::test]
+async fn git_remote_forms_canonicalize_to_same_project_id() {
+    let ssh = binding_for_remote("git@GitHub.com:foo/bar.git").await;
+    let https = binding_for_remote("https://github.com/foo/bar/").await;
+    let git_protocol = binding_for_remote("git://github.com/foo//bar.git").await;
 
     assert_eq!(
         ssh.project.as_ref().expect("ssh project").canonical_id,
@@ -142,8 +143,8 @@ fn git_remote_forms_canonicalize_to_same_project_id() {
     assert_eq!(ssh.namespaces_in_scope, https.namespaces_in_scope);
 }
 
-#[test]
-fn file_and_bare_git_remotes_canonicalize_equivalent_paths() {
+#[tokio::test]
+async fn file_and_bare_git_remotes_canonicalize_equivalent_paths() {
     let temp = tempfile::tempdir().expect("tempdir");
     let upstream = temp.path().join("upstream.git");
     fs::create_dir_all(&upstream).expect("upstream");
@@ -153,8 +154,8 @@ fn file_and_bare_git_remotes_canonicalize_equivalent_paths() {
     #[cfg(windows)]
     std::os::windows::fs::symlink_dir(&upstream, &symlink).expect("symlink");
 
-    let file = binding_for_remote_in(temp.path(), &format!("file://{}", upstream.display()));
-    let bare = binding_for_remote_in(temp.path(), &symlink.to_string_lossy());
+    let file = binding_for_remote_in(temp.path(), &format!("file://{}", upstream.display())).await;
+    let bare = binding_for_remote_in(temp.path(), &symlink.to_string_lossy()).await;
 
     assert_eq!(
         file.project.as_ref().expect("file project").canonical_id,
@@ -162,17 +163,17 @@ fn file_and_bare_git_remotes_canonicalize_equivalent_paths() {
     );
 }
 
-fn binding_for_remote(remote: &str) -> memoryd::recall::SessionBinding {
+async fn binding_for_remote(remote: &str) -> memoryd::recall::SessionBinding {
     let temp = tempfile::tempdir().expect("tempdir");
-    binding_for_remote_in(temp.path(), remote)
+    binding_for_remote_in(temp.path(), remote).await
 }
 
-fn binding_for_remote_in(parent: &Path, remote: &str) -> memoryd::recall::SessionBinding {
+async fn binding_for_remote_in(parent: &Path, remote: &str) -> memoryd::recall::SessionBinding {
     let repo = parent.join(format!("repo-{}", uuidish(remote)));
     fs::create_dir_all(&repo).expect("repo");
     git(&repo, &["init"]);
     git(&repo, &["remote", "add", "origin", remote]);
-    validate_startup_request(request(repo.to_string_lossy(), "sess", "codex", None)).expect("valid binding")
+    validate_startup_request(request(repo.to_string_lossy(), "sess", "codex", None)).await.expect("valid binding")
 }
 
 fn request(cwd: impl AsRef<str>, session_id: &str, harness: &str, harness_version: Option<&str>) -> StartupRequest {

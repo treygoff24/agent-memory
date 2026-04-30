@@ -1,16 +1,21 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use tokio::task;
+use tokio::time;
 
 use crate::recall::error::RecallError;
 use crate::recall::types::{ProjectBinding, ProjectBindingSource};
 
 const PROJECT_FILE: &str = ".memory-project.yaml";
 const MAX_PROJECT_FIELD_BYTES: usize = 128;
+const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
+const GIT_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -19,12 +24,12 @@ struct ProjectFile {
     alias: Option<String>,
 }
 
-pub fn resolve_project_binding(cwd: &Path) -> Result<Option<ProjectBinding>, RecallError> {
+pub async fn resolve_project_binding(cwd: &Path) -> Result<Option<ProjectBinding>, RecallError> {
     if let Some(path) = find_project_file(cwd) {
         return parse_project_file(&path).map(Some);
     }
 
-    let Some(remote) = git_origin_remote(cwd) else {
+    let Some(remote) = git_origin_remote(cwd).await else {
         return Ok(None);
     };
     let normalized = normalize_remote(&remote)?;
@@ -126,9 +131,9 @@ fn validate_alias(value: &str) -> Result<String, RecallError> {
     Ok(trimmed.to_owned())
 }
 
-fn git_origin_remote(cwd: &Path) -> Option<String> {
-    let root = git_worktree_root(cwd)?;
-    let output = Command::new("git").args(["remote", "get-url", "origin"]).current_dir(root).output().ok()?;
+async fn git_origin_remote(cwd: &Path) -> Option<String> {
+    let root = git_worktree_root(cwd).await?;
+    let output = git_output(root, ["remote", "get-url", "origin"]).await?;
     if !output.status.success() {
         return None;
     }
@@ -137,13 +142,39 @@ fn git_origin_remote(cwd: &Path) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
-fn git_worktree_root(cwd: &Path) -> Option<PathBuf> {
-    let output = Command::new("git").args(["rev-parse", "--show-toplevel"]).current_dir(cwd).output().ok()?;
+async fn git_worktree_root(cwd: &Path) -> Option<PathBuf> {
+    let output = git_output(cwd.to_path_buf(), ["rev-parse", "--show-toplevel"]).await?;
     if !output.status.success() {
         return None;
     }
     let root = String::from_utf8(output.stdout).ok()?;
     Some(PathBuf::from(root.trim()))
+}
+
+async fn git_output<const N: usize>(cwd: PathBuf, args: [&'static str; N]) -> Option<Output> {
+    let task = task::spawn_blocking(move || {
+        let mut command = Command::new("git");
+        command.args(args).current_dir(cwd);
+        command_output_with_deadline(command, GIT_COMMAND_TIMEOUT)
+    });
+    time::timeout(GIT_COMMAND_TIMEOUT + GIT_POLL_INTERVAL, task).await.ok()?.ok()?
+}
+
+fn command_output_with_deadline(mut command: Command, timeout: Duration) -> Option<Output> {
+    let mut child = command.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().ok()?;
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        if child.try_wait().ok()?.is_some() {
+            return child.wait_with_output().ok();
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::sleep(GIT_POLL_INTERVAL);
+    }
 }
 
 fn normalize_remote(remote: &str) -> Result<String, RecallError> {
@@ -208,10 +239,25 @@ fn canonicalize_local_remote(path: &str) -> Result<String, RecallError> {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_remote_path;
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    use super::{command_output_with_deadline, normalize_remote_path};
 
     #[test]
     fn strips_single_git_suffix_after_trailing_slashes() {
         assert_eq!(normalize_remote_path("foo//bar.git/"), "foo/bar");
+    }
+
+    #[test]
+    fn blocking_command_deadline_returns_before_process_completes() {
+        let start = Instant::now();
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 1; echo should-not-print"]);
+
+        let output = command_output_with_deadline(command, Duration::from_millis(50));
+
+        assert!(output.is_none());
+        assert!(start.elapsed() < Duration::from_millis(500));
     }
 }
