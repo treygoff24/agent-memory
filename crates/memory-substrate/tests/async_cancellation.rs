@@ -28,7 +28,12 @@ async fn dropping_unpolled_write_future_has_no_repo_index_or_event_effects() {
 
     assert!(!path.exists());
     assert!(substrate
-        .query_memory(MemoryQuery { id: Some(memory.frontmatter.id), tag: None, include_metadata_only: false })
+        .query_memory(MemoryQuery {
+            id: Some(memory.frontmatter.id),
+            tag: None,
+            include_metadata_only: false,
+            ..MemoryQuery::default()
+        })
         .await
         .expect("query")
         .is_empty());

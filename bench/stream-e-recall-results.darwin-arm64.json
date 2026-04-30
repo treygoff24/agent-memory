@@ -1,0 +1,29 @@
+{
+  "mode": "release",
+  "hardware_profile": "darwin-arm64",
+  "budget_tokens": 3600,
+  "results": [
+    {
+      "memory_count": 200,
+      "encrypted_metadata_only_count": 12,
+      "candidate_quarantine_count": 20,
+      "selected_memory_count": 107,
+      "omitted_memory_count": 7,
+      "cold_start_p95_ms": 13.433916,
+      "startup_warm_p95_ms": 12.054916,
+      "delta_no_match_p95_ms": 9.912083,
+      "delta_five_entity_match_p95_ms": 9.091083
+    },
+    {
+      "memory_count": 1000,
+      "encrypted_metadata_only_count": 59,
+      "candidate_quarantine_count": 100,
+      "selected_memory_count": 347,
+      "omitted_memory_count": 64,
+      "cold_start_p95_ms": 15.747916,
+      "startup_warm_p95_ms": 15.302707999999999,
+      "delta_no_match_p95_ms": 8.503708,
+      "delta_five_entity_match_p95_ms": 8.349334
+    }
+  ]
+}

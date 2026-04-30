@@ -206,7 +206,7 @@ impl Substrate {
     fn resolve_memory_id_to_path(&self, id: &MemoryId) -> Result<RepoPath, ReadError> {
         // Prefer index lookup; fall back to disk walk if the index is empty
         // (e.g. fresh open before any read paths through it).
-        let query = MemoryQuery { id: Some(id.clone()), tag: None, include_metadata_only: true };
+        let query = MemoryQuery { id: Some(id.clone()), include_metadata_only: true, ..MemoryQuery::default() };
         let from_index = self.index.lock().ok().and_then(|guard| guard.query_memory(&query).ok());
         if let Some(rows) = from_index {
             if let Some(hit) = rows.into_iter().next() {
@@ -839,7 +839,12 @@ impl Substrate {
 
     /// Query memories.
     pub async fn query_memory(&self, query: MemoryQuery) -> SubstrateResult<Vec<QueryResult>> {
-        Ok(self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.query_memory(&query)?)
+        self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.query_memory(&query)
+    }
+
+    /// Query recall-index rows without hydrating memory envelopes.
+    pub async fn query_recall_index(&self, query: RecallIndexQuery) -> SubstrateResult<Vec<RecallIndexRow>> {
+        self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.query_recall_index(&query)
     }
 
     /// Query chunks.

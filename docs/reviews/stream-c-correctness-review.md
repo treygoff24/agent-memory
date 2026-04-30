@@ -11,6 +11,7 @@ Stream C appears intended to insert deterministic governance between Stream B's 
 The implementation has the right high-level shape (separate `memory-governance` crate, typed decisions, deterministic provider traits, Stream A as mutation authority), but several lifecycle invariants are not actually enforced at the daemon boundary. The biggest risks are that invalid policy files silently fall back to built-ins, tombstone rules are never loaded into the live daemon engine, unrelated active memories can force quarantines because similarity is effectively hardcoded to 1.0, explicit supersede requests execute for non-supersession decisions, and partial supersession failures can leave a replacement committed without durable repair state. Tests cover happy-path and crate-local contracts, but do not prove the end-to-end invariants that would catch these failures.
 
 #
+
 ## Remediation status (2026-04-29)
 
 This report is historical. Local code changes after the review have resolved or partially resolved multiple findings:

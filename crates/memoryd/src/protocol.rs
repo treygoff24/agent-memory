@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::recall::{DeltaRequest, DeltaResponse, RecallCounters, StartupRequest, StartupResponse};
+
 pub use memory_governance::GovernanceRefusalReason;
 
 /// Maximum byte length of a single newline-delimited request or response frame.
@@ -42,6 +44,8 @@ pub enum RequestPayload {
     ReviewQueue { limit: Option<usize> },
     ReviewApprove { id: String },
     ReviewReject { id: String, reason: String },
+    Startup(StartupRequest),
+    Delta(DeltaRequest),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -93,12 +97,16 @@ pub enum ResponsePayload {
     ReviewQueue(ReviewQueueResponse),
     ReviewApprove(ReviewDecisionResponse),
     ReviewReject(ReviewDecisionResponse),
+    Startup(Box<StartupResponse>),
+    Delta(DeltaResponse),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatusResponse {
     pub state: String,
     pub guidance: String,
+    #[serde(default)]
+    pub recall: RecallCounters,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

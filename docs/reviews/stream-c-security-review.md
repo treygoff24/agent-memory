@@ -14,7 +14,6 @@ Stream C has the right architectural intention: typed governance decisions befor
 - P1: 5 — invalid policy files fail open; live daemon never enforces tombstone rules; grounding is caller-self-attested/file-existence-only; Stream D privacy gaps are marked `Trusted`; admin review protocol is exposed on the same unauthenticated daemon socket despite not appearing in the MCP manifest.
 - P2: 1 — malformed governance metadata is accepted/defaulted instead of rejected, amplifying privacy/grounding bypasses.
 
-
 ## Remediation status (2026-04-29)
 
 This report is historical. Local code changes after the review have addressed several original blockers:

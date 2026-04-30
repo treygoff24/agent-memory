@@ -15,8 +15,8 @@ pub mod regex;
 pub use classifier::{DeterministicPrivacyClassifier, PrivacyClassifier};
 pub use crypto::{EncryptedPayload, PrivacyEncryptor};
 pub use decision::{
-    PrivacyDecision, PrivacyLabel, PrivacyNamespace, PrivacyScanMetadata, PrivacySpan, PrivacyStorageAction,
-    PrivacyTier,
+    safe_plaintext_fragment, PrivacyDecision, PrivacyLabel, PrivacyNamespace, PrivacyScanMetadata, PrivacySpan,
+    PrivacyStorageAction, PrivacyTier, SafeFragmentDecision,
 };
 pub use error::{PrivacyError, PrivacyResult};
 pub use keys::{FileKeyProvider, KeyMaterial, KeyProvider};

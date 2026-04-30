@@ -930,6 +930,14 @@ pub struct MemoryQuery {
     pub tag: Option<String>,
     /// Include metadata-only encrypted records.
     pub include_metadata_only: bool,
+    /// Optional lifecycle status filter.
+    pub status: Option<MemoryStatus>,
+    /// Optional synthetic namespace filter (`me`, `agent`, `project:<id>`, `org:<id>`).
+    pub namespace_prefix: Option<String>,
+    /// Return only rows whose retrieval policy permits passive recall.
+    pub passive_recall_only: bool,
+    /// Optional inclusive updated-at lower bound.
+    pub updated_since: Option<DateTime<Utc>>,
 }
 
 /// Query result.
@@ -941,6 +949,64 @@ pub struct QueryResult {
     pub path: RepoPath,
     /// Summary.
     pub summary: String,
+}
+
+/// Read-only query over Stream A's derived recall index.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RecallIndexQuery {
+    /// Optional synthetic namespace filter (`me`, `agent`, `project:<id>`, `org:<id>`).
+    pub namespace_prefix: Option<String>,
+    /// Optional lifecycle status allow-list. Empty means no status predicate.
+    pub statuses: Vec<MemoryStatus>,
+    /// Return only rows whose retrieval policy permits passive recall.
+    pub passive_recall_only: bool,
+    /// Optional inclusive updated-at lower bound.
+    pub updated_since: Option<DateTime<Utc>>,
+    /// Optional exact/case-insensitive terms matched against tags, aliases, entities, and entity aliases.
+    pub match_terms: Vec<String>,
+}
+
+/// Stream E recall-index row projected from SQLite index and auxiliary tables.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RecallIndexRow {
+    /// Memory id.
+    pub id: MemoryId,
+    /// Repository path.
+    pub path: RepoPath,
+    /// Frontmatter summary.
+    pub summary: String,
+    /// Lifecycle status.
+    pub status: MemoryStatus,
+    /// Namespace scope.
+    pub scope: Scope,
+    /// Canonical namespace id when scope is project/org.
+    pub canonical_namespace_id: Option<String>,
+    /// Updated-at timestamp.
+    pub updated_at: DateTime<Utc>,
+    /// Confidence score.
+    pub confidence: f64,
+    /// Source kind.
+    pub source_kind: SourceKind,
+    /// Sensitivity classification.
+    pub sensitivity: Sensitivity,
+    /// Indexed retrieval_policy.passive_recall value.
+    pub passive_recall: bool,
+    /// Indexed retrieval_policy.index_body value.
+    pub index_body: bool,
+    /// Indexed frontmatter.requires_user_confirmation value.
+    pub requires_user_confirmation: bool,
+    /// Indexed frontmatter.review_state value.
+    pub review_state: Option<String>,
+    /// Indexed write_policy.human_review_required value.
+    pub human_review_required: bool,
+    /// Indexed retrieval_policy.max_scope value.
+    pub max_scope: Scope,
+    /// Tags from `memory_tags`, sorted deterministically.
+    pub tags: Vec<String>,
+    /// Memory aliases from `memory_aliases`, sorted deterministically.
+    pub aliases: Vec<String>,
+    /// Entities with aliases from `memory_entities` / `memory_entity_aliases`, sorted deterministically by id.
+    pub entities: Vec<Entity>,
 }
 
 /// Chunk query.

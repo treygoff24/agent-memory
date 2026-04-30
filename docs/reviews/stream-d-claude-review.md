@@ -41,7 +41,7 @@ write goes through `write_encrypted` — body becomes ciphertext-only,
 metadata-only in FTS, search returns 0 hits for any term in the body, and
 `memory_get` returns `"[encrypted content omitted]"`.
 
-**Why it's wrong:** URLs are *everywhere* in engineering memories. Doc links,
+**Why it's wrong:** URLs are _everywhere_ in engineering memories. Doc links,
 issue trackers, design docs, runbook references, package URLs, stack traces.
 A note that says "see https://docs.example.com/foo for the rate-limit
 contract" gets pushed to the encrypted tier — agents lose the body, search
@@ -51,13 +51,15 @@ is a default that breaks the product.
 **Why I think Codex shipped it this way:** the spec (§2) lists URL as a
 Layer 1 detection category. Codex correctly detects URLs as spans (good — that
 data is useful for masking pipelines and for confidential-tier records that
-already require encryption). But Codex then conflated *detection* with
-*tier elevation* via `implied_tier()`. Detect ≠ elevate.
+already require encryption). But Codex then conflated _detection_ with
+_tier elevation_ via `implied_tier()`. Detect ≠ elevate.
 
 **Fix (one line):**
+
 ```rust
 Self::PrivateUrl => PrivacyTier::Internal,
 ```
+
 URL spans are still recorded (still useful for masking, audit, and elevation
 when caller marks `Sensitivity::Personal` explicitly). They no longer force
 encryption.
@@ -78,13 +80,15 @@ auto-encrypted.
 
 **Why it's wrong:** dates are dense in engineering memories. Commit dates,
 release dates, captured-at timestamps, retro dates, milestone dates. The
-spec doesn't mandate that *every* date is sensitive — birthdates and medical
+spec doesn't mandate that _every_ date is sensitive — birthdates and medical
 dates are, but the regex can't tell those apart from build dates.
 
 **Fix (one line):**
+
 ```rust
 Self::PrivateDate => PrivacyTier::Internal,
 ```
+
 Same reasoning as B1. Date spans still recorded, no forced encryption.
 
 **Test:** parallel to B1 — write a project memory with an ISO date in the
@@ -107,6 +111,7 @@ elevated by caller-supplied `Sensitivity::Personal` when an operator or
 classifier knows the field is actually a phone number.
 
 **Fix (one line):**
+
 ```rust
 Self::PrivatePhone => PrivacyTier::Internal,
 ```
@@ -344,7 +349,7 @@ and zero international coverage. Fine for v0.1.
 
 **Where:** `crates/memory-privacy/src/policy.rs:18-22, 30`.
 
-Maps to `Confidential`. Worth a comment explaining what it's compatible *with*
+Maps to `Confidential`. Worth a comment explaining what it's compatible _with_
 — I assume Stream A's `Sensitivity::Sensitive`, but nothing in Stream D's code
 or spec connects those dots.
 
@@ -352,17 +357,18 @@ or spec connects those dots.
 
 ## Verification ledger (CLAUDE.md critical invariants)
 
-| # | Invariant | Status | Where |
-|---|-----------|--------|-------|
-| 1 | `secret` never persisted to disk | ✓ | `handlers.rs:498` early-return; `api.rs:467-469` `SecretRefused`; `privacy_e2e_secret_governed_write_is_refused_before_disk_effects` |
-| 2 | Every write carries `ClassificationOutcome` | ✓ | `write_privacy_memory` sets `RequiresEncryption` for encrypted, `tier.classification()` for plaintext, `Trusted` for review decisions |
-| 3 | Embedding triple is identity | n/a | Stream D doesn't touch embedding triples |
-| 4 | Device IDs in runtime only | ✓ | Unchanged |
-| 5 | `MERGE_DRIVER_SUPPORTED_SCHEMA_VERSION` | ✓ | Unchanged |
-| 6 | Two-clone convergence | n/a | Stream D doesn't change merge |
-| 7 | Bench baselines human-only | ✓ | Unchanged |
+| #   | Invariant                                   | Status | Where                                                                                                                                 |
+| --- | ------------------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `secret` never persisted to disk            | ✓      | `handlers.rs:498` early-return; `api.rs:467-469` `SecretRefused`; `privacy_e2e_secret_governed_write_is_refused_before_disk_effects`  |
+| 2   | Every write carries `ClassificationOutcome` | ✓      | `write_privacy_memory` sets `RequiresEncryption` for encrypted, `tier.classification()` for plaintext, `Trusted` for review decisions |
+| 3   | Embedding triple is identity                | n/a    | Stream D doesn't touch embedding triples                                                                                              |
+| 4   | Device IDs in runtime only                  | ✓      | Unchanged                                                                                                                             |
+| 5   | `MERGE_DRIVER_SUPPORTED_SCHEMA_VERSION`     | ✓      | Unchanged                                                                                                                             |
+| 6   | Two-clone convergence                       | n/a    | Stream D doesn't change merge                                                                                                         |
+| 7   | Bench baselines human-only                  | ✓      | Unchanged                                                                                                                             |
 
 Spec-mandated boundaries:
+
 - ✓ Encrypted records land at `encrypted/<original-path>` (`api.rs:1182`).
 - ✓ Body overwritten with base64 ciphertext before serialization (`api.rs:511`).
 - ✓ `indexed_memory.body.clear()` before FTS upsert when no safe projection

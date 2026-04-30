@@ -41,7 +41,11 @@ CREATE TABLE IF NOT EXISTS memories(
   file_hash                   TEXT NOT NULL,
   file_mtime_ns               INTEGER NOT NULL,
   indexed_at                  TEXT NOT NULL,
-  metadata_only               INTEGER NOT NULL DEFAULT 0
+  metadata_only               INTEGER NOT NULL DEFAULT 0,
+  passive_recall              INTEGER NOT NULL DEFAULT 1,
+  index_body                  INTEGER NOT NULL DEFAULT 1,
+  human_review_required       INTEGER NOT NULL DEFAULT 0,
+  max_scope                   TEXT NOT NULL DEFAULT 'agent'
 );
 
 CREATE INDEX IF NOT EXISTS idx_memories_scope_canon_status_sens_updated

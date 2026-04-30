@@ -138,6 +138,7 @@ async fn run_iterations(fixture: &Fixture, runs: usize, seed: u64) -> Result<Met
                         ))),
                         tag: None,
                         include_metadata_only: false,
+                        ..MemoryQuery::default()
                     })
                     .await
                     .map(|_| ())
@@ -152,6 +153,7 @@ async fn run_iterations(fixture: &Fixture, runs: usize, seed: u64) -> Result<Met
                         id: None,
                         tag: Some("bucket-7".to_string()),
                         include_metadata_only: true,
+                        ..MemoryQuery::default()
                     })
                     .await
                     .map(|_| ())

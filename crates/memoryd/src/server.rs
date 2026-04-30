@@ -8,7 +8,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::watch;
 
-use crate::handlers;
+use crate::handlers::{self, HandlerState};
 use crate::protocol::{RequestEnvelope, RequestPayload, ResponseEnvelope, ResponsePayload, StatusResponse};
 
 pub use crate::protocol::MAX_FRAME_BYTES;
@@ -50,7 +50,7 @@ pub async fn serve_substrate(socket_path: impl AsRef<Path>, substrate: Substrate
     let (_shutdown_tx, shutdown_rx) = watch::channel(false);
     serve_with_dispatcher(
         socket_path.as_ref(),
-        Dispatch::Substrate(Arc::new(substrate)),
+        Dispatch::Substrate { substrate: Arc::new(substrate), state: Arc::new(HandlerState::new()) },
         ServerOptions::default(),
         shutdown_rx,
     )
@@ -71,7 +71,13 @@ pub async fn serve_substrate_with(
     options: ServerOptions,
     shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
-    serve_with_dispatcher(socket_path.as_ref(), Dispatch::Substrate(Arc::new(substrate)), options, shutdown).await
+    serve_with_dispatcher(
+        socket_path.as_ref(),
+        Dispatch::Substrate { substrate: Arc::new(substrate), state: Arc::new(HandlerState::new()) },
+        options,
+        shutdown,
+    )
+    .await
 }
 
 async fn serve_with_dispatcher(
@@ -118,7 +124,7 @@ fn harden_socket_permissions(_socket_path: &Path) -> Result<()> {
 #[derive(Clone)]
 enum Dispatch {
     Standalone,
-    Substrate(Arc<Substrate>),
+    Substrate { substrate: Arc<Substrate>, state: Arc<HandlerState> },
 }
 
 /// Outcome of reading one newline-delimited frame from the socket.
@@ -245,7 +251,9 @@ fn extract_id_best_effort(bytes: &[u8]) -> String {
 
 async fn handle_request(dispatch: &Dispatch, request: RequestEnvelope) -> ResponseEnvelope {
     match dispatch {
-        Dispatch::Substrate(substrate) => handlers::handle_request(substrate, request).await,
+        Dispatch::Substrate { substrate, state } => {
+            handlers::handle_request_with_state(substrate, state, request).await
+        }
         Dispatch::Standalone => match request.request {
             RequestPayload::Status => ResponseEnvelope::success(request.id, ResponsePayload::Status(healthy_status())),
             _ => ResponseEnvelope::error(
@@ -262,6 +270,7 @@ fn healthy_status() -> StatusResponse {
     StatusResponse {
         state: "healthy".to_owned(),
         guidance: "memoryd local daemon is accepting requests; substrate is not attached yet".to_owned(),
+        recall: Default::default(),
     }
 }
 

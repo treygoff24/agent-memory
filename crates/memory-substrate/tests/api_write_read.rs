@@ -26,7 +26,12 @@ async fn write_read_query_and_event_round_trip_through_public_api() {
     let read = substrate.read_memory(&memory.frontmatter.id).await.expect("read");
     assert_eq!(read.body, memory.body);
     let hits = substrate
-        .query_memory(MemoryQuery { id: Some(memory.frontmatter.id.clone()), tag: None, include_metadata_only: false })
+        .query_memory(MemoryQuery {
+            id: Some(memory.frontmatter.id.clone()),
+            tag: None,
+            include_metadata_only: false,
+            ..MemoryQuery::default()
+        })
         .await
         .expect("query");
     assert_eq!(hits.len(), 1);
@@ -81,14 +86,24 @@ async fn query_memory_filters_by_tag_and_metadata_only() {
         .expect("write hidden");
 
     let visible_hits = substrate
-        .query_memory(MemoryQuery { id: None, tag: Some("shared".to_string()), include_metadata_only: false })
+        .query_memory(MemoryQuery {
+            id: None,
+            tag: Some("shared".to_string()),
+            include_metadata_only: false,
+            ..MemoryQuery::default()
+        })
         .await
         .expect("query visible");
     assert_eq!(visible_hits.len(), 1);
     assert_eq!(visible_hits[0].id, visible.frontmatter.id);
 
     let all_hits = substrate
-        .query_memory(MemoryQuery { id: None, tag: Some("shared".to_string()), include_metadata_only: true })
+        .query_memory(MemoryQuery {
+            id: None,
+            tag: Some("shared".to_string()),
+            include_metadata_only: true,
+            ..MemoryQuery::default()
+        })
         .await
         .expect("query all");
     assert_eq!(all_hits.len(), 2);
@@ -96,7 +111,12 @@ async fn query_memory_filters_by_tag_and_metadata_only() {
     assert!(all_hits.iter().any(|hit| hit.id == hidden.frontmatter.id));
 
     let alpha_hits = substrate
-        .query_memory(MemoryQuery { id: None, tag: Some("alpha".to_string()), include_metadata_only: false })
+        .query_memory(MemoryQuery {
+            id: None,
+            tag: Some("alpha".to_string()),
+            include_metadata_only: false,
+            ..MemoryQuery::default()
+        })
         .await
         .expect("query alpha");
     assert_eq!(alpha_hits.len(), 1);
@@ -196,7 +216,8 @@ async fn plaintext_write_refuses_encrypted_namespace_before_disk_index_or_event_
         .query_memory(MemoryQuery {
             id: Some(MemoryId::new("mem_20260424_a1b2c3d4e5f60718_000040")),
             tag: None,
-            include_metadata_only: true
+            include_metadata_only: true,
+            ..MemoryQuery::default()
         })
         .await
         .expect("query")
@@ -326,7 +347,12 @@ async fn privacy_scan_private_credential_refuses_plaintext_before_disk_effect() 
     );
     assert!(!roots.repo.join(path.as_path()).exists());
     let hits = substrate
-        .query_memory(MemoryQuery { id: Some(memory.frontmatter.id), tag: None, include_metadata_only: true })
+        .query_memory(MemoryQuery {
+            id: Some(memory.frontmatter.id),
+            tag: None,
+            include_metadata_only: true,
+            ..MemoryQuery::default()
+        })
         .await
         .expect("query");
     assert!(hits.is_empty());
@@ -697,7 +723,8 @@ async fn event_after_commit_failure_returns_committed_indexed_repair_outcome() {
             .query_memory(MemoryQuery {
                 id: Some(MemoryId::new("mem_20260424_a1b2c3d4e5f60718_000022")),
                 tag: None,
-                include_metadata_only: false
+                include_metadata_only: false,
+                ..MemoryQuery::default()
             })
             .await
             .expect("indexed query")
@@ -819,7 +846,12 @@ async fn encrypted_write_uses_encrypted_path_and_metadata_only_index() {
         .expect("encrypted tree validates");
     assert!(!roots.repo.join(format!("agent/patterns/{}.md", memory.frontmatter.id.as_str())).exists());
     let hits = substrate
-        .query_memory(MemoryQuery { id: Some(memory.frontmatter.id.clone()), tag: None, include_metadata_only: true })
+        .query_memory(MemoryQuery {
+            id: Some(memory.frontmatter.id.clone()),
+            tag: None,
+            include_metadata_only: true,
+            ..MemoryQuery::default()
+        })
         .await
         .expect("query");
     assert_eq!(hits[0].path.as_str(), format!("encrypted/agent/patterns/{}.md", memory.frontmatter.id.as_str()));
@@ -837,7 +869,12 @@ async fn encrypted_write_uses_encrypted_path_and_metadata_only_index() {
     }
     let reopened = Substrate::open(roots.clone()).await.expect("reopen after index loss");
     let recovered = reopened
-        .query_memory(MemoryQuery { id: Some(memory.frontmatter.id.clone()), tag: None, include_metadata_only: true })
+        .query_memory(MemoryQuery {
+            id: Some(memory.frontmatter.id.clone()),
+            tag: None,
+            include_metadata_only: true,
+            ..MemoryQuery::default()
+        })
         .await
         .expect("recovered encrypted metadata");
     assert_eq!(recovered.len(), 1);
@@ -1166,7 +1203,12 @@ async fn encrypted_event_after_ciphertext_commit_queue_failure_returns_repair_qu
     assert!(roots.repo.join(format!("encrypted/agent/patterns/{}.md", memory.frontmatter.id.as_str())).exists());
     assert_eq!(
         substrate
-            .query_memory(MemoryQuery { id: Some(memory.frontmatter.id), tag: None, include_metadata_only: true })
+            .query_memory(MemoryQuery {
+                id: Some(memory.frontmatter.id),
+                tag: None,
+                include_metadata_only: true,
+                ..MemoryQuery::default()
+            })
             .await
             .expect("indexed metadata")
             .len(),

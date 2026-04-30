@@ -61,6 +61,16 @@ pub enum SubstrateError {
     /// SQLite failed.
     #[error("sqlite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
+    /// Caller supplied an invalid query filter.
+    #[error("invalid_query: {field}={value}: {message}")]
+    InvalidQuery {
+        /// Query field name.
+        field: String,
+        /// Rejected value.
+        value: String,
+        /// Stable diagnostic message. Contains `invalid_query` for daemon mapping.
+        message: String,
+    },
 }
 
 /// Open errors.

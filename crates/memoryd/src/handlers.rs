@@ -10,8 +10,8 @@ use memory_governance::{
     SourceKind as GovernanceSourceKind, TiebreakOutcome, TombstoneIndex, TombstoneKind, TombstoneRule,
 };
 use memory_privacy::{
-    CallerSensitivity, DeterministicPrivacyClassifier, EncryptedPayload, FileKeyProvider, PrivacyClassifier,
-    PrivacyDecision, PrivacyEncryptor, PrivacyNamespace, PrivacyStorageAction,
+    safe_plaintext_fragment, CallerSensitivity, DeterministicPrivacyClassifier, EncryptedPayload, FileKeyProvider,
+    PrivacyClassifier, PrivacyDecision, PrivacyEncryptor, PrivacyNamespace, PrivacyStorageAction, SafeFragmentDecision,
 };
 use memory_substrate::{
     Author, AuthorKind, ChunkQuery, ClassificationOutcome, EncryptedWriteRequest, EventContext, Frontmatter,
@@ -28,6 +28,7 @@ use crate::protocol::{
     ResponsePayload, RevealResponse, ReviewDecisionResponse, ReviewQueueItemResponse, ReviewQueueResponse, SearchHit,
     SearchResponse, StatusResponse, WriteNoteResponse, MAX_FRAME_BYTES,
 };
+use crate::recall::{build_delta_response, build_startup_response, RecallError, SharedRecallCounters};
 
 const SEARCH_LIMIT_DEFAULT: usize = 10;
 const SEARCH_LIMIT_MAX: usize = 20;
@@ -43,17 +44,40 @@ const REVIEW_DECISION_SUMMARY_MAX: usize = 512;
 const REVIEW_RESPONSE_FRAME_BUDGET: usize = MAX_FRAME_BYTES - 1024;
 const DEFAULT_PROJECT_NAMESPACE: &str = "agent-memory";
 
+#[derive(Debug, Clone, Default)]
+pub struct HandlerState {
+    recall: SharedRecallCounters,
+}
+
+impl HandlerState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
 pub async fn handle_request(substrate: &Substrate, envelope: RequestEnvelope) -> ResponseEnvelope {
+    handle_request_with_state(substrate, &HandlerState::new(), envelope).await
+}
+
+pub async fn handle_request_with_state(
+    substrate: &Substrate,
+    state: &HandlerState,
+    envelope: RequestEnvelope,
+) -> ResponseEnvelope {
     let id = envelope.id;
-    match dispatch(substrate, envelope.request).await {
+    match dispatch(substrate, state, envelope.request).await {
         Ok(payload) => ResponseEnvelope::success(id, payload),
         Err(error) => ResponseEnvelope::error(id, error.code, error.message, error.retryable),
     }
 }
 
-async fn dispatch(substrate: &Substrate, request: RequestPayload) -> Result<ResponsePayload, HandlerError> {
+async fn dispatch(
+    substrate: &Substrate,
+    state: &HandlerState,
+    request: RequestPayload,
+) -> Result<ResponsePayload, HandlerError> {
     match request {
-        RequestPayload::Status => Ok(ResponsePayload::Status(status_response())),
+        RequestPayload::Status => Ok(ResponsePayload::Status(status_response(state))),
         RequestPayload::Doctor => Ok(ResponsePayload::Doctor(doctor_response(substrate).await)),
         RequestPayload::Search { query, limit, include_body } => {
             search_response(substrate, &query, limit, include_body).await
@@ -73,13 +97,50 @@ async fn dispatch(substrate: &Substrate, request: RequestPayload) -> Result<Resp
         RequestPayload::ReviewReject { id, reason } => {
             review_decision_response(substrate, &id, ReviewDecision::Reject { reason }).await
         }
+        RequestPayload::Startup(request) => startup_response(substrate, state, request).await,
+        RequestPayload::Delta(request) => delta_response(substrate, state, request).await,
     }
 }
 
-fn status_response() -> StatusResponse {
+fn status_response(state: &HandlerState) -> StatusResponse {
     StatusResponse {
         state: "ready".to_string(),
         guidance: "memoryd handlers are backed by the Stream A substrate.".to_string(),
+        recall: state.recall.snapshot(),
+    }
+}
+
+async fn delta_response(
+    substrate: &Substrate,
+    state: &HandlerState,
+    request: crate::recall::DeltaRequest,
+) -> Result<ResponsePayload, HandlerError> {
+    match build_delta_response(substrate, request).await {
+        Ok(response) => {
+            state.recall.record_delta_success();
+            Ok(ResponsePayload::Delta(response))
+        }
+        Err(error) => {
+            state.recall.record_delta_failure(error.protocol_code());
+            Err(HandlerError::from_recall(error))
+        }
+    }
+}
+
+async fn startup_response(
+    substrate: &Substrate,
+    state: &HandlerState,
+    request: crate::recall::StartupRequest,
+) -> Result<ResponsePayload, HandlerError> {
+    match build_startup_response(substrate, request).await {
+        Ok(response) => {
+            state.recall.record_startup_success();
+            Ok(ResponsePayload::Startup(Box::new(response)))
+        }
+        Err(error) => {
+            state.recall.record_startup_failure(error.protocol_code());
+            Err(HandlerError::from_recall(error))
+        }
     }
 }
 
@@ -165,7 +226,7 @@ async fn reveal_response(substrate: &Substrate, id: &str, reason: &str) -> Resul
     if reason.is_empty() {
         return Err(HandlerError::invalid_request("reveal reason must not be empty"));
     }
-    if !safe_plaintext_fragment(reason) {
+    if !is_safe_plaintext_for_indexing(reason) {
         return Err(HandlerError::invalid_request("reveal reason must not contain sensitive material"));
     }
     let memory_id = MemoryId::try_new(id.to_string()).map_err(|err| HandlerError::invalid_request(err.to_string()))?;
@@ -1250,7 +1311,7 @@ impl GovernanceWriteInput {
         let candidate = self.meta.summary.clone().or_else(|| self.title.clone());
         if storage_action.requires_encryption() {
             return candidate
-                .filter(|value| safe_plaintext_fragment(value))
+                .filter(|value| is_safe_plaintext_for_indexing(value))
                 .unwrap_or_else(|| "encrypted memory".to_string());
         }
         candidate.unwrap_or_else(|| bounded(&self.body, 120))
@@ -1258,7 +1319,7 @@ impl GovernanceWriteInput {
 
     fn persisted_tags(&self, storage_action: PrivacyStorageAction) -> Vec<String> {
         if storage_action.requires_encryption() {
-            self.tags.iter().filter(|tag| safe_plaintext_fragment(tag)).cloned().collect()
+            self.tags.iter().filter(|tag| is_safe_plaintext_for_indexing(tag)).cloned().collect()
         } else {
             self.tags.clone()
         }
@@ -1335,7 +1396,7 @@ impl GovernanceWriteInput {
                 self.meta
                     .source_ref
                     .clone()
-                    .filter(|reference| safe_plaintext_fragment(reference))
+                    .filter(|reference| is_safe_plaintext_for_indexing(reference))
                     .or_else(|| Some("memoryd.governance".to_string()))
             } else {
                 self.meta.source_ref.clone().or_else(|| Some("memoryd.governance".to_string()))
@@ -1359,7 +1420,7 @@ impl GovernanceWriteInput {
         let hints = descriptors
             .lookup_hints
             .iter()
-            .filter(|hint| safe_plaintext_fragment(hint))
+            .filter(|hint| is_safe_plaintext_for_indexing(hint))
             .cloned()
             .map(Value::String)
             .collect::<Vec<_>>();
@@ -1545,16 +1606,13 @@ fn candidate_memory(id: MemoryId, text: &str, storage_action: PrivacyStorageActi
 }
 
 fn insert_safe_descriptor(object: &mut serde_json::Map<String, Value>, key: &str, value: Option<&str>) {
-    if let Some(value) = value.filter(|value| safe_plaintext_fragment(value)) {
+    if let Some(value) = value.filter(|value| is_safe_plaintext_for_indexing(value)) {
         object.insert(key.to_string(), Value::String(value.to_string()));
     }
 }
 
-fn safe_plaintext_fragment(text: &str) -> bool {
-    match classify_privacy(text, PrivacyNamespace::Project, None) {
-        Ok(decision) => decision.storage_action == PrivacyStorageAction::Plaintext,
-        Err(_) => false,
-    }
+fn is_safe_plaintext_for_indexing(text: &str) -> bool {
+    matches!(safe_plaintext_fragment(&DeterministicPrivacyClassifier::new(), text), SafeFragmentDecision::Allow)
 }
 
 fn safe_index_projection(memory: &Memory) -> Option<IndexProjection> {
@@ -1574,7 +1632,7 @@ fn safe_index_projection(memory: &Memory) -> Option<IndexProjection> {
     let safe_body = fragments
         .into_iter()
         .map(|fragment| fragment.trim().to_string())
-        .filter(|fragment| !fragment.is_empty() && safe_plaintext_fragment(fragment))
+        .filter(|fragment| !fragment.is_empty() && is_safe_plaintext_for_indexing(fragment))
         .collect::<Vec<_>>()
         .join("\n");
     (!safe_body.is_empty()).then_some(IndexProjection { safe_body: Some(safe_body) })
@@ -1618,5 +1676,13 @@ impl HandlerError {
 
     fn privacy(error: impl std::fmt::Display) -> Self {
         Self { code: "privacy_error".to_string(), message: bounded(&error.to_string(), 240), retryable: false }
+    }
+
+    fn from_recall(error: RecallError) -> Self {
+        Self {
+            code: error.protocol_code().to_owned(),
+            message: bounded(error.message(), 240),
+            retryable: error.retryable(),
+        }
     }
 }

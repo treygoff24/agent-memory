@@ -1,0 +1,150 @@
+use std::path::Path;
+use std::process::Command;
+use std::time::Duration;
+
+use memory_substrate::{InitOptions, Roots, Substrate};
+use memoryd::client;
+use memoryd::protocol::{RequestPayload, ResponsePayload, ResponseResult};
+use memoryd::server::{serve_substrate_with, ServerOptions};
+use tokio::net::UnixStream;
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
+use tokio::time::{sleep, timeout};
+
+#[tokio::test]
+async fn recall_cli_startup_and_delta_print_only_xml_and_update_daemon_counters() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let repo = temp.path().join("repo");
+    let runtime = temp.path().join("runtime");
+    let socket = runtime.join("memoryd.sock");
+    let substrate = Substrate::init(
+        Roots::new(&repo, &runtime),
+        InitOptions { force_unsafe_durability: true, device_id: Some("dev_recallcli".to_owned()) },
+    )
+    .await
+    .expect("substrate init");
+    let (shutdown_tx, server) = spawn_daemon(&socket, substrate);
+    wait_for_socket(&socket).await;
+
+    let startup = run_memoryd_async([
+        "recall",
+        "startup-block",
+        "--repo",
+        repo.to_string_lossy().as_ref(),
+        "--runtime",
+        runtime.to_string_lossy().as_ref(),
+        "--cwd",
+        repo.to_string_lossy().as_ref(),
+        "--session-id",
+        "sess_cli",
+        "--harness",
+        "codex",
+        "--budget-tokens",
+        "512",
+    ])
+    .await;
+    assert!(startup.status.success(), "startup stderr: {}", String::from_utf8_lossy(&startup.stderr));
+    let startup_stdout = String::from_utf8(startup.stdout).expect("startup stdout utf8");
+    assert!(startup_stdout.starts_with("<memory-recall version=\"stream-e-v0.5\""));
+    assert!(String::from_utf8_lossy(&startup.stderr).is_empty(), "success diagnostics stay off stderr");
+
+    let delta = run_memoryd_async([
+        "recall",
+        "delta-block",
+        "--repo",
+        repo.to_string_lossy().as_ref(),
+        "--runtime",
+        runtime.to_string_lossy().as_ref(),
+        "--cwd",
+        repo.to_string_lossy().as_ref(),
+        "--session-id",
+        "sess_cli",
+        "--harness",
+        "codex",
+        "--message",
+        "definitely-no-match",
+        "--budget-tokens",
+        "512",
+    ])
+    .await;
+    assert!(delta.status.success(), "delta stderr: {}", String::from_utf8_lossy(&delta.stderr));
+    assert_eq!(String::from_utf8(delta.stdout).expect("delta stdout utf8"), "<memory-delta empty=\"true\" />\n");
+    assert!(String::from_utf8_lossy(&delta.stderr).is_empty(), "success diagnostics stay off stderr");
+
+    let status = client::request(&socket, "status-after-cli", RequestPayload::Status).await.expect("status request");
+    match status.result {
+        ResponseResult::Success(ResponsePayload::Status(status)) => {
+            assert_eq!(status.recall.startup_invoked_total, 1);
+            assert_eq!(status.recall.delta_invoked_total, 1);
+        }
+        other => panic!("expected status success, got {other:?}"),
+    }
+
+    shutdown(shutdown_tx, server, &socket).await;
+}
+
+#[test]
+fn recall_cli_without_daemon_fails_fast_with_recall_unavailable_exit_2_and_no_stdout() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let output = run_memoryd([
+        "recall",
+        "delta-block",
+        "--repo",
+        temp.path().to_string_lossy().as_ref(),
+        "--runtime",
+        temp.path().join("runtime").to_string_lossy().as_ref(),
+        "--cwd",
+        temp.path().to_string_lossy().as_ref(),
+        "--session-id",
+        "sess_cli",
+        "--harness",
+        "codex",
+        "--message",
+        "definitely-no-match",
+    ]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty(), "failure stdout must be empty");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("recall_unavailable"));
+}
+
+fn run_memoryd<const N: usize>(args: [&str; N]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_memoryd")).args(args).output().expect("memoryd command runs")
+}
+
+async fn run_memoryd_async<const N: usize>(args: [&str; N]) -> std::process::Output {
+    let args = args.map(str::to_owned);
+    tokio::task::spawn_blocking(move || {
+        Command::new(env!("CARGO_BIN_EXE_memoryd")).args(args).output().expect("memoryd command runs")
+    })
+    .await
+    .expect("memoryd blocking task joins")
+}
+
+fn spawn_daemon(socket: &Path, substrate: Substrate) -> (watch::Sender<bool>, JoinHandle<anyhow::Result<()>>) {
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let socket = socket.to_path_buf();
+    let options = ServerOptions { idle_frame_timeout: Duration::from_secs(5) };
+    let task = tokio::spawn(serve_substrate_with(socket, substrate, options, shutdown_rx));
+    (shutdown_tx, task)
+}
+
+async fn shutdown(shutdown_tx: watch::Sender<bool>, server: JoinHandle<anyhow::Result<()>>, socket: &Path) {
+    shutdown_tx.send(true).expect("shutdown signal lands");
+    timeout(Duration::from_secs(2), server)
+        .await
+        .expect("server stops before timeout")
+        .expect("server task joins")
+        .expect("server returns Ok");
+    let _ = std::fs::remove_file(socket);
+}
+
+async fn wait_for_socket(socket: &Path) {
+    for _ in 0..200 {
+        if UnixStream::connect(socket).await.is_ok() {
+            return;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    panic!("daemon did not bind socket at {}", socket.display());
+}

@@ -4,14 +4,15 @@
 //! below.  Column lists, value bindings, and index names are kept in the same
 //! vertical region as the statement that uses them so readers don't scroll.
 
-use rusqlite::{named_params, params, Connection, Transaction};
+use chrono::{DateTime, Utc};
+use rusqlite::{named_params, params, params_from_iter, Connection, Transaction};
 
-use crate::error::VectorError;
+use crate::error::{SubstrateError, SubstrateResult, VectorError};
 use crate::index::chunking::chunk_memory;
 use crate::markdown::hash_bytes;
 use crate::model::{
-    ChunkResult, EmbeddingTriple, EmbeddingUpdate, Memory, MemoryId, MemoryQuery, QueryResult, RepoPath, Sensitivity,
-    SourceKind,
+    ChunkResult, EmbeddingTriple, EmbeddingUpdate, Entity, Memory, MemoryId, MemoryQuery, MemoryStatus, QueryResult,
+    RecallIndexQuery, RecallIndexRow, RepoPath, Scope, Sensitivity, SourceKind,
 };
 
 /// Index handle.  Owns a single SQLite connection; all mutating methods take
@@ -260,76 +261,72 @@ impl Index {
     /// scan even when a selective filter (e.g. PK lookup by `id`) is bound.
     /// Each filter combination yields a distinct prepared statement; `prepare_cached`
     /// keeps the small set of variants warm.
-    pub fn query_memory(&self, query: &MemoryQuery) -> rusqlite::Result<Vec<QueryResult>> {
-        match (query.id.as_ref(), query.tag.as_deref(), query.include_metadata_only) {
-            (Some(id), None, true) => collect_query_results(
-                &self.connection,
-                "SELECT id,path,summary
-                 FROM memories
-                 WHERE id = ?1
-                 ORDER BY id",
-                [id.as_str()],
-            ),
-            (Some(id), None, false) => collect_query_results(
-                &self.connection,
-                "SELECT id,path,summary
-                 FROM memories
-                 WHERE id = ?1 AND metadata_only = 0
-                 ORDER BY id",
-                [id.as_str()],
-            ),
-            (None, None, true) => collect_query_results(
-                &self.connection,
-                "SELECT id,path,summary
-                 FROM memories
-                 ORDER BY id",
-                [],
-            ),
-            (None, None, false) => collect_query_results(
-                &self.connection,
-                "SELECT id,path,summary
-                 FROM memories
-                 WHERE metadata_only = 0
-                 ORDER BY id",
-                [],
-            ),
-            (Some(id), Some(tag), true) => collect_query_results(
-                &self.connection,
-                "SELECT memories.id,memories.path,memories.summary
-                 FROM memories
-                 JOIN memory_tags ON memory_tags.memory_id = memories.id
-                 WHERE memories.id = ?1 AND memory_tags.tag = ?2
-                 ORDER BY memories.id",
-                params![id.as_str(), tag],
-            ),
-            (Some(id), Some(tag), false) => collect_query_results(
-                &self.connection,
-                "SELECT memories.id,memories.path,memories.summary
-                 FROM memories
-                 JOIN memory_tags ON memory_tags.memory_id = memories.id
-                 WHERE memories.id = ?1 AND memory_tags.tag = ?2 AND memories.metadata_only = 0
-                 ORDER BY memories.id",
-                params![id.as_str(), tag],
-            ),
-            (None, Some(tag), true) => collect_query_results(
-                &self.connection,
-                "SELECT memories.id,memories.path,memories.summary
-                 FROM memory_tags
-                 JOIN memories ON memories.id = memory_tags.memory_id
-                 WHERE memory_tags.tag = ?1
-                 ORDER BY memories.id",
-                [tag],
-            ),
-            (None, Some(tag), false) => collect_query_results(
-                &self.connection,
-                "SELECT memories.id,memories.path,memories.summary
-                 FROM memory_tags
-                 JOIN memories ON memories.id = memory_tags.memory_id
-                 WHERE memory_tags.tag = ?1 AND memories.metadata_only = 0
-                 ORDER BY memories.id",
-                [tag],
-            ),
+    pub fn query_memory(&self, query: &MemoryQuery) -> SubstrateResult<Vec<QueryResult>> {
+        let mut sql = String::from("SELECT memories.id,memories.path,memories.summary FROM memories");
+        if query.tag.is_some() {
+            sql.push_str(" JOIN memory_tags ON memory_tags.memory_id = memories.id");
         }
+
+        let mut filters = Vec::new();
+        let mut bindings = Vec::new();
+        append_memory_query_filters(query, &mut filters, &mut bindings)?;
+        if let Some(tag) = query.tag.as_ref() {
+            filters.push("memory_tags.tag = ?".to_string());
+            bindings.push(rusqlite::types::Value::Text(tag.clone()));
+        }
+        append_filters_and_order(&mut sql, filters, "memories.id");
+        collect_query_results(&self.connection, &sql, bindings).map_err(Into::into)
+    }
+
+    /// Query recall-index rows without hydrating full memory envelopes.
+    pub fn query_recall_index(&self, query: &RecallIndexQuery) -> SubstrateResult<Vec<RecallIndexRow>> {
+        let mut sql = String::from(
+            "SELECT memories.id,memories.path,memories.summary,memories.status,memories.scope,
+                    memories.canonical_namespace_id,memories.updated_at,memories.confidence,
+                    memories.source_kind,memories.sensitivity,memories.passive_recall,memories.index_body,
+                    memories.requires_user_confirmation,memories.review_state,
+                    memories.human_review_required,memories.max_scope
+             FROM memories",
+        );
+        let mut filters = Vec::new();
+        let mut bindings = Vec::new();
+        append_recall_index_filters(query, &mut filters, &mut bindings)?;
+        append_match_term_filters(query, &mut filters, &mut bindings);
+        append_filters_and_order(&mut sql, filters, "memories.id");
+
+        let mut stmt = self.connection.prepare_cached(&sql)?;
+        let mut rows = stmt.query(params_from_iter(bindings.iter()))?;
+        let mut results = Vec::new();
+        while let Some(row) = rows.next()? {
+            results.push(self.row_to_recall_index_row(row)?);
+        }
+        Ok(results)
+    }
+
+    fn row_to_recall_index_row(&self, row: &rusqlite::Row<'_>) -> rusqlite::Result<RecallIndexRow> {
+        let id = MemoryId::new(row.get::<_, String>(0)?);
+        Ok(RecallIndexRow {
+            tags: read_tags(&self.connection, &id)?,
+            aliases: read_aliases(&self.connection, &id)?,
+            entities: read_entities(&self.connection, &id)?,
+            id,
+            // `from_unchecked`: path was validated at index-write time; hydrating from DB row.
+            path: RepoPath::from_unchecked(row.get::<_, String>(1)?),
+            summary: row.get(2)?,
+            status: memory_status_from_str(row.get::<_, String>(3)?.as_str())?,
+            scope: scope_from_str(row.get::<_, String>(4)?.as_str())?,
+            canonical_namespace_id: row.get(5)?,
+            updated_at: parse_index_time(row.get::<_, String>(6)?.as_str())?,
+            confidence: row.get(7)?,
+            source_kind: source_kind_from_str(row.get::<_, String>(8)?.as_str())?,
+            sensitivity: sensitivity_from_str(row.get::<_, String>(9)?.as_str())?,
+            passive_recall: row.get::<_, i64>(10)? != 0,
+            index_body: row.get::<_, i64>(11)? != 0,
+            requires_user_confirmation: row.get::<_, i64>(12)? != 0,
+            review_state: row.get(13)?,
+            human_review_required: row.get::<_, i64>(14)? != 0,
+            max_scope: scope_from_str(row.get::<_, String>(15)?.as_str())?,
+        })
     }
 }
 
@@ -459,6 +456,11 @@ fn upsert_memory_row_with_full_metadata(
     let created_at = memory.frontmatter.created_at.to_rfc3339();
     let updated_at = memory.frontmatter.updated_at.to_rfc3339();
 
+    let passive_recall = memory.frontmatter.retrieval_policy.passive_recall as i64;
+    let index_body = memory.frontmatter.retrieval_policy.index_body as i64;
+    let human_review_required = memory.frontmatter.write_policy.human_review_required as i64;
+    let max_scope = scope_str(memory.frontmatter.retrieval_policy.max_scope);
+
     txn.execute(
         "INSERT INTO memories(
              id, path, schema_version, type, scope, namespace, canonical_namespace_id,
@@ -466,14 +468,16 @@ fn upsert_memory_row_with_full_metadata(
              requires_user_confirmation, created_at, updated_at,
              observed_at, valid_from, valid_until, ttl,
              author, source_kind, source_harness, source_device,
-             body_hash, frontmatter_json, file_hash, file_mtime_ns, indexed_at, metadata_only
+             body_hash, frontmatter_json, file_hash, file_mtime_ns, indexed_at, metadata_only,
+             passive_recall, index_body, human_review_required, max_scope
          ) VALUES (
              :id, :path, :schema_version, :type, :scope, :namespace, :canonical_namespace_id,
              :summary, :confidence, :trust_level, :sensitivity, :status, :review_state,
              :requires_user_confirmation, :created_at, :updated_at,
              :observed_at, :valid_from, :valid_until, :ttl,
              :author, :source_kind, :source_harness, :source_device,
-             :body_hash, :frontmatter_json, :file_hash, :file_mtime_ns, :indexed_at, :metadata_only
+             :body_hash, :frontmatter_json, :file_hash, :file_mtime_ns, :indexed_at, :metadata_only,
+             :passive_recall, :index_body, :human_review_required, :max_scope
          )
          ON CONFLICT(id) DO UPDATE SET
              path=excluded.path, schema_version=excluded.schema_version,
@@ -490,7 +494,10 @@ fn upsert_memory_row_with_full_metadata(
              source_device=excluded.source_device, body_hash=excluded.body_hash,
              frontmatter_json=excluded.frontmatter_json,
              file_hash=excluded.file_hash, file_mtime_ns=excluded.file_mtime_ns,
-             indexed_at=excluded.indexed_at, metadata_only=excluded.metadata_only",
+             indexed_at=excluded.indexed_at, metadata_only=excluded.metadata_only,
+             passive_recall=excluded.passive_recall, index_body=excluded.index_body,
+             human_review_required=excluded.human_review_required,
+             max_scope=excluded.max_scope",
         named_params! {
             ":id":                        memory.frontmatter.id.as_str(),
             ":path":                      &path,
@@ -523,6 +530,10 @@ fn upsert_memory_row_with_full_metadata(
             ":file_mtime_ns":             file_mtime_ns,
             ":indexed_at":                &indexed_at,
             ":metadata_only":             metadata_only as i64,
+            ":passive_recall":            passive_recall,
+            ":index_body":                index_body,
+            ":human_review_required":     human_review_required,
+            ":max_scope":                 max_scope,
         },
     )?;
 
@@ -724,18 +735,193 @@ fn ensure_vector_table(conn: &Connection, triple: &EmbeddingTriple) -> Result<()
     .map_err(Into::into)
 }
 
-fn collect_query_results<P: rusqlite::Params>(
+fn append_memory_query_filters(
+    query: &MemoryQuery,
+    filters: &mut Vec<String>,
+    bindings: &mut Vec<rusqlite::types::Value>,
+) -> SubstrateResult<()> {
+    if let Some(id) = query.id.as_ref() {
+        filters.push("memories.id = ?".to_string());
+        bindings.push(rusqlite::types::Value::Text(id.as_str().to_string()));
+    }
+    if !query.include_metadata_only {
+        filters.push("memories.metadata_only = 0".to_string());
+    }
+    if let Some(status) = query.status {
+        filters.push("memories.status = ?".to_string());
+        bindings.push(rusqlite::types::Value::Text(status_str(status).to_string()));
+    }
+    append_namespace_filter(query.namespace_prefix.as_deref(), filters, bindings)?;
+    if query.passive_recall_only {
+        filters.push("memories.passive_recall = 1".to_string());
+    }
+    if let Some(updated_since) = query.updated_since.as_ref() {
+        filters.push("memories.updated_at >= ?".to_string());
+        bindings.push(rusqlite::types::Value::Text(updated_since.to_rfc3339()));
+    }
+    Ok(())
+}
+
+fn append_recall_index_filters(
+    query: &RecallIndexQuery,
+    filters: &mut Vec<String>,
+    bindings: &mut Vec<rusqlite::types::Value>,
+) -> SubstrateResult<()> {
+    append_namespace_filter(query.namespace_prefix.as_deref(), filters, bindings)?;
+    if !query.statuses.is_empty() {
+        let placeholders = vec!["?"; query.statuses.len()].join(",");
+        filters.push(format!("memories.status IN ({placeholders})"));
+        for status in &query.statuses {
+            bindings.push(rusqlite::types::Value::Text(status_str(*status).to_string()));
+        }
+    }
+    if query.passive_recall_only {
+        filters.push("memories.passive_recall = 1".to_string());
+    }
+    if let Some(updated_since) = query.updated_since.as_ref() {
+        filters.push("memories.updated_at >= ?".to_string());
+        bindings.push(rusqlite::types::Value::Text(updated_since.to_rfc3339()));
+    }
+    Ok(())
+}
+
+fn append_namespace_filter(
+    namespace_prefix: Option<&str>,
+    filters: &mut Vec<String>,
+    bindings: &mut Vec<rusqlite::types::Value>,
+) -> SubstrateResult<()> {
+    match namespace_prefix.map(parse_namespace_prefix).transpose()? {
+        Some(NamespaceFilter::Scope(scope)) => {
+            filters.push("memories.scope = ?".to_string());
+            bindings.push(rusqlite::types::Value::Text(scope.to_string()));
+        }
+        Some(NamespaceFilter::ScopeAndCanonicalId { scope, canonical_id }) => {
+            filters.push("memories.scope = ?".to_string());
+            bindings.push(rusqlite::types::Value::Text(scope.to_string()));
+            filters.push("memories.canonical_namespace_id = ?".to_string());
+            bindings.push(rusqlite::types::Value::Text(canonical_id));
+        }
+        None => {}
+    }
+    Ok(())
+}
+
+fn append_match_term_filters(
+    query: &RecallIndexQuery,
+    filters: &mut Vec<String>,
+    bindings: &mut Vec<rusqlite::types::Value>,
+) {
+    let terms = query.match_terms.iter().filter(|term| !term.trim().is_empty()).collect::<Vec<_>>();
+    if terms.is_empty() {
+        return;
+    }
+
+    let mut clauses = Vec::new();
+    for term in terms {
+        clauses.push(
+            "(EXISTS (SELECT 1 FROM memory_tags WHERE memory_tags.memory_id = memories.id AND memory_tags.tag = ? COLLATE NOCASE)
+              OR EXISTS (SELECT 1 FROM memory_aliases WHERE memory_aliases.memory_id = memories.id AND memory_aliases.alias = ? COLLATE NOCASE)
+              OR EXISTS (SELECT 1 FROM memory_entities WHERE memory_entities.memory_id = memories.id AND (memory_entities.entity_id = ? OR memory_entities.label = ? COLLATE NOCASE))
+              OR EXISTS (SELECT 1 FROM memory_entity_aliases WHERE memory_entity_aliases.memory_id = memories.id AND memory_entity_aliases.alias = ? COLLATE NOCASE))"
+                .to_string(),
+        );
+        for _ in 0..5 {
+            bindings.push(rusqlite::types::Value::Text(term.to_string()));
+        }
+    }
+    filters.push(format!("({})", clauses.join(" OR ")));
+}
+
+fn append_filters_and_order(sql: &mut String, filters: Vec<String>, order_by: &str) {
+    if !filters.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&filters.join(" AND "));
+    }
+    sql.push_str(" ORDER BY ");
+    sql.push_str(order_by);
+}
+
+enum NamespaceFilter {
+    Scope(&'static str),
+    ScopeAndCanonicalId { scope: &'static str, canonical_id: String },
+}
+
+fn parse_namespace_prefix(value: &str) -> SubstrateResult<NamespaceFilter> {
+    match value {
+        "me" => Ok(NamespaceFilter::Scope("user")),
+        "agent" => Ok(NamespaceFilter::Scope("agent")),
+        _ if value.starts_with("project:") => parse_scoped_namespace(value, "project:", "project"),
+        _ if value.starts_with("org:") => parse_scoped_namespace(value, "org:", "org"),
+        _ => Err(invalid_namespace_prefix(value)),
+    }
+}
+
+fn parse_scoped_namespace(value: &str, prefix: &str, scope: &'static str) -> SubstrateResult<NamespaceFilter> {
+    let canonical_id = value.strip_prefix(prefix).unwrap_or_default();
+    if canonical_id.is_empty() || canonical_id.contains(':') {
+        return Err(invalid_namespace_prefix(value));
+    }
+    Ok(NamespaceFilter::ScopeAndCanonicalId { scope, canonical_id: canonical_id.to_string() })
+}
+
+fn invalid_namespace_prefix(value: &str) -> SubstrateError {
+    SubstrateError::InvalidQuery {
+        field: "namespace_prefix".to_string(),
+        value: value.to_string(),
+        message: "invalid_query: expected one of me, agent, project:<canonical_id>, org:<canonical_id>".to_string(),
+    }
+}
+
+fn collect_query_results(
     conn: &Connection,
     sql: &str,
-    params: P,
+    bindings: Vec<rusqlite::types::Value>,
 ) -> rusqlite::Result<Vec<QueryResult>> {
     let mut stmt = conn.prepare_cached(sql)?;
-    let mut rows = stmt.query(params)?;
+    let mut rows = stmt.query(params_from_iter(bindings.iter()))?;
     let mut results = Vec::new();
     while let Some(row) = rows.next()? {
         results.push(row_to_result(row)?);
     }
     Ok(results)
+}
+
+fn read_tags(conn: &Connection, id: &MemoryId) -> rusqlite::Result<Vec<String>> {
+    read_strings(conn, "SELECT tag FROM memory_tags WHERE memory_id = ?1 ORDER BY tag COLLATE NOCASE, tag", id)
+}
+
+fn read_aliases(conn: &Connection, id: &MemoryId) -> rusqlite::Result<Vec<String>> {
+    read_strings(conn, "SELECT alias FROM memory_aliases WHERE memory_id = ?1 ORDER BY alias COLLATE NOCASE, alias", id)
+}
+
+fn read_strings(conn: &Connection, sql: &str, id: &MemoryId) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = conn.prepare_cached(sql)?;
+    let rows = stmt.query_map([id.as_str()], |row| row.get::<_, String>(0))?.collect();
+    rows
+}
+
+fn read_entities(conn: &Connection, id: &MemoryId) -> rusqlite::Result<Vec<Entity>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT entity_id,label FROM memory_entities WHERE memory_id = ?1 ORDER BY entity_id COLLATE NOCASE, entity_id",
+    )?;
+    let rows = stmt
+        .query_map([id.as_str()], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    rows.into_iter()
+        .map(|(entity_id, label)| {
+            Ok(Entity { aliases: read_entity_aliases(conn, id, &entity_id)?, id: entity_id, label })
+        })
+        .collect()
+}
+
+fn read_entity_aliases(conn: &Connection, memory_id: &MemoryId, entity_id: &str) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT alias FROM memory_entity_aliases
+         WHERE memory_id = ?1 AND entity_id = ?2
+         ORDER BY alias COLLATE NOCASE, alias",
+    )?;
+    let rows = stmt.query_map(params![memory_id.as_str(), entity_id], |row| row.get::<_, String>(0))?.collect();
+    rows
 }
 
 fn row_to_result(row: &rusqlite::Row<'_>) -> rusqlite::Result<QueryResult> {
@@ -760,6 +946,16 @@ fn sensitivity_str(s: Sensitivity) -> &'static str {
         Sensitivity::Internal => "internal",
         Sensitivity::Confidential => "confidential",
         Sensitivity::Personal => "personal",
+    }
+}
+
+fn sensitivity_from_str(value: &str) -> rusqlite::Result<Sensitivity> {
+    match value {
+        "public" => Ok(Sensitivity::Public),
+        "internal" => Ok(Sensitivity::Internal),
+        "confidential" => Ok(Sensitivity::Confidential),
+        "personal" => Ok(Sensitivity::Personal),
+        _ => Err(invalid_column_value("sensitivity", value)),
     }
 }
 
@@ -795,6 +991,17 @@ fn scope_str(s: crate::model::Scope) -> &'static str {
     }
 }
 
+fn scope_from_str(value: &str) -> rusqlite::Result<Scope> {
+    match value {
+        "user" => Ok(Scope::User),
+        "project" => Ok(Scope::Project),
+        "org" => Ok(Scope::Org),
+        "agent" => Ok(Scope::Agent),
+        "subagent" => Ok(Scope::Subagent),
+        _ => Err(invalid_column_value("scope", value)),
+    }
+}
+
 fn trust_level_str(t: crate::model::TrustLevel) -> &'static str {
     match t {
         crate::model::TrustLevel::Trusted => "trusted",
@@ -814,6 +1021,19 @@ fn status_str(s: crate::model::MemoryStatus) -> &'static str {
         crate::model::MemoryStatus::Archived => "archived",
         crate::model::MemoryStatus::Tombstoned => "tombstoned",
         crate::model::MemoryStatus::Quarantined => "quarantined",
+    }
+}
+
+fn memory_status_from_str(value: &str) -> rusqlite::Result<MemoryStatus> {
+    match value {
+        "candidate" => Ok(MemoryStatus::Candidate),
+        "active" => Ok(MemoryStatus::Active),
+        "pinned" => Ok(MemoryStatus::Pinned),
+        "superseded" => Ok(MemoryStatus::Superseded),
+        "archived" => Ok(MemoryStatus::Archived),
+        "tombstoned" => Ok(MemoryStatus::Tombstoned),
+        "quarantined" => Ok(MemoryStatus::Quarantined),
+        _ => Err(invalid_column_value("status", value)),
     }
 }
 
@@ -840,6 +1060,36 @@ fn source_kind_str(k: SourceKind) -> &'static str {
         SourceKind::Import => "import",
         SourceKind::System => "system",
     }
+}
+
+fn source_kind_from_str(value: &str) -> rusqlite::Result<SourceKind> {
+    match value {
+        "user" => Ok(SourceKind::User),
+        "agent-primary" => Ok(SourceKind::AgentPrimary),
+        "agent-subagent" => Ok(SourceKind::AgentSubagent),
+        "tool" => Ok(SourceKind::Tool),
+        "web" => Ok(SourceKind::Web),
+        "email" => Ok(SourceKind::Email),
+        "file" => Ok(SourceKind::File),
+        "synthesis" => Ok(SourceKind::Synthesis),
+        "import" => Ok(SourceKind::Import),
+        "system" => Ok(SourceKind::System),
+        _ => Err(invalid_column_value("source_kind", value)),
+    }
+}
+
+fn parse_index_time(value: &str) -> rusqlite::Result<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(value)
+        .map(|time| time.with_timezone(&Utc))
+        .map_err(|err| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(err)))
+}
+
+fn invalid_column_value(field: &'static str, value: &str) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        0,
+        rusqlite::types::Type::Text,
+        Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("invalid {field}: {value}"))),
+    )
 }
 
 /// Sanitize a free-form user query for FTS5.

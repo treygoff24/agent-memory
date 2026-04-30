@@ -4,16 +4,14 @@
 //!
 //!   1. Implemented tools (Search, Get, Note) round-trip through a live daemon
 //!      and produce the expected substrate effect.
-//!   2. Unimplemented tools (Startup) short-circuit
-//!      with a structured `not_implemented` envelope and never contact the
-//!      daemon, so they can be tested without spinning anything up.
+//!   2. Startup forwards through the daemon once Stream E is wired.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use memory_substrate::{InitOptions, Roots, Substrate};
 use memoryd::mcp::{forward_to_daemon, GetRequest, NoteRequest, SearchRequest, StartupRequest, ToolRequest};
-use memoryd::protocol::{ResponsePayload, ResponseResult};
+use memoryd::protocol::{RequestPayload, ResponseEnvelope, ResponsePayload, ResponseResult};
 use memoryd::server::{serve_substrate_with, ServerOptions};
 use tokio::net::UnixStream;
 use tokio::sync::watch;
@@ -80,16 +78,27 @@ async fn forward_memory_note_then_search_then_get_round_trips_through_daemon() {
 }
 
 #[tokio::test]
-async fn forward_memory_startup_short_circuits_with_not_implemented() {
-    let response = forward_to_daemon(
-        std::path::Path::new("/nonexistent/socket/should/never/be/touched.sock"),
-        "req-startup",
-        ToolRequest::MemoryStartup(StartupRequest { include_recent: true }),
-    )
-    .await
-    .expect("forward returns Ok with structured error, not Err");
+async fn forward_memory_startup_forwards_required_binding_context_to_daemon() {
+    let socket = unique_socket_path("mcp-startup");
+    let daemon = spawn_single_request_daemon(&socket, |request| match request.request {
+        RequestPayload::Startup(startup) => {
+            assert_eq!(startup.cwd, "/tmp/project");
+            assert_eq!(startup.session_id, "sess_mcp");
+            assert_eq!(startup.harness, "codex");
+            assert_eq!(startup.budget_tokens, Some(3_600));
+            ResponseEnvelope::error(request.id, "not_implemented", "fixture stops after forwarding assertion", false)
+        }
+        other => panic!("expected startup request, got {other:?}"),
+    })
+    .await;
 
-    assert_not_implemented(&response, "memory_startup");
+    let response = forward_to_daemon(&socket, "req-startup", ToolRequest::MemoryStartup(startup_request()))
+        .await
+        .expect("startup forwards to daemon");
+
+    assert_not_implemented(&response, "fixture");
+    daemon.await.expect("daemon joins").expect("daemon ok");
+    let _ = std::fs::remove_file(socket);
 }
 
 fn assert_not_implemented(response: &memoryd::protocol::ResponseEnvelope, tool: &str) {
@@ -137,6 +146,37 @@ async fn init_substrate(temp: &tempfile::TempDir) -> Substrate {
     Substrate::init(roots, InitOptions { force_unsafe_durability: true, device_id: Some("dev_mcpforward".to_string()) })
         .await
         .expect("substrate init")
+}
+
+async fn spawn_single_request_daemon<F>(socket: &Path, assert_and_respond: F) -> JoinHandle<anyhow::Result<()>>
+where
+    F: FnOnce(memoryd::protocol::RequestEnvelope) -> ResponseEnvelope + Send + 'static,
+{
+    let _ = std::fs::remove_file(socket);
+    let listener = tokio::net::UnixListener::bind(socket).expect("bind fake daemon socket");
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        let mut reader = tokio::io::BufReader::new(stream);
+        let mut line = String::new();
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        reader.read_line(&mut line).await?;
+        let request = memoryd::protocol::RequestEnvelope::from_json_line(&line)?;
+        let response = assert_and_respond(request);
+        reader.get_mut().write_all(response.to_json_line()?.as_bytes()).await?;
+        Ok(())
+    })
+}
+
+fn startup_request() -> StartupRequest {
+    StartupRequest {
+        cwd: "/tmp/project".to_owned(),
+        session_id: "sess_mcp".to_owned(),
+        harness: "codex".to_owned(),
+        harness_version: None,
+        include_recent: true,
+        since_event_id: None,
+        budget_tokens: Some(3_600),
+    }
 }
 
 fn unique_socket_path(test_name: &str) -> PathBuf {

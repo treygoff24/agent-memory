@@ -3,6 +3,7 @@ use memoryd::protocol::{
     RequestEnvelope, RequestPayload, ResponseEnvelope, ResponsePayload, RevealResponse, SearchHit, SearchResponse,
     WriteNoteResponse,
 };
+use memoryd::recall::StartupRequest;
 
 #[test]
 fn protocol_contract_round_trips_request_variants_as_snake_case_json() {
@@ -53,6 +54,18 @@ fn protocol_contract_round_trips_request_variants_as_snake_case_json() {
                 reason: "user requested removal".to_owned(),
             },
         ),
+        RequestEnvelope::new(
+            "req-startup",
+            RequestPayload::Startup(StartupRequest {
+                cwd: "/tmp/agent-memory".to_owned(),
+                session_id: "sess_protocol".to_owned(),
+                harness: "codex".to_owned(),
+                harness_version: Some("0.0.0".to_owned()),
+                include_recent: true,
+                since_event_id: None,
+                budget_tokens: Some(3_600),
+            }),
+        ),
     ];
 
     for request in requests {
@@ -67,6 +80,17 @@ fn protocol_contract_round_trips_request_variants_as_snake_case_json() {
         let decoded = RequestEnvelope::from_json_line(&line).expect("request deserializes");
         assert_eq!(decoded, request);
     }
+}
+
+#[test]
+fn protocol_contract_status_recall_is_json_additive() {
+    let legacy = r#"{"state":"ready","guidance":"legacy status"}"#;
+    let decoded: memoryd::protocol::StatusResponse = serde_json::from_str(legacy).expect("legacy status decodes");
+    assert_eq!(decoded.recall.startup_invoked_total, 0);
+    assert!(decoded.recall.startup_failed_total.is_empty());
+
+    let encoded = serde_json::to_value(decoded).expect("status encodes");
+    assert!(encoded.get("recall").is_some(), "new status responses always serialize recall counters");
 }
 
 #[test]

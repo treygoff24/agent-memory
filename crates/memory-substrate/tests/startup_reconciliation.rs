@@ -39,7 +39,12 @@ async fn startup_replays_pending_index_queue_before_queries() {
 
     let reopened = Substrate::open(roots).await.expect("reopen");
     let hits = reopened
-        .query_memory(MemoryQuery { id: Some(memory.frontmatter.id.clone()), tag: None, include_metadata_only: false })
+        .query_memory(MemoryQuery {
+            id: Some(memory.frontmatter.id.clone()),
+            tag: None,
+            include_metadata_only: false,
+            ..MemoryQuery::default()
+        })
         .await
         .expect("query");
     assert_eq!(hits.len(), 1);

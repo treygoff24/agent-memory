@@ -6,9 +6,10 @@ use memory_substrate::{InitOptions, Roots, Substrate};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::watch;
 
-use memoryd::cli::{Cli, Command, DeviceCommand, PrivacyCommand, PrivacyFilterCommand, ReviewCommand};
+use memoryd::cli::{Cli, Command, DeviceCommand, PrivacyCommand, PrivacyFilterCommand, RecallCommand, ReviewCommand};
 use memoryd::client;
-use memoryd::protocol::RequestPayload;
+use memoryd::protocol::{RequestPayload, ResponsePayload, ResponseResult};
+use memoryd::recall::{DeltaRequest, StartupRequest};
 use memoryd::server::{self, ServerOptions};
 
 #[tokio::main(flavor = "current_thread")]
@@ -141,6 +142,42 @@ async fn main() -> anyhow::Result<()> {
                 )?;
             }
         },
+        Command::Recall(args) => match args.command {
+            RecallCommand::StartupBlock(args) => {
+                let socket = recall_socket_path(&args.socket);
+                let response = client::request(
+                    &socket,
+                    "cli-recall-startup",
+                    RequestPayload::Startup(StartupRequest {
+                        cwd: args.cwd.to_string_lossy().into_owned(),
+                        session_id: args.session_id,
+                        harness: args.harness,
+                        harness_version: args.harness_version,
+                        include_recent: args.include_recent,
+                        since_event_id: None,
+                        budget_tokens: args.budget_tokens,
+                    }),
+                )
+                .await;
+                print_recall_startup(response)?;
+            }
+            RecallCommand::DeltaBlock(args) => {
+                let socket = recall_socket_path(&args.socket);
+                let response = client::request(
+                    &socket,
+                    "cli-recall-delta",
+                    RequestPayload::Delta(DeltaRequest {
+                        cwd: args.cwd.to_string_lossy().into_owned(),
+                        session_id: args.session_id,
+                        harness: args.harness,
+                        message: args.message,
+                        budget_tokens: args.budget_tokens,
+                    }),
+                )
+                .await;
+                print_recall_delta(response)?;
+            }
+        },
         Command::Privacy(args) => match args.command {
             PrivacyCommand::Status(args) => {
                 let key_provider = FileKeyProvider::runtime_default(&args.runtime);
@@ -242,6 +279,58 @@ async fn main() -> anyhow::Result<()> {
 fn print_response(response: memoryd::protocol::ResponseEnvelope) -> anyhow::Result<()> {
     println!("{}", serde_json::to_string_pretty(&response)?);
     Ok(())
+}
+
+fn print_recall_startup(response: anyhow::Result<memoryd::protocol::ResponseEnvelope>) -> anyhow::Result<()> {
+    match response {
+        Ok(envelope) => match envelope.result {
+            ResponseResult::Success(ResponsePayload::Startup(startup)) => {
+                print!("{}", startup.recall_block);
+                Ok(())
+            }
+            ResponseResult::Error(error) => exit_protocol_error(error),
+            other => anyhow::bail!("daemon returned non-startup response: {other:?}"),
+        },
+        Err(error) => exit_recall_unavailable(error),
+    }
+}
+
+fn print_recall_delta(response: anyhow::Result<memoryd::protocol::ResponseEnvelope>) -> anyhow::Result<()> {
+    match response {
+        Ok(envelope) => match envelope.result {
+            ResponseResult::Success(ResponsePayload::Delta(delta)) => {
+                print!("{}", delta.delta_block);
+                Ok(())
+            }
+            ResponseResult::Error(error) => exit_protocol_error(error),
+            other => anyhow::bail!("daemon returned non-delta response: {other:?}"),
+        },
+        Err(error) => exit_recall_unavailable(error),
+    }
+}
+
+fn exit_protocol_error(error: memoryd::protocol::ProtocolError) -> ! {
+    eprintln!("{}: {}", error.code, error.message);
+    std::process::exit(recall_exit_code(&error.code));
+}
+
+fn exit_recall_unavailable(error: anyhow::Error) -> ! {
+    eprintln!("recall_unavailable: {error:#}");
+    std::process::exit(2);
+}
+
+fn recall_exit_code(code: &str) -> i32 {
+    match code {
+        "invalid_request" => 1,
+        "substrate_error" | "recall_unavailable" => 2,
+        "privacy_error" => 3,
+        "not_implemented" => 4,
+        _ => 1,
+    }
+}
+
+fn recall_socket_path(args: &memoryd::cli::RecallSocketArgs) -> std::path::PathBuf {
+    args.socket.clone().unwrap_or_else(|| args.runtime.join("memoryd.sock"))
 }
 
 fn parse_meta(meta: Option<String>) -> anyhow::Result<serde_json::Value> {

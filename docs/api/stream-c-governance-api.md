@@ -31,7 +31,7 @@ Current daemon error codes:
 | ----------------- | --------- | ------------------------------------------------------------------------------------------------- |
 | `invalid_request` | `false`   | Bad request shape, invalid memory id, empty body/query/note, or invalid governance metadata JSON. |
 | `substrate_error` | `true`    | Stream A substrate read/write/index operation failed.                                             |
-| `not_implemented` | `false`   | MCP-only short-circuit for `memory_startup`; it is still Stream E.                                |
+| `not_implemented` | `false`   | Reserved for explicitly deferred features such as non-null Stream E `since_event_id`.             |
 
 Governance refusals are not protocol errors. They are successful governance
 responses with `status: "refused"`, no memory id, and a stable `reason` code.
@@ -290,23 +290,6 @@ requirement/satisfaction, and tombstone enforcement mode. There is no public
 operator CLI for policy dry-run in Stream C; daemon responses expose the applied
 policy and source after evaluation.
 
-## Why `memory_startup` is still Stream E
+## Stream E startup recall
 
-`memory_startup` remains a structured MCP `not_implemented` response:
-
-```json
-{
-  "id": "req-startup",
-  "result": {
-    "error": {
-      "code": "not_implemented",
-      "message": "memory_startup is not yet implemented; planned for Stream E",
-      "retryable": false
-    }
-  }
-}
-```
-
-Stream C governs writes, supersession, forgetting, and review visibility. Startup
-recall block assembly requires Stream E ranking/assembly behavior and should not
-be documented or inferred from Stream C.
+`memory_startup` is implemented by Stream E, not Stream C. Governance remains the authority for write/review lifecycle, while passive recall reads only governed Stream A index projections and excludes candidate/quarantine claims from factual output.

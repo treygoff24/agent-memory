@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 
 use crate::client;
 use crate::protocol::{RequestPayload, ResponseEnvelope};
+pub use crate::recall::StartupRequest;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Manifest {
@@ -100,12 +101,6 @@ pub struct RevealRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StartupRequest {
-    #[serde(default)]
-    pub include_recent: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NoteRequest {
     pub text: String,
 }
@@ -140,8 +135,7 @@ pub fn args_from_request(request: &ToolRequest) -> Result<Value, serde_json::Err
     }
 }
 
-/// Forward an MCP `ToolRequest` to the memoryd daemon, or return a structured
-/// `NotImplemented` response for tools that are not yet wired up.
+/// Forward an MCP `ToolRequest` to the memoryd daemon.
 ///
 /// Implemented mappings:
 ///   `MemorySearch`  → `RequestPayload::Search`
@@ -151,9 +145,7 @@ pub fn args_from_request(request: &ToolRequest) -> Result<Value, serde_json::Err
 ///   `MemoryForget`  → `RequestPayload::Forget`
 ///   `MemoryReveal`  → `RequestPayload::Reveal`
 ///   `MemoryNote`    → `RequestPayload::WriteNote`
-///
-/// Not-yet-implemented (returns structured error without contacting daemon):
-///   `MemoryStartup`
+///   `MemoryStartup` → `RequestPayload::Startup`
 pub async fn forward_to_daemon(
     socket_path: &Path,
     id: impl Into<String>,
@@ -181,14 +173,7 @@ pub async fn forward_to_daemon(
         },
         ToolRequest::MemoryForget(args) => RequestPayload::Forget { id: args.id, reason: args.reason },
         ToolRequest::MemoryReveal(args) => RequestPayload::Reveal { id: args.id, reason: args.reason },
-        ToolRequest::MemoryStartup(_) => {
-            return Ok(ResponseEnvelope::error(
-                id,
-                "not_implemented",
-                "memory_startup is not yet implemented; planned for Stream E",
-                false,
-            ));
-        }
+        ToolRequest::MemoryStartup(args) => RequestPayload::Startup(args),
     };
 
     client::request(socket_path, id, payload).await
@@ -294,8 +279,28 @@ fn descriptor(name: ToolName) -> ToolDescriptor {
         ),
         ToolName::Startup => (
             "Return startup memory context for a new agent session.",
-            object_schema(&[("include_recent", "boolean")], &[]),
-            object_schema(&[("items", "array"), ("guidance", "string")], &["items", "guidance"]),
+            object_schema(
+                &[
+                    ("cwd", "string"),
+                    ("session_id", "string"),
+                    ("harness", "string"),
+                    ("harness_version", "string"),
+                    ("include_recent", "boolean"),
+                    ("since_event_id", "string"),
+                    ("budget_tokens", "integer"),
+                ],
+                &["cwd", "session_id", "harness"],
+            ),
+            object_schema(
+                &[
+                    ("session_binding", "object"),
+                    ("recall_block", "string"),
+                    ("budget_used_tokens", "integer"),
+                    ("recall_explanation", "object"),
+                    ("guidance", "string"),
+                ],
+                &["session_binding", "recall_block", "budget_used_tokens", "recall_explanation", "guidance"],
+            ),
         ),
         ToolName::Note => (
             "Capture a lightweight note without exposing admin controls.",

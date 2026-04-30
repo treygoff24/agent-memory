@@ -26,13 +26,23 @@ async fn reindex_refuses_plaintext_markdown_under_encrypted_namespace() {
     std::fs::create_dir_all(roots.repo.join("encrypted/agent/patterns")).expect("encrypted dirs");
     std::fs::write(roots.repo.join("encrypted/agent/patterns/leak.md"), markdown).expect("plaintext leak");
     let before = substrate
-        .query_memory(MemoryQuery { id: Some(memory.frontmatter.id.clone()), tag: None, include_metadata_only: false })
+        .query_memory(MemoryQuery {
+            id: Some(memory.frontmatter.id.clone()),
+            tag: None,
+            include_metadata_only: false,
+            ..MemoryQuery::default()
+        })
         .await
         .expect("query before failed reindex");
 
     let err = substrate.reindex().await.expect_err("encrypted namespace plaintext refused");
     let after = substrate
-        .query_memory(MemoryQuery { id: Some(memory.frontmatter.id), tag: None, include_metadata_only: false })
+        .query_memory(MemoryQuery {
+            id: Some(memory.frontmatter.id),
+            tag: None,
+            include_metadata_only: false,
+            ..MemoryQuery::default()
+        })
         .await
         .expect("query after failed reindex");
 
@@ -48,13 +58,23 @@ async fn reindex_refuses_malformed_candidate_without_clearing_existing_index() {
     std::fs::write(roots.repo.join("agent/patterns/malformed.md"), "---\nschema_version: 99\n---\nbad")
         .expect("malformed candidate");
     let before = substrate
-        .query_memory(MemoryQuery { id: Some(memory.frontmatter.id.clone()), tag: None, include_metadata_only: false })
+        .query_memory(MemoryQuery {
+            id: Some(memory.frontmatter.id.clone()),
+            tag: None,
+            include_metadata_only: false,
+            ..MemoryQuery::default()
+        })
         .await
         .expect("query before malformed reindex");
 
     let err = substrate.reindex().await.expect_err("malformed candidate refused");
     let after = substrate
-        .query_memory(MemoryQuery { id: Some(memory.frontmatter.id), tag: None, include_metadata_only: false })
+        .query_memory(MemoryQuery {
+            id: Some(memory.frontmatter.id),
+            tag: None,
+            include_metadata_only: false,
+            ..MemoryQuery::default()
+        })
         .await
         .expect("query after malformed reindex");
 
@@ -117,7 +137,12 @@ async fn path_only_rename_reindexes_existing_memory_to_new_path() {
 
     substrate.reindex().await.expect("reindex");
     let hits = substrate
-        .query_memory(MemoryQuery { id: Some(memory.frontmatter.id), tag: None, include_metadata_only: false })
+        .query_memory(MemoryQuery {
+            id: Some(memory.frontmatter.id),
+            tag: None,
+            include_metadata_only: false,
+            ..MemoryQuery::default()
+        })
         .await
         .expect("query renamed");
 
@@ -142,12 +167,22 @@ async fn rename_plus_id_change_removes_old_id_and_indexes_new_id() {
     substrate.reindex().await.expect("reindex");
 
     assert!(substrate
-        .query_memory(MemoryQuery { id: Some(old_id), tag: None, include_metadata_only: false })
+        .query_memory(MemoryQuery {
+            id: Some(old_id),
+            tag: None,
+            include_metadata_only: false,
+            ..MemoryQuery::default()
+        })
         .await
         .expect("query old id")
         .is_empty());
     let hits = substrate
-        .query_memory(MemoryQuery { id: Some(new_id), tag: None, include_metadata_only: false })
+        .query_memory(MemoryQuery {
+            id: Some(new_id),
+            tag: None,
+            include_metadata_only: false,
+            ..MemoryQuery::default()
+        })
         .await
         .expect("query new id");
     assert_eq!(hits[0].path, new_repo_path);

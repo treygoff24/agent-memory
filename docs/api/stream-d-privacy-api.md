@@ -11,6 +11,7 @@ Primary types:
 - `PrivacyStorageAction::{Plaintext, EncryptAtRest, Refuse}`
 - `PrivacyDecision { tier, storage_action, spans, scan }`
 - `PrivacySpan { label, start, end, confidence }`
+- `SafeFragmentDecision::{Allow, OmitEncryptedBodyHidden, OmitReviewPending}`
 - `PrivacyClassifier`
 - `PrivacyFilterProvider`
 - `PrivacyEncryptor`
@@ -26,6 +27,21 @@ Primary types:
 `PrivacyStorageAction` is the daemon's write-routing authority. Detected PII can
 select `EncryptAtRest` without raising a project/agent record from `internal` to
 `personal`.
+
+`safe_plaintext_fragment(classifier, fragment)` is the Stream D helper for
+Stream E passive-recall prose, hook diagnostics, and echoed CLI/error fragments.
+It classifies the fragment under `PrivacyNamespace::Me`, allocates no persistent
+state, and never calls reveal/decrypt logic. Results map Stream D policy to
+emission safety:
+
+- `SafeFragmentDecision::Allow` for plaintext, URL-only, date-only, or no-span
+  fragments.
+- `SafeFragmentDecision::OmitReviewPending` for encrypted-at-rest private or
+  account-like fragments.
+- `SafeFragmentDecision::OmitEncryptedBodyHidden` for refused or secret-like
+  fragments, including classifier failures.
+
+The strictest detected span wins.
 
 ## Daemon write behavior
 
@@ -50,8 +66,8 @@ Stream A mutation.
   writing plaintext. Encrypted supersede replacements and encrypted review
   decisions currently fail closed until Stream A has an atomic encrypted
   lifecycle update API.
-- `memory_startup` remains Stream E and still returns structured
-  `not_implemented`.
+- Stream E consumes `safe_plaintext_fragment` for recall-safe prose and diagnostics.
+- `memory_startup` is implemented by Stream E and never calls `memory_reveal`.
 
 ## CLI commands
 

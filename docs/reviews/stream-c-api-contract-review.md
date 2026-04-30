@@ -12,7 +12,6 @@ Mode: read-only review except this report.
 
 MCP admin-tool separation is mostly correct: the manifest declares only the seven agent-facing tools and the tests explicitly reject review/admin names. The main contract risks are that the agent-facing `memory_write` DTO cannot carry the documented metadata, the MCP manifest schemas do not describe what `forward_to_daemon` actually returns, review queue responses are unbounded, and the daemon protocol leaks a kebab-case status in a surface that otherwise promises snake_case JSON.
 
-
 ## Remediation status (2026-04-29)
 
 This report is historical. Local code/docs changes after the review have resolved or partially resolved several findings:

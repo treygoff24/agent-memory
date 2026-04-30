@@ -75,3 +75,15 @@ fn tool_name_conversion_accepts_only_manifest_tools() {
         assert!(ToolName::try_from(unknown).is_err(), "unexpected tool accepted: {unknown}");
     }
 }
+
+#[test]
+fn mcp_manifest_memory_startup_requires_binding_context() {
+    let manifest = manifest();
+    let startup = manifest.tools.iter().find(|tool| tool.name == "memory_startup").expect("startup tool");
+
+    assert_eq!(startup.input_schema["required"], serde_json::json!(["cwd", "session_id", "harness"]));
+    for field in ["cwd", "session_id", "harness", "budget_tokens"] {
+        assert!(startup.input_schema["properties"].get(field).is_some(), "missing startup field {field}");
+    }
+    assert!(startup.output_schema["properties"].get("recall_block").is_some());
+}

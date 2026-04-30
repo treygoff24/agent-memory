@@ -5,5 +5,6 @@ pub mod client;
 pub mod handlers;
 pub mod mcp;
 pub mod protocol;
+pub mod recall;
 pub mod server;
 pub mod workers;

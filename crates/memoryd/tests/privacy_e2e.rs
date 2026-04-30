@@ -94,7 +94,12 @@ async fn privacy_e2e_personal_write_is_encrypted_and_not_raw_searchable() {
     assert_eq!(search.total, 0, "raw personal body must not be searchable");
 
     let hits = substrate
-        .query_memory(MemoryQuery { id: Some(MemoryId::new(&id)), tag: None, include_metadata_only: true })
+        .query_memory(MemoryQuery {
+            id: Some(MemoryId::new(&id)),
+            tag: None,
+            include_metadata_only: true,
+            ..MemoryQuery::default()
+        })
         .await
         .expect("metadata query");
     assert_eq!(hits.len(), 1);

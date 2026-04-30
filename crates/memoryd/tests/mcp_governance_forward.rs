@@ -208,21 +208,37 @@ async fn mcp_governance_forward_memory_reveal_forwards_to_privacy_reveal_payload
 }
 
 #[tokio::test]
-async fn mcp_governance_forward_memory_startup_still_short_circuits_with_stream_e_not_implemented() {
+async fn mcp_governance_forward_memory_startup_uses_daemon_path() {
+    let socket = unique_socket_path("startup");
+    let server = spawn_single_request_daemon(&socket, |request| {
+        assert!(matches!(request.request, RequestPayload::Startup(_)));
+        ResponseEnvelope::error(request.id, "not_implemented", "fixture saw startup", false)
+    })
+    .await;
+
     let response = forward_to_daemon(
-        Path::new("/nonexistent/socket/should/never/be/touched.sock"),
+        &socket,
         "req-startup",
-        ToolRequest::MemoryStartup(StartupRequest { include_recent: true }),
+        ToolRequest::MemoryStartup(StartupRequest {
+            cwd: "/tmp/project".to_owned(),
+            session_id: "sess_mcp".to_owned(),
+            harness: "codex".to_owned(),
+            harness_version: None,
+            include_recent: true,
+            since_event_id: None,
+            budget_tokens: Some(3_600),
+        }),
     )
     .await
-    .expect("startup returns structured error");
+    .expect("startup forwards");
 
     let ResponseResult::Error(error) = response.result else {
         panic!("expected startup error, got {:?}", response.result);
     };
     assert_eq!(error.code, "not_implemented");
-    assert!(error.message.contains("memory_startup"));
-    assert!(error.message.contains("Stream E"));
+    assert!(error.message.contains("fixture"));
+    server.await.expect("server joins").expect("server ok");
+    let _ = std::fs::remove_file(socket);
 }
 
 async fn spawn_single_request_daemon<F>(socket: &Path, assert_and_respond: F) -> JoinHandle<anyhow::Result<()>>

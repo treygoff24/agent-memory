@@ -40,6 +40,7 @@ async fn server_smoke_serves_status_over_newline_delimited_json() {
         ResponseResult::Success(ResponsePayload::Status(memoryd::protocol::StatusResponse {
             state: "healthy".to_owned(),
             guidance: "memoryd local daemon is accepting requests; substrate is not attached yet".to_owned(),
+            recall: Default::default(),
         }))
     );
 

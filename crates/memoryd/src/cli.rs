@@ -32,6 +32,8 @@ pub enum Command {
     Forget(ForgetArgs),
     /// Admin review queue commands.
     Review(ReviewArgs),
+    /// Passive recall hook commands.
+    Recall(RecallArgs),
     /// Admin privacy inspection commands.
     Privacy(PrivacyArgs),
     /// Optional Privacy Filter commands.
@@ -201,6 +203,67 @@ pub struct ReviewRejectArgs {
     pub reason: String,
     /// Memory id to reject.
     pub id: String,
+}
+
+#[derive(Debug, Args)]
+pub struct RecallArgs {
+    #[command(subcommand)]
+    pub command: RecallCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RecallCommand {
+    /// Print a Stream E startup recall XML block.
+    StartupBlock(RecallStartupArgs),
+    /// Print a Stream E per-turn delta recall XML block.
+    DeltaBlock(RecallDeltaArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct RecallSocketArgs {
+    /// Canonical memory repository root. Present for hook contract clarity; daemon socket is authoritative.
+    #[arg(long, default_value = ".")]
+    pub repo: PathBuf,
+    /// Local per-device runtime root. The default recall socket is `<runtime>/memoryd.sock`.
+    #[arg(long, default_value = ".memoryd")]
+    pub runtime: PathBuf,
+    /// Optional Unix socket override.
+    #[arg(long)]
+    pub socket: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct RecallStartupArgs {
+    #[command(flatten)]
+    pub socket: RecallSocketArgs,
+    #[arg(long)]
+    pub cwd: PathBuf,
+    #[arg(long)]
+    pub session_id: String,
+    #[arg(long)]
+    pub harness: String,
+    #[arg(long)]
+    pub harness_version: Option<String>,
+    #[arg(long, default_value_t = true)]
+    pub include_recent: bool,
+    #[arg(long)]
+    pub budget_tokens: Option<usize>,
+}
+
+#[derive(Debug, Args)]
+pub struct RecallDeltaArgs {
+    #[command(flatten)]
+    pub socket: RecallSocketArgs,
+    #[arg(long)]
+    pub cwd: PathBuf,
+    #[arg(long)]
+    pub session_id: String,
+    #[arg(long)]
+    pub harness: String,
+    #[arg(long)]
+    pub message: String,
+    #[arg(long)]
+    pub budget_tokens: Option<usize>,
 }
 
 #[derive(Debug, Args)]
