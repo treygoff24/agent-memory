@@ -55,9 +55,19 @@ impl MaskingSession {
         if session_id != &self.id {
             return Err(PrivacyError::Masking("wrong masking session".to_string()));
         }
-        let mut restored = text.to_string();
-        for (token, original) in self.replacements.iter().rev() {
-            restored = restored.replace(token, original);
+        let mut restored = String::with_capacity(text.len());
+        let mut cursor = 0;
+        while cursor < text.len() {
+            let remaining = &text[cursor..];
+            if let Some((token, original)) = self.replacements.iter().find(|(token, _)| remaining.starts_with(*token)) {
+                restored.push_str(original);
+                cursor += token.len();
+            } else if let Some(ch) = remaining.chars().next() {
+                restored.push(ch);
+                cursor += ch.len_utf8();
+            } else {
+                break;
+            }
         }
         Ok(restored)
     }

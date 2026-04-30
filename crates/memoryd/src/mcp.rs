@@ -28,6 +28,7 @@ pub enum ToolName {
     Write,
     Supersede,
     Forget,
+    Reveal,
     Startup,
     Note,
 }
@@ -45,6 +46,7 @@ pub enum ToolRequest {
     MemoryWrite(WriteRequest),
     MemorySupersede(SupersedeRequest),
     MemoryForget(ForgetRequest),
+    MemoryReveal(RevealRequest),
     MemoryStartup(StartupRequest),
     MemoryNote(NoteRequest),
 }
@@ -92,6 +94,12 @@ pub struct ForgetRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RevealRequest {
+    pub id: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StartupRequest {
     #[serde(default)]
     pub include_recent: bool,
@@ -113,6 +121,7 @@ pub fn request_from_args(name: ToolName, args: Value) -> Result<ToolRequest, ser
         ToolName::Write => serde_json::from_value(args).map(ToolRequest::MemoryWrite),
         ToolName::Supersede => serde_json::from_value(args).map(ToolRequest::MemorySupersede),
         ToolName::Forget => serde_json::from_value(args).map(ToolRequest::MemoryForget),
+        ToolName::Reveal => serde_json::from_value(args).map(ToolRequest::MemoryReveal),
         ToolName::Startup => serde_json::from_value(args).map(ToolRequest::MemoryStartup),
         ToolName::Note => serde_json::from_value(args).map(ToolRequest::MemoryNote),
     }
@@ -125,6 +134,7 @@ pub fn args_from_request(request: &ToolRequest) -> Result<Value, serde_json::Err
         ToolRequest::MemoryWrite(args) => serde_json::to_value(args),
         ToolRequest::MemorySupersede(args) => serde_json::to_value(args),
         ToolRequest::MemoryForget(args) => serde_json::to_value(args),
+        ToolRequest::MemoryReveal(args) => serde_json::to_value(args),
         ToolRequest::MemoryStartup(args) => serde_json::to_value(args),
         ToolRequest::MemoryNote(args) => serde_json::to_value(args),
     }
@@ -139,6 +149,7 @@ pub fn args_from_request(request: &ToolRequest) -> Result<Value, serde_json::Err
 ///   `MemoryWrite`   → `RequestPayload::WriteMemory`
 ///   `MemorySupersede` → `RequestPayload::Supersede`
 ///   `MemoryForget`  → `RequestPayload::Forget`
+///   `MemoryReveal`  → `RequestPayload::Reveal`
 ///   `MemoryNote`    → `RequestPayload::WriteNote`
 ///
 /// Not-yet-implemented (returns structured error without contacting daemon):
@@ -169,6 +180,7 @@ pub async fn forward_to_daemon(
             meta: args.meta,
         },
         ToolRequest::MemoryForget(args) => RequestPayload::Forget { id: args.id, reason: args.reason },
+        ToolRequest::MemoryReveal(args) => RequestPayload::Reveal { id: args.id, reason: args.reason },
         ToolRequest::MemoryStartup(_) => {
             return Ok(ResponseEnvelope::error(
                 id,
@@ -183,8 +195,8 @@ pub async fn forward_to_daemon(
 }
 
 impl ToolName {
-    pub const fn all() -> [Self; 7] {
-        [Self::Search, Self::Get, Self::Write, Self::Supersede, Self::Forget, Self::Startup, Self::Note]
+    pub const fn all() -> [Self; 8] {
+        [Self::Search, Self::Get, Self::Write, Self::Supersede, Self::Forget, Self::Reveal, Self::Startup, Self::Note]
     }
 
     pub const fn as_str(self) -> &'static str {
@@ -194,6 +206,7 @@ impl ToolName {
             Self::Write => "memory_write",
             Self::Supersede => "memory_supersede",
             Self::Forget => "memory_forget",
+            Self::Reveal => "memory_reveal",
             Self::Startup => "memory_startup",
             Self::Note => "memory_note",
         }
@@ -210,6 +223,7 @@ impl TryFrom<&str> for ToolName {
             "memory_write" => Ok(Self::Write),
             "memory_supersede" => Ok(Self::Supersede),
             "memory_forget" => Ok(Self::Forget),
+            "memory_reveal" => Ok(Self::Reveal),
             "memory_startup" => Ok(Self::Startup),
             "memory_note" => Ok(Self::Note),
             name => Err(UnknownToolName { name: name.to_owned() }),
@@ -269,6 +283,14 @@ fn descriptor(name: ToolName) -> ToolDescriptor {
             "Forget a memory through the agent-facing tombstone path.",
             object_schema(&[("id", "string"), ("reason", "string")], &["id", "reason"]),
             object_schema(&[("status", "string"), ("id", "string"), ("tombstone_ref", "string")], &["status", "id"]),
+        ),
+        ToolName::Reveal => (
+            "Explicitly reveal encrypted content by id with a user-directed reason.",
+            object_schema(&[("id", "string"), ("reason", "string")], &["id", "reason"]),
+            object_schema(
+                &[("id", "string"), ("summary", "string"), ("body", "string"), ("truncated", "boolean")],
+                &["id", "body", "truncated"],
+            ),
         ),
         ToolName::Startup => (
             "Return startup memory context for a new agent session.",

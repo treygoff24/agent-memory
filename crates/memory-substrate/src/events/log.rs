@@ -87,6 +87,13 @@ pub enum EventKind {
         /// Refusal reason; serializes through `WriteFailureKind`'s display.
         reason: String,
     },
+    /// Encrypted content was explicitly revealed through a user-directed privacy path.
+    EncryptedContentRevealed {
+        /// Memory id revealed.
+        id: MemoryId,
+        /// Bounded, non-plaintext audit reason supplied by the caller.
+        reason: String,
+    },
     // Deferred §12.2 event kinds: WriteStarted, WriteIndexed, WriteEventAppendFailed,
     // Deleted, Superseded, IndexUpdated, IndexFailed, VectorReconciled,
     // EmbeddingJobEnqueued, EventLogRecovered, MergeQuarantined,

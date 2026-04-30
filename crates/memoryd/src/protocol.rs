@@ -34,6 +34,7 @@ pub enum RequestPayload {
     Doctor,
     Search { query: String, limit: Option<usize>, include_body: bool },
     Get { id: String, include_provenance: bool },
+    Reveal { id: String, reason: String },
     WriteNote { text: String },
     WriteMemory { body: String, title: Option<String>, tags: Vec<String>, meta: Value },
     Supersede { old_id: String, content: String, reason: String, meta: Value },
@@ -84,6 +85,7 @@ pub enum ResponsePayload {
     Doctor(DoctorResponse),
     Search(SearchResponse),
     Get(GetResponse),
+    Reveal(RevealResponse),
     WriteNote(WriteNoteResponse),
     GovernanceWrite(GovernanceWriteResponse),
     GovernanceSupersede(GovernanceSupersedeResponse),
@@ -130,6 +132,15 @@ pub struct SearchHit {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetResponse {
+    pub id: String,
+    pub summary: String,
+    pub body: String,
+    pub truncated: bool,
+    pub guidance: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RevealResponse {
     pub id: String,
     pub summary: String,
     pub body: String,

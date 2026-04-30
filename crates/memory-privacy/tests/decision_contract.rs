@@ -1,4 +1,4 @@
-use memory_privacy::{PrivacyDecision, PrivacyLabel, PrivacySpan, PrivacyTier};
+use memory_privacy::{PrivacyDecision, PrivacyLabel, PrivacySpan, PrivacyStorageAction, PrivacyTier};
 use memory_substrate::{ClassificationOutcome, Sensitivity};
 
 #[test]
@@ -23,6 +23,7 @@ fn secret_is_not_a_persisted_frontmatter_sensitivity() {
 fn privacy_decision_serializes_stable_snake_case_labels() {
     let decision = PrivacyDecision::new(
         PrivacyTier::Personal,
+        PrivacyStorageAction::EncryptAtRest,
         vec![PrivacySpan::new(PrivacyLabel::PrivateEmail, 4, 20, 0.95)],
         "fixture",
     );
@@ -30,6 +31,7 @@ fn privacy_decision_serializes_stable_snake_case_labels() {
     let json = serde_json::to_value(decision).expect("serialize decision");
 
     assert_eq!(json["tier"], "personal");
+    assert_eq!(json["storage_action"], "encrypt_at_rest");
     assert_eq!(json["spans"][0]["label"], "private_email");
     assert_eq!(json["scan"]["labels"][0], "private_email");
 }

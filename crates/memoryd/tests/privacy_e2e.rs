@@ -1,5 +1,5 @@
 use memory_privacy::FileKeyProvider;
-use memory_substrate::{InitOptions, MemoryContent, MemoryId, MemoryQuery, Roots, Substrate};
+use memory_substrate::{events::EventKind, InitOptions, MemoryContent, MemoryId, MemoryQuery, Roots, Substrate};
 use memoryd::handlers::handle_request;
 use memoryd::protocol::{
     GovernanceRefusalReason, GovernanceStatus, RequestEnvelope, RequestPayload, ResponsePayload, ResponseResult,
@@ -77,7 +77,7 @@ async fn privacy_e2e_personal_write_is_encrypted_and_not_raw_searchable() {
     let envelope = substrate.read_memory_envelope(&MemoryId::new(&id)).await.expect("read envelope");
     assert!(matches!(envelope.content, MemoryContent::Ciphertext { .. }));
     assert!(envelope.metadata.path.as_ref().expect("path").as_str().starts_with("encrypted/"));
-    assert_eq!(envelope.metadata.frontmatter.sensitivity, memory_substrate::Sensitivity::Personal);
+    assert_eq!(envelope.metadata.frontmatter.sensitivity, memory_substrate::Sensitivity::Internal);
     assert!(!repo_contains(temp.path(), raw), "raw personal canary must not be present in repo/runtime");
 
     let search = handle_request(
@@ -136,7 +136,7 @@ async fn privacy_e2e_caller_confidential_without_spans_is_metadata_only_encrypte
     let id = write.id.expect("encrypted write id");
     let envelope = substrate.read_memory_envelope(&MemoryId::new(&id)).await.expect("read envelope");
     assert!(matches!(envelope.content, MemoryContent::Ciphertext { .. }));
-    assert_eq!(envelope.metadata.frontmatter.summary, "encrypted memory");
+    assert_eq!(envelope.metadata.frontmatter.summary, "confidential acquisition note");
     assert!(!repo_contains(temp.path(), raw), "raw confidential text must not be persisted as safe projection");
 
     let search = handle_request(
@@ -151,6 +151,214 @@ async fn privacy_e2e_caller_confidential_without_spans_is_metadata_only_encrypte
         panic!("expected search response, got {:?}", search.result);
     };
     assert_eq!(search.total, 0, "raw confidential body must not be indexed");
+}
+
+#[tokio::test]
+async fn privacy_e2e_project_url_and_date_stay_plaintext_and_searchable() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let substrate = init_substrate(&temp).await;
+    let body = "See https://docs.example.com/foo for the 2026-04-28 release notes.";
+
+    let response = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "url-date-plaintext",
+            RequestPayload::WriteMemory {
+                body: body.to_string(),
+                title: Some("release notes link".to_string()),
+                tags: Vec::new(),
+                meta: serde_json::json!({
+                    "namespace": "project",
+                    "type": "claim",
+                    "summary": "release notes link",
+                    "confidence": 0.95,
+                    "source_kind": "user",
+                    "explicit_user_context": true
+                }),
+            },
+        ),
+    )
+    .await;
+
+    let ResponseResult::Success(ResponsePayload::GovernanceWrite(write)) = response.result else {
+        panic!("expected governance response, got {:?}", response.result);
+    };
+    let id = write.id.expect("plaintext write id");
+    let envelope = substrate.read_memory_envelope(&MemoryId::new(&id)).await.expect("read envelope");
+    assert!(matches!(envelope.content, MemoryContent::Plaintext(_)));
+
+    let search = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "search-url",
+            RequestPayload::Search { query: "docs.example.com".to_string(), limit: Some(10), include_body: false },
+        ),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::Search(search)) = search.result else {
+        panic!("expected search response, got {:?}", search.result);
+    };
+    assert_eq!(search.total, 1, "URL-bearing project memory should remain searchable");
+}
+
+#[tokio::test]
+async fn privacy_e2e_phone_contact_is_encrypted_findable_and_revealable() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let substrate = init_substrate(&temp).await;
+    FileKeyProvider::runtime_default(&temp.path().join("runtime")).onboard_local_file().expect("privacy key");
+    let raw_phone = "202-555-0198";
+
+    let response = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "encrypted-contact",
+            RequestPayload::WriteMemory {
+                body: format!("Rep. Mills Chief of Staff cell is {raw_phone}."),
+                title: Some("Rep. Mills Chief of Staff cell".to_string()),
+                tags: vec!["contact".to_string(), "rep-mills".to_string(), "chief-of-staff".to_string()],
+                meta: serde_json::json!({
+                    "namespace": "project",
+                    "type": "claim",
+                    "summary": "Rep. Mills Chief of Staff cell phone",
+                    "confidence": 0.95,
+                    "source_kind": "user",
+                    "explicit_user_context": true,
+                    "privacy_descriptors": {
+                        "subject": "Rep. Mills Chief of Staff",
+                        "role": "Chief of Staff",
+                        "organization": "Rep. Mills office",
+                        "value_kind": "phone",
+                        "lookup_hints": ["cell", "contact"]
+                    }
+                }),
+            },
+        ),
+    )
+    .await;
+
+    let ResponseResult::Success(ResponsePayload::GovernanceWrite(write)) = response.result else {
+        panic!("expected governance response, got {:?}", response.result);
+    };
+    let id = write.id.expect("encrypted contact id");
+    let envelope = substrate.read_memory_envelope(&MemoryId::new(&id)).await.expect("read envelope");
+    assert!(matches!(envelope.content, MemoryContent::Ciphertext { .. }));
+    assert_eq!(envelope.metadata.frontmatter.sensitivity, memory_substrate::Sensitivity::Internal);
+    assert_eq!(envelope.metadata.frontmatter.summary, "Rep. Mills Chief of Staff cell phone");
+    assert!(envelope.metadata.frontmatter.tags.iter().any(|tag| tag == "rep-mills"));
+    assert!(!repo_contains(temp.path(), raw_phone), "raw phone must not be written outside ciphertext");
+
+    let descriptor_search = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "search-descriptor",
+            RequestPayload::Search { query: "chief staff cell".to_string(), limit: Some(10), include_body: false },
+        ),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::Search(search)) = descriptor_search.result else {
+        panic!("expected search response, got {:?}", descriptor_search.result);
+    };
+    assert_eq!(search.total, 1, "safe descriptors should make encrypted contact findable");
+
+    let raw_search = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "search-phone",
+            RequestPayload::Search { query: raw_phone.to_string(), limit: Some(10), include_body: false },
+        ),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::Search(raw_search)) = raw_search.result else {
+        panic!("expected raw search response, got {:?}", raw_search.result);
+    };
+    assert_eq!(raw_search.total, 0, "raw phone must not be indexed");
+
+    let get = handle_request(
+        &substrate,
+        RequestEnvelope::new("get-redacted", RequestPayload::Get { id: id.clone(), include_provenance: false }),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::Get(get)) = get.result else {
+        panic!("expected get response, got {:?}", get.result);
+    };
+    assert_eq!(get.body, "[encrypted content omitted]");
+
+    let reveal = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "reveal-contact",
+            RequestPayload::Reveal {
+                id: id.clone(),
+                reason: "user asked for Rep. Mills Chief of Staff cell".to_string(),
+            },
+        ),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::Reveal(reveal)) = reveal.result else {
+        panic!("expected reveal response, got {:?}", reveal.result);
+    };
+    assert!(reveal.body.contains(raw_phone));
+    assert!(substrate
+        .events()
+        .expect("events")
+        .iter()
+        .any(|event| matches!(&event.kind, EventKind::EncryptedContentRevealed { id: event_id, .. } if event_id.as_str() == id)));
+}
+
+#[tokio::test]
+async fn privacy_e2e_reveal_fails_for_plaintext_and_missing_key() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let substrate = init_substrate(&temp).await;
+    let plain = governed_project_write(&substrate, "plain-reveal", "The deployment target is staging.").await;
+    let plain_id = plain.id.expect("plain id");
+
+    let plain_reveal = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "plain-reveal-fails",
+            RequestPayload::Reveal { id: plain_id, reason: "user asked".to_string() },
+        ),
+    )
+    .await;
+    assert!(matches!(plain_reveal.result, ResponseResult::Error(_)));
+
+    let key_provider = FileKeyProvider::runtime_default(&temp.path().join("runtime"));
+    key_provider.onboard_local_file().expect("privacy key");
+    let encrypted = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "encrypted-missing-key",
+            RequestPayload::WriteMemory {
+                body: "Contact missing-key@example.com for details.".to_string(),
+                title: Some("missing key contact".to_string()),
+                tags: Vec::new(),
+                meta: serde_json::json!({
+                    "namespace": "project",
+                    "type": "claim",
+                    "summary": "missing key contact",
+                    "confidence": 0.95,
+                    "source_kind": "user",
+                    "explicit_user_context": true
+                }),
+            },
+        ),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::GovernanceWrite(write)) = encrypted.result else {
+        panic!("expected encrypted write, got {:?}", encrypted.result);
+    };
+    let encrypted_id = write.id.expect("encrypted id");
+    std::fs::remove_file(key_provider.path()).expect("remove key");
+
+    let missing_key_reveal = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "missing-key-reveal",
+            RequestPayload::Reveal { id: encrypted_id, reason: "user asked".to_string() },
+        ),
+    )
+    .await;
+    assert!(matches!(missing_key_reveal.result, ResponseResult::Error(_)));
 }
 
 #[tokio::test]
@@ -370,7 +578,22 @@ async fn init_substrate(temp: &tempfile::TempDir) -> Substrate {
 }
 
 fn repo_contains(root: &std::path::Path, needle: &str) -> bool {
-    let output =
-        std::process::Command::new("rg").arg("--fixed-strings").arg(needle).arg(root).output().expect("run rg");
-    output.status.success()
+    let needle = needle.as_bytes();
+    contains_needle(root, needle).expect("walk repo/runtime for leak canary")
+}
+
+fn contains_needle(path: &std::path::Path, needle: &[u8]) -> std::io::Result<bool> {
+    if path.is_dir() {
+        for entry in std::fs::read_dir(path)? {
+            if contains_needle(&entry?.path(), needle)? {
+                return Ok(true);
+            }
+        }
+        return Ok(false);
+    }
+    if path.is_file() {
+        let bytes = std::fs::read(path)?;
+        return Ok(bytes.windows(needle.len()).any(|window| window == needle));
+    }
+    Ok(false)
 }

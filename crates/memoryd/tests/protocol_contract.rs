@@ -1,6 +1,7 @@
 use memoryd::protocol::{
     GetResponse, GovernanceForgetResponse, GovernanceStatus, GovernanceSupersedeResponse, GovernanceWriteResponse,
-    RequestEnvelope, RequestPayload, ResponseEnvelope, ResponsePayload, SearchHit, SearchResponse, WriteNoteResponse,
+    RequestEnvelope, RequestPayload, ResponseEnvelope, ResponsePayload, RevealResponse, SearchHit, SearchResponse,
+    WriteNoteResponse,
 };
 
 #[test]
@@ -15,6 +16,13 @@ fn protocol_contract_round_trips_request_variants_as_snake_case_json() {
         RequestEnvelope::new(
             "req-get",
             RequestPayload::Get { id: "mem_20260428_0123456789abcdef_000001".to_owned(), include_provenance: true },
+        ),
+        RequestEnvelope::new(
+            "req-reveal",
+            RequestPayload::Reveal {
+                id: "mem_20260428_0123456789abcdef_000001".to_owned(),
+                reason: "user asked for encrypted contact".to_owned(),
+            },
         ),
         RequestEnvelope::new(
             "req-write-note",
@@ -93,6 +101,16 @@ fn protocol_contract_success_responses_are_bounded_and_guided() {
             summary: "Note accepted.".to_owned(),
         }),
     );
+    let reveal = ResponseEnvelope::success(
+        "req-reveal",
+        ResponsePayload::Reveal(RevealResponse {
+            id: "mem_20260428_0123456789abcdef_000001".to_owned(),
+            summary: "Encrypted contact.".to_owned(),
+            body: "Bounded decrypted body.".to_owned(),
+            truncated: false,
+            guidance: "Returned decrypted content through explicit memory_reveal.".to_owned(),
+        }),
+    );
     let governed_write = ResponseEnvelope::success(
         "req-write-memory",
         ResponsePayload::GovernanceWrite(GovernanceWriteResponse {
@@ -128,7 +146,7 @@ fn protocol_contract_success_responses_are_bounded_and_guided() {
         }),
     );
 
-    for response in [search, get, write, governed_write, supersede, forget] {
+    for response in [search, get, reveal, write, governed_write, supersede, forget] {
         let line = response.to_json_line().expect("response serializes");
         let decoded = ResponseEnvelope::from_json_line(&line).expect("response deserializes");
         assert_eq!(decoded, response);
@@ -138,6 +156,7 @@ fn protocol_contract_success_responses_are_bounded_and_guided() {
         assert!(
             line.contains("call memory_get for full body")
                 || line.contains("Note accepted")
+                || line.contains("memory_reveal")
                 || line.contains("promoted")
                 || line.contains("tombstoned")
         );

@@ -10,14 +10,14 @@ use memory_governance::{
     SourceKind as GovernanceSourceKind, TiebreakOutcome, TombstoneIndex, TombstoneKind, TombstoneRule,
 };
 use memory_privacy::{
-    CallerSensitivity, DeterministicPrivacyClassifier, FileKeyProvider, PrivacyClassifier, PrivacyDecision,
-    PrivacyEncryptor, PrivacyNamespace, PrivacyTier,
+    CallerSensitivity, DeterministicPrivacyClassifier, EncryptedPayload, FileKeyProvider, PrivacyClassifier,
+    PrivacyDecision, PrivacyEncryptor, PrivacyNamespace, PrivacyStorageAction,
 };
 use memory_substrate::{
-    Author, AuthorKind, ChunkQuery, ClassificationOutcome, EncryptedWriteRequest, EventContext, Frontmatter, Memory,
-    MemoryContent, MemoryId, MemoryStatus, MemoryType, RepoPath, RetrievalPolicy, Scope, Sensitivity, Source,
-    SourceKind, Substrate, SupersedeRequest as SubstrateSupersedeRequest, TombstoneRequest, TrustLevel, WriteMode,
-    WritePolicy, WriteRequest as SubstrateWriteRequest,
+    Author, AuthorKind, ChunkQuery, ClassificationOutcome, EncryptedWriteRequest, EventContext, Frontmatter,
+    IndexProjection, Memory, MemoryContent, MemoryId, MemoryStatus, MemoryType, RepoPath, RetrievalPolicy, Scope,
+    Sensitivity, Source, SourceKind, Substrate, SupersedeRequest as SubstrateSupersedeRequest, TombstoneRequest,
+    TrustLevel, WriteMode, WritePolicy, WriteRequest as SubstrateWriteRequest,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -25,8 +25,8 @@ use serde_json::Value;
 use crate::protocol::{
     DoctorFinding, DoctorResponse, GetResponse, GovernanceForgetResponse, GovernanceStatus,
     GovernanceSupersedeResponse, GovernanceWriteResponse, RequestEnvelope, RequestPayload, ResponseEnvelope,
-    ResponsePayload, ReviewDecisionResponse, ReviewQueueItemResponse, ReviewQueueResponse, SearchHit, SearchResponse,
-    StatusResponse, WriteNoteResponse, MAX_FRAME_BYTES,
+    ResponsePayload, RevealResponse, ReviewDecisionResponse, ReviewQueueItemResponse, ReviewQueueResponse, SearchHit,
+    SearchResponse, StatusResponse, WriteNoteResponse, MAX_FRAME_BYTES,
 };
 
 const SEARCH_LIMIT_DEFAULT: usize = 10;
@@ -59,6 +59,7 @@ async fn dispatch(substrate: &Substrate, request: RequestPayload) -> Result<Resp
             search_response(substrate, &query, limit, include_body).await
         }
         RequestPayload::Get { id, include_provenance } => get_response(substrate, &id, include_provenance).await,
+        RequestPayload::Reveal { id, reason } => reveal_response(substrate, &id, &reason).await,
         RequestPayload::WriteNote { text } => write_note_response(substrate, &text).await,
         RequestPayload::WriteMemory { body, title, tags, meta } => {
             governance_write_response(substrate, GovernanceWriteRequest { body, title, tags, meta }).await
@@ -159,18 +160,49 @@ async fn get_response(
     }))
 }
 
+async fn reveal_response(substrate: &Substrate, id: &str, reason: &str) -> Result<ResponsePayload, HandlerError> {
+    let reason = reason.trim();
+    if reason.is_empty() {
+        return Err(HandlerError::invalid_request("reveal reason must not be empty"));
+    }
+    if !safe_plaintext_fragment(reason) {
+        return Err(HandlerError::invalid_request("reveal reason must not contain sensitive material"));
+    }
+    let memory_id = MemoryId::try_new(id.to_string()).map_err(|err| HandlerError::invalid_request(err.to_string()))?;
+    let envelope = substrate.read_memory_envelope(&memory_id).await.map_err(HandlerError::substrate)?;
+    let MemoryContent::Ciphertext { bytes, .. } = envelope.content else {
+        return Err(HandlerError::invalid_request("memory_reveal requires an encrypted memory"));
+    };
+    let encryptor = PrivacyEncryptor::new(FileKeyProvider::runtime_default(&substrate.roots().runtime));
+    let body = encryptor
+        .decrypt(&EncryptedPayload { ciphertext: bytes, envelope: serde_json::Value::Null })
+        .map_err(HandlerError::privacy)?;
+    substrate
+        .record_encrypted_content_revealed(memory_id, bounded(reason, 240))
+        .map_err(|err| HandlerError::substrate(format!("record encrypted reveal audit event: {err}")))?;
+    let (body, truncated) = bounded_with_truncation(&body, GET_BODY_MAX);
+    Ok(ResponsePayload::Reveal(RevealResponse {
+        id: envelope.metadata.frontmatter.id.as_str().to_string(),
+        summary: envelope.metadata.frontmatter.summary,
+        body,
+        truncated,
+        guidance: "Returned decrypted content through explicit memory_reveal; plaintext was not re-indexed."
+            .to_string(),
+    }))
+}
+
 async fn write_note_response(substrate: &Substrate, text: &str) -> Result<ResponsePayload, HandlerError> {
     let text = text.trim();
     if text.is_empty() {
         return Err(HandlerError::invalid_request("note text must not be empty"));
     }
     let privacy = classify_privacy(text, PrivacyNamespace::Agent, None)?;
-    if privacy.tier == PrivacyTier::Secret {
+    if privacy.storage_action.refuses_storage() {
         return Err(HandlerError::invalid_request("privacy refused secret note before disk effects"));
     }
 
     let memory_id = substrate.next_memory_id().await.map_err(HandlerError::substrate)?;
-    let memory = candidate_memory(memory_id, text, privacy.tier);
+    let memory = candidate_memory(memory_id, text, privacy.storage_action);
     let id = memory.frontmatter.id.as_str().to_string();
     let summary = memory.frontmatter.summary.clone();
     write_privacy_memory(
@@ -311,10 +343,10 @@ async fn governance_supersede_response(
     let mut replacement = input.to_memory(
         new_id.clone(),
         GovernedLifecycle::new(MemoryStatus::Active, TrustLevel::Trusted, policy_applied.clone()),
-        privacy.tier,
+        &privacy,
     );
     replacement.frontmatter.supersedes.push(old_memory_id.clone());
-    if privacy.tier.requires_encryption() {
+    if privacy.storage_action.requires_encryption() {
         return Ok(ResponsePayload::GovernanceSupersede(supersede_privacy_refusal(
             old_id,
             Some(policy_applied),
@@ -379,7 +411,7 @@ async fn execute_write_decision(
             let memory = input.to_memory(
                 id.clone(),
                 GovernedLifecycle::new(MemoryStatus::Active, TrustLevel::Trusted, policy_applied.clone()),
-                privacy.tier,
+                &privacy,
             );
             write_governed_memory(substrate, memory, &privacy).await?;
             Ok(GovernanceWriteResponse {
@@ -397,7 +429,7 @@ async fn execute_write_decision(
             let memory = input.to_memory(
                 id.clone(),
                 GovernedLifecycle::new(MemoryStatus::Candidate, TrustLevel::Candidate, policy_applied.clone()),
-                privacy.tier,
+                &privacy,
             );
             write_governed_memory(substrate, memory, &privacy).await?;
             Ok(GovernanceWriteResponse {
@@ -415,7 +447,7 @@ async fn execute_write_decision(
             let memory = input.to_memory(
                 id.clone(),
                 GovernedLifecycle::new(MemoryStatus::Quarantined, TrustLevel::Quarantined, policy_applied.clone()),
-                privacy.tier,
+                &privacy,
             );
             write_governed_memory(substrate, memory, &privacy).await?;
             Ok(GovernanceWriteResponse {
@@ -495,20 +527,23 @@ async fn write_privacy_memory(
     privacy: &PrivacyDecision,
     event_context: EventContext,
 ) -> Result<(), HandlerError> {
-    if privacy.tier == PrivacyTier::Secret {
+    if privacy.storage_action.refuses_storage() {
         return Err(HandlerError::invalid_request("privacy refused secret before disk effects"));
     }
     attach_privacy_scan(&mut memory, privacy);
-    if privacy.tier.requires_encryption() {
+    if privacy.storage_action.requires_encryption() {
         let encryptor = PrivacyEncryptor::new(FileKeyProvider::runtime_default(&substrate.roots().runtime));
         let encrypted = encryptor.encrypt(&memory.body).map_err(HandlerError::privacy)?;
         memory.frontmatter.extras.insert("encryption".to_string(), encrypted.envelope);
+        let safe_index_projection = safe_index_projection(&memory);
         substrate
             .write_encrypted(EncryptedWriteRequest {
                 operation_id: None,
                 metadata_memory: memory,
                 ciphertext: encrypted.ciphertext,
-                safe_index_projection: None,
+                // Stream D: encrypted records index only descriptors already proven safe.
+                // Do NOT project raw or masked body text here; see stream-d-security-review P0.
+                safe_index_projection,
                 event_context,
                 allow_best_effort_durability: true,
                 classification: ClassificationOutcome::RequiresEncryption,
@@ -964,6 +999,35 @@ struct GovernanceMeta {
     source_kind: GovernanceSourceKindMeta,
     source_ref: Option<String>,
     explicit_user_context: bool,
+    privacy_descriptors: Option<PrivacyDescriptors>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct PrivacyDescriptors {
+    subject: Option<String>,
+    role: Option<String>,
+    organization: Option<String>,
+    office: Option<String>,
+    value_kind: Option<String>,
+    lookup_hints: Vec<String>,
+}
+
+impl PrivacyDescriptors {
+    fn values(&self) -> Vec<String> {
+        let mut values = [
+            self.subject.clone(),
+            self.role.clone(),
+            self.organization.clone(),
+            self.office.clone(),
+            self.value_kind.clone(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+        values.extend(self.lookup_hints.iter().cloned());
+        values
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1016,6 +1080,7 @@ impl Default for GovernanceMeta {
             source_kind: GovernanceSourceKindMeta::User,
             source_ref: None,
             explicit_user_context: false,
+            privacy_descriptors: None,
         }
     }
 }
@@ -1070,12 +1135,19 @@ impl GovernanceWriteInput {
             fields.push(source_ref.as_str());
         }
         fields.extend(self.tags.iter().map(String::as_str));
-        fields.join("\n")
+        let mut text = fields.join("\n");
+        if let Some(descriptors) = &self.meta.privacy_descriptors {
+            for value in descriptors.values() {
+                text.push('\n');
+                text.push_str(&value);
+            }
+        }
+        text
     }
 
     fn privacy_refusal(&self, privacy: &PrivacyDecision) -> Option<GovernanceWriteResponse> {
-        match privacy.tier {
-            PrivacyTier::Secret => Some(GovernanceWriteResponse {
+        match privacy.storage_action {
+            PrivacyStorageAction::Refuse => Some(GovernanceWriteResponse {
                 status: GovernanceStatus::Refused,
                 id: None,
                 namespace: Some(self.response_namespace()),
@@ -1085,7 +1157,7 @@ impl GovernanceWriteInput {
                 policy_source: None,
                 existing_id: None,
             }),
-            PrivacyTier::Public | PrivacyTier::Internal | PrivacyTier::Confidential | PrivacyTier::Personal => None,
+            PrivacyStorageAction::Plaintext | PrivacyStorageAction::EncryptAtRest => None,
         }
     }
 
@@ -1100,9 +1172,9 @@ impl GovernanceWriteInput {
         candidate
     }
 
-    fn to_memory(&self, id: MemoryId, lifecycle: GovernedLifecycle, privacy_tier: PrivacyTier) -> Memory {
+    fn to_memory(&self, id: MemoryId, lifecycle: GovernedLifecycle, privacy: &PrivacyDecision) -> Memory {
         let now = chrono::Utc::now();
-        let summary = self.summary(privacy_tier);
+        let summary = self.summary(privacy.storage_action);
         let requires_review = matches!(lifecycle.status, MemoryStatus::Candidate | MemoryStatus::Quarantined);
         let review_state = match lifecycle.status {
             MemoryStatus::Candidate => Some("candidate".to_string()),
@@ -1114,9 +1186,12 @@ impl GovernanceWriteInput {
             extras.insert("governance_reason".to_string(), serde_json::json!("governance quarantine"));
         }
 
-        let sensitivity = privacy_tier.persisted_sensitivity().unwrap_or(Sensitivity::Internal);
-        let encrypted = privacy_tier.requires_encryption();
+        let sensitivity = privacy.tier.persisted_sensitivity().unwrap_or(Sensitivity::Internal);
+        let encrypted = privacy.storage_action.requires_encryption();
         let indexable = !encrypted && !matches!(lifecycle.status, MemoryStatus::Quarantined);
+        if let Some(descriptors) = self.safe_privacy_descriptors_value() {
+            extras.insert("privacy_descriptors".to_string(), descriptors);
+        }
         Memory {
             frontmatter: Frontmatter {
                 schema_version: memory_substrate::SUBSTRATE_SCHEMA_VERSION,
@@ -1133,10 +1208,10 @@ impl GovernanceWriteInput {
                 author: self.author(),
                 namespace: self.substrate_namespace(),
                 canonical_namespace_id: self.substrate_namespace(),
-                tags: self.persisted_tags(privacy_tier),
+                tags: self.persisted_tags(privacy.storage_action),
                 entities: Vec::new(),
                 aliases: Vec::new(),
-                source: self.substrate_source(privacy_tier),
+                source: self.substrate_source(privacy.storage_action),
                 evidence: Vec::new(),
                 requires_user_confirmation: requires_review,
                 review_state,
@@ -1171,16 +1246,19 @@ impl GovernanceWriteInput {
         }
     }
 
-    fn summary(&self, privacy_tier: PrivacyTier) -> String {
-        if privacy_tier.requires_encryption() {
-            return "encrypted memory".to_string();
+    fn summary(&self, storage_action: PrivacyStorageAction) -> String {
+        let candidate = self.meta.summary.clone().or_else(|| self.title.clone());
+        if storage_action.requires_encryption() {
+            return candidate
+                .filter(|value| safe_plaintext_fragment(value))
+                .unwrap_or_else(|| "encrypted memory".to_string());
         }
-        self.meta.summary.clone().or_else(|| self.title.clone()).unwrap_or_else(|| bounded(&self.body, 120))
+        candidate.unwrap_or_else(|| bounded(&self.body, 120))
     }
 
-    fn persisted_tags(&self, privacy_tier: PrivacyTier) -> Vec<String> {
-        if privacy_tier.requires_encryption() {
-            Vec::new()
+    fn persisted_tags(&self, storage_action: PrivacyStorageAction) -> Vec<String> {
+        if storage_action.requires_encryption() {
+            self.tags.iter().filter(|tag| safe_plaintext_fragment(tag)).cloned().collect()
         } else {
             self.tags.clone()
         }
@@ -1244,7 +1322,7 @@ impl GovernanceWriteInput {
         vec![GovernanceSource::new(kind, self.meta.source_ref.clone())]
     }
 
-    fn substrate_source(&self, privacy_tier: PrivacyTier) -> Source {
+    fn substrate_source(&self, storage_action: PrivacyStorageAction) -> Source {
         let kind = match self.meta.source_kind {
             GovernanceSourceKindMeta::User => SourceKind::User,
             GovernanceSourceKindMeta::Subagent => SourceKind::AgentSubagent,
@@ -1253,8 +1331,12 @@ impl GovernanceWriteInput {
         };
         Source {
             kind,
-            reference: if privacy_tier.requires_encryption() {
-                Some("memoryd.governance".to_string())
+            reference: if storage_action.requires_encryption() {
+                self.meta
+                    .source_ref
+                    .clone()
+                    .filter(|reference| safe_plaintext_fragment(reference))
+                    .or_else(|| Some("memoryd.governance".to_string()))
             } else {
                 self.meta.source_ref.clone().or_else(|| Some("memoryd.governance".to_string()))
             },
@@ -1264,6 +1346,27 @@ impl GovernanceWriteInput {
             subagent_id: None,
             device: None,
         }
+    }
+
+    fn safe_privacy_descriptors_value(&self) -> Option<Value> {
+        let descriptors = self.meta.privacy_descriptors.as_ref()?;
+        let mut object = serde_json::Map::new();
+        insert_safe_descriptor(&mut object, "subject", descriptors.subject.as_deref());
+        insert_safe_descriptor(&mut object, "role", descriptors.role.as_deref());
+        insert_safe_descriptor(&mut object, "organization", descriptors.organization.as_deref());
+        insert_safe_descriptor(&mut object, "office", descriptors.office.as_deref());
+        insert_safe_descriptor(&mut object, "value_kind", descriptors.value_kind.as_deref());
+        let hints = descriptors
+            .lookup_hints
+            .iter()
+            .filter(|hint| safe_plaintext_fragment(hint))
+            .cloned()
+            .map(Value::String)
+            .collect::<Vec<_>>();
+        if !hints.is_empty() {
+            object.insert("lookup_hints".to_string(), Value::Array(hints));
+        }
+        (!object.is_empty()).then_some(Value::Object(object))
     }
 
     fn author(&self) -> Author {
@@ -1373,10 +1476,10 @@ impl ReviewDecision {
     }
 }
 
-fn candidate_memory(id: MemoryId, text: &str, privacy_tier: PrivacyTier) -> Memory {
+fn candidate_memory(id: MemoryId, text: &str, storage_action: PrivacyStorageAction) -> Memory {
     let now = chrono::Utc::now();
-    let sensitivity = privacy_tier.persisted_sensitivity().unwrap_or(Sensitivity::Internal);
-    let encrypted = privacy_tier.requires_encryption();
+    let sensitivity = Sensitivity::Internal;
+    let encrypted = storage_action.requires_encryption();
     Memory {
         frontmatter: Frontmatter {
             schema_version: memory_substrate::SUBSTRATE_SCHEMA_VERSION,
@@ -1438,6 +1541,51 @@ fn candidate_memory(id: MemoryId, text: &str, privacy_tier: PrivacyTier) -> Memo
         },
         body: text.to_string(),
         path: Some(RepoPath::new(format!("agent/patterns/{}.md", id.as_str()))),
+    }
+}
+
+fn insert_safe_descriptor(object: &mut serde_json::Map<String, Value>, key: &str, value: Option<&str>) {
+    if let Some(value) = value.filter(|value| safe_plaintext_fragment(value)) {
+        object.insert(key.to_string(), Value::String(value.to_string()));
+    }
+}
+
+fn safe_plaintext_fragment(text: &str) -> bool {
+    match classify_privacy(text, PrivacyNamespace::Project, None) {
+        Ok(decision) => decision.storage_action == PrivacyStorageAction::Plaintext,
+        Err(_) => false,
+    }
+}
+
+fn safe_index_projection(memory: &Memory) -> Option<IndexProjection> {
+    let mut fragments = Vec::new();
+    if !memory.frontmatter.summary.starts_with("encrypted ") {
+        fragments.push(memory.frontmatter.summary.clone());
+    }
+    fragments.extend(memory.frontmatter.tags.iter().cloned());
+    if let Some(reference) = &memory.frontmatter.source.reference {
+        if reference != "memoryd.governance" && reference != "memoryd.write_note" {
+            fragments.push(reference.clone());
+        }
+    }
+    if let Some(descriptors) = memory.frontmatter.extras.get("privacy_descriptors") {
+        collect_descriptor_strings(descriptors, &mut fragments);
+    }
+    let safe_body = fragments
+        .into_iter()
+        .map(|fragment| fragment.trim().to_string())
+        .filter(|fragment| !fragment.is_empty() && safe_plaintext_fragment(fragment))
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!safe_body.is_empty()).then_some(IndexProjection { safe_body: Some(safe_body) })
+}
+
+fn collect_descriptor_strings(value: &Value, output: &mut Vec<String>) {
+    match value {
+        Value::String(value) => output.push(value.clone()),
+        Value::Array(values) => values.iter().for_each(|value| collect_descriptor_strings(value, output)),
+        Value::Object(values) => values.values().for_each(|value| collect_descriptor_strings(value, output)),
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
     }
 }
 

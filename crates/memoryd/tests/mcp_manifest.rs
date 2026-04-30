@@ -13,11 +13,12 @@ fn mcp_manifest_declares_exact_agent_facing_tools_in_order() {
             "memory_write",
             "memory_supersede",
             "memory_forget",
+            "memory_reveal",
             "memory_startup",
             "memory_note",
         ]
     );
-    assert_eq!(manifest.tools.len(), 7);
+    assert_eq!(manifest.tools.len(), 8);
 }
 
 #[test]

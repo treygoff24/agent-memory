@@ -14,9 +14,12 @@ pub mod regex;
 
 pub use classifier::{DeterministicPrivacyClassifier, PrivacyClassifier};
 pub use crypto::{EncryptedPayload, PrivacyEncryptor};
-pub use decision::{PrivacyDecision, PrivacyLabel, PrivacyNamespace, PrivacyScanMetadata, PrivacySpan, PrivacyTier};
+pub use decision::{
+    PrivacyDecision, PrivacyLabel, PrivacyNamespace, PrivacyScanMetadata, PrivacySpan, PrivacyStorageAction,
+    PrivacyTier,
+};
 pub use error::{PrivacyError, PrivacyResult};
 pub use keys::{FileKeyProvider, KeyMaterial, KeyProvider};
 pub use masking::{MaskingSession, MaskingSessionId};
-pub use policy::{CallerSensitivity, PrivacyPolicy};
+pub use policy::{CallerSensitivity, PrivacyPolicy, ResolvedPrivacyPolicy};
 pub use privacy_filter::{DisabledPrivacyFilter, FixturePrivacyFilter, PrivacyFilterProvider};

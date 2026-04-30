@@ -951,6 +951,12 @@ impl Substrate {
         read_events(&self.event_log)
     }
 
+    /// Record that encrypted content was intentionally revealed without
+    /// persisting the revealed plaintext.
+    pub fn record_encrypted_content_revealed(&self, id: MemoryId, reason: String) -> std::io::Result<()> {
+        self.record_event(EventKind::EncryptedContentRevealed { id, reason }, &new_operation_id())
+    }
+
     async fn open_with_options(roots: Roots, force_unsafe_durability: bool) -> Result<Self, OpenError> {
         bootstrap_repo_layout(&roots.repo)?;
         std::fs::create_dir_all(&roots.runtime)?;

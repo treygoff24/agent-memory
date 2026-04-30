@@ -1,6 +1,6 @@
 use memory_privacy::{
     DeterministicPrivacyClassifier, DisabledPrivacyFilter, FixturePrivacyFilter, PrivacyClassifier, PrivacyLabel,
-    PrivacyNamespace, PrivacySpan, PrivacyTier,
+    PrivacyNamespace, PrivacySpan, PrivacyStorageAction, PrivacyTier,
 };
 
 #[test]
@@ -24,7 +24,8 @@ fn fixture_provider_merges_with_layer1_spans() {
     let decision =
         classifier.classify("Trey wrote trey@example.com", PrivacyNamespace::Project, None).expect("classify");
 
-    assert_eq!(decision.tier, PrivacyTier::Personal);
+    assert_eq!(decision.tier, PrivacyTier::Internal);
+    assert_eq!(decision.storage_action, PrivacyStorageAction::EncryptAtRest);
     assert!(decision.spans.iter().any(|span| span.label == PrivacyLabel::PrivatePerson));
     assert!(decision.spans.iter().any(|span| span.label == PrivacyLabel::PrivateEmail));
 }

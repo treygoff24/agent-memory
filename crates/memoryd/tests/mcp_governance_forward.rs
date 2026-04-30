@@ -1,10 +1,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use memoryd::mcp::{forward_to_daemon, ForgetRequest, StartupRequest, SupersedeRequest, ToolRequest, WriteRequest};
+use memoryd::mcp::{
+    forward_to_daemon, ForgetRequest, RevealRequest, StartupRequest, SupersedeRequest, ToolRequest, WriteRequest,
+};
 use memoryd::protocol::{
     GovernanceForgetResponse, GovernanceStatus, GovernanceSupersedeResponse, GovernanceWriteResponse, RequestEnvelope,
-    RequestPayload, ResponseEnvelope, ResponsePayload, ResponseResult,
+    RequestPayload, ResponseEnvelope, ResponsePayload, ResponseResult, RevealResponse,
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
@@ -159,6 +161,48 @@ async fn mcp_governance_forward_memory_forget_forwards_to_governed_daemon_payloa
     };
     assert_eq!(forget.status, GovernanceStatus::Tombstoned);
     assert_eq!(forget.id, "mem_20260429_a1b2c3d4e5f60718_900001");
+    server.await.expect("server joins").expect("server ok");
+    let _ = std::fs::remove_file(socket);
+}
+
+#[tokio::test]
+async fn mcp_governance_forward_memory_reveal_forwards_to_privacy_reveal_payload() {
+    let socket = unique_socket_path("mcp-reveal");
+    let server = spawn_single_request_daemon(&socket, |request| {
+        assert_eq!(request.id, "req-reveal");
+        let RequestPayload::Reveal { id, reason } = request.request else {
+            panic!("expected Reveal payload, got {:?}", request.request);
+        };
+        assert_eq!(id, "mem_20260429_a1b2c3d4e5f60718_900003");
+        assert_eq!(reason, "user asked for contact cell");
+        ResponseEnvelope::success(
+            request.id,
+            ResponsePayload::Reveal(RevealResponse {
+                id,
+                summary: "contact cell".to_string(),
+                body: "cell is 202-555-0198".to_string(),
+                truncated: false,
+                guidance: "revealed".to_string(),
+            }),
+        )
+    })
+    .await;
+
+    let response = forward_to_daemon(
+        &socket,
+        "req-reveal",
+        ToolRequest::MemoryReveal(RevealRequest {
+            id: "mem_20260429_a1b2c3d4e5f60718_900003".to_string(),
+            reason: "user asked for contact cell".to_string(),
+        }),
+    )
+    .await
+    .expect("reveal forwards to daemon");
+
+    let ResponseResult::Success(ResponsePayload::Reveal(reveal)) = response.result else {
+        panic!("expected Reveal success, got {:?}", response.result);
+    };
+    assert!(reveal.body.contains("202-555-0198"));
     server.await.expect("server joins").expect("server ok");
     let _ = std::fs::remove_file(socket);
 }

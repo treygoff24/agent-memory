@@ -39,6 +39,11 @@ static RULES: Lazy<Vec<Rule>> = Lazy::new(|| {
                 .expect("jwt regex literal"),
         },
         Rule {
+            label: PrivacyLabel::Secret,
+            confidence: 0.99,
+            regex: Regex::new(r"\b\d{3}-\d{2}-\d{4}\b").expect("ssn regex literal"),
+        },
+        Rule {
             label: PrivacyLabel::PrivateEmail,
             confidence: 0.95,
             regex: Regex::new(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b").expect("email regex literal"),
@@ -78,6 +83,44 @@ pub fn regex_spans(text: &str) -> Vec<PrivacySpan> {
                 .map(|matched| PrivacySpan::new(rule.label, matched.start(), matched.end(), rule.confidence)),
         );
     }
+    spans.extend(credit_card_spans(text));
     spans.sort_by_key(|span| (span.start, span.end));
     spans
+}
+
+#[allow(clippy::expect_used)]
+static CARD_CANDIDATE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\b(?:\d[ -]?){13,19}\b").expect("credit card candidate regex literal"));
+
+fn credit_card_spans(text: &str) -> Vec<PrivacySpan> {
+    CARD_CANDIDATE
+        .find_iter(text)
+        .filter_map(|matched| {
+            let digits = matched.as_str().chars().filter(|ch| ch.is_ascii_digit()).collect::<String>();
+            luhn_valid(&digits).then(|| PrivacySpan::new(PrivacyLabel::Secret, matched.start(), matched.end(), 0.99))
+        })
+        .collect()
+}
+
+fn luhn_valid(digits: &str) -> bool {
+    if !(13..=19).contains(&digits.len()) {
+        return false;
+    }
+    let mut sum = 0_u32;
+    let mut double = false;
+    for digit in digits.bytes().rev() {
+        if !digit.is_ascii_digit() {
+            return false;
+        }
+        let mut value = u32::from(digit - b'0');
+        if double {
+            value *= 2;
+            if value > 9 {
+                value -= 9;
+            }
+        }
+        sum += value;
+        double = !double;
+    }
+    sum % 10 == 0
 }

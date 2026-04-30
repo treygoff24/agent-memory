@@ -57,6 +57,30 @@ impl PrivacyTier {
     }
 }
 
+/// Storage routing selected by Stream D after classification.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrivacyStorageAction {
+    /// Plaintext storage is allowed.
+    Plaintext,
+    /// Encrypt at rest, but do not imply a higher user-facing sensitivity tier.
+    EncryptAtRest,
+    /// Refuse before disk effects.
+    Refuse,
+}
+
+impl PrivacyStorageAction {
+    /// Whether this action routes through Stream A encrypted writes.
+    pub fn requires_encryption(self) -> bool {
+        matches!(self, Self::EncryptAtRest)
+    }
+
+    /// Whether this action refuses storage before Stream A mutation.
+    pub fn refuses_storage(self) -> bool {
+        matches!(self, Self::Refuse)
+    }
+}
+
 /// Detected privacy span label.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -80,17 +104,16 @@ pub enum PrivacyLabel {
 }
 
 impl PrivacyLabel {
-    /// Conservative tier implied by a detected label.
-    pub fn implied_tier(self) -> PrivacyTier {
+    /// Storage action implied by a detected label.
+    pub fn storage_action(self) -> PrivacyStorageAction {
         match self {
-            Self::Secret => PrivacyTier::Secret,
+            Self::Secret => PrivacyStorageAction::Refuse,
             Self::AccountNumber
             | Self::PrivateAddress
             | Self::PrivateEmail
             | Self::PrivatePerson
-            | Self::PrivatePhone
-            | Self::PrivateUrl
-            | Self::PrivateDate => PrivacyTier::Personal,
+            | Self::PrivatePhone => PrivacyStorageAction::EncryptAtRest,
+            Self::PrivateUrl | Self::PrivateDate => PrivacyStorageAction::Plaintext,
         }
     }
 
@@ -147,6 +170,8 @@ pub struct PrivacyScanMetadata {
 pub struct PrivacyDecision {
     /// Final tier after defaults, caller metadata, deterministic scanner, and optional model spans.
     pub tier: PrivacyTier,
+    /// Storage routing after caller metadata and span policy.
+    pub storage_action: PrivacyStorageAction,
     /// All spans contributing to the decision.
     pub spans: Vec<PrivacySpan>,
     /// Audit metadata.
@@ -155,10 +180,16 @@ pub struct PrivacyDecision {
 
 impl PrivacyDecision {
     /// Build a decision.
-    pub fn new(tier: PrivacyTier, spans: Vec<PrivacySpan>, model: impl Into<String>) -> Self {
+    pub fn new(
+        tier: PrivacyTier,
+        storage_action: PrivacyStorageAction,
+        spans: Vec<PrivacySpan>,
+        model: impl Into<String>,
+    ) -> Self {
         let labels = spans.iter().map(|span| span.label).collect::<Vec<_>>();
         Self {
             tier,
+            storage_action,
             spans,
             scan: PrivacyScanMetadata { model: model.into(), ran_at: Utc::now(), spans_detected: labels.len(), labels },
         }

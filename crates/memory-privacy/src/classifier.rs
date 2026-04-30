@@ -52,7 +52,7 @@ impl PrivacyClassifier for DeterministicPrivacyClassifier {
             spans.extend(provider_spans);
         }
         spans.sort_by_key(|span| (span.start, span.end));
-        let tier = PrivacyPolicy::resolve_tier(namespace, caller, &spans)?;
-        Ok(PrivacyDecision::new(tier, spans, model))
+        let resolved = PrivacyPolicy::resolve(namespace, caller, &spans)?;
+        Ok(PrivacyDecision::new(resolved.tier, resolved.storage_action, spans, model))
     }
 }
