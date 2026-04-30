@@ -32,6 +32,12 @@ pub enum Command {
     Forget(ForgetArgs),
     /// Admin review queue commands.
     Review(ReviewArgs),
+    /// Admin privacy inspection commands.
+    Privacy(PrivacyArgs),
+    /// Optional Privacy Filter commands.
+    PrivacyFilter(PrivacyFilterArgs),
+    /// Local encrypted-tier device key commands.
+    Device(DeviceArgs),
 }
 
 #[derive(Debug, Args)]
@@ -195,4 +201,87 @@ pub struct ReviewRejectArgs {
     pub reason: String,
     /// Memory id to reject.
     pub id: String,
+}
+
+#[derive(Debug, Args)]
+pub struct PrivacyArgs {
+    #[command(subcommand)]
+    pub command: PrivacyCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PrivacyCommand {
+    /// Show Stream D privacy status.
+    Status(RootArgs),
+    /// Classify text or a file with the always-on Layer 1 scanner.
+    Scan(PrivacyScanArgs),
+    /// Scan staged git delta text with Layer 1 before commit.
+    ScanDelta(PrivacyScanDeltaArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct PrivacyScanArgs {
+    /// Text to classify.
+    #[arg(long, conflicts_with = "file")]
+    pub text: Option<String>,
+    /// File whose contents should be classified.
+    #[arg(long, conflicts_with = "text")]
+    pub file: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct PrivacyScanDeltaArgs {
+    /// Repository whose staged delta should be scanned.
+    #[arg(long, default_value = ".")]
+    pub repo: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub struct PrivacyFilterArgs {
+    #[command(subcommand)]
+    pub command: PrivacyFilterCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PrivacyFilterCommand {
+    /// Explain how Privacy Filter installation is handled.
+    Install,
+    /// Enable the optional Privacy Filter provider when installed.
+    Enable,
+    /// Disable the optional Privacy Filter provider.
+    Disable,
+    /// Show optional Privacy Filter status.
+    Status,
+}
+
+#[derive(Debug, Args)]
+pub struct DeviceArgs {
+    #[command(subcommand)]
+    pub command: DeviceCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DeviceCommand {
+    /// Generate local age key material in the runtime privacy key store.
+    Onboard(DeviceOnboardArgs),
+    /// Rotate local age key material.
+    RotateKeys(DeviceOnboardArgs),
+    /// Mark a device revoke request as operator-required.
+    Revoke(DeviceRevokeArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct DeviceOnboardArgs {
+    /// Local per-device runtime root.
+    #[arg(long, default_value = ".memoryd")]
+    pub runtime: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub struct DeviceRevokeArgs {
+    /// Device id to revoke.
+    pub device_id: String,
+    /// Local per-device runtime root.
+    #[arg(long, default_value = ".memoryd")]
+    pub runtime: PathBuf,
 }

@@ -217,9 +217,6 @@ impl Substrate {
         // hydration of `frontmatter_json`).
         for path in crate::tree::relative_memory_paths(&self.roots.repo) {
             let repo_path = RepoPath::new(path.to_string_lossy().replace('\\', "/"));
-            if repo_path.as_str().starts_with("encrypted/") {
-                continue;
-            }
             if let Ok((memory, _)) = read_memory_file(&self.roots.repo, &repo_path) {
                 if &memory.frontmatter.id == id {
                     return Ok(repo_path);
@@ -276,6 +273,7 @@ impl Substrate {
             operation_id: &operation_id,
             durability: self.durability,
             suppression: Some(&self.suppression),
+            allow_encrypted_namespace: false,
         })?;
         let upsert_res = {
             let mut index_guard = self.index.lock().map_err(|err| WriteFailure {
@@ -670,10 +668,11 @@ impl Substrate {
     pub async fn tombstone_memory(&self, request: TombstoneRequest) -> Result<WriteOutcome, WriteFailure> {
         let operation_id = new_operation_id();
         let outcome = WriteOutcome::not_committed(operation_id.clone(), self.durability);
-        let mut memory = self.read_memory(&request.id).await.map_err(|err| WriteFailure {
+        let envelope = self.read_memory_envelope(&request.id).await.map_err(|err| WriteFailure {
             outcome: outcome.clone(),
             kind: WriteFailureKind::Validation(err.to_string()),
         })?;
+        let mut memory = envelope.metadata;
         let path = memory
             .path
             .clone()
@@ -710,6 +709,7 @@ impl Substrate {
             operation_id: &operation_id,
             durability: self.durability,
             suppression: Some(&self.suppression),
+            allow_encrypted_namespace: path.as_str().starts_with("encrypted/"),
         })?;
         self.index
             .lock()

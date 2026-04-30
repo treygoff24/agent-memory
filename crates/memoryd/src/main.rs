@@ -1,9 +1,12 @@
 use clap::Parser;
+use memory_privacy::{
+    DeterministicPrivacyClassifier, FileKeyProvider, KeyProvider, PrivacyClassifier, PrivacyNamespace,
+};
 use memory_substrate::{InitOptions, Roots, Substrate};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::watch;
 
-use memoryd::cli::{Cli, Command, ReviewCommand};
+use memoryd::cli::{Cli, Command, DeviceCommand, PrivacyCommand, PrivacyFilterCommand, ReviewCommand};
 use memoryd::client;
 use memoryd::protocol::RequestPayload;
 use memoryd::server::{self, ServerOptions};
@@ -136,6 +139,100 @@ async fn main() -> anyhow::Result<()> {
                     )
                     .await?,
                 )?;
+            }
+        },
+        Command::Privacy(args) => match args.command {
+            PrivacyCommand::Status(args) => {
+                let key_provider = FileKeyProvider::runtime_default(&args.runtime);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "stream": "D",
+                        "layer1": "enabled",
+                        "privacy_filter": "disabled",
+                        "encrypted_key_available": key_provider.load_key().is_ok(),
+                        "guidance": "Layer 1 regex/entropy scanning is always on; optional Privacy Filter is disabled unless configured."
+                    }))?
+                );
+            }
+            PrivacyCommand::Scan(scan) => {
+                let text = match (scan.text, scan.file) {
+                    (Some(text), None) => text,
+                    (None, Some(path)) => std::fs::read_to_string(path)?,
+                    _ => anyhow::bail!("provide exactly one of --text or --file"),
+                };
+                let classifier = DeterministicPrivacyClassifier::new();
+                let decision = classifier.classify(&text, PrivacyNamespace::Project, None)?;
+                println!("{}", serde_json::to_string_pretty(&decision)?);
+            }
+            PrivacyCommand::ScanDelta(args) => {
+                let output = std::process::Command::new("git")
+                    .args(["-C", args.repo.to_string_lossy().as_ref(), "diff", "--cached", "--no-ext-diff", "-U0"])
+                    .output()?;
+                if !output.status.success() {
+                    anyhow::bail!("git diff --cached failed");
+                }
+                let text = String::from_utf8(output.stdout)?;
+                let classifier = DeterministicPrivacyClassifier::new();
+                let decision = classifier.classify(&text, PrivacyNamespace::Project, None)?;
+                println!("{}", serde_json::to_string_pretty(&decision)?);
+                if decision.tier == memory_privacy::PrivacyTier::Secret {
+                    anyhow::bail!("staged delta contains secret-like material");
+                }
+            }
+        },
+        Command::PrivacyFilter(args) => match args.command {
+            PrivacyFilterCommand::Install => {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "status": "not_installed",
+                        "guidance": "No model weights are downloaded by normal tests. Install the optional OpenAI Privacy Filter out of band, then enable the provider."
+                    }))?
+                );
+            }
+            PrivacyFilterCommand::Enable => {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(
+                        &serde_json::json!({"status": "disabled", "reason": "provider runtime not configured"})
+                    )?
+                );
+            }
+            PrivacyFilterCommand::Disable => {
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({"status": "disabled"}))?);
+            }
+            PrivacyFilterCommand::Status => {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({"status": "disabled", "layer1": "enabled"}))?
+                );
+            }
+        },
+        Command::Device(args) => match args.command {
+            DeviceCommand::Onboard(args) | DeviceCommand::RotateKeys(args) => {
+                let provider = FileKeyProvider::runtime_default(&args.runtime);
+                let key = provider.onboard_local_file()?;
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "status": "ok",
+                        "recipient": key.recipient,
+                        "key_path": provider.path(),
+                        "guidance": "Local Stream D key material created for encrypted-tier writes."
+                    }))?
+                );
+            }
+            DeviceCommand::Revoke(args) => {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "status": "operator_required",
+                        "device_id": args.device_id,
+                        "runtime": args.runtime,
+                        "guidance": "Remove the device recipient from trusted devices and rotate keys."
+                    }))?
+                );
             }
         },
     }

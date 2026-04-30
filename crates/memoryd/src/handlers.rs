@@ -9,11 +9,15 @@ use memory_governance::{
     ReviewMemoryEnvelope, ReviewQueue, SessionSpawnResolver, SimilaritySearch, Source as GovernanceSource,
     SourceKind as GovernanceSourceKind, TiebreakOutcome, TombstoneIndex, TombstoneKind, TombstoneRule,
 };
+use memory_privacy::{
+    CallerSensitivity, DeterministicPrivacyClassifier, FileKeyProvider, PrivacyClassifier, PrivacyDecision,
+    PrivacyEncryptor, PrivacyNamespace, PrivacyTier,
+};
 use memory_substrate::{
-    Author, AuthorKind, ChunkQuery, ClassificationOutcome, EventContext, Frontmatter, Memory, MemoryContent, MemoryId,
-    MemoryStatus, MemoryType, RepoPath, RetrievalPolicy, Scope, Sensitivity, Source, SourceKind, Substrate,
-    SupersedeRequest as SubstrateSupersedeRequest, TombstoneRequest, TrustLevel, WriteMode, WritePolicy,
-    WriteRequest as SubstrateWriteRequest,
+    Author, AuthorKind, ChunkQuery, ClassificationOutcome, EncryptedWriteRequest, EventContext, Frontmatter, Memory,
+    MemoryContent, MemoryId, MemoryStatus, MemoryType, RepoPath, RetrievalPolicy, Scope, Sensitivity, Source,
+    SourceKind, Substrate, SupersedeRequest as SubstrateSupersedeRequest, TombstoneRequest, TrustLevel, WriteMode,
+    WritePolicy, WriteRequest as SubstrateWriteRequest,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -160,24 +164,22 @@ async fn write_note_response(substrate: &Substrate, text: &str) -> Result<Respon
     if text.is_empty() {
         return Err(HandlerError::invalid_request("note text must not be empty"));
     }
+    let privacy = classify_privacy(text, PrivacyNamespace::Agent, None)?;
+    if privacy.tier == PrivacyTier::Secret {
+        return Err(HandlerError::invalid_request("privacy refused secret note before disk effects"));
+    }
 
     let memory_id = substrate.next_memory_id().await.map_err(HandlerError::substrate)?;
-    let memory = candidate_memory(memory_id, text);
+    let memory = candidate_memory(memory_id, text, privacy.tier);
     let id = memory.frontmatter.id.as_str().to_string();
     let summary = memory.frontmatter.summary.clone();
-    substrate
-        .write_memory(SubstrateWriteRequest {
-            operation_id: None,
-            memory,
-            expected_base_hash: None,
-            write_mode: WriteMode::CreateNew,
-            index_projection: None,
-            event_context: EventContext::default(),
-            allow_best_effort_durability: true,
-            classification: ClassificationOutcome::Trusted,
-        })
-        .await
-        .map_err(HandlerError::substrate)?;
+    write_privacy_memory(
+        substrate,
+        memory,
+        &privacy,
+        EventContext { actor: Some("memoryd-note".to_string()), reason: Some("privacy-mediated note".to_string()) },
+    )
+    .await?;
     Ok(ResponsePayload::WriteNote(WriteNoteResponse { id, summary }))
 }
 
@@ -186,7 +188,8 @@ async fn governance_write_response(
     request: GovernanceWriteRequest,
 ) -> Result<ResponsePayload, HandlerError> {
     let input = GovernanceWriteInput::parse(request.body, request.title, request.tags, request.meta)?;
-    if let Some(response) = input.privacy_refusal() {
+    let privacy = classify_input_privacy(&input)?;
+    if let Some(response) = input.privacy_refusal(&privacy) {
         return Ok(ResponsePayload::GovernanceWrite(response));
     }
 
@@ -217,7 +220,8 @@ async fn governance_write_response(
         allow_top_k: false,
     });
     let decision = engine.evaluate_write(&candidate);
-    let response = execute_write_decision(substrate, WriteExecution { input, id, decision, policy_source }).await?;
+    let response =
+        execute_write_decision(substrate, WriteExecution { input, id, decision, policy_source, privacy }).await?;
     Ok(ResponsePayload::GovernanceWrite(response))
 }
 
@@ -229,7 +233,8 @@ async fn governance_supersede_response(
     let old_memory_id =
         MemoryId::try_new(old_id.clone()).map_err(|err| HandlerError::invalid_request(err.to_string()))?;
     let input = GovernanceWriteInput::parse(content, None, Vec::new(), meta)?;
-    if let Some(refusal) = input.privacy_refusal() {
+    let privacy = classify_input_privacy(&input)?;
+    if let Some(refusal) = input.privacy_refusal(&privacy) {
         return Ok(ResponsePayload::GovernanceSupersede(GovernanceSupersedeResponse {
             status: GovernanceStatus::Refused,
             new_id: None,
@@ -271,8 +276,15 @@ async fn governance_supersede_response(
             }));
         }
     };
-    let old_memory = substrate.read_memory(&old_memory_id).await.map_err(HandlerError::substrate)?;
-    let active = vec![existing_summary_from_memory(old_memory)];
+    let old_envelope = substrate.read_memory_envelope(&old_memory_id).await.map_err(HandlerError::substrate)?;
+    let MemoryContent::Plaintext(old_body) = old_envelope.content else {
+        return Ok(ResponsePayload::GovernanceSupersede(supersede_privacy_refusal(
+            old_id,
+            None,
+            "encrypted memories cannot be superseded until Stream A exposes an encrypted supersession API",
+        )));
+    };
+    let active = vec![existing_summary_from_memory(old_envelope.metadata, old_body)];
     let engine = governance_engine(GovernanceEngineInput {
         policies,
         active,
@@ -299,14 +311,22 @@ async fn governance_supersede_response(
     let mut replacement = input.to_memory(
         new_id.clone(),
         GovernedLifecycle::new(MemoryStatus::Active, TrustLevel::Trusted, policy_applied.clone()),
+        privacy.tier,
     );
     replacement.frontmatter.supersedes.push(old_memory_id.clone());
+    if privacy.tier.requires_encryption() {
+        return Ok(ResponsePayload::GovernanceSupersede(supersede_privacy_refusal(
+            old_id,
+            Some(policy_applied),
+            "encrypted supersession replacements require Stream A encrypted supersession atomicity",
+        )));
+    }
     substrate
         .supersede_memory(SubstrateSupersedeRequest {
             old_id: old_memory_id,
             replacement,
             reason,
-            classification: ClassificationOutcome::Trusted,
+            classification: privacy.tier.classification(),
             allow_best_effort_durability: true,
         })
         .await
@@ -329,12 +349,18 @@ async fn governance_forget_response(
     reason: String,
 ) -> Result<ResponsePayload, HandlerError> {
     let memory_id = MemoryId::try_new(id.clone()).map_err(|err| HandlerError::invalid_request(err.to_string()))?;
-    let memory = substrate.read_memory(&memory_id).await.map_err(HandlerError::substrate)?;
+    let envelope = substrate.read_memory_envelope(&memory_id).await.map_err(HandlerError::substrate)?;
+    let tombstone_claim = match &envelope.content {
+        MemoryContent::Plaintext(body) if !body.is_empty() => body.clone(),
+        MemoryContent::Ciphertext { .. } | MemoryContent::MetadataOnly | MemoryContent::Plaintext(_) => {
+            envelope.metadata.frontmatter.summary.clone()
+        }
+    };
     substrate
         .tombstone_memory(TombstoneRequest { id: memory_id, reason: reason.clone() })
         .await
         .map_err(HandlerError::substrate)?;
-    write_tombstone_rule(substrate.roots().repo.as_path(), &memory, &reason)?;
+    write_tombstone_rule(substrate.roots().repo.as_path(), &envelope.metadata, &tombstone_claim, &reason)?;
     Ok(ResponsePayload::GovernanceForget(GovernanceForgetResponse {
         status: GovernanceStatus::Tombstoned,
         id,
@@ -347,14 +373,15 @@ async fn execute_write_decision(
     substrate: &Substrate,
     execution: WriteExecution,
 ) -> Result<GovernanceWriteResponse, HandlerError> {
-    let WriteExecution { input, id, decision, policy_source } = execution;
+    let WriteExecution { input, id, decision, policy_source, privacy } = execution;
     match decision {
         GovernanceWriteDecision::Promoted { namespace, policy_applied, .. } => {
             let memory = input.to_memory(
                 id.clone(),
                 GovernedLifecycle::new(MemoryStatus::Active, TrustLevel::Trusted, policy_applied.clone()),
+                privacy.tier,
             );
-            write_governed_memory(substrate, memory).await?;
+            write_governed_memory(substrate, memory, &privacy).await?;
             Ok(GovernanceWriteResponse {
                 status: GovernanceStatus::Promoted,
                 id: Some(id.as_str().to_string()),
@@ -370,8 +397,9 @@ async fn execute_write_decision(
             let memory = input.to_memory(
                 id.clone(),
                 GovernedLifecycle::new(MemoryStatus::Candidate, TrustLevel::Candidate, policy_applied.clone()),
+                privacy.tier,
             );
-            write_governed_memory(substrate, memory).await?;
+            write_governed_memory(substrate, memory, &privacy).await?;
             Ok(GovernanceWriteResponse {
                 status: GovernanceStatus::Candidate,
                 id: Some(id.as_str().to_string()),
@@ -387,8 +415,9 @@ async fn execute_write_decision(
             let memory = input.to_memory(
                 id.clone(),
                 GovernedLifecycle::new(MemoryStatus::Quarantined, TrustLevel::Quarantined, policy_applied.clone()),
+                privacy.tier,
             );
-            write_governed_memory(substrate, memory).await?;
+            write_governed_memory(substrate, memory, &privacy).await?;
             Ok(GovernanceWriteResponse {
                 status: GovernanceStatus::Quarantined,
                 id: Some(id.as_str().to_string()),
@@ -443,24 +472,85 @@ async fn execute_write_decision(
     }
 }
 
-async fn write_governed_memory(substrate: &Substrate, memory: Memory) -> Result<(), HandlerError> {
-    substrate
-        .write_memory(SubstrateWriteRequest {
-            operation_id: None,
-            memory,
-            expected_base_hash: None,
-            write_mode: WriteMode::CreateNew,
-            index_projection: None,
-            event_context: EventContext {
-                actor: Some("memoryd-governance".to_string()),
-                reason: Some("governed write".to_string()),
-            },
-            allow_best_effort_durability: true,
-            classification: ClassificationOutcome::Trusted,
-        })
-        .await
-        .map(|_| ())
-        .map_err(HandlerError::substrate)
+async fn write_governed_memory(
+    substrate: &Substrate,
+    memory: Memory,
+    privacy: &PrivacyDecision,
+) -> Result<(), HandlerError> {
+    write_privacy_memory(
+        substrate,
+        memory,
+        privacy,
+        EventContext {
+            actor: Some("memoryd-governance".to_string()),
+            reason: Some("governed privacy-mediated write".to_string()),
+        },
+    )
+    .await
+}
+
+async fn write_privacy_memory(
+    substrate: &Substrate,
+    mut memory: Memory,
+    privacy: &PrivacyDecision,
+    event_context: EventContext,
+) -> Result<(), HandlerError> {
+    if privacy.tier == PrivacyTier::Secret {
+        return Err(HandlerError::invalid_request("privacy refused secret before disk effects"));
+    }
+    attach_privacy_scan(&mut memory, privacy);
+    if privacy.tier.requires_encryption() {
+        let encryptor = PrivacyEncryptor::new(FileKeyProvider::runtime_default(&substrate.roots().runtime));
+        let encrypted = encryptor.encrypt(&memory.body).map_err(HandlerError::privacy)?;
+        memory.frontmatter.extras.insert("encryption".to_string(), encrypted.envelope);
+        substrate
+            .write_encrypted(EncryptedWriteRequest {
+                operation_id: None,
+                metadata_memory: memory,
+                ciphertext: encrypted.ciphertext,
+                safe_index_projection: None,
+                event_context,
+                allow_best_effort_durability: true,
+                classification: ClassificationOutcome::RequiresEncryption,
+            })
+            .await
+            .map(|_| ())
+            .map_err(HandlerError::substrate)
+    } else {
+        substrate
+            .write_memory(SubstrateWriteRequest {
+                operation_id: None,
+                memory,
+                expected_base_hash: None,
+                write_mode: WriteMode::CreateNew,
+                index_projection: None,
+                event_context,
+                allow_best_effort_durability: true,
+                classification: privacy.tier.classification(),
+            })
+            .await
+            .map(|_| ())
+            .map_err(HandlerError::substrate)
+    }
+}
+
+fn classify_input_privacy(input: &GovernanceWriteInput) -> Result<PrivacyDecision, HandlerError> {
+    classify_privacy(&input.privacy_scan_text(), input.privacy_namespace(), input.caller_sensitivity())
+}
+
+fn classify_privacy(
+    text: &str,
+    namespace: PrivacyNamespace,
+    caller: Option<CallerSensitivity>,
+) -> Result<PrivacyDecision, HandlerError> {
+    DeterministicPrivacyClassifier::new().classify(text, namespace, caller).map_err(HandlerError::privacy)
+}
+
+fn attach_privacy_scan(memory: &mut Memory, privacy: &PrivacyDecision) {
+    memory
+        .frontmatter
+        .extras
+        .insert("privacy_scan".to_string(), serde_json::to_value(&privacy.scan).unwrap_or(serde_json::Value::Null));
 }
 
 async fn review_queue_response(substrate: &Substrate, limit: Option<usize>) -> Result<ResponsePayload, HandlerError> {
@@ -508,7 +598,13 @@ async fn review_decision_response(
     decision: ReviewDecision,
 ) -> Result<ResponsePayload, HandlerError> {
     let memory_id = MemoryId::try_new(id.to_string()).map_err(|err| HandlerError::invalid_request(err.to_string()))?;
-    let mut memory = substrate.read_memory(&memory_id).await.map_err(HandlerError::substrate)?;
+    let envelope = substrate.read_memory_envelope(&memory_id).await.map_err(HandlerError::substrate)?;
+    if !matches!(envelope.content, MemoryContent::Plaintext(_)) {
+        return Err(HandlerError::invalid_request(
+            "encrypted review decisions require an encrypted lifecycle update API",
+        ));
+    }
+    let mut memory = envelope.metadata;
     if !matches!(memory.frontmatter.status, MemoryStatus::Candidate | MemoryStatus::Quarantined)
         || !review_queue_contains(&memory)
     {
@@ -654,21 +750,37 @@ fn supersede_refusal(
     }
 }
 
-fn existing_summary_from_memory(memory: Memory) -> ExistingMemorySummary {
+fn supersede_privacy_refusal(
+    old_id: String,
+    policy_applied: Option<String>,
+    policy_source: impl Into<String>,
+) -> GovernanceSupersedeResponse {
+    GovernanceSupersedeResponse {
+        status: GovernanceStatus::Refused,
+        new_id: None,
+        old_id: Some(old_id),
+        reason: Some(GovernanceRefusalReason::Privacy),
+        chain: None,
+        policy_applied,
+        policy_source: Some(policy_source.into()),
+    }
+}
+
+fn existing_summary_from_memory(memory: Memory, body: String) -> ExistingMemorySummary {
     ExistingMemorySummary::new(
         memory.frontmatter.id.as_str().to_string(),
         namespace_for_frontmatter(&memory.frontmatter),
-        memory.body,
+        body,
         1.0,
     )
     .with_entity_ids(entity_ids(&memory.frontmatter))
 }
 
-fn write_tombstone_rule(repo: &Path, memory: &Memory, reason: &str) -> Result<(), HandlerError> {
+fn write_tombstone_rule(repo: &Path, memory: &Memory, claim: &str, reason: &str) -> Result<(), HandlerError> {
     let tombstone_dir = repo.join("tombstones");
     std::fs::create_dir_all(&tombstone_dir)
         .map_err(|error| HandlerError::substrate(format!("create tombstone dir: {error}")))?;
-    let key = memory_governance::CandidateTombstoneKey::from_claim(&memory.body, entity_ids(&memory.frontmatter))
+    let key = memory_governance::CandidateTombstoneKey::from_claim(claim, entity_ids(&memory.frontmatter))
         .with_target_memory_id(memory.frontmatter.id.as_str().to_string());
     let rule = TombstoneRule {
         id: format!("tomb_{}", memory.frontmatter.id.as_str()),
@@ -816,6 +928,7 @@ struct WriteExecution {
     id: MemoryId,
     decision: GovernanceWriteDecision,
     policy_source: PolicySource,
+    privacy: PrivacyDecision,
 }
 
 #[derive(Clone, Debug)]
@@ -945,25 +1058,34 @@ impl GovernanceWriteInput {
         Ok(Self { body, title, tags, meta })
     }
 
-    fn privacy_refusal(&self) -> Option<GovernanceWriteResponse> {
-        match self.meta.sensitivity {
-            Some(GovernanceSensitivity::Public | GovernanceSensitivity::Internal) => None,
-            None
-            | Some(
-                GovernanceSensitivity::Confidential
-                | GovernanceSensitivity::Personal
-                | GovernanceSensitivity::Sensitive
-                | GovernanceSensitivity::Secret,
-            ) => Some(GovernanceWriteResponse {
+    fn privacy_scan_text(&self) -> String {
+        let mut fields = vec![self.body.as_str()];
+        if let Some(title) = &self.title {
+            fields.push(title.as_str());
+        }
+        if let Some(summary) = &self.meta.summary {
+            fields.push(summary.as_str());
+        }
+        if let Some(source_ref) = &self.meta.source_ref {
+            fields.push(source_ref.as_str());
+        }
+        fields.extend(self.tags.iter().map(String::as_str));
+        fields.join("\n")
+    }
+
+    fn privacy_refusal(&self, privacy: &PrivacyDecision) -> Option<GovernanceWriteResponse> {
+        match privacy.tier {
+            PrivacyTier::Secret => Some(GovernanceWriteResponse {
                 status: GovernanceStatus::Refused,
                 id: None,
                 namespace: Some(self.response_namespace()),
                 reason: Some(GovernanceRefusalReason::Privacy),
-                next_actions: vec!["run_stream_d_privacy_classification".to_string()],
+                next_actions: vec!["remove_secret_material".to_string()],
                 policy_applied: None,
                 policy_source: None,
                 existing_id: None,
             }),
+            PrivacyTier::Public | PrivacyTier::Internal | PrivacyTier::Confidential | PrivacyTier::Personal => None,
         }
     }
 
@@ -978,9 +1100,9 @@ impl GovernanceWriteInput {
         candidate
     }
 
-    fn to_memory(&self, id: MemoryId, lifecycle: GovernedLifecycle) -> Memory {
+    fn to_memory(&self, id: MemoryId, lifecycle: GovernedLifecycle, privacy_tier: PrivacyTier) -> Memory {
         let now = chrono::Utc::now();
-        let summary = self.summary();
+        let summary = self.summary(privacy_tier);
         let requires_review = matches!(lifecycle.status, MemoryStatus::Candidate | MemoryStatus::Quarantined);
         let review_state = match lifecycle.status {
             MemoryStatus::Candidate => Some("candidate".to_string()),
@@ -992,6 +1114,9 @@ impl GovernanceWriteInput {
             extras.insert("governance_reason".to_string(), serde_json::json!("governance quarantine"));
         }
 
+        let sensitivity = privacy_tier.persisted_sensitivity().unwrap_or(Sensitivity::Internal);
+        let encrypted = privacy_tier.requires_encryption();
+        let indexable = !encrypted && !matches!(lifecycle.status, MemoryStatus::Quarantined);
         Memory {
             frontmatter: Frontmatter {
                 schema_version: memory_substrate::SUBSTRATE_SCHEMA_VERSION,
@@ -1001,17 +1126,17 @@ impl GovernanceWriteInput {
                 summary,
                 confidence: self.meta.confidence,
                 trust_level: lifecycle.trust_level,
-                sensitivity: Sensitivity::Internal,
+                sensitivity,
                 status: lifecycle.status,
                 created_at: now,
                 updated_at: now,
                 author: self.author(),
                 namespace: self.substrate_namespace(),
                 canonical_namespace_id: self.substrate_namespace(),
-                tags: self.tags.clone(),
+                tags: self.persisted_tags(privacy_tier),
                 entities: Vec::new(),
                 aliases: Vec::new(),
-                source: self.substrate_source(),
+                source: self.substrate_source(privacy_tier),
                 evidence: Vec::new(),
                 requires_user_confirmation: requires_review,
                 review_state,
@@ -1022,9 +1147,9 @@ impl GovernanceWriteInput {
                 retrieval_policy: RetrievalPolicy {
                     passive_recall: !matches!(lifecycle.status, MemoryStatus::Quarantined),
                     max_scope: self.substrate_scope(),
-                    mask_personal_for_synthesis: false,
-                    index_body: !matches!(lifecycle.status, MemoryStatus::Quarantined),
-                    index_embeddings: !matches!(lifecycle.status, MemoryStatus::Quarantined),
+                    mask_personal_for_synthesis: encrypted,
+                    index_body: indexable,
+                    index_embeddings: indexable,
                 },
                 write_policy: WritePolicy {
                     human_review_required: requires_review,
@@ -1046,8 +1171,19 @@ impl GovernanceWriteInput {
         }
     }
 
-    fn summary(&self) -> String {
+    fn summary(&self, privacy_tier: PrivacyTier) -> String {
+        if privacy_tier.requires_encryption() {
+            return "encrypted memory".to_string();
+        }
         self.meta.summary.clone().or_else(|| self.title.clone()).unwrap_or_else(|| bounded(&self.body, 120))
+    }
+
+    fn persisted_tags(&self, privacy_tier: PrivacyTier) -> Vec<String> {
+        if privacy_tier.requires_encryption() {
+            Vec::new()
+        } else {
+            self.tags.clone()
+        }
     }
 
     fn response_namespace(&self) -> String {
@@ -1064,6 +1200,25 @@ impl GovernanceWriteInput {
             GovernanceNamespace::Project => memory_governance::Scope::Project,
             GovernanceNamespace::Agent => memory_governance::Scope::Agent,
         }
+    }
+
+    fn privacy_namespace(&self) -> PrivacyNamespace {
+        match self.meta.namespace {
+            GovernanceNamespace::Me => PrivacyNamespace::Me,
+            GovernanceNamespace::Project => PrivacyNamespace::Project,
+            GovernanceNamespace::Agent => PrivacyNamespace::Agent,
+        }
+    }
+
+    fn caller_sensitivity(&self) -> Option<CallerSensitivity> {
+        self.meta.sensitivity.map(|sensitivity| match sensitivity {
+            GovernanceSensitivity::Public => CallerSensitivity::Public,
+            GovernanceSensitivity::Internal => CallerSensitivity::Internal,
+            GovernanceSensitivity::Confidential => CallerSensitivity::Confidential,
+            GovernanceSensitivity::Personal => CallerSensitivity::Personal,
+            GovernanceSensitivity::Sensitive => CallerSensitivity::Sensitive,
+            GovernanceSensitivity::Secret => CallerSensitivity::Secret,
+        })
     }
 
     fn substrate_scope(&self) -> Scope {
@@ -1089,7 +1244,7 @@ impl GovernanceWriteInput {
         vec![GovernanceSource::new(kind, self.meta.source_ref.clone())]
     }
 
-    fn substrate_source(&self) -> Source {
+    fn substrate_source(&self, privacy_tier: PrivacyTier) -> Source {
         let kind = match self.meta.source_kind {
             GovernanceSourceKindMeta::User => SourceKind::User,
             GovernanceSourceKindMeta::Subagent => SourceKind::AgentSubagent,
@@ -1098,7 +1253,11 @@ impl GovernanceWriteInput {
         };
         Source {
             kind,
-            reference: self.meta.source_ref.clone().or_else(|| Some("memoryd.governance".to_string())),
+            reference: if privacy_tier.requires_encryption() {
+                Some("memoryd.governance".to_string())
+            } else {
+                self.meta.source_ref.clone().or_else(|| Some("memoryd.governance".to_string()))
+            },
             harness: None,
             harness_version: None,
             session_id: None,
@@ -1214,18 +1373,20 @@ impl ReviewDecision {
     }
 }
 
-fn candidate_memory(id: MemoryId, text: &str) -> Memory {
+fn candidate_memory(id: MemoryId, text: &str, privacy_tier: PrivacyTier) -> Memory {
     let now = chrono::Utc::now();
+    let sensitivity = privacy_tier.persisted_sensitivity().unwrap_or(Sensitivity::Internal);
+    let encrypted = privacy_tier.requires_encryption();
     Memory {
         frontmatter: Frontmatter {
             schema_version: memory_substrate::SUBSTRATE_SCHEMA_VERSION,
             id: id.clone(),
             memory_type: MemoryType::Pattern,
             scope: Scope::Agent,
-            summary: bounded(text, 120),
+            summary: if encrypted { "encrypted note".to_string() } else { bounded(text, 120) },
             confidence: 0.5,
             trust_level: TrustLevel::Candidate,
-            sensitivity: Sensitivity::Internal,
+            sensitivity,
             status: MemoryStatus::Candidate,
             created_at: now,
             updated_at: now,
@@ -1241,7 +1402,7 @@ fn candidate_memory(id: MemoryId, text: &str) -> Memory {
             },
             namespace: None,
             canonical_namespace_id: None,
-            tags: vec!["candidate".to_string(), "memoryd-note".to_string()],
+            tags: if encrypted { Vec::new() } else { vec!["candidate".to_string(), "memoryd-note".to_string()] },
             entities: Vec::new(),
             aliases: Vec::new(),
             source: Source {
@@ -1263,9 +1424,9 @@ fn candidate_memory(id: MemoryId, text: &str) -> Memory {
             retrieval_policy: RetrievalPolicy {
                 passive_recall: true,
                 max_scope: Scope::Agent,
-                mask_personal_for_synthesis: false,
-                index_body: true,
-                index_embeddings: true,
+                mask_personal_for_synthesis: encrypted,
+                index_body: !encrypted,
+                index_embeddings: !encrypted,
             },
             write_policy: WritePolicy {
                 human_review_required: true,
@@ -1305,5 +1466,9 @@ impl HandlerError {
 
     fn substrate(error: impl std::fmt::Display) -> Self {
         Self { code: "substrate_error".to_string(), message: error.to_string(), retryable: true }
+    }
+
+    fn privacy(error: impl std::fmt::Display) -> Self {
+        Self { code: "privacy_error".to_string(), message: bounded(&error.to_string(), 240), retryable: false }
     }
 }

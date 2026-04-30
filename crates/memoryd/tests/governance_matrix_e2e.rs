@@ -4,6 +4,7 @@ mod governance_fixtures;
 use std::path::Path;
 
 use governance_fixtures::{GovernanceActor, GovernanceScope, ACTOR_FIXTURES, RELATION_FIXTURES, SCOPE_POLICY_FIXTURES};
+use memory_privacy::FileKeyProvider;
 use memory_substrate::{InitOptions, MemoryId, Roots, Substrate};
 use memoryd::handlers::handle_request;
 use memoryd::protocol::{
@@ -233,10 +234,12 @@ async fn write_memory(substrate: &Substrate, write_case: WriteCase<'_>) -> memor
 
 async fn init_substrate(temp: &tempfile::TempDir) -> Substrate {
     let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
-    Substrate::init(
+    let substrate = Substrate::init(
         roots,
         InitOptions { force_unsafe_durability: true, device_id: Some("dev_governancematrix".to_string()) },
     )
     .await
-    .expect("init substrate")
+    .expect("init substrate");
+    FileKeyProvider::runtime_default(&temp.path().join("runtime")).onboard_local_file().expect("privacy key");
+    substrate
 }

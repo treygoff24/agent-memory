@@ -6,7 +6,7 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace
 cargo test --workspace --release
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
-pnpm exec oxfmt --check .
+pnpm exec oxfmt --check --ignore-path .oxfmtignore .
 pnpm exec oxlint .
 if command -v specgate >/dev/null 2>&1; then
   specgate validate

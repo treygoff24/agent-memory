@@ -25,9 +25,15 @@ This repo carries a project-local Rust skill at `.codex/skills/rust-engineer`. R
 
 - Stream A substrate API: `docs/api/stream-a-public-api.md`
 - Stream C governance API: `docs/api/stream-c-governance-api.md`
+- Stream D privacy API: `docs/api/stream-d-privacy-api.md`
 - Governance review runbook: `docs/runbooks/governance-review.md`
+- Privacy leak response runbook: `docs/runbooks/privacy-leak-response-placeholder.md`
 
 Stream C currently governs `memory_write`, `memory_supersede`, and
-`memory_forget` through `memoryd`, plus CLI review queue operations. Startup
-recall block assembly is still Stream E; `memory_startup` returns a structured
-`not_implemented` error that names Stream E.
+`memory_forget` through `memoryd`, plus CLI review queue operations. Stream D
+privacy now classifies daemon writes, refuses secrets/high-risk identity
+numbers, routes detected PII and personal/confidential content to encrypted
+Stream A writes, and exposes explicit `memory_reveal` for audited user-directed
+decrypt access. Startup recall block assembly is still Stream E;
+`memory_startup` returns a structured `not_implemented` error that names Stream
+E.

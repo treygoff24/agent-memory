@@ -24,7 +24,21 @@ fn mcp_manifest_declares_exact_agent_facing_tools_in_order() {
 fn mcp_manifest_excludes_admin_tools_and_provides_descriptors() {
     let manifest = manifest();
 
-    for admin_tool in ["memory_rollback", "memory_pin", "memory_unpin", "memory_policy", "memory_doctor"] {
+    for admin_tool in [
+        "memory_rollback",
+        "memory_pin",
+        "memory_unpin",
+        "memory_policy",
+        "memory_doctor",
+        "memory_privacy_status",
+        "memory_privacy_scan",
+        "memory_privacy_filter_install",
+        "memory_privacy_filter_enable",
+        "memory_privacy_filter_disable",
+        "memory_device_onboard",
+        "memory_device_rotate_keys",
+        "memory_device_revoke",
+    ] {
         assert!(
             manifest.tools.iter().all(|tool| tool.name != admin_tool),
             "admin-only tool leaked into MCP manifest: {admin_tool}"
@@ -45,7 +59,18 @@ fn tool_name_conversion_accepts_only_manifest_tools() {
         assert_eq!(parsed.as_str(), tool.name);
     }
 
-    for unknown in ["memory_doctor", "memory_status", "search", "memory_delete"] {
+    for unknown in [
+        "memory_doctor",
+        "memory_status",
+        "search",
+        "memory_delete",
+        "memory_privacy_status",
+        "memory_privacy_scan",
+        "memory_privacy_filter_enable",
+        "memory_device_onboard",
+        "memory_device_rotate_keys",
+        "memory_device_revoke",
+    ] {
         assert!(ToolName::try_from(unknown).is_err(), "unexpected tool accepted: {unknown}");
     }
 }

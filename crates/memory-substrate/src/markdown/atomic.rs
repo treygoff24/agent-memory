@@ -51,6 +51,8 @@ pub struct AtomicWrite<'a> {
     pub durability: DurabilityTier,
     /// Optional watcher self-event suppression ledger.
     pub suppression: Option<&'a Arc<Mutex<SuppressionLedger>>>,
+    /// Allow metadata-preserving updates to encrypted records.
+    pub allow_encrypted_namespace: bool,
 }
 
 /// Atomically serialize and write a memory file.
@@ -64,7 +66,7 @@ pub fn atomic_write(args: AtomicWrite<'_>) -> Result<Sha256, WriteFailure> {
             kind: WriteFailureKind::Validation(format!("invalid repo path: {}", relative.as_str())),
         });
     }
-    if relative.as_str().starts_with("encrypted/") {
+    if relative.as_str().starts_with("encrypted/") && !args.allow_encrypted_namespace {
         return Err(WriteFailure {
             outcome,
             kind: WriteFailureKind::Validation(format!(

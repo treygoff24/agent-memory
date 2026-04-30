@@ -13,6 +13,9 @@ use crate::protocol::{RequestEnvelope, RequestPayload, ResponseEnvelope, Respons
 
 pub use crate::protocol::MAX_FRAME_BYTES;
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 /// Tunable knobs for the daemon connection layer. Defaults are appropriate
 /// for production; tests typically override `idle_frame_timeout` to keep
 /// runtime short.
@@ -80,6 +83,7 @@ async fn serve_with_dispatcher(
     remove_stale_socket(socket_path).await?;
 
     let listener = UnixListener::bind(socket_path).with_context(|| format!("bind socket {}", socket_path.display()))?;
+    harden_socket_permissions(socket_path)?;
 
     loop {
         tokio::select! {
@@ -98,6 +102,17 @@ async fn serve_with_dispatcher(
             }
         }
     }
+}
+
+#[cfg(unix)]
+fn harden_socket_permissions(socket_path: &Path) -> Result<()> {
+    std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))
+        .with_context(|| format!("chmod owner-only socket {}", socket_path.display()))
+}
+
+#[cfg(not(unix))]
+fn harden_socket_permissions(_socket_path: &Path) -> Result<()> {
+    Ok(())
 }
 
 #[derive(Clone)]

@@ -79,7 +79,7 @@ async fn governance_e2e_ungrounded_agent_write_is_refused_for_grounding() {
 }
 
 #[tokio::test]
-async fn governance_e2e_missing_privacy_classification_is_refused() {
+async fn governance_e2e_missing_privacy_classification_is_classified_by_stream_d() {
     let temp = tempfile::tempdir().expect("tempdir");
     let substrate = init_substrate(&temp).await;
 
@@ -108,9 +108,11 @@ async fn governance_e2e_missing_privacy_classification_is_refused() {
     let ResponseResult::Success(ResponsePayload::GovernanceWrite(write)) = response.result else {
         panic!("expected structured governance response, got {:?}", response.result);
     };
-    assert_eq!(write.status, GovernanceStatus::Refused);
-    assert_eq!(write.reason, Some(GovernanceRefusalReason::Privacy));
-    assert!(write.id.is_none(), "privacy refusals do not create memories");
+    assert_eq!(write.status, GovernanceStatus::Promoted);
+    let id = write.id.expect("classified write persists");
+    let saved = substrate.read_memory(&MemoryId::new(&id)).await.expect("classified memory readable");
+    assert_eq!(saved.frontmatter.sensitivity, memory_substrate::Sensitivity::Internal);
+    assert!(saved.frontmatter.extras.contains_key("privacy_scan"));
 }
 
 #[tokio::test]

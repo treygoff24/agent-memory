@@ -7,6 +7,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::time::{sleep, timeout, Duration};
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 #[tokio::test]
 async fn server_smoke_serves_status_over_newline_delimited_json() {
     let socket_path = unique_socket_path("status");
@@ -15,6 +18,7 @@ async fn server_smoke_serves_status_over_newline_delimited_json() {
     let server = tokio::spawn(serve(socket_path.clone()));
     let stream = connect_with_retry(&socket_path).await;
     let mut stream = BufReader::new(stream);
+    assert_owner_only_socket(&socket_path);
 
     let request = RequestEnvelope::new("req-status", RequestPayload::Status);
     stream
@@ -172,6 +176,15 @@ async fn server_smoke_refuses_oversized_lines_without_killing_server() {
     server.abort();
     let _ = std::fs::remove_file(socket_path);
 }
+
+#[cfg(unix)]
+fn assert_owner_only_socket(socket_path: &PathBuf) {
+    let mode = std::fs::metadata(socket_path).expect("socket metadata").permissions().mode();
+    assert_eq!(mode & 0o077, 0, "daemon socket must not be group/world accessible");
+}
+
+#[cfg(not(unix))]
+fn assert_owner_only_socket(_socket_path: &PathBuf) {}
 
 async fn connect_with_retry(socket_path: &PathBuf) -> UnixStream {
     for _ in 0..100 {

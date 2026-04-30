@@ -19,6 +19,7 @@ fn atomic_write_stages_temp_in_target_parent_without_cross_device_rename() {
         operation_id: &OperationId::new("op_atomic_parent"),
         durability: DurabilityTier::BestEffort,
         suppression: None,
+        allow_encrypted_namespace: false,
     })
     .expect("atomic write");
 
@@ -47,6 +48,7 @@ fn atomic_write_refuses_plaintext_encrypted_namespace_before_disk_effects() {
         operation_id: &OperationId::new("op_atomic_encrypted_namespace"),
         durability: DurabilityTier::BestEffort,
         suppression: None,
+        allow_encrypted_namespace: false,
     })
     .expect_err("plaintext atomic write to encrypted namespace is refused");
 
@@ -71,6 +73,7 @@ fn atomic_write_refuses_unsafe_repo_path_before_disk_effects() {
         operation_id: &OperationId::new("op_atomic_unsafe_path"),
         durability: DurabilityTier::BestEffort,
         suppression: None,
+        allow_encrypted_namespace: false,
     })
     .expect_err("unsafe atomic write path is refused");
 

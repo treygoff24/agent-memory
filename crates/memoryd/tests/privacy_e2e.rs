@@ -1,0 +1,376 @@
+use memory_privacy::FileKeyProvider;
+use memory_substrate::{InitOptions, MemoryContent, MemoryId, MemoryQuery, Roots, Substrate};
+use memoryd::handlers::handle_request;
+use memoryd::protocol::{
+    GovernanceRefusalReason, GovernanceStatus, RequestEnvelope, RequestPayload, ResponsePayload, ResponseResult,
+};
+
+#[tokio::test]
+async fn privacy_e2e_secret_governed_write_is_refused_before_disk_effects() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let substrate = init_substrate(&temp).await;
+    let secret = "AKIA1234567890ABCDEF";
+
+    let response = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "secret-write",
+            RequestPayload::WriteMemory {
+                body: format!("Do not persist {secret}."),
+                title: Some("secret".to_string()),
+                tags: Vec::new(),
+                meta: serde_json::json!({
+                    "namespace": "project",
+                    "type": "claim",
+                    "summary": "secret canary",
+                    "confidence": 0.95,
+                    "source_kind": "user",
+                    "explicit_user_context": true
+                }),
+            },
+        ),
+    )
+    .await;
+
+    let ResponseResult::Success(ResponsePayload::GovernanceWrite(write)) = response.result else {
+        panic!("expected governance response, got {:?}", response.result);
+    };
+    assert_eq!(write.status, GovernanceStatus::Refused);
+    assert_eq!(write.reason, Some(GovernanceRefusalReason::Privacy));
+    assert!(write.id.is_none());
+    assert!(!repo_contains(temp.path(), secret), "secret canary must not be written to repo/runtime");
+}
+
+#[tokio::test]
+async fn privacy_e2e_personal_write_is_encrypted_and_not_raw_searchable() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let substrate = init_substrate(&temp).await;
+    FileKeyProvider::runtime_default(&temp.path().join("runtime")).onboard_local_file().expect("privacy key");
+    let raw = "trey@example.com";
+
+    let response = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "personal-write",
+            RequestPayload::WriteMemory {
+                body: format!("Contact {raw} for the launch."),
+                title: Some("contact".to_string()),
+                tags: Vec::new(),
+                meta: serde_json::json!({
+                    "namespace": "project",
+                    "type": "claim",
+                    "summary": "contact",
+                    "confidence": 0.95,
+                    "source_kind": "user",
+                    "explicit_user_context": true
+                }),
+            },
+        ),
+    )
+    .await;
+
+    let ResponseResult::Success(ResponsePayload::GovernanceWrite(write)) = response.result else {
+        panic!("expected governance response, got {:?}", response.result);
+    };
+    assert!(matches!(write.status, GovernanceStatus::Promoted | GovernanceStatus::Candidate));
+    let id = write.id.expect("encrypted write id");
+    let envelope = substrate.read_memory_envelope(&MemoryId::new(&id)).await.expect("read envelope");
+    assert!(matches!(envelope.content, MemoryContent::Ciphertext { .. }));
+    assert!(envelope.metadata.path.as_ref().expect("path").as_str().starts_with("encrypted/"));
+    assert_eq!(envelope.metadata.frontmatter.sensitivity, memory_substrate::Sensitivity::Personal);
+    assert!(!repo_contains(temp.path(), raw), "raw personal canary must not be present in repo/runtime");
+
+    let search = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "search-raw",
+            RequestPayload::Search { query: raw.to_string(), limit: Some(10), include_body: false },
+        ),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::Search(search)) = search.result else {
+        panic!("expected search response, got {:?}", search.result);
+    };
+    assert_eq!(search.total, 0, "raw personal body must not be searchable");
+
+    let hits = substrate
+        .query_memory(MemoryQuery { id: Some(MemoryId::new(&id)), tag: None, include_metadata_only: true })
+        .await
+        .expect("metadata query");
+    assert_eq!(hits.len(), 1);
+}
+
+#[tokio::test]
+async fn privacy_e2e_caller_confidential_without_spans_is_metadata_only_encrypted() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let substrate = init_substrate(&temp).await;
+    FileKeyProvider::runtime_default(&temp.path().join("runtime")).onboard_local_file().expect("privacy key");
+    let raw = "Acquisition target is Northstar";
+
+    let response = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "confidential-no-spans",
+            RequestPayload::WriteMemory {
+                body: raw.to_string(),
+                title: Some("confidential".to_string()),
+                tags: Vec::new(),
+                meta: serde_json::json!({
+                    "namespace": "project",
+                    "type": "claim",
+                    "summary": "confidential acquisition note",
+                    "confidence": 0.95,
+                    "sensitivity": "confidential",
+                    "source_kind": "user",
+                    "explicit_user_context": true
+                }),
+            },
+        ),
+    )
+    .await;
+
+    let ResponseResult::Success(ResponsePayload::GovernanceWrite(write)) = response.result else {
+        panic!("expected governance response, got {:?}", response.result);
+    };
+    assert_eq!(write.status, GovernanceStatus::Promoted);
+    let id = write.id.expect("encrypted write id");
+    let envelope = substrate.read_memory_envelope(&MemoryId::new(&id)).await.expect("read envelope");
+    assert!(matches!(envelope.content, MemoryContent::Ciphertext { .. }));
+    assert_eq!(envelope.metadata.frontmatter.summary, "encrypted memory");
+    assert!(!repo_contains(temp.path(), raw), "raw confidential text must not be persisted as safe projection");
+
+    let search = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "search-confidential-raw",
+            RequestPayload::Search { query: "Northstar".to_string(), limit: Some(10), include_body: false },
+        ),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::Search(search)) = search.result else {
+        panic!("expected search response, got {:?}", search.result);
+    };
+    assert_eq!(search.total, 0, "raw confidential body must not be indexed");
+}
+
+#[tokio::test]
+async fn privacy_e2e_metadata_secret_is_refused_before_disk_effects() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let substrate = init_substrate(&temp).await;
+    let secret = "ghp_1234567890abcdefghijklmnop";
+
+    let response = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "metadata-secret",
+            RequestPayload::WriteMemory {
+                body: "safe body".to_string(),
+                title: Some(format!("leaked {secret}")),
+                tags: Vec::new(),
+                meta: serde_json::json!({
+                    "namespace": "project",
+                    "type": "claim",
+                    "summary": "safe summary",
+                    "confidence": 0.95,
+                    "source_kind": "user",
+                    "explicit_user_context": true
+                }),
+            },
+        ),
+    )
+    .await;
+
+    let ResponseResult::Success(ResponsePayload::GovernanceWrite(write)) = response.result else {
+        panic!("expected governance response, got {:?}", response.result);
+    };
+    assert_eq!(write.status, GovernanceStatus::Refused);
+    assert_eq!(write.reason, Some(GovernanceRefusalReason::Privacy));
+    assert!(!repo_contains(temp.path(), secret), "metadata secret must not be written");
+}
+
+#[tokio::test]
+async fn privacy_e2e_encrypted_memory_can_be_forgotten_without_plaintext_leak() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let substrate = init_substrate(&temp).await;
+    FileKeyProvider::runtime_default(&temp.path().join("runtime")).onboard_local_file().expect("privacy key");
+    let raw = "forget-me@example.com";
+
+    let write = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "personal-write-forget",
+            RequestPayload::WriteMemory {
+                body: format!("Remove contact {raw} after test."),
+                title: Some("forget encrypted".to_string()),
+                tags: Vec::new(),
+                meta: serde_json::json!({
+                    "namespace": "project",
+                    "type": "claim",
+                    "summary": "encrypted forget fixture",
+                    "confidence": 0.95,
+                    "source_kind": "user",
+                    "explicit_user_context": true
+                }),
+            },
+        ),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::GovernanceWrite(write)) = write.result else {
+        panic!("expected write success, got {:?}", write.result);
+    };
+    let id = write.id.expect("encrypted write id");
+
+    let forget = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "forget-encrypted",
+            RequestPayload::Forget { id: id.clone(), reason: "user requested removal".to_string() },
+        ),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::GovernanceForget(forget)) = forget.result else {
+        panic!("expected forget success, got {:?}", forget.result);
+    };
+    assert_eq!(forget.status, GovernanceStatus::Tombstoned);
+
+    let envelope = substrate.read_memory_envelope(&MemoryId::new(&id)).await.expect("read tombstoned envelope");
+    assert_eq!(envelope.metadata.frontmatter.status, memory_substrate::MemoryStatus::Tombstoned);
+    assert!(matches!(envelope.content, MemoryContent::Ciphertext { .. }));
+    assert!(!repo_contains(temp.path(), raw), "forgetting encrypted memory must not leak raw plaintext");
+}
+
+#[tokio::test]
+async fn privacy_e2e_encrypted_supersede_replacement_fails_closed_without_disk_effects() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let substrate = init_substrate(&temp).await;
+    let old = governed_project_write(&substrate, "old-supersede", "The deployment target is staging.").await;
+    let old_id = old.id.expect("old id");
+    let raw = "ops@example.com";
+
+    let response = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "supersede-encrypted-replacement",
+            RequestPayload::Supersede {
+                old_id: old_id.clone(),
+                content: format!("The deployment target is production and contact is {raw}."),
+                reason: "deployment target changed".to_string(),
+                meta: serde_json::json!({
+                    "namespace": "project",
+                    "type": "project",
+                    "summary": "Deployment target is production",
+                    "confidence": 0.95,
+                    "source_kind": "user",
+                    "explicit_user_context": true
+                }),
+            },
+        ),
+    )
+    .await;
+
+    let ResponseResult::Success(ResponsePayload::GovernanceSupersede(supersede)) = response.result else {
+        panic!("expected supersede response, got {:?}", response.result);
+    };
+    assert_eq!(supersede.status, GovernanceStatus::Refused);
+    assert_eq!(supersede.reason, Some(GovernanceRefusalReason::Privacy));
+    assert!(supersede.new_id.is_none());
+    assert_eq!(
+        substrate.read_memory(&MemoryId::new(&old_id)).await.expect("old memory").frontmatter.status,
+        memory_substrate::MemoryStatus::Active
+    );
+    assert!(!repo_contains(temp.path(), raw), "refused encrypted supersession must not write replacement plaintext");
+}
+
+#[tokio::test]
+async fn privacy_e2e_note_secret_is_refused() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let substrate = init_substrate(&temp).await;
+    let secret = "ghp_1234567890abcdefghijklmnop";
+
+    let response = handle_request(
+        &substrate,
+        RequestEnvelope::new("secret-note", RequestPayload::WriteNote { text: format!("temporary {secret}") }),
+    )
+    .await;
+
+    let ResponseResult::Error(error) = response.result else {
+        panic!("expected protocol error for secret note, got {:?}", response.result);
+    };
+    assert_eq!(error.code, "invalid_request");
+    assert!(!repo_contains(temp.path(), secret), "secret note must not be written");
+}
+
+#[tokio::test]
+async fn privacy_e2e_encrypted_review_decision_fails_closed_without_not_found() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let substrate = init_substrate(&temp).await;
+    FileKeyProvider::runtime_default(&temp.path().join("runtime")).onboard_local_file().expect("privacy key");
+
+    let write = handle_request(
+        &substrate,
+        RequestEnvelope::new("encrypted-note", RequestPayload::WriteNote { text: "email reviewer@example.com".into() }),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::WriteNote(note)) = write.result else {
+        panic!("expected encrypted note write, got {:?}", write.result);
+    };
+
+    let review = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "reject-encrypted-note",
+            RequestPayload::ReviewReject { id: note.id, reason: "not useful".to_string() },
+        ),
+    )
+    .await;
+    let ResponseResult::Error(error) = review.result else {
+        panic!("expected fail-closed review error, got {:?}", review.result);
+    };
+    assert_eq!(error.code, "invalid_request");
+    assert!(error.message.contains("encrypted review decisions"));
+}
+
+async fn governed_project_write(
+    substrate: &Substrate,
+    request_id: &str,
+    body: &str,
+) -> memoryd::protocol::GovernanceWriteResponse {
+    let response = handle_request(
+        substrate,
+        RequestEnvelope::new(
+            request_id,
+            RequestPayload::WriteMemory {
+                body: body.to_string(),
+                title: Some(request_id.to_string()),
+                tags: vec!["project".to_string()],
+                meta: serde_json::json!({
+                    "namespace": "project",
+                    "type": "project",
+                    "summary": request_id,
+                    "confidence": 0.95,
+                    "sensitivity": "internal",
+                    "source_kind": "user",
+                    "explicit_user_context": true
+                }),
+            },
+        ),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::GovernanceWrite(write)) = response.result else {
+        panic!("expected governed write success, got {:?}", response.result);
+    };
+    write
+}
+
+async fn init_substrate(temp: &tempfile::TempDir) -> Substrate {
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    Substrate::init(roots, InitOptions { force_unsafe_durability: true, device_id: Some("dev_privacye2e".to_string()) })
+        .await
+        .expect("init substrate")
+}
+
+fn repo_contains(root: &std::path::Path, needle: &str) -> bool {
+    let output =
+        std::process::Command::new("rg").arg("--fixed-strings").arg(needle).arg(root).output().expect("run rg");
+    output.status.success()
+}

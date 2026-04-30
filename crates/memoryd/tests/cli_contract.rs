@@ -9,7 +9,7 @@ fn cli_contract_help_exposes_daemon_and_agent_facing_client_commands() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).expect("help is utf8");
-    for command in ["serve", "status", "doctor", "search", "get", "write-note"] {
+    for command in ["serve", "status", "doctor", "search", "get", "write-note", "privacy", "privacy-filter", "device"] {
         assert!(stdout.contains(command), "help should list {command}");
     }
     for admin_only in ["rollback", "pin", "unpin", "policy"] {
@@ -60,4 +60,14 @@ fn cli_contract_clap_parses_all_subcommands() {
 
     // doctor
     Cli::try_parse_from(["memoryd", "doctor"]).expect("doctor parses");
+
+    // Stream D admin commands
+    Cli::try_parse_from(["memoryd", "privacy", "status"]).expect("privacy status parses");
+    Cli::try_parse_from(["memoryd", "privacy", "scan", "--text", "hello"]).expect("privacy scan text parses");
+    Cli::try_parse_from(["memoryd", "privacy", "scan-delta", "--repo", "."]).expect("privacy scan-delta parses");
+    Cli::try_parse_from(["memoryd", "privacy-filter", "status"]).expect("privacy-filter status parses");
+    Cli::try_parse_from(["memoryd", "privacy-filter", "install"]).expect("privacy-filter install parses");
+    Cli::try_parse_from(["memoryd", "device", "onboard"]).expect("device onboard parses");
+    Cli::try_parse_from(["memoryd", "device", "rotate-keys"]).expect("device rotate parses");
+    Cli::try_parse_from(["memoryd", "device", "revoke", "dev_a1b2"]).expect("device revoke parses");
 }
