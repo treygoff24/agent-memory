@@ -72,8 +72,7 @@ pub enum PrivacyStorageAction {
 }
 
 /// Stream E-safe decision for short plaintext fragments.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SafeFragmentDecision {
     /// The fragment can be emitted as plaintext.
     Allow,

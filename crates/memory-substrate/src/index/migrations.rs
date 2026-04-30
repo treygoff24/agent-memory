@@ -118,7 +118,7 @@ SET max_scope =
     tx.commit()
 }
 
-fn add_column_if_missing(tx: &Transaction<'_>, column: &str, definition: &str) -> rusqlite::Result<()> {
+fn add_column_if_missing(tx: &Transaction<'_>, column: &'static str, definition: &'static str) -> rusqlite::Result<()> {
     if memory_column_exists(tx, column)? {
         return Ok(());
     }

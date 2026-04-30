@@ -61,6 +61,20 @@ fn cli_contract_clap_parses_all_subcommands() {
     // doctor
     Cli::try_parse_from(["memoryd", "doctor"]).expect("doctor parses");
 
+    Cli::try_parse_from([
+        "memoryd",
+        "recall",
+        "startup-block",
+        "--cwd",
+        "/tmp",
+        "--session-id",
+        "sess",
+        "--harness",
+        "codex",
+        "--no-include-recent",
+    ])
+    .expect("recall startup --no-include-recent parses");
+
     // Stream D admin commands
     Cli::try_parse_from(["memoryd", "privacy", "status"]).expect("privacy status parses");
     Cli::try_parse_from(["memoryd", "privacy", "scan", "--text", "hello"]).expect("privacy scan text parses");

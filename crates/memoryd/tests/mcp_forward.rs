@@ -4,7 +4,7 @@
 //!
 //!   1. Implemented tools (Search, Get, Note) round-trip through a live daemon
 //!      and produce the expected substrate effect.
-//!   2. Startup forwards through the daemon once Stream E is wired.
+//!   2. Startup forwards through the live daemon/substrate Stream E path.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -99,6 +99,42 @@ async fn forward_memory_startup_forwards_required_binding_context_to_daemon() {
     assert_not_implemented(&response, "fixture");
     daemon.await.expect("daemon joins").expect("daemon ok");
     let _ = std::fs::remove_file(socket);
+}
+
+#[tokio::test]
+async fn forward_memory_startup_round_trips_through_live_substrate_daemon() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let socket = unique_socket_path("mcp-startup-live");
+    let substrate = init_substrate(&temp).await;
+    let cwd = temp.path().join("repo");
+    let (shutdown_tx, server) = spawn_daemon(&socket, substrate);
+    wait_for_socket(&socket).await;
+
+    let response = forward_to_daemon(
+        &socket,
+        "req-startup-live",
+        ToolRequest::MemoryStartup(StartupRequest {
+            cwd: cwd.to_string_lossy().into_owned(),
+            session_id: "sess_mcp_live".to_owned(),
+            harness: "codex".to_owned(),
+            harness_version: None,
+            include_recent: true,
+            since_event_id: None,
+            budget_tokens: Some(3_600),
+        }),
+    )
+    .await
+    .expect("startup forwards through live daemon");
+
+    match response.result {
+        ResponseResult::Success(ResponsePayload::Startup(startup)) => {
+            assert_eq!(startup.session_binding.session_id, "sess_mcp_live");
+            assert!(startup.recall_block.starts_with("<memory-recall version=\"stream-e-v0.5\""));
+        }
+        other => panic!("expected live startup response, got {other:?}"),
+    }
+
+    shutdown(shutdown_tx, server, &socket).await;
 }
 
 fn assert_not_implemented(response: &memoryd::protocol::ResponseEnvelope, tool: &str) {

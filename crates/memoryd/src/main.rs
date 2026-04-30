@@ -153,7 +153,7 @@ async fn main() -> anyhow::Result<()> {
                         session_id: args.session_id,
                         harness: args.harness,
                         harness_version: args.harness_version,
-                        include_recent: args.include_recent,
+                        include_recent: args.include_recent && !args.no_include_recent,
                         since_event_id: None,
                         budget_tokens: args.budget_tokens,
                     }),

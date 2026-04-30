@@ -8,9 +8,11 @@ use memory_substrate::{
     MemoryType, RepoPath, RetrievalPolicy, Roots, Scope, Sensitivity, Source, SourceKind, Substrate, TrustLevel,
     WriteMode, WritePolicy, WriteRequest,
 };
-use memory_test_support::perf::{SEED_RELEASE, SEED_SMOKE};
 use memoryd::recall::{build_delta_response, build_startup_response, DeltaRequest, StartupRequest};
 use serde::Serialize;
+
+const SEED_SMOKE: u64 = 169_300_215;
+const SEED_RELEASE: u64 = 693_467_474_526;
 
 #[derive(Debug, Parser)]
 struct Args {

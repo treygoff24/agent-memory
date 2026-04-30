@@ -184,9 +184,24 @@ async fn handle_connection(
                 )
             }
         };
-        let response_line = response.to_json_line().context("serialize response frame")?;
+        let response_line = response_line_with_frame_cap(response).context("serialize response frame")?;
         reader.get_mut().write_all(response_line.as_bytes()).await.context("write response frame")?;
     }
+}
+
+fn response_line_with_frame_cap(response: ResponseEnvelope) -> serde_json::Result<String> {
+    let line = response.to_json_line()?;
+    if line.len() <= MAX_FRAME_BYTES {
+        return Ok(line);
+    }
+
+    ResponseEnvelope::error(
+        response.id,
+        "response_frame_too_large",
+        format!("response frame exceeded the {MAX_FRAME_BYTES}-byte limit"),
+        false,
+    )
+    .to_json_line()
 }
 
 /// Read exactly one newline-terminated frame, capping at MAX_FRAME_BYTES.
@@ -279,5 +294,62 @@ async fn remove_stale_socket(socket_path: &Path) -> Result<()> {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error).with_context(|| format!("remove stale socket {}", socket_path.display())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::response_line_with_frame_cap;
+    use crate::protocol::{ResponseEnvelope, ResponsePayload, ResponseResult};
+    use crate::recall::{DeltaResponse, StartupResponse};
+
+    #[test]
+    fn oversized_startup_response_is_replaced_with_bounded_protocol_error() {
+        let response = ResponseEnvelope::success(
+            "req-huge-startup",
+            ResponsePayload::Startup(Box::new(StartupResponse {
+                session_binding: serde_json::from_value(serde_json::json!({
+                    "session_id": "sess",
+                    "harness": "codex",
+                    "cwd": "/tmp",
+                    "namespaces_in_scope": ["me"]
+                }))
+                .expect("session binding fixture"),
+                recall_block: "x".repeat(crate::protocol::MAX_FRAME_BYTES),
+                budget_used_tokens: 0,
+                recall_explanation: crate::recall::RecallExplanation::empty(3_600),
+                guidance: "fixture".to_owned(),
+            })),
+        );
+
+        let line = response_line_with_frame_cap(response).expect("bounded response serializes");
+        assert!(line.len() <= crate::protocol::MAX_FRAME_BYTES);
+
+        let decoded = ResponseEnvelope::from_json_line(&line).expect("bounded response decodes");
+        match decoded.result {
+            ResponseResult::Error(error) => assert_eq!(error.code, "response_frame_too_large"),
+            other => panic!("expected bounded error response, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn empty_delta_response_remains_byte_identical_after_protocol_roundtrip() {
+        let response = ResponseEnvelope::success(
+            "req-empty-delta",
+            ResponsePayload::Delta(DeltaResponse {
+                delta_block: "<memory-delta empty=\"true\" />\n".to_owned(),
+                budget_used_tokens: 0,
+                guidance: "No passive recall delta matched this turn.".to_owned(),
+            }),
+        );
+
+        let line = response.to_json_line().expect("delta response serializes");
+        let decoded = ResponseEnvelope::from_json_line(&line).expect("delta response decodes");
+        match decoded.result {
+            ResponseResult::Success(ResponsePayload::Delta(delta)) => {
+                assert_eq!(delta.delta_block, "<memory-delta empty=\"true\" />\n");
+            }
+            other => panic!("expected delta response, got {other:?}"),
+        }
     }
 }

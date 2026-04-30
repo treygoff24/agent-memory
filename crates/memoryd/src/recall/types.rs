@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 
 pub const STREAM_E_POLICY: &str = "stream-e-v0.5";
 pub const MAX_SERIALIZED_OMISSIONS: usize = 64;
+pub const DEFAULT_STARTUP_BUDGET_TOKENS: usize = 3_600;
+pub const DEFAULT_DELTA_BUDGET_TOKENS: usize = 400;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StartupRequest {

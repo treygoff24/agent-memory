@@ -6,6 +6,7 @@ use memoryd::recall::{
     collect_recall_candidates, collect_recall_candidates_from_index, OmissionReason, RecallCollectionRequest,
     RecallIndexFuture, RecallIndexReader, RecallSectionName,
 };
+use std::sync::Mutex;
 
 #[test]
 fn active_and_pinned_rows_recall_as_sorted_fact_candidates() {
@@ -87,13 +88,13 @@ fn pending_confirmation_human_review_and_review_state_suppress_facts_but_count_a
 #[tokio::test]
 async fn collection_queries_stream_a_recall_index_without_envelope_hydration() {
     let updated_since = instant("2026-04-23T12:00:00Z");
-    let mut index = RecordingRecallIndex::new(vec![
+    let index = RecordingRecallIndex::new(vec![
         row("mem_20260430_0000000000000002_000002", MemoryStatus::Pinned),
         row("mem_20260430_0000000000000001_000001", MemoryStatus::Active),
     ]);
 
     let collected = collect_recall_candidates_from_index(
-        &mut index,
+        &index,
         RecallCollectionRequest {
             section: RecallSectionName::RecentMemory,
             namespace_prefixes: vec!["me".to_owned(), "project:proj_agent_memory".to_owned()],
@@ -104,15 +105,16 @@ async fn collection_queries_stream_a_recall_index_without_envelope_hydration() {
     .expect("recall index collection succeeds");
 
     assert_eq!(index.envelope_reads, 0, "collection must not hydrate envelopes while enumerating candidates");
-    assert_eq!(index.queries.len(), 4);
+    let queries = index.queries.lock().expect("recorded queries lock not poisoned");
+    assert_eq!(queries.len(), 4);
     assert_eq!(
-        index.queries.iter().map(|query| query.namespace_prefix.as_deref()).collect::<Vec<_>>(),
+        queries.iter().map(|query| query.namespace_prefix.as_deref()).collect::<Vec<_>>(),
         vec![Some("me"), Some("me"), Some("project:proj_agent_memory"), Some("project:proj_agent_memory")]
     );
-    assert!(index.queries.iter().all(|query| query.passive_recall_only));
-    assert!(index.queries.iter().all(|query| query.updated_since == Some(updated_since)));
+    assert!(queries.iter().all(|query| query.passive_recall_only));
+    assert!(queries.iter().all(|query| query.updated_since == Some(updated_since)));
     assert_eq!(
-        index.queries.iter().map(|query| query.statuses.as_slice()).collect::<Vec<_>>(),
+        queries.iter().map(|query| query.statuses.as_slice()).collect::<Vec<_>>(),
         vec![
             &[MemoryStatus::Active][..],
             &[MemoryStatus::Pinned][..],
@@ -159,19 +161,19 @@ fn max_scope_sensitivity_and_metadata_only_rows_do_not_recall_factual_bodies() {
 
 struct RecordingRecallIndex {
     rows: Vec<RecallIndexRow>,
-    queries: Vec<RecallIndexQuery>,
+    queries: Mutex<Vec<RecallIndexQuery>>,
     envelope_reads: usize,
 }
 
 impl RecordingRecallIndex {
     fn new(rows: Vec<RecallIndexRow>) -> Self {
-        Self { rows, queries: Vec::new(), envelope_reads: 0 }
+        Self { rows, queries: Mutex::new(Vec::new()), envelope_reads: 0 }
     }
 }
 
 impl RecallIndexReader for RecordingRecallIndex {
-    fn query_recall_index(&mut self, query: RecallIndexQuery) -> RecallIndexFuture<'_> {
-        self.queries.push(query.clone());
+    fn query_recall_index(&self, query: RecallIndexQuery) -> RecallIndexFuture<'_> {
+        self.queries.lock().expect("recorded queries lock not poisoned").push(query.clone());
         let rows = self.rows.iter().filter(|row| query.statuses.contains(&row.status)).cloned().collect::<Vec<_>>();
         Box::pin(async move { Ok(rows) })
     }

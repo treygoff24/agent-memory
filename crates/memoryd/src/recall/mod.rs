@@ -1,15 +1,15 @@
-pub mod binding;
-pub mod budget;
-pub mod candidates;
-pub mod counters;
-pub mod delta;
-pub mod entity;
-pub mod error;
-pub mod project;
-pub mod rank;
-pub mod render;
-pub mod startup;
-pub mod types;
+pub(crate) mod binding;
+pub(crate) mod budget;
+pub(crate) mod candidates;
+pub(crate) mod counters;
+pub(crate) mod delta;
+pub(crate) mod entity;
+pub(crate) mod error;
+pub(crate) mod project;
+pub(crate) mod rank;
+pub(crate) mod render;
+pub(crate) mod startup;
+pub(crate) mod types;
 
 pub use binding::validate_startup_request;
 pub use budget::{estimated_tokens, truncate_utf8_bytes, TruncatedText};

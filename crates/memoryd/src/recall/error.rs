@@ -1,11 +1,14 @@
-use std::fmt;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RecallError {
+    #[error("invalid_request: {message}")]
     InvalidRequest { message: String },
+    #[error("substrate_error: {message}")]
     SubstrateError { message: String },
+    #[error("recall_unavailable: {message}")]
     RecallUnavailable { message: String },
+    #[error("privacy_error: {message}")]
     PrivacyError { message: String },
+    #[error("not_implemented: {message}")]
     NotImplemented { message: String },
 }
 
@@ -63,11 +66,3 @@ impl RecallError {
         }
     }
 }
-
-impl fmt::Display for RecallError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}: {}", self.protocol_code(), self.message())
-    }
-}
-
-impl std::error::Error for RecallError {}

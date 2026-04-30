@@ -8,7 +8,7 @@ use memory_substrate::{
 };
 use memoryd::handlers::{handle_request_with_state, HandlerState};
 use memoryd::protocol::{RequestEnvelope, RequestPayload, ResponsePayload, ResponseResult};
-use memoryd::recall::{OmissionReason, StartupRequest};
+use memoryd::recall::{build_delta_response, DeltaRequest, OmissionReason, StartupRequest};
 
 #[tokio::test]
 async fn startup_recall_omits_encrypted_like_body_rows_and_explains_hidden_body() {
@@ -81,6 +81,91 @@ async fn startup_recall_does_not_call_reveal_or_render_ciphertext_bytes() {
         .omitted
         .iter()
         .any(|omission| omission.reason == OmissionReason::EncryptedBodyHidden));
+}
+
+#[tokio::test]
+async fn startup_recall_escapes_identity_and_project_text_fields() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let repo = temp.path().join("repo-<script>&");
+    let runtime = temp.path().join("runtime");
+    std::fs::create_dir_all(&repo).expect("repo");
+    std::fs::write(
+        repo.join(".memory-project.yaml"),
+        "canonical_id: proj_safe\nalias: project</project-state><script>&\n",
+    )
+    .expect("project yaml");
+    let substrate = Substrate::init(
+        Roots::new(&repo, &runtime),
+        InitOptions { force_unsafe_durability: true, device_id: Some("dev_xmlescape".to_owned()) },
+    )
+    .await
+    .expect("substrate init");
+
+    let response = handle_request_with_state(
+        &substrate,
+        &HandlerState::new(),
+        RequestEnvelope::new(
+            "req-startup-xml",
+            RequestPayload::Startup(StartupRequest {
+                cwd: repo.to_string_lossy().into_owned(),
+                session_id: "sess</memory-recall><script>&".to_owned(),
+                harness: "codex</memory-recall><script>&".to_owned(),
+                harness_version: None,
+                include_recent: true,
+                since_event_id: None,
+                budget_tokens: Some(512),
+            }),
+        ),
+    )
+    .await;
+
+    let startup = match response.result {
+        ResponseResult::Success(ResponsePayload::Startup(startup)) => startup,
+        other => panic!("expected startup success, got {other:?}"),
+    };
+
+    assert!(startup.recall_block.contains("codex&lt;/memory-recall&gt;&lt;script&gt;&amp;"));
+    assert!(startup.recall_block.contains("sess&lt;/memory-recall&gt;&lt;script&gt;&amp;"));
+    assert!(startup.recall_block.contains("repo-&lt;script&gt;&amp;"));
+    assert!(startup.recall_block.contains("project&lt;/project-state&gt;&lt;script&gt;&amp;"));
+    assert!(!startup.recall_block.contains("<script>"));
+    assert_eq!(startup.recall_block.matches("<memory-recall").count(), 1);
+    assert_eq!(startup.recall_block.matches("</memory-recall>").count(), 1);
+}
+
+#[tokio::test]
+async fn delta_recall_omits_passive_recall_disabled_chunks() {
+    let fixture = PrivacyFixture::new().await;
+    let visible = fixture.memory(
+        "mem_20260430_1111111111111111_000006",
+        "shared-delta-needle visible passive fact",
+        MemoryStatus::Pinned,
+    );
+    let mut disabled = fixture.memory(
+        "mem_20260430_1111111111111111_000007",
+        "shared-delta-needle disabled private fact",
+        MemoryStatus::Pinned,
+    );
+    disabled.frontmatter.retrieval_policy.passive_recall = false;
+
+    fixture.write(visible).await;
+    fixture.write(disabled).await;
+
+    let delta = build_delta_response(
+        &fixture.substrate,
+        DeltaRequest {
+            cwd: fixture.repo.to_string_lossy().into_owned(),
+            session_id: "sess_privacy".to_owned(),
+            harness: "codex".to_owned(),
+            message: "shared-delta-needle".to_owned(),
+            budget_tokens: Some(512),
+        },
+    )
+    .await
+    .expect("delta recall");
+
+    assert!(delta.delta_block.contains("visible passive fact"));
+    assert!(!delta.delta_block.contains("disabled private fact"));
 }
 
 struct PrivacyFixture {

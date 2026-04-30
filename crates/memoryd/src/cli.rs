@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{ArgAction, Args, Parser, Subcommand};
 
 #[derive(Debug, Parser)]
 #[command(name = "memoryd")]
@@ -244,8 +244,10 @@ pub struct RecallStartupArgs {
     pub harness: String,
     #[arg(long)]
     pub harness_version: Option<String>,
-    #[arg(long, default_value_t = true)]
+    #[arg(long, default_value_t = true, conflicts_with = "no_include_recent")]
     pub include_recent: bool,
+    #[arg(long = "no-include-recent", action = ArgAction::SetTrue)]
+    pub no_include_recent: bool,
     #[arg(long)]
     pub budget_tokens: Option<usize>,
 }

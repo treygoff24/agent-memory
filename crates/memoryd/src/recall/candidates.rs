@@ -51,17 +51,17 @@ pub struct RecallCollectionRequest {
 pub type RecallIndexFuture<'a> = Pin<Box<dyn Future<Output = SubstrateResult<Vec<RecallIndexRow>>> + Send + 'a>>;
 
 pub trait RecallIndexReader {
-    fn query_recall_index(&mut self, query: RecallIndexQuery) -> RecallIndexFuture<'_>;
+    fn query_recall_index(&self, query: RecallIndexQuery) -> RecallIndexFuture<'_>;
 }
 
 impl RecallIndexReader for Substrate {
-    fn query_recall_index(&mut self, query: RecallIndexQuery) -> RecallIndexFuture<'_> {
+    fn query_recall_index(&self, query: RecallIndexQuery) -> RecallIndexFuture<'_> {
         Box::pin(async move { Substrate::query_recall_index(self, query).await })
     }
 }
 
 pub async fn collect_recall_candidates_from_index(
-    reader: &mut impl RecallIndexReader,
+    reader: &impl RecallIndexReader,
     request: RecallCollectionRequest,
 ) -> SubstrateResult<CandidateCollection> {
     let mut rows = BTreeMap::new();

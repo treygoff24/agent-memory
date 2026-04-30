@@ -1,7 +1,7 @@
 use memoryd::recall::{
     bounded_omissions, estimated_tokens, render_memory_entry, render_startup_frame, truncate_utf8_bytes,
     OmissionReason, ProjectBinding, ProjectBindingSource, RecallEntry, RecallError, RecallExplanation, RecallOmission,
-    RecallSectionName, SessionBinding,
+    RecallSectionName, SessionBinding, STREAM_E_POLICY,
 };
 use serde_json::{json, Value};
 
@@ -48,6 +48,8 @@ fn rendered_entry_truncates_summary_and_snippet_before_fixed_suffix() {
 
 #[test]
 fn empty_startup_frame_contains_required_sections_in_spec_order() {
+    assert_eq!(STREAM_E_POLICY, "stream-e-v0.5");
+
     let binding = session_binding();
     let explanation = RecallExplanation::empty(3600);
 

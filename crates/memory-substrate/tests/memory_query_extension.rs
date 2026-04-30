@@ -197,6 +197,31 @@ async fn recall_index_match_terms_are_isolated_by_source() {
 }
 
 #[tokio::test]
+async fn recall_index_match_terms_use_union_semantics() {
+    let context = seeded_isolated_recall_match_substrate().await;
+
+    let rows = context
+        .substrate
+        .query_recall_index(RecallIndexQuery {
+            namespace_prefix: Some(format!("project:{ISOLATED_PROJECT_NAMESPACE}")),
+            statuses: vec![MemoryStatus::Active],
+            passive_recall_only: true,
+            updated_since: None,
+            match_terms: vec!["source-tag-only".to_string(), "source-memory-alias-only".to_string()],
+        })
+        .await
+        .expect("multi-term recall-index match query");
+
+    assert_eq!(
+        recall_ids(&rows),
+        vec![
+            RecallMatchSource::Tag.fixture().memory.frontmatter.id,
+            RecallMatchSource::MemoryAlias.fixture().memory.frontmatter.id,
+        ]
+    );
+}
+
+#[tokio::test]
 async fn recall_index_statuses_and_updated_since_filters_are_independent() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
@@ -261,6 +286,23 @@ async fn recall_index_statuses_and_updated_since_filters_are_independent() {
 }
 
 #[test]
+fn recall_index_excludes_metadata_only_rows() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let connection = open_index(&temp.path().join("index.sqlite")).expect("fresh index init");
+    let mut index = Index::new(connection);
+
+    let visible = sample_memory("mem_20260430_a1b2c3d4e5f60718_000016", "2026-04-30T13:00:00Z");
+    let metadata_only = sample_memory("mem_20260430_a1b2c3d4e5f60718_000017", "2026-04-30T14:00:00Z");
+
+    index.upsert_memory(&visible, false).expect("upsert visible row");
+    index.upsert_memory(&metadata_only, true).expect("upsert metadata-only row");
+
+    let rows = index.query_recall_index(&RecallIndexQuery::default()).expect("query recall index");
+
+    assert_eq!(recall_ids(&rows), vec![visible.frontmatter.id]);
+}
+
+#[test]
 fn fresh_index_init_creates_recall_filter_indexes() {
     let temp = tempfile::tempdir().expect("tempdir");
     let connection = open_index(&temp.path().join("index.sqlite")).expect("fresh index init");
@@ -285,7 +327,9 @@ fn v1_index_migration_backfills_recall_projection_columns_once() {
 
     let first_open = open_index(&db_path).expect("first migration");
     assert_eq!(
-        first_open.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get::<_, i64>(0)).unwrap(),
+        first_open
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get::<_, i64>(0))
+            .expect("MAX(version) from schema_migrations"),
         3
     );
     assert_recall_governance_columns_exist(&first_open);
@@ -308,7 +352,7 @@ fn v1_index_migration_backfills_recall_projection_columns_once() {
     assert_eq!(
         second_open
             .query_row("SELECT COUNT(*) FROM schema_migrations WHERE version = 3", [], |row| row.get::<_, i64>(0))
-            .unwrap(),
+            .expect("version 3 migration count"),
         1
     );
     assert_eq!(
@@ -320,7 +364,7 @@ fn v1_index_migration_backfills_recall_projection_columns_once() {
                     Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?, row.get::<_, String>(3)?))
                 }
             )
-            .unwrap(),
+            .expect("backfilled recall governance columns"),
         (0, 0, 1, "org".to_string())
     );
 }

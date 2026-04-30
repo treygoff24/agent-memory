@@ -1,7 +1,7 @@
 use memory_substrate::{InitOptions, Roots, Substrate};
 use memoryd::handlers::{handle_request_with_state, HandlerState};
 use memoryd::protocol::{RequestEnvelope, RequestPayload, ResponsePayload, ResponseResult};
-use memoryd::recall::{estimated_tokens, RecallSectionName, StartupRequest};
+use memoryd::recall::{estimated_tokens, DeltaRequest, RecallSectionName, StartupRequest};
 
 #[tokio::test]
 async fn memory_startup_returns_recall_block_and_increments_success_counter() {
@@ -161,6 +161,50 @@ async fn memory_startup_since_event_id_is_only_not_implemented_startup_path() {
             assert!(!error.retryable);
         }
         other => panic!("expected not_implemented, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn memory_delta_validation_failure_increments_failure_counter_by_code() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let repo = temp.path().join("repo");
+    let substrate = Substrate::init(
+        Roots::new(&repo, temp.path().join("runtime")),
+        InitOptions { force_unsafe_durability: true, device_id: Some("dev_startup".to_owned()) },
+    )
+    .await
+    .expect("substrate init");
+    let state = HandlerState::new();
+
+    let response = handle_request_with_state(
+        &substrate,
+        &state,
+        RequestEnvelope::new(
+            "req-delta-invalid",
+            RequestPayload::Delta(DeltaRequest {
+                cwd: repo.to_string_lossy().into_owned(),
+                session_id: "sess_delta".to_owned(),
+                harness: "codex".to_owned(),
+                message: " ".to_owned(),
+                budget_tokens: Some(512),
+            }),
+        ),
+    )
+    .await;
+
+    match response.result {
+        ResponseResult::Error(error) => assert_eq!(error.code, "invalid_request"),
+        other => panic!("expected invalid_request, got {other:?}"),
+    }
+
+    let status =
+        handle_request_with_state(&substrate, &state, RequestEnvelope::new("req-status", RequestPayload::Status)).await;
+    match status.result {
+        ResponseResult::Success(ResponsePayload::Status(status)) => {
+            assert_eq!(status.recall.delta_invoked_total, 0);
+            assert_eq!(status.recall.delta_failed_total.get("invalid_request"), Some(&1));
+        }
+        other => panic!("expected status success, got {other:?}"),
     }
 }
 

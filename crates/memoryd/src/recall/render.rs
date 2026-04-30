@@ -133,6 +133,7 @@ fn escape_xml(value: &str, escape_quotes: bool) -> String {
             '>' => escaped.push_str("&gt;"),
             '"' if escape_quotes => escaped.push_str("&quot;"),
             '\'' if escape_quotes => escaped.push_str("&apos;"),
+            c if (c as u32) < 0x20 && c != '\t' && c != '\n' && c != '\r' => {}
             _ => escaped.push(character),
         }
     }

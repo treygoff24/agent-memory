@@ -28,7 +28,9 @@ use crate::protocol::{
     ResponsePayload, RevealResponse, ReviewDecisionResponse, ReviewQueueItemResponse, ReviewQueueResponse, SearchHit,
     SearchResponse, StatusResponse, WriteNoteResponse, MAX_FRAME_BYTES,
 };
-use crate::recall::{build_delta_response, build_startup_response, RecallError, SharedRecallCounters};
+use crate::recall::{
+    build_delta_response, build_startup_response, OmissionReason, RecallError, SharedRecallCounters, StartupResponse,
+};
 
 const SEARCH_LIMIT_DEFAULT: usize = 10;
 const SEARCH_LIMIT_MAX: usize = 20;
@@ -134,12 +136,21 @@ async fn startup_response(
 ) -> Result<ResponsePayload, HandlerError> {
     match build_startup_response(substrate, request).await {
         Ok(response) => {
+            record_budget_exhaustions(state, &response);
             state.recall.record_startup_success();
             Ok(ResponsePayload::Startup(Box::new(response)))
         }
         Err(error) => {
             state.recall.record_startup_failure(error.protocol_code());
             Err(HandlerError::from_recall(error))
+        }
+    }
+}
+
+fn record_budget_exhaustions(state: &HandlerState, response: &StartupResponse) {
+    for omission in &response.recall_explanation.omitted {
+        if omission.reason == OmissionReason::BudgetExhausted {
+            state.recall.record_budget_exhausted(omission.section.as_str());
         }
     }
 }
@@ -643,10 +654,10 @@ fn classify_privacy(
 }
 
 fn attach_privacy_scan(memory: &mut Memory, privacy: &PrivacyDecision) {
-    memory
-        .frontmatter
-        .extras
-        .insert("privacy_scan".to_string(), serde_json::to_value(&privacy.scan).unwrap_or(serde_json::Value::Null));
+    memory.frontmatter.extras.insert(
+        "privacy_scan".to_string(),
+        serde_json::to_value(&privacy.scan).expect("privacy scan always serializes"),
+    );
 }
 
 async fn review_queue_response(substrate: &Substrate, limit: Option<usize>) -> Result<ResponsePayload, HandlerError> {

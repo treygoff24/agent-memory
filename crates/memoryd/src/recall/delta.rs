@@ -2,10 +2,8 @@ use memory_substrate::{ChunkQuery, Substrate};
 
 use crate::recall::budget::estimated_tokens;
 use crate::recall::error::RecallError;
-use crate::recall::render::escape_xml_text;
-use crate::recall::types::{DeltaRequest, DeltaResponse};
-
-const DEFAULT_DELTA_BUDGET_TOKENS: usize = 400;
+use crate::recall::render::{escape_xml_attr, escape_xml_text};
+use crate::recall::types::{DeltaRequest, DeltaResponse, DEFAULT_DELTA_BUDGET_TOKENS};
 
 pub async fn build_delta_response(substrate: &Substrate, request: DeltaRequest) -> Result<DeltaResponse, RecallError> {
     validate_delta_request(&request)?;
@@ -27,11 +25,7 @@ pub async fn build_delta_response(substrate: &Substrate, request: DeltaRequest) 
     let mut body = String::from("<memory-delta>\n");
     let mut used = 0usize;
     for chunk in chunks {
-        let rendered = format!(
-            "  <item id=\"{}\">{}</item>\n",
-            escape_xml_text(chunk.memory_id.as_str()),
-            escape_xml_text(&chunk.text)
-        );
+        let rendered = render_delta_item(chunk.memory_id.as_str(), &chunk.text);
         let tokens = estimated_tokens(&rendered);
         if used + tokens > budget_tokens {
             break;
@@ -48,6 +42,10 @@ pub async fn build_delta_response(substrate: &Substrate, request: DeltaRequest) 
     })
 }
 
+fn render_delta_item(memory_id: &str, text: &str) -> String {
+    format!("  <item id=\"{}\">{}</item>\n", escape_xml_attr(memory_id), escape_xml_text(text))
+}
+
 fn validate_delta_request(request: &DeltaRequest) -> Result<(), RecallError> {
     if request.message.trim().is_empty() {
         return Err(RecallError::invalid_request("message must be non-empty"));
@@ -56,14 +54,20 @@ fn validate_delta_request(request: &DeltaRequest) -> Result<(), RecallError> {
     if !(128..=8_000).contains(&budget) {
         return Err(RecallError::invalid_request("budget_tokens must be in 128..=8000"));
     }
-    crate::recall::validate_startup_request(crate::recall::StartupRequest {
-        cwd: request.cwd.clone(),
-        session_id: request.session_id.clone(),
-        harness: request.harness.clone(),
-        harness_version: None,
-        include_recent: true,
-        since_event_id: None,
-        budget_tokens: Some(budget.max(512)),
-    })?;
+    crate::recall::binding::validate_session_fields(&request.cwd, &request.session_id, &request.harness)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_delta_item;
+
+    #[test]
+    fn delta_item_escapes_id_as_xml_attribute() {
+        let rendered = render_delta_item("mem\" onclick=\"evil", "safe <text>");
+
+        assert!(rendered.contains("id=\"mem&quot; onclick=&quot;evil\""));
+        assert!(rendered.contains("safe &lt;text&gt;"));
+        assert!(!rendered.contains("onclick=\"evil"));
+    }
 }

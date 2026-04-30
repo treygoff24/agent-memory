@@ -4,6 +4,8 @@
 //! below.  Column lists, value bindings, and index names are kept in the same
 //! vertical region as the statement that uses them so readers don't scroll.
 
+use std::collections::BTreeMap;
+
 use chrono::{DateTime, Utc};
 use rusqlite::{named_params, params, params_from_iter, Connection, Transaction};
 
@@ -174,7 +176,8 @@ impl Index {
     /// See `sanitize_fts_query` (private) for the exact transformation.
     ///
     /// R-IX-1 defense-in-depth: the join against `memories` filters out
-    /// encrypted-memory chunks (`metadata_only = 0`) even if upstream forgot.
+    /// encrypted-memory chunks (`metadata_only = 1`) and rows disabled for
+    /// passive recall even if upstream forgot.
     pub fn query_chunks(&self, text: &str) -> rusqlite::Result<Vec<ChunkResult>> {
         let sanitized = sanitize_fts_query(text);
         if sanitized.is_empty() {
@@ -187,6 +190,7 @@ impl Index {
              JOIN memories      ON memories.id = memory_chunks.memory_id
              WHERE memory_chunks_fts MATCH ?1
                AND memories.metadata_only = 0
+               AND memories.passive_recall = 1
              ORDER BY score
              LIMIT 20",
         )?;
@@ -298,35 +302,10 @@ impl Index {
         let mut rows = stmt.query(params_from_iter(bindings.iter()))?;
         let mut results = Vec::new();
         while let Some(row) = rows.next()? {
-            results.push(self.row_to_recall_index_row(row)?);
+            results.push(row_to_recall_index_row(row)?);
         }
+        hydrate_recall_index_auxiliary(&self.connection, &mut results)?;
         Ok(results)
-    }
-
-    fn row_to_recall_index_row(&self, row: &rusqlite::Row<'_>) -> rusqlite::Result<RecallIndexRow> {
-        let id = MemoryId::new(row.get::<_, String>(0)?);
-        Ok(RecallIndexRow {
-            tags: read_tags(&self.connection, &id)?,
-            aliases: read_aliases(&self.connection, &id)?,
-            entities: read_entities(&self.connection, &id)?,
-            id,
-            // `from_unchecked`: path was validated at index-write time; hydrating from DB row.
-            path: RepoPath::from_unchecked(row.get::<_, String>(1)?),
-            summary: row.get(2)?,
-            status: memory_status_from_str(row.get::<_, String>(3)?.as_str())?,
-            scope: scope_from_str(row.get::<_, String>(4)?.as_str())?,
-            canonical_namespace_id: row.get(5)?,
-            updated_at: parse_index_time(row.get::<_, String>(6)?.as_str())?,
-            confidence: row.get(7)?,
-            source_kind: source_kind_from_str(row.get::<_, String>(8)?.as_str())?,
-            sensitivity: sensitivity_from_str(row.get::<_, String>(9)?.as_str())?,
-            passive_recall: row.get::<_, i64>(10)? != 0,
-            index_body: row.get::<_, i64>(11)? != 0,
-            requires_user_confirmation: row.get::<_, i64>(12)? != 0,
-            review_state: row.get(13)?,
-            human_review_required: row.get::<_, i64>(14)? != 0,
-            max_scope: scope_from_str(row.get::<_, String>(15)?.as_str())?,
-        })
     }
 }
 
@@ -768,6 +747,7 @@ fn append_recall_index_filters(
     bindings: &mut Vec<rusqlite::types::Value>,
 ) -> SubstrateResult<()> {
     append_namespace_filter(query.namespace_prefix.as_deref(), filters, bindings)?;
+    filters.push("memories.metadata_only = 0".to_string());
     if !query.statuses.is_empty() {
         let placeholders = vec!["?"; query.statuses.len()].join(",");
         filters.push(format!("memories.status IN ({placeholders})"));
@@ -811,6 +791,8 @@ fn append_match_term_filters(
     filters: &mut Vec<String>,
     bindings: &mut Vec<rusqlite::types::Value>,
 ) {
+    // Recall match terms intentionally use union semantics. A passive recall request should surface
+    // candidates matching any observed tag, alias, entity id, or entity alias from the current turn.
     let terms = query.match_terms.iter().filter(|term| !term.trim().is_empty()).collect::<Vec<_>>();
     if terms.is_empty() {
         return;
@@ -886,42 +868,128 @@ fn collect_query_results(
     Ok(results)
 }
 
-fn read_tags(conn: &Connection, id: &MemoryId) -> rusqlite::Result<Vec<String>> {
-    read_strings(conn, "SELECT tag FROM memory_tags WHERE memory_id = ?1 ORDER BY tag COLLATE NOCASE, tag", id)
+fn row_to_recall_index_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RecallIndexRow> {
+    Ok(RecallIndexRow {
+        id: MemoryId::new(row.get::<_, String>(0)?),
+        // `from_unchecked`: path was validated at index-write time; hydrating from DB row.
+        path: RepoPath::from_unchecked(row.get::<_, String>(1)?),
+        summary: row.get(2)?,
+        status: memory_status_from_str(row.get::<_, String>(3)?.as_str())?,
+        scope: scope_from_str(row.get::<_, String>(4)?.as_str())?,
+        canonical_namespace_id: row.get(5)?,
+        updated_at: parse_index_time(row.get::<_, String>(6)?.as_str())?,
+        confidence: row.get(7)?,
+        source_kind: source_kind_from_str(row.get::<_, String>(8)?.as_str())?,
+        sensitivity: sensitivity_from_str(row.get::<_, String>(9)?.as_str())?,
+        passive_recall: row.get::<_, i64>(10)? != 0,
+        index_body: row.get::<_, i64>(11)? != 0,
+        requires_user_confirmation: row.get::<_, i64>(12)? != 0,
+        review_state: row.get(13)?,
+        human_review_required: row.get::<_, i64>(14)? != 0,
+        max_scope: scope_from_str(row.get::<_, String>(15)?.as_str())?,
+        tags: Vec::new(),
+        aliases: Vec::new(),
+        entities: Vec::new(),
+    })
 }
 
-fn read_aliases(conn: &Connection, id: &MemoryId) -> rusqlite::Result<Vec<String>> {
-    read_strings(conn, "SELECT alias FROM memory_aliases WHERE memory_id = ?1 ORDER BY alias COLLATE NOCASE, alias", id)
-}
+fn hydrate_recall_index_auxiliary(conn: &Connection, rows: &mut [RecallIndexRow]) -> rusqlite::Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
 
-fn read_strings(conn: &Connection, sql: &str, id: &MemoryId) -> rusqlite::Result<Vec<String>> {
-    let mut stmt = conn.prepare_cached(sql)?;
-    let rows = stmt.query_map([id.as_str()], |row| row.get::<_, String>(0))?.collect();
-    rows
-}
-
-fn read_entities(conn: &Connection, id: &MemoryId) -> rusqlite::Result<Vec<Entity>> {
-    let mut stmt = conn.prepare_cached(
-        "SELECT entity_id,label FROM memory_entities WHERE memory_id = ?1 ORDER BY entity_id COLLATE NOCASE, entity_id",
+    let ids = rows.iter().map(|row| row.id.as_str().to_owned()).collect::<Vec<_>>();
+    let mut tags_by_memory = read_strings_by_memory(
+        conn,
+        AuxiliaryStringTable {
+            table: "memory_tags",
+            column: "tag",
+            order_by: "ORDER BY memory_id, tag COLLATE NOCASE, tag",
+        },
+        &ids,
     )?;
-    let rows = stmt
-        .query_map([id.as_str()], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    rows.into_iter()
-        .map(|(entity_id, label)| {
-            Ok(Entity { aliases: read_entity_aliases(conn, id, &entity_id)?, id: entity_id, label })
-        })
-        .collect()
+    let mut aliases_by_memory = read_strings_by_memory(
+        conn,
+        AuxiliaryStringTable {
+            table: "memory_aliases",
+            column: "alias",
+            order_by: "ORDER BY memory_id, alias COLLATE NOCASE, alias",
+        },
+        &ids,
+    )?;
+    let mut entities_by_memory = read_entities_by_memory(conn, &ids)?;
+
+    for row in rows {
+        row.tags = tags_by_memory.remove(row.id.as_str()).unwrap_or_default();
+        row.aliases = aliases_by_memory.remove(row.id.as_str()).unwrap_or_default();
+        row.entities = entities_by_memory.remove(row.id.as_str()).unwrap_or_default();
+    }
+    Ok(())
 }
 
-fn read_entity_aliases(conn: &Connection, memory_id: &MemoryId, entity_id: &str) -> rusqlite::Result<Vec<String>> {
-    let mut stmt = conn.prepare_cached(
-        "SELECT alias FROM memory_entity_aliases
-         WHERE memory_id = ?1 AND entity_id = ?2
-         ORDER BY alias COLLATE NOCASE, alias",
-    )?;
-    let rows = stmt.query_map(params![memory_id.as_str(), entity_id], |row| row.get::<_, String>(0))?.collect();
-    rows
+struct AuxiliaryStringTable {
+    table: &'static str,
+    column: &'static str,
+    order_by: &'static str,
+}
+
+fn read_strings_by_memory(
+    conn: &Connection,
+    table: AuxiliaryStringTable,
+    ids: &[String],
+) -> rusqlite::Result<BTreeMap<String, Vec<String>>> {
+    let placeholders = vec!["?"; ids.len()].join(",");
+    let sql = format!(
+        "SELECT memory_id,{} FROM {} WHERE memory_id IN ({placeholders}) {}",
+        table.column, table.table, table.order_by
+    );
+    let mut stmt = conn.prepare_cached(&sql)?;
+    let mut rows = stmt.query(params_from_iter(ids.iter()))?;
+    let mut values = BTreeMap::<String, Vec<String>>::new();
+    while let Some(row) = rows.next()? {
+        values.entry(row.get::<_, String>(0)?).or_default().push(row.get(1)?);
+    }
+    Ok(values)
+}
+
+fn read_entities_by_memory(conn: &Connection, ids: &[String]) -> rusqlite::Result<BTreeMap<String, Vec<Entity>>> {
+    let placeholders = vec!["?"; ids.len()].join(",");
+    let sql = format!(
+        "SELECT memory_id,entity_id,label FROM memory_entities
+         WHERE memory_id IN ({placeholders})
+         ORDER BY memory_id, entity_id COLLATE NOCASE, entity_id"
+    );
+    let mut stmt = conn.prepare_cached(&sql)?;
+    let mut rows = stmt.query(params_from_iter(ids.iter()))?;
+    let aliases_by_entity = read_entity_aliases_by_memory(conn, ids)?;
+    let mut entities = BTreeMap::<String, Vec<Entity>>::new();
+    while let Some(row) = rows.next()? {
+        let memory_id = row.get::<_, String>(0)?;
+        let entity_id = row.get::<_, String>(1)?;
+        let label = row.get::<_, String>(2)?;
+        let aliases = aliases_by_entity.get(&(memory_id.clone(), entity_id.clone())).cloned().unwrap_or_default();
+        entities.entry(memory_id).or_default().push(Entity { id: entity_id, label, aliases });
+    }
+    Ok(entities)
+}
+
+fn read_entity_aliases_by_memory(
+    conn: &Connection,
+    ids: &[String],
+) -> rusqlite::Result<BTreeMap<(String, String), Vec<String>>> {
+    let placeholders = vec!["?"; ids.len()].join(",");
+    let sql = format!(
+        "SELECT memory_id,entity_id,alias FROM memory_entity_aliases
+         WHERE memory_id IN ({placeholders})
+         ORDER BY memory_id, entity_id COLLATE NOCASE, entity_id, alias COLLATE NOCASE, alias"
+    );
+    let mut stmt = conn.prepare_cached(&sql)?;
+    let mut rows = stmt.query(params_from_iter(ids.iter()))?;
+    let mut aliases = BTreeMap::<(String, String), Vec<String>>::new();
+    while let Some(row) = rows.next()? {
+        aliases.entry((row.get(0)?, row.get(1)?)).or_default().push(row.get(2)?);
+    }
+    Ok(aliases)
 }
 
 fn row_to_result(row: &rusqlite::Row<'_>) -> rusqlite::Result<QueryResult> {

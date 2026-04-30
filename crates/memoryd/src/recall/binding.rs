@@ -3,19 +3,30 @@ use std::path::PathBuf;
 
 use crate::recall::error::RecallError;
 use crate::recall::project::resolve_project_binding;
-use crate::recall::types::{SessionBinding, StartupRequest};
+use crate::recall::types::{SessionBinding, StartupRequest, DEFAULT_STARTUP_BUDGET_TOKENS};
 
 const MAX_BINDING_FIELD_BYTES: usize = 128;
-const DEFAULT_BUDGET_TOKENS: usize = 3_600;
 const MIN_BUDGET_TOKENS: usize = 512;
 const MAX_BUDGET_TOKENS: usize = 8_000;
 
 pub fn validate_startup_request(request: StartupRequest) -> Result<SessionBinding, RecallError> {
-    let cwd = validate_cwd(&request.cwd)?;
-    let session_id = validate_required_field("session_id", &request.session_id)?;
-    let harness = validate_required_field("harness", &request.harness)?;
     let harness_version = validate_optional_field("harness_version", request.harness_version.as_deref())?;
     validate_budget(request.budget_tokens)?;
+
+    let mut binding = validate_session_fields(&request.cwd, &request.session_id, &request.harness)?;
+    binding.harness_version = harness_version;
+
+    Ok(binding)
+}
+
+pub(crate) fn validate_session_fields(
+    cwd: &str,
+    session_id: &str,
+    harness: &str,
+) -> Result<SessionBinding, RecallError> {
+    let cwd = validate_cwd(cwd)?;
+    let session_id = validate_required_field("session_id", session_id)?;
+    let harness = validate_required_field("harness", harness)?;
 
     let project = resolve_project_binding(&cwd)?;
     let namespaces_in_scope = namespaces_for(project.as_ref());
@@ -23,7 +34,7 @@ pub fn validate_startup_request(request: StartupRequest) -> Result<SessionBindin
     Ok(SessionBinding {
         session_id,
         harness,
-        harness_version,
+        harness_version: None,
         cwd: cwd.to_string_lossy().into_owned(),
         project,
         namespaces_in_scope,
@@ -55,7 +66,7 @@ fn validate_optional_field(name: &str, value: Option<&str>) -> Result<Option<Str
 }
 
 fn validate_budget(budget_tokens: Option<usize>) -> Result<(), RecallError> {
-    let budget = budget_tokens.unwrap_or(DEFAULT_BUDGET_TOKENS);
+    let budget = budget_tokens.unwrap_or(DEFAULT_STARTUP_BUDGET_TOKENS);
     if !(MIN_BUDGET_TOKENS..=MAX_BUDGET_TOKENS).contains(&budget) {
         return Err(RecallError::invalid_request("budget_tokens must be in 512..=8000"));
     }

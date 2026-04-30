@@ -560,6 +560,48 @@ async fn query_chunks_returns_fts_hits() {
 }
 
 #[tokio::test]
+async fn query_chunks_excludes_passive_recall_disabled_rows() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let substrate =
+        Substrate::init(roots, InitOptions { force_unsafe_durability: true, device_id: Some("dev_test".to_string()) })
+            .await
+            .expect("init");
+
+    let mut passive = sample_memory("mem_20260424_a1b2c3d4e5f60718_000116");
+    passive.body = "sharedneedle passive body".to_string();
+
+    let mut disabled = sample_memory("mem_20260424_a1b2c3d4e5f60718_000117");
+    disabled.body = "sharedneedle disabled body".to_string();
+    disabled.frontmatter.retrieval_policy.passive_recall = false;
+
+    for memory in [passive.clone(), disabled] {
+        substrate
+            .write_memory(WriteRequest {
+                operation_id: None,
+                memory,
+                expected_base_hash: None,
+                write_mode: WriteMode::CreateNew,
+                index_projection: None,
+                event_context: EventContext::default(),
+                allow_best_effort_durability: true,
+                classification: ClassificationOutcome::Trusted,
+            })
+            .await
+            .expect("write");
+    }
+
+    let hits = substrate
+        .query_chunks(ChunkQuery { text: Some("sharedneedle".to_string()), triple: None, vector: None })
+        .await
+        .expect("chunk query");
+
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].memory_id, passive.frontmatter.id);
+    assert!(hits[0].text.contains("passive body"));
+}
+
+#[tokio::test]
 async fn fts_mutation_removes_old_terms_after_replace() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));

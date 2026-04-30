@@ -272,6 +272,23 @@ pub enum SourceKind {
     System,
 }
 
+impl std::fmt::Display for SourceKind {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::User => "user",
+            Self::AgentPrimary => "agent-primary",
+            Self::AgentSubagent => "agent-subagent",
+            Self::Tool => "tool",
+            Self::Web => "web",
+            Self::Email => "email",
+            Self::File => "file",
+            Self::Synthesis => "synthesis",
+            Self::Import => "import",
+            Self::System => "system",
+        })
+    }
+}
+
 /// Retrieval policy.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RetrievalPolicy {
