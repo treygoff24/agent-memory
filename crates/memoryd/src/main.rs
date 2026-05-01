@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use clap::Parser;
 use memory_privacy::{
     DeterministicPrivacyClassifier, FileKeyProvider, KeyProvider, PrivacyClassifier, PrivacyNamespace,
@@ -6,9 +8,11 @@ use memory_substrate::{InitOptions, Roots, Substrate};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::watch;
 
-use memoryd::cli::{Cli, Command, DeviceCommand, PrivacyCommand, PrivacyFilterCommand, RecallCommand, ReviewCommand};
+use memoryd::cli::{
+    Cli, Command, DeviceCommand, DreamCommand, PrivacyCommand, PrivacyFilterCommand, RecallCommand, ReviewCommand,
+};
 use memoryd::client;
-use memoryd::protocol::{RequestPayload, ResponsePayload, ResponseResult};
+use memoryd::protocol::{DreamRunReport, PassStatus, RequestPayload, ResponsePayload, ResponseResult};
 use memoryd::recall::{DeltaRequest, StartupRequest};
 use memoryd::server::{self, ServerOptions};
 
@@ -178,6 +182,42 @@ async fn main() -> anyhow::Result<()> {
                 print_recall_delta(response)?;
             }
         },
+        Command::Dream(args) => match args.command {
+            DreamCommand::Status(args) => {
+                let report = memoryd::dream::status::build_dream_status_report(&args.repo, &args.runtime)
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                if args.json {
+                    println!("{}", serde_json::to_string_pretty(&report)?);
+                } else {
+                    print!("{}", memoryd::dream::status::render_human_status(&report));
+                }
+            }
+            DreamCommand::Now(args) => {
+                let report = run_manual_dream(args).await?;
+                println!("{}", serde_json::to_string_pretty(&report)?);
+                if dream_report_failed(&report) {
+                    std::process::exit(4);
+                }
+            }
+            DreamCommand::Review(args) => {
+                let report = memoryd::dream::review::collect_review(&args.repo, &args.since, args.scope.as_deref())
+                    .map_err(anyhow::Error::msg)?;
+                print!("{}", memoryd::dream::review::render_human_review(&report));
+            }
+            DreamCommand::Enable(args) => {
+                println!("{}", memoryd::dream::status::PRIVACY_DISCLOSURE);
+                memoryd::dream::status::enable_device(&args.runtime)?;
+                println!(
+                    "enabled: removed device-local sentinel {}",
+                    memoryd::dream::status::disabled_sentinel_path(&args.runtime).display()
+                );
+            }
+            DreamCommand::Disable(args) => {
+                let path = memoryd::dream::status::disable_device(&args.runtime)?;
+                println!("disabled: created device-local sentinel {}", path.display());
+            }
+        },
         Command::Privacy(args) => match args.command {
             PrivacyCommand::Status(args) => {
                 let key_provider = FileKeyProvider::runtime_default(&args.runtime);
@@ -276,6 +316,87 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn run_manual_dream(args: memoryd::cli::DreamNowArgs) -> anyhow::Result<DreamRunReport> {
+    let config = memory_substrate::config::load_config(&args.repo, &args.runtime, None).map_err(anyhow::Error::msg)?;
+    if !config.synced.dreams.enabled || memoryd::dream::status::disabled_sentinel_path(&args.runtime).exists() {
+        eprintln!("dream_disabled: dreaming is disabled on this device");
+        std::process::exit(1);
+    }
+    let cli_used = args.cli_used();
+    let now = chrono::Utc::now();
+    let result = memoryd::dream::lease::acquire_manual_lease(memoryd::dream::lease::LeaseAcquireRequest {
+        repo: args.repo.clone(),
+        runtime: args.runtime.clone(),
+        scope: args.scope.clone(),
+        force: args.force,
+        now,
+        lease_window_seconds: u64::from(config.synced.dreams.lease_window_seconds),
+        cli_used: cli_used.clone(),
+    });
+    let acquired = match result {
+        Ok(acquired) => acquired,
+        Err(error) => exit_dream_error(error),
+    };
+
+    let run_result = async {
+        let substrate = Substrate::open(Roots::new(args.repo.clone(), args.runtime.clone())).await?;
+        let scope =
+            memoryd::dream::scope::DreamScope::parse(&args.scope).map_err(|err| anyhow::anyhow!(err.to_string()))?;
+        let build = memoryd::dream::orchestration::build_dream_run(
+            &substrate,
+            memoryd::dream::orchestration::DreamRunBuildRequest {
+                scope,
+                run_id: acquired.record.run_id,
+                run_date: now.date_naive(),
+                pass_timeout: Duration::from_secs(u64::from(config.synced.dreams.per_pass_timeout_seconds)),
+                pass_2_max_candidates: config.synced.dreams.pass_2_max_candidates as usize,
+                pass_1_window_days: config.synced.dreams.pass_1_window_days,
+            },
+        )
+        .await
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+        let harness = memoryd::dream::orchestration::select_harness(
+            cli_used.as_deref(),
+            &config.synced.dreams.default_cli_priority,
+            &build.options,
+        )
+        .await
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+        memoryd::dream::run::DreamRunner::new(build.options.with_harness(harness), build.writer)
+            .run()
+            .await
+            .map_err(|err| anyhow::anyhow!(err.to_string()))
+    }
+    .await;
+
+    if let Err(error) = &run_result {
+        let _ = memoryd::dream::lease::release_manual_lease(memoryd::dream::lease::LeaseAcquireRequest {
+            repo: args.repo,
+            runtime: args.runtime,
+            scope: args.scope,
+            force: false,
+            now: chrono::Utc::now(),
+            lease_window_seconds: u64::from(config.synced.dreams.lease_window_seconds),
+            cli_used,
+        });
+        let message = error.to_string();
+        if let Some(rest) = message.strip_prefix("invalid_request: dream_unavailable: ") {
+            eprintln!("dream_unavailable: {rest}");
+            std::process::exit(2);
+        }
+        if message.contains("unknown harness CLI override") {
+            eprintln!("invalid_request: {message}");
+            std::process::exit(1);
+        }
+    }
+
+    run_result
+}
+
+fn dream_report_failed(report: &DreamRunReport) -> bool {
+    [report.pass_1.status, report.pass_2.status, report.pass_3.status].contains(&PassStatus::Failed)
+}
+
 fn print_response(response: memoryd::protocol::ResponseEnvelope) -> anyhow::Result<()> {
     println!("{}", serde_json::to_string_pretty(&response)?);
     Ok(())
@@ -319,12 +440,19 @@ fn exit_recall_unavailable(error: anyhow::Error) -> ! {
     std::process::exit(2);
 }
 
+fn exit_dream_error(error: memoryd::dream::lease::LeaseError) -> ! {
+    eprintln!("{}: {}", error.code(), error);
+    std::process::exit(error.cli_exit_code());
+}
+
 fn recall_exit_code(code: &str) -> i32 {
     match code {
         "invalid_request" => 1,
-        "substrate_error" | "recall_unavailable" => 2,
+        "dream_disabled" => 1,
+        "substrate_error" | "recall_unavailable" | "dream_unavailable" => 2,
         "privacy_error" => 3,
-        "not_implemented" => 4,
+        "not_implemented" | "dream_pass_failed" => 4,
+        "lease_held" | "lease_unavailable" | "lease_dirty_tree" => 5,
         _ => 1,
     }
 }

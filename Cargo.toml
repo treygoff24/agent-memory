@@ -56,3 +56,4 @@ uuid = { version = "1.11", features = ["v4", "serde"] }
 which = "6"
 walkdir = "2.5"
 yaml_serde = "0.10.4"
+zstd = "0.13"

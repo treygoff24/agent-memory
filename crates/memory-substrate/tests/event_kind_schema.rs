@@ -23,8 +23,13 @@ fn every_current_event_kind_has_typed_payload_fixture() {
         EventKind::StartupReconciliationCompleted { reindexed: 1, repaired_events: 1 },
         EventKind::OperatorRepairRequired { reason: "fixture".to_string() },
         EventKind::GitPushFailed { reason: "fixture".to_string() },
+        EventKind::SubstrateFragmentWritten {
+            id: "sub_01HZXJK7J7W0X4Q4KJ7A2R8V1A".to_string(),
+            path: RepoPath::new("substrate/dev_test/2026-04-30.jsonl"),
+            classification: ClassificationOutcome::Trusted,
+        },
     ];
-    assert_eq!(events.len(), 8);
+    assert_eq!(events.len(), 9);
     for (index, kind) in events.into_iter().enumerate() {
         let event = Event {
             schema: memory_substrate::SUBSTRATE_SCHEMA_VERSION,

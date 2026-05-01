@@ -1,0 +1,338 @@
+use std::time::Duration;
+
+use memoryd::dream::error::HarnessCliError;
+use memoryd::dream::harness::{
+    run_hardened_command, ClaudeCodeCli, CodexCli, EchoCli, HardenedCommand, HarnessCli, MinimalEnvironment,
+    CLAUDE_ENV_ALLOWLIST, CODEX_ENV_ALLOWLIST,
+};
+use memoryd::dream::registry::HarnessCliRegistry;
+use memoryd::protocol::PromptTransport;
+
+static SUBPROCESS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[tokio::test]
+async fn echo_cli_replays_canned_outputs_deterministically() {
+    let prompt = "masked dream prompt for pass 1";
+    let echo = EchoCli::from_prompt_outputs([(prompt, "canned journal")]);
+
+    let first = echo.complete(prompt, false, Duration::from_secs(1)).await.expect("echo fixture returns canned output");
+    let second = echo.complete(prompt, false, Duration::from_secs(1)).await.expect("echo fixture is deterministic");
+
+    assert_eq!(first, "canned journal");
+    assert_eq!(second, first);
+}
+
+#[test]
+fn claude_adapter_detects_stub_binary_on_path() {
+    let bin_dir = tempfile::tempdir().expect("stub bin dir");
+    write_executable(bin_dir.path().join("claude"), "#!/bin/sh\nexit 0\n");
+
+    let cli = ClaudeCodeCli::with_path_env(bin_dir.path().as_os_str().to_owned());
+
+    assert!(cli.is_installed(), "stub claude on PATH should be detected");
+}
+
+#[test]
+fn claude_and_codex_adapter_argv_never_contains_prompt() {
+    let prompt = "MASKED_SECRET_PROMPT_SHOULD_NOT_BE_IN_ARGV";
+
+    let claude_args = ClaudeCodeCli::new().command(false).args;
+    let codex_text_args = CodexCli::new().command(false).args;
+    let codex_json_args = CodexCli::new().command(true).args;
+
+    assert_eq!(claude_args, ["--print"]);
+    assert_eq!(codex_text_args, ["exec", "-"]);
+    assert_eq!(codex_json_args, ["exec", "--json", "-"]);
+
+    for args in [&claude_args, &codex_text_args, &codex_json_args] {
+        assert!(args.iter().all(|arg| !arg.contains(prompt)), "adapter argv must never include prompt bytes: {args:?}");
+    }
+}
+
+#[test]
+fn hardened_subprocess_sends_prompt_only_on_stdin_with_minimal_env_and_scratch_cwd() {
+    let _guard = SUBPROCESS_TEST_LOCK.lock().expect("subprocess test lock");
+    run_async(async {
+        let temp = tempfile::tempdir().expect("recorder tempdir");
+        let recorder = temp.path().join("recorder");
+        let record_prefix = temp.path().join("record");
+        let scratch_root = temp.path().join("scratch");
+        let parent_cwd = std::env::current_dir().expect("parent cwd");
+        let prompt = "MASKED_PROMPT_ONLY_STDIN";
+
+        write_executable(
+            &recorder,
+            r#"#!/bin/sh
+record="$1"
+cat > "${record}.stdin"
+printf '%s\n' "$PWD" > "${record}.cwd"
+printf '%s\n' "$@" > "${record}.argv"
+if [ "${SHOULD_NOT_LEAK+x}" = x ]; then printf leak > "${record}.env"; else printf ok > "${record}.env"; fi
+printf 'stderr without prompt\n' >&2
+printf 'stdout without prompt\n'
+"#,
+        );
+
+        let mut env = MinimalEnvironment::from_pairs([
+            ("PATH", std::env::var("PATH").expect("PATH is set")),
+            ("HOME", temp.path().display().to_string()),
+            ("TERM", "xterm-256color".to_string()),
+            ("ANTHROPIC_API_KEY", "test-auth".to_string()),
+            ("SHOULD_NOT_LEAK", "1".to_string()),
+        ]);
+
+        let output = run_hardened_command(
+            HardenedCommand {
+                program: recorder,
+                args: vec![record_prefix.display().to_string()],
+                prompt_transport: PromptTransport::Stdin,
+                expect_json: false,
+                timeout: Duration::from_secs(2),
+                kill_grace: Duration::from_millis(500),
+                scratch_root: scratch_root.clone(),
+                environment: env.clone(),
+            },
+            prompt,
+        )
+        .await
+        .expect("recorder subprocess succeeds");
+
+        assert_eq!(std::fs::read_to_string(record_prefix.with_extension("stdin")).expect("stdin record"), prompt);
+        assert!(!std::fs::read_to_string(record_prefix.with_extension("argv")).expect("argv record").contains(prompt));
+        assert_eq!(std::fs::read_to_string(record_prefix.with_extension("env")).expect("env record"), "ok");
+        assert!(!output.stderr_tail.contains(prompt));
+        assert!(!output.stdout.contains(prompt));
+
+        let child_cwd = std::fs::read_to_string(record_prefix.with_extension("cwd")).expect("cwd record");
+        let child_cwd = std::path::PathBuf::from(child_cwd.trim());
+        assert_ne!(child_cwd, parent_cwd, "harness must not run in repo/project cwd");
+        let scratch_root = std::fs::canonicalize(&scratch_root).expect("canonical scratch root");
+        assert!(child_cwd.starts_with(&scratch_root), "harness cwd should be under scratch root: {child_cwd:?}");
+
+        env.retain_documented_keys_only();
+        assert_eq!(
+            env.keys().collect::<Vec<_>>(),
+            ["ANTHROPIC_API_KEY", "HOME", "PATH", "TERM"],
+            "minimal env builder should retain only documented keys and force TERM into the allowlist"
+        );
+    });
+}
+
+#[test]
+fn adapter_environment_allowlists_do_not_cross_provider_credentials() {
+    let mut claude_env = MinimalEnvironment::from_pairs([
+        ("PATH", "/bin".to_string()),
+        ("HOME", "/tmp".to_string()),
+        ("ANTHROPIC_API_KEY", "anthropic".to_string()),
+        ("OPENAI_API_KEY", "openai".to_string()),
+        ("CODEX_HOME", "/tmp/codex".to_string()),
+        ("GEMINI_API_KEY", "gemini".to_string()),
+    ]);
+    claude_env.retain_keys(CLAUDE_ENV_ALLOWLIST);
+    assert_eq!(claude_env.keys().collect::<Vec<_>>(), ["ANTHROPIC_API_KEY", "HOME", "PATH", "TERM"]);
+
+    let mut codex_env = MinimalEnvironment::from_pairs([
+        ("PATH", "/bin".to_string()),
+        ("HOME", "/tmp".to_string()),
+        ("ANTHROPIC_API_KEY", "anthropic".to_string()),
+        ("CLAUDE_CONFIG_DIR", "/tmp/claude".to_string()),
+        ("OPENAI_API_KEY", "openai".to_string()),
+        ("CODEX_HOME", "/tmp/codex".to_string()),
+        ("GEMINI_API_KEY", "gemini".to_string()),
+    ]);
+    codex_env.retain_keys(CODEX_ENV_ALLOWLIST);
+    assert_eq!(codex_env.keys().collect::<Vec<_>>(), ["CODEX_HOME", "HOME", "OPENAI_API_KEY", "PATH", "TERM"]);
+}
+
+#[test]
+fn hardened_subprocess_timeout_terminates_child() {
+    let _guard = SUBPROCESS_TEST_LOCK.lock().expect("subprocess test lock");
+    run_async(async {
+        let temp = tempfile::tempdir().expect("timeout tempdir");
+        let sleeper = temp.path().join("sleeper");
+        let record_prefix = temp.path().join("timeout");
+        let scratch_root = temp.path().join("scratch");
+
+        write_executable(
+            &sleeper,
+            r#"#!/bin/sh
+record="$1"
+trap 'printf term > "${record}.term"' TERM
+printf '%s' "$$" > "${record}.pid"
+while :; do sleep 1; done
+"#,
+        );
+
+        let error = run_hardened_command(
+            HardenedCommand {
+                program: sleeper,
+                args: vec![record_prefix.display().to_string()],
+                prompt_transport: PromptTransport::Stdin,
+                expect_json: false,
+                timeout: Duration::from_millis(500),
+                kill_grace: Duration::from_millis(500),
+                scratch_root,
+                environment: MinimalEnvironment::from_pairs([
+                    ("PATH", std::env::var("PATH").expect("PATH is set")),
+                    ("HOME", temp.path().display().to_string()),
+                ]),
+            },
+            "prompt sent before timeout",
+        )
+        .await
+        .expect_err("subprocess should time out");
+
+        assert!(matches!(error, HarnessCliError::Timeout { .. }));
+        let pid = std::fs::read_to_string(record_prefix.with_extension("pid"))
+            .expect("pid marker")
+            .parse::<u32>()
+            .expect("pid parses");
+        assert!(!process_is_alive(pid), "timed-out child should not remain alive");
+    });
+}
+
+#[test]
+fn hardened_subprocess_timeout_covers_non_reading_child_with_large_prompt() {
+    let _guard = SUBPROCESS_TEST_LOCK.lock().expect("subprocess test lock");
+    run_async(async {
+        let temp = tempfile::tempdir().expect("non-reader tempdir");
+        let sleeper = temp.path().join("non-reader");
+        let record_prefix = temp.path().join("non-reader");
+        let scratch_root = temp.path().join("scratch");
+
+        write_executable(
+            &sleeper,
+            r#"#!/bin/sh
+record="$1"
+trap 'printf term > "${record}.term"' TERM
+printf '%s' "$$" > "${record}.pid"
+printf ready > "${record}.ready"
+while :; do sleep 1; done
+"#,
+        );
+
+        let prompt = "MASKED_LARGE_PROMPT_LINE\n".repeat(512 * 1024);
+        let started = std::time::Instant::now();
+        let error = tokio::time::timeout(
+            Duration::from_secs(3),
+            run_hardened_command(
+                HardenedCommand {
+                    program: sleeper,
+                    args: vec![record_prefix.display().to_string()],
+                    prompt_transport: PromptTransport::Stdin,
+                    expect_json: false,
+                    timeout: Duration::from_millis(250),
+                    kill_grace: Duration::from_millis(250),
+                    scratch_root,
+                    environment: MinimalEnvironment::from_pairs([
+                        ("PATH", std::env::var("PATH").expect("PATH is set")),
+                        ("HOME", temp.path().display().to_string()),
+                    ]),
+                },
+                &prompt,
+            ),
+        )
+        .await
+        .expect("harness timeout should cover blocked stdin writes")
+        .expect_err("non-reading child should time out");
+
+        assert!(matches!(error, HarnessCliError::Timeout { .. }));
+        assert!(started.elapsed() < Duration::from_secs(2), "timeout should be bounded by harness timeout");
+
+        let pid = std::fs::read_to_string(record_prefix.with_extension("pid"))
+            .expect("pid marker")
+            .parse::<u32>()
+            .expect("pid parses");
+        assert!(!process_is_alive(pid), "timed-out non-reader child should not remain alive");
+    });
+}
+
+#[test]
+fn hardened_subprocess_redacts_partial_prompt_echo_from_stderr_error() {
+    let _guard = SUBPROCESS_TEST_LOCK.lock().expect("subprocess test lock");
+    run_async(async {
+        let temp = tempfile::tempdir().expect("stderr tempdir");
+        let echoer = temp.path().join("partial-stderr");
+        let scratch_root = temp.path().join("scratch");
+        let prompt = "MASKED_PROMPT_ALPHA\nMASKED_PROMPT_BETA\nMASKED_PROMPT_GAMMA";
+
+        write_executable(
+            &echoer,
+            r#"#!/bin/sh
+printf 'diagnostic: MASKED_PROMPT_BETA\n' >&2
+exit 23
+"#,
+        );
+
+        let error = run_hardened_command(
+            HardenedCommand {
+                program: echoer,
+                args: Vec::new(),
+                prompt_transport: PromptTransport::Stdin,
+                expect_json: false,
+                timeout: Duration::from_secs(2),
+                kill_grace: Duration::from_millis(250),
+                scratch_root,
+                environment: MinimalEnvironment::from_pairs([
+                    ("PATH", std::env::var("PATH").expect("PATH is set")),
+                    ("HOME", temp.path().display().to_string()),
+                ]),
+            },
+            prompt,
+        )
+        .await
+        .expect_err("failing subprocess should return an error");
+
+        let error_text = error.to_string();
+        assert!(!error_text.contains("MASKED_PROMPT_ALPHA"));
+        assert!(!error_text.contains("MASKED_PROMPT_BETA"));
+        assert!(!error_text.contains("MASKED_PROMPT_GAMMA"));
+        match error {
+            HarnessCliError::SubprocessExit { stderr_tail, .. } => {
+                assert!(!stderr_tail.contains("MASKED_PROMPT_ALPHA"));
+                assert!(!stderr_tail.contains("MASKED_PROMPT_BETA"));
+                assert!(!stderr_tail.contains("MASKED_PROMPT_GAMMA"));
+            }
+            other => panic!("expected subprocess exit, got {other:?}"),
+        }
+    });
+}
+
+#[test]
+fn v0_2_registry_declares_no_argv_prompt_transport() {
+    let registry = HarnessCliRegistry::builtin_v0_2();
+
+    let adapters = registry.adapters().map(|(name, adapter)| (name, adapter.prompt_transport())).collect::<Vec<_>>();
+
+    assert_eq!(adapters, [("claude", PromptTransport::Stdin), ("codex", PromptTransport::Stdin)]);
+    assert!(adapters.iter().all(|(_, transport)| *transport != PromptTransport::Argv));
+
+    let gemini = registry.disabled_adapters().find(|adapter| adapter.name == "gemini").expect("gemini disabled status");
+    assert!(!gemini.is_installed, "Gemini remains disabled until stdin support is proven");
+    assert_eq!(gemini.prompt_transport, PromptTransport::Stdin, "disabled Gemini must not introduce argv fallback");
+}
+
+#[cfg(unix)]
+fn write_executable(path: impl AsRef<std::path::Path>, contents: &str) {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::write(path.as_ref(), contents).expect("write executable stub");
+    let mut permissions = std::fs::metadata(path.as_ref()).expect("stub metadata").permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(path.as_ref(), permissions).expect("mark stub executable");
+}
+
+fn run_async<T>(future: impl std::future::Future<Output = T>) -> T {
+    tokio::runtime::Builder::new_current_thread().enable_all().build().expect("test runtime").block_on(future)
+}
+
+#[cfg(unix)]
+fn process_is_alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}

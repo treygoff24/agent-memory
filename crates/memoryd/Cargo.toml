@@ -20,6 +20,7 @@ hex.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+zstd.workspace = true
 
 [dev-dependencies]
 memory-test-support = { path = "../memory-test-support" }

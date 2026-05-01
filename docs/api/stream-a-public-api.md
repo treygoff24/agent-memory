@@ -15,6 +15,31 @@ Every plaintext and encrypted write request carries an explicit `ClassificationO
 
 `WriteOutcome` preserves committed-state semantics so callers do not retry a canonical file write after any error with `committed = true`.
 
+## Stream F noncanonical repo files
+
+Stream A accepts Stream F's repo-synced file families as valid tree files, but they are not canonical memories:
+
+- `substrate/<device_id>/<YYYY-MM-DD>.jsonl`
+- `substrate/archive/<device_id>/<YYYY-MM>.jsonl`
+- `encrypted/substrate/<device_id>/<YYYY-MM-DD>.jsonl`
+- `dreams/journal/<scope_path>/<YYYY-MM-DD>.md`
+- `dreams/questions/<scope_path>/<YYYY-MM-DD>.jsonl`
+- `dreams/cleanup/<device_id>/<YYYY-MM-DD>.json`
+- `leases/journal.lease`
+
+These paths use dedicated tree validators for path shape and JSON/JSONL well-formedness. They do not use canonical-memory frontmatter parsing. In particular, frontmatter-free `dreams/journal/**.md` files validate as Stream F dream output but are excluded from the canonical Markdown walker.
+
+The merge-driver public surface remains `memory_substrate::merge::merge_markdown(MergeInput)`, because the git merge-driver binary already passes the repo path through `MergeInput::path`. Stream F path families route before canonical Markdown parsing:
+
+- `substrate/**/*.jsonl` and `encrypted/substrate/**/*.jsonl`: append-only JSONL merge, de-duplicated by canonical row bytes and sorted by `id`.
+- `dreams/questions/**/*.jsonl` and `leases/journal.lease`: append-only JSONL merge, de-duplicated by canonical row bytes and sorted by `(scope, ts, id)`. Legacy rows without `id` use `run_id` where present and otherwise a canonical-row fallback for deterministic ordering.
+- `dreams/journal/**/*.md`: one-sided edits use normal last-writer-wins fast paths; contested same-scope same-date writes produce a quarantine/diagnostic marker preserving both sides for operator choice.
+- `dreams/cleanup/**/*.json`: JSON-object last-writer-wins by `(device_id, date)`, using report timestamps when present and a deterministic canonical-row fallback when not.
+
+`Substrate::read_path_envelope(&RepoPath)` returns `ReadError::NotACanonicalMemory { path }` for these valid-but-noncanonical paths before attempting frontmatter parsing. `Substrate::read_memory_envelope(&MemoryId)` remains ID-based and resolves only canonical memories.
+
+`query_memory`, `query_recall_index`, and `query_chunks` are restricted to canonical memory index rows; Stream F dream/substrate/lease files are never indexed by those APIs.
+
 ## Query API
 
 `MemoryQuery` remains default-compatible with the original Stream A behavior: `MemoryQuery::default()` returns all non-metadata-only indexed memories ordered by memory id. The Stream E extension adds index-side filters:

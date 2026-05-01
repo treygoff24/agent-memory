@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "fixture_version": "stream-f-dreaming-v0.2-task-15",
+  "profile": "darwin-arm64",
+  "platform": {
+    "os": "macos",
+    "arch": "aarch64"
+  },
+  "fixture": {
+    "run_date": "2026-04-30",
+    "pass_1_fragment_count": 1000,
+    "pass_1_active_memory_count": 64,
+    "cleanup_canonical_memory_count": 10000,
+    "cleanup_substrate_fragment_count": 100000,
+    "cleanup_old_event_count": 256,
+    "recall_question_record_count": 90
+  },
+  "measurements": [
+    {
+      "name": "pass_1_prompt_assembly_1k_fragments",
+      "description": "1k-fragment Pass 1 prompt assembly.",
+      "measured_p95_ms": 7.657,
+      "budget_ms": null,
+      "budget_operator": null,
+      "sample_count": 15,
+      "pass": true,
+      "details": {
+        "active_memory_count": 64,
+        "fragment_count": 1000,
+        "prompt_bytes": 322071
+      }
+    },
+    {
+      "name": "lease_acquisition",
+      "description": "Manual lease acquisition with local git fetch/read/append/commit/push.",
+      "measured_p95_ms": 87.599,
+      "budget_ms": 2000.0,
+      "budget_operator": "less_than",
+      "sample_count": 7,
+      "pass": true,
+      "details": {
+        "git_remote": "local_bare_origin",
+        "lease_records_written": 7
+      }
+    },
+    {
+      "name": "substrate_fragment_write_memory_observe",
+      "description": "Substrate-fragment write throughput through the public append API.",
+      "measured_p95_ms": 0.307,
+      "budget_ms": 5.0,
+      "budget_operator": "less_than",
+      "sample_count": 41,
+      "pass": true,
+      "details": {
+        "classification": "trusted_plaintext",
+        "durability_mode": "best_effort_fixture; full-durability repositories still fsync append and event records",
+        "write_surface": "Substrate::append_substrate_fragment public write path"
+      }
+    },
+    {
+      "name": "cleanup_full_pass_representative",
+      "description": "Cleanup full pass over 10k canonical memories, 100k substrate fragments, and compactable events.",
+      "measured_p95_ms": 33442.129,
+      "budget_ms": 60000.0,
+      "budget_operator": "less_than",
+      "sample_count": 1,
+      "pass": true,
+      "details": {
+        "canonical_memory_count": 10000,
+        "commit_deferred": true,
+        "entity_index_rows": 10000,
+        "events_compacted": 256,
+        "fragments_archived": 100000,
+        "substrate_fragment_count": 100000
+      }
+    },
+    {
+      "name": "stream_e_pending_attention_question_read_overhead",
+      "description": "Added Stream E startup p95 overhead from reading Pass-3 dream questions.",
+      "measured_p95_ms": 3.642,
+      "budget_ms": 5.0,
+      "budget_operator": "less_than_or_equal",
+      "sample_count": 21,
+      "pass": true,
+      "details": {
+        "base_memory_count": 80,
+        "paired_overhead_samples_p95_ms": 2.791,
+        "question_record_count": 90,
+        "startup_with_questions_p95_ms": 6.991,
+        "startup_without_questions_p95_ms": 3.349
+      }
+    }
+  ]
+}

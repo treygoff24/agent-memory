@@ -113,6 +113,12 @@ pub enum ReadError {
     /// Path not found.
     #[error("memory path not found: {0}")]
     NotFound(RepoPath),
+    /// Path is a valid repository file but not a canonical memory envelope.
+    #[error("not a canonical memory: {path}")]
+    NotACanonicalMemory {
+        /// Noncanonical repository path.
+        path: RepoPath,
+    },
     /// Parse failed.
     #[error("parse failed for {path}: {message}")]
     Parse { path: RepoPath, message: String },
@@ -146,6 +152,9 @@ pub enum WriteFailureKind {
     /// Trusted classification conflicts with sensitive frontmatter.
     #[error("classification sensitivity mismatch")]
     ClassificationSensitivityMismatch,
+    /// Dream journal/question prose was cited as grounding evidence.
+    #[error("dream prose cannot be cited as a grounding source")]
+    DreamProseAsSource,
     /// Stale base hash.
     #[error("stale base")]
     StaleBase,
@@ -218,6 +227,14 @@ pub enum ValidationError {
     PlaintextUnderEncryptedTier {
         /// Offending plaintext path.
         path: PathBuf,
+    },
+    /// Stream F noncanonical file failed its dedicated validator.
+    #[error("invalid noncanonical Stream F file at {}: {message}", path.display())]
+    NonCanonicalStreamFFile {
+        /// Offending noncanonical path.
+        path: PathBuf,
+        /// Stable diagnostic message.
+        message: String,
     },
     /// Invalid memory id.
     #[error("invalid memory id: {0}")]

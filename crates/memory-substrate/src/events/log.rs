@@ -94,6 +94,15 @@ pub enum EventKind {
         /// Bounded, non-plaintext audit reason supplied by the caller.
         reason: String,
     },
+    /// Stream F substrate fragment appended.
+    SubstrateFragmentWritten {
+        /// Fragment id (`sub_<ulid>`).
+        id: String,
+        /// JSONL path written.
+        path: RepoPath,
+        /// Classification that selected plaintext vs encrypted substrate.
+        classification: ClassificationOutcome,
+    },
     // Deferred §12.2 event kinds: WriteStarted, WriteIndexed, WriteEventAppendFailed,
     // Deleted, Superseded, IndexUpdated, IndexFailed, VectorReconciled,
     // EmbeddingJobEnqueued, EventLogRecovered, MergeQuarantined,
@@ -161,6 +170,19 @@ impl From<EventFramingError> for std::io::Error {
 ///
 /// Returns `Err` if the line exceeds 64 KiB (spec §12.3 step 1).
 pub fn append_event(path: &Path, event: &Event) -> std::io::Result<()> {
+    append_event_inner(path, event, true)
+}
+
+/// Append an event without forcing it to stable storage.
+///
+/// This is only used when the substrate was explicitly opened in
+/// `DurabilityTier::BestEffort` mode. Full-durability repositories keep using
+/// `append_event`, which preserves the Stream A event-log fsync contract.
+pub fn append_event_best_effort(path: &Path, event: &Event) -> std::io::Result<()> {
+    append_event_inner(path, event, false)
+}
+
+fn append_event_inner(path: &Path, event: &Event, sync: bool) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -171,7 +193,10 @@ pub fn append_event(path: &Path, event: &Event) -> std::io::Result<()> {
     }
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
     file.write_all(line.as_bytes())?;
-    file.sync_all()
+    if sync {
+        file.sync_all()?;
+    }
+    Ok(())
 }
 
 /// Read valid events, failing on any malformed line.
@@ -216,6 +241,30 @@ pub fn read_events(path: &Path) -> std::io::Result<Vec<Event>> {
         }
         Err(other) => Err(other),
     }
+}
+
+/// Rewrite an event log with the provided event set.
+///
+/// Used by Stream F cleanup compaction after old events have been moved into
+/// compressed monthly archives. The same framing path as [`append_event`] is
+/// used so CRC semantics stay identical for the retained live tail.
+pub fn rewrite_events(path: &Path, events: &[Event]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut bytes = Vec::new();
+    for event in events {
+        let value = serde_json::to_value(event).map_err(std::io::Error::other)?;
+        let line = encode_event_line(&value)?;
+        if line.len() > MAX_LINE_BYTES {
+            return Err(std::io::Error::other(format!(
+                "event line too long: {} bytes (max {MAX_LINE_BYTES})",
+                line.len()
+            )));
+        }
+        bytes.extend_from_slice(line.as_bytes());
+    }
+    fs::write(path, bytes)
 }
 
 /// Refuse copied same-device logs until adoption repair removes the copy.

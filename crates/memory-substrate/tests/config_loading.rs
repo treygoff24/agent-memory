@@ -68,6 +68,7 @@ fn env_overrides_are_visible_but_not_serialized_to_synced_config() {
 
 #[test]
 fn local_roots_win_over_synced_defaults_without_mutating_synced_config() {
+    let _guard = ENV_LOCK.lock().expect("env lock");
     let temp = tempfile::tempdir().expect("tempdir");
     let repo = temp.path().join("repo");
     let runtime = temp.path().join("runtime");
@@ -103,4 +104,176 @@ paths:
     assert_eq!(local.device.id, "dev_local");
     assert_eq!(loaded.roots, Roots::new("/local/memory", "/local/runtime"));
     assert_eq!(std::fs::read_to_string(repo.join("config.yaml")).expect("synced unchanged"), synced_text);
+}
+
+#[test]
+fn dreams_config_defaults_when_dreams_and_events_are_omitted() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let repo = temp.path().join("repo");
+    bootstrap_repo_tree(&repo).expect("bootstrap repo");
+    std::fs::write(
+        repo.join("config.yaml"),
+        r#"schema_version: 1
+active_embedding:
+  provider: synthetic
+  model_ref: stream-a-test
+  dimension: 32
+"#,
+    )
+    .expect("synced config");
+
+    let synced = load_synced_config(&repo).expect("synced config").expect("config present");
+
+    assert!(synced.dreams.enabled);
+    assert_eq!(synced.dreams.default_cli_priority, vec!["claude".to_string(), "codex".to_string()]);
+    assert!(synced.dreams.scope_overrides.is_empty());
+    assert_eq!(synced.dreams.per_pass_timeout_seconds, 300);
+    assert_eq!(synced.dreams.pass_1_window_days, 7);
+    assert_eq!(synced.dreams.pass_2_max_candidates, 8);
+    assert_eq!(synced.dreams.pass_2_drift_threshold, 0.30);
+    assert_eq!(synced.dreams.pass_3_max_questions, 12);
+    assert_eq!(synced.dreams.pending_attention_per_scope_cap, 2);
+    assert_eq!(synced.dreams.pending_attention_total_cap, 6);
+    assert_eq!(synced.dreams.pending_attention_recent_window_days, 7);
+    assert_eq!(synced.dreams.fragment_lifetime_days, 14);
+    assert_eq!(synced.dreams.candidate_stale_days, 30);
+    assert_eq!(synced.dreams.cleanup_run_hour_utc, 3);
+    assert_eq!(synced.dreams.lease_window_seconds, 3600);
+    assert_eq!(synced.dreams.dream_retry_window_minutes, 180);
+    assert_eq!(synced.events.compaction_days, 90);
+}
+
+#[test]
+fn dreams_config_rejects_unknown_cli_names() {
+    let err = load_synced_config_from_text(
+        r#"schema_version: 1
+active_embedding:
+  provider: synthetic
+  model_ref: stream-a-test
+  dimension: 32
+dreams:
+  default_cli_priority: [claude, unknown_harness]
+"#,
+    )
+    .expect_err("unknown CLI rejected");
+
+    assert!(err.contains("unknown_harness"), "actual error: {err}");
+}
+
+#[test]
+fn dreams_config_rejects_bad_scope_override_keys() {
+    let err = load_synced_config_from_text(
+        r#"schema_version: 1
+active_embedding:
+  provider: synthetic
+  model_ref: stream-a-test
+  dimension: 32
+dreams:
+  scope_overrides:
+    project: [codex]
+"#,
+    )
+    .expect_err("bad scope key rejected");
+
+    assert!(err.contains("project"), "actual error: {err}");
+}
+
+#[test]
+fn dreams_config_rejects_out_of_range_numeric_values() {
+    let err = load_synced_config_from_text(
+        r#"schema_version: 1
+active_embedding:
+  provider: synthetic
+  model_ref: stream-a-test
+  dimension: 32
+dreams:
+  pass_1_window_days: 0
+"#,
+    )
+    .expect_err("out of range value rejected");
+
+    assert!(err.contains("pass_1_window_days"), "actual error: {err}");
+}
+
+#[test]
+fn dreams_config_rejects_per_scope_cap_greater_than_total_cap() {
+    let err = load_synced_config_from_text(
+        r#"schema_version: 1
+active_embedding:
+  provider: synthetic
+  model_ref: stream-a-test
+  dimension: 32
+dreams:
+  pending_attention_per_scope_cap: 7
+  pending_attention_total_cap: 6
+"#,
+    )
+    .expect_err("invalid cap relationship rejected");
+
+    assert!(err.contains("pending_attention_per_scope_cap"), "actual error: {err}");
+}
+
+#[test]
+fn dreams_config_parses_all_v0_2_keys_and_preserves_values() {
+    let synced = load_synced_config_from_text(
+        r#"schema_version: 1
+active_embedding:
+  provider: synthetic
+  model_ref: stream-a-test
+  dimension: 32
+dreams:
+  enabled: false
+  default_cli_priority: [codex, claude]
+  scope_overrides:
+    me: [claude]
+    project:proj_abc: [codex, claude]
+    org:org_123: [claude]
+    agent: [codex]
+  per_pass_timeout_seconds: 600
+  pass_1_window_days: 21
+  pass_2_max_candidates: 13
+  pass_2_drift_threshold: 0.42
+  pass_3_max_questions: 9
+  pending_attention_per_scope_cap: 3
+  pending_attention_total_cap: 11
+  pending_attention_recent_window_days: 12
+  fragment_lifetime_days: 31
+  candidate_stale_days: 45
+  cleanup_run_hour_utc: 11
+  lease_window_seconds: 7200
+  dream_retry_window_minutes: 240
+events:
+  compaction_days: 180
+"#,
+    )
+    .expect("valid dreams config");
+
+    assert!(!synced.dreams.enabled);
+    assert_eq!(synced.dreams.default_cli_priority, vec!["codex".to_string(), "claude".to_string()]);
+    assert_eq!(synced.dreams.scope_overrides["me"], vec!["claude".to_string()]);
+    assert_eq!(synced.dreams.scope_overrides["project:proj_abc"], vec!["codex".to_string(), "claude".to_string()]);
+    assert_eq!(synced.dreams.scope_overrides["org:org_123"], vec!["claude".to_string()]);
+    assert_eq!(synced.dreams.scope_overrides["agent"], vec!["codex".to_string()]);
+    assert_eq!(synced.dreams.per_pass_timeout_seconds, 600);
+    assert_eq!(synced.dreams.pass_1_window_days, 21);
+    assert_eq!(synced.dreams.pass_2_max_candidates, 13);
+    assert_eq!(synced.dreams.pass_2_drift_threshold, 0.42);
+    assert_eq!(synced.dreams.pass_3_max_questions, 9);
+    assert_eq!(synced.dreams.pending_attention_per_scope_cap, 3);
+    assert_eq!(synced.dreams.pending_attention_total_cap, 11);
+    assert_eq!(synced.dreams.pending_attention_recent_window_days, 12);
+    assert_eq!(synced.dreams.fragment_lifetime_days, 31);
+    assert_eq!(synced.dreams.candidate_stale_days, 45);
+    assert_eq!(synced.dreams.cleanup_run_hour_utc, 11);
+    assert_eq!(synced.dreams.lease_window_seconds, 7200);
+    assert_eq!(synced.dreams.dream_retry_window_minutes, 240);
+    assert_eq!(synced.events.compaction_days, 180);
+}
+
+fn load_synced_config_from_text(text: &str) -> Result<memory_substrate::config::SyncedConfig, String> {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let repo = temp.path().join("repo");
+    std::fs::create_dir_all(&repo).expect("repo");
+    std::fs::write(repo.join("config.yaml"), text).expect("config");
+    load_synced_config(&repo).map(|loaded| loaded.expect("config exists"))
 }

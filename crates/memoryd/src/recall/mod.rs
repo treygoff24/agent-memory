@@ -3,6 +3,7 @@ pub(crate) mod budget;
 pub(crate) mod candidates;
 pub(crate) mod counters;
 pub(crate) mod delta;
+pub(crate) mod dream_questions;
 pub(crate) mod entity;
 pub(crate) mod error;
 pub(crate) mod project;

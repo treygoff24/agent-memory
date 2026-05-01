@@ -21,12 +21,13 @@ pnpm run lint
 
 This repo carries a project-local Rust skill at `.codex/skills/rust-engineer`. Root agents and subagents doing Stream A work must use `clean-code`, `tdd`, and `rust-engineer`.
 
-## Implemented stream docs
+## Stream and API docs
 
 - Stream A substrate API: `docs/api/stream-a-public-api.md`
 - Stream C governance API: `docs/api/stream-c-governance-api.md`
 - Stream D privacy API: `docs/api/stream-d-privacy-api.md`
 - Stream E passive recall API: `docs/api/stream-e-passive-recall-api.md`
+- Stream F dreaming API: `docs/api/stream-f-dreaming-api.md`
 - Governance review runbook: `docs/runbooks/governance-review.md`
 - Privacy leak response runbook: `docs/runbooks/privacy-leak-response-placeholder.md`
 
@@ -38,3 +39,9 @@ explicit `memory_reveal` for audited user-directed decrypt access. Stream E
 ships passive recall: `memory_startup` forwards through the daemon, `memoryd
 recall startup-block` and `memoryd recall delta-block` emit XML for hooks, and
 status responses include additive recall counters.
+
+## Stream F dreaming status
+
+Dreaming uses whichever agent-harness CLI you have installed and authenticated on this device (Claude Code, Codex CLI, Gemini, etc.). Dream prompts are masked through the agent-memory privacy filter before they leave the daemon, but the masked text is processed by the harness CLI's upstream model provider. The data, retention, and training policies of that provider apply. Where this device's selected harness CLI accepts prompts on stdin, the prompt is not visible to other local processes; where it does not, the prompt may be visible via process listing tools (`ps`, `top`, `/proc/<pid>/cmdline`). `memoryd dream status` shows the prompt-transport mode for each installed harness adapter. Substrate fragments written via `memory_observe` are git-synced as low-level durable telemetry; this means the private git repo's raw-observation surface is larger than its canonical-memory surface, even though substrate is not searchable as memory. If you don't want dream content sent to a particular provider, set the per-scope CLI priority to exclude it, or run `memoryd dream disable` on this device.
+
+Stream F v0.2 is shipped with a green final release gate recorded in `docs/reviews/stream-f-final-gate-report.md`. The API doc is `docs/api/stream-f-dreaming-api.md`. Stream F adds `memory_observe` for substrate fragments while `memory_note` is unchanged for canonical note writes. CLI/provider disclosure currently covers `ClaudeCodeCli`, `CodexCli`, and disabled/deferred Gemini; shipped v0.2 adapters use `prompt_transport: stdin`, and any future argv fallback must disclose the upstream data policy and local process-listing risk. The device-local `dream-disabled` sentinel remains the opt-out switch.

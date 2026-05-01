@@ -14,19 +14,22 @@ use memory_privacy::{
     PrivacyClassifier, PrivacyDecision, PrivacyEncryptor, PrivacyNamespace, PrivacyStorageAction, SafeFragmentDecision,
 };
 use memory_substrate::{
-    Author, AuthorKind, ChunkQuery, ClassificationOutcome, EncryptedWriteRequest, EventContext, Frontmatter,
-    IndexProjection, Memory, MemoryContent, MemoryId, MemoryStatus, MemoryType, RepoPath, RetrievalPolicy, Scope,
-    Sensitivity, Source, SourceKind, Substrate, SupersedeRequest as SubstrateSupersedeRequest, TombstoneRequest,
-    TrustLevel, WriteMode, WritePolicy, WriteRequest as SubstrateWriteRequest,
+    Author, AuthorKind, ChunkQuery, ClassificationOutcome, EncryptedSubstrateDescriptor, EncryptedWriteRequest,
+    EventContext, Frontmatter, IndexProjection, Memory, MemoryContent, MemoryId, MemoryStatus, MemoryType, ObserveKind,
+    PrivacySpanRecord, RepoPath, RetrievalPolicy, Scope, Sensitivity, Source, SourceKind, Substrate,
+    SubstrateFragmentAppendRequest, SubstrateFragmentEncryption, SubstrateFragmentPayload,
+    SupersedeRequest as SubstrateSupersedeRequest, TombstoneRequest, TrustLevel, WriteMode, WritePolicy,
+    WriteRequest as SubstrateWriteRequest,
 };
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::dream::rehydration;
 use crate::protocol::{
     DoctorFinding, DoctorResponse, GetResponse, GovernanceForgetResponse, GovernanceStatus,
-    GovernanceSupersedeResponse, GovernanceWriteResponse, RequestEnvelope, RequestPayload, ResponseEnvelope,
-    ResponsePayload, RevealResponse, ReviewDecisionResponse, ReviewQueueItemResponse, ReviewQueueResponse, SearchHit,
-    SearchResponse, StatusResponse, WriteNoteResponse, MAX_FRAME_BYTES,
+    GovernanceSupersedeResponse, GovernanceWriteResponse, ObserveResponse, ObserveTarget, RequestEnvelope,
+    RequestPayload, ResponseEnvelope, ResponsePayload, RevealResponse, ReviewDecisionResponse, ReviewQueueItemResponse,
+    ReviewQueueResponse, SearchHit, SearchResponse, StatusResponse, WriteNoteResponse, MAX_FRAME_BYTES,
 };
 use crate::recall::{
     build_delta_response, build_startup_response, OmissionReason, RecallError, SharedRecallCounters, StartupResponse,
@@ -36,6 +39,11 @@ const SEARCH_LIMIT_DEFAULT: usize = 10;
 const SEARCH_LIMIT_MAX: usize = 20;
 const SEARCH_SNIPPET_MAX: usize = 240;
 const GET_BODY_MAX: usize = 4_096;
+const OBSERVE_TEXT_MAX_BYTES: usize = 16 * 1024;
+const OBSERVE_ENTITIES_MAX: usize = 32;
+const OBSERVE_ENTITY_MAX_BYTES: usize = 128;
+const OBSERVE_ENTITY_BODY_MAX_BYTES: usize = 124;
+const OBSERVE_BINDING_FIELD_MAX_BYTES: usize = 128;
 const REVIEW_QUEUE_LIMIT_DEFAULT: usize = 50;
 const REVIEW_QUEUE_LIMIT_MAX: usize = 100;
 const REVIEW_QUEUE_SUMMARY_MAX: usize = 512;
@@ -101,6 +109,17 @@ async fn dispatch(
         }
         RequestPayload::Startup(request) => startup_response(substrate, state, request).await,
         RequestPayload::Delta(request) => delta_response(substrate, state, request).await,
+        RequestPayload::Observe { text, kind, entities, cwd, session_id, harness, harness_version } => {
+            observe_response(
+                substrate,
+                ObserveRequestFields { text, kind, entities, cwd, session_id, harness, harness_version },
+            )
+            .await
+        }
+        RequestPayload::DreamNow { scope, force, cli_override } => {
+            dream_now_response(substrate, scope, force, cli_override).await
+        }
+        RequestPayload::DreamStatus {} => dream_status_response(substrate).await,
     }
 }
 
@@ -109,6 +128,109 @@ fn status_response(state: &HandlerState) -> StatusResponse {
         state: "ready".to_string(),
         guidance: "memoryd handlers are backed by the Stream A substrate.".to_string(),
         recall: state.recall.snapshot(),
+        dreams: Default::default(),
+    }
+}
+
+async fn dream_status_response(substrate: &Substrate) -> Result<ResponsePayload, HandlerError> {
+    crate::dream::status::build_dream_status_report(&substrate.roots().repo, &substrate.roots().runtime)
+        .await
+        .map(|report| ResponsePayload::DreamStatus(Box::new(report)))
+        .map_err(HandlerError::substrate)
+}
+
+async fn dream_now_response(
+    substrate: &Substrate,
+    scope: String,
+    force: bool,
+    cli_override: Option<String>,
+) -> Result<ResponsePayload, HandlerError> {
+    let config = memory_substrate::config::load_config(&substrate.roots().repo, &substrate.roots().runtime, None)
+        .map_err(HandlerError::invalid_request)?;
+    if !config.synced.dreams.enabled
+        || crate::dream::status::disabled_sentinel_path(&substrate.roots().runtime).exists()
+    {
+        return Err(HandlerError::dream_disabled("dreaming is disabled on this device"));
+    }
+    let scope = crate::dream::scope::DreamScope::parse(&scope).map_err(HandlerError::from_dream)?;
+    validate_dream_cli_override(cli_override.as_deref())?;
+    let now = chrono::Utc::now();
+    let acquired = crate::dream::lease::acquire_manual_lease(crate::dream::lease::LeaseAcquireRequest {
+        repo: substrate.roots().repo.clone(),
+        runtime: substrate.roots().runtime.clone(),
+        scope: scope.as_str(),
+        force,
+        now,
+        lease_window_seconds: u64::from(config.synced.dreams.lease_window_seconds),
+        cli_used: cli_override.clone(),
+    })
+    .map_err(HandlerError::from_lease)?;
+
+    let result = async {
+        let build = crate::dream::orchestration::build_dream_run(
+            substrate,
+            crate::dream::orchestration::DreamRunBuildRequest {
+                scope: scope.clone(),
+                run_id: acquired.record.run_id,
+                run_date: now.date_naive(),
+                pass_timeout: std::time::Duration::from_secs(u64::from(config.synced.dreams.per_pass_timeout_seconds)),
+                pass_2_max_candidates: config.synced.dreams.pass_2_max_candidates as usize,
+                pass_1_window_days: config.synced.dreams.pass_1_window_days,
+            },
+        )
+        .await
+        .map_err(HandlerError::from_dream)?;
+        let harness = crate::dream::orchestration::select_harness(
+            cli_override.as_deref(),
+            &config.synced.dreams.default_cli_priority,
+            &build.options,
+        )
+        .await
+        .map_err(dream_error_to_handler)?;
+        crate::dream::run::DreamRunner::new(build.options.with_harness(harness), build.writer)
+            .run()
+            .await
+            .map(|report| ResponsePayload::DreamNow(Box::new(report)))
+            .map_err(HandlerError::from_dream)
+    }
+    .await;
+
+    if result.is_err() {
+        let _ = crate::dream::lease::release_manual_lease(crate::dream::lease::LeaseAcquireRequest {
+            repo: substrate.roots().repo.clone(),
+            runtime: substrate.roots().runtime.clone(),
+            scope: scope.as_str(),
+            force: false,
+            now: chrono::Utc::now(),
+            lease_window_seconds: u64::from(config.synced.dreams.lease_window_seconds),
+            cli_used: cli_override,
+        });
+    }
+
+    result
+}
+
+fn dream_error_to_handler(error: crate::dream::types::DreamError) -> HandlerError {
+    let message = error.to_string();
+    if let Some(rest) = message.strip_prefix("invalid_request: dream_unavailable: ") {
+        HandlerError::dream_unavailable(rest.to_string())
+    } else {
+        HandlerError::from_dream(error)
+    }
+}
+
+fn validate_dream_cli_override(cli_override: Option<&str>) -> Result<(), HandlerError> {
+    let Some(name) = cli_override else {
+        return Ok(());
+    };
+    if name == "echo" {
+        return Ok(());
+    }
+    let registry = crate::dream::registry::HarnessCliRegistry::builtin_v0_2();
+    if registry.get(name).is_some() || registry.disabled_adapters().any(|adapter| adapter.name == name) {
+        Ok(())
+    } else {
+        Err(HandlerError::invalid_request(format!("unknown harness CLI override `{name}`")))
     }
 }
 
@@ -137,6 +259,7 @@ async fn startup_response(
     match build_startup_response(substrate, request).await {
         Ok(response) => {
             record_budget_exhaustions(state, &response);
+            state.recall.record_dream_question_omissions(&response.dream_question_omissions);
             state.recall.record_startup_success();
             Ok(ResponsePayload::Startup(Box::new(response)))
         }
@@ -285,6 +408,273 @@ async fn write_note_response(substrate: &Substrate, text: &str) -> Result<Respon
     )
     .await?;
     Ok(ResponsePayload::WriteNote(WriteNoteResponse { id, summary }))
+}
+
+#[derive(Debug)]
+struct ObserveRequestFields {
+    text: String,
+    kind: ObserveKind,
+    entities: Vec<String>,
+    cwd: String,
+    session_id: String,
+    harness: String,
+    harness_version: Option<String>,
+}
+
+async fn observe_response(
+    substrate: &Substrate,
+    request: ObserveRequestFields,
+) -> Result<ResponsePayload, HandlerError> {
+    let text = validated_observe_text(request.text)?;
+    let entities = validated_observe_entities(request.entities)?;
+    let session_id = validated_observe_binding_field("session_id", request.session_id)?;
+    let harness = validated_observe_binding_field("harness", request.harness)?;
+    let harness_version = request
+        .harness_version
+        .map(|version| validated_observe_binding_field("harness_version", version))
+        .transpose()?;
+    let mut binding = crate::recall::binding::validate_session_fields(&request.cwd, &session_id, &harness)
+        .await
+        .map_err(HandlerError::from_recall)?;
+    binding.harness_version = harness_version;
+    let privacy = classify_privacy(&text, PrivacyNamespace::Agent, None)?;
+    if privacy.storage_action.refuses_storage() {
+        return Err(HandlerError::privacy("secret refused before substrate fragment write"));
+    }
+
+    let kind = request.kind;
+    let (payload, classification, target) = if privacy.storage_action.requires_encryption() {
+        (
+            encrypted_observe_payload(substrate, &text, kind)?,
+            ClassificationOutcome::RequiresEncryption,
+            ObserveTarget::EncryptedSubstrate,
+        )
+    } else {
+        (
+            SubstrateFragmentPayload::Plaintext { text },
+            ClassificationOutcome::Trusted,
+            ObserveTarget::PlaintextSubstrate,
+        )
+    };
+    let outcome = substrate
+        .append_substrate_fragment(SubstrateFragmentAppendRequest {
+            id: None,
+            at: chrono::Utc::now(),
+            session: Some(binding.session_id.clone()),
+            harness: Some(binding.harness.clone()),
+            scope: observe_scope(&binding),
+            entities,
+            kind,
+            source_ref: Some(observe_source_ref(&binding)),
+            privacy_spans: privacy_span_records(&privacy),
+            payload,
+            classification,
+            operation_id: None,
+        })
+        .await
+        .map_err(HandlerError::substrate)?;
+
+    Ok(ResponsePayload::Observe(ObserveResponse { fragment_id: outcome.id, target }))
+}
+
+fn validated_observe_text(text: String) -> Result<String, HandlerError> {
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return Err(HandlerError::invalid_request("observe text must not be empty"));
+    }
+    if text.len() > OBSERVE_TEXT_MAX_BYTES {
+        return Err(HandlerError::invalid_request("observe text exceeds 16 KiB"));
+    }
+    Ok(text)
+}
+
+fn validated_observe_entities(entities: Vec<String>) -> Result<Vec<String>, HandlerError> {
+    if entities.len() > OBSERVE_ENTITIES_MAX {
+        return Err(HandlerError::invalid_request("observe entities exceeds 32 entries"));
+    }
+    for entity in &entities {
+        validate_observe_entity_id(entity)?;
+    }
+    Ok(entities)
+}
+
+fn validate_observe_entity_id(entity: &str) -> Result<(), HandlerError> {
+    if entity.trim() != entity {
+        return Err(HandlerError::invalid_request(
+            "observe entity ids must not include leading or trailing whitespace",
+        ));
+    }
+    if entity.len() > OBSERVE_ENTITY_MAX_BYTES {
+        return Err(HandlerError::invalid_request("observe entity exceeds 128 UTF-8 bytes"));
+    }
+    let Some(body) = entity.strip_prefix("ent_") else {
+        return Err(HandlerError::invalid_request("observe entities must be canonical ent_ ids"));
+    };
+    if body.is_empty() || body.len() > OBSERVE_ENTITY_BODY_MAX_BYTES {
+        return Err(HandlerError::invalid_request("observe entities must be canonical ent_ ids"));
+    }
+    if !body.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b':' | b'-')) {
+        return Err(HandlerError::invalid_request("observe entities must be canonical ent_ ids"));
+    }
+    validate_observe_metadata_is_safe("observe entity", entity)?;
+    Ok(())
+}
+
+fn validated_observe_binding_field(name: &str, value: String) -> Result<String, HandlerError> {
+    if value.trim() != value {
+        return Err(HandlerError::invalid_request(format!("{name} must not include leading or trailing whitespace")));
+    }
+    if value.is_empty() {
+        return Err(HandlerError::invalid_request(format!("{name} must be non-empty")));
+    }
+    if value.len() > OBSERVE_BINDING_FIELD_MAX_BYTES {
+        return Err(HandlerError::invalid_request(format!("{name} must be at most 128 bytes")));
+    }
+    if !value.bytes().all(is_observe_binding_byte) {
+        return Err(HandlerError::invalid_request(format!("{name} must contain only safe id characters")));
+    }
+    validate_observe_metadata_is_safe(name, &value)?;
+    Ok(value)
+}
+
+fn is_observe_binding_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b':' | b'-')
+}
+
+fn validate_observe_metadata_is_safe(name: &str, value: &str) -> Result<(), HandlerError> {
+    if !is_safe_plaintext_for_indexing(value) || contains_observe_metadata_canary(value) {
+        return Err(HandlerError::invalid_request(format!("{name} must not contain sensitive material")));
+    }
+    Ok(())
+}
+
+fn contains_observe_metadata_canary(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    value.contains('@')
+        || contains_aws_access_key(value)
+        || contains_us_phone_number(value)
+        || contains_phone_like_digit_sequence(value)
+        || lower.contains("ghp_")
+        || lower.contains("sk_live_")
+}
+
+fn contains_aws_access_key(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.windows(4).enumerate().any(|(index, window)| {
+        window == b"AKIA"
+            && bytes.get(index + 4..index + 20).is_some_and(|suffix| suffix.iter().all(u8::is_ascii_alphanumeric))
+    })
+}
+
+fn contains_us_phone_number(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.windows(12).any(|window| {
+        window[0..3].iter().all(u8::is_ascii_digit)
+            && window[3] == b'-'
+            && window[4..7].iter().all(u8::is_ascii_digit)
+            && window[7] == b'-'
+            && window[8..12].iter().all(u8::is_ascii_digit)
+    })
+}
+
+fn contains_phone_like_digit_sequence(value: &str) -> bool {
+    let mut digit_count = 0usize;
+    for byte in value.bytes() {
+        if byte.is_ascii_digit() {
+            digit_count += 1;
+            if digit_count >= 10 {
+                return true;
+            }
+            continue;
+        }
+        if matches!(byte, b'-' | b'.' | b'_' | b' ') {
+            continue;
+        }
+        digit_count = 0;
+    }
+    false
+}
+
+fn observe_scope(binding: &crate::recall::SessionBinding) -> String {
+    binding
+        .project
+        .as_ref()
+        .map(|project| format!("project:{}", project.canonical_id))
+        .unwrap_or_else(|| "agent".to_string())
+}
+
+fn observe_source_ref(binding: &crate::recall::SessionBinding) -> String {
+    format!("session:{}:memory_observe", binding.session_id)
+}
+
+fn encrypted_observe_payload(
+    substrate: &Substrate,
+    text: &str,
+    kind: ObserveKind,
+) -> Result<SubstrateFragmentPayload, HandlerError> {
+    let encryptor = PrivacyEncryptor::new(FileKeyProvider::runtime_default(&substrate.roots().runtime));
+    let encrypted = encryptor.encrypt(text).map_err(HandlerError::privacy)?;
+    Ok(SubstrateFragmentPayload::Encrypted {
+        encryption: SubstrateFragmentEncryption {
+            recipient: encrypted.envelope.get("recipient").and_then(Value::as_str).unwrap_or("age-x25519").to_string(),
+            ciphertext_b64: base64_encode(&encrypted.ciphertext),
+        },
+        descriptor: encrypted_observe_descriptor(kind),
+    })
+}
+
+fn encrypted_observe_descriptor(kind: ObserveKind) -> EncryptedSubstrateDescriptor {
+    let tag = observe_kind_tag(kind);
+    EncryptedSubstrateDescriptor {
+        summary_safe: format!("encrypted {tag} substrate fragment"),
+        tag_safe: vec![tag.to_string()],
+    }
+}
+
+fn observe_kind_tag(kind: ObserveKind) -> &'static str {
+    match kind {
+        ObserveKind::Observation => "observation",
+        ObserveKind::Pattern => "pattern",
+        ObserveKind::Signal => "signal",
+    }
+}
+
+fn privacy_span_records(privacy: &PrivacyDecision) -> Vec<PrivacySpanRecord> {
+    privacy
+        .spans
+        .iter()
+        .map(|span| PrivacySpanRecord {
+            label: serde_json::to_value(span.label)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_string))
+                .unwrap_or_else(|| format!("{:?}", span.label)),
+            start: span.start,
+            end: span.end,
+        })
+        .collect()
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = chunk.get(1).copied().unwrap_or(0);
+        let b2 = chunk.get(2).copied().unwrap_or(0);
+        encoded.push(TABLE[(b0 >> 2) as usize] as char);
+        encoded.push(TABLE[(((b0 & 0b0000_0011) << 4) | (b1 >> 4)) as usize] as char);
+        if chunk.len() > 1 {
+            encoded.push(TABLE[(((b1 & 0b0000_1111) << 2) | (b2 >> 6)) as usize] as char);
+        } else {
+            encoded.push('=');
+        }
+        if chunk.len() > 2 {
+            encoded.push(TABLE[(b2 & 0b0011_1111) as usize] as char);
+        } else {
+            encoded.push('=');
+        }
+    }
+    encoded
 }
 
 async fn governance_write_response(
@@ -720,6 +1110,15 @@ async fn review_decision_response(
     if matches!((&decision, memory.frontmatter.status), (ReviewDecision::Approve, MemoryStatus::Quarantined)) {
         return Err(HandlerError::invalid_request("quarantined memories must be resubmitted through governance"));
     }
+    if matches!(decision, ReviewDecision::Approve)
+        && rehydration::requires_rehydration(&memory)
+        && rehydration::verify_dream_candidate(substrate, &memory).await.is_err()
+    {
+        let summary = bounded(&memory.frontmatter.summary, REVIEW_DECISION_SUMMARY_MAX);
+        quarantine_for_grounding_rehydration(substrate, memory).await?;
+        let response = ReviewDecisionResponse { id: id.to_string(), status: "quarantined".to_string(), summary };
+        return Ok(ResponsePayload::ReviewApprove(response));
+    }
     let status = decision.apply(&mut memory);
     let summary = bounded(&memory.frontmatter.summary, REVIEW_DECISION_SUMMARY_MAX);
 
@@ -745,6 +1144,45 @@ async fn review_decision_response(
         ReviewDecision::Approve => Ok(ResponsePayload::ReviewApprove(response)),
         ReviewDecision::Reject { .. } => Ok(ResponsePayload::ReviewReject(response)),
     }
+}
+
+async fn quarantine_for_grounding_rehydration(substrate: &Substrate, mut memory: Memory) -> Result<(), HandlerError> {
+    memory.frontmatter.updated_at = chrono::Utc::now();
+    memory.frontmatter.status = MemoryStatus::Quarantined;
+    memory.frontmatter.trust_level = TrustLevel::Quarantined;
+    memory.frontmatter.requires_user_confirmation = true;
+    memory.frontmatter.review_state = Some("quarantined".to_string());
+    memory.frontmatter.retrieval_policy.index_body = false;
+    memory.frontmatter.retrieval_policy.index_embeddings = false;
+    memory.frontmatter.write_policy.human_review_required = true;
+    memory
+        .frontmatter
+        .extras
+        .insert("governance_reason".to_string(), serde_json::json!("grounding_rehydration_failed"));
+    memory.frontmatter.merge_diagnostics = Some(serde_json::json!({
+        "human_reason": "grounding_rehydration_failed",
+        "preserved_sources": [],
+        "lifecycle_notes": ["dream grounding rehydration failed before review approval"],
+        "evidence_near_duplicates": []
+    }));
+
+    substrate
+        .write_memory(SubstrateWriteRequest {
+            operation_id: None,
+            memory,
+            expected_base_hash: None,
+            write_mode: WriteMode::ReplaceExisting,
+            index_projection: None,
+            event_context: EventContext {
+                actor: Some("memoryd-review".to_string()),
+                reason: Some("review grounding_rehydration_failed".to_string()),
+            },
+            allow_best_effort_durability: true,
+            classification: ClassificationOutcome::Trusted,
+        })
+        .await
+        .map_err(HandlerError::substrate)?;
+    Ok(())
 }
 
 fn review_envelope_from_memory(memory: Memory) -> ReviewMemoryEnvelope {
@@ -1681,6 +2119,14 @@ impl HandlerError {
         Self { code: "invalid_request".to_string(), message: message.into(), retryable: false }
     }
 
+    fn dream_unavailable(message: impl Into<String>) -> Self {
+        Self { code: "dream_unavailable".to_string(), message: message.into(), retryable: true }
+    }
+
+    fn dream_disabled(message: impl Into<String>) -> Self {
+        Self { code: "dream_disabled".to_string(), message: message.into(), retryable: false }
+    }
+
     fn substrate(error: impl std::fmt::Display) -> Self {
         Self { code: "substrate_error".to_string(), message: error.to_string(), retryable: true }
     }
@@ -1695,5 +2141,17 @@ impl HandlerError {
             message: bounded(error.message(), 240),
             retryable: error.retryable(),
         }
+    }
+
+    fn from_dream(error: crate::dream::types::DreamError) -> Self {
+        Self { code: error.code().to_string(), message: bounded(&error.to_string(), 240), retryable: false }
+    }
+
+    fn from_lease(error: crate::dream::lease::LeaseError) -> Self {
+        let retryable = matches!(
+            error,
+            crate::dream::lease::LeaseError::Held { .. } | crate::dream::lease::LeaseError::Unavailable { .. }
+        );
+        Self { code: error.code().to_string(), message: bounded(&error.to_string(), 240), retryable }
     }
 }

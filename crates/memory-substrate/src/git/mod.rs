@@ -9,7 +9,7 @@ mod sync;
 
 pub use adopt::{adopt_clone, adopt_clone_explicit, AdoptError};
 pub use command::run_git;
-pub use commit::{auto_commit, auto_commit_with_outcome, CommitOutcome};
+pub use commit::{auto_commit, auto_commit_with_outcome, commit_lease_file, CommitOutcome, LeaseCommitAction};
 pub use init::{configure_merge_driver, init_git_repo};
 pub use preflight::git_preflight;
 pub use sync::{

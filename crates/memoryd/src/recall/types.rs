@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 pub const STREAM_E_POLICY: &str = "stream-e-v0.5";
@@ -24,6 +26,8 @@ pub struct StartupResponse {
     pub budget_used_tokens: usize,
     pub recall_explanation: RecallExplanation,
     pub guidance: String,
+    #[serde(skip)]
+    pub dream_question_omissions: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -5,13 +5,14 @@ Reviewer: Claude (Sonnet 4.5)
 Scope: full Stream E buildout in commit `85c0783` — substrate query extension
 (`crates/memory-substrate/src/index/{query,migrations,schema,model,error}.rs`,
 `api.rs`), privacy fragment surface (`crates/memory-privacy/src/{decision,lib}.rs`
-+ `tests/safe_plaintext_fragment.rs`), the recall module
-(`crates/memoryd/src/recall/*.rs`, 13 files / ~1616 LoC), daemon integration
-(`handlers.rs`, `mcp.rs`, `protocol.rs`, `cli.rs`, `main.rs`, `server.rs`,
-`lib.rs`, `Cargo.toml`), the bench harness
-(`crates/memoryd/src/bin/stream_e_recall_bench.rs`), and the new test surface
-(`startup_recall_*.rs` — determinism, governance, mcp, privacy, project_binding,
-ranking — plus `recall_cli.rs`, `protocol_contract.rs`, `mcp_manifest.rs`).
+
+- `tests/safe_plaintext_fragment.rs`), the recall module
+  (`crates/memoryd/src/recall/*.rs`, 13 files / ~1616 LoC), daemon integration
+  (`handlers.rs`, `mcp.rs`, `protocol.rs`, `cli.rs`, `main.rs`, `server.rs`,
+  `lib.rs`, `Cargo.toml`), the bench harness
+  (`crates/memoryd/src/bin/stream_e_recall_bench.rs`), and the new test surface
+  (`startup_recall_*.rs` — determinism, governance, mcp, privacy, project_binding,
+  ranking — plus `recall_cli.rs`, `protocol_contract.rs`, `mcp_manifest.rs`).
 
 Reviewed through both the **Clean Code** (Uncle Bob) and **Rust Engineer** lenses.
 Methodology: three layer-scoped read-only subagents (substrate+privacy, recall
@@ -510,7 +511,7 @@ implemented cleanly at the source rather than relying on downstream filtering.
 - `bounded_omissions` uses `BTreeMap`-stable ordering with a 4-tuple sort key
   (`section`, `reason`, `alias`, `id`).
 - `compare_ranked_candidates` tiebreaker chain (`score → status_sort_key →
-  updated_at → id`) ends on a stable string compare — no `HashMap`
+updated_at → id`) ends on a stable string compare — no `HashMap`
   iteration, no float surprises in the final tier.
 - No `HashMap` iteration leaks anywhere in the output path. This is
   exactly what spec-mandated determinism requires.

@@ -2,6 +2,7 @@
 
 pub mod cli;
 pub mod client;
+pub mod dream;
 pub mod handlers;
 pub mod mcp;
 pub mod protocol;

@@ -26,6 +26,13 @@ static DEVICE_ID_REGEX: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"^dev_[a-z0-9]+$").expect("device-id regex literal") // expect-justified: compile-time regex literal cannot fail
 });
 
+/// Substrate fragment id format. Stream F uses `sub_<ULID>`.
+#[allow(clippy::expect_used)]
+static SUBSTRATE_FRAGMENT_ID_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"^sub_[0-9A-HJKMNP-TV-Z]{26}$").expect("substrate-fragment-id regex literal")
+    // expect-justified: compile-time regex literal cannot fail
+});
+
 /// Local and synced roots used by Stream A.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Roots {
@@ -79,6 +86,18 @@ pub enum ClassificationOutcome {
     RequiresEncryption,
     /// Caller asserts content is secret and must not be persisted by Stream A.
     Secret,
+}
+
+/// Substrate-observation kind accepted by `memory_observe`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObserveKind {
+    /// A raw observation.
+    Observation,
+    /// A recurring pattern.
+    Pattern,
+    /// A weak signal that may need later attention.
+    Signal,
 }
 
 /// Frontmatter sensitivity.
@@ -485,6 +504,19 @@ pub struct Frontmatter {
     pub extras: BTreeMap<String, serde_json::Value>,
 }
 
+impl Frontmatter {
+    /// Whether a dream-authored candidate must re-resolve cited grounding refs
+    /// immediately before review approval.
+    pub fn grounding_rehydration_required(&self) -> bool {
+        self.extras.get("grounding_rehydration_required").and_then(serde_json::Value::as_bool).unwrap_or(false)
+    }
+
+    /// Set the explicit Stream F grounding rehydration marker.
+    pub fn set_grounding_rehydration_required(&mut self, required: bool) {
+        self.extras.insert("grounding_rehydration_required".to_string(), serde_json::Value::Bool(required));
+    }
+}
+
 /// Canonical memory document.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Memory {
@@ -514,6 +546,185 @@ pub struct EventContext {
     pub actor: Option<String>,
     /// Optional reason.
     pub reason: Option<String>,
+}
+
+/// Privacy span persisted for substrate audit records.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PrivacySpanRecord {
+    /// Privacy label supplied by Stream D.
+    pub label: String,
+    /// UTF-8 byte start offset.
+    pub start: usize,
+    /// UTF-8 byte end offset.
+    pub end: usize,
+}
+
+/// Plaintext substrate fragment record.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SubstrateFragmentRecord {
+    /// Fragment id (`sub_<ulid>`).
+    pub id: String,
+    /// Observation timestamp.
+    #[serde(rename = "ts")]
+    pub ts: DateTime<Utc>,
+    /// Writing device.
+    pub device: DeviceId,
+    /// Optional caller session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+    /// Optional harness name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
+    /// Synthetic scope string (`me`, `agent`, `project:<id>`, `org:<id>`).
+    pub scope: String,
+    /// Referenced entities.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entities: Vec<String>,
+    /// Observation kind.
+    pub kind: ObserveKind,
+    /// Plaintext body. Only legal for plaintext substrate records.
+    pub text: String,
+    /// Source reference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_ref: Option<String>,
+    /// Privacy spans from Stream D classifier.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub privacy_spans: Vec<PrivacySpanRecord>,
+}
+
+/// Encryption envelope stored in encrypted substrate JSONL records.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SubstrateFragmentEncryption {
+    /// Recipient key id.
+    pub recipient: String,
+    /// Base64-encoded ciphertext.
+    pub ciphertext_b64: String,
+}
+
+/// Safe descriptor projection for encrypted substrate fragments.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct EncryptedSubstrateDescriptor {
+    /// Safe summary supplied by Stream D.
+    pub summary_safe: String,
+    /// Safe tag projection supplied by Stream D.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tag_safe: Vec<String>,
+}
+
+/// Encrypted substrate fragment record.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct EncryptedSubstrateFragmentRecord {
+    /// Fragment id (`sub_<ulid>`).
+    pub id: String,
+    /// Observation timestamp.
+    #[serde(rename = "ts")]
+    pub ts: DateTime<Utc>,
+    /// Writing device.
+    pub device: DeviceId,
+    /// Optional caller session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+    /// Optional harness name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
+    /// Synthetic scope string.
+    pub scope: String,
+    /// Referenced entities.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entities: Vec<String>,
+    /// Observation kind.
+    pub kind: ObserveKind,
+    /// Encryption payload. No plaintext `text` field is present in this record.
+    pub encryption: SubstrateFragmentEncryption,
+    /// Safe descriptor projection.
+    pub descriptor: EncryptedSubstrateDescriptor,
+    /// Source reference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_ref: Option<String>,
+    /// Privacy spans from Stream D classifier.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub privacy_spans: Vec<PrivacySpanRecord>,
+}
+
+/// Payload routed by Stream D classification.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "target", rename_all = "snake_case")]
+pub enum SubstrateFragmentPayload {
+    /// Plaintext-safe substrate record.
+    Plaintext {
+        /// Plaintext body.
+        text: String,
+    },
+    /// Encrypted substrate record with safe descriptor projection.
+    Encrypted {
+        /// Encryption envelope.
+        encryption: SubstrateFragmentEncryption,
+        /// Descriptor projection.
+        descriptor: EncryptedSubstrateDescriptor,
+    },
+}
+
+/// Append request for Stream F substrate fragments.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SubstrateFragmentAppendRequest {
+    /// Optional caller-supplied id, used by deterministic tests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Observation timestamp.
+    pub at: DateTime<Utc>,
+    /// Optional caller session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+    /// Optional harness name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
+    /// Synthetic scope string.
+    pub scope: String,
+    /// Entity ids.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entities: Vec<String>,
+    /// Observation kind.
+    pub kind: ObserveKind,
+    /// Source reference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_ref: Option<String>,
+    /// Privacy spans.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub privacy_spans: Vec<PrivacySpanRecord>,
+    /// Storage payload.
+    pub payload: SubstrateFragmentPayload,
+    /// Classification supplied by Stream D.
+    pub classification: ClassificationOutcome,
+    /// Optional operation id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<OperationId>,
+}
+
+/// Append outcome for substrate fragments.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SubstrateFragmentAppendOutcome {
+    /// Fragment id.
+    pub id: String,
+    /// Repo-relative JSONL path.
+    pub path: RepoPath,
+    /// Operation id used for audit event emission.
+    pub operation_id: OperationId,
+}
+
+/// Archival outcome for expired plaintext substrate fragments.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SubstrateArchiveOutcome {
+    /// Number of newly archived fragments.
+    pub fragments_archived: usize,
+}
+
+/// Validate a Stream F substrate fragment id.
+pub fn validate_substrate_fragment_id(id: &str) -> Result<(), ValidationError> {
+    if SUBSTRATE_FRAGMENT_ID_REGEX.is_match(id) {
+        Ok(())
+    } else {
+        Err(ValidationError::BadShape(format!("invalid substrate fragment id: {id}")))
+    }
 }
 
 /// Safe index projection for encrypted records.
@@ -885,6 +1096,9 @@ fn validate_repo_relative_path(value: &str) -> Result<(), String> {
     if ROOT_FILES.contains(&value) {
         return Ok(());
     }
+    if is_noncanonical_stream_f_repo_path(value) {
+        return Ok(());
+    }
     if let Some(prefix) = MEMORY_PREFIXES.iter().find(|prefix| value.starts_with(*prefix)) {
         return validate_memory_tier_extension(value, prefix);
     }
@@ -892,6 +1106,23 @@ fn validate_repo_relative_path(value: &str) -> Result<(), String> {
         return validate_jsonl_tier_extension(value, prefix);
     }
     Err(format!("path is outside Stream A tree: {value}"))
+}
+
+pub(crate) fn is_noncanonical_stream_f_repo_path(value: &str) -> bool {
+    if value == "leases/journal.lease" {
+        return true;
+    }
+    let extension = Path::new(value).extension().and_then(|ext| ext.to_str());
+    match extension {
+        Some("md") => value.starts_with("dreams/journal/"),
+        Some("jsonl") => {
+            value.starts_with("dreams/questions/")
+                || value.starts_with("substrate/")
+                || value.starts_with("encrypted/substrate/")
+        }
+        Some("json") => value.starts_with("dreams/cleanup/"),
+        _ => false,
+    }
 }
 
 fn validate_memory_tier_extension(value: &str, prefix: &str) -> Result<(), String> {

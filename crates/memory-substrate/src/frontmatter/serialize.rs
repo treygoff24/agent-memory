@@ -28,6 +28,8 @@ pub fn serialize_frontmatter(frontmatter: &Frontmatter) -> Result<String, Valida
     for key in CANONICAL_KEYS {
         if let Some(value) = source.get(*key) {
             emit_key_value(&mut out, key, &sorted_value(key, value.clone()), 0);
+        } else if *key == "grounding_rehydration_required" {
+            emit_key_value(&mut out, key, &Value::Bool(false), 0);
         }
     }
     for (key, value) in &frontmatter.extras {

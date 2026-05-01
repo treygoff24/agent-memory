@@ -10,7 +10,10 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use memory_substrate::{InitOptions, Roots, Substrate};
-use memoryd::mcp::{forward_to_daemon, GetRequest, NoteRequest, SearchRequest, StartupRequest, ToolRequest};
+use memoryd::mcp::{
+    forward_to_daemon, request_from_args, GetRequest, NoteRequest, ObserveKindRequest, ObserveRequest, SearchRequest,
+    StartupRequest, ToolName, ToolRequest,
+};
 use memoryd::protocol::{RequestPayload, ResponseEnvelope, ResponsePayload, ResponseResult};
 use memoryd::server::{serve_substrate_with, ServerOptions};
 use tokio::net::UnixStream;
@@ -135,6 +138,92 @@ async fn forward_memory_startup_round_trips_through_live_substrate_daemon() {
     }
 
     shutdown(shutdown_tx, server, &socket).await;
+}
+
+#[tokio::test]
+async fn forward_memory_observe_sends_observe_payload_to_daemon() {
+    let socket = unique_socket_path("mcp-observe");
+    let daemon = spawn_single_request_daemon(&socket, |request| match request.request {
+        RequestPayload::Observe { text, kind, entities, cwd, session_id, harness, harness_version } => {
+            assert_eq!(text, "agent noticed repeated cache invalidation churn");
+            assert_eq!(kind, ObserveKindRequest::Pattern);
+            assert_eq!(entities.len(), 2);
+            assert_eq!(entities[0], "ent_cache");
+            assert_eq!(entities[1], "ent_repo");
+            assert_eq!(cwd, "/tmp/project");
+            assert_eq!(session_id, "sess_mcp");
+            assert_eq!(harness, "codex");
+            assert_eq!(harness_version.as_deref(), Some("0.0.0"));
+            ResponseEnvelope::error(
+                request.id,
+                "not_implemented",
+                "fixture stops after observe forwarding assertion",
+                false,
+            )
+        }
+        other => panic!("expected observe request, got {other:?}"),
+    })
+    .await;
+
+    let response = forward_to_daemon(
+        &socket,
+        "req-observe",
+        ToolRequest::MemoryObserve(ObserveRequest {
+            text: "agent noticed repeated cache invalidation churn".to_owned(),
+            kind: ObserveKindRequest::Pattern,
+            entities: vec!["ent_cache".to_owned(), "ent_repo".to_owned()],
+            cwd: "/tmp/project".to_owned(),
+            session_id: "sess_mcp".to_owned(),
+            harness: "codex".to_owned(),
+            harness_version: Some("0.0.0".to_owned()),
+        }),
+    )
+    .await
+    .expect("observe forwards to daemon");
+
+    assert_not_implemented(&response, "observe");
+    daemon.await.expect("daemon joins").expect("daemon ok");
+    let _ = std::fs::remove_file(socket);
+}
+
+#[tokio::test]
+async fn forward_spec_shaped_memory_observe_sends_defaulted_binding_to_daemon() {
+    let socket = unique_socket_path("mcp-observe-defaults");
+    let daemon = spawn_single_request_daemon(&socket, |request| match request.request {
+        RequestPayload::Observe { text, kind, entities, cwd, session_id, harness, harness_version } => {
+            assert_eq!(text, "agent noticed repeated cache invalidation churn");
+            assert_eq!(kind, ObserveKindRequest::Pattern);
+            assert!(entities.is_empty());
+            assert!(!cwd.is_empty());
+            assert_eq!(session_id, "synthetic-memory-observe");
+            assert_eq!(harness, "unknown");
+            assert_eq!(harness_version, None);
+            ResponseEnvelope::error(
+                request.id,
+                "not_implemented",
+                "fixture stops after observe forwarding assertion",
+                false,
+            )
+        }
+        other => panic!("expected observe request, got {other:?}"),
+    })
+    .await;
+
+    let request = request_from_args(
+        ToolName::Observe,
+        serde_json::json!({
+            "text": "agent noticed repeated cache invalidation churn",
+            "kind": "pattern"
+        }),
+    )
+    .expect("spec-shaped observe request parses");
+
+    let response =
+        forward_to_daemon(&socket, "req-observe-defaults", request).await.expect("observe forwards to daemon");
+
+    assert_not_implemented(&response, "observe");
+    daemon.await.expect("daemon joins").expect("daemon ok");
+    let _ = std::fs::remove_file(socket);
 }
 
 fn assert_not_implemented(response: &memoryd::protocol::ResponseEnvelope, tool: &str) {

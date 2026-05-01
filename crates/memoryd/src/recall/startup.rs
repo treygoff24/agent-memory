@@ -1,7 +1,10 @@
+use std::collections::BTreeSet;
+
 use memory_substrate::{MemoryStatus, RecallIndexQuery, Substrate, SubstrateError};
 
 use crate::recall::budget::estimated_tokens;
 use crate::recall::candidates::{collect_recall_candidates_from_index, RecallCollectionRequest};
+use crate::recall::dream_questions::{render_pending_attention_body, select_pending_attention_questions};
 use crate::recall::error::RecallError;
 use crate::recall::rank::{select_ranked_candidates, RankingContext};
 use crate::recall::render::{
@@ -68,11 +71,15 @@ pub async fn build_startup_response(
     };
 
     let pending_attention_count = collection.pending_attention_count + candidate_attention_count;
-    let pending_attention_body = if pending_attention_count == 0 {
-        String::new()
-    } else {
-        format!("- {pending_attention_count} memory item(s) require review before factual recall.")
-    };
+    let review_attention_line = (pending_attention_count > 0)
+        .then(|| format!("- {pending_attention_count} memory item(s) require review before factual recall."));
+    let active_entity_ids = active_entity_ids(&selected);
+    let dream_questions = select_pending_attention_questions(
+        &substrate.roots().repo,
+        &session_binding.namespaces_in_scope,
+        &active_entity_ids,
+    );
+    let pending_attention_body = render_pending_attention_body(review_attention_line, &dream_questions.lines);
 
     let sections = vec![
         RenderedRecallSection { name: RecallSectionName::Identity, body: identity_body(&session_binding) },
@@ -110,7 +117,16 @@ pub async fn build_startup_response(
         budget_used_tokens: explanation.budget_used_tokens,
         recall_explanation: explanation,
         guidance: "Stream E passive recall assembled from read-only Stream A index projections.".to_owned(),
+        dream_question_omissions: dream_questions.omitted_total,
     })
+}
+
+fn active_entity_ids(selected: &crate::recall::rank::RankedSelection) -> BTreeSet<String> {
+    selected
+        .selected
+        .iter()
+        .flat_map(|candidate| candidate.candidate.row.entities.iter().map(|entity| entity.id.clone()))
+        .collect()
 }
 
 async fn count_candidate_attention(substrate: &Substrate, namespace_prefixes: &[String]) -> Result<usize, RecallError> {

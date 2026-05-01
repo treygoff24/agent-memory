@@ -286,6 +286,7 @@ fn healthy_status() -> StatusResponse {
         state: "healthy".to_owned(),
         guidance: "memoryd local daemon is accepting requests; substrate is not attached yet".to_owned(),
         recall: Default::default(),
+        dreams: Default::default(),
     }
 }
 
@@ -319,6 +320,7 @@ mod tests {
                 budget_used_tokens: 0,
                 recall_explanation: crate::recall::RecallExplanation::empty(3_600),
                 guidance: "fixture".to_owned(),
+                dream_question_omissions: Default::default(),
             })),
         );
 

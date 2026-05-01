@@ -13,6 +13,8 @@ pub struct RecallStatusCounters {
     pub delta_failed_total: BTreeMap<String, u64>,
     #[serde(default)]
     pub budget_exhausted_total: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub dream_question_omitted_total: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -46,6 +48,13 @@ impl SharedRecallCounters {
     pub fn record_budget_exhausted(&self, section: &str) {
         let mut counters = self.inner.lock().expect("recall counters lock not poisoned");
         *counters.budget_exhausted_total.entry(section.to_owned()).or_default() += 1;
+    }
+
+    pub fn record_dream_question_omissions(&self, omissions: &BTreeMap<String, u64>) {
+        let mut counters = self.inner.lock().expect("recall counters lock not poisoned");
+        for (reason, count) in omissions {
+            *counters.dream_question_omitted_total.entry(reason.clone()).or_default() += count;
+        }
     }
 }
 

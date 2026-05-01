@@ -12,6 +12,7 @@ fn cli_contract_help_exposes_daemon_and_agent_facing_client_commands() {
     for command in ["serve", "status", "doctor", "search", "get", "write-note", "privacy", "privacy-filter", "device"] {
         assert!(stdout.contains(command), "help should list {command}");
     }
+    assert!(stdout.contains("dream"), "top-level help should expose dream admin commands");
     for admin_only in ["rollback", "pin", "unpin", "policy"] {
         assert!(!stdout.contains(admin_only), "admin-only command leaked into initial CLI: {admin_only}");
     }
@@ -84,4 +85,50 @@ fn cli_contract_clap_parses_all_subcommands() {
     Cli::try_parse_from(["memoryd", "device", "onboard"]).expect("device onboard parses");
     Cli::try_parse_from(["memoryd", "device", "rotate-keys"]).expect("device rotate parses");
     Cli::try_parse_from(["memoryd", "device", "revoke", "dev_a1b2"]).expect("device revoke parses");
+}
+
+#[test]
+fn cli_contract_clap_parses_all_dream_subcommands_and_help_exposes_them() {
+    Cli::try_parse_from(["memoryd", "dream", "status"]).expect("dream status parses");
+    Cli::try_parse_from(["memoryd", "dream", "status", "--repo", "/tmp/repo", "--runtime", "/tmp/rt", "--json"])
+        .expect("dream status flags parse");
+    Cli::try_parse_from([
+        "memoryd",
+        "dream",
+        "now",
+        "--repo",
+        "/tmp/repo",
+        "--runtime",
+        "/tmp/rt",
+        "--scope",
+        "me",
+        "--force",
+        "--cli",
+        "echo",
+        "--json",
+    ])
+    .expect("dream now flags parse");
+    Cli::try_parse_from([
+        "memoryd",
+        "dream",
+        "review",
+        "--repo",
+        "/tmp/repo",
+        "--runtime",
+        "/tmp/rt",
+        "--since",
+        "7d",
+        "--scope",
+        "project:proj_abc",
+    ])
+    .expect("dream review flags parse");
+    Cli::try_parse_from(["memoryd", "dream", "enable", "--runtime", "/tmp/rt"]).expect("dream enable parses");
+    Cli::try_parse_from(["memoryd", "dream", "disable", "--runtime", "/tmp/rt"]).expect("dream disable parses");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_memoryd")).args(["dream", "--help"]).output().expect("dream help");
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).expect("dream help utf8");
+    for command in ["status", "now", "review", "enable", "disable"] {
+        assert!(stdout.contains(command), "dream help should list {command}");
+    }
 }

@@ -71,6 +71,7 @@ fn materialize_defaults(
         serde_json::to_value(default_source()).map_err(|err| ValidationError::Other(err.to_string()))?,
     );
     set_default(map, warnings, "requires_user_confirmation", Value::Bool(false));
+    set_default(map, warnings, "grounding_rehydration_required", Value::Bool(false));
     set_default(map, warnings, "review_state", Value::Null);
     set_default(
         map,

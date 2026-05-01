@@ -1,6 +1,7 @@
 //! Auto-commit helper.
 
 use std::path::Path;
+use std::process::Command;
 
 use crate::error::GitError;
 use crate::git::run_git;
@@ -36,6 +37,24 @@ pub enum CommitOutcome {
     },
 }
 
+/// Lease commit action used in the fixed Stream F lease commit message.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum LeaseCommitAction {
+    /// A lease record was acquired.
+    Acquire,
+    /// A lease record was released.
+    Release,
+}
+
+impl LeaseCommitAction {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Acquire => "acquire",
+            Self::Release => "release",
+        }
+    }
+}
+
 /// Commit current substrate changes.
 ///
 /// Returns `Ok(())` when the commit succeeds or when there is nothing to
@@ -62,6 +81,31 @@ pub fn auto_commit_with_outcome(repo: &Path, message: &str) -> Result<CommitOutc
     Ok(CommitOutcome::Committed { sha })
 }
 
+/// Commit only `leases/journal.lease` with the fixed Stream F lease-bot identity.
+///
+/// This helper intentionally does not reuse [`auto_commit_with_outcome`]: lease
+/// acquisition must never stage broad daemon-owned namespaces, because the
+/// lease commit is the concurrency primitive that protects those later writes.
+pub fn commit_lease_file(
+    repo: &Path,
+    action: LeaseCommitAction,
+    scope: &str,
+    device_id: &str,
+) -> Result<CommitOutcome, GitError> {
+    const LEASE_FILE: &str = "leases/journal.lease";
+
+    run_git(repo, &["add", "--", LEASE_FILE])?;
+    let changed = run_git(repo, &["diff", "--cached", "--name-only", "--", LEASE_FILE])?;
+    if changed.trim().is_empty() {
+        return Ok(CommitOutcome::NoChanges);
+    }
+
+    let message = format!("dream: lease {} {scope} on {device_id}", action.as_str());
+    run_lease_commit(repo, &message)?;
+    let sha = run_git(repo, &["rev-parse", "--short", "HEAD"])?.trim().to_string();
+    Ok(CommitOutcome::Committed { sha })
+}
+
 /// Stage only the spec §5.1 namespaces and bootstrap root files.
 fn stage_spec_namespaces(repo: &Path) -> Result<(), GitError> {
     let mut full_args = vec!["add", "--"];
@@ -84,6 +128,49 @@ fn nothing_to_commit(repo: &Path) -> Result<bool, GitError> {
 fn run_commit(repo: &Path, message: &str) -> Result<String, GitError> {
     run_git(repo, &["commit", "-m", message])?;
     run_git(repo, &["rev-parse", "--short", "HEAD"]).map(|sha| sha.trim().to_string())
+}
+
+fn run_lease_commit(repo: &Path, message: &str) -> Result<(), GitError> {
+    let mut command = Command::new("git");
+    command
+        .args([
+            "commit",
+            "--author",
+            "memoryd lease-bot <noreply@memoryd.local>",
+            "-m",
+            message,
+            "--",
+            "leases/journal.lease",
+        ])
+        .current_dir(repo)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_OBJECT_DIRECTORY")
+        .env_remove("GIT_NAMESPACE")
+        .env("GIT_AUTHOR_NAME", "memoryd lease-bot")
+        .env("GIT_AUTHOR_EMAIL", "noreply@memoryd.local")
+        .env("GIT_COMMITTER_NAME", "memoryd lease-bot")
+        .env("GIT_COMMITTER_EMAIL", "noreply@memoryd.local");
+
+    let output = command.output()?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(GitError::CommandFailed {
+            program: "git".to_string(),
+            args: vec![
+                "commit".to_string(),
+                "--author".to_string(),
+                "memoryd lease-bot <noreply@memoryd.local>".to_string(),
+                "-m".to_string(),
+                message.to_string(),
+                "--".to_string(),
+                "leases/journal.lease".to_string(),
+            ],
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        })
+    }
 }
 
 fn staged_paths() -> Vec<&'static str> {

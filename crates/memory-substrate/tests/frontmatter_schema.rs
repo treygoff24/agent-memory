@@ -27,6 +27,42 @@ fn serializes_canonical_key_order_byte_stably() {
 }
 
 #[test]
+fn grounding_rehydration_required_defaults_false_and_round_trips() {
+    let parsed = parse_document(minimal_doc(), None).expect("minimal document parses");
+    assert!(!parsed.memory.frontmatter.grounding_rehydration_required());
+
+    let serialized = serialize_document(&parsed.memory).expect("serialize");
+    assert!(serialized.contains("grounding_rehydration_required: false"));
+
+    let with_marker = minimal_doc().replace("author:\n", "grounding_rehydration_required: true\nauthor:\n");
+    let reparsed = parse_document(&with_marker, None).expect("explicit marker parses");
+    assert!(reparsed.memory.frontmatter.grounding_rehydration_required());
+
+    let serialized = serialize_document(&reparsed.memory).expect("serialize explicit marker");
+    assert!(serialized.contains("grounding_rehydration_required: true"));
+    assert!(parse_document(&serialized, None)
+        .expect("reparse explicit marker")
+        .memory
+        .frontmatter
+        .grounding_rehydration_required());
+}
+
+#[test]
+fn dream_authored_candidate_frontmatter_supports_grounding_marker() {
+    let text = minimal_doc()
+        .replace("status: active", "status: candidate")
+        .replace("trust_level: trusted", "trust_level: candidate")
+        .replace("author:\n", "grounding_rehydration_required: true\nauthor:\n")
+        .replace("kind: system", "kind: dreaming")
+        .replace("component: test", "component: null")
+        .replace("phase: null", "phase: pass_2");
+
+    let parsed = parse_document(&text, None).expect("dream-authored candidate parses");
+
+    assert!(parsed.memory.frontmatter.grounding_rehydration_required());
+}
+
+#[test]
 fn preserves_unknown_v1_extras() {
     let parsed = parse_document(&minimal_doc().replace("author:\n", "custom_future: yes\nauthor:\n"), None)
         .expect("parse with extra");

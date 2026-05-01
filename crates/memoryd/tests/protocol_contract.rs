@@ -1,7 +1,10 @@
+use chrono::{TimeZone, Utc};
 use memoryd::protocol::{
-    GetResponse, GovernanceForgetResponse, GovernanceStatus, GovernanceSupersedeResponse, GovernanceWriteResponse,
-    RequestEnvelope, RequestPayload, ResponseEnvelope, ResponsePayload, RevealResponse, SearchHit, SearchResponse,
-    WriteNoteResponse,
+    CandidateWriteResult, DreamRunReport, DreamStatusCounters, DreamStatusReport, GetResponse,
+    GovernanceForgetResponse, GovernanceStatus, GovernanceSupersedeResponse, GovernanceWriteResponse, HarnessCliStatus,
+    LeaseRecord, ObserveKind, ObserveResponse, ObserveTarget, PassOutcome, PassStatus, PromptTransport,
+    RequestEnvelope, RequestPayload, ResponseEnvelope, ResponsePayload, RevealResponse, ScopeRunSummary, SearchHit,
+    SearchResponse, WriteNoteResponse,
 };
 use memoryd::recall::StartupRequest;
 
@@ -88,9 +91,173 @@ fn protocol_contract_status_recall_is_json_additive() {
     let decoded: memoryd::protocol::StatusResponse = serde_json::from_str(legacy).expect("legacy status decodes");
     assert_eq!(decoded.recall.startup_invoked_total, 0);
     assert!(decoded.recall.startup_failed_total.is_empty());
+    assert_eq!(decoded.dreams.dream_runs_invoked_total, 0);
+    assert!(decoded.dreams.substrate_fragments_written_total.is_empty());
 
     let encoded = serde_json::to_value(decoded).expect("status encodes");
     assert!(encoded.get("recall").is_some(), "new status responses always serialize recall counters");
+    assert!(encoded.get("dreams").is_some(), "new status responses always serialize dream counters");
+}
+
+#[test]
+fn protocol_contract_stream_f_dreaming_dtos_round_trip_as_snake_case_json() {
+    let acquired_at = Utc.with_ymd_and_hms(2026, 4, 30, 3, 0, 0).unwrap();
+    let expires_at = Utc.with_ymd_and_hms(2026, 4, 30, 4, 0, 0).unwrap();
+
+    let accepted_candidate = CandidateWriteResult {
+        id: Some("mem_20260430_a1b2c3d4e5f60718_000001".to_owned()),
+        accepted: true,
+        reason: None,
+        source_ref_count: 2,
+    };
+    let refused_candidate = CandidateWriteResult {
+        id: None,
+        accepted: false,
+        reason: Some("missing_grounding".to_owned()),
+        source_ref_count: 0,
+    };
+    let pass_1 = PassOutcome {
+        status: PassStatus::Success,
+        output_path: Some("dreams/journal/project/proj_abc/2026-04-30.md".to_owned()),
+        candidate_results: Vec::new(),
+        error_code: None,
+        duration_ms: 125,
+    };
+    let pass_2 = PassOutcome {
+        status: PassStatus::Failed,
+        output_path: None,
+        candidate_results: vec![accepted_candidate.clone(), refused_candidate.clone()],
+        error_code: Some("missing_grounding".to_owned()),
+        duration_ms: 250,
+    };
+    let pass_3 = PassOutcome {
+        status: PassStatus::Skipped,
+        output_path: Some("dreams/questions/project/proj_abc/2026-04-30.jsonl".to_owned()),
+        candidate_results: Vec::new(),
+        error_code: None,
+        duration_ms: 75,
+    };
+    let dream_run = DreamRunReport {
+        scope: "project:proj_abc".to_owned(),
+        cli_used: Some("codex".to_owned()),
+        pass_1: pass_1.clone(),
+        pass_2: pass_2.clone(),
+        pass_3: pass_3.clone(),
+        duration_ms: 450,
+    };
+    let lease = LeaseRecord {
+        device: "dev_local".to_owned(),
+        scope: "project:proj_abc".to_owned(),
+        acquired_at,
+        expires_at,
+        run_id: "dream_run_20260430_030000".to_owned(),
+    };
+    let cli = HarnessCliStatus {
+        name: "codex".to_owned(),
+        is_installed: true,
+        is_authenticated: Some(true),
+        prompt_transport: PromptTransport::Stdin,
+        last_probe_at: Some(acquired_at),
+        last_probe_error: None,
+    };
+    let scope_summary = ScopeRunSummary {
+        scope: "project:proj_abc".to_owned(),
+        last_run_at: Some(acquired_at),
+        last_run_outcome: Some(PassStatus::Failed),
+        last_run_cli: Some("codex".to_owned()),
+        consecutive_missed_runs: 1,
+    };
+    let mut counters = DreamStatusCounters::default();
+    counters.substrate_fragments_written_total.insert("observation".to_owned(), 3);
+    counters.dream_runs_invoked_total = 1;
+    counters.dream_runs_failed_total.insert("missing_grounding".to_owned(), 1);
+    counters.pass_failed_total.insert("pass_2:missing_grounding".to_owned(), 1);
+    counters.harness_cli_calls_total.insert("codex".to_owned(), 3);
+    counters.harness_cli_auth_failures_total.insert("gemini".to_owned(), 1);
+    counters.cleanup_runs_invoked_total = 1;
+    counters.cleanup_findings_total.insert("stale_candidate".to_owned(), 2);
+    let dream_status = DreamStatusReport {
+        enabled: true,
+        last_runs: vec![scope_summary.clone()],
+        active_leases: vec![lease.clone()],
+        cli_inventory: vec![cli.clone()],
+        counters: counters.clone(),
+        privacy_disclosure: "Dreaming sends masked prompts to configured local CLIs.".to_owned(),
+    };
+
+    let requests = [
+        RequestEnvelope::new(
+            "req-observe",
+            RequestPayload::Observe {
+                text: "raw observation for Stream F".to_owned(),
+                kind: ObserveKind::Observation,
+                entities: vec!["ent_proj_abc".to_owned()],
+                cwd: "/tmp/agent-memory".to_owned(),
+                session_id: "sess_protocol".to_owned(),
+                harness: "codex".to_owned(),
+                harness_version: Some("0.0.0".to_owned()),
+            },
+        ),
+        RequestEnvelope::new(
+            "req-dream-now",
+            RequestPayload::DreamNow {
+                scope: "project:proj_abc".to_owned(),
+                force: true,
+                cli_override: Some("codex".to_owned()),
+            },
+        ),
+        RequestEnvelope::new("req-dream-status", RequestPayload::DreamStatus {}),
+    ];
+
+    for request in requests {
+        let line = request.to_json_line().expect("stream f request serializes");
+        assert!(!line.contains("DreamNow"), "request variants serialize as snake_case");
+        let decoded = RequestEnvelope::from_json_line(&line).expect("stream f request deserializes");
+        assert_eq!(decoded, request);
+    }
+
+    let responses = [
+        ResponseEnvelope::success(
+            "req-observe",
+            ResponsePayload::Observe(ObserveResponse {
+                fragment_id: "sub_01HWPRZK1SPRAWM6EVQ6Y0XS8R".to_owned(),
+                target: ObserveTarget::PlaintextSubstrate,
+            }),
+        ),
+        ResponseEnvelope::success("req-dream-now", ResponsePayload::DreamNow(Box::new(dream_run.clone()))),
+        ResponseEnvelope::success("req-dream-status", ResponsePayload::DreamStatus(Box::new(dream_status.clone()))),
+    ];
+
+    for response in responses {
+        let line = response.to_json_line().expect("stream f response serializes");
+        assert!(line.contains("dream_now") || line.contains("dream_status") || line.contains("plaintext_substrate"));
+        assert!(line.contains("prompt_transport") || line.contains("fragment_id") || line.contains("pass_1"));
+        let decoded = ResponseEnvelope::from_json_line(&line).expect("stream f response deserializes");
+        assert_eq!(decoded, response);
+    }
+
+    assert_eq!(serde_json::to_value(PromptTransport::Stdin).expect("transport serializes"), "stdin");
+    assert_eq!(
+        serde_json::to_value(ObserveTarget::PlaintextSubstrate).expect("target serializes"),
+        "plaintext_substrate"
+    );
+    assert_eq!(serde_json::to_value(PassStatus::Failed).expect("pass status serializes"), "failed");
+
+    assert_eq!(round_trip(&dream_run), dream_run);
+    assert_eq!(round_trip(&pass_1), pass_1);
+    assert_eq!(round_trip(&accepted_candidate), accepted_candidate);
+    assert_eq!(round_trip(&dream_status), dream_status);
+    assert_eq!(round_trip(&scope_summary), scope_summary);
+    assert_eq!(round_trip(&cli), cli);
+    assert_eq!(round_trip(&PromptTransport::Argv), PromptTransport::Argv);
+    assert_eq!(round_trip(&lease), lease);
+}
+
+fn round_trip<T>(value: &T) -> T
+where
+    T: serde::Serialize + serde::de::DeserializeOwned,
+{
+    serde_json::from_value(serde_json::to_value(value).expect("value serializes")).expect("value deserializes")
 }
 
 #[test]
@@ -199,4 +366,26 @@ fn protocol_contract_error_response_preserves_id_and_structured_error() {
     assert_eq!(json["id"], "req-bad");
     assert_eq!(json["result"]["error"]["code"], "invalid_request");
     assert_eq!(json["result"]["error"]["retryable"], true);
+}
+
+#[test]
+fn observe_request_payload_accepts_spec_shaped_json_without_binding_fields() {
+    let payload: RequestPayload = serde_json::from_value(serde_json::json!({
+        "observe": {
+            "text": "raw observation for Stream F",
+            "kind": "observation"
+        }
+    }))
+    .expect("spec-shaped observe payload parses");
+
+    let RequestPayload::Observe { text, kind, entities, cwd, session_id, harness, harness_version } = payload else {
+        panic!("expected observe payload");
+    };
+    assert_eq!(text, "raw observation for Stream F");
+    assert_eq!(kind, ObserveKind::Observation);
+    assert!(entities.is_empty());
+    assert!(!cwd.is_empty());
+    assert_eq!(session_id, "synthetic-memory-observe");
+    assert_eq!(harness, "unknown");
+    assert_eq!(harness_version, None);
 }

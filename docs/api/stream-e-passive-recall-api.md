@@ -134,11 +134,23 @@ Budgeting uses the deterministic estimator `ceil(utf8_byte_len / 4)`. Rendered s
 
 ## Privacy and governance constraints
 
-Passive recall is read-only. It never calls `memory_reveal`, never decrypts, and never persists last-recalled state.
+Passive recall is read-only. It never calls `memory_reveal`, never decrypts, and never persists durable last-recalled state. Stream F's dream-question hook maintains only a runtime-local recent surfaced-question hash ring for novelty-window suppression; that ring resets when the daemon process restarts.
 
 Fact recall includes only active/pinned, passive-recall-enabled, review-safe rows within the row's `max_scope`. Rows that require review, are candidate/quarantined, are tombstoned/superseded/archived, disable passive recall, or are unsafe for body recall are omitted or counted as pending attention.
 
 Candidate and quarantined rows can affect `<pending-attention>` counts but their claim text is not emitted. Encrypted or metadata-only rows may contribute only safe metadata already available in Stream A's recall index.
+
+Stream F adds an additive Pass-3 dream-question hook without changing `policy = "stream-e-v0.5"`. During startup recall only, the daemon reads the most recent `dreams/questions/<scope_path>/<YYYY-MM-DD>.jsonl` file with date `<= today` for each namespace in `namespaces_in_scope`. Each JSONL record must contain explicit `entities: string[]` and `question: string` fields. The hook entity-gates on the structured `entities` field against the active recall seed set; it does not unmask question text, call an LLM, decrypt memory, or rerun Pass 3.
+
+Matching dream questions render as pending-attention line items:
+
+```text
+- [<scope>] <question text>
+```
+
+Question text is classified with Stream D `safe_plaintext_fragment` before emission, capped to 240 UTF-8 bytes, and XML-escaped by the recall renderer. Empty `entities` records never surface. Non-empty `entities` records with no active seed overlap are omitted. The daemon suppresses any matching question whose normalized 240-byte question-text hash was surfaced from the same repo in the last 7 days. Caps are exactly 2 questions per scope and 6 total. When caps apply, surfacing order is deterministic: entity-overlap strength, file recency, novelty hash, then lexicographic `(scope, question)`.
+
+Recent-window suppressions are not currently represented in `dream_question_omitted_total`: Stream F v0.2 enumerates the stable status keys below and does not define a dedicated `recent_window` reason. The suppression remains observable in the rendered `<pending-attention>` output and resets with the in-process ring on daemon restart.
 
 ## Status counters
 
@@ -151,5 +163,14 @@ Fields:
 - `delta_invoked_total`
 - `delta_failed_total: { code: count }`
 - `budget_exhausted_total: { section: count }`
+- `dream_question_omitted_total: { reason: count }`
 
 Counters are in-process and reset on daemon restart.
+
+`dream_question_omitted_total` reason keys are exactly:
+
+- `cap_section`
+- `cap_total`
+- `no_entity_match`
+- `unsafe_fragment`
+- `malformed_record`

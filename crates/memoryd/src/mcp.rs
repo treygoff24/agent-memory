@@ -6,7 +6,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::client;
-use crate::protocol::{RequestPayload, ResponseEnvelope};
+pub use crate::protocol::ObserveKind as ObserveKindRequest;
+use crate::protocol::{
+    default_observe_cwd, default_observe_harness, default_observe_session_id, ObserveKind, RequestPayload,
+    ResponseEnvelope,
+};
 pub use crate::recall::StartupRequest;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,6 +36,7 @@ pub enum ToolName {
     Reveal,
     Startup,
     Note,
+    Observe,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +55,7 @@ pub enum ToolRequest {
     MemoryReveal(RevealRequest),
     MemoryStartup(StartupRequest),
     MemoryNote(NoteRequest),
+    MemoryObserve(ObserveRequest),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,8 +107,26 @@ pub struct RevealRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NoteRequest {
     pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ObserveRequest {
+    pub text: String,
+    pub kind: ObserveKind,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entities: Vec<String>,
+    #[serde(default = "default_observe_cwd")]
+    pub cwd: String,
+    #[serde(default = "default_observe_session_id")]
+    pub session_id: String,
+    #[serde(default = "default_observe_harness")]
+    pub harness: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness_version: Option<String>,
 }
 
 pub fn manifest() -> Manifest {
@@ -119,6 +143,7 @@ pub fn request_from_args(name: ToolName, args: Value) -> Result<ToolRequest, ser
         ToolName::Reveal => serde_json::from_value(args).map(ToolRequest::MemoryReveal),
         ToolName::Startup => serde_json::from_value(args).map(ToolRequest::MemoryStartup),
         ToolName::Note => serde_json::from_value(args).map(ToolRequest::MemoryNote),
+        ToolName::Observe => serde_json::from_value(args).map(ToolRequest::MemoryObserve),
     }
 }
 
@@ -132,6 +157,7 @@ pub fn args_from_request(request: &ToolRequest) -> Result<Value, serde_json::Err
         ToolRequest::MemoryReveal(args) => serde_json::to_value(args),
         ToolRequest::MemoryStartup(args) => serde_json::to_value(args),
         ToolRequest::MemoryNote(args) => serde_json::to_value(args),
+        ToolRequest::MemoryObserve(args) => serde_json::to_value(args),
     }
 }
 
@@ -145,6 +171,7 @@ pub fn args_from_request(request: &ToolRequest) -> Result<Value, serde_json::Err
 ///   `MemoryForget`  → `RequestPayload::Forget`
 ///   `MemoryReveal`  → `RequestPayload::Reveal`
 ///   `MemoryNote`    → `RequestPayload::WriteNote`
+///   `MemoryObserve` → `RequestPayload::Observe`
 ///   `MemoryStartup` → `RequestPayload::Startup`
 pub async fn forward_to_daemon(
     socket_path: &Path,
@@ -165,6 +192,15 @@ pub async fn forward_to_daemon(
             RequestPayload::WriteMemory { body: args.body, title: args.title, tags: args.tags, meta: args.meta }
         }
         ToolRequest::MemoryNote(args) => RequestPayload::WriteNote { text: args.text },
+        ToolRequest::MemoryObserve(args) => RequestPayload::Observe {
+            text: args.text,
+            kind: args.kind,
+            entities: args.entities,
+            cwd: args.cwd,
+            session_id: args.session_id,
+            harness: args.harness,
+            harness_version: args.harness_version,
+        },
         ToolRequest::MemorySupersede(args) => RequestPayload::Supersede {
             old_id: args.old_id,
             content: args.new_body,
@@ -180,8 +216,18 @@ pub async fn forward_to_daemon(
 }
 
 impl ToolName {
-    pub const fn all() -> [Self; 8] {
-        [Self::Search, Self::Get, Self::Write, Self::Supersede, Self::Forget, Self::Reveal, Self::Startup, Self::Note]
+    pub const fn all() -> [Self; 9] {
+        [
+            Self::Search,
+            Self::Get,
+            Self::Write,
+            Self::Supersede,
+            Self::Forget,
+            Self::Reveal,
+            Self::Startup,
+            Self::Note,
+            Self::Observe,
+        ]
     }
 
     pub const fn as_str(self) -> &'static str {
@@ -194,6 +240,7 @@ impl ToolName {
             Self::Reveal => "memory_reveal",
             Self::Startup => "memory_startup",
             Self::Note => "memory_note",
+            Self::Observe => "memory_observe",
         }
     }
 }
@@ -211,6 +258,7 @@ impl TryFrom<&str> for ToolName {
             "memory_reveal" => Ok(Self::Reveal),
             "memory_startup" => Ok(Self::Startup),
             "memory_note" => Ok(Self::Note),
+            "memory_observe" => Ok(Self::Observe),
             name => Err(UnknownToolName { name: name.to_owned() }),
         }
     }
@@ -307,6 +355,11 @@ fn descriptor(name: ToolName) -> ToolDescriptor {
             object_schema(&[("text", "string")], &["text"]),
             object_schema(&[("id", "string"), ("summary", "string")], &["id", "summary"]),
         ),
+        ToolName::Observe => (
+            "Capture low-level Stream F substrate telemetry without creating a canonical memory.",
+            observe_input_schema(),
+            observe_output_schema(),
+        ),
     };
 
     ToolDescriptor { name: name.as_str().to_owned(), description: description.to_owned(), input_schema, output_schema }
@@ -322,6 +375,44 @@ fn object_schema(properties: &[(&str, &str)], required: &[&str]) -> Value {
         "type": "object",
         "properties": properties,
         "required": required,
+        "additionalProperties": false,
+    })
+}
+
+fn observe_input_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "text": { "type": "string", "minLength": 1, "maxLength": 16384 },
+            "kind": { "type": "string", "enum": ["observation", "pattern", "signal"] },
+            "entities": {
+                "type": "array",
+                "maxItems": 32,
+                "items": {
+                    "type": "string",
+                    "minLength": 5,
+                    "maxLength": 128,
+                    "pattern": "^ent_[A-Za-z0-9_.:-]{1,124}$"
+                }
+            },
+            "cwd": { "type": "string" },
+            "session_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "harness": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "harness_version": { "type": "string", "minLength": 1, "maxLength": 128 }
+        },
+        "required": ["text", "kind"],
+        "additionalProperties": false,
+    })
+}
+
+fn observe_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "fragment_id": { "type": "string" },
+            "target": { "type": "string", "enum": ["plaintext_substrate", "encrypted_substrate"] }
+        },
+        "required": ["fragment_id", "target"],
         "additionalProperties": false,
     })
 }

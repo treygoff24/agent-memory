@@ -26,6 +26,7 @@ pub const CANONICAL_KEYS: &[&str] = &[
     "source",
     "evidence",
     "requires_user_confirmation",
+    "grounding_rehydration_required",
     "review_state",
     "supersedes",
     "superseded_by",

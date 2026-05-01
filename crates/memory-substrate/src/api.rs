@@ -2,15 +2,23 @@
 //! Public API orchestration remains centralized until Task 10 seam split.
 //! Public Stream A API.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::io::Write;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc, Mutex,
+};
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
-use chrono::Utc;
+use chrono::{DateTime, Duration, Utc};
+use serde::Serialize;
 
 use crate::error::{OpenError, ReadError, SubstrateResult, VectorError, WriteFailure, WriteFailureKind};
-use crate::events::{append_event, read_events, reserve_event_sequence, sync_event_sequence_state, Event, EventKind};
+use crate::events::{
+    append_event, append_event_best_effort, read_events, reserve_event_sequence, sync_event_sequence_state, Event,
+    EventKind,
+};
 use crate::frontmatter::validate_frontmatter;
 use crate::git;
 use crate::ids::next_memory_id;
@@ -33,6 +41,7 @@ pub struct Substrate {
     durability: DurabilityTier,
     index: Arc<Mutex<Index>>,
     event_log: PathBuf,
+    best_effort_event_seq: Arc<AtomicU64>,
     suppression: Arc<Mutex<SuppressionLedger>>,
 }
 
@@ -136,6 +145,9 @@ impl Substrate {
 
     /// Read by repository path; returns the spec §16.2 `MemoryEnvelope` (B-API-1).
     pub async fn read_path_envelope(&self, path: &RepoPath) -> Result<MemoryEnvelope, ReadError> {
+        if is_noncanonical_stream_f_repo_path(path.as_str()) {
+            return Err(ReadError::NotACanonicalMemory { path: path.clone() });
+        }
         if path.as_str().starts_with("encrypted/") {
             return self.read_ciphertext_envelope(path);
         }
@@ -250,6 +262,13 @@ impl Substrate {
         )?;
         self.guard_with_refusal_audit(
             self.validate_memory_path(&request.memory, outcome.clone()),
+            request.memory.frontmatter.id.clone(),
+            request.memory.path.clone(),
+            request.classification,
+            &operation_id,
+        )?;
+        self.guard_with_refusal_audit(
+            enforce_no_dream_prose_sources(&request.memory, outcome.clone()),
             request.memory.frontmatter.id.clone(),
             request.memory.path.clone(),
             request.classification,
@@ -485,6 +504,13 @@ impl Substrate {
             request.classification,
             &operation_id,
         )?;
+        self.guard_with_refusal_audit(
+            enforce_no_dream_prose_sources(&request.metadata_memory, outcome.clone()),
+            mem_id.clone(),
+            mem_path.clone(),
+            request.classification,
+            &operation_id,
+        )?;
         validate_frontmatter(&request.metadata_memory.frontmatter).map_err(|err| WriteFailure {
             outcome: outcome.clone(),
             kind: WriteFailureKind::Validation(err.to_string()),
@@ -662,6 +688,180 @@ impl Substrate {
             repair_required: None,
             operation_id,
         })
+    }
+
+    /// Append a Stream F substrate fragment to the per-device JSONL series.
+    pub async fn append_substrate_fragment(
+        &self,
+        request: SubstrateFragmentAppendRequest,
+    ) -> Result<SubstrateFragmentAppendOutcome, WriteFailure> {
+        let operation_id = request.operation_id.clone().unwrap_or_else(new_operation_id);
+        let outcome = WriteOutcome::not_committed(operation_id.clone(), self.durability);
+        validate_substrate_fragment_append(&request)
+            .map_err(|err| WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::Validation(err) })?;
+        let id = request.id.clone().unwrap_or_else(new_substrate_fragment_id);
+        validate_substrate_fragment_id(&id).map_err(|err| WriteFailure {
+            outcome: outcome.clone(),
+            kind: WriteFailureKind::Validation(err.to_string()),
+        })?;
+        let device = DeviceId::try_new(&self.device_id).map_err(|err| WriteFailure {
+            outcome: outcome.clone(),
+            kind: WriteFailureKind::Validation(err.to_string()),
+        })?;
+        let path = substrate_fragment_path(&request, device.as_str())
+            .map_err(|err| WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::Validation(err) })?;
+
+        match &request.payload {
+            SubstrateFragmentPayload::Plaintext { text } => {
+                let record = SubstrateFragmentRecord {
+                    id: id.clone(),
+                    ts: request.at,
+                    device,
+                    session: request.session.clone(),
+                    harness: request.harness.clone(),
+                    scope: request.scope.clone(),
+                    entities: request.entities.clone(),
+                    kind: request.kind,
+                    text: text.clone(),
+                    source_ref: request.source_ref.clone(),
+                    privacy_spans: request.privacy_spans.clone(),
+                };
+                append_jsonl_record(
+                    JsonlWriteTarget::new(&self.roots.repo, &path, &operation_id, self.durability),
+                    &record,
+                )
+                .map_err(|err| WriteFailure {
+                    outcome: outcome.clone(),
+                    kind: WriteFailureKind::Io(err.to_string()),
+                })?;
+            }
+            SubstrateFragmentPayload::Encrypted { encryption, descriptor } => {
+                let record = EncryptedSubstrateFragmentRecord {
+                    id: id.clone(),
+                    ts: request.at,
+                    device,
+                    session: request.session.clone(),
+                    harness: request.harness.clone(),
+                    scope: request.scope.clone(),
+                    entities: request.entities.clone(),
+                    kind: request.kind,
+                    encryption: encryption.clone(),
+                    descriptor: descriptor.clone(),
+                    source_ref: request.source_ref.clone(),
+                    privacy_spans: request.privacy_spans.clone(),
+                };
+                append_jsonl_record(
+                    JsonlWriteTarget::new(&self.roots.repo, &path, &operation_id, self.durability),
+                    &record,
+                )
+                .map_err(|err| WriteFailure {
+                    outcome: outcome.clone(),
+                    kind: WriteFailureKind::Io(err.to_string()),
+                })?;
+            }
+        }
+
+        let event_kind = EventKind::SubstrateFragmentWritten {
+            id: id.clone(),
+            path: path.clone(),
+            classification: request.classification,
+        };
+        self.record_event(event_kind, &operation_id).map_err(|err| WriteFailure {
+            outcome: WriteOutcome {
+                committed: true,
+                indexed: true,
+                event_recorded: false,
+                durability: self.durability,
+                repair_required: Some(RepairRequired::PendingEvent),
+                operation_id: operation_id.clone(),
+            },
+            kind: WriteFailureKind::Io(err.to_string()),
+        })?;
+
+        Ok(SubstrateFragmentAppendOutcome { id, path, operation_id })
+    }
+
+    /// Archive expired plaintext substrate fragments for this device.
+    pub async fn archive_expired_substrate_fragments(
+        &self,
+        now: DateTime<Utc>,
+        lifetime_days: i64,
+    ) -> Result<SubstrateArchiveOutcome, WriteFailure> {
+        let operation_id = new_operation_id();
+        let outcome = WriteOutcome::not_committed(operation_id.clone(), self.durability);
+        if lifetime_days < 1 {
+            return Err(WriteFailure {
+                outcome,
+                kind: WriteFailureKind::Validation("lifetime_days must be positive".to_string()),
+            });
+        }
+        let device = DeviceId::try_new(&self.device_id).map_err(|err| WriteFailure {
+            outcome: outcome.clone(),
+            kind: WriteFailureKind::Validation(err.to_string()),
+        })?;
+        let device_dir = self.roots.repo.join("substrate").join(device.as_str());
+        if !device_dir.exists() {
+            return Ok(SubstrateArchiveOutcome { fragments_archived: 0 });
+        }
+
+        let mut archive_batches: BTreeMap<RepoPath, Vec<SubstrateFragmentRecord>> = BTreeMap::new();
+        for entry in std::fs::read_dir(&device_dir)
+            .map_err(|err| WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::Io(err.to_string()) })?
+        {
+            let entry = entry.map_err(|err| WriteFailure {
+                outcome: outcome.clone(),
+                kind: WriteFailureKind::Io(err.to_string()),
+            })?;
+            let file_path = entry.path();
+            if file_path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let repo_path = absolute_to_repo_path(&self.roots.repo, &file_path)
+                .map_err(|err| WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::Validation(err) })?;
+            let records = read_substrate_records(&file_path).map_err(|err| WriteFailure {
+                outcome: outcome.clone(),
+                kind: WriteFailureKind::Io(err.to_string()),
+            })?;
+            let (expired, live): (Vec<_>, Vec<_>) =
+                records.into_iter().partition(|record| record.ts + Duration::days(lifetime_days) <= now);
+            if expired.is_empty() {
+                continue;
+            }
+            write_jsonl_records(
+                JsonlWriteTarget::new(&self.roots.repo, &repo_path, &operation_id, self.durability),
+                &live,
+            )
+            .map_err(|err| WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::Io(err.to_string()) })?;
+            for record in expired {
+                let archive_path =
+                    RepoPath::new(format!("substrate/archive/{}/{}.jsonl", device.as_str(), record.ts.format("%Y-%m")));
+                archive_batches.entry(archive_path).or_default().push(record);
+            }
+        }
+
+        let mut fragments_archived = 0;
+        for (archive_path, mut new_records) in archive_batches {
+            let absolute_archive = self.roots.repo.join(archive_path.as_path());
+            let mut records = read_substrate_records(&absolute_archive).map_err(|err| WriteFailure {
+                outcome: outcome.clone(),
+                kind: WriteFailureKind::Io(err.to_string()),
+            })?;
+            let mut seen: BTreeSet<String> = records.iter().map(|record| record.id.clone()).collect();
+            for record in new_records.drain(..) {
+                if seen.insert(record.id.clone()) {
+                    records.push(record);
+                    fragments_archived += 1;
+                }
+            }
+            records.sort_by(|left, right| left.id.cmp(&right.id));
+            write_jsonl_records(
+                JsonlWriteTarget::new(&self.roots.repo, &archive_path, &operation_id, self.durability),
+                &records,
+            )
+            .map_err(|err| WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::Io(err.to_string()) })?;
+        }
+
+        Ok(SubstrateArchiveOutcome { fragments_archived })
     }
 
     /// Tombstone a memory.
@@ -994,6 +1194,7 @@ impl Substrate {
             device_id,
             durability,
             index: Arc::new(Mutex::new(index)),
+            best_effort_event_seq: Arc::new(AtomicU64::new(best_effort_event_seq_start(&event_log, &device))),
             event_log,
             suppression: Arc::new(Mutex::new(SuppressionLedger::default())),
         })
@@ -1095,9 +1296,36 @@ impl Substrate {
     }
 
     fn record_event(&self, kind: EventKind, operation_id: &OperationId) -> std::io::Result<()> {
+        if matches!(self.durability, DurabilityTier::BestEffort) {
+            let device = DeviceId::try_new(&self.device_id).map_err(std::io::Error::other)?;
+            let event = Event {
+                schema: crate::SUBSTRATE_SCHEMA_VERSION,
+                id: EventId::new(format!("evt_{}", uuid::Uuid::new_v4())),
+                at: Utc::now(),
+                device,
+                seq: self.best_effort_event_seq.fetch_add(1, Ordering::Relaxed),
+                operation_id: Some(operation_id.clone()),
+                kind,
+                crc32c: 0,
+            };
+            return append_event_best_effort(&self.event_log, &event);
+        }
         let event = self.build_recorded_event(kind, operation_id)?;
         append_event(&self.event_log, &event)
     }
+}
+
+fn best_effort_event_seq_start(event_log: &std::path::Path, device: &DeviceId) -> u64 {
+    read_events(event_log)
+        .map(|events| {
+            events
+                .into_iter()
+                .filter(|event| &event.device == device)
+                .map(|event| event.seq)
+                .max()
+                .map_or(1, |seq| seq.saturating_add(1))
+        })
+        .unwrap_or(1)
 }
 
 fn committed_lifecycle_failure(failure: WriteFailure, committed_outcome: &WriteOutcome) -> WriteFailure {
@@ -1112,6 +1340,149 @@ fn committed_lifecycle_failure(failure: WriteFailure, committed_outcome: &WriteO
 
 fn lifecycle_updated_at(frontmatter: &Frontmatter) -> chrono::DateTime<Utc> {
     Utc::now().max(frontmatter.created_at)
+}
+
+fn validate_substrate_fragment_append(request: &SubstrateFragmentAppendRequest) -> Result<(), String> {
+    if request.scope.trim().is_empty() {
+        return Err("substrate fragment scope is required".to_string());
+    }
+    if request.entities.len() > 32 {
+        return Err("substrate fragment entities exceeds 32 entries".to_string());
+    }
+    for entity in &request.entities {
+        if entity.len() > 128 {
+            return Err(format!("substrate fragment entity exceeds 128 bytes: {entity}"));
+        }
+    }
+    match (&request.payload, request.classification) {
+        (SubstrateFragmentPayload::Plaintext { text }, ClassificationOutcome::Trusted) if text.trim().is_empty() => {
+            Err("plaintext substrate fragment text is required".to_string())
+        }
+        (SubstrateFragmentPayload::Plaintext { .. }, ClassificationOutcome::Trusted) => Ok(()),
+        (SubstrateFragmentPayload::Encrypted { encryption, descriptor }, ClassificationOutcome::RequiresEncryption) => {
+            if encryption.recipient.trim().is_empty() || encryption.ciphertext_b64.trim().is_empty() {
+                return Err("encrypted substrate fragment requires recipient and ciphertext_b64".to_string());
+            }
+            if descriptor.summary_safe.trim().is_empty() {
+                return Err("encrypted substrate fragment requires descriptor.summary_safe".to_string());
+            }
+            Ok(())
+        }
+        (_, ClassificationOutcome::Secret) => Err("secret substrate fragments are refused".to_string()),
+        (SubstrateFragmentPayload::Plaintext { .. }, ClassificationOutcome::RequiresEncryption) => {
+            Err("requires_encryption classification must use encrypted substrate payload".to_string())
+        }
+        (SubstrateFragmentPayload::Encrypted { .. }, ClassificationOutcome::Trusted) => {
+            Err("trusted classification must use plaintext substrate payload".to_string())
+        }
+    }
+}
+
+struct JsonlWriteTarget<'a> {
+    repo: &'a std::path::Path,
+    path: &'a RepoPath,
+    operation_id: &'a OperationId,
+    durability: DurabilityTier,
+}
+
+impl<'a> JsonlWriteTarget<'a> {
+    fn new(
+        repo: &'a std::path::Path,
+        path: &'a RepoPath,
+        operation_id: &'a OperationId,
+        durability: DurabilityTier,
+    ) -> Self {
+        Self { repo, path, operation_id, durability }
+    }
+}
+
+fn substrate_fragment_path(request: &SubstrateFragmentAppendRequest, device_id: &str) -> Result<RepoPath, String> {
+    let prefix = match &request.payload {
+        SubstrateFragmentPayload::Plaintext { .. } => "substrate",
+        SubstrateFragmentPayload::Encrypted { .. } => "encrypted/substrate",
+    };
+    RepoPath::try_new(format!("{prefix}/{}/{}.jsonl", device_id, request.at.format("%Y-%m-%d")))
+}
+
+fn append_jsonl_record<T: Serialize>(target: JsonlWriteTarget<'_>, record: &T) -> std::io::Result<()> {
+    ensure_write_parent_contained(target.repo, target.path).map_err(std::io::Error::other)?;
+    let final_path = target.repo.join(target.path.as_path());
+    let parent = final_path.parent().ok_or_else(|| std::io::Error::other("missing parent"))?;
+    std::fs::create_dir_all(parent)?;
+    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&final_path)?;
+    serde_json::to_writer(&mut file, record).map_err(std::io::Error::other)?;
+    file.write_all(b"\n")?;
+    if matches!(target.durability, DurabilityTier::Full) {
+        file.sync_all()?;
+    }
+    if matches!(target.durability, DurabilityTier::Full) {
+        std::fs::File::open(parent)?.sync_all()?;
+    }
+    Ok(())
+}
+
+fn write_jsonl_records<T: Serialize>(target: JsonlWriteTarget<'_>, records: &[T]) -> std::io::Result<()> {
+    ensure_write_parent_contained(target.repo, target.path).map_err(std::io::Error::other)?;
+    let final_path = target.repo.join(target.path.as_path());
+    let parent = final_path.parent().ok_or_else(|| std::io::Error::other("missing parent"))?;
+    std::fs::create_dir_all(parent)?;
+    let file_name = final_path.file_name().and_then(|name| name.to_str()).unwrap_or("substrate.jsonl");
+    let temp_path = parent.join(format!(".{file_name}.{}.tmp", target.operation_id.as_str()));
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temp_path)?;
+    for record in records {
+        serde_json::to_writer(&mut file, record).map_err(std::io::Error::other)?;
+        file.write_all(b"\n")?;
+    }
+    if matches!(target.durability, DurabilityTier::Full) {
+        file.sync_all()?;
+    }
+    std::fs::rename(&temp_path, &final_path)?;
+    if matches!(target.durability, DurabilityTier::Full) {
+        std::fs::File::open(parent)?.sync_all()?;
+    }
+    Ok(())
+}
+
+fn read_substrate_records(path: &std::path::Path) -> std::io::Result<Vec<SubstrateFragmentRecord>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let text = std::fs::read_to_string(path)?;
+    text.lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).map_err(std::io::Error::other))
+        .collect()
+}
+
+fn enforce_no_dream_prose_sources(memory: &Memory, outcome: WriteOutcome) -> Result<(), WriteFailure> {
+    let source_ref = memory.frontmatter.source.reference.as_deref();
+    let evidence_refs = memory.frontmatter.evidence.iter().map(|evidence| evidence.reference.as_str());
+
+    if source_ref.into_iter().chain(evidence_refs).any(is_dream_prose_ref) {
+        Err(WriteFailure { outcome, kind: WriteFailureKind::DreamProseAsSource })
+    } else {
+        Ok(())
+    }
+}
+
+fn is_dream_prose_ref(reference: &str) -> bool {
+    let without_file_prefix = reference.strip_prefix("file:").unwrap_or(reference);
+    without_file_prefix
+        .split_once('#')
+        .map_or(without_file_prefix, |(path, _fragment)| path)
+        .split('/')
+        .collect::<Vec<_>>()
+        .windows(3)
+        .any(|window| window[0] == "dreams" && matches!(window[1], "journal" | "questions"))
+}
+
+fn absolute_to_repo_path(repo: &std::path::Path, absolute: &std::path::Path) -> Result<RepoPath, String> {
+    let relative = absolute.strip_prefix(repo).map_err(|err| err.to_string())?;
+    RepoPath::try_new(relative.to_string_lossy().replace('\\', "/"))
+}
+
+fn new_substrate_fragment_id() -> String {
+    format!("sub_{}", ulid::Ulid::new())
 }
 
 struct BinaryWrite<'a> {

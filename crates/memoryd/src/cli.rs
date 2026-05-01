@@ -34,6 +34,8 @@ pub enum Command {
     Review(ReviewArgs),
     /// Passive recall hook commands.
     Recall(RecallArgs),
+    /// Stream F dreaming admin commands.
+    Dream(DreamArgs),
     /// Admin privacy inspection commands.
     Privacy(PrivacyArgs),
     /// Optional Privacy Filter commands.
@@ -209,6 +211,90 @@ pub struct ReviewRejectArgs {
 pub struct RecallArgs {
     #[command(subcommand)]
     pub command: RecallCommand,
+}
+
+#[derive(Debug, Args)]
+pub struct DreamArgs {
+    #[command(subcommand)]
+    pub command: DreamCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DreamCommand {
+    /// Report dreaming status, inventory, leases, and recent run summaries.
+    Status(DreamStatusArgs),
+    /// Run a manual dream for one scope, failing fast on lease errors.
+    Now(DreamNowArgs),
+    /// Review recent dream journal, question, candidate, and cleanup outputs.
+    Review(DreamReviewArgs),
+    /// Enable dreaming on this device by removing the local disabled sentinel.
+    Enable(DreamToggleArgs),
+    /// Disable dreaming on this device by creating the local disabled sentinel.
+    Disable(DreamToggleArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct DreamStatusArgs {
+    /// Canonical memory repository root.
+    #[arg(long, default_value = ".")]
+    pub repo: PathBuf,
+    /// Local per-device runtime root.
+    #[arg(long, default_value = ".memoryd")]
+    pub runtime: PathBuf,
+    /// Emit a structured JSON DreamStatusReport.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct DreamNowArgs {
+    /// Canonical memory repository root.
+    #[arg(long, default_value = ".")]
+    pub repo: PathBuf,
+    /// Local per-device runtime root.
+    #[arg(long, default_value = ".memoryd")]
+    pub runtime: PathBuf,
+    /// Dream scope: `me`, `agent`, `project:<id>`, or `org:<id>`.
+    #[arg(long)]
+    pub scope: String,
+    /// Override an active foreign lease.
+    #[arg(long)]
+    pub force: bool,
+    /// Harness CLI name to use for this manual run.
+    #[arg(long = "cli")]
+    pub cli_override: Option<String>,
+    /// Emit JSON. Manual dream reports are currently JSON in both modes.
+    #[arg(long)]
+    pub json: bool,
+}
+
+impl DreamNowArgs {
+    pub fn cli_used(&self) -> Option<String> {
+        self.cli_override.clone()
+    }
+}
+
+#[derive(Debug, Args)]
+pub struct DreamReviewArgs {
+    /// Canonical memory repository root.
+    #[arg(long, default_value = ".")]
+    pub repo: PathBuf,
+    /// Local per-device runtime root. Accepted for command symmetry; review reads git-synced outputs.
+    #[arg(long, default_value = ".memoryd")]
+    pub runtime: PathBuf,
+    /// Review window such as 7d, 24h, or 60m.
+    #[arg(long)]
+    pub since: String,
+    /// Optional dream scope: `me`, `agent`, `project:<id>`, or `org:<id>`.
+    #[arg(long)]
+    pub scope: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct DreamToggleArgs {
+    /// Local per-device runtime root containing the device-local dream-disabled sentinel.
+    #[arg(long, default_value = ".memoryd")]
+    pub runtime: PathBuf,
 }
 
 #[derive(Debug, Subcommand)]

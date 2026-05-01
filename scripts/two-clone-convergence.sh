@@ -93,7 +93,7 @@ python3 - "$left/$target" <<'PY'
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
-path.write_text(text.replace("summary: fixture 1", "summary: left summary"), newline="")
+path.write_text(text.replace("summary: fixture 1", "summary: left summary"))
 PY
 git -C "$left" commit -q -am "left updates summary"
 git -C "$left" push -q origin main
@@ -102,7 +102,7 @@ python3 - "$right/$target" <<'PY'
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
-path.write_text(text.replace("base body 1", "right body"), newline="")
+path.write_text(text.replace("base body 1", "right body"))
 PY
 git -C "$right" commit -q -am "right updates body"
 git -C "$right" pull -q --no-rebase origin main
