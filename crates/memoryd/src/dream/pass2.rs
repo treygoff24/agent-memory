@@ -47,13 +47,8 @@ where
     let catalog = EvidenceCatalog::new(&input.evidence_catalog);
     let mut candidate_results = Vec::new();
 
-    if proposals.len() > candidate_cap {
-        candidate_results.extend(proposals.iter().map(|proposal| refused_candidate(proposal, "too_many_candidates")));
-        return Ok(pass_2_outcome(started_at, candidate_results));
-    }
-
     let expected_namespace = input.scope.as_str();
-    for proposal in proposals {
+    for proposal in proposals.into_iter().take(candidate_cap) {
         if let Some(reason) = validate_candidate(&proposal, &expected_namespace, &catalog) {
             candidate_results.push(refused_candidate(&proposal, &reason));
             continue;

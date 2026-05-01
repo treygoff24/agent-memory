@@ -4,7 +4,10 @@ use chrono::NaiveDate;
 use memory_privacy::{PrivacyLabel, PrivacySpan};
 use memoryd::dream::{
     harness::EchoCli,
-    run::{DreamActiveMemoryInput, DreamRunOptions, DreamRunner, DreamSubstrateFragmentInput, NoopCandidateWriter},
+    run::{
+        CandidateWriteRequest, CandidateWriter, DreamActiveMemoryInput, DreamRunOptions, DreamRunner,
+        DreamSubstrateFragmentInput, NoopCandidateWriter,
+    },
     scope::DreamScope,
     types::{ActiveMemory, SubstrateFragment},
 };
@@ -256,7 +259,7 @@ async fn pass_2_rejects_out_of_scope_namespace_invalid_confidence_and_invalid_ki
 }
 
 #[tokio::test]
-async fn pass_2_rejects_candidate_arrays_over_configured_cap_before_governance() {
+async fn pass_2_truncates_candidate_arrays_to_configured_cap_before_governance() {
     let temp = tempfile::tempdir().expect("tempdir");
     let mut options = base_options(temp.path());
     options.pass_2_max_candidates = 1;
@@ -281,16 +284,13 @@ async fn pass_2_rejects_candidate_arrays_over_configured_cap_before_governance()
 
     let (report, writes) = run_pass_2_fixture(options, pass_2_output, RecordingCandidateWriter::default()).await;
 
-    assert_eq!(report.pass_2.status, memoryd::protocol::PassStatus::Skipped);
-    assert_eq!(report.pass_2.error_code.as_deref(), Some("no_candidates_accepted"));
-    assert_eq!(report.pass_2.candidate_results.len(), 2);
-    assert!(report.pass_2.candidate_results.iter().all(|result| !result.accepted));
-    assert!(report
-        .pass_2
-        .candidate_results
-        .iter()
-        .all(|result| result.reason.as_deref() == Some("too_many_candidates")));
-    assert!(writes.lock().expect("writes lock").is_empty());
+    assert_eq!(report.pass_2.status, memoryd::protocol::PassStatus::Success);
+    assert_eq!(report.pass_2.error_code, None);
+    assert_eq!(report.pass_2.candidate_results.len(), 1);
+    assert!(report.pass_2.candidate_results[0].accepted);
+    let writes = writes.lock().expect("writes lock");
+    assert_eq!(writes.len(), 1);
+    assert!(writes[0].claim.contains("Alice should centralize JWT verification"));
 }
 
 #[tokio::test]
@@ -711,4 +711,50 @@ async fn masking_session_restore_restores_pass_2_fields_and_drop_runs_on_success
 
     assert_eq!(failure_report.pass_1.status, memoryd::protocol::PassStatus::Failed);
     assert_eq!(failure_observer.drops(), 1, "MaskingSession wrapper must drop after failure");
+}
+
+#[tokio::test]
+async fn masking_session_drop_runs_when_candidate_writer_panics() {
+    let temp = tempfile::tempdir().expect("panic tempdir");
+    let options = base_options(temp.path());
+    let pass_1_output = "# Why\nPerson_A keeps seeing auth drift.";
+    let pass_1_prompt = DreamRunner::<NoopCandidateWriter>::preview_pass_1_prompt(&options).expect("preview pass 1");
+    let pass_2_prompt =
+        DreamRunner::<NoopCandidateWriter>::preview_pass_2_prompt(&options, pass_1_output).expect("preview pass 2");
+    let pass_2_output = r#"[
+      {
+        "claim": "Person_A should centralize JWT verification.",
+        "namespace": "project:proj_abc",
+        "kind": "decision",
+        "evidence": [{"kind": "substrate_fragment", "ref": "sub_01"}],
+        "confidence": 0.86,
+        "rationale": "Person_A saw the pattern repeatedly."
+      }
+    ]"#;
+    let harness = Arc::new(EchoCli::from_prompt_outputs([
+        (pass_1_prompt.as_str(), pass_1_output),
+        (pass_2_prompt.as_str(), pass_2_output),
+    ]));
+    let observer = memoryd::dream::masking::MaskingDropObserver::default();
+    let runner = DreamRunner::new(options.with_harness(harness), PanicCandidateWriter)
+        .with_masking_drop_observer(observer.clone());
+
+    let join = tokio::spawn(async move { runner.run().await }).await.expect_err("writer panic should unwind task");
+
+    assert!(join.is_panic());
+    assert_eq!(observer.drops(), 1, "MaskingSession wrapper must drop while unwinding");
+}
+
+#[derive(Clone)]
+struct PanicCandidateWriter;
+
+impl CandidateWriter for PanicCandidateWriter {
+    fn write_candidate<'a>(
+        &'a self,
+        _request: CandidateWriteRequest,
+    ) -> memoryd::dream::harness::HarnessFuture<'a, memoryd::protocol::CandidateWriteResult> {
+        Box::pin(async move {
+            panic!("candidate writer panic for masking drop regression");
+        })
+    }
 }

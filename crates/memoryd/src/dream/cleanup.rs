@@ -7,9 +7,13 @@ use std::time::SystemTime;
 
 use chrono::{DateTime, Duration, Utc};
 use memory_substrate::events::{decode_line, encode_event_line, read_events, rewrite_events, Event};
-use memory_substrate::frontmatter::{parse_document, serialize_document};
+use memory_substrate::frontmatter::parse_document;
+use memory_substrate::markdown::read_memory_file;
 use memory_substrate::tree::relative_memory_paths;
-use memory_substrate::{Memory, MemoryId, MemoryQuery, MemoryStatus, RepoPath, Substrate};
+use memory_substrate::{
+    ClassificationOutcome, EventContext, Memory, MemoryId, MemoryQuery, MemoryStatus, RepoPath, Sha256, Substrate,
+    WriteMode, WriteRequest,
+};
 use serde_json::Value;
 use thiserror::Error;
 
@@ -41,6 +45,14 @@ pub enum CleanupError {
 }
 
 pub async fn run_cleanup(substrate: &Substrate, config: CleanupConfig) -> Result<CleanupReport, CleanupError> {
+    run_cleanup_with_git(substrate, config, &RealCleanupGit).await
+}
+
+async fn run_cleanup_with_git<G: CleanupGit>(
+    substrate: &Substrate,
+    config: CleanupConfig,
+    git: &G,
+) -> Result<CleanupReport, CleanupError> {
     validate_config(&config)?;
 
     let repo = substrate.roots().repo.as_path();
@@ -48,7 +60,7 @@ pub async fn run_cleanup(substrate: &Substrate, config: CleanupConfig) -> Result
     let mut findings = Vec::new();
     let mut operations = CleanupOperationCounts {
         fragments_archived: archive_expired_fragments(substrate, &config, &mut mutated_files).await?,
-        candidates_archived: archive_stale_candidates(repo, &config, &mut mutated_files)?,
+        candidates_archived: archive_stale_candidates(substrate, &config, &mut mutated_files, &mut findings).await?,
         ..CleanupOperationCounts::default()
     };
     findings.extend(collect_memory_findings(repo));
@@ -64,7 +76,8 @@ pub async fn run_cleanup(substrate: &Substrate, config: CleanupConfig) -> Result
             format!("entity index rebuild skipped: {err}"),
         )),
     }
-    operations.observed_at_refreshed = refresh_observed_at(repo, &config, &mut mutated_files)?;
+    operations.observed_at_refreshed =
+        refresh_observed_at(substrate, &config, &mut mutated_files, &mut findings).await?;
     let event_outcome = compact_event_logs(repo, &config, &mut mutated_files)?;
     operations.events_compacted = event_outcome.events_compacted;
     operations.event_archive_files_written = event_outcome.archive_files_written;
@@ -82,18 +95,18 @@ pub async fn run_cleanup(substrate: &Substrate, config: CleanupConfig) -> Result
         findings: sorted_findings(findings),
         mutated_files: mutated_files.iter().cloned().collect(),
     });
-    report.commit_deferred = has_dirty_user_work(repo, &mutated_files)?;
+    report.commit_deferred = has_dirty_user_work(git, repo, &mutated_files)?;
     write_report(repo, &report_path, &report)?;
 
     if report.commit_deferred {
-        stage_paths(repo, &mutated_files)?;
+        stage_paths(git, repo, &mutated_files)?;
         return Ok(report);
     }
 
     let refreshed = read_report(repo, &report_path)?;
-    let commit_outcome = commit_cleanup(repo, &refreshed)?;
+    let commit_outcome = commit_cleanup(git, repo, &refreshed)?;
     if commit_outcome == CommitCleanupOutcome::NoChanges {
-        stage_paths(repo, &mutated_files)?;
+        stage_paths(git, repo, &mutated_files)?;
     }
     Ok(report)
 }
@@ -125,18 +138,23 @@ async fn archive_expired_fragments(
     Ok(outcome.fragments_archived)
 }
 
-fn archive_stale_candidates(
-    repo: &Path,
+async fn archive_stale_candidates(
+    substrate: &Substrate,
     config: &CleanupConfig,
     mutated_files: &mut BTreeSet<String>,
+    findings: &mut Vec<CleanupFinding>,
 ) -> Result<usize, CleanupError> {
+    let repo = substrate.roots().repo.as_path();
     let cutoff = config.now - Duration::days(config.candidate_stale_days);
     let mut archived = 0usize;
     for path in relative_memory_paths(repo) {
         let repo_path = repo_path_from_relative(&path);
-        let absolute = repo.join(&path);
-        let Ok(mut memory) = read_memory_at(repo, &repo_path) else {
-            continue;
+        let (mut memory, base_hash) = match read_memory_at(repo, &repo_path) {
+            Ok(memory) => memory,
+            Err(err) => {
+                findings.push(CleanupFinding::new("memory_lint", repo_path.as_str(), None, err.to_string()));
+                continue;
+            }
         };
         if !is_stale_candidate(&memory, cutoff) {
             continue;
@@ -144,7 +162,12 @@ fn archive_stale_candidates(
         memory.frontmatter.status = MemoryStatus::Archived;
         memory.frontmatter.review_state = Some("archived".to_string());
         memory.frontmatter.updated_at = config.now;
-        fs::write(&absolute, serialize_document(&memory).map_err(|err| CleanupError::Serialization(err.to_string()))?)?;
+        if let Err(err) =
+            write_cleanup_memory(substrate, memory, base_hash, "memoryd cleanup archived a stale dream candidate").await
+        {
+            findings.push(CleanupFinding::new("memory_lint", repo_path.as_str(), None, err.to_string()));
+            continue;
+        }
         mutated_files.insert(repo_path.as_str().to_string());
         archived += 1;
     }
@@ -228,17 +251,22 @@ fn collect_supersession_findings(
     }
 }
 
-fn refresh_observed_at(
-    repo: &Path,
+async fn refresh_observed_at(
+    substrate: &Substrate,
     config: &CleanupConfig,
     mutated_files: &mut BTreeSet<String>,
+    findings: &mut Vec<CleanupFinding>,
 ) -> Result<usize, CleanupError> {
+    let repo = substrate.roots().repo.as_path();
     let mut refreshed = 0usize;
     for path in relative_memory_paths(repo) {
         let repo_path = repo_path_from_relative(&path);
-        let mut memory = match read_memory_at(repo, &repo_path) {
+        let (mut memory, base_hash) = match read_memory_at(repo, &repo_path) {
             Ok(memory) => memory,
-            Err(_) => continue,
+            Err(err) => {
+                findings.push(CleanupFinding::new("memory_lint", repo_path.as_str(), None, err.to_string()));
+                continue;
+            }
         };
         let Some(source_ref) = memory.frontmatter.source.reference.as_deref() else {
             continue;
@@ -249,21 +277,74 @@ fn refresh_observed_at(
         if !source_path.is_file() {
             continue;
         }
-        let mtime = DateTime::<Utc>::from(fs::metadata(&source_path)?.modified()?);
+        let metadata = match fs::metadata(&source_path) {
+            Ok(metadata) => metadata,
+            Err(err) => {
+                findings.push(CleanupFinding::new(
+                    "observed_at_refresh",
+                    repo_path.as_str(),
+                    Some(memory.frontmatter.id.as_str().to_string()),
+                    err.to_string(),
+                ));
+                continue;
+            }
+        };
+        let modified = match metadata.modified() {
+            Ok(modified) => modified,
+            Err(err) => {
+                findings.push(CleanupFinding::new(
+                    "observed_at_refresh",
+                    repo_path.as_str(),
+                    Some(memory.frontmatter.id.as_str().to_string()),
+                    err.to_string(),
+                ));
+                continue;
+            }
+        };
+        let mtime = DateTime::<Utc>::from(modified);
         let next = Value::String(mtime.to_rfc3339());
         if memory.frontmatter.extras.get("observed_at") == Some(&next) {
             continue;
         }
         memory.frontmatter.extras.insert("observed_at".to_string(), next);
         memory.frontmatter.updated_at = config.now;
-        fs::write(
-            repo.join(repo_path.as_path()),
-            serialize_document(&memory).map_err(|err| CleanupError::Serialization(err.to_string()))?,
-        )?;
+        if let Err(err) =
+            write_cleanup_memory(substrate, memory, base_hash, "memoryd cleanup refreshed observed_at").await
+        {
+            findings.push(CleanupFinding::new("observed_at_refresh", repo_path.as_str(), None, err.to_string()));
+            continue;
+        }
         mutated_files.insert(repo_path.as_str().to_string());
         refreshed += 1;
     }
     Ok(refreshed)
+}
+
+async fn write_cleanup_memory(
+    substrate: &Substrate,
+    memory: Memory,
+    base_hash: Sha256,
+    reason: &str,
+) -> Result<(), CleanupError> {
+    // Cleanup follows the opened substrate's durability tier; daemon cleanup may
+    // run against best-effort fixtures, so it must explicitly opt into that tier.
+    substrate
+        .write_memory(WriteRequest {
+            operation_id: None,
+            memory,
+            expected_base_hash: Some(base_hash),
+            write_mode: WriteMode::ReplaceExisting,
+            index_projection: None,
+            event_context: EventContext {
+                actor: Some("memoryd-cleanup-bot".to_string()),
+                reason: Some(reason.to_string()),
+            },
+            allow_best_effort_durability: true,
+            classification: ClassificationOutcome::Trusted,
+        })
+        .await
+        .map(|_| ())
+        .map_err(|err| CleanupError::Substrate(err.kind.to_string()))
 }
 
 #[derive(Default)]
@@ -372,14 +453,14 @@ fn sorted_findings(mut findings: Vec<CleanupFinding>) -> Vec<CleanupFinding> {
     findings.sort_by(|left, right| {
         (&left.kind, &left.path, &left.id, &left.message).cmp(&(&right.kind, &right.path, &right.id, &right.message))
     });
+    findings.dedup_by(|left, right| {
+        left.kind == right.kind && left.path == right.path && left.id == right.id && left.message == right.message
+    });
     findings
 }
 
-fn read_memory_at(repo: &Path, repo_path: &RepoPath) -> Result<Memory, CleanupError> {
-    let text = fs::read_to_string(repo.join(repo_path.as_path()))?;
-    parse_document(&text, Some(repo_path.clone()))
-        .map(|parsed| parsed.memory)
-        .map_err(|err| CleanupError::Serialization(err.to_string()))
+fn read_memory_at(repo: &Path, repo_path: &RepoPath) -> Result<(Memory, Sha256), CleanupError> {
+    read_memory_file(repo, repo_path).map_err(|err| CleanupError::Serialization(err.to_string()))
 }
 
 fn write_report(repo: &Path, report_path: &str, report: &CleanupReport) -> Result<(), CleanupError> {
@@ -407,65 +488,87 @@ enum CommitCleanupOutcome {
     NoChanges,
 }
 
-fn commit_cleanup(repo: &Path, report: &CleanupReport) -> Result<CommitCleanupOutcome, CleanupError> {
+fn commit_cleanup<G: CleanupGit>(
+    git: &G,
+    repo: &Path,
+    report: &CleanupReport,
+) -> Result<CommitCleanupOutcome, CleanupError> {
     let paths = report.mutated_files.iter().cloned().collect::<BTreeSet<_>>();
-    stage_paths(repo, &paths)?;
-    let changed = git(repo, &["diff", "--cached", "--name-only"])?;
+    stage_paths(git, repo, &paths)?;
+    let changed = git.run(repo, &["diff", "--cached", "--name-only"])?;
     if changed.trim().is_empty() {
         return Ok(CommitCleanupOutcome::NoChanges);
     }
     let subject = cleanup_commit_subject(&report.device_id, report.date);
     let summary = report.operations.summary_line();
-    let mut command = Command::new("git");
-    command
-        .args(["commit", "--author", CLEANUP_BOT_AUTHOR, "-m", &subject, "-m", &summary])
-        .current_dir(repo)
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .env_remove("GIT_OBJECT_DIRECTORY")
-        .env_remove("GIT_NAMESPACE")
-        .env("GIT_AUTHOR_NAME", "memoryd cleanup-bot")
-        .env("GIT_AUTHOR_EMAIL", "noreply@memoryd.local")
-        .env("GIT_COMMITTER_NAME", "memoryd cleanup-bot")
-        .env("GIT_COMMITTER_EMAIL", "noreply@memoryd.local");
-    let output = command.output()?;
-    if output.status.success() {
-        Ok(CommitCleanupOutcome::Committed)
-    } else {
-        Err(CleanupError::Git(String::from_utf8_lossy(&output.stderr).to_string()))
-    }
+    git.commit_cleanup(repo, &subject, &summary)
 }
 
-fn has_dirty_user_work(repo: &Path, cleanup_paths: &BTreeSet<String>) -> Result<bool, CleanupError> {
-    let output = git(repo, &["status", "--porcelain=v1", "--untracked-files=all"])?;
+fn has_dirty_user_work<G: CleanupGit>(
+    git: &G,
+    repo: &Path,
+    cleanup_paths: &BTreeSet<String>,
+) -> Result<bool, CleanupError> {
+    let output = git.run(repo, &["status", "--porcelain=v1", "--untracked-files=all"])?;
     Ok(output.lines().filter_map(status_path).any(|path| !cleanup_paths.contains(&path)))
 }
 
-fn stage_paths(repo: &Path, paths: &BTreeSet<String>) -> Result<(), CleanupError> {
+fn stage_paths<G: CleanupGit>(git: &G, repo: &Path, paths: &BTreeSet<String>) -> Result<(), CleanupError> {
     if paths.is_empty() {
         return Ok(());
     }
     let mut args = vec!["add", "--"];
     args.extend(paths.iter().map(String::as_str));
-    git(repo, &args)?;
+    git.run(repo, &args)?;
     Ok(())
 }
 
-fn git(repo: &Path, args: &[&str]) -> Result<String, CleanupError> {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(repo)
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .env_remove("GIT_OBJECT_DIRECTORY")
-        .env_remove("GIT_NAMESPACE")
-        .output()?;
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
-    } else {
-        Err(CleanupError::Git(String::from_utf8_lossy(&output.stderr).to_string()))
+trait CleanupGit {
+    fn run(&self, repo: &Path, args: &[&str]) -> Result<String, CleanupError>;
+
+    fn commit_cleanup(&self, repo: &Path, subject: &str, summary: &str) -> Result<CommitCleanupOutcome, CleanupError>;
+}
+
+struct RealCleanupGit;
+
+impl CleanupGit for RealCleanupGit {
+    fn run(&self, repo: &Path, args: &[&str]) -> Result<String, CleanupError> {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_OBJECT_DIRECTORY")
+            .env_remove("GIT_NAMESPACE")
+            .output()?;
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        } else {
+            Err(CleanupError::Git(String::from_utf8_lossy(&output.stderr).to_string()))
+        }
+    }
+
+    fn commit_cleanup(&self, repo: &Path, subject: &str, summary: &str) -> Result<CommitCleanupOutcome, CleanupError> {
+        let mut command = Command::new("git");
+        command
+            .args(["commit", "--author", CLEANUP_BOT_AUTHOR, "-m", subject, "-m", summary])
+            .current_dir(repo)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_OBJECT_DIRECTORY")
+            .env_remove("GIT_NAMESPACE")
+            .env("GIT_AUTHOR_NAME", "memoryd cleanup-bot")
+            .env("GIT_AUTHOR_EMAIL", "noreply@memoryd.local")
+            .env("GIT_COMMITTER_NAME", "memoryd cleanup-bot")
+            .env("GIT_COMMITTER_EMAIL", "noreply@memoryd.local");
+        let output = command.output()?;
+        if output.status.success() {
+            Ok(CommitCleanupOutcome::Committed)
+        } else {
+            Err(CleanupError::Git(String::from_utf8_lossy(&output.stderr).to_string()))
+        }
     }
 }
 

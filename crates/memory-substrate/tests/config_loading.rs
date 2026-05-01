@@ -1,4 +1,4 @@
-use memory_substrate::config::{load_config, load_local_device_config, load_synced_config};
+use memory_substrate::config::{load_config, load_local_device_config, load_synced_config, DreamsConfig, SyncedConfig};
 use memory_substrate::tree::bootstrap_repo_tree;
 use memory_substrate::Roots;
 use once_cell::sync::Lazy;
@@ -144,6 +144,14 @@ active_embedding:
 }
 
 #[test]
+fn synced_and_dreams_config_retain_eq_contract() {
+    fn assert_eq_bound<T: Eq>() {}
+
+    assert_eq_bound::<DreamsConfig>();
+    assert_eq_bound::<SyncedConfig>();
+}
+
+#[test]
 fn dreams_config_rejects_unknown_cli_names() {
     let err = load_synced_config_from_text(
         r#"schema_version: 1
@@ -158,6 +166,23 @@ dreams:
     .expect_err("unknown CLI rejected");
 
     assert!(err.contains("unknown_harness"), "actual error: {err}");
+}
+
+#[test]
+fn dreams_config_rejects_deferred_gemini_harness_until_adapter_ships() {
+    let err = load_synced_config_from_text(
+        r#"schema_version: 1
+active_embedding:
+  provider: synthetic
+  model_ref: stream-a-test
+  dimension: 32
+dreams:
+  default_cli_priority: [gemini]
+"#,
+    )
+    .expect_err("deferred Gemini adapter is not a valid v0.2 config name");
+
+    assert!(err.contains("gemini"), "actual error: {err}");
 }
 
 #[test]

@@ -129,6 +129,59 @@ fn dream_now_respects_device_disabled_sentinel_before_lease_or_outputs() {
 }
 
 #[test]
+fn dream_scheduled_echo_runs_pipeline_and_writes_scheduled_summary() {
+    let env = DreamCliEnv::new("dev_scheduled");
+
+    let output = env.memoryd([
+        "dream",
+        "scheduled",
+        "--repo",
+        env.repo_str(),
+        "--runtime",
+        env.runtime_str(),
+        "--scope",
+        "me",
+        "--cli",
+        "echo",
+        "--json",
+    ]);
+
+    assert_success(&output);
+    let json: Value = serde_json::from_str(&stdout(&output)).expect("scheduled lease report json");
+    assert_eq!(json["outcome"], "success");
+    assert_eq!(json["consecutive_missed_runs"], 0);
+    let cleanup_dir = env.repo.join("dreams/cleanup/dev_scheduled");
+    assert!(cleanup_dir.is_dir(), "scheduled run should write cleanup summary under {}", cleanup_dir.display());
+    let journal_dir = env.repo.join("dreams/journal/me");
+    assert!(journal_dir.is_dir(), "scheduled run should execute the dream pipeline");
+}
+
+#[test]
+fn dream_scheduled_respects_device_disabled_sentinel_before_lease_or_outputs() {
+    let env = DreamCliEnv::new("dev_disabled_scheduled");
+    std::fs::write(env.runtime.join("dream-disabled"), "disabled\n").expect("disabled sentinel");
+
+    let output = env.memoryd([
+        "dream",
+        "scheduled",
+        "--repo",
+        env.repo_str(),
+        "--runtime",
+        env.runtime_str(),
+        "--scope",
+        "me",
+        "--cli",
+        "echo",
+    ]);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).contains("dream_disabled"));
+    assert!(!env.repo.join("dreams/journal/me").exists(), "disabled scheduled dreams must not write pass outputs");
+    let lease_text = std::fs::read_to_string(env.repo.join("leases/journal.lease")).expect("lease file");
+    assert!(lease_text.trim().is_empty(), "disabled scheduled dreams must not acquire a lease: {lease_text}");
+}
+
+#[test]
 fn dream_review_lists_outputs_without_dumping_full_unsafe_bodies() {
     let env = DreamCliEnv::new("dev_review");
     env.write(
@@ -244,6 +297,55 @@ fn dream_manual_lease_failure_exit_code_5_remains_covered() {
 
     assert_eq!(output.status.code(), Some(5));
     assert!(stderr(&output).contains("lease_held"));
+}
+
+#[test]
+fn dream_cleanup_writes_report_json() {
+    let env = DreamCliEnv::new("dev_cleanupcli");
+
+    let output = env.memoryd([
+        "dream",
+        "cleanup",
+        "--repo",
+        env.repo_str(),
+        "--runtime",
+        env.runtime_str(),
+        "--now",
+        "2026-04-30T03:00:00Z",
+        "--json",
+    ]);
+
+    assert_success(&output);
+    let json: Value = serde_json::from_str(&stdout(&output)).expect("cleanup report json");
+    assert_eq!(json["device_id"], "dev_cleanupcli");
+    assert_eq!(json["date"], "2026-04-30");
+    assert!(json["commit_deferred"].is_boolean());
+    assert!(env.repo.join("dreams/cleanup/dev_cleanupcli/2026-04-30.json").is_file());
+}
+
+#[test]
+fn dream_cleanup_defers_commit_when_user_work_is_dirty() {
+    let env = DreamCliEnv::new("dev_cleanupdirty");
+    env.write("human-uncommitted.txt", "do not commit me\n");
+
+    let output = env.memoryd([
+        "dream",
+        "cleanup",
+        "--repo",
+        env.repo_str(),
+        "--runtime",
+        env.runtime_str(),
+        "--now",
+        "2026-04-30T03:00:00Z",
+        "--json",
+    ]);
+
+    assert_success(&output);
+    let json: Value = serde_json::from_str(&stdout(&output)).expect("cleanup report json");
+    assert_eq!(json["commit_deferred"], true);
+    assert!(env.repo.join("dreams/cleanup/dev_cleanupdirty/2026-04-30.json").is_file());
+    let status = command_in(&env.repo, "git", ["status", "--porcelain=v1", "--untracked-files=all"]);
+    assert!(status.contains("human-uncommitted.txt"), "dirty user work should remain uncommitted: {status}");
 }
 
 struct DreamCliEnv {

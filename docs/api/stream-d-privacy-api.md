@@ -43,6 +43,13 @@ emission safety:
 
 The strictest detected span wins.
 
+`safe_descriptor_projection(classifier, text, fallback_summary, fallback_tags)`
+is the companion helper for encrypted records that still need descriptor-level
+findability or synthesis signal. It removes classifier spans from the source
+text, emits a bounded `summary_safe` plus `tag_safe` values only after
+`safe_plaintext_fragment` allows them, and falls back to caller-provided generic
+descriptors when no safe content remains.
+
 ## Daemon write behavior
 
 `memory_write`, `memory_note`, and `memory_supersede` are privacy-mediated before
@@ -103,4 +110,4 @@ changes local privacy configuration, for example by onboarding key material.
 
 Stream F is the first user of `MaskingSession` for outbound LLM prompt masking. Dreaming creates a session with `MaskingSession::new`, masks prompt text before invoking a harness CLI, restores returned text through the same session, and relies on Drop-based teardown so the in-memory token map is not persisted.
 
-`memory_observe` also reuses Stream D's deterministic classification before substrate disk effects. Plaintext observations may append to `substrate/...`; observations requiring encryption route to `encrypted/substrate/...`; secret/refused content fails closed with no fragment written. Dream passes never call `memory_reveal` and never decrypt encrypted substrate.
+`memory_observe` also reuses Stream D's deterministic classification before substrate disk effects. Plaintext observations may append to `substrate/...`; observations requiring encryption route to `encrypted/substrate/...` with a `safe_descriptor_projection`; secret/refused content fails closed with no fragment written. Dream passes never call `memory_reveal` and never decrypt encrypted substrate.

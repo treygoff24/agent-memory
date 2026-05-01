@@ -33,6 +33,20 @@ fn claude_adapter_detects_stub_binary_on_path() {
 }
 
 #[test]
+fn adapter_path_lookup_ignores_empty_path_components() {
+    let _guard = SUBPROCESS_TEST_LOCK.lock().expect("subprocess test lock");
+    let temp = tempfile::tempdir().expect("cwd tempdir");
+    write_executable(temp.path().join("claude"), "#!/bin/sh\nexit 0\n");
+    let original_cwd = std::env::current_dir().expect("current dir");
+    std::env::set_current_dir(temp.path()).expect("enter temp cwd");
+
+    let is_installed = ClaudeCodeCli::with_path_env(std::ffi::OsString::from("")).is_installed();
+
+    std::env::set_current_dir(original_cwd).expect("restore cwd");
+    assert!(!is_installed, "empty PATH components must not search the daemon cwd");
+}
+
+#[test]
 fn claude_and_codex_adapter_argv_never_contains_prompt() {
     let prompt = "MASKED_SECRET_PROMPT_SHOULD_NOT_BE_IN_ARGV";
 
@@ -244,6 +258,45 @@ while :; do sleep 1; done
             .parse::<u32>()
             .expect("pid parses");
         assert!(!process_is_alive(pid), "timed-out non-reader child should not remain alive");
+    });
+}
+
+#[test]
+fn hardened_subprocess_ignores_broken_pipe_after_successful_stdout() {
+    let _guard = SUBPROCESS_TEST_LOCK.lock().expect("subprocess test lock");
+    run_async(async {
+        let temp = tempfile::tempdir().expect("epipe tempdir");
+        let early_exit = temp.path().join("early-exit");
+
+        write_executable(
+            &early_exit,
+            r#"#!/bin/sh
+exec 0<&-
+printf '{"ok":true}\n'
+exit 0
+"#,
+        );
+
+        let output = run_hardened_command(
+            HardenedCommand {
+                program: early_exit,
+                args: Vec::new(),
+                prompt_transport: PromptTransport::Stdin,
+                expect_json: true,
+                timeout: Duration::from_secs(2),
+                kill_grace: Duration::from_millis(250),
+                scratch_root: temp.path().join("scratch"),
+                environment: MinimalEnvironment::from_pairs([
+                    ("PATH", std::env::var("PATH").expect("PATH is set")),
+                    ("HOME", temp.path().display().to_string()),
+                ]),
+            },
+            &"large masked prompt\n".repeat(64 * 1024),
+        )
+        .await
+        .expect("successful child stdout should win over stdin BrokenPipe");
+
+        assert_eq!(output.stdout, "{\"ok\":true}\n");
     });
 }
 

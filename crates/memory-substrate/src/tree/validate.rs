@@ -138,34 +138,71 @@ fn validate_noncanonical_stream_f_files(
 }
 
 fn validate_noncanonical_stream_f_file(root: &Path, relative: &Path) -> Result<(), ValidationError> {
+    match stream_f_path_family(relative) {
+        StreamFPathFamily::DreamJournal => validate_dream_scope_date_path(relative, "dreams/journal", "md"),
+        StreamFPathFamily::DreamQuestions => {
+            validate_dream_scope_date_path(relative, "dreams/questions", "jsonl")?;
+            validate_dream_question_jsonl(root, relative)
+        }
+        StreamFPathFamily::DreamCleanup => {
+            validate_device_date_path(relative, "dreams/cleanup", "json")?;
+            validate_json_object_file(root, relative)
+        }
+        StreamFPathFamily::SubstrateArchive => {
+            validate_device_month_path(relative, "substrate/archive", "jsonl")?;
+            validate_jsonl_objects(root, relative)
+        }
+        StreamFPathFamily::PlaintextSubstrate => {
+            validate_device_date_path(relative, "substrate", "jsonl")?;
+            validate_jsonl_objects(root, relative)
+        }
+        StreamFPathFamily::EncryptedSubstrate => {
+            validate_device_date_path(relative, "encrypted/substrate", "jsonl")?;
+            validate_jsonl_objects(root, relative)
+        }
+        StreamFPathFamily::JournalLease => validate_jsonl_objects(root, relative),
+        StreamFPathFamily::Unrecognized => {
+            panic!("noncanonical Stream F path family must have an explicit validation branch")
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StreamFPathFamily {
+    DreamJournal,
+    DreamQuestions,
+    DreamCleanup,
+    SubstrateArchive,
+    PlaintextSubstrate,
+    EncryptedSubstrate,
+    JournalLease,
+    Unrecognized,
+}
+
+fn stream_f_path_family(relative: &Path) -> StreamFPathFamily {
     let rel = relative.to_string_lossy().replace('\\', "/");
+    if rel == "leases/journal.lease" {
+        return StreamFPathFamily::JournalLease;
+    }
     if rel.starts_with("dreams/journal/") {
-        return validate_dream_scope_date_path(relative, "dreams/journal", "md");
+        return StreamFPathFamily::DreamJournal;
     }
     if rel.starts_with("dreams/questions/") {
-        validate_dream_scope_date_path(relative, "dreams/questions", "jsonl")?;
-        return validate_dream_question_jsonl(root, relative);
+        return StreamFPathFamily::DreamQuestions;
     }
     if rel.starts_with("dreams/cleanup/") {
-        validate_device_date_path(relative, "dreams/cleanup", "json")?;
-        return validate_json_object_file(root, relative);
+        return StreamFPathFamily::DreamCleanup;
     }
     if rel.starts_with("substrate/archive/") {
-        validate_device_month_path(relative, "substrate/archive", "jsonl")?;
-        return validate_jsonl_objects(root, relative);
-    }
-    if rel.starts_with("substrate/") {
-        validate_device_date_path(relative, "substrate", "jsonl")?;
-        return validate_jsonl_objects(root, relative);
+        return StreamFPathFamily::SubstrateArchive;
     }
     if rel.starts_with("encrypted/substrate/") {
-        validate_device_date_path(relative, "encrypted/substrate", "jsonl")?;
-        return validate_jsonl_objects(root, relative);
+        return StreamFPathFamily::EncryptedSubstrate;
     }
-    if rel == "leases/journal.lease" {
-        return validate_jsonl_objects(root, relative);
+    if rel.starts_with("substrate/") {
+        return StreamFPathFamily::PlaintextSubstrate;
     }
-    Ok(())
+    StreamFPathFamily::Unrecognized
 }
 
 fn validate_dream_scope_date_path(relative: &Path, prefix: &str, expected_ext: &str) -> Result<(), ValidationError> {

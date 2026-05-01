@@ -1,8 +1,9 @@
 use memory_substrate::tree::{bootstrap_repo_tree, validate_tree, TreeValidationMode};
 use memory_substrate::{
-    ChunkQuery, ClassificationOutcome, Entity, InitOptions, Memory, MemoryId, MemoryQuery, MemoryStatus, MemoryType,
-    ReadError, RecallIndexQuery, RepoPath, RetrievalPolicy, Roots, Scope, Sensitivity, Source, SourceKind, Substrate,
-    TrustLevel, ValidationError, WriteMode, WriteRequest,
+    ChunkQuery, ClassificationOutcome, Entity, EventContext, Evidence, InitOptions, Memory, MemoryId, MemoryQuery,
+    MemoryStatus, MemoryType, ReadError, RecallIndexQuery, RepoPath, RetrievalPolicy, Roots, Scope, Sensitivity,
+    Source, SourceKind, Substrate, SupersedeRequest, TrustLevel, ValidationError, WriteFailureKind, WriteMode,
+    WriteRequest,
 };
 use std::process::Command;
 
@@ -231,6 +232,85 @@ async fn stream_f_noncanonical_files_are_never_indexed_or_returned_by_queries() 
     assert_eq!(chunk_hits[0].memory_id, memory.frontmatter.id);
 }
 
+#[tokio::test]
+async fn write_memory_refuses_dream_artifacts_as_grounding_sources() {
+    let (_temp, substrate) = initialized_substrate().await;
+
+    let mut source_journal = canonical_memory("mem_20260430_a1b2c3d4e5f60718_000101");
+    source_journal.frontmatter.source.reference = Some("dreams/journal/me/2026-04-30.md".to_string());
+    let evidence_journal = memory_with_evidence_ref(
+        canonical_memory("mem_20260430_a1b2c3d4e5f60718_000102"),
+        "dreams/journal/me/2026-04-30.md",
+    );
+    let evidence_questions = memory_with_evidence_ref(
+        canonical_memory("mem_20260430_a1b2c3d4e5f60718_000103"),
+        "file:dreams/questions/me/2026-04-30.jsonl#L1",
+    );
+    let mut source_cleanup = canonical_memory("mem_20260430_a1b2c3d4e5f60718_000104");
+    source_cleanup.frontmatter.source.reference = Some("dreams/cleanup/dev_test/2026-04-30.json".to_string());
+
+    for (label, memory) in [
+        ("source journal", source_journal),
+        ("evidence journal", evidence_journal),
+        ("evidence questions", evidence_questions),
+        ("source cleanup", source_cleanup),
+    ] {
+        let err = substrate
+            .write_memory(WriteRequest {
+                operation_id: None,
+                memory,
+                expected_base_hash: None,
+                write_mode: WriteMode::CreateNew,
+                index_projection: None,
+                event_context: EventContext::default(),
+                allow_best_effort_durability: true,
+                classification: ClassificationOutcome::Trusted,
+            })
+            .await
+            .expect_err("dream artifacts cannot ground canonical memory");
+
+        assert_eq!(err.kind, WriteFailureKind::DreamProseAsSource, "{label}");
+        assert!(!err.outcome.committed, "{label}");
+    }
+}
+
+#[tokio::test]
+async fn supersede_memory_refuses_dream_artifacts_as_grounding_sources() {
+    let (_temp, substrate) = initialized_substrate().await;
+    let old = canonical_memory("mem_20260430_a1b2c3d4e5f60718_000111");
+    substrate
+        .write_memory(WriteRequest {
+            operation_id: None,
+            memory: old.clone(),
+            expected_base_hash: None,
+            write_mode: WriteMode::CreateNew,
+            index_projection: None,
+            event_context: EventContext::default(),
+            allow_best_effort_durability: true,
+            classification: ClassificationOutcome::Trusted,
+        })
+        .await
+        .expect("seed old memory");
+    let replacement = memory_with_evidence_ref(
+        canonical_memory("mem_20260430_a1b2c3d4e5f60718_000112"),
+        "dreams/questions/project/proj_abc/2026-04-30.jsonl",
+    );
+
+    let err = substrate
+        .supersede_memory(SupersedeRequest {
+            old_id: old.frontmatter.id,
+            replacement,
+            reason: "regression guard".to_string(),
+            classification: ClassificationOutcome::Trusted,
+            allow_best_effort_durability: true,
+        })
+        .await
+        .expect_err("supersede replacement cannot cite dream prose");
+
+    assert_eq!(err.kind, WriteFailureKind::DreamProseAsSource);
+    assert!(!err.outcome.committed);
+}
+
 fn noncanonical_files() -> Vec<(&'static str, &'static str)> {
     vec![
         ("dreams/journal/me/2026-04-30.md", "Masked journal body without frontmatter.\n"),
@@ -272,6 +352,29 @@ fn canonical_memory(id: &str) -> Memory {
         body: "stream-f-isolation canonical body".to_string(),
         path: Some(RepoPath::new(format!("agent/patterns/{id}.md"))),
     }
+}
+
+async fn initialized_substrate() -> (tempfile::TempDir, Substrate) {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let substrate =
+        Substrate::init(roots, InitOptions { force_unsafe_durability: true, device_id: Some("dev_test".to_string()) })
+            .await
+            .expect("init substrate");
+    (temp, substrate)
+}
+
+fn memory_with_evidence_ref(mut memory: Memory, reference: &str) -> Memory {
+    memory.frontmatter.evidence.push(Evidence {
+        id: "ev_01HZXJK7J7W0X4Q4KJ7A2R8V1A".to_string(),
+        quote: "supporting quote".to_string(),
+        quote_norm_hash: None,
+        reference: reference.to_string(),
+        weight: 1.0,
+        observed_at: None,
+        source: None,
+    });
+    memory
 }
 
 fn memory_frontmatter(id: &str) -> memory_substrate::Frontmatter {

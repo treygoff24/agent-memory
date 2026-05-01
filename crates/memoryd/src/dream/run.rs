@@ -245,7 +245,7 @@ where
                 .await
                 {
                     Ok(outcome) => outcome,
-                    Err(error) => failed_pass("pass_2_failed", error.to_string()),
+                    Err(error) => failed_pass("pass_2_failed", &error),
                 }
             }
             None => skipped_pass(),
@@ -265,7 +265,7 @@ where
                 .await
                 {
                     Ok(outcome) => outcome,
-                    Err(error) => failed_pass("pass_3_failed", error.to_string()),
+                    Err(error) => failed_pass("pass_3_failed", &error),
                 }
             }
             None => skipped_pass(),
@@ -344,12 +344,12 @@ fn skipped_pass() -> PassOutcome {
     }
 }
 
-fn failed_pass(code: &str, message: String) -> PassOutcome {
+fn failed_pass(code: &str, error: &DreamError) -> PassOutcome {
     PassOutcome {
         status: PassStatus::Failed,
         output_path: None,
         candidate_results: Vec::<CandidateWriteResult>::new(),
-        error_code: Some(format!("{code}:{message}")),
+        error_code: Some(format!("{code}:{}", error.code())),
         duration_ms: 0,
     }
 }

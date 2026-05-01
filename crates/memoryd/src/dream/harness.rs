@@ -191,7 +191,7 @@ impl HarnessCli for EchoCli {
                     stderr_tail: "echo fixture has no canned output for prompt hash".to_owned(),
                 }
             })?;
-            validate_json_if_expected(output, expect_json, prompt)
+            validate_json_if_expected(output, expect_json)
         })
     }
 }
@@ -414,7 +414,35 @@ fn prompt_hash(prompt: &str) -> String {
 fn run_hardened_command_blocking(command: HardenedCommand, prompt: &str) -> Result<HardenedOutput, HarnessCliError> {
     std::fs::create_dir_all(&command.scratch_root)?;
     let scratch_dir = tempfile::Builder::new().prefix("run-").tempdir_in(&command.scratch_root)?;
+    let expect_json = command.expect_json;
+    let timeout = command.timeout;
+    let kill_grace = command.kill_grace;
+    let (mut child, handles) = spawn_hardened_child(command, prompt, scratch_dir.path())?;
+    let output = capture_hardened_child(&mut child, handles, timeout, kill_grace)?;
 
+    finalize_hardened_output(output, expect_json, timeout)
+}
+
+struct SpawnedHardenedChild {
+    stdout_reader: thread::JoinHandle<std::io::Result<Vec<u8>>>,
+    stderr_reader: thread::JoinHandle<std::io::Result<Vec<u8>>>,
+    stdin_writer: Option<thread::JoinHandle<std::io::Result<()>>>,
+}
+
+struct CapturedHardenedChild {
+    stdout: String,
+    stderr_tail: String,
+    status_code: Option<i32>,
+    stdin_write_result: Result<(), HarnessCliError>,
+    timed_out: bool,
+    status_success: bool,
+}
+
+fn spawn_hardened_child(
+    command: HardenedCommand,
+    prompt: &str,
+    scratch_dir: &Path,
+) -> Result<(std::process::Child, SpawnedHardenedChild), HarnessCliError> {
     let mut args = command.args;
     if command.prompt_transport == PromptTransport::Argv {
         args.push(prompt.to_owned());
@@ -423,7 +451,7 @@ fn run_hardened_command_blocking(command: HardenedCommand, prompt: &str) -> Resu
     let mut process = Command::new(command.program);
     process
         .args(&args)
-        .current_dir(scratch_dir.path())
+        .current_dir(scratch_dir)
         .stdin(match command.prompt_transport {
             PromptTransport::Stdin => Stdio::piped(),
             PromptTransport::Argv => Stdio::null(),
@@ -443,24 +471,50 @@ fn run_hardened_command_blocking(command: HardenedCommand, prompt: &str) -> Resu
         None
     };
 
-    let outcome = wait_with_timeout(&mut child, command.timeout, command.kill_grace)?;
-    let stdin_write_result = join_stdin_writer(stdin_writer);
-    let stdout = join_reader(stdout_reader)?;
-    let stderr_tail = join_reader(stderr_reader)?;
+    Ok((child, SpawnedHardenedChild { stdout_reader, stderr_reader, stdin_writer }))
+}
+
+fn capture_hardened_child(
+    child: &mut std::process::Child,
+    handles: SpawnedHardenedChild,
+    timeout: Duration,
+    kill_grace: Duration,
+) -> Result<CapturedHardenedChild, HarnessCliError> {
+    let outcome = wait_with_timeout(child, timeout, kill_grace)?;
+    let stdin_write_result = join_stdin_writer(handles.stdin_writer);
+    let stdout = join_reader(handles.stdout_reader)?;
+    let stderr_tail = join_reader(handles.stderr_reader)?;
     let stdout = String::from_utf8_lossy(&stdout).into_owned();
     let stderr_tail = redacted_capture_diagnostic("stderr", &stderr_tail);
-    if outcome.timed_out {
-        return Err(HarnessCliError::Timeout { duration: command.timeout });
-    }
-
     let status = outcome.status;
-    if !status.success() {
-        return Err(HarnessCliError::SubprocessExit { code: status.code(), stderr_tail });
-    }
-    stdin_write_result?;
+    Ok(CapturedHardenedChild {
+        stdout,
+        stderr_tail,
+        status_code: status.code(),
+        stdin_write_result,
+        timed_out: outcome.timed_out,
+        status_success: status.success(),
+    })
+}
 
-    let stdout = validate_json_if_expected(stdout, command.expect_json, prompt)?;
-    Ok(HardenedOutput { stdout, stderr_tail, status_code: status.code() })
+fn finalize_hardened_output(
+    output: CapturedHardenedChild,
+    expect_json: bool,
+    timeout: Duration,
+) -> Result<HardenedOutput, HarnessCliError> {
+    if output.timed_out {
+        return Err(HarnessCliError::Timeout { duration: timeout });
+    }
+
+    if !output.status_success {
+        return Err(HarnessCliError::SubprocessExit { code: output.status_code, stderr_tail: output.stderr_tail });
+    }
+    if !successful_stdout_allows_stdin_error(&output.stdout, &output.stdin_write_result) {
+        output.stdin_write_result?;
+    }
+
+    let stdout = validate_json_if_expected(output.stdout, expect_json)?;
+    Ok(HardenedOutput { stdout, stderr_tail: output.stderr_tail, status_code: output.status_code })
 }
 
 struct WaitOutcome {
@@ -573,11 +627,19 @@ fn join_stdin_writer(handle: Option<thread::JoinHandle<std::io::Result<()>>>) ->
     Ok(())
 }
 
+fn successful_stdout_allows_stdin_error(stdout: &str, result: &Result<(), HarnessCliError>) -> bool {
+    !stdout.trim().is_empty()
+        && matches!(
+            result,
+            Err(HarnessCliError::Io(error)) if error.kind() == std::io::ErrorKind::BrokenPipe
+        )
+}
+
 fn join_reader(handle: thread::JoinHandle<std::io::Result<Vec<u8>>>) -> Result<Vec<u8>, HarnessCliError> {
     handle.join().map_err(|_| std::io::Error::other("hardened command reader panicked"))?.map_err(HarnessCliError::Io)
 }
 
-fn validate_json_if_expected(output: String, expect_json: bool, _prompt: &str) -> Result<String, HarnessCliError> {
+fn validate_json_if_expected(output: String, expect_json: bool) -> Result<String, HarnessCliError> {
     if expect_json {
         serde_json::from_str::<serde_json::Value>(&output).map_err(|_| HarnessCliError::MalformedJson {
             stage: JsonStage::Parse,
@@ -618,6 +680,7 @@ fn find_executable(program: &str, path_env: Option<&OsStr>) -> Option<PathBuf> {
     let path_env = path_env.map(OsString::from).or_else(|| std::env::var_os("PATH"))?;
 
     std::env::split_paths(&path_env)
+        .filter(|directory| !directory.as_os_str().is_empty())
         .map(|directory| directory.join(program))
         .find(|candidate| is_executable_file(candidate))
 }

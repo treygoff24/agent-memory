@@ -31,6 +31,8 @@ pub struct SyncedConfig {
     pub events: EventsConfig,
 }
 
+impl Eq for SyncedConfig {}
+
 /// Path config shared by synced and local config files.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PathsConfig {
@@ -75,7 +77,7 @@ pub struct LoadedConfig {
 }
 
 /// Stream F dreaming configuration.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DreamsConfig {
     /// Enable scheduled dreaming unless disabled by local sentinel.
     #[serde(default = "default_true")]
@@ -126,6 +128,29 @@ pub struct DreamsConfig {
     #[serde(default = "default_dream_retry_window_minutes")]
     pub dream_retry_window_minutes: u32,
 }
+
+impl PartialEq for DreamsConfig {
+    fn eq(&self, other: &Self) -> bool {
+        self.enabled == other.enabled
+            && self.default_cli_priority == other.default_cli_priority
+            && self.scope_overrides == other.scope_overrides
+            && self.per_pass_timeout_seconds == other.per_pass_timeout_seconds
+            && self.pass_1_window_days == other.pass_1_window_days
+            && self.pass_2_max_candidates == other.pass_2_max_candidates
+            && self.pass_2_drift_threshold.to_bits() == other.pass_2_drift_threshold.to_bits()
+            && self.pass_3_max_questions == other.pass_3_max_questions
+            && self.pending_attention_per_scope_cap == other.pending_attention_per_scope_cap
+            && self.pending_attention_total_cap == other.pending_attention_total_cap
+            && self.pending_attention_recent_window_days == other.pending_attention_recent_window_days
+            && self.fragment_lifetime_days == other.fragment_lifetime_days
+            && self.candidate_stale_days == other.candidate_stale_days
+            && self.cleanup_run_hour_utc == other.cleanup_run_hour_utc
+            && self.lease_window_seconds == other.lease_window_seconds
+            && self.dream_retry_window_minutes == other.dream_retry_window_minutes
+    }
+}
+
+impl Eq for DreamsConfig {}
 
 impl Default for DreamsConfig {
     fn default() -> Self {
@@ -274,7 +299,7 @@ fn validate_cli_priority(field: &str, priority: &[String]) -> Result<(), String>
 }
 
 fn is_known_harness_name(name: &str) -> bool {
-    matches!(name, "claude" | "codex" | "gemini")
+    matches!(name, "claude" | "codex")
 }
 
 fn validate_scope_key(scope: &str) -> Result<(), String> {
@@ -328,6 +353,9 @@ fn default_true() -> bool {
 }
 
 fn default_cli_priority() -> Vec<String> {
+    // Keep this in sync with `is_known_harness_name`: only shipped v0.2
+    // adapters are valid config names. Deferred adapters, such as Gemini, fail
+    // config validation until their prompt transport and auth probe ship.
     vec!["claude".to_string(), "codex".to_string()]
 }
 

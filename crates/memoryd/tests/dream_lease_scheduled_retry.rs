@@ -1,8 +1,8 @@
 use chrono::{Duration, TimeZone, Utc};
 use memoryd::dream::git::ScriptedLeaseGit;
 use memoryd::dream::lease::{
-    acquire_manual_lease_with_git, run_scheduled_lease, run_scheduled_lease_with_runner, LeaseAcquireRequest,
-    LeaseError, ScheduledLeaseOutcome, ScheduledLeaseRequest,
+    acquire_manual_lease_with_git, run_scheduled_lease_with_runner_and_sleeper, ImmediateLeaseSleeper,
+    LeaseAcquireRequest, LeaseError, LeaseSleeper, ScheduledLeaseOutcome, ScheduledLeaseRequest,
 };
 use memoryd::protocol::{CandidateWriteResult, DreamRunReport, LeaseRecord, PassOutcome, PassStatus};
 
@@ -13,13 +13,15 @@ fn scheduled_transient_lease_unavailable_eventually_succeeds_within_retry_window
         .with_fetch_results([Err("network blip".to_string()), Ok(())])
         .with_push_results([Ok(())]);
 
-    let report = run_scheduled_lease(
+    let report = run_scheduled_lease_with_runner_and_sleeper(
         &mut git,
         ScheduledLeaseRequest {
             acquire: env.acquire_request("me"),
             retry_window_minutes: 3,
             run_date: fixed_now().date_naive(),
         },
+        &ImmediateLeaseSleeper,
+        |lease| Ok(lease.report.clone()),
     )
     .expect("transient fetch failure recovers inside retry window");
 
@@ -37,13 +39,14 @@ fn recovered_scheduled_lease_invokes_dream_run_callback() {
         .with_push_results([Ok(())]);
     let mut callback_runs = Vec::new();
 
-    let report = run_scheduled_lease_with_runner(
+    let report = run_scheduled_lease_with_runner_and_sleeper(
         &mut git,
         ScheduledLeaseRequest {
             acquire: env.acquire_request("me"),
             retry_window_minutes: 3,
             run_date: fixed_now().date_naive(),
         },
+        &ImmediateLeaseSleeper,
         |lease| {
             callback_runs.push((lease.record.scope.clone(), lease.record.run_id.clone()));
             Ok(non_stub_dream_report(&lease.record.scope))
@@ -61,13 +64,14 @@ fn post_acquire_dream_failure_releases_lease_before_returning_error() {
     let env = ScheduledEnv::new();
     let mut git = ScriptedLeaseGit::new().with_fetch_results([Ok(()), Ok(())]).with_push_results([Ok(()), Ok(())]);
 
-    let err = run_scheduled_lease_with_runner(
+    let err = run_scheduled_lease_with_runner_and_sleeper(
         &mut git,
         ScheduledLeaseRequest {
             acquire: env.acquire_request("me"),
             retry_window_minutes: 3,
             run_date: fixed_now().date_naive(),
         },
+        &ImmediateLeaseSleeper,
         |_| Err(LeaseError::unavailable("dream_unavailable: harness selection failed")),
     )
     .expect_err("post-acquire dream failure is returned after release");
@@ -81,6 +85,88 @@ fn post_acquire_dream_failure_releases_lease_before_returning_error() {
 }
 
 #[test]
+fn dream_failure_error_is_preserved_when_release_fails() {
+    let env = ScheduledEnv::new();
+    let mut git = ScriptedLeaseGit::new()
+        .with_fetch_results([Ok(()), Ok(())])
+        .with_push_results([Ok(()), Err("release push failed".to_string())]);
+
+    let err = run_scheduled_lease_with_runner_and_sleeper(
+        &mut git,
+        ScheduledLeaseRequest {
+            acquire: env.acquire_request("me"),
+            retry_window_minutes: 3,
+            run_date: fixed_now().date_naive(),
+        },
+        &ImmediateLeaseSleeper,
+        |_| Err(LeaseError::unavailable("dream_unavailable: pass 2 timed out")),
+    )
+    .expect_err("dream failure should be returned even if release also fails");
+
+    assert!(matches!(err, LeaseError::Unavailable { message } if message.contains("pass 2 timed out")));
+}
+
+#[test]
+fn scheduled_retry_sleeps_between_attempts_with_exponential_backoff() {
+    let env = ScheduledEnv::new();
+    let mut git = ScriptedLeaseGit::new().with_fetch_results([
+        Err("down".to_string()),
+        Err("down".to_string()),
+        Err("down".to_string()),
+        Err("down".to_string()),
+        Err("down".to_string()),
+        Err("down".to_string()),
+        Err("down".to_string()),
+        Ok(()),
+    ]);
+    let sleeper = RecordingSleeper::default();
+
+    let report = run_scheduled_lease_with_runner_and_sleeper(
+        &mut git,
+        ScheduledLeaseRequest {
+            acquire: env.acquire_request("me"),
+            retry_window_minutes: 95,
+            run_date: fixed_now().date_naive(),
+        },
+        &sleeper,
+        |lease| Ok(lease.report.clone()),
+    )
+    .expect("scheduled retry eventually succeeds");
+
+    assert_eq!(report.outcome, ScheduledLeaseOutcome::Success);
+    assert_eq!(sleeper.sleeps(), vec![1, 2, 4, 8, 16, 32, 32]);
+}
+
+#[test]
+fn lease_run_ids_are_device_prefixed_and_never_collapse_to_run_zero() {
+    let env = ScheduledEnv::new();
+    let mut git = ScriptedLeaseGit::new().with_fetch_results([Ok(())]).with_push_results([Ok(())]);
+
+    acquire_manual_lease_with_git(&mut git, env.acquire_request("me")).expect("lease acquired");
+
+    let lease_text = std::fs::read_to_string(env.repo.join("leases/journal.lease")).expect("lease file");
+    assert!(lease_text.contains("\"run_id\":\"run_dev_local_"), "{lease_text}");
+    assert!(!lease_text.contains("\"run_id\":\"run_0\""), "{lease_text}");
+}
+
+#[derive(Default)]
+struct RecordingSleeper {
+    sleeps: std::sync::Mutex<Vec<u16>>,
+}
+
+impl RecordingSleeper {
+    fn sleeps(&self) -> Vec<u16> {
+        self.sleeps.lock().expect("sleeps lock").clone()
+    }
+}
+
+impl LeaseSleeper for RecordingSleeper {
+    fn sleep_minutes(&self, minutes: u16) {
+        self.sleeps.lock().expect("sleeps lock").push(minutes);
+    }
+}
+
+#[test]
 fn scheduled_persistent_failure_records_missed_run_summary() {
     let env = ScheduledEnv::new();
     let mut git = ScriptedLeaseGit::new().with_fetch_results([
@@ -89,13 +175,15 @@ fn scheduled_persistent_failure_records_missed_run_summary() {
         Err("down".to_string()),
     ]);
 
-    let report = run_scheduled_lease(
+    let report = run_scheduled_lease_with_runner_and_sleeper(
         &mut git,
         ScheduledLeaseRequest {
             acquire: env.acquire_request("me"),
             retry_window_minutes: 3,
             run_date: fixed_now().date_naive(),
         },
+        &ImmediateLeaseSleeper,
+        |lease| Ok(lease.report.clone()),
     )
     .expect("persistent failure is summarized, not thrown");
 
@@ -119,13 +207,14 @@ fn scheduled_lease_held_is_not_retried_and_does_not_run_callback() {
     let mut git = ScriptedLeaseGit::new().with_fetch_results([Ok(()), Ok(())]);
     let mut callback_runs = 0;
 
-    let report = run_scheduled_lease_with_runner(
+    let report = run_scheduled_lease_with_runner_and_sleeper(
         &mut git,
         ScheduledLeaseRequest {
             acquire: env.acquire_request("me"),
             retry_window_minutes: 3,
             run_date: fixed_now().date_naive(),
         },
+        &ImmediateLeaseSleeper,
         |_| {
             callback_runs += 1;
             Ok(non_stub_dream_report("me"))
@@ -147,25 +236,29 @@ fn success_next_day_resets_consecutive_missed_runs() {
         Err("down".to_string()),
         Err("down".to_string()),
     ]);
-    run_scheduled_lease(
+    run_scheduled_lease_with_runner_and_sleeper(
         &mut failing_git,
         ScheduledLeaseRequest {
             acquire: env.acquire_request("me"),
             retry_window_minutes: 3,
             run_date: fixed_now().date_naive(),
         },
+        &ImmediateLeaseSleeper,
+        |lease| Ok(lease.report.clone()),
     )
     .expect("missed day summarized");
 
     let next_day = fixed_now() + Duration::days(1);
     let mut succeeding_git = ScriptedLeaseGit::new().with_fetch_results([Ok(())]).with_push_results([Ok(())]);
-    let report = run_scheduled_lease(
+    let report = run_scheduled_lease_with_runner_and_sleeper(
         &mut succeeding_git,
         ScheduledLeaseRequest {
             acquire: LeaseAcquireRequest { now: next_day, ..env.acquire_request("me") },
             retry_window_minutes: 3,
             run_date: next_day.date_naive(),
         },
+        &ImmediateLeaseSleeper,
+        |lease| Ok(lease.report.clone()),
     )
     .expect("next day success resets missed counter");
 
@@ -179,13 +272,14 @@ fn retry_window_zero_disables_scheduled_retries() {
     let mut git = ScriptedLeaseGit::new().with_fetch_results([Err("first and only failure".to_string()), Ok(())]);
     let mut callback_runs = 0;
 
-    let report = run_scheduled_lease_with_runner(
+    let report = run_scheduled_lease_with_runner_and_sleeper(
         &mut git,
         ScheduledLeaseRequest {
             acquire: env.acquire_request("me"),
             retry_window_minutes: 0,
             run_date: fixed_now().date_naive(),
         },
+        &ImmediateLeaseSleeper,
         |_| {
             callback_runs += 1;
             Ok(non_stub_dream_report("me"))

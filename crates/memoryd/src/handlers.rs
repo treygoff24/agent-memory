@@ -10,8 +10,9 @@ use memory_governance::{
     SourceKind as GovernanceSourceKind, TiebreakOutcome, TombstoneIndex, TombstoneKind, TombstoneRule,
 };
 use memory_privacy::{
-    safe_plaintext_fragment, CallerSensitivity, DeterministicPrivacyClassifier, EncryptedPayload, FileKeyProvider,
-    PrivacyClassifier, PrivacyDecision, PrivacyEncryptor, PrivacyNamespace, PrivacyStorageAction, SafeFragmentDecision,
+    safe_descriptor_projection, safe_plaintext_fragment, CallerSensitivity, DeterministicPrivacyClassifier,
+    EncryptedPayload, FileKeyProvider, PrivacyClassifier, PrivacyDecision, PrivacyEncryptor, PrivacyNamespace,
+    PrivacyStorageAction, SafeFragmentDecision,
 };
 use memory_substrate::{
     Author, AuthorKind, ChunkQuery, ClassificationOutcome, EncryptedSubstrateDescriptor, EncryptedWriteRequest,
@@ -223,7 +224,7 @@ fn validate_dream_cli_override(cli_override: Option<&str>) -> Result<(), Handler
     let Some(name) = cli_override else {
         return Ok(());
     };
-    if name == "echo" {
+    if name == "echo" && crate::dream::orchestration::echo_cli_override_enabled() {
         return Ok(());
     }
     let registry = crate::dream::registry::HarnessCliRegistry::builtin_v0_2();
@@ -553,7 +554,6 @@ fn contains_observe_metadata_canary(value: &str) -> bool {
     value.contains('@')
         || contains_aws_access_key(value)
         || contains_us_phone_number(value)
-        || contains_phone_like_digit_sequence(value)
         || lower.contains("ghp_")
         || lower.contains("sk_live_")
 }
@@ -575,24 +575,6 @@ fn contains_us_phone_number(value: &str) -> bool {
             && window[7] == b'-'
             && window[8..12].iter().all(u8::is_ascii_digit)
     })
-}
-
-fn contains_phone_like_digit_sequence(value: &str) -> bool {
-    let mut digit_count = 0usize;
-    for byte in value.bytes() {
-        if byte.is_ascii_digit() {
-            digit_count += 1;
-            if digit_count >= 10 {
-                return true;
-            }
-            continue;
-        }
-        if matches!(byte, b'-' | b'.' | b'_' | b' ') {
-            continue;
-        }
-        digit_count = 0;
-    }
-    false
 }
 
 fn observe_scope(binding: &crate::recall::SessionBinding) -> String {
@@ -619,16 +601,17 @@ fn encrypted_observe_payload(
             recipient: encrypted.envelope.get("recipient").and_then(Value::as_str).unwrap_or("age-x25519").to_string(),
             ciphertext_b64: base64_encode(&encrypted.ciphertext),
         },
-        descriptor: encrypted_observe_descriptor(kind),
+        descriptor: content_aware_encrypted_observe_descriptor(text, kind),
     })
 }
 
-fn encrypted_observe_descriptor(kind: ObserveKind) -> EncryptedSubstrateDescriptor {
+fn content_aware_encrypted_observe_descriptor(text: &str, kind: ObserveKind) -> EncryptedSubstrateDescriptor {
     let tag = observe_kind_tag(kind);
-    EncryptedSubstrateDescriptor {
-        summary_safe: format!("encrypted {tag} substrate fragment"),
-        tag_safe: vec![tag.to_string()],
-    }
+    let fallback_tags = vec![tag.to_string()];
+    let fallback_summary = format!("encrypted {tag} substrate fragment");
+    let projection =
+        safe_descriptor_projection(&DeterministicPrivacyClassifier::new(), text, &fallback_summary, &fallback_tags);
+    EncryptedSubstrateDescriptor { summary_safe: projection.summary_safe, tag_safe: projection.tag_safe }
 }
 
 fn observe_kind_tag(kind: ObserveKind) -> &'static str {

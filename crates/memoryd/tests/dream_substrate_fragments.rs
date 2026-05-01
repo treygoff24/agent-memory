@@ -62,7 +62,12 @@ async fn memory_observe_routes_pii_to_encrypted_substrate_without_plaintext_leak
     assert!(encrypted_records[0].get("text").is_none(), "encrypted substrate must not include text field");
     assert!(encrypted_records[0]["encryption"]["recipient"].as_str().is_some_and(|value| !value.is_empty()));
     assert!(encrypted_records[0]["encryption"]["ciphertext_b64"].as_str().is_some_and(|value| !value.is_empty()));
-    assert!(encrypted_records[0]["descriptor"]["summary_safe"].as_str().is_some_and(|value| !value.is_empty()));
+    let summary_safe = encrypted_records[0]["descriptor"]["summary_safe"].as_str().expect("summary_safe string");
+    assert!(summary_safe.contains("launch checklist"), "descriptor should retain safe signal: {summary_safe}");
+    assert!(!summary_safe.contains(raw), "descriptor must not leak raw PII: {summary_safe}");
+    assert!(encrypted_records[0]["descriptor"]["tag_safe"]
+        .as_array()
+        .is_some_and(|tags| tags.iter().any(|tag| tag.as_str() == Some("launch"))));
     assert!(encrypted_records[0]["privacy_spans"].as_array().is_some_and(|spans| !spans.is_empty()));
     assert!(!repo_contains(temp.path(), raw), "raw PII must not leak into repo/runtime plaintext");
     assert!(!repo_contains(temp.path(), text.as_str()), "raw observed text must not leak into repo/runtime plaintext");
@@ -131,7 +136,7 @@ async fn memory_observe_refuses_sensitive_canonical_entity_ids_without_fragment_
 }
 
 #[tokio::test]
-async fn memory_observe_refuses_phone_like_entity_variants_without_fragment_file() {
+async fn memory_observe_allows_phone_like_entity_ids() {
     for entity in ["ent_202.555.0198", "ent_2025550198", "ent_202_555_0198"] {
         let temp = tempfile::tempdir().expect("tempdir");
         let substrate = init_substrate(&temp).await;
@@ -142,12 +147,10 @@ async fn memory_observe_refuses_phone_like_entity_variants_without_fragment_file
         )
         .await;
 
-        let ResponseResult::Error(error) = observe.result else {
-            panic!("{entity}: expected sensitive entity refusal, got {:?}", observe.result);
+        let ResponseResult::Success(ResponsePayload::Observe(response)) = observe.result else {
+            panic!("{entity}: expected observe success, got {:?}", observe.result);
         };
-        assert_eq!(error.code, "invalid_request", "{entity}");
-        assert_no_substrate_records(&substrate, entity);
-        assert!(!repo_contains(temp.path(), entity), "{entity} canary must not be written");
+        assert!(response.fragment_id.starts_with("sub_"), "{entity}");
     }
 }
 
@@ -182,7 +185,7 @@ async fn memory_observe_refuses_sensitive_binding_metadata_without_fragment_file
 }
 
 #[tokio::test]
-async fn memory_observe_refuses_phone_like_binding_metadata_without_fragment_file() {
+async fn memory_observe_allows_phone_like_binding_metadata() {
     for (field, canary) in [
         ("session_id", "sess_202.555.0198"),
         ("session_id", "sess_2025550198"),
@@ -206,12 +209,10 @@ async fn memory_observe_refuses_phone_like_binding_metadata_without_fragment_fil
 
         let observe = observe(&substrate, input).await;
 
-        let ResponseResult::Error(error) = observe.result else {
-            panic!("{field}={canary}: expected sensitive binding refusal, got {:?}", observe.result);
+        let ResponseResult::Success(ResponsePayload::Observe(response)) = observe.result else {
+            panic!("{field}={canary}: expected observe success, got {:?}", observe.result);
         };
-        assert_eq!(error.code, "invalid_request", "{field}={canary}");
-        assert_no_substrate_records(&substrate, canary);
-        assert!(!repo_contains(temp.path(), canary), "{field} canary must not be written");
+        assert!(response.fragment_id.starts_with("sub_"), "{field}={canary}");
     }
 }
 

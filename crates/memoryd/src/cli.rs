@@ -225,6 +225,10 @@ pub enum DreamCommand {
     Status(DreamStatusArgs),
     /// Run a manual dream for one scope, failing fast on lease errors.
     Now(DreamNowArgs),
+    /// Run the scheduled lease-elected dream path for one scope, with bounded retry.
+    Scheduled(DreamScheduledArgs),
+    /// Run the scheduled cleanup pass for this device.
+    Cleanup(DreamCleanupArgs),
     /// Review recent dream journal, question, candidate, and cleanup outputs.
     Review(DreamReviewArgs),
     /// Enable dreaming on this device by removing the local disabled sentinel.
@@ -272,6 +276,50 @@ impl DreamNowArgs {
     pub fn cli_used(&self) -> Option<String> {
         self.cli_override.clone()
     }
+}
+
+#[derive(Debug, Args)]
+pub struct DreamScheduledArgs {
+    /// Canonical memory repository root.
+    #[arg(long, default_value = ".")]
+    pub repo: PathBuf,
+    /// Local per-device runtime root.
+    #[arg(long, default_value = ".memoryd")]
+    pub runtime: PathBuf,
+    /// Dream scope: `me`, `agent`, `project:<id>`, or `org:<id>`.
+    #[arg(long)]
+    pub scope: String,
+    /// Harness CLI name to use for this scheduled run.
+    #[arg(long = "cli")]
+    pub cli_override: Option<String>,
+    /// Emit JSON. Scheduled dream reports are currently JSON in both modes.
+    #[arg(long)]
+    pub json: bool,
+}
+
+impl DreamScheduledArgs {
+    pub fn cli_used(&self) -> Option<String> {
+        self.cli_override.clone()
+    }
+}
+
+#[derive(Debug, Args)]
+pub struct DreamCleanupArgs {
+    /// Canonical memory repository root.
+    #[arg(long, default_value = ".")]
+    pub repo: PathBuf,
+    /// Local per-device runtime root.
+    #[arg(long, default_value = ".memoryd")]
+    pub runtime: PathBuf,
+    /// Device id to write cleanup reports under. Defaults to local-device.yaml.
+    #[arg(long)]
+    pub device_id: Option<String>,
+    /// Cleanup timestamp as RFC3339. Defaults to current UTC time.
+    #[arg(long)]
+    pub now: Option<String>,
+    /// Emit JSON. Cleanup reports are currently JSON in both modes.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, Args)]

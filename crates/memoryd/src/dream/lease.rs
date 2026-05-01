@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
+use std::future::Future;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration as StdDuration;
 
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use memory_substrate::config::load_local_device_config;
@@ -80,18 +82,39 @@ pub struct ScheduledLeaseRequest {
     pub run_date: NaiveDate,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScheduledLeaseReport {
     pub attempts: u32,
     pub outcome: ScheduledLeaseOutcome,
     pub consecutive_missed_runs: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ScheduledLeaseOutcome {
     Success,
     Missed,
     Held,
+}
+
+pub trait LeaseSleeper {
+    fn sleep_minutes(&self, minutes: u16);
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct RealLeaseSleeper;
+
+impl LeaseSleeper for RealLeaseSleeper {
+    fn sleep_minutes(&self, minutes: u16) {
+        std::thread::sleep(StdDuration::from_secs(u64::from(minutes) * 60));
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ImmediateLeaseSleeper;
+
+impl LeaseSleeper for ImmediateLeaseSleeper {
+    fn sleep_minutes(&self, _minutes: u16) {}
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -199,7 +222,7 @@ pub fn run_scheduled_lease(
     git: &mut impl LeaseGit,
     request: ScheduledLeaseRequest,
 ) -> Result<ScheduledLeaseReport, LeaseError> {
-    run_scheduled_lease_with_runner(git, request, |lease| Ok(lease.report.clone()))
+    run_scheduled_lease_with_runner_and_sleeper(git, request, &RealLeaseSleeper, |lease| Ok(lease.report.clone()))
 }
 
 pub fn run_scheduled_lease_with_runner(
@@ -207,17 +230,113 @@ pub fn run_scheduled_lease_with_runner(
     request: ScheduledLeaseRequest,
     mut run_dream: impl FnMut(&LeaseAcquired) -> Result<DreamRunReport, LeaseError>,
 ) -> Result<ScheduledLeaseReport, LeaseError> {
+    run_scheduled_lease_with_runner_and_sleeper(git, request, &RealLeaseSleeper, |lease| run_dream(lease))
+}
+
+pub fn run_scheduled_lease_with_runner_and_sleeper(
+    git: &mut impl LeaseGit,
+    request: ScheduledLeaseRequest,
+    sleeper: &impl LeaseSleeper,
+    mut run_dream: impl FnMut(&LeaseAcquired) -> Result<DreamRunReport, LeaseError>,
+) -> Result<ScheduledLeaseReport, LeaseError> {
     let device_id = load_device_id(&request.acquire.runtime)?;
     let retry_offsets = retry_offsets(request.retry_window_minutes);
     let mut attempts = 0;
     let mut last_error = None;
+    let mut previous_offset = 0;
 
-    for _offset in retry_offsets {
+    for offset in retry_offsets {
+        if attempts > 0 {
+            sleeper.sleep_minutes(offset.saturating_sub(previous_offset));
+        }
+        previous_offset = offset;
         attempts += 1;
         match acquire_manual_lease_with_git(git, request.acquire.clone()) {
             Ok(lease) => {
                 if let Err(err) = run_dream(&lease) {
-                    release_manual_lease_with_git(git, request.acquire.clone())?;
+                    if let Err(_release_err) = release_manual_lease_with_git(git, request.acquire.clone()) {
+                        // Preserve the original dream failure for operator diagnostics. A release-side
+                        // failure is secondary; the lease will still expire under the normal lease window.
+                    }
+                    return Err(err);
+                }
+                let report = ScheduledLeaseReport {
+                    attempts,
+                    outcome: ScheduledLeaseOutcome::Success,
+                    consecutive_missed_runs: 0,
+                };
+                write_cleanup_summary(CleanupWrite {
+                    request: &request.acquire,
+                    date: request.run_date,
+                    device_id: &device_id,
+                    report: &report,
+                    error_code: None,
+                })?;
+                return Ok(report);
+            }
+            Err(LeaseError::Unavailable { message }) => {
+                last_error = Some(format!("lease_unavailable: {message}"));
+            }
+            Err(LeaseError::Held { .. }) => {
+                let report =
+                    ScheduledLeaseReport { attempts, outcome: ScheduledLeaseOutcome::Held, consecutive_missed_runs: 0 };
+                write_cleanup_summary(CleanupWrite {
+                    request: &request.acquire,
+                    date: request.run_date,
+                    device_id: &device_id,
+                    report: &report,
+                    error_code: Some("lease_held"),
+                })?;
+                return Ok(report);
+            }
+            Err(err) => return Err(err),
+        }
+    }
+
+    let consecutive_missed_runs =
+        previous_missed_runs(&request.acquire.repo, &device_id, &request.acquire.scope).saturating_add(1);
+    let report = ScheduledLeaseReport { attempts, outcome: ScheduledLeaseOutcome::Missed, consecutive_missed_runs };
+    write_cleanup_summary(CleanupWrite {
+        request: &request.acquire,
+        date: request.run_date,
+        device_id: &device_id,
+        report: &report,
+        error_code: Some(last_error.as_deref().unwrap_or("lease_unavailable")),
+    })?;
+    Ok(report)
+}
+
+pub async fn run_scheduled_lease_with_async_runner_and_sleeper<G, S, F, Fut>(
+    git: &mut G,
+    request: ScheduledLeaseRequest,
+    sleeper: &S,
+    mut run_dream: F,
+) -> Result<ScheduledLeaseReport, LeaseError>
+where
+    G: LeaseGit,
+    S: LeaseSleeper,
+    F: FnMut(LeaseAcquired) -> Fut,
+    Fut: Future<Output = Result<DreamRunReport, LeaseError>>,
+{
+    let device_id = load_device_id(&request.acquire.runtime)?;
+    let retry_offsets = retry_offsets(request.retry_window_minutes);
+    let mut attempts = 0;
+    let mut last_error = None;
+    let mut previous_offset = 0;
+
+    for offset in retry_offsets {
+        if attempts > 0 {
+            sleeper.sleep_minutes(offset.saturating_sub(previous_offset));
+        }
+        previous_offset = offset;
+        attempts += 1;
+        match acquire_manual_lease_with_git(git, request.acquire.clone()) {
+            Ok(lease) => {
+                if let Err(err) = run_dream(lease).await {
+                    if let Err(_release_err) = release_manual_lease_with_git(git, request.acquire.clone()) {
+                        // Preserve the original dream failure for operator diagnostics. A release-side
+                        // failure is secondary; the lease will still expire under the normal lease window.
+                    }
                     return Err(err);
                 }
                 let report = ScheduledLeaseReport {
@@ -293,7 +412,7 @@ fn lease_record(request: &LeaseAcquireRequest, device_id: &str) -> LeaseRecord {
         scope: request.scope.clone(),
         acquired_at: request.now,
         expires_at: request.now + Duration::seconds(request.lease_window_seconds as i64),
-        run_id: format!("run_{}", request.now.timestamp_nanos_opt().unwrap_or_default().unsigned_abs()),
+        run_id: lease_record_id("run", request, device_id),
     }
 }
 
@@ -303,8 +422,17 @@ fn release_record(request: &LeaseAcquireRequest, device_id: &str) -> LeaseRecord
         scope: request.scope.clone(),
         acquired_at: request.now,
         expires_at: request.now,
-        run_id: format!("release_{}", request.now.timestamp_nanos_opt().unwrap_or_default().unsigned_abs()),
+        run_id: lease_record_id("release", request, device_id),
     }
+}
+
+fn lease_record_id(prefix: &str, request: &LeaseAcquireRequest, device_id: &str) -> String {
+    let timestamp = request
+        .now
+        .timestamp_nanos_opt()
+        .map(|nanos| nanos.unsigned_abs().to_string())
+        .unwrap_or_else(|| request.now.format("%Y%m%dT%H%M%S%9fZ").to_string());
+    format!("{prefix}_{device_id}_{timestamp}")
 }
 
 fn append_lease_record(path: &Path, record: &LeaseRecord) -> Result<(), LeaseError> {

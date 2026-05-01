@@ -11,7 +11,7 @@ use memory_substrate::{
 };
 use memoryd::dream::{
     orchestration::{build_dream_run, DreamRunBuildRequest, SubstrateCandidateWriter},
-    run::DreamRunner,
+    run::{CandidateEvidenceRef, CandidateWriteRequest, CandidateWriter, DreamRunner},
     scope::DreamScope,
 };
 use memoryd::handlers::handle_request;
@@ -186,6 +186,51 @@ async fn dreaming_protocol_echo_writes_pass_2_candidate_to_canonical_queue() {
     assert_eq!(candidate.frontmatter.write_policy.policy_applied, "dreaming-strict");
     assert!(candidate.frontmatter.grounding_rehydration_required());
     assert_eq!(candidate.frontmatter.evidence[0].reference, "sub_01HZXJK7J7W0X4Q4KJ7A2R8V1A");
+}
+
+#[tokio::test]
+async fn dream_candidate_writer_refuses_encrypt_at_rest_candidates_without_plaintext_write() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let substrate = init_substrate(roots).await;
+    let build = build_dream_run(
+        &substrate,
+        DreamRunBuildRequest {
+            scope: DreamScope::Agent,
+            run_id: "run_private_candidate".to_string(),
+            run_date: chrono::Utc::now().date_naive(),
+            pass_timeout: std::time::Duration::from_secs(1),
+            pass_2_max_candidates: 8,
+            pass_1_window_days: 7,
+        },
+    )
+    .await
+    .expect("dream run builds");
+
+    let result = build
+        .writer
+        .write_candidate(CandidateWriteRequest {
+            claim: "Call 202-555-0198 before publishing the launch runbook.".to_string(),
+            namespace: "agent".to_string(),
+            kind: "claim".to_string(),
+            evidence: vec![CandidateEvidenceRef {
+                kind: "substrate".to_string(),
+                reference: "sub_01HZXJK7J7W0X4Q4KJ7A2R8V1A".to_string(),
+                excerpt: Some("launch runbook needs one owner".to_string()),
+            }],
+            confidence: 0.82,
+            rationale: "Contains useful operational signal but requires encrypt-at-rest privacy handling.".to_string(),
+            policy: "dreaming-strict".to_string(),
+            grounding_rehydration_required: true,
+        })
+        .await;
+
+    assert!(!result.accepted, "{result:?}");
+    assert_eq!(result.reason.as_deref(), Some("encrypt_at_rest_candidate_refused"));
+    assert!(
+        !substrate.roots().repo.join("agent/claims").exists(),
+        "dreaming-strict refuses encrypt-at-rest candidates instead of writing plaintext"
+    );
 }
 
 #[tokio::test]

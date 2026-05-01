@@ -89,7 +89,7 @@ ResponsePayload::Observe(ObserveResponse {
 })
 ```
 
-Dreaming itself is daemon/admin-only and is not exposed through MCP. `memoryd dream now`, `memoryd dream status`, `memoryd dream review`, `memoryd dream enable`, and `memoryd dream disable` stay outside the MCP manifest.
+Dreaming itself is daemon/admin-only and is not exposed through MCP. `memoryd dream now`, `memoryd dream scheduled`, `memoryd dream cleanup`, `memoryd dream status`, `memoryd dream review`, `memoryd dream enable`, and `memoryd dream disable` stay outside the MCP manifest.
 
 ## CLI/admin surface
 
@@ -97,6 +97,8 @@ Dreaming itself is daemon/admin-only and is not exposed through MCP. `memoryd dr
 memoryd dream status --repo . --runtime .memoryd
 memoryd dream now --repo . --runtime .memoryd --scope project:agent-memory --cli codex
 memoryd dream now --repo . --runtime .memoryd --scope project:agent-memory --cli echo --json
+memoryd dream scheduled --repo . --runtime .memoryd --scope project:agent-memory --cli codex --json
+memoryd dream cleanup --repo . --runtime .memoryd --json
 memoryd dream review --repo . --runtime .memoryd --since 7d
 memoryd dream disable --runtime ~/.memoryd
 memoryd dream enable --runtime ~/.memoryd
@@ -105,6 +107,10 @@ memoryd dream enable --runtime ~/.memoryd
 Human `memoryd dream status` output begins with the privacy disclosure above as its first line when dreaming is enabled. JSON output is structured and includes CLI inventory, last runs, active leases, local disable state, and each adapter's `prompt_transport`.
 
 The device-local sentinel `~/.memoryd/dream-disabled` disables scheduled and manual dreaming on that device without changing synced per-scope config. `memoryd dream enable` removes the sentinel only after showing the privacy disclosure on first-run confirmation.
+
+`memoryd dream scheduled` is the production entry point for the scheduled lease path. It uses the same dream pipeline as `memoryd dream now`, but calls the scheduled lease wrapper: `lease_held` is recorded as a skip, transient `lease_unavailable` failures retry inside `dreams.dream_retry_window_minutes` using exponential backoff of 1, 2, 4, 8, 16, then capped 32-minute sleeps, and each run writes its per-device summary under `dreams/cleanup/<device_id>/<YYYY-MM-DD>.json`. The harness installer should register the OS scheduler (launchd, systemd, cron, or equivalent) to invoke this command daily at `dreams.cleanup_run_hour_utc`.
+
+`memoryd dream cleanup` is the production entry point for the daily cleanup pass. It opens the local substrate, applies `dreams.fragment_lifetime_days`, `dreams.candidate_stale_days`, and `events.compaction_days`, writes `dreams/cleanup/<device_id>/<YYYY-MM-DD>.json`, and commits cleanup-authored changes when no unrelated user work is dirty. It accepts `--device-id` for explicit scheduler wiring and `--now <RFC3339>` for deterministic tests/replays; by default both values come from `local-device.yaml` and current UTC time. The harness installer should schedule cleanup after the scheduled dream retry window, typically at `dreams.cleanup_run_hour_utc + dreams.dream_retry_window_minutes`.
 
 Exit behavior:
 
@@ -126,11 +132,11 @@ via the generic non-retryable caller/config path.
 
 Dreaming does not build a generic provider. It shells out to installed harness CLIs selected by synced per-scope priority and local availability.
 
-| Adapter              | CLI                                                      | prompt_transport  | Provider disclosure                                                                                                            |
-| -------------------- | -------------------------------------------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `ClaudeCodeCli`      | `claude --print`                                         | `stdin`           | Uses Claude Code's configured upstream account/provider; upstream data policy applies.                                         |
-| `CodexCli`           | `codex exec -` or `codex exec --json -`                  | `stdin`           | Uses Codex CLI's configured upstream account/provider; upstream data policy applies.                                           |
-| Gemini / `GeminiCli` | deferred/disabled in v0.2 unless stdin support is proven | disabled/deferred | Disabled/deferred Gemini support must not be selected until prompt_transport and upstream data policy disclosure are reviewed. |
+| Adapter              | CLI                                                      | prompt_transport  | Provider disclosure                                                                                                                                                               |
+| -------------------- | -------------------------------------------------------- | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ClaudeCodeCli`      | `claude --print`                                         | `stdin`           | Uses Claude Code's configured upstream account/provider; upstream data policy applies.                                                                                            |
+| `CodexCli`           | `codex exec -` or `codex exec --json -`                  | `stdin`           | Uses Codex CLI's configured upstream account/provider; upstream data policy applies.                                                                                              |
+| Gemini / `GeminiCli` | deferred/disabled in v0.2 unless stdin support is proven | disabled/deferred | Disabled/deferred Gemini support is not accepted in `dreams.default_cli_priority` or per-scope overrides until prompt_transport and upstream data policy disclosure are reviewed. |
 
 Adapters must declare `prompt_transport` truthfully. v0.2 ships only stdin-supporting adapters unless Trey approves an argv fallback; argv fallback would be disclosed in `memoryd dream status` because prompts could appear in process listings.
 
@@ -144,11 +150,11 @@ A manual or scheduled dream run:
 4. Runs the selected `HarnessCli` through its declared `prompt_transport`.
 5. Restores masked output through the same session and drops the session afterward.
 6. Writes Pass 1 journal output under `dreams/journal/...`.
-7. Builds an evidence catalog and writes Pass 2 candidates to the canonical candidate queue under `dreaming-strict` policy.
+7. Builds an evidence catalog and writes plaintext-safe Pass 2 candidates to the canonical candidate queue under `dreaming-strict` policy.
 8. Writes Pass 3 recall questions under `dreams/questions/...` with explicit `entities` arrays.
 9. Emits status counters and per-run reports.
 
-Pass 2 never auto-promotes canonical memory. Candidates require normal governance/human review and may later be approved with review tooling.
+Pass 2 never auto-promotes canonical memory. Candidates require normal governance/human review and may later be approved with review tooling. Restored candidates are re-classified through Stream D before any canonical write; `EncryptAtRest` candidates are intentionally refused with `encrypt_at_rest_candidate_refused` in v0.2 rather than written as encrypted dream candidates.
 
 ## Review, cleanup, and status
 
@@ -170,7 +176,7 @@ Status surfaces include:
 
 - `memory_observe` uses the same deterministic privacy classification boundary as canonical daemon writes.
 - `MaskingSession::new`, `mask`, `restore`, and Drop-based teardown are the only masking lifecycle used by dream prompts and outputs.
-- Journal and question passes use plaintext substrate plus safe descriptors for encrypted substrate; they never decrypt encrypted substrate fragments.
+- Journal and question passes use plaintext substrate plus content-aware safe descriptors for encrypted substrate; they never decrypt encrypted substrate fragments. The encrypted-fragment descriptor removes Stream D-detected private spans, emits only `safe_plaintext_fragment`-allowed summary/tags, and falls back to a generic encrypted-fragment descriptor if no safe signal remains.
 - Prompt text is not logged, echoed, or passed through argv for shipped v0.2 adapters.
 - Refused/secret content causes fail-closed behavior with no substrate fragment and no dream output commit.
 - Provider disclosure is required because masked prompt text still leaves the daemon through the selected harness CLI and that provider's upstream data policy applies.

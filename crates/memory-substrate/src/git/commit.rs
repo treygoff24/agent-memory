@@ -131,17 +131,18 @@ fn run_commit(repo: &Path, message: &str) -> Result<String, GitError> {
 }
 
 fn run_lease_commit(repo: &Path, message: &str) -> Result<(), GitError> {
+    let args = vec![
+        "commit".to_string(),
+        "--author".to_string(),
+        "memoryd lease-bot <noreply@memoryd.local>".to_string(),
+        "-m".to_string(),
+        message.to_string(),
+        "--".to_string(),
+        "leases/journal.lease".to_string(),
+    ];
     let mut command = Command::new("git");
     command
-        .args([
-            "commit",
-            "--author",
-            "memoryd lease-bot <noreply@memoryd.local>",
-            "-m",
-            message,
-            "--",
-            "leases/journal.lease",
-        ])
+        .args(&args)
         .current_dir(repo)
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
@@ -159,15 +160,7 @@ fn run_lease_commit(repo: &Path, message: &str) -> Result<(), GitError> {
     } else {
         Err(GitError::CommandFailed {
             program: "git".to_string(),
-            args: vec![
-                "commit".to_string(),
-                "--author".to_string(),
-                "memoryd lease-bot <noreply@memoryd.local>".to_string(),
-                "-m".to_string(),
-                message.to_string(),
-                "--".to_string(),
-                "leases/journal.lease".to_string(),
-            ],
+            args,
             stderr: String::from_utf8_lossy(&output.stderr).to_string(),
         })
     }

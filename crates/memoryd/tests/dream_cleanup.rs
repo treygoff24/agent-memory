@@ -5,6 +5,7 @@ use std::process::Command;
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use memory_substrate::events::{append_event, read_events, Event, EventKind, EVENT_SCHEMA_VERSION};
 use memory_substrate::frontmatter::serialize_document;
+use memory_substrate::markdown::read_memory_file;
 use memory_substrate::{
     Author, AuthorKind, ClassificationOutcome, DeviceId, EventContext, EventId, Evidence, Frontmatter, InitOptions,
     Memory, MemoryId, MemoryStatus, MemoryType, ObserveKind, OperationId, RepoPath, RetrievalPolicy, Roots, Scope,
@@ -43,11 +44,48 @@ async fn stale_candidate_archival_mutates_frontmatter_without_deleting_body() {
     write_memory(&fixture.substrate, candidate.clone()).await;
 
     let report = run_cleanup(&fixture.substrate, config("dev_cleanup")).await.expect("cleanup");
-    let saved = fixture.substrate.read_memory(&candidate.frontmatter.id).await.expect("read archived candidate");
+    let (saved, _) = read_memory_file(&fixture.roots.repo, candidate.path.as_ref().expect("candidate path"))
+        .expect("read archived candidate file");
+    let events = read_events(&fixture.repo_path("events/dev_cleanup.jsonl")).expect("read event log");
+    let write_events = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                &event.kind,
+                EventKind::WriteCommitted { id, path, classification: ClassificationOutcome::Trusted }
+                    if id == &candidate.frontmatter.id && path.as_str() == candidate.path.as_ref().unwrap().as_str()
+            )
+        })
+        .count();
 
     assert_eq!(report.operations.candidates_archived, 1);
     assert_eq!(saved.frontmatter.status, MemoryStatus::Archived);
     assert_eq!(saved.body, "candidate body must remain");
+    assert_eq!(write_events, 2, "initial write plus cleanup archive mutation should both emit substrate events");
+}
+
+#[tokio::test]
+async fn cleanup_records_per_file_findings_and_continues_candidate_archival() {
+    let fixture = Fixture::new("dev_cleanup").await;
+    let mut candidate = sample_memory("mem_20260401_a1b2c3d4e5f60718_000006", MemoryStatus::Candidate);
+    candidate.frontmatter.created_at = days_ago(60);
+    candidate.frontmatter.updated_at = days_ago(60);
+    candidate.frontmatter.trust_level = TrustLevel::Candidate;
+    candidate.frontmatter.review_state = Some("candidate".to_string());
+    write_memory(&fixture.substrate, candidate.clone()).await;
+    fs::write(fixture.repo_path("agent/patterns/corrupt.md"), "---\nschema_version: 999\n---\nbody")
+        .expect("write corrupt memory");
+
+    let report = run_cleanup(&fixture.substrate, config("dev_cleanup")).await.expect("cleanup continues");
+    let (saved, _) = read_memory_file(&fixture.roots.repo, candidate.path.as_ref().expect("candidate path"))
+        .expect("read archived candidate file");
+
+    assert_eq!(report.operations.candidates_archived, 1);
+    assert_eq!(saved.frontmatter.status, MemoryStatus::Archived);
+    assert!(report
+        .findings
+        .iter()
+        .any(|finding| { finding.kind == "memory_lint" && finding.path == "agent/patterns/corrupt.md" }));
 }
 
 #[tokio::test]

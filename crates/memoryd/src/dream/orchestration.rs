@@ -8,7 +8,8 @@ use std::{
 
 use chrono::{DateTime, NaiveDate, Utc};
 use memory_privacy::{
-    safe_plaintext_fragment, DeterministicPrivacyClassifier, PrivacyLabel, PrivacySpan, SafeFragmentDecision,
+    DeterministicPrivacyClassifier, PrivacyClassifier, PrivacyLabel, PrivacyNamespace, PrivacySpan,
+    PrivacyStorageAction,
 };
 use memory_substrate::{
     Author, AuthorKind, ClassificationOutcome, Entity, EventContext, Evidence, Frontmatter, Memory, MemoryStatus,
@@ -32,8 +33,12 @@ use super::{
     types::{ActiveMemory, DreamError, SubstrateFragment},
 };
 
+/// Prompt-size guardrail for Stream F §5.1.1 substrate-fragment windows; newest
+/// fragments win after the spec-defined date/scope filter.
 const MAX_DREAM_SUBSTRATE_FRAGMENTS: usize = 1_000;
+/// Prompt-size guardrail for Stream F §5.1.2 active-memory context.
 const MAX_DREAM_ACTIVE_MEMORIES: usize = 256;
+/// Prompt-size guardrail for Stream F §6.4 previous-question dedupe context.
 const MAX_PREVIOUS_QUESTIONS: usize = 64;
 pub struct DreamRunBuild {
     pub options: DreamRunOptions,
@@ -83,7 +88,7 @@ pub async fn select_harness(
     priority: &[String],
     options: &DreamRunOptions,
 ) -> Result<Arc<dyn HarnessCli>, DreamError> {
-    if cli_override == Some("echo") {
+    if cli_override == Some("echo") && echo_cli_override_enabled() {
         return deterministic_echo_harness(options);
     }
 
@@ -122,6 +127,10 @@ pub async fn select_harness(
     })
 }
 
+pub(crate) fn echo_cli_override_enabled() -> bool {
+    cfg!(debug_assertions)
+}
+
 #[derive(Clone)]
 pub struct SubstrateCandidateWriter {
     substrate: Substrate,
@@ -150,13 +159,27 @@ impl SubstrateCandidateWriter {
     }
 
     async fn write_candidate_memory(&self, request: CandidateWriteRequest) -> Result<CandidateWriteResult, String> {
-        if !candidate_plaintext_is_safe(&request) {
-            return Ok(CandidateWriteResult {
-                id: None,
-                accepted: false,
-                reason: Some("unsafe_candidate".to_string()),
-                source_ref_count: request.evidence.len(),
-            });
+        match candidate_storage_action(&request)? {
+            PrivacyStorageAction::Plaintext => {}
+            // Dreaming-strict intentionally does not create encrypted canonical
+            // candidates: dream passes never reveal/decrypt, and encrypt-at-rest
+            // candidate review requires a user-visible product contract.
+            PrivacyStorageAction::EncryptAtRest => {
+                return Ok(CandidateWriteResult {
+                    id: None,
+                    accepted: false,
+                    reason: Some("encrypt_at_rest_candidate_refused".to_string()),
+                    source_ref_count: request.evidence.len(),
+                });
+            }
+            PrivacyStorageAction::Refuse => {
+                return Ok(CandidateWriteResult {
+                    id: None,
+                    accepted: false,
+                    reason: Some("unsafe_candidate".to_string()),
+                    source_ref_count: request.evidence.len(),
+                });
+            }
         }
 
         let id = self.substrate.next_memory_id().await.map_err(|err| err.to_string())?;
@@ -317,7 +340,7 @@ fn short_hash(value: &str) -> String {
     hex::encode(&digest[..8])
 }
 
-fn candidate_plaintext_is_safe(request: &CandidateWriteRequest) -> bool {
+fn candidate_storage_action(request: &CandidateWriteRequest) -> Result<PrivacyStorageAction, String> {
     let mut text = String::new();
     text.push_str(&request.claim);
     text.push('\n');
@@ -330,7 +353,19 @@ fn candidate_plaintext_is_safe(request: &CandidateWriteRequest) -> bool {
             text.push_str(excerpt);
         }
     }
-    safe_plaintext_fragment(&DeterministicPrivacyClassifier::new(), &text) == SafeFragmentDecision::Allow
+    let namespace = candidate_privacy_namespace(&request.namespace)?;
+    DeterministicPrivacyClassifier::new()
+        .classify(&text, namespace, None)
+        .map(|decision| decision.storage_action)
+        .map_err(|err| err.to_string())
+}
+
+fn candidate_privacy_namespace(namespace: &str) -> Result<PrivacyNamespace, String> {
+    match DreamScope::parse(namespace).map_err(|err| err.to_string())? {
+        DreamScope::Me => Ok(PrivacyNamespace::Me),
+        DreamScope::Agent => Ok(PrivacyNamespace::Agent),
+        DreamScope::Project(_) | DreamScope::Org(_) => Ok(PrivacyNamespace::Project),
+    }
 }
 
 fn bounded_summary(text: &str) -> String {

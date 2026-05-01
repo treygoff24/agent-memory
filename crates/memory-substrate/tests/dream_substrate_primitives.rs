@@ -2,6 +2,7 @@ use chrono::{TimeZone, Utc};
 use memory_substrate::events::EventKind;
 use memory_substrate::tree::{validate_tree, TreeValidationMode};
 use memory_substrate::*;
+use std::collections::BTreeMap;
 
 #[tokio::test]
 async fn append_plaintext_substrate_fragment_under_device_date_jsonl() {
@@ -57,6 +58,20 @@ async fn append_substrate_fragment_emits_event() {
                     && classification == &ClassificationOutcome::Trusted
         )
     }));
+}
+
+#[tokio::test]
+async fn append_substrate_fragment_refuses_secret_before_disk_effect() {
+    let (_temp, substrate) = initialized_substrate().await;
+    let before = snapshot_repo(&substrate.roots().repo);
+    let mut request = plaintext_request("sub_01HZXJK7J7W0X4Q4KJ7A2R8V1S", "secret observation");
+    request.classification = ClassificationOutcome::Secret;
+
+    let err = substrate.append_substrate_fragment(request).await.expect_err("secret substrate fragment refused");
+
+    assert_eq!(err.kind, WriteFailureKind::SecretRefused);
+    assert!(!err.outcome.committed);
+    assert_eq!(snapshot_repo(&substrate.roots().repo), before, "secret refusal must not mutate repo bytes");
 }
 
 #[tokio::test]
@@ -205,4 +220,17 @@ fn read_jsonl(path: &std::path::Path) -> Vec<serde_json::Value> {
         .filter(|line| !line.trim().is_empty())
         .map(|line| serde_json::from_str(line).expect("json line"))
         .collect()
+}
+
+fn snapshot_repo(root: &std::path::Path) -> BTreeMap<String, Vec<u8>> {
+    let mut files = BTreeMap::new();
+    for entry in
+        walkdir::WalkDir::new(root).into_iter().filter_map(Result::ok).filter(|entry| entry.file_type().is_file())
+    {
+        let relative = entry.path().strip_prefix(root).expect("repo-relative");
+        let key = relative.to_string_lossy().replace('\\', "/");
+        let bytes = std::fs::read(entry.path()).expect("read snapshot file");
+        files.insert(key, bytes);
+    }
+    files
 }

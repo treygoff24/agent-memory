@@ -1,5 +1,7 @@
+use std::path::PathBuf;
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
 use clap::Parser;
 use memory_privacy::{
     DeterministicPrivacyClassifier, FileKeyProvider, KeyProvider, PrivacyClassifier, PrivacyNamespace,
@@ -200,6 +202,14 @@ async fn main() -> anyhow::Result<()> {
                     std::process::exit(4);
                 }
             }
+            DreamCommand::Scheduled(args) => {
+                let report = run_scheduled_dream(args).await?;
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            }
+            DreamCommand::Cleanup(args) => {
+                let report = run_dream_cleanup(args).await?;
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            }
             DreamCommand::Review(args) => {
                 let report = memoryd::dream::review::collect_review(&args.repo, &args.since, args.scope.as_deref())
                     .map_err(anyhow::Error::msg)?;
@@ -339,33 +349,16 @@ async fn run_manual_dream(args: memoryd::cli::DreamNowArgs) -> anyhow::Result<Dr
     };
 
     let run_result = async {
-        let substrate = Substrate::open(Roots::new(args.repo.clone(), args.runtime.clone())).await?;
-        let scope =
-            memoryd::dream::scope::DreamScope::parse(&args.scope).map_err(|err| anyhow::anyhow!(err.to_string()))?;
-        let build = memoryd::dream::orchestration::build_dream_run(
-            &substrate,
-            memoryd::dream::orchestration::DreamRunBuildRequest {
-                scope,
-                run_id: acquired.record.run_id,
-                run_date: now.date_naive(),
-                pass_timeout: Duration::from_secs(u64::from(config.synced.dreams.per_pass_timeout_seconds)),
-                pass_2_max_candidates: config.synced.dreams.pass_2_max_candidates as usize,
-                pass_1_window_days: config.synced.dreams.pass_1_window_days,
-            },
-        )
+        execute_dream_run(DreamRunInvocation {
+            repo: args.repo.clone(),
+            runtime: args.runtime.clone(),
+            raw_scope: args.scope.clone(),
+            run_id: acquired.record.run_id,
+            run_date: now.date_naive(),
+            dreams: config.synced.dreams.clone(),
+            cli_used: cli_used.clone(),
+        })
         .await
-        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
-        let harness = memoryd::dream::orchestration::select_harness(
-            cli_used.as_deref(),
-            &config.synced.dreams.default_cli_priority,
-            &build.options,
-        )
-        .await
-        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
-        memoryd::dream::run::DreamRunner::new(build.options.with_harness(harness), build.writer)
-            .run()
-            .await
-            .map_err(|err| anyhow::anyhow!(err.to_string()))
     }
     .await;
 
@@ -391,6 +384,148 @@ async fn run_manual_dream(args: memoryd::cli::DreamNowArgs) -> anyhow::Result<Dr
     }
 
     run_result
+}
+
+async fn run_scheduled_dream(
+    args: memoryd::cli::DreamScheduledArgs,
+) -> anyhow::Result<memoryd::dream::lease::ScheduledLeaseReport> {
+    let config = memory_substrate::config::load_config(&args.repo, &args.runtime, None).map_err(anyhow::Error::msg)?;
+    if !config.synced.dreams.enabled || memoryd::dream::status::disabled_sentinel_path(&args.runtime).exists() {
+        eprintln!("dream_disabled: dreaming is disabled on this device");
+        std::process::exit(1);
+    }
+
+    let now = Utc::now();
+    let cli_used = args.cli_used();
+    let request = memoryd::dream::lease::ScheduledLeaseRequest {
+        acquire: memoryd::dream::lease::LeaseAcquireRequest {
+            repo: args.repo.clone(),
+            runtime: args.runtime.clone(),
+            scope: args.scope.clone(),
+            force: false,
+            now,
+            lease_window_seconds: u64::from(config.synced.dreams.lease_window_seconds),
+            cli_used: cli_used.clone(),
+        },
+        retry_window_minutes: u16::try_from(config.synced.dreams.dream_retry_window_minutes)
+            .map_err(|_| anyhow::anyhow!("dream_retry_window_minutes exceeds u16"))?,
+        run_date: now.date_naive(),
+    };
+    let mut git = memoryd::dream::git::NativeLeaseGit;
+    let sleeper = memoryd::dream::lease::RealLeaseSleeper;
+    let report = memoryd::dream::lease::run_scheduled_lease_with_async_runner_and_sleeper(
+        &mut git,
+        request,
+        &sleeper,
+        |lease| {
+            let repo = args.repo.clone();
+            let runtime = args.runtime.clone();
+            let scope = args.scope.clone();
+            let dreams = config.synced.dreams.clone();
+            let cli_used = cli_used.clone();
+            async move {
+                execute_dream_run(DreamRunInvocation {
+                    repo,
+                    runtime,
+                    raw_scope: scope,
+                    run_id: lease.record.run_id,
+                    run_date: now.date_naive(),
+                    dreams,
+                    cli_used,
+                })
+                .await
+                .map_err(dream_run_error_to_lease_error)
+            }
+        },
+    )
+    .await;
+    match report {
+        Ok(report) => Ok(report),
+        Err(error) => exit_dream_error(error),
+    }
+}
+
+struct DreamRunInvocation {
+    repo: PathBuf,
+    runtime: PathBuf,
+    raw_scope: String,
+    run_id: String,
+    run_date: chrono::NaiveDate,
+    dreams: memory_substrate::config::DreamsConfig,
+    cli_used: Option<String>,
+}
+
+async fn execute_dream_run(invocation: DreamRunInvocation) -> anyhow::Result<DreamRunReport> {
+    let substrate = Substrate::open(Roots::new(invocation.repo.clone(), invocation.runtime)).await?;
+    let scope = memoryd::dream::scope::DreamScope::parse(&invocation.raw_scope)
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    let build = memoryd::dream::orchestration::build_dream_run(
+        &substrate,
+        memoryd::dream::orchestration::DreamRunBuildRequest {
+            scope,
+            run_id: invocation.run_id,
+            run_date: invocation.run_date,
+            pass_timeout: Duration::from_secs(u64::from(invocation.dreams.per_pass_timeout_seconds)),
+            pass_2_max_candidates: invocation.dreams.pass_2_max_candidates as usize,
+            pass_1_window_days: invocation.dreams.pass_1_window_days,
+        },
+    )
+    .await
+    .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    let harness = memoryd::dream::orchestration::select_harness(
+        invocation.cli_used.as_deref(),
+        &invocation.dreams.default_cli_priority,
+        &build.options,
+    )
+    .await
+    .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    memoryd::dream::run::DreamRunner::new(build.options.with_harness(harness), build.writer)
+        .run()
+        .await
+        .map_err(|err| anyhow::anyhow!(err.to_string()))
+}
+
+fn dream_run_error_to_lease_error(error: anyhow::Error) -> memoryd::dream::lease::LeaseError {
+    let message = error.to_string();
+    if message.contains("unknown harness CLI override") {
+        return memoryd::dream::lease::LeaseError::InvalidRequest { message };
+    }
+    memoryd::dream::lease::LeaseError::unavailable(message)
+}
+
+async fn run_dream_cleanup(
+    args: memoryd::cli::DreamCleanupArgs,
+) -> anyhow::Result<memoryd::dream::report::CleanupReport> {
+    let loaded = memory_substrate::config::load_config(&args.repo, &args.runtime, None).map_err(anyhow::Error::msg)?;
+    let device_id = match args.device_id {
+        Some(device_id) => device_id,
+        None => loaded
+            .local
+            .as_ref()
+            .map(|local| local.device.id.clone())
+            .ok_or_else(|| anyhow::anyhow!("local-device.yaml is missing; pass --device-id"))?,
+    };
+    let now = parse_cleanup_now(args.now)?;
+    let substrate = Substrate::open(Roots::new(args.repo, args.runtime)).await?;
+    memoryd::dream::cleanup::run_cleanup(
+        &substrate,
+        memoryd::dream::cleanup::CleanupConfig {
+            device_id,
+            now,
+            fragment_lifetime_days: i64::from(loaded.synced.dreams.fragment_lifetime_days),
+            candidate_stale_days: i64::from(loaded.synced.dreams.candidate_stale_days),
+            event_compaction_days: i64::from(loaded.synced.events.compaction_days),
+        },
+    )
+    .await
+    .map_err(|err| anyhow::anyhow!(err.to_string()))
+}
+
+fn parse_cleanup_now(raw: Option<String>) -> anyhow::Result<DateTime<Utc>> {
+    match raw {
+        Some(raw) => Ok(DateTime::parse_from_rfc3339(&raw)?.with_timezone(&Utc)),
+        None => Ok(Utc::now()),
+    }
 }
 
 fn dream_report_failed(report: &DreamRunReport) -> bool {

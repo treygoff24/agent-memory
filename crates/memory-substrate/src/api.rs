@@ -3,7 +3,7 @@
 //! Public Stream A API.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
@@ -16,8 +16,8 @@ use serde::Serialize;
 
 use crate::error::{OpenError, ReadError, SubstrateResult, VectorError, WriteFailure, WriteFailureKind};
 use crate::events::{
-    append_event, append_event_best_effort, read_events, reserve_event_sequence, sync_event_sequence_state, Event,
-    EventKind,
+    append_event, append_event_best_effort, decode_line, read_events, reserve_event_sequence,
+    sync_event_sequence_state, Event, EventKind,
 };
 use crate::frontmatter::validate_frontmatter;
 use crate::git;
@@ -697,6 +697,9 @@ impl Substrate {
     ) -> Result<SubstrateFragmentAppendOutcome, WriteFailure> {
         let operation_id = request.operation_id.clone().unwrap_or_else(new_operation_id);
         let outcome = WriteOutcome::not_committed(operation_id.clone(), self.durability);
+        if matches!(request.classification, ClassificationOutcome::Secret) {
+            return Err(WriteFailure { outcome, kind: WriteFailureKind::SecretRefused });
+        }
         validate_substrate_fragment_append(&request)
             .map_err(|err| WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::Validation(err) })?;
         let id = request.id.clone().unwrap_or_else(new_substrate_fragment_id);
@@ -833,8 +836,12 @@ impl Substrate {
             )
             .map_err(|err| WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::Io(err.to_string()) })?;
             for record in expired {
-                let archive_path =
-                    RepoPath::new(format!("substrate/archive/{}/{}.jsonl", device.as_str(), record.ts.format("%Y-%m")));
+                let archive_path = RepoPath::try_new(format!(
+                    "substrate/archive/{}/{}.jsonl",
+                    device.as_str(),
+                    record.ts.format("%Y-%m")
+                ))
+                .map_err(|err| WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::Validation(err) })?;
                 archive_batches.entry(archive_path).or_default().push(record);
             }
         }
@@ -1316,16 +1323,50 @@ impl Substrate {
 }
 
 fn best_effort_event_seq_start(event_log: &std::path::Path, device: &DeviceId) -> u64 {
-    read_events(event_log)
-        .map(|events| {
-            events
-                .into_iter()
-                .filter(|event| &event.device == device)
-                .map(|event| event.seq)
-                .max()
-                .map_or(1, |seq| seq.saturating_add(1))
-        })
-        .unwrap_or(1)
+    latest_event_seq_for_device(event_log, device).ok().flatten().map_or(1, |seq| seq.saturating_add(1))
+}
+
+fn latest_event_seq_for_device(event_log: &std::path::Path, device: &DeviceId) -> std::io::Result<Option<u64>> {
+    if !event_log.exists() {
+        return Ok(None);
+    }
+
+    const TAIL_CHUNK_SIZE: u64 = 8192;
+    let mut file = std::fs::File::open(event_log)?;
+    let mut position = file.seek(SeekFrom::End(0))?;
+    let mut suffix = Vec::new();
+
+    while position > 0 {
+        let read_len = position.min(TAIL_CHUNK_SIZE);
+        position -= read_len;
+        file.seek(SeekFrom::Start(position))?;
+
+        let mut chunk = vec![0; read_len as usize];
+        file.read_exact(&mut chunk)?;
+        chunk.extend_from_slice(&suffix);
+
+        let mut search_end = chunk.len();
+        while let Some(newline_index) = chunk[..search_end].iter().rposition(|byte| *byte == b'\n') {
+            let line = &chunk[newline_index + 1..search_end];
+            if let Some(seq) = event_seq_from_line_for_device(line, device) {
+                return Ok(Some(seq));
+            }
+            search_end = newline_index;
+        }
+        suffix = chunk[..search_end].to_vec();
+    }
+
+    Ok(event_seq_from_line_for_device(&suffix, device))
+}
+
+fn event_seq_from_line_for_device(line: &[u8], device: &DeviceId) -> Option<u64> {
+    if line.is_empty() {
+        return None;
+    }
+    let line = std::str::from_utf8(line).ok()?.trim_end_matches('\r');
+    let value = decode_line(line)?;
+    let event = serde_json::from_value::<Event>(value).ok()?;
+    (&event.device == device).then_some(event.seq)
 }
 
 fn committed_lifecycle_failure(failure: WriteFailure, committed_outcome: &WriteOutcome) -> WriteFailure {
@@ -1414,8 +1455,6 @@ fn append_jsonl_record<T: Serialize>(target: JsonlWriteTarget<'_>, record: &T) -
     file.write_all(b"\n")?;
     if matches!(target.durability, DurabilityTier::Full) {
         file.sync_all()?;
-    }
-    if matches!(target.durability, DurabilityTier::Full) {
         std::fs::File::open(parent)?.sync_all()?;
     }
     Ok(())
@@ -1473,7 +1512,7 @@ fn is_dream_prose_ref(reference: &str) -> bool {
         .split('/')
         .collect::<Vec<_>>()
         .windows(3)
-        .any(|window| window[0] == "dreams" && matches!(window[1], "journal" | "questions"))
+        .any(|window| window[0] == "dreams" && matches!(window[1], "journal" | "questions" | "cleanup"))
 }
 
 fn absolute_to_repo_path(repo: &std::path::Path, absolute: &std::path::Path) -> Result<RepoPath, String> {
@@ -1579,6 +1618,48 @@ fn load_device_id(runtime: &std::path::Path) -> Result<String, OpenError> {
 
 fn new_operation_id() -> OperationId {
     OperationId::new(format!("op_{}", uuid::Uuid::new_v4()))
+}
+
+#[cfg(test)]
+mod event_seq_tests {
+    use chrono::Utc;
+    use std::io::Write as _;
+
+    use super::*;
+    use crate::events::append_event;
+
+    #[test]
+    fn best_effort_event_seq_start_reads_valid_tail_without_full_log_recovery() {
+        let temp = must(tempfile::tempdir(), "tempdir");
+        let event_log = temp.path().join("events").join("dev_test.jsonl");
+        let device = must(DeviceId::try_new("dev_test"), "device id");
+        must(append_event(&event_log, &test_event(&device, 41)), "append first event");
+        let mut file = must(std::fs::OpenOptions::new().append(true).open(&event_log), "open event log");
+        must(file.write_all(b"{not-json}\n"), "append malformed middle line");
+        must(append_event(&event_log, &test_event(&device, 42)), "append tail event");
+
+        assert_eq!(best_effort_event_seq_start(&event_log, &device), 43);
+    }
+
+    fn must<T, E: std::fmt::Display>(result: Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(err) => panic!("{context}: {err}"),
+        }
+    }
+
+    fn test_event(device: &DeviceId, seq: u64) -> Event {
+        Event {
+            schema: crate::SUBSTRATE_SCHEMA_VERSION,
+            id: EventId::new(format!("evt_{seq}")),
+            at: Utc::now(),
+            device: device.clone(),
+            seq,
+            operation_id: None,
+            kind: EventKind::OperatorRepairRequired { reason: "test".to_string() },
+            crc32c: 0,
+        }
+    }
 }
 
 /// Build a synthetic `Frontmatter` for ciphertext-only `MemoryEnvelope`s.
