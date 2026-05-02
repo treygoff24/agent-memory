@@ -63,7 +63,7 @@ impl RcScheduler {
     pub fn is_overdue(&self, state: &RealityCheckState, now: DateTime<Utc>) -> bool {
         state
             .last_completed_at
-            .is_some_and(|last_completed_at| now.signed_duration_since(last_completed_at) > OVERDUE_WINDOW)
+            .is_none_or(|last_completed_at| now.signed_duration_since(last_completed_at) > OVERDUE_WINDOW)
     }
 
     pub fn check_and_fire_if_due(

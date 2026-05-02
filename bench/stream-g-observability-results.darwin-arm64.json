@@ -73,6 +73,7 @@
       "budget_operator": "less_than_or_equal",
       "sample_count": 80,
       "pass": true,
+      "synthetic_caveat": "Measures in-process state-machine transition against a 144-byte mock frame only; does not exercise the ratatui buffer-diff or crossterm write path. Will not catch regressions in the real render pipeline. Real-load TUI bench (terminal-emulator integration) is deferred to v1.1+ (see spec §12.1). Retained as a smoke-test regression detector for in-process render logic.",
       "details": {
         "fixture": "synthetic in-process key event to frame render",
         "panel_count": 8,
@@ -88,6 +89,7 @@
       "budget_operator": "less_than_or_equal",
       "sample_count": 80,
       "pass": true,
+      "synthetic_caveat": "Measures in-process state-machine transition against a 251-byte mock frame with an in-memory daemon fixture; does not exercise the ratatui buffer-diff, crossterm write path, or live daemon socket round-trip. Will not catch regressions in the real render pipeline. Real-load TUI bench (terminal-emulator integration) is deferred to v1.1+ (see spec §12.1). Retained as a smoke-test regression detector for in-process render logic.",
       "details": {
         "detail_records": 256,
         "fixture": "synthetic trust artifact fetch from in-memory daemon fixture",

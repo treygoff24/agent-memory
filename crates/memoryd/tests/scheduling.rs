@@ -40,6 +40,19 @@ fn test_overdue_after_21_days() {
 }
 
 #[test]
+fn test_overdue_when_never_completed() {
+    // A fresh install with no completed Reality Check must be considered overdue —
+    // the user has never run one, which is at least as overdue as a 21-day lapse.
+    // Spec §5.5: `is_overdue` mirrors `is_due` semantics where None means "infinitely
+    // overdue" rather than "never due". This guards against the `is_some_and` trap
+    // that returns `false` when `last_completed_at` is None.
+    let now = instant("2026-05-01T12:00:00Z");
+    let state = RealityCheckState { last_completed_at: None, snooze_until: None };
+
+    assert!(RcScheduler::default().is_overdue(&state, now));
+}
+
+#[test]
 fn test_invalid_cron_falls_back_to_default() {
     let scheduler = RcScheduler::new("not a cron expression");
 

@@ -9,6 +9,12 @@
 
 v0.1: Initial Stream G contract for v1 release. Defines all observability-facing user surfaces: TUI (8-panel `ratatui`), localhost web dashboard (4 sections), Reality Check ritual, notification dispatcher, trust artifact rendering, and CLI command additions. Stream G is a consumer of shipped Streams A–F; it does not mutate canonical memory state, does not add MCP tools, and does not modify governance or privacy logic.
 
+v0.1 (micro-clarifications, 2026-05-02): Four implementation-accuracy fixes from the post-12-hour-run fresh-eyes review — no contract changes, only documentation alignment and deferred-list updates:
+1. §4.4 bind_address clarification: explicitly documents `::1` as a valid value alongside `127.0.0.1`; the §8 config block already listed both but §4.4 prose was underspecified.
+2. §11.8 (new): `GET /api/audit/:id/walk` (audit_walk) is formally moved to the v1.1+ deferred list. The route was shipped as a 501 stub by the Codex 12-hour run; the 501 is correct behavior — the route is now explicitly deferred rather than silently stubbed.
+3. §12.1 (annotation added): The TUI benchmark entries `tui_panel_switch` and `tui_detail_modal_open` in the canonical baseline use synthetic 144-byte frames, not a full ratatui render path. Real-load TUI bench (full terminal-emulator integration) is deferred to v1.1+. The synthetic measurements remain valid as smoke-test regression detectors for the in-process render code path.
+4. §5.5 / §5.2 clarification: `is_overdue` must treat `None` (never-completed) as overdue, mirroring `is_due`'s `is_none_or` semantics. Aligns implementation with spec intent.
+
 ---
 
 ## 1. Scope and dependency boundaries
@@ -1802,6 +1808,14 @@ SMTP password storage via env var (`smtp_password_env`) covers the basic case. F
 
 The `/memory-reality-check` slash command (§9.8) prints a summary for the human. Open question: should the output include memory titles (which could surface private memory content in the harness's visible context window)? Decision for v0.1: yes, titles are shown, because (a) the harness context is already trusted (Tier 1), (b) `memoryd reality-check run --json` — which backs this command — applies `safe_plaintext_fragment` on the title before outputting, and (c) omitting titles makes the summary useless. If Stream D's safe_plaintext_fragment returns `OmitEncryptedBodyHidden` for a title, the item is rendered as `[encrypted item, score: X.XX]` with no title.
 
+### 11.8 `GET /api/audit/:id/walk` — deeper audit-walk provenance traversal (deferred v1.1+)
+
+`GET /api/audit/:id/walk?direction=up|down&depth=<int>` (§4.3, `ProvenanceWalkResponse`) was shipped as a 501 Not Implemented stub by the Codex 12-hour implementation run. The route and its response type are defined; the backend traversal logic (walking the `events_log` mirror and `memory_supersession` join table to build a multi-hop provenance DAG) was scoped out due to the complexity of reliable recursive graph walks within the 12-hour constraint.
+
+**v1 behavior:** The route returns `{"status": "not_implemented", "route": "audit_walk"}` with HTTP 501. The dashboard "Walk provenance" button is visible in the UI but triggers this 501; users see a "Provenance walk not yet available" message in the dashboard. No silent failure.
+
+**v1.1+ scope:** Implement the full provenance walk using the bounded CTE shape from §5.1 (`distinct_sources`), extended to walk `EventKind` provenance events and supersession edges simultaneously. The response shape (`ProvenanceWalkResponse` with `nodes[]` and `edges[]`) is already defined and stable.
+
 ---
 
 ## 12. Performance budgets
@@ -1818,6 +1832,8 @@ The `/memory-reality-check` slash command (§9.8) prints a summary for the human
 | Resize redraw | ≤32 ms | Resize event to stable frame |
 
 **Failure mode on budget miss:** log a WARNING to the daemon log at `WARN` level: "TUI render budget exceeded: <op> took <ms> ms". No error state; no crash. Budget misses above 3× (48 ms) are logged at `ERROR`.
+
+**Synthetic benchmark caveat (v1 baseline):** The canonical baseline entries `tui_panel_switch` and `tui_detail_modal_open` in `bench/stream-g-observability-results.darwin-arm64.json` measure in-process state transitions against a synthetic 144-byte mock frame, not a full ratatui render path with a real terminal backend and live daemon socket responses. Measured times (≤0.001 ms p95) reflect the state-machine cost only and will not catch regressions in the ratatui buffer-diff or crossterm write paths. The entries remain in the baseline as smoke-test regression detectors for the in-process render logic. A real-load TUI bench (terminal-emulator integration, realistic frame sizes, mock daemon socket) is deferred to v1.1+. TODO(v1.1): replace `tui_panel_switch` and `tui_detail_modal_open` with full-fidelity terminal-emulator integration bench using e.g. a headless vt100 backend or ratatui's TestBackend with realistic content sizes.
 
 ### 12.2 Web dashboard performance
 
