@@ -172,9 +172,18 @@ impl ClaimLockRegistry {
                         return ClaimLockAcquireResult::AlreadyHeld(existing_info);
                     }
 
-                    let contender_harness = request.harness.clone();
-                    let contender_session_id = request.session_id.clone();
-                    entry.insert(ClaimLockEntry::new(request, clock));
+                    // INVARIANT: advisory contention — the *original* holder's
+                    // lock entry is preserved in the registry.  The caller
+                    // receives `Contended` with the original holder info so it
+                    // can warn the user and decide whether to proceed.  We do
+                    // NOT replace the entry here; the contender may call
+                    // `restore` to reclaim a previous snapshot after it
+                    // completes its own work, or it may simply proceed without
+                    // taking ownership.  Replacing the entry on contention would
+                    // silently evict the holder — surprising for advisory
+                    // semantics and observable via `peer status`.
+                    let contender_harness = request.harness;
+                    let contender_session_id = request.session_id;
                     return ClaimLockAcquireResult::Contended(contention(
                         memory_id,
                         existing_info,

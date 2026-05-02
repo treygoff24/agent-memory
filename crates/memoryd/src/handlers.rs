@@ -591,6 +591,15 @@ async fn peer_heartbeat_response(
         },
     )
     .map_err(peer_heartbeat_error)?;
+    // INVARIANT: `conflicting_claim_locks` is populated only at Level 3.
+    // Spec §6.1 does not explicitly restrict this field to L3, but in practice
+    // the heartbeat path is only exercised by Level 3 sessions — the
+    // `PresenceRegistry::handle_peer_heartbeat` path in presence.rs returns an
+    // empty `active_peers` list (and Level 1/2 sessions do not send heartbeats).
+    // If a future Level 2 heartbeat path is introduced, this guard must be
+    // removed or explicitly extended so that L2 callers receive conflict signals
+    // too.  Do NOT silently drop this to "emit empty at L2" without a test.
+    // See: docs/api/stream-i-cross-session-api.md (heartbeat notes section).
     if ack.active_level == 3 {
         ack.conflicting_claim_locks = conflicting_claim_locks_for_heartbeat(substrate, state, &heartbeat).await;
     }

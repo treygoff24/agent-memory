@@ -61,6 +61,13 @@ pub struct CrossDeviceStartupUpdates {
 pub struct StartupCoordinationRender<'a> {
     pub same_device: Option<&'a CoordinationInsertion>,
     pub cross_device: Option<&'a CrossDeviceStartupUpdates>,
+    /// Salient entity ids for the current session, used to populate the
+    /// `entities=` attribute on `<entity-recall>`. Per spec §4.3, Stream E
+    /// populates this attribute so that later startup-recall parsing can
+    /// re-derive `SessionContext.salient_entities` from the recall block
+    /// via `entity_recall_attribute_ids`. When `None` the attribute is
+    /// emitted empty (legacy / non-coordination callers).
+    pub salient_entities: Option<&'a HashSet<String>>,
 }
 
 pub fn render_memory_entry(entry: &RecallEntry) -> String {
@@ -139,7 +146,7 @@ pub fn render_startup_frame_with_coordination(
         session_binding,
         explanation,
         sections,
-        StartupCoordinationRender { same_device: coordination, cross_device: None },
+        StartupCoordinationRender { same_device: coordination, cross_device: None, salient_entities: None },
     )
 }
 
@@ -172,7 +179,7 @@ pub fn render_startup_frame_with_cross_device_updates(
             .find(|section| section.name == section_name)
             .map(|section| section.body.as_str())
             .unwrap_or("");
-        let opening = opening_tag(session_binding, explanation, section_name);
+        let opening = opening_tag(session_binding, explanation, section_name, startup_coordination.salient_entities);
         let merged_body;
         let body = if section_name == RecallSectionName::EntityRecall
             && (!rendered_peer_updates.is_empty() || !rendered_cross_device_updates.is_empty())
@@ -263,10 +270,11 @@ fn opening_tag(
     session_binding: &SessionBinding,
     explanation: &RecallExplanation,
     section_name: RecallSectionName,
+    salient_entities: Option<&HashSet<String>>,
 ) -> String {
     match section_name {
         RecallSectionName::ProjectState => project_state_opening_tag(session_binding),
-        RecallSectionName::EntityRecall => "<entity-recall entities=\"\">".to_owned(),
+        RecallSectionName::EntityRecall => entity_recall_opening_tag(salient_entities),
         RecallSectionName::RecallExplanation => format!(
             "<recall-explanation policy=\"{}\" budget-tokens=\"{}\" used-tokens=\"{}\">",
             escape_xml_attr(&explanation.policy),
@@ -275,6 +283,25 @@ fn opening_tag(
         ),
         _ => format!("<{}>", section_name.as_str()),
     }
+}
+
+/// Build `<entity-recall entities="...">` with a sorted, XML-escaped,
+/// comma-separated list of salient entity ids.
+///
+/// Sorting is lexicographic on the entity id strings so that the attribute
+/// value is deterministic regardless of `HashSet` iteration order — required
+/// for two-clone convergence (CLAUDE.md invariant 6).
+fn entity_recall_opening_tag(salient_entities: Option<&HashSet<String>>) -> String {
+    let entities_attr = match salient_entities {
+        None => String::new(),
+        Some(entities) if entities.is_empty() => String::new(),
+        Some(entities) => {
+            let mut sorted: Vec<&str> = entities.iter().map(String::as_str).collect();
+            sorted.sort_unstable();
+            sorted.iter().map(|e| escape_xml_attr(e)).collect::<Vec<_>>().join(",")
+        }
+    };
+    format!("<entity-recall entities=\"{entities_attr}\">")
 }
 
 fn project_state_opening_tag(session_binding: &SessionBinding) -> String {

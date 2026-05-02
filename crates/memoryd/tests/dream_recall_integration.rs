@@ -403,7 +403,7 @@ fn stream_e_empty_baseline(cwd: &str) -> String {
         "    - project: dream-project".to_owned(),
         "    - namespace: project:proj_dream".to_owned(),
         "  </project-state>".to_owned(),
-        "  <entity-recall entities=\"\">".to_owned(),
+        "  <entity-recall entities=\"dream-project,proj_dream\">".to_owned(),
         "  </entity-recall>".to_owned(),
         "  <recent-memory>".to_owned(),
         "  </recent-memory>".to_owned(),

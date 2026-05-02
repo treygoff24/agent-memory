@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use chrono::{TimeZone, Utc};
 use memorum_coordination::{ClaimLockInfo, CoordinationInsertion, PeerPresenceEntry, PeerUpdateEntry};
 use memoryd::recall::{
@@ -194,7 +196,11 @@ fn startup_renders_cross_device_updates_separately_with_device_other() {
         &session_binding(),
         &RecallExplanation::empty(3600),
         &[],
-        StartupCoordinationRender { same_device: Some(&same_device), cross_device: Some(&cross_device) },
+        StartupCoordinationRender {
+            same_device: Some(&same_device),
+            cross_device: Some(&cross_device),
+            salient_entities: None,
+        },
     );
 
     assert!(rendered.starts_with("<memory-recall version=\"stream-e-v0.5\" harness=\"codex\" session=\"sess_current\" coordination=\"stream-i-v0.1\">"));
@@ -254,4 +260,87 @@ fn assert_in_order(value: &str, needles: &[&str]) {
 #[test]
 fn estimated_token_fixture_sanity() {
     assert_eq!(estimated_tokens("abcde"), 2);
+}
+
+// --- I-R3 tests: entity-recall entities= attribute ---
+
+/// When no salient entities are provided, the attribute is emitted empty.
+#[test]
+fn entity_recall_entities_attr_empty_when_no_salients() {
+    let rendered = render_startup_frame_with_cross_device_updates(
+        &session_binding(),
+        &RecallExplanation::empty(3600),
+        &[],
+        StartupCoordinationRender { same_device: None, cross_device: None, salient_entities: None },
+    );
+
+    assert!(rendered.contains("<entity-recall entities=\"\">"), "expected empty entities attr, got:\n{rendered}");
+}
+
+/// When salient entities are present, the attribute is populated with a
+/// comma-separated, lexicographically sorted, XML-escaped list.
+#[test]
+fn entity_recall_entities_attr_populated_from_salients() {
+    // Use "bravo" before "alpha" in the HashSet to verify sorting.
+    let salients: HashSet<String> = ["bravo".to_string(), "alpha".to_string()].into();
+
+    let rendered = render_startup_frame_with_cross_device_updates(
+        &session_binding(),
+        &RecallExplanation::empty(3600),
+        &[],
+        StartupCoordinationRender { same_device: None, cross_device: None, salient_entities: Some(&salients) },
+    );
+
+    // Sorted: alpha comes before bravo.
+    assert!(
+        rendered.contains("<entity-recall entities=\"alpha,bravo\">"),
+        "expected sorted entities attr, got:\n{rendered}"
+    );
+}
+
+/// Entities with XML-special characters in their ids are properly escaped in
+/// the attribute value.
+#[test]
+fn entity_recall_entities_attr_xml_escaped() {
+    let salients: HashSet<String> = ["ent&special".to_string(), "ent\"quoted".to_string()].into();
+
+    let rendered = render_startup_frame_with_cross_device_updates(
+        &session_binding(),
+        &RecallExplanation::empty(3600),
+        &[],
+        StartupCoordinationRender { same_device: None, cross_device: None, salient_entities: Some(&salients) },
+    );
+
+    // Both ids must be escaped; raw & or " must not appear inside the attribute value.
+    assert!(!rendered.contains("ent&special"), "raw & must be escaped");
+    assert!(!rendered.contains("ent\"quoted"), "raw \" must be escaped");
+    assert!(rendered.contains("ent&amp;special"), "& must be escaped to &amp;");
+    assert!(rendered.contains("ent&quot;quoted"), "\" must be escaped to &quot;");
+}
+
+/// Two calls with the same entity set must produce identical attribute values —
+/// confirms that `HashSet` iteration order is not leaking into the output.
+#[test]
+fn entity_recall_entities_attr_is_deterministic() {
+    let salients: HashSet<String> =
+        ["ent_c".to_string(), "ent_a".to_string(), "ent_b".to_string(), "ent_d".to_string()].into();
+
+    let first = render_startup_frame_with_cross_device_updates(
+        &session_binding(),
+        &RecallExplanation::empty(3600),
+        &[],
+        StartupCoordinationRender { same_device: None, cross_device: None, salient_entities: Some(&salients) },
+    );
+    let second = render_startup_frame_with_cross_device_updates(
+        &session_binding(),
+        &RecallExplanation::empty(3600),
+        &[],
+        StartupCoordinationRender { same_device: None, cross_device: None, salient_entities: Some(&salients) },
+    );
+
+    assert_eq!(first, second, "entity-recall attribute must be deterministic across calls");
+    assert!(
+        first.contains("<entity-recall entities=\"ent_a,ent_b,ent_c,ent_d\">"),
+        "entities must be sorted lexicographically"
+    );
 }

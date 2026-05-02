@@ -373,3 +373,80 @@ fn candidate_embedding(triple: EmbeddingTriple, vector: Vec<f32>) -> CandidateEm
 fn peer_update_ids(entries: &[PeerUpdateEntry]) -> Vec<String> {
     entries.iter().map(|entry| entry.reference.clone()).collect()
 }
+
+// --- I-R5: cross-device pass cool-down suppression ---
+
+/// Simulates the two-pass startup recall flow (same-device → cross-device).
+///
+/// If a memory id is surfaced in pass 1 (same-device), it must be suppressed
+/// in pass 2 (cross-device) even though the two passes operate over different
+/// candidate slices.  The fix: seed pass 2's `SessionContext` clone with the
+/// ids surfaced by pass 1 before evaluating.
+///
+/// This test exercises the gate-level mechanism directly without requiring a
+/// Substrate (the startup.rs fix wires this for production; the gate itself is
+/// the right unit to test for the cool-down contract).
+#[test]
+fn cross_device_pass_suppresses_ids_already_surfaced_in_same_device_pass() {
+    let now = fixture_now();
+    let mut base_session = session_with_entities(["ent_shared"]);
+    base_session.salient_paths = set(["project:proj/shared.md"]);
+
+    // Pass 1 — same-device candidates.  One passes the gate.
+    let same_device_candidate =
+        candidate("mem_20260501_a1b2c3d4e5f60718_000500", ["ent_shared"], ["project:proj/shared.md"]);
+
+    let pass1_insertion = gate().evaluate(&mut base_session, &[same_device_candidate], now);
+    assert_eq!(
+        peer_update_ids(&pass1_insertion.peer_updates),
+        ["mem_20260501_a1b2c3d4e5f60718_000500"],
+        "pass 1: same-device candidate must be surfaced"
+    );
+
+    // Simulate what startup.rs does: extract surfaced ids from pass 1's result
+    // and seed a fresh session clone for pass 2.
+    let mut pass2_session = base_session.clone();
+    // NOTE: base_session already has the id recorded (gate mutates it), but we
+    // explicitly seed pass2_session to mirror the startup.rs fix where the
+    // caller must thread the surfaced set explicitly.
+    for id in pass1_insertion.peer_updates.iter().map(|u| u.reference.clone()) {
+        pass2_session.record_surfaced_peer_write(id);
+    }
+
+    // Pass 2 — cross-device candidates include the same memory id plus a novel one.
+    let same_id_cross_device =
+        candidate("mem_20260501_a1b2c3d4e5f60718_000500", ["ent_shared"], ["project:proj/shared.md"]);
+    let novel_cross_device =
+        candidate("mem_20260501_a1b2c3d4e5f60718_000501", ["ent_shared"], ["project:proj/shared.md"]);
+
+    let pass2_insertion = gate().evaluate(&mut pass2_session, &[same_id_cross_device, novel_cross_device], now);
+
+    // The id surfaced in pass 1 must be suppressed; only the novel id appears.
+    assert_eq!(
+        peer_update_ids(&pass2_insertion.peer_updates),
+        ["mem_20260501_a1b2c3d4e5f60718_000501"],
+        "pass 2: id already surfaced in pass 1 must be suppressed by cool-down"
+    );
+}
+
+/// Without cross-pass seeding, the same id appears in both passes — confirming
+/// that the shared-cool-down fix is load-bearing (not accidentally a no-op).
+#[test]
+fn without_cooldown_seeding_same_id_appears_in_both_passes() {
+    let now = fixture_now();
+
+    let mut pass1_session = session_with_entities(["ent_shared"]);
+    pass1_session.salient_paths = set(["project:proj/shared.md"]);
+    let mut pass2_session = pass1_session.clone(); // NOT seeded with pass 1 surfaced ids
+
+    let same_id = "mem_20260501_a1b2c3d4e5f60718_000502";
+    let pass1_candidate = candidate(same_id, ["ent_shared"], ["project:proj/shared.md"]);
+    let pass2_candidate = candidate(same_id, ["ent_shared"], ["project:proj/shared.md"]);
+
+    let pass1_insertion = gate().evaluate(&mut pass1_session, &[pass1_candidate], now);
+    let pass2_insertion = gate().evaluate(&mut pass2_session, &[pass2_candidate], now);
+
+    // Without seeding: both passes independently surface the same id.
+    assert_eq!(peer_update_ids(&pass1_insertion.peer_updates), [same_id]);
+    assert_eq!(peer_update_ids(&pass2_insertion.peer_updates), [same_id], "unseeded pass 2 duplicates pass 1 output");
+}

@@ -22,7 +22,10 @@ const SALIENT_ENTITY_COUNT: usize = 10;
 const SALIENT_PATH_COUNT: usize = 10;
 const SAMPLE_COUNT: usize = 301;
 const RELEVANCE_GATE_BUDGET_MS: f64 = 5.0;
-const EMBEDDING_DIMENSION: usize = 16;
+/// Default embedding dimension.  Production vectors are 1,024–3,072; the spec
+/// budget (≤5ms/candidate) must hold at this size.  Use `--embedding-dimension`
+/// to override (e.g. `--embedding-dimension 3072` for worst-case profiling).
+const DEFAULT_EMBEDDING_DIMENSION: usize = 1536;
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -41,6 +44,12 @@ struct Args {
     /// Explicit release/update mode. This is the only mode that writes the canonical output file.
     #[arg(long)]
     write_output: Option<PathBuf>,
+
+    /// Embedding vector dimension used to construct the synthetic fixture.
+    /// Default is 1536 (typical production dimension).  Pass a higher value
+    /// (e.g. 3072) to profile worst-case cosine-similarity cost.
+    #[arg(long, default_value_t = DEFAULT_EMBEDDING_DIMENSION)]
+    embedding_dimension: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,7 +108,7 @@ fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     validate_mode(&args)?;
 
-    let report = run_benchmark(&args.profile)?;
+    let report = run_benchmark(&args.profile, args.embedding_dimension)?;
 
     if args.assert {
         let baseline_path = args.baseline.as_ref().context("baseline is required in assert mode")?;
@@ -144,8 +153,8 @@ fn validate_mode(args: &Args) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn run_benchmark(profile: &str) -> anyhow::Result<BenchReport> {
-    let fixture = BenchFixture::new()?;
+fn run_benchmark(profile: &str, embedding_dimension: usize) -> anyhow::Result<BenchReport> {
+    let fixture = BenchFixture::new(embedding_dimension)?;
     let peer_relevance_gate = measure_peer_relevance_gate(&fixture)?;
 
     Ok(BenchReport {
@@ -162,7 +171,7 @@ fn run_benchmark(profile: &str) -> anyhow::Result<BenchReport> {
             outside_recency_count: OUTSIDE_RECENCY_COUNT,
             salient_entity_count: SALIENT_ENTITY_COUNT,
             salient_path_count: SALIENT_PATH_COUNT,
-            precomputed_embedding_dimension: EMBEDDING_DIMENSION,
+            precomputed_embedding_dimension: embedding_dimension,
             sample_count: SAMPLE_COUNT,
         },
         peer_relevance_gate,
@@ -315,21 +324,21 @@ struct BenchFixture {
 }
 
 impl BenchFixture {
-    fn new() -> anyhow::Result<Self> {
+    fn new(embedding_dimension: usize) -> anyhow::Result<Self> {
         let now = fixture_now()?;
-        let session = session_context();
-        let candidates = peer_write_candidates(now)?;
+        let session = session_context(embedding_dimension);
+        let candidates = peer_write_candidates(now, embedding_dimension)?;
 
         Ok(Self { now, session, candidates })
     }
 }
 
-fn session_context() -> SessionContext {
-    let triple = embedding_triple();
+fn session_context(embedding_dimension: usize) -> SessionContext {
+    let triple = embedding_triple(embedding_dimension);
     let mut session = SessionContext {
         session_id: "bench_current_session".to_owned(),
         harness: "codex".to_owned(),
-        recent_query_embedding: Some(QueryEmbedding { triple, vector: embedding_vector(0) }),
+        recent_query_embedding: Some(QueryEmbedding { triple, vector: embedding_vector(0, embedding_dimension) }),
         ..SessionContext::default()
     };
     session.salient_entities = (0..SALIENT_ENTITY_COUNT).map(entity_id).collect();
@@ -337,15 +346,19 @@ fn session_context() -> SessionContext {
     session
 }
 
-fn peer_write_candidates(now: DateTime<Utc>) -> anyhow::Result<Vec<PeerWriteCandidate>> {
+fn peer_write_candidates(now: DateTime<Utc>, embedding_dimension: usize) -> anyhow::Result<Vec<PeerWriteCandidate>> {
     let mut candidates = Vec::with_capacity(CANDIDATE_COUNT);
     for index in 0..CANDIDATE_COUNT {
-        candidates.push(peer_write_candidate(index, now)?);
+        candidates.push(peer_write_candidate(index, now, embedding_dimension)?);
     }
     Ok(candidates)
 }
 
-fn peer_write_candidate(index: usize, now: DateTime<Utc>) -> anyhow::Result<PeerWriteCandidate> {
+fn peer_write_candidate(
+    index: usize,
+    now: DateTime<Utc>,
+    embedding_dimension: usize,
+) -> anyhow::Result<PeerWriteCandidate> {
     let memory_id = memory_id(index)?;
     let indexed_at = if index < WITHIN_RECENCY_COUNT {
         now - Duration::seconds(index as i64)
@@ -360,7 +373,10 @@ fn peer_write_candidate(index: usize, now: DateTime<Utc>) -> anyhow::Result<Peer
         harness: "claude-code".to_owned(),
         session_id: format!("peer_session_{:03}", index % 4),
         namespace: "project:stream-i".to_owned(),
-        embedding: Some(CandidateEmbedding { triple: embedding_triple(), vector: embedding_vector(index) }),
+        embedding: Some(CandidateEmbedding {
+            triple: embedding_triple(embedding_dimension),
+            vector: embedding_vector(index, embedding_dimension),
+        }),
     })
 }
 
@@ -422,17 +438,17 @@ fn path_id(index: usize) -> String {
     format!("projects/stream-i/path-{index:02}.md")
 }
 
-fn embedding_triple() -> EmbeddingTriple {
+fn embedding_triple(dimension: usize) -> EmbeddingTriple {
     EmbeddingTriple {
         provider: "local-fixture".to_owned(),
         model_ref: "stream-i-precomputed-v1".to_owned(),
-        dimension: EMBEDDING_DIMENSION as u32,
+        dimension: dimension as u32,
     }
 }
 
-fn embedding_vector(index: usize) -> Vec<f32> {
-    let rotation = index % EMBEDDING_DIMENSION;
-    (0..EMBEDDING_DIMENSION).map(|dimension| if dimension == rotation { 1.0 } else { 0.25 }).collect()
+fn embedding_vector(index: usize, dimension: usize) -> Vec<f32> {
+    let rotation = index % dimension.max(1);
+    (0..dimension).map(|d| if d == rotation { 1.0 } else { 0.25 }).collect()
 }
 
 fn fixture_now() -> anyhow::Result<DateTime<Utc>> {

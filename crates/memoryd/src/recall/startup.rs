@@ -148,7 +148,7 @@ pub async fn build_startup_response_with_coordination_config(
     ];
     let startup_context = startup_context_from_selection(&session_binding, &selected);
     let startup_peer_updates =
-        startup_peer_updates(substrate, &session_binding, &coordination_config, startup_context).await?;
+        startup_peer_updates(substrate, &session_binding, &coordination_config, startup_context.clone()).await?;
 
     let section_token_estimates = section_token_estimates(&sections);
     let mut omissions = collection.omitted;
@@ -173,6 +173,7 @@ pub async fn build_startup_response_with_coordination_config(
         StartupCoordinationRender {
             same_device: startup_peer_updates.same_device.as_ref(),
             cross_device: startup_peer_updates.cross_device.as_ref(),
+            salient_entities: Some(&startup_context.salient_entities),
         },
     );
     emit_recall_hits(substrate, included_memory_ids.iter().map(String::as_str));
@@ -216,8 +217,27 @@ async fn startup_peer_updates(
     let now = Utc::now();
     let same_device =
         same_device_updates(substrate, session_binding, &same_device_rows, now, config, &startup_context).await;
-    let cross_device =
-        cross_device_updates(substrate, session_binding, &cross_device_rows, now, config, &startup_context).await;
+
+    // I-R5: share the cool-down set across both passes. Peer-write ids surfaced
+    // in the same-device pass must not be surfaced again in the cross-device
+    // pass during the same startup (spec §4.2 single-session cool-down).
+    // We extract the surfaced ids from the same-device result and seed the
+    // startup_context clone used by the cross-device pass with them, so the
+    // relevance gate's cool-down check suppresses duplicates.
+    let same_device_surfaced: HashSet<String> = same_device
+        .as_ref()
+        .map(|insertion| insertion.peer_updates.iter().map(|u| u.reference.clone()).collect())
+        .unwrap_or_default();
+    let cross_device = cross_device_updates(
+        substrate,
+        session_binding,
+        &cross_device_rows,
+        now,
+        config,
+        &startup_context,
+        same_device_surfaced,
+    )
+    .await;
 
     Ok(StartupPeerUpdates { same_device, cross_device })
 }
@@ -294,6 +314,11 @@ async fn cross_device_updates(
     now: DateTime<Utc>,
     base_config: &CoordinationConfig,
     startup_context: &SessionContext,
+    // I-R5: peer-write ids already surfaced in the same-device pass. These are
+    // pre-seeded into the session clone's `surfaced_peer_writes` set so the
+    // relevance gate's cool-down check suppresses any id that already appeared
+    // in pass 1 (spec §4.2 single-session cool-down).
+    already_surfaced: HashSet<String>,
 ) -> Option<CrossDeviceStartupUpdates> {
     if rows.is_empty() {
         return None;
@@ -307,6 +332,10 @@ async fn cross_device_updates(
     let recency_cutoff = recency_cutoff(now, config.relevance_gate.recency_window_seconds);
     let rows = rows.iter().filter(|row| row.indexed_at >= recency_cutoff).cloned().collect::<Vec<_>>();
     let mut session = startup_context.clone();
+    // Seed the cool-down set with ids surfaced in the same-device pass.
+    for id in already_surfaced {
+        session.record_surfaced_peer_write(id);
+    }
     let candidates = peer_write_candidates(substrate, session_binding, &rows).await;
     let insertion = RelevanceGate::new(config).evaluate(&mut session, &candidates, now);
     let mut peer_updates = insertion.peer_updates;

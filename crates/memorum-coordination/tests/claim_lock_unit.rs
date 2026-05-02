@@ -65,9 +65,11 @@ fn test_acquire_contention_returns_holder_and_contender_info() {
     assert_eq!(contention.holder.holder_session_id, "sess_a");
     assert_eq!(contention.contender_harness, "codex");
     assert_eq!(contention.contender_session_id, "sess_b");
+    // I-R4 fix: the *original* holder must remain in the registry after a
+    // contention attempt.  The contender does NOT evict the previous holder.
     let active_lock = registry.get_at("mem_x", base + Duration::from_secs(5)).unwrap();
-    assert_eq!(active_lock.holder_session_id, "sess_b");
-    assert_eq!(active_lock.holder_harness, "codex");
+    assert_eq!(active_lock.holder_session_id, "sess_a");
+    assert_eq!(active_lock.holder_harness, "claude-code");
 }
 
 #[test]
@@ -196,11 +198,14 @@ fn test_same_session_id_different_harness_is_not_holder() {
 }
 
 #[test]
-fn test_release_does_not_remove_new_contender_lock() {
+fn test_original_holder_owns_lock_after_contention_attempt() {
+    // I-R4 fix: after a contention attempt the *original* holder retains ownership.
+    // Only the original holder can release the lock; the contender's session
+    // is not granted any registry presence.
     let registry = ClaimLockRegistry::new();
     let base = Instant::now();
     acquire_at!(&registry, "mem_x", "sess_a", "codex", Duration::from_secs(30), clock_at(base, timestamp(15, 23, 0)));
-    acquire_at!(
+    let result = acquire_at!(
         &registry,
         "mem_x",
         "sess_b",
@@ -208,20 +213,29 @@ fn test_release_does_not_remove_new_contender_lock() {
         Duration::from_secs(30),
         clock_at(base + Duration::from_secs(1), timestamp(15, 23, 1)),
     );
+    assert!(matches!(result, ClaimLockAcquireResult::Contended(_)), "expected contention");
 
-    assert!(registry.release("mem_x", "codex", "sess_a").is_none());
+    // Contender cannot release (it never held the lock).
+    assert!(registry.release("mem_x", "claude-code", "sess_b").is_none());
+    // Original holder is still registered and can release.
     let active_lock = registry.get_at("mem_x", base + Duration::from_secs(2)).unwrap();
-    assert_eq!(active_lock.holder_harness, "claude-code");
-    assert_eq!(active_lock.holder_session_id, "sess_b");
+    assert_eq!(active_lock.holder_harness, "codex");
+    assert_eq!(active_lock.holder_session_id, "sess_a");
+    // Original holder can release itself.
+    assert!(registry.release("mem_x", "codex", "sess_a").is_some());
+    assert!(registry.get_at("mem_x", base + Duration::from_secs(3)).is_none());
 }
 
 #[test]
-fn test_restore_previous_holder_after_failed_contention() {
+fn test_original_holder_remains_after_contention_no_restore_needed() {
+    // I-R4 fix: because the contender never evicts the original holder, the
+    // original holder's lock is present in the registry at all times during
+    // contention.  `restore` is not required to recover the original state.
     let registry = ClaimLockRegistry::new();
     let base = Instant::now();
     let utc = Utc::now();
     acquire_at!(&registry, "mem_x", "sess_a", "codex", Duration::from_secs(60), clock_at(base, utc));
-    let previous_holder = match acquire_at!(
+    let contention_info = match acquire_at!(
         &registry,
         "mem_x",
         "sess_b",
@@ -229,58 +243,65 @@ fn test_restore_previous_holder_after_failed_contention() {
         Duration::from_secs(60),
         clock_at(base + Duration::from_secs(1), utc + chrono::Duration::seconds(1)),
     ) {
-        ClaimLockAcquireResult::Contended(contention) => contention.holder,
+        ClaimLockAcquireResult::Contended(contention) => contention,
         other => panic!("expected contention, got {other:?}"),
     };
 
-    assert!(registry.release("mem_x", "claude-code", "sess_b").is_some());
-    let restored = registry.restore(previous_holder).expect("restore previous holder");
+    // The `holder` field in the contention carries the original holder's info.
+    assert_eq!(contention_info.holder.holder_harness, "codex");
+    assert_eq!(contention_info.holder.holder_session_id, "sess_a");
 
-    assert_eq!(restored.holder_harness, "codex");
-    assert_eq!(restored.holder_session_id, "sess_a");
-    let active_lock = registry.get("mem_x").expect("restored lock should be active");
+    // Contender did not acquire ownership; it cannot release.
+    assert!(registry.release("mem_x", "claude-code", "sess_b").is_none());
+
+    // The original holder is still present — no restore step required.
+    let active_lock = registry.get("mem_x").expect("original holder's lock must still be active");
     assert_eq!(active_lock.holder_harness, "codex");
     assert_eq!(active_lock.holder_session_id, "sess_a");
 }
 
 #[test]
 fn test_restore_does_not_replace_unrelated_live_holder() {
+    // This test verifies `restore` does NOT clobber an *unrelated* live holder.
+    // Set up: sess_a acquires; sess_a then releases (voluntarily); sess_b
+    // acquires next; now we try to restore sess_a's old snapshot — it must
+    // be refused because sess_b is now the legitimate holder.
     let registry = ClaimLockRegistry::new();
     let base = Instant::now();
     let utc = Utc::now();
-    acquire_at!(&registry, "mem_x", "sess_a", "codex", Duration::from_secs(60), clock_at(base, utc));
-    let previous_holder = match acquire_at!(
+    let snap = match acquire_at!(&registry, "mem_x", "sess_a", "codex", Duration::from_secs(60), clock_at(base, utc)) {
+        ClaimLockAcquireResult::Acquired(info) => info,
+        other => panic!("expected acquired, got {other:?}"),
+    };
+
+    // sess_a releases; sess_b then acquires — it becomes the unrelated live holder.
+    assert!(registry.release("mem_x", "codex", "sess_a").is_some());
+    acquire_at!(
         &registry,
         "mem_x",
         "sess_b",
         "claude-code",
         Duration::from_secs(60),
         clock_at(base + Duration::from_secs(1), utc + chrono::Duration::seconds(1)),
-    ) {
-        ClaimLockAcquireResult::Contended(contention) => contention.holder,
-        other => panic!("expected contention, got {other:?}"),
-    };
-    acquire_at!(
-        &registry,
-        "mem_x",
-        "sess_c",
-        "cursor",
-        Duration::from_secs(60),
-        clock_at(base + Duration::from_secs(2), utc + chrono::Duration::seconds(2)),
     );
 
-    assert!(registry.restore(previous_holder).is_none());
+    // Restoring sess_a's old snapshot must fail — sess_b is the live holder.
+    assert!(registry.restore(snap).is_none());
 
-    let active_lock = registry.get_at("mem_x", base + Duration::from_secs(3)).expect("current holder remains");
-    assert_eq!(active_lock.holder_harness, "cursor");
-    assert_eq!(active_lock.holder_session_id, "sess_c");
+    let active_lock = registry.get_at("mem_x", base + Duration::from_secs(2)).expect("current holder remains");
+    assert_eq!(active_lock.holder_harness, "claude-code");
+    assert_eq!(active_lock.holder_session_id, "sess_b");
 }
 
 #[test]
 fn test_expired_sweep_does_not_remove_reacquired_live_lock() {
+    // Scenario: sess_a's lock expires; sess_b then legitimately acquires (not
+    // via contention — sess_a is already expired when sess_b acquires).  The
+    // sweep at that point must not remove sess_b's fresh lock.
     let registry = ClaimLockRegistry::new();
     let base = Instant::now();
     acquire_at!(&registry, "mem_x", "sess_a", "codex", Duration::from_secs(1), clock_at(base, timestamp(15, 23, 0)));
+    // Wait until sess_a's lock has expired (t=2s > t=1s TTL), then sess_b acquires.
     acquire_at!(
         &registry,
         "mem_x",
@@ -290,6 +311,8 @@ fn test_expired_sweep_does_not_remove_reacquired_live_lock() {
         clock_at(base + Duration::from_secs(2), timestamp(15, 23, 2)),
     );
 
+    // At t=2s sess_a is expired; sweep at t=2s should not touch sess_b's
+    // fresh lock (acquired at t=2s, expires at t=32s).
     assert!(registry.sweep_expired_at(base + Duration::from_secs(2)).is_empty());
     let active_lock = registry.get_at("mem_x", base + Duration::from_secs(3)).unwrap();
     assert_eq!(active_lock.holder_harness, "claude-code");

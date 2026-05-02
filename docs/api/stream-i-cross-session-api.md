@@ -48,6 +48,7 @@ Notes:
 - `started_at` is optional on the wire so later heartbeats can omit it. The daemon retains the first non-`None` value for a session.
 - Heartbeats update `PresenceRegistry` only when the effective coordination level is Level 3. Lower levels can still receive an acknowledgement.
 - Level 3 heartbeat can renew advisory claim locks listed in `claim_locks_held`.
+- `conflicting_claim_locks` in `PeerHeartbeatAck` is populated only at Level 3. This is a named design constraint, not a silent gap: the heartbeat path in `handlers.rs` gates population behind `ack.active_level == 3` because in v1 only Level 3 sessions send heartbeats. If a Level 2 heartbeat path is added in a future release, the gate must be removed or explicitly extended so that Level 2 callers receive conflict signals too.
 
 ### `PeerStatus`
 
