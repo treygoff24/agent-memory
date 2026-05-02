@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use memorum_eval::daemon_scaffold::DaemonScaffold;
 use memorum_eval::harness_runner::{HarnessRunner, RealHarness, HARNESS_MCP_CONFIG_PATH_ENV, HARNESS_PROJECT_CWD_ENV};
+use memorum_eval::{eval_assert, eval_assert_eq, eval_flush_assertion_count};
 use serde_json::{json, Value};
 
 use crate::support::{daemon_request, find_file_with_extension};
@@ -38,7 +39,7 @@ async fn t13_cross_harness_substrate_sharing() {
 
     let fragment = find_t13_substrate_fragment(scaffold.tree_dir())
         .unwrap_or_else(|| panic!("Codex observe phase should write a substrate record for {ENTITY_ID}"));
-    assert_eq!(
+    eval_assert_eq!(
         fragment.pointer("/harness").and_then(Value::as_str),
         Some("codex"),
         "substrate fragment should retain Codex harness provenance: {fragment:#?}"
@@ -49,12 +50,12 @@ async fn t13_cross_harness_substrate_sharing() {
     let claude_prompt = render_prompt(CLAUDE_RECALL_PROMPT, scaffold.tree_dir());
     let claude_output =
         run_claude_with_one_parse_retry(&claude, &claude_prompt, &phase_env(scaffold.tree_dir(), &claude_config)).await;
-    assert_eq!(
+    eval_assert_eq!(
         claude_output.pointer("/found").and_then(Value::as_bool),
         Some(true),
         "Claude should report the Codex-written fragment as found: {claude_output:#?}"
     );
-    assert!(
+    eval_assert!(
         fragment_text_preserves_fact(&claude_output),
         "Claude fragment_text should preserve the sentinel fact: {claude_output:#?}"
     );
@@ -63,10 +64,11 @@ async fn t13_cross_harness_substrate_sharing() {
         scaffold.socket_path(),
         json!({"search": {"query": ENTITY_ID, "limit": null, "include_body": true}}),
     );
-    assert!(
+    eval_assert!(
         search.pointer("/result/success/search/total").and_then(Value::as_u64).unwrap_or_default() >= 1,
         "memory_search should surface the cross-harness substrate fragment: {search:#?}"
     );
+    eval_flush_assertion_count();
 }
 
 const CODEX_OBSERVE_PROMPT: &str = include_str!("../../../fixtures/prompts/t13_codex_observe.md");
@@ -132,10 +134,13 @@ fn render_prompt(template: &str, project_cwd: &Path) -> String {
 }
 
 fn assert_harness_success(phase: &str, result: &memorum_eval::harness_runner::HarnessRunResult) {
-    assert_eq!(
-        result.exit_code, 0,
+    eval_assert_eq!(
+        result.exit_code,
+        0,
         "{phase} failed with exit code {}\nstdout={}\nstderr={}",
-        result.exit_code, result.stdout, result.stderr
+        result.exit_code,
+        result.stdout,
+        result.stderr
     );
 }
 

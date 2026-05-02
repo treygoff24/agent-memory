@@ -234,12 +234,23 @@ fn memoryd_binary_path() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target"));
     let binary = target_dir.join("debug").join("memoryd");
+
+    // Return the cached binary if it already exists. Callers that need
+    // TestInjectEvent support (e.g. T16) should ensure the binary was built with
+    // `--features test-utils` before invoking the test; if the feature is absent the
+    // daemon returns `method_not_allowed` with a clear message. Building memoryd
+    // here when the binary is already present triggers recursive cargo lock
+    // contention when the scaffold is called from an orchestrator subprocess.
     if binary.exists() {
         return binary;
     }
 
-    let status = Command::new("cargo").args(["build", "-p", "memoryd"]).status().expect("build memoryd binary");
-    assert!(status.success(), "cargo build -p memoryd failed");
+    // First-time build: include test-utils so T16's TestInjectEvent surface works.
+    let status = Command::new("cargo")
+        .args(["build", "-p", "memoryd", "--features", "test-utils"])
+        .status()
+        .expect("build memoryd binary");
+    assert!(status.success(), "cargo build -p memoryd --features test-utils failed");
     binary
 }
 

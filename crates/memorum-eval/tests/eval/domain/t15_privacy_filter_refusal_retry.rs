@@ -7,6 +7,7 @@ use memorum_eval::daemon_scaffold::DaemonScaffold;
 use memorum_eval::harness_runner::{
     HarnessRunResult, HarnessRunner, RealHarness, HARNESS_MCP_CONFIG_PATH_ENV, HARNESS_PROJECT_CWD_ENV,
 };
+use memorum_eval::{eval_assert, eval_assert_eq, eval_flush_assertion_count};
 use serde_json::{json, Value};
 
 use crate::support::daemon_request;
@@ -41,6 +42,7 @@ async fn t15_privacy_filter_refusal_and_retry() {
     assert_raw_phone_is_not_searchable(scaffold.socket_path());
     assert_no_pii_on_disk(scaffold.tree_dir(), RAW_PHONE_DIGITS)
         .expect("raw phone digits must not persist in temp tree");
+    eval_flush_assertion_count();
 }
 
 fn missing_claude_cli() -> bool {
@@ -107,10 +109,13 @@ async fn run_claude_with_one_parse_retry(claude: &HarnessRunner, prompt: &str, e
 }
 
 fn assert_harness_success(phase: &str, result: &HarnessRunResult) {
-    assert_eq!(
-        result.exit_code, 0,
+    eval_assert_eq!(
+        result.exit_code,
+        0,
         "{phase} failed with exit code {}\nstdout={}\nstderr={}",
-        result.exit_code, result.stdout, result.stderr
+        result.exit_code,
+        result.stdout,
+        result.stderr
     );
 }
 
@@ -127,7 +132,7 @@ fn parse_last_json_object(stdout: &str) -> Option<Value> {
 
 fn assert_first_write_refused(output: &Value) {
     let status = output.pointer("/first_attempt_status").and_then(Value::as_str).unwrap_or_default();
-    assert!(
+    eval_assert!(
         status.to_ascii_lowercase().contains("refused"),
         "first PII write should be refused; Claude output: {output:#?}"
     );
@@ -135,26 +140,26 @@ fn assert_first_write_refused(output: &Value) {
 
 fn assert_retry_succeeded(output: &Value) {
     let retry_status = output.pointer("/retry_status").and_then(Value::as_str).unwrap_or_default();
-    assert!(
+    eval_assert!(
         matches!(retry_status, "promoted" | "candidate"),
         "AGENT_DID_NOT_RETRY: retry_status should be promoted or candidate; Claude output: {output:#?}"
     );
 
     let retry_id = output.pointer("/retry_id").and_then(Value::as_str).unwrap_or_default();
-    assert!(!retry_id.is_empty(), "retry_id should be non-null/non-empty; Claude output: {output:#?}");
+    eval_assert!(!retry_id.is_empty(), "retry_id should be non-null/non-empty; Claude output: {output:#?}");
     if retry_status == "promoted" {
-        assert!(retry_id.starts_with("mem_"), "promoted retry_id should look like a memory id: {retry_id}");
+        eval_assert!(retry_id.starts_with("mem_"), "promoted retry_id should look like a memory id: {retry_id}");
     }
 }
 
 fn assert_retry_memory_is_searchable(socket_path: &Path) {
     let search =
         daemon_request(socket_path, json!({"search": {"query": RETRY_SENTINEL, "limit": null, "include_body": true}}));
-    assert!(
+    eval_assert!(
         search_total(&search) >= 1,
         "memory_search should find the sanitized retry by sentinel {RETRY_SENTINEL}: {search:#?}"
     );
-    assert!(
+    eval_assert!(
         !search_hits_text(&search).contains(RAW_PHONE_DIGITS),
         "sentinel search results must not include raw phone digits: {search:#?}"
     );
@@ -165,7 +170,7 @@ fn assert_raw_phone_is_not_searchable(socket_path: &Path) {
         socket_path,
         json!({"search": {"query": RAW_PHONE_DIGITS, "limit": null, "include_body": true}}),
     );
-    assert_eq!(search_total(&search), 0, "raw phone digits should not be searchable: {search:#?}");
+    eval_assert_eq!(search_total(&search), 0, "raw phone digits should not be searchable: {search:#?}");
 }
 
 fn search_total(response: &Value) -> u64 {

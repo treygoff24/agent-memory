@@ -4,6 +4,56 @@ pub mod harness_runner;
 pub mod orchestrator;
 pub mod simulator;
 
+use std::cell::Cell;
+
+thread_local! {
+    /// Per-test assertion counter. Incremented by `eval_assert!` / `eval_assert_eq!`
+    /// macros. Printed as `MEMORUM_EVAL_ASSERTIONS=<n>` at test end so the
+    /// orchestrator can report accurate per-test assertion granularity. (H-B3)
+    static EVAL_ASSERTION_COUNTER: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Increment the thread-local eval assertion counter and return the new count.
+pub fn eval_assertion_tick() -> usize {
+    EVAL_ASSERTION_COUNTER.with(|cell| {
+        let next = cell.get().saturating_add(1);
+        cell.set(next);
+        next
+    })
+}
+
+/// Print the assertion count in a format the orchestrator can parse.
+///
+/// Call this at the end of an eval test to report per-test assertion granularity.
+/// The orchestrator (`run_cargo_test`) scans cargo test stdout for
+/// `MEMORUM_EVAL_ASSERTIONS=<n>` and uses it to populate the JSON report's
+/// `assertions` / `assertions_passed` fields.
+pub fn eval_flush_assertion_count() {
+    let count = EVAL_ASSERTION_COUNTER.with(Cell::get);
+    println!("{}={count}", orchestrator::EVAL_ASSERTION_COUNT_MARKER.trim_end_matches('='));
+}
+
+/// Assert a condition and increment the eval assertion counter.
+///
+/// Use in place of `assert!` in eval tests to enable accurate assertion-count
+/// reporting in the orchestrator JSON output.
+#[macro_export]
+macro_rules! eval_assert {
+    ($cond:expr $(, $msg:expr)* $(,)?) => {{
+        $crate::eval_assertion_tick();
+        assert!($cond $(, $msg)*);
+    }};
+}
+
+/// Assert equality and increment the eval assertion counter.
+#[macro_export]
+macro_rules! eval_assert_eq {
+    ($left:expr, $right:expr $(, $msg:expr)* $(,)?) => {{
+        $crate::eval_assertion_tick();
+        assert_eq!($left, $right $(, $msg)*);
+    }};
+}
+
 use std::path::PathBuf;
 
 use clap::Parser;

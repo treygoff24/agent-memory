@@ -3,6 +3,7 @@ use std::fs;
 use memorum_eval::assertions::assert_xml_valid;
 use memorum_eval::daemon_scaffold::DaemonScaffold;
 use memorum_eval::simulator::{SimulatorAction, SimulatorAgent, SimulatorConfig};
+use memorum_eval::{eval_assert, eval_assert_eq, eval_flush_assertion_count};
 use serde_json::Value;
 
 use crate::support::{
@@ -26,7 +27,7 @@ async fn forgotten_agent_memory_is_tombstoned_hidden_and_blocks_reinsertion() {
             meta_json: promoted_meta("agent", "t08-agent-fallback-queue", "claim"),
         }])
         .await;
-    assert_eq!(observations.last_write_outcome.as_deref(), Some("promoted"), "{observations:#?}");
+    eval_assert_eq!(observations.last_write_outcome.as_deref(), Some("promoted"), "{observations:#?}");
     let memory_id = write_id(&observations);
 
     let observations = agent
@@ -41,18 +42,18 @@ async fn forgotten_agent_memory_is_tombstoned_hidden_and_blocks_reinsertion() {
 
     let forget_json = observations.last_forget_json.as_deref().expect("forget response captured");
     let forget = payload(forget_json, "governance_forget");
-    assert_eq!(forget.get("status").and_then(Value::as_str), Some("tombstoned"), "{forget_json}");
+    eval_assert_eq!(forget.get("status").and_then(Value::as_str), Some("tombstoned"), "{forget_json}");
 
     let recall_block = observations.last_startup_block.as_deref().expect("startup recall block captured");
-    assert_xml_valid(recall_block).expect("startup recall block is valid XML");
-    assert!(!recall_block.contains(&memory_id), "tombstoned memory must not be recalled:\n{recall_block}");
-    assert!(!recall_block.contains(FORGOTTEN_BODY), "tombstoned body must not be recalled:\n{recall_block}");
+    eval_assert!(assert_xml_valid(recall_block).is_ok(), "startup recall block is valid XML");
+    eval_assert!(!recall_block.contains(&memory_id), "tombstoned memory must not be recalled:\n{recall_block}");
+    eval_assert!(!recall_block.contains(FORGOTTEN_BODY), "tombstoned body must not be recalled:\n{recall_block}");
 
     let search_json = observations.last_search_json.as_deref().expect("search response captured");
-    assert_eq!(search_total(search_json), 0, "default search must not surface tombstoned memory:\n{search_json}");
+    eval_assert_eq!(search_total(search_json), 0, "default search must not surface tombstoned memory:\n{search_json}");
 
     let tombstoned_file = memory_file_body(scaffold.tree_dir(), &memory_id);
-    assert!(
+    eval_assert!(
         tombstoned_file.contains("status: tombstoned"),
         "canonical memory file should expose audit status:\n{tombstoned_file}"
     );
@@ -60,7 +61,7 @@ async fn forgotten_agent_memory_is_tombstoned_hidden_and_blocks_reinsertion() {
     let tombstone_file = scaffold.tree_dir().join("tombstones").join("memoryd-forget.jsonl");
     let tombstones = fs::read_to_string(&tombstone_file)
         .unwrap_or_else(|err| panic!("read tombstone file {}: {err}", tombstone_file.display()));
-    assert!(tombstones.contains(&memory_id), "tombstone file should reference forgotten id:\n{tombstones}");
+    eval_assert!(tombstones.contains(&memory_id), "tombstone file should reference forgotten id:\n{tombstones}");
 
     let reinsertion = agent
         .run_script([SimulatorAction::WriteWithMetaJson {
@@ -78,6 +79,8 @@ async fn forgotten_agent_memory_is_tombstoned_hidden_and_blocks_reinsertion() {
         .await;
     let write_json = reinsertion.last_write_json.as_deref().expect("reinsertion response captured");
     let write = payload(write_json, "governance_write");
-    assert_eq!(write.get("status").and_then(Value::as_str), Some("refused"), "{write_json}");
-    assert_eq!(write.get("reason").and_then(Value::as_str), Some("tombstone"), "{write_json}");
+    eval_assert_eq!(write.get("status").and_then(Value::as_str), Some("refused"), "{write_json}");
+    eval_assert_eq!(write.get("reason").and_then(Value::as_str), Some("tombstone"), "{write_json}");
+
+    eval_flush_assertion_count();
 }

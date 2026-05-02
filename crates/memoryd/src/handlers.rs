@@ -41,12 +41,12 @@ use tokio::sync::{broadcast, Mutex};
 use crate::dream::rehydration;
 use crate::protocol::{
     ClaimLockWarning, DoctorFinding, DoctorResponse, GetResponse, GovernanceForgetResponse, GovernanceStatus,
-    GovernanceSupersedeResponse, GovernanceWriteResponse, ObserveResponse, ObserveTarget, PassiveNotificationStatus,
-    PeerActivityResponse, PeerDeliveryAuditEntry, PeerReleaseLockResponse, PeerReleaseLockStatus, PeerSessionStatus,
-    PeerStatusResponse, RealityCheckAction, RealityCheckRequest, RealityCheckResponse, RequestEnvelope, RequestPayload,
-    RespondRefusalKind, ResponseEnvelope, ResponsePayload, RevealResponse, ReviewDecisionResponse,
-    ReviewQueueItemResponse, ReviewQueueResponse, SearchHit, SearchResponse, StatusResponse, WebDashboardStatus,
-    WriteNoteResponse, MAX_FRAME_BYTES, NOTIFICATION_CHANNEL_CAPACITY,
+    GovernanceSupersedeResponse, GovernanceWriteResponse, InjectableEventKind, ObserveResponse, ObserveTarget,
+    PassiveNotificationStatus, PeerActivityResponse, PeerDeliveryAuditEntry, PeerReleaseLockResponse,
+    PeerReleaseLockStatus, PeerSessionStatus, PeerStatusResponse, RealityCheckAction, RealityCheckRequest,
+    RealityCheckResponse, RequestEnvelope, RequestPayload, RespondRefusalKind, ResponseEnvelope, ResponsePayload,
+    RevealResponse, ReviewDecisionResponse, ReviewQueueItemResponse, ReviewQueueResponse, SearchHit, SearchResponse,
+    StatusResponse, WebDashboardStatus, WriteNoteResponse, MAX_FRAME_BYTES, NOTIFICATION_CHANNEL_CAPACITY,
 };
 use crate::reality_check::{RcAdvanceRequest, RcRunRequest, RcSessionAdvance, RcSessionHandler};
 use crate::recall::{
@@ -536,6 +536,10 @@ async fn dispatch(
         RequestPayload::WebDisable => web_disable_response(state),
         RequestPayload::WebStatus => web_status_response(state),
         RequestPayload::RealityCheck(request) => reality_check_response(substrate, state, request).await,
+        RequestPayload::TestInjectEvent { kind, memory_id, ts, harness, session_id } => {
+            test_inject_event_response(substrate, TestInjectEventRequest { kind, memory_id, ts, harness, session_id })
+                .await
+        }
     }
 }
 
@@ -1152,6 +1156,77 @@ fn contains_email_like_token(text: &str) -> bool {
 fn contains_phone_like_token(text: &str) -> bool {
     let digit_count = text.chars().filter(|ch| ch.is_ascii_digit()).count();
     digit_count >= 7 && text.chars().any(|ch| matches!(ch, '-' | '(' | ')' | '+' | '.'))
+}
+
+/// Inject a synthetic event-log entry with a controlled timestamp.
+///
+/// This handler is only functional when `memoryd` is compiled with the
+/// `test-utils` feature flag; without it, the protocol variant still exists
+/// (so the crate compiles) but the handler returns `method_not_allowed`. This
+/// keeps the test-only surface invisible in production daemon builds while
+/// letting Stream H eval tests exercise events-log-derived metrics
+/// deterministically. (H-R1)
+#[cfg_attr(not(feature = "test-utils"), allow(dead_code))]
+struct TestInjectEventRequest {
+    kind: InjectableEventKind,
+    memory_id: MemoryId,
+    ts: chrono::DateTime<chrono::Utc>,
+    harness: Option<String>,
+    session_id: Option<String>,
+}
+
+async fn test_inject_event_response(
+    substrate: &Substrate,
+    request: TestInjectEventRequest,
+) -> Result<ResponsePayload, HandlerError> {
+    #[cfg(not(feature = "test-utils"))]
+    {
+        let _ = (substrate, request);
+        Err(HandlerError::invalid_request(
+            "TestInjectEvent requires the memoryd `test-utils` feature; \
+             this daemon was compiled without it",
+        ))
+    }
+
+    #[cfg(feature = "test-utils")]
+    {
+        let event_kind = match request.kind {
+            InjectableEventKind::RecallHit => {
+                EventKind::RecallHit { id: request.memory_id.clone(), recalled_at: request.ts }
+            }
+            InjectableEventKind::WriteCommitted => {
+                // Synthetic WriteCommitted: we use a placeholder path derived from the
+                // memory_id since we don't re-query the substrate for the actual file path.
+                // The cross_source_corroboration metric only counts distinct devices/harnesses
+                // that produced WriteCommitted events for a given memory_id; the path field
+                // is not used for scoring. Source attribution (harness) is available in the
+                // harness parameter but WriteCommitted's schema does not carry it (§12.1).
+                let synthetic_path =
+                    memory_substrate::RepoPath::new(format!("synthetic-test-inject/{}.md", request.memory_id.as_str()));
+                EventKind::WriteCommitted {
+                    id: request.memory_id.clone(),
+                    path: synthetic_path,
+                    classification: memory_substrate::ClassificationOutcome::Trusted,
+                }
+            }
+        };
+        let _ = (request.harness, request.session_id); // reserved for future provenance embedding
+        substrate.record_event_best_effort(event_kind).map_err(HandlerError::substrate)?;
+        let event_id = format!("injected-{}-{}", kind_label(request.kind), request.memory_id.as_str());
+        Ok(ResponsePayload::TestInjectEvent(crate::protocol::TestInjectEventResponse {
+            event_id,
+            injected_kind: request.kind,
+            memory_id: request.memory_id,
+        }))
+    }
+}
+
+#[cfg(feature = "test-utils")]
+fn kind_label(kind: InjectableEventKind) -> &'static str {
+    match kind {
+        InjectableEventKind::RecallHit => "recall-hit",
+        InjectableEventKind::WriteCommitted => "write-committed",
+    }
 }
 
 async fn dream_now_response(

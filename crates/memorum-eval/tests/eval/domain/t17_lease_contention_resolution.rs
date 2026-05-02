@@ -2,16 +2,19 @@ use std::io::Write;
 use std::path::Path;
 
 use memorum_eval::daemon_scaffold::DaemonScaffold;
+use memorum_eval::{eval_assert, eval_assert_eq, eval_flush_assertion_count};
 use serde_json::{json, Value};
 
 use crate::support::{daemon_request, find_file_with_extension, git, read_device_id};
+
+const SEMANTIC_PARTIAL_LEASE_REENTRANCY_NOT_SHIPPED: &str = "SEMANTIC_PARTIAL_LEASE_REENTRANCY_NOT_SHIPPED";
 
 #[tokio::test]
 async fn t17_preseeded_two_device_lease_blocks_loser_and_allows_retry_after_release() {
     let scaffold = DaemonScaffold::two_device().await;
     let device_a_id = read_device_id(&scaffold.device_a.tree_dir().join(".memoryd"));
     let device_b_id = read_device_id(&scaffold.device_b.tree_dir().join(".memoryd"));
-    assert_ne!(device_a_id, device_b_id, "two-device scaffold should create distinct device ids");
+    eval_assert!(device_a_id != device_b_id, "two-device scaffold should create distinct device ids");
 
     append_lease_record(scaffold.device_a.tree_dir(), active_lease_record(&device_a_id));
     git(scaffold.device_a.tree_dir(), ["add", "leases/journal.lease"]);
@@ -21,15 +24,16 @@ async fn t17_preseeded_two_device_lease_blocks_loser_and_allows_retry_after_rele
 
     let device_b_blocked = dream_now(scaffold.device_b.socket_path(), false);
     assert_error_code(&device_b_blocked, "lease_held");
-    assert!(
+    eval_assert!(
         journal_files(scaffold.device_b.tree_dir()).is_empty(),
         "Device B must not write a journal while Device A's active lease is visible"
     );
 
     let device_a_same_lease = dream_now(scaffold.device_a.socket_path(), false);
     if protocol_error_code(&device_a_same_lease) == Some("lease_held") {
-        eprintln!(
-            "SKIP_ADAPTATION: Current Stream F lease acquisition is not re-entrant for the same device; \
+        println!(
+            "MEMORUM_EVAL_SKIP:{SEMANTIC_PARTIAL_LEASE_REENTRANCY_NOT_SHIPPED}: \
+             Current Stream F lease acquisition is not re-entrant for the same device; \
              a pre-seeded local active lease returns lease_held unless forced, so the spec step where Device A \
              proceeds under its own pre-seeded lease is not shipped yet. Verified the two-device loser backs off."
         );
@@ -37,14 +41,15 @@ async fn t17_preseeded_two_device_lease_blocks_loser_and_allows_retry_after_rele
     }
 
     assert_pass_1_success(&device_a_same_lease);
-    assert!(
+    eval_assert!(
         !journal_files(scaffold.device_a.tree_dir()).is_empty(),
         "Device A should write the journal when it owns the pre-seeded lease: {device_a_same_lease:#?}"
     );
-    assert!(
+    eval_assert!(
         journal_files(scaffold.device_b.tree_dir()).is_empty(),
         "Device B should still have no journal before retry"
     );
+    eval_flush_assertion_count();
 }
 
 fn dream_now(socket_path: &Path, force: bool) -> Value {
@@ -52,7 +57,7 @@ fn dream_now(socket_path: &Path, force: bool) -> Value {
 }
 
 fn assert_error_code(response: &Value, expected: &str) {
-    assert_eq!(protocol_error_code(response), Some(expected), "expected protocol error {expected}: {response:#?}");
+    eval_assert_eq!(protocol_error_code(response), Some(expected), "expected protocol error {expected}: {response:#?}");
 }
 
 fn protocol_error_code(response: &Value) -> Option<&str> {
@@ -60,7 +65,7 @@ fn protocol_error_code(response: &Value) -> Option<&str> {
 }
 
 fn assert_pass_1_success(response: &Value) {
-    assert_eq!(
+    eval_assert_eq!(
         response.pointer("/result/success/dream_now/pass_1/status").and_then(Value::as_str),
         Some("success"),
         "expected successful dream pass 1: {response:#?}"

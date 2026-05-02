@@ -1,6 +1,7 @@
 use memorum_eval::assertions::assert_xml_valid;
 use memorum_eval::daemon_scaffold::DaemonScaffold;
 use memorum_eval::simulator::{SimulatorAction, SimulatorAgent, SimulatorConfig};
+use memorum_eval::{eval_assert, eval_assert_eq, eval_flush_assertion_count};
 
 use crate::support::{
     memory_file_body, promoted_project_meta, search_hits, write_id, write_project_file, DEFAULT_PROJECT_ID,
@@ -25,7 +26,7 @@ async fn artifact_memory_preserves_tool_output_handle_through_recall_search_and_
             meta_json: promoted_project_meta("t06-artifact", "artifact"),
         }])
         .await;
-    assert_eq!(
+    eval_assert_eq!(
         observations.last_write_outcome.as_deref(),
         Some("promoted"),
         "artifact write should promote: {observations:#?}"
@@ -42,15 +43,15 @@ async fn artifact_memory_preserves_tool_output_handle_through_recall_search_and_
         .await;
 
     let recall_block = observations.last_startup_block.as_deref().expect("startup recall block captured");
-    assert_xml_valid(recall_block).expect("startup recall block is valid XML");
-    assert!(
+    eval_assert!(assert_xml_valid(recall_block).is_ok(), "startup recall block is valid XML");
+    eval_assert!(
         recall_block.contains(&artifact_id),
         "startup recall should include artifact memory {artifact_id}:\n{recall_block}"
     );
 
     let search_json = observations.last_search_json.as_deref().expect("search response captured");
     let hits = search_hits(search_json);
-    assert!(
+    eval_assert!(
         hits.iter().any(|hit| {
             hit.get("id").and_then(|id| id.as_str()) == Some(artifact_id.as_str())
                 && hit
@@ -62,9 +63,11 @@ async fn artifact_memory_preserves_tool_output_handle_through_recall_search_and_
     );
 
     let get_json = observations.last_get_json.as_deref().expect("get response captured");
-    assert!(get_json.contains(ARTIFACT_HANDLE), "memory_get should preserve artifact handle:\n{get_json}");
+    eval_assert!(get_json.contains(ARTIFACT_HANDLE), "memory_get should preserve artifact handle:\n{get_json}");
 
     let file = memory_file_body(scaffold.tree_dir(), &artifact_id);
-    assert!(file.contains("type: artifact"), "canonical file should persist artifact type:\n{file}");
-    assert!(file.contains(ARTIFACT_HANDLE), "canonical file should preserve artifact handle:\n{file}");
+    eval_assert!(file.contains("type: artifact"), "canonical file should persist artifact type:\n{file}");
+    eval_assert!(file.contains(ARTIFACT_HANDLE), "canonical file should preserve artifact handle:\n{file}");
+
+    eval_flush_assertion_count();
 }

@@ -132,6 +132,41 @@ pub enum RequestPayload {
     WebDisable,
     WebStatus,
     RealityCheck(RealityCheckRequest),
+
+    /// Inject a synthetic event-log entry with a controlled timestamp.
+    ///
+    /// Only meaningful when `memoryd` is built with the `test-utils` feature.
+    /// Production builds receive this variant and return `method_not_allowed`.
+    /// Stream H eval tests use this to seed `RecallHit` and `WriteCommitted`
+    /// events so that drift-score derived metrics are deterministic. (H-R1)
+    TestInjectEvent {
+        kind: InjectableEventKind,
+        memory_id: MemoryId,
+        ts: DateTime<Utc>,
+        /// Provenance fields for injected `WriteCommitted` events; ignored for `RecallHit`.
+        harness: Option<String>,
+        session_id: Option<String>,
+    },
+}
+
+/// Kind of synthetic event injected by `TestInjectEvent`.
+///
+/// Part of the `test-utils` surface; see `RequestPayload::TestInjectEvent`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InjectableEventKind {
+    /// Append `EventKind::RecallHit { id, recalled_at: ts }` to the events log.
+    RecallHit,
+    /// Append a `WriteCommitted`-style event with synthetic provenance.
+    WriteCommitted,
+}
+
+/// Response to a successful `TestInjectEvent` request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TestInjectEventResponse {
+    pub event_id: String,
+    pub injected_kind: InjectableEventKind,
+    pub memory_id: MemoryId,
 }
 
 pub fn default_observe_cwd() -> String {
@@ -229,6 +264,7 @@ pub enum ResponsePayload {
     DreamStatus(Box<DreamStatusReport>),
     WebStatus(WebDashboardStatus),
     RealityCheck(RealityCheckResponse),
+    TestInjectEvent(TestInjectEventResponse),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

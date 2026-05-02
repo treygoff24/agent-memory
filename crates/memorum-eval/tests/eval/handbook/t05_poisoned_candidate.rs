@@ -1,6 +1,7 @@
 use memorum_eval::assertions::assert_xml_valid;
 use memorum_eval::daemon_scaffold::DaemonScaffold;
 use memorum_eval::simulator::{SimulatorAction, SimulatorAgent, SimulatorConfig};
+use memorum_eval::{eval_assert, eval_assert_eq, eval_flush_assertion_count};
 
 use crate::support::{low_confidence_ungrounded_meta, payload, search_total, write_project_file, DEFAULT_PROJECT_ID};
 
@@ -23,12 +24,12 @@ async fn low_confidence_poisoned_candidate_is_not_promoted_or_recalled() {
     let write_json = observations.last_write_json.as_deref().expect("write response captured");
     let write = payload(write_json, "governance_write");
     let status = write.get("status").and_then(|status| status.as_str()).expect("write status");
-    assert!(
+    eval_assert!(
         matches!(status, "quarantined" | "refused"),
         "poisoned write must not promote or become a factual candidate:\n{write_json}"
     );
-    assert_ne!(status, "promoted", "poisoned write must not promote:\n{write_json}");
-    assert!(
+    eval_assert!(status != "promoted", "poisoned write must not promote:\n{write_json}");
+    eval_assert!(
         write
             .get("reason")
             .and_then(|reason| reason.as_str())
@@ -50,17 +51,19 @@ async fn low_confidence_poisoned_candidate_is_not_promoted_or_recalled() {
         .await;
 
     let recall_block = observations.last_startup_block.as_deref().expect("startup recall block captured");
-    assert_xml_valid(recall_block).expect("startup recall block is valid XML");
-    assert!(!recall_block.contains(POISONED_BODY), "poisoned body must not appear in recall:\n{recall_block}");
+    eval_assert!(assert_xml_valid(recall_block).is_ok(), "startup recall block is valid XML");
+    eval_assert!(!recall_block.contains(POISONED_BODY), "poisoned body must not appear in recall:\n{recall_block}");
 
     let search_json = observations.last_search_json.as_deref().expect("search response captured");
-    assert_eq!(search_total(search_json), 0, "default search must not surface poisoned candidate:\n{search_json}");
+    eval_assert_eq!(search_total(search_json), 0, "default search must not surface poisoned candidate:\n{search_json}");
 
     if status == "quarantined" {
         let review_json = observations.last_review_queue_json.as_deref().expect("review queue response captured");
-        assert!(
+        eval_assert!(
             review_json.contains("quarantined"),
             "quarantined poisoned item should be visible for review:\n{review_json}"
         );
     }
+
+    eval_flush_assertion_count();
 }

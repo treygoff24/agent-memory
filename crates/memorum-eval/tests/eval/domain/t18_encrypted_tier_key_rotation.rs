@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use memorum_eval::daemon_scaffold::DaemonScaffold;
+use memorum_eval::{eval_assert, eval_assert_eq, eval_flush_assertion_count};
 use serde_json::{json, Value};
 
 use crate::support::{daemon_request, debug_binary, find_file_with_extension, read_device_id};
@@ -15,8 +16,8 @@ async fn t18_encrypted_tier_key_rotation_preserves_reads_and_forward_secrecy() {
     let scaffold = DaemonScaffold::fresh().await;
 
     if !rotation_contract_present(scaffold.tree_dir()) {
-        eprintln!(
-            "{STREAM_D_ROTATION_CONTRACT_NOT_SHIPPED}: Stream D key rotation contract is absent. \
+        println!(
+            "MEMORUM_EVAL_SKIP:{STREAM_D_ROTATION_CONTRACT_NOT_SHIPPED}: Stream D key rotation contract is absent. \
              The rotate-keys probe did not create keys/decommissioned plus keys/active.json, \
              so Test #18 is semantically skipped instead of treating the shipped overwrite-only CLI as rotation."
         );
@@ -27,24 +28,23 @@ async fn t18_encrypted_tier_key_rotation_preserves_reads_and_forward_secrecy() {
     assert_write_promoted(&first_response);
     let first_id = promoted_memory_id(&first_response);
     let first_files = encrypted_memory_files(scaffold.tree_dir());
-    assert_eq!(first_files.len(), 1, "first PII write should create one encrypted memory file");
+    eval_assert_eq!(first_files.len(), 1, "first PII write should create one encrypted memory file");
     assert_body_absent_from_tree(scaffold.tree_dir(), FIRST_PRIVATE_BODY);
     let old_active_key = active_key_snapshot(scaffold.tree_dir());
 
     let rotation = rotate_keys(scaffold.tree_dir());
-    assert!(
+    eval_assert!(
         rotation.status.success(),
         "memoryd device rotate-keys should exit 0 after the Stream D contract is present\nstdout={}\nstderr={}",
         String::from_utf8_lossy(&rotation.stdout),
         String::from_utf8_lossy(&rotation.stderr)
     );
-    assert!(
+    eval_assert!(
         rotation_contract_files(scaffold.tree_dir()).is_present(),
         "rotation contract files should remain present after rotation"
     );
-    assert_ne!(
-        active_key_snapshot(scaffold.tree_dir()),
-        old_active_key,
+    eval_assert!(
+        active_key_snapshot(scaffold.tree_dir()) != old_active_key,
         "active key snapshot should change after rotation"
     );
 
@@ -55,13 +55,14 @@ async fn t18_encrypted_tier_key_rotation_preserves_reads_and_forward_secrecy() {
     assert_write_promoted(&second_response);
     let second_id = promoted_memory_id(&second_response);
     let second_files = encrypted_memory_files(scaffold.tree_dir());
-    assert_eq!(second_files.len(), 2, "second PII write should add another encrypted memory file");
+    eval_assert_eq!(second_files.len(), 2, "second PII write should add another encrypted memory file");
     assert_new_ciphertext_uses_new_recipient(&second_files, &old_active_key);
 
     let second_reveal = reveal_memory(scaffold.socket_path(), &second_id, "T18 new encrypted memory active key check");
     assert_revealed_body(&second_reveal, SECOND_PRIVATE_BODY);
     assert_encrypted_reveal_events(scaffold.tree_dir(), &[&first_id, &second_id]);
     assert_device_keys_rotated_event(scaffold.tree_dir());
+    eval_flush_assertion_count();
 }
 
 fn rotation_contract_present(tree_dir: &Path) -> bool {
@@ -72,8 +73,9 @@ fn rotation_contract_present(tree_dir: &Path) -> bool {
 
     let output = rotate_keys(tree_dir);
     if !output.status.success() {
-        eprintln!(
-            "{STREAM_D_ROTATION_CONTRACT_NOT_SHIPPED}: rotate-keys probe failed before contract files existed\nstdout={}\nstderr={}",
+        println!(
+            "MEMORUM_EVAL_SKIP:{STREAM_D_ROTATION_CONTRACT_NOT_SHIPPED}: \
+             rotate-keys probe failed before contract files existed\nstdout={}\nstderr={}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
@@ -127,7 +129,7 @@ fn reveal_memory(socket_path: &Path, id: &str, reason: &str) -> Value {
 }
 
 fn assert_write_promoted(response: &Value) {
-    assert_eq!(
+    eval_assert_eq!(
         response.pointer("/result/success/governance_write/status").and_then(Value::as_str),
         Some("promoted"),
         "PII write should promote into encrypted storage: {response:#?}"
@@ -151,7 +153,7 @@ fn encrypted_memory_files(tree_dir: &Path) -> Vec<PathBuf> {
 fn assert_body_absent_from_tree(tree_dir: &Path, body: &str) {
     for path in find_file_with_extension(tree_dir, "md") {
         let text = std::fs::read_to_string(&path).unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
-        assert!(!text.contains(body), "encrypted PII body leaked to markdown file {}", path.display());
+        eval_assert!(!text.contains(body), "encrypted PII body leaked to markdown file {}", path.display());
     }
 }
 
@@ -168,11 +170,11 @@ fn active_key_snapshot(tree_dir: &Path) -> String {
 fn assert_new_ciphertext_uses_new_recipient(encrypted_files: &[PathBuf], old_active_key: &str) {
     let new_file = encrypted_files.last().expect("new encrypted file exists");
     let text = std::fs::read_to_string(new_file).unwrap_or_else(|err| panic!("read {}: {err}", new_file.display()));
-    assert!(
+    eval_assert!(
         !old_active_key.trim().is_empty(),
         "full Test #18 path requires a readable pre-rotation active key snapshot"
     );
-    assert!(
+    eval_assert!(
         !text.contains(old_active_key.trim()),
         "new ciphertext metadata must not keep using the pre-rotation active key: {}",
         new_file.display()
@@ -180,7 +182,7 @@ fn assert_new_ciphertext_uses_new_recipient(encrypted_files: &[PathBuf], old_act
 }
 
 fn assert_revealed_body(response: &Value, body: &str) {
-    assert_eq!(
+    eval_assert_eq!(
         response.pointer("/result/success/reveal/body").and_then(Value::as_str),
         Some(body),
         "memory_reveal should return decrypted body: {response:#?}"
@@ -190,7 +192,7 @@ fn assert_revealed_body(response: &Value, body: &str) {
 fn assert_encrypted_reveal_events(tree_dir: &Path, memory_ids: &[&str]) {
     let events = event_log_text(tree_dir);
     for memory_id in memory_ids {
-        assert!(
+        eval_assert!(
             events.contains(r#""kind":"encrypted_content_revealed""#) && events.contains(memory_id),
             "event log should include encrypted_content_revealed for {memory_id}:\n{events}"
         );
@@ -199,7 +201,7 @@ fn assert_encrypted_reveal_events(tree_dir: &Path, memory_ids: &[&str]) {
 
 fn assert_device_keys_rotated_event(tree_dir: &Path) {
     let events = event_log_text(tree_dir);
-    assert!(
+    eval_assert!(
         events.contains(r#""kind":"device_keys_rotated""#),
         "event log should include DeviceKeysRotated after key rotation:\n{events}"
     );

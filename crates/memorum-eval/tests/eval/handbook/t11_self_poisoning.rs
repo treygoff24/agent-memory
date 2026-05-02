@@ -1,6 +1,7 @@
 use memorum_eval::assertions::assert_xml_valid;
 use memorum_eval::daemon_scaffold::DaemonScaffold;
 use memorum_eval::simulator::{GovernanceMeta, SimulatorAction, SimulatorAgent, SimulatorConfig};
+use memorum_eval::{eval_assert, eval_assert_eq, eval_flush_assertion_count};
 use serde_json::Value;
 
 use crate::support::{
@@ -34,7 +35,7 @@ async fn self_poisoned_candidate_cannot_ground_its_own_confidence_escalation() {
         .await;
     let candidate_json = candidate.last_write_json.as_deref().expect("candidate write response captured");
     let candidate_write = payload(candidate_json, "governance_write");
-    assert_eq!(candidate_write.get("status").and_then(Value::as_str), Some("candidate"), "{candidate_json}");
+    eval_assert_eq!(candidate_write.get("status").and_then(Value::as_str), Some("candidate"), "{candidate_json}");
     let candidate_id = write_id(&candidate);
 
     let observations = agent
@@ -44,9 +45,9 @@ async fn self_poisoned_candidate_cannot_ground_its_own_confidence_escalation() {
         ])
         .await;
     let recall_block = observations.last_startup_block.as_deref().expect("startup recall block captured");
-    assert_xml_valid(recall_block).expect("startup recall block is valid XML");
-    assert!(!recall_block.contains(&candidate_id), "candidate must not appear as factual recall:\n{recall_block}");
-    assert!(
+    eval_assert!(assert_xml_valid(recall_block).is_ok(), "startup recall block is valid XML");
+    eval_assert!(!recall_block.contains(&candidate_id), "candidate must not appear as factual recall:\n{recall_block}");
+    eval_assert!(
         !recall_block.contains(WRONG_CLAIM),
         "wrong candidate body must not appear in factual recall:\n{recall_block}"
     );
@@ -67,8 +68,8 @@ async fn self_poisoned_candidate_cannot_ground_its_own_confidence_escalation() {
         .await;
     let escalation_json = escalation.last_write_json.as_deref().expect("escalation response captured");
     let escalation_write = payload(escalation_json, "governance_write");
-    assert_eq!(escalation_write.get("status").and_then(Value::as_str), Some("refused"), "{escalation_json}");
-    assert_eq!(escalation_write.get("reason").and_then(Value::as_str), Some("grounding"), "{escalation_json}");
+    eval_assert_eq!(escalation_write.get("status").and_then(Value::as_str), Some("refused"), "{escalation_json}");
+    eval_assert_eq!(escalation_write.get("reason").and_then(Value::as_str), Some("grounding"), "{escalation_json}");
 
     let superseded = agent
         .run_script([SimulatorAction::Supersede {
@@ -82,7 +83,7 @@ async fn self_poisoned_candidate_cannot_ground_its_own_confidence_escalation() {
             },
         }])
         .await;
-    assert_eq!(superseded.last_supersede_outcome.as_deref(), Some("promoted"), "{superseded:#?}");
+    eval_assert_eq!(superseded.last_supersede_outcome.as_deref(), Some("promoted"), "{superseded:#?}");
     let correct_id = supersede_new_id(&superseded);
 
     let observations = agent
@@ -93,22 +94,24 @@ async fn self_poisoned_candidate_cannot_ground_its_own_confidence_escalation() {
         ])
         .await;
     let recall_block = observations.last_startup_block.as_deref().expect("post-correction recall block captured");
-    assert!(recall_block.contains(&correct_id), "correct supersession should be recalled:\n{recall_block}");
-    assert!(
+    eval_assert!(recall_block.contains(&correct_id), "correct supersession should be recalled:\n{recall_block}");
+    eval_assert!(
         !recall_block.contains(&candidate_id),
         "superseded wrong candidate should not be recalled:\n{recall_block}"
     );
 
     let search_json = observations.last_search_json.as_deref().expect("search response captured");
     let hits = search_hits(search_json);
-    assert_eq!(
+    eval_assert_eq!(
         hits.first().and_then(|hit| hit.get("id")).and_then(Value::as_str),
         Some(correct_id.as_str()),
         "correct ES256 claim should rank before superseded/candidate rows:\n{search_json}"
     );
-    assert!(
+    eval_assert!(
         hits.iter().any(|hit| hit.get("id").and_then(Value::as_str) == Some(correct_id.as_str())
             && hit.get("snippet").and_then(Value::as_str).is_some_and(|snippet| snippet.contains("ES256"))),
         "search should return correct ES256 claim:\n{search_json}"
     );
+
+    eval_flush_assertion_count();
 }

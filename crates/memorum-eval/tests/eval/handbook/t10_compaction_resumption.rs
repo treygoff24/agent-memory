@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use memorum_eval::assertions::assert_xml_valid;
 use memorum_eval::daemon_scaffold::DaemonScaffold;
 use memorum_eval::simulator::{SimulatorAction, SimulatorAgent, SimulatorConfig};
+use memorum_eval::{eval_assert, eval_flush_assertion_count};
 
 use crate::support::{
     memory_file_body, promoted_project_meta, search_hits, write_id, write_project_file, DEFAULT_PROJECT_ID,
@@ -35,14 +36,14 @@ async fn simulated_compaction_resumption_preserves_active_working_state_without_
         ])
         .await;
     let first_block = first_resumption.last_startup_block.as_deref().expect("first startup recall block captured");
-    assert_xml_valid(first_block).expect("first recall block is valid XML");
+    eval_assert!(assert_xml_valid(first_block).is_ok(), "first recall block is valid XML");
     let recalled_first = first_round_ids.iter().filter(|id| first_block.contains(id.as_str())).count();
-    assert!(
+    eval_assert!(
         recalled_first >= 8,
         "first resumption should recall >=8 of 10 memories, got {recalled_first}:\n{first_block}"
     );
     let search_json = first_resumption.last_search_json.as_deref().expect("first search response captured");
-    assert!(
+    eval_assert!(
         search_hits(search_json).iter().any(|hit| hit
             .get("snippet")
             .and_then(|snippet| snippet.as_str())
@@ -70,12 +71,12 @@ async fn simulated_compaction_resumption_preserves_active_working_state_without_
         ])
         .await;
     let second_block = second_resumption.last_startup_block.as_deref().expect("second startup recall block captured");
-    assert_xml_valid(second_block).expect("second recall block is valid XML");
-    assert!(
+    eval_assert!(assert_xml_valid(second_block).is_ok(), "second recall block is valid XML");
+    eval_assert!(
         first_round_ids.iter().any(|id| second_block.contains(id.as_str())),
         "second resumption should include original working state:\n{second_block}"
     );
-    assert!(
+    eval_assert!(
         second_round_ids.iter().any(|id| second_block.contains(id.as_str())),
         "second resumption should include newer working state:\n{second_block}"
     );
@@ -83,8 +84,10 @@ async fn simulated_compaction_resumption_preserves_active_working_state_without_
 
     for id in first_round_ids.iter().chain(second_round_ids.iter()) {
         let file = memory_file_body(scaffold.tree_dir(), id);
-        assert!(file.contains("status: active"), "working state {id} should remain active:\n{file}");
+        eval_assert!(file.contains("status: active"), "working state {id} should remain active:\n{file}");
     }
+
+    eval_flush_assertion_count();
 }
 
 fn assert_no_duplicate_recall_ids(recall_block: &str) {
@@ -94,6 +97,6 @@ fn assert_no_duplicate_recall_ids(recall_block: &str) {
         let id_start = start + 3;
         let Some(end) = line[id_start..].find(']') else { continue };
         let id = &line[id_start..id_start + end];
-        assert!(seen.insert(id.to_owned()), "duplicate recall id {id} in block:\n{recall_block}");
+        eval_assert!(seen.insert(id.to_owned()), "duplicate recall id {id} in block:\n{recall_block}");
     }
 }

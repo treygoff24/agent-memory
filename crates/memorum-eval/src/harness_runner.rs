@@ -105,7 +105,10 @@ impl HarnessRunner {
             return Err(HarnessRunnerError::HarnessIncompatibleCli {
                 harness,
                 path,
-                reason: format!("{} --help did not contain {MCP_CONFIG_FLAG}", harness.binary_name()),
+                reason: format!(
+                    "{} --help did not contain {MCP_CONFIG_FLAG}; observed help output: {help_text:?}",
+                    harness.binary_name()
+                ),
             });
         }
 

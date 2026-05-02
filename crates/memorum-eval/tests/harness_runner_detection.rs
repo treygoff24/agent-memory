@@ -86,11 +86,14 @@ fn writes_harness_specific_mcp_config_files_without_extra_temp_files() {
 
 fn write_fake_cli(path_dir: &std::path::Path, name: &str, help_text: &str) {
     let path = path_dir.join(name);
-    fs::write(&path, format!("#!/bin/sh\nprintf '%s' {}\n", shell_quote(help_text)))
+    fs::write(&path, format!("#!/bin/sh\necho {}\n", shell_quote(help_text.trim_end())))
         .expect("fake CLI should be written");
     let mut permissions = fs::metadata(&path).expect("fake CLI metadata should be readable").permissions();
     permissions.set_mode(0o755);
     fs::set_permissions(&path, permissions).expect("fake CLI should be executable");
+    let output = std::process::Command::new(&path).arg("--help").output().expect("fake CLI should execute");
+    let help = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    assert!(help.contains("--mcp-config"), "fake {name} help fixture should include --mcp-config: {help:?}");
 }
 
 fn shell_quote(value: &str) -> String {

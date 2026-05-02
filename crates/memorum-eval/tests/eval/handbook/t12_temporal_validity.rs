@@ -1,6 +1,7 @@
 use memorum_eval::assertions::assert_xml_valid;
 use memorum_eval::daemon_scaffold::DaemonScaffold;
 use memorum_eval::simulator::{SimulatorAction, SimulatorAgent, SimulatorConfig};
+use memorum_eval::{eval_assert, eval_assert_eq, eval_flush_assertion_count};
 use serde_json::{json, Value};
 
 use crate::support::{grounding_source_ref, promoted_project_meta, write_id, write_project_file, DEFAULT_PROJECT_ID};
@@ -62,7 +63,7 @@ async fn temporal_validity_fields_are_not_silently_ignored_and_fresh_memory_is_c
             meta_json: promoted_project_meta("t12-fresh", "claim"),
         }])
         .await;
-    assert_eq!(fresh.last_write_outcome.as_deref(), Some("promoted"), "{fresh:#?}");
+    eval_assert_eq!(fresh.last_write_outcome.as_deref(), Some("promoted"), "{fresh:#?}");
     let fresh_id = write_id(&fresh);
 
     let observations = agent
@@ -74,17 +75,25 @@ async fn temporal_validity_fields_are_not_silently_ignored_and_fresh_memory_is_c
         ])
         .await;
     let recall_block = observations.last_startup_block.as_deref().expect("startup recall block captured");
-    assert_xml_valid(recall_block).expect("startup recall block is valid XML");
-    assert!(recall_block.contains(&fresh_id), "fresh memory should be recalled:\n{recall_block}");
-    assert!(
+    eval_assert!(assert_xml_valid(recall_block).is_ok(), "startup recall block is valid XML");
+    eval_assert!(recall_block.contains(&fresh_id), "fresh memory should be recalled:\n{recall_block}");
+    eval_assert!(
         recall_block.contains("Fresh database version"),
         "fresh memory summary should be recalled:\n{recall_block}"
     );
-    assert!(!recall_block.contains("PostgreSQL 13"), "rejected expired memory must not be recalled:\n{recall_block}");
-    assert!(!recall_block.contains("PostgreSQL 18"), "rejected future memory must not be recalled:\n{recall_block}");
+    eval_assert!(
+        !recall_block.contains("PostgreSQL 13"),
+        "rejected expired memory must not be recalled:\n{recall_block}"
+    );
+    eval_assert!(
+        !recall_block.contains("PostgreSQL 18"),
+        "rejected future memory must not be recalled:\n{recall_block}"
+    );
 
     let get_json = observations.last_get_json.as_deref().expect("get response captured");
-    assert!(get_json.contains(FRESH), "memory_get should return the fresh body:\n{get_json}");
+    eval_assert!(get_json.contains(FRESH), "memory_get should return the fresh body:\n{get_json}");
+
+    eval_flush_assertion_count();
 }
 
 fn assert_temporal_field_rejected(response_json: &str, field: &str) {
@@ -92,12 +101,12 @@ fn assert_temporal_field_rejected(response_json: &str, field: &str) {
     let error = parsed
         .pointer("/result/error")
         .unwrap_or_else(|| panic!("expected invalid-request error for {field}, got:\n{response_json}"));
-    assert_eq!(error.get("code").and_then(Value::as_str), Some("invalid_request"), "{response_json}");
-    assert!(
+    eval_assert_eq!(error.get("code").and_then(Value::as_str), Some("invalid_request"), "{response_json}");
+    eval_assert!(
         error.get("message").and_then(Value::as_str).is_some_and(|message| message.contains(field)),
         "error should name rejected field {field}:\n{response_json}"
     );
-    assert!(payload_is_absent(response_json, "governance_write"));
+    eval_assert!(payload_is_absent(response_json, "governance_write"));
 }
 
 fn payload_is_absent(response_json: &str, name: &str) -> bool {

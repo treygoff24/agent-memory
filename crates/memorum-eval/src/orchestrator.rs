@@ -2,10 +2,11 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll, Wake, Waker};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use chrono::SecondsFormat;
 use clap::ValueEnum;
+use tokio::runtime::Builder as TokioBuilder;
 
 use crate::daemon_scaffold::DaemonScaffold;
 use crate::harness_runner::{HarnessRunner, MockHarness, RealHarness, TestOutcome};
@@ -13,9 +14,13 @@ use crate::harness_runner::{HarnessRunner, MockHarness, RealHarness, TestOutcome
 const CLAUDE_KEY_ENV: &str = "MEMORUM_EVAL_CLAUDE_KEY";
 const CODEX_KEY_ENV: &str = "MEMORUM_EVAL_CODEX_KEY";
 const SKIP_NO_AUTH: &str = "SKIP_NO_AUTH";
-const STREAM_D_ROTATION_CONTRACT_NOT_SHIPPED: &str = "STREAM_D_ROTATION_CONTRACT_NOT_SHIPPED";
 const STREAM_I_DEPS_DISABLED: &str = "STREAM_I_DEPS_DISABLED";
-const SEMANTIC_PARTIAL_LEASE_REENTRANCY_NOT_SHIPPED: &str = "SEMANTIC_PARTIAL_LEASE_REENTRANCY_NOT_SHIPPED";
+/// Marker printed to stdout by a test that wants a clean skip rather than a pass.
+/// Format: `MEMORUM_EVAL_SKIP:<reason>` on its own line.
+const CARGO_TEST_SKIP_MARKER: &str = "MEMORUM_EVAL_SKIP:";
+/// Marker printed by tests to report actual assertion count for JSON output accuracy.
+/// Format: `MEMORUM_EVAL_ASSERTIONS=<n>` on its own line. Used by `eval_assert_count!`.
+pub const EVAL_ASSERTION_COUNT_MARKER: &str = "MEMORUM_EVAL_ASSERTIONS=";
 
 #[derive(Debug, Default)]
 pub struct EvalOrchestrator;
@@ -517,8 +522,10 @@ fn dispatch_for_entry(entry: CatalogEntry, context: &RunContext) -> CatalogDispa
 
 fn semantic_skip_reason(entry: CatalogEntry) -> Option<&'static str> {
     match entry.number {
-        17 => Some(SEMANTIC_PARTIAL_LEASE_REENTRANCY_NOT_SHIPPED),
-        18 => Some(STREAM_D_ROTATION_CONTRACT_NOT_SHIPPED),
+        // T17 and T18 unconditional skips removed by H-B1.
+        // Those tests carry honest internal skip guards (T17 checks re-entrant
+        // lease support; T18 checks for the Stream D rotation contract files).
+        // Let those guards drive skip/pass behavior instead of the orchestrator.
         19 if !cfg!(feature = "stream-i-deps") => Some(STREAM_I_DEPS_DISABLED),
         _ => None,
     }
@@ -591,6 +598,14 @@ fn cargo_dispatch(entry: CatalogEntry) -> CargoTestDispatch {
             target: "domain",
             filter: "t16_reality_check_drift_scores_order_and_explain_components",
         },
+        17 => CargoTestDispatch {
+            target: "domain",
+            filter: "t17_preseeded_two_device_lease_blocks_loser_and_allows_retry_after_release",
+        },
+        18 => CargoTestDispatch {
+            target: "domain",
+            filter: "t18_encrypted_tier_key_rotation_preserves_reads_and_forward_secrecy",
+        },
         19 => {
             CargoTestDispatch { target: "t19_peer_update_framing", filter: "t19_peer_update_framing_sampling_matrix" }
         }
@@ -605,10 +620,43 @@ fn run_cargo_test(entry: CatalogEntry, started: Instant, dispatch: CargoTestDisp
         .output();
 
     match output {
-        Ok(output) if output.status.success() => passed_result(entry, started.elapsed()),
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+
+            // Check if the test printed a skip marker even though cargo reported success.
+            // Tests that lack a required runtime dependency (e.g. T16 without Stream G)
+            // print `MEMORUM_EVAL_SKIP:<reason>` so the orchestrator records a real
+            // skipped result rather than a silent pass. (H-R4)
+            if let Some(reason) = extract_skip_marker(&stdout) {
+                return skipped_result(entry, started.elapsed(), reason);
+            }
+
+            // Parse the assertion count emitted by `eval_assert_count!` calls.
+            // Tests print `MEMORUM_EVAL_ASSERTIONS=<n>` to stdout; the orchestrator
+            // picks it up here so JSON output reflects real per-test granularity
+            // rather than a hardcoded 1. (H-B3)
+            let assertions = extract_assertion_count(&stdout).unwrap_or(1);
+            passed_result_with_count(entry, started.elapsed(), assertions)
+        }
         Ok(output) => failed_result(entry, started.elapsed(), &cargo_failure_detail(&output)),
         Err(error) => failed_result(entry, started.elapsed(), &format!("failed to run cargo test: {error}")),
     }
+}
+
+/// Extract a skip reason from a `MEMORUM_EVAL_SKIP:<reason>` marker in cargo test stdout.
+fn extract_skip_marker(stdout: &str) -> Option<&str> {
+    stdout.lines().find_map(|line| {
+        let trimmed = line.trim();
+        trimmed.strip_prefix(CARGO_TEST_SKIP_MARKER).map(str::trim)
+    })
+}
+
+/// Extract the total assertion count from a `MEMORUM_EVAL_ASSERTIONS=<n>` marker.
+fn extract_assertion_count(stdout: &str) -> Option<usize> {
+    stdout.lines().find_map(|line| {
+        let trimmed = line.trim();
+        trimmed.strip_prefix(EVAL_ASSERTION_COUNT_MARKER).and_then(|s| s.trim().parse().ok())
+    })
 }
 
 fn cargo_failure_detail(output: &std::process::Output) -> String {
@@ -638,7 +686,10 @@ fn normalize_skip_reason(reason: &str) -> &'static str {
     }
 }
 
-fn passed_result(entry: CatalogEntry, duration: Duration) -> EvalTestResult {
+/// Build a passed result with an explicit assertion count from the test's
+/// `MEMORUM_EVAL_ASSERTIONS=<n>` stdout marker (H-B3), defaulting to 1 when
+/// no marker is present.
+fn passed_result_with_count(entry: CatalogEntry, duration: Duration, assertions: usize) -> EvalTestResult {
     EvalTestResult {
         number: entry.number,
         name: entry.name,
@@ -646,8 +697,8 @@ fn passed_result(entry: CatalogEntry, duration: Duration) -> EvalTestResult {
         mode: entry.mode,
         status: TestStatus::Passed,
         duration_ms: duration.as_millis(),
-        assertions: 1,
-        assertions_passed: 1,
+        assertions,
+        assertions_passed: assertions,
         assertions_failed: 0,
         failure_detail: None,
         skip_reason: None,
@@ -708,24 +759,18 @@ fn skipped_result(entry: CatalogEntry, duration: Duration, reason: &str) -> Eval
     }
 }
 
+/// Run an async future to completion from a synchronous context.
+///
+/// Uses a per-call single-threaded tokio runtime. The orchestrator worker threads
+/// are OS threads with no ambient runtime, so `Handle::block_on` is not
+/// available. A `current_thread` runtime is lightweight and avoids the
+/// busy-spin + `yield_now()` of the prior home-rolled implementation. (H-R2)
 fn block_on<F: std::future::Future>(future: F) -> F::Output {
-    let waker = Waker::from(Arc::new(NoopWaker));
-    let mut context = Context::from_waker(&waker);
-    let mut future = std::pin::pin!(future);
-
-    loop {
-        match future.as_mut().poll(&mut context) {
-            Poll::Ready(output) => return output,
-            Poll::Pending => std::thread::yield_now(),
-        }
-    }
-}
-
-#[derive(Debug)]
-struct NoopWaker;
-
-impl Wake for NoopWaker {
-    fn wake(self: Arc<Self>) {}
+    TokioBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("orchestrator block_on: failed to build single-threaded tokio runtime")
+        .block_on(future)
 }
 
 fn matches_filter(entry: CatalogEntry, pattern: &str) -> bool {
@@ -837,7 +882,8 @@ fn new_run_id() -> String {
 }
 
 fn timestamp_string() -> String {
-    format!("unix-ms:{}", unix_millis())
+    // Spec §6.2 requires ISO 8601 timestamps in JSON output. (H-nit)
+    chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
 fn unix_millis() -> u128 {

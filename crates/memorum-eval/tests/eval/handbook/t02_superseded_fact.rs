@@ -1,6 +1,7 @@
 use memorum_eval::assertions::assert_xml_valid;
 use memorum_eval::daemon_scaffold::DaemonScaffold;
 use memorum_eval::simulator::{GovernanceMeta, SimulatorAction, SimulatorAgent, SimulatorConfig};
+use memorum_eval::{eval_assert, eval_assert_eq, eval_flush_assertion_count};
 
 use crate::support::{
     memory_file_body, promoted_project_meta, search_hits, supersede_new_id, write_id, write_project_file,
@@ -35,7 +36,7 @@ async fn superseded_fact_loses_to_replacement_in_search_and_recall() {
             },
         }])
         .await;
-    assert_eq!(
+    eval_assert_eq!(
         superseded.last_supersede_outcome.as_deref(),
         Some("promoted"),
         "supersede should promote: {superseded:#?}"
@@ -53,28 +54,33 @@ async fn superseded_fact_loses_to_replacement_in_search_and_recall() {
 
     let search_json = observations.last_search_json.as_deref().expect("search response captured");
     let hits = search_hits(search_json);
-    assert!(!hits.is_empty(), "search should find the replacement claim:\n{search_json}");
-    assert_eq!(
+    eval_assert!(!hits.is_empty(), "search should find the replacement claim:\n{search_json}");
+    eval_assert_eq!(
         hits[0].get("id").and_then(|id| id.as_str()),
         Some(new_id.as_str()),
         "PostgreSQL 16 should rank first: {hits:#?}"
     );
-    assert!(hits[0]
+    eval_assert!(hits[0]
         .get("snippet")
         .and_then(|snippet| snippet.as_str())
         .is_some_and(|snippet| snippet.contains("PostgreSQL 16")));
 
     let old_file = memory_file_body(scaffold.tree_dir(), &old_id);
-    assert!(old_file.contains("status: superseded"), "old memory should be marked superseded:\n{old_file}");
-    assert!(old_file.contains(&new_id), "old memory should point at replacement {new_id}:\n{old_file}");
+    eval_assert!(old_file.contains("status: superseded"), "old memory should be marked superseded:\n{old_file}");
+    eval_assert!(old_file.contains(&new_id), "old memory should point at replacement {new_id}:\n{old_file}");
 
     let new_file = memory_file_body(scaffold.tree_dir(), &new_id);
-    assert!(new_file.contains("PostgreSQL 16"));
-    assert!(new_file.contains(&old_id), "replacement should record supersedes {old_id}:\n{new_file}");
+    eval_assert!(new_file.contains("PostgreSQL 16"));
+    eval_assert!(new_file.contains(&old_id), "replacement should record supersedes {old_id}:\n{new_file}");
 
     let recall_block = observations.last_startup_block.as_deref().expect("startup recall block captured");
-    assert_xml_valid(recall_block).expect("startup recall block is valid XML");
-    assert!(recall_block.contains(&new_id), "recall should include replacement {new_id}:\n{recall_block}");
-    assert!(!recall_block.contains(&old_id), "recall should not include superseded old id {old_id}:\n{recall_block}");
-    assert!(!recall_block.contains("PostgreSQL 14"), "recall should not include old body:\n{recall_block}");
+    eval_assert!(assert_xml_valid(recall_block).is_ok(), "startup recall block is valid XML");
+    eval_assert!(recall_block.contains(&new_id), "recall should include replacement {new_id}:\n{recall_block}");
+    eval_assert!(
+        !recall_block.contains(&old_id),
+        "recall should not include superseded old id {old_id}:\n{recall_block}"
+    );
+    eval_assert!(!recall_block.contains("PostgreSQL 14"), "recall should not include old body:\n{recall_block}");
+
+    eval_flush_assertion_count();
 }

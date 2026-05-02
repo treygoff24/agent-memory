@@ -46,7 +46,20 @@ fn mock_harness_skips_real_harness_tests_without_counting_failures() {
     let report = json_stdout(output);
     assert_eq!(report["total"], 19);
     assert_eq!(report["failed"], 0);
-    assert_eq!(report["partial"], true);
+    // With stream-i-deps enabled by default (H-B2), T19 runs through MockHarness.
+    // T16/T17/T18 are Simulator-mode tests that skip at runtime via their own
+    // internal MEMORUM_EVAL_SKIP guards (T16 needs test-utils; T17/T18 depend on
+    // unshipped feature gates). These runtime skips set partial=true. Zero tests
+    // are pre-skipped at the orchestrator level, so failed is still 0.
+    assert_eq!(report["failed"], 0, "no tests should fail in mock mode: {report:#?}");
+    // partial is true because T16/T17/T18 produce runtime SKIP markers.
+    #[cfg(feature = "stream-i-deps")]
+    assert_eq!(report["partial"], true, "partial reflects runtime skips from T16/T17/T18: {report:#?}");
+    #[cfg(not(feature = "stream-i-deps"))]
+    assert_eq!(
+        report["partial"], true,
+        "partial is true (T16/T17/T18 runtime skips, and T19 pre-skipped): {report:#?}"
+    );
 
     let tests = report["tests"].as_array().expect("tests should be an array");
     let t13 = find_test(tests, 13);
@@ -220,6 +233,145 @@ fn find_test(tests: &[Value], number: u64) -> &Value {
 
 fn skipped_real_harness_tests(tests: &[Value]) -> Vec<&Value> {
     tests.iter().filter(|test| test["mode"] == "real_harness").filter(|test| test["status"] == "skipped").collect()
+}
+
+/// H-B1 regression: T17 and T18 must not be permanently skipped at the orchestrator
+/// level; they should be cargo-dispatched so their in-test skip guards run.
+#[test]
+fn t17_and_t18_dispatch_through_cargo_not_permanently_skipped() {
+    let fake_cargo = fake_failing_cargo();
+    for test_number in ["t17", "t18"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_memorum-eval"))
+            .args(["--harness", "mock", "--filter", test_number, "--output", "json"])
+            .env("MEMORUM_EVAL_CARGO", &fake_cargo)
+            .output()
+            .expect("spawn memorum-eval");
+
+        // fake cargo fails, so the test should be FAILED (dispatched), not SKIPPED (pre-empted)
+        assert!(!output.status.success(), "fake cargo should cause {test_number} to fail");
+
+        let report = json_stdout(output);
+        let test = &report["tests"][0];
+        assert_eq!(
+            test["status"], "failed",
+            "{test_number} should run through cargo dispatch, not be pre-skipped: {test:#?}"
+        );
+        assert_eq!(
+            test["skip_reason"],
+            Value::Null,
+            "{test_number} skip_reason must be null when dispatched: {test:#?}"
+        );
+
+        // Verify the old semantic skip constants are not present
+        let report_str = report.to_string();
+        assert!(
+            !report_str.contains("SEMANTIC_PARTIAL_LEASE_REENTRANCY_NOT_SHIPPED"),
+            "{test_number}: old T17 orchestrator skip constant must not appear: {report_str}"
+        );
+        assert!(
+            !report_str.contains("STREAM_D_ROTATION_CONTRACT_NOT_SHIPPED"),
+            "{test_number}: old T18 orchestrator skip constant must not appear: {report_str}"
+        );
+    }
+}
+
+/// H-B2 regression: T19 must not be skipped in default builds now that Stream I is shipped.
+#[test]
+fn t19_is_not_skipped_by_default_with_stream_i_feature() {
+    let fake_cargo = fake_failing_cargo();
+    let output = Command::new(env!("CARGO_BIN_EXE_memorum-eval"))
+        .args(["--harness", "mock", "--filter", "t19", "--output", "json"])
+        .env("MEMORUM_EVAL_CARGO", &fake_cargo)
+        .output()
+        .expect("spawn memorum-eval");
+
+    let report = json_stdout(output);
+    let test = &report["tests"][0];
+
+    // With stream-i-deps enabled by default, T19 should reach MockHarness or cargo dispatch,
+    // not be pre-skipped with STREAM_I_DEPS_DISABLED.
+    assert_ne!(
+        test["status"], "skipped",
+        "T19 must not be pre-skipped when stream-i-deps feature is enabled by default: {test:#?}"
+    );
+    assert_ne!(
+        test["skip_reason"].as_str(),
+        Some("STREAM_I_DEPS_DISABLED"),
+        "T19 must not carry STREAM_I_DEPS_DISABLED skip when stream-i-deps is a default feature: {test:#?}"
+    );
+}
+
+/// H-R4 regression: cargo-test success that includes a MEMORUM_EVAL_SKIP: marker
+/// should be recorded as skipped, not passed.
+#[test]
+fn skip_marker_in_cargo_stdout_produces_skipped_result_not_pass() {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
+    // Create a fake cargo that exits 0 but emits a skip marker in test stdout
+    let path = std::env::temp_dir().join(format!("memorum-eval-skip-cargo-{}.sh", std::process::id()));
+    fs::write(
+        &path,
+        "#!/bin/sh\nprintf 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\\n'\nprintf 'MEMORUM_EVAL_SKIP:STREAM_G_RC_HANDLER_NOT_SHIPPED\\n'\nexit 0\n",
+    )
+    .expect("write skip-marker fake cargo");
+    let mut perms = fs::metadata(&path).expect("fake cargo metadata").permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&path, perms).expect("chmod fake cargo");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_memorum-eval"))
+        .args(["--harness", "mock", "--filter", "t16", "--output", "json"])
+        .env("MEMORUM_EVAL_CARGO", &path)
+        .output()
+        .expect("spawn memorum-eval");
+
+    // Should exit 0 (skips are not failures in mock mode)
+    assert!(output.status.success(), "skip marker run should exit 0: {}", diagnostic(&output));
+
+    let report = json_stdout(output);
+    let test = &report["tests"][0];
+    assert_eq!(test["status"], "skipped", "skip-marker stdout should produce a skipped result: {test:#?}");
+    assert!(
+        test["skip_reason"].as_str().is_some_and(|r| r.contains("STREAM_G_RC_HANDLER_NOT_SHIPPED")),
+        "skip_reason should contain the extracted reason: {test:#?}"
+    );
+}
+
+/// H-B3 regression: cargo-test success that includes MEMORUM_EVAL_ASSERTIONS=<n>
+/// should populate the assertions field accurately (not hardcoded 1).
+#[test]
+fn assertion_count_marker_in_cargo_stdout_populates_assertions_field() {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = std::env::temp_dir().join(format!("memorum-eval-assert-cargo-{}.sh", std::process::id()));
+    fs::write(
+        &path,
+        "#!/bin/sh\nprintf 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\\n'\nprintf 'MEMORUM_EVAL_ASSERTIONS=7\\n'\nexit 0\n",
+    )
+    .expect("write assertion-count fake cargo");
+    let mut perms = fs::metadata(&path).expect("fake cargo metadata").permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&path, perms).expect("chmod fake cargo");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_memorum-eval"))
+        .args(["--harness", "mock", "--filter", "t01", "--output", "json"])
+        .env("MEMORUM_EVAL_CARGO", &path)
+        .output()
+        .expect("spawn memorum-eval");
+
+    assert!(output.status.success(), "assertion-count run should exit 0: {}", diagnostic(&output));
+
+    let report = json_stdout(output);
+    let test = &report["tests"][0];
+    assert_eq!(test["status"], "passed", "assertion-count run should pass: {test:#?}");
+    assert_eq!(
+        test["assertions"].as_u64(),
+        Some(7),
+        "assertions field should reflect the MEMORUM_EVAL_ASSERTIONS marker, not hardcoded 1: {test:#?}"
+    );
+    assert_eq!(test["assertions_passed"].as_u64(), Some(7), "assertions_passed should match assertions: {test:#?}");
+    assert_eq!(test["assertions_failed"].as_u64(), Some(0));
 }
 
 fn json_stdout(output: std::process::Output) -> Value {

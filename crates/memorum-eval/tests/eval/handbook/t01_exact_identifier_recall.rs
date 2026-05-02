@@ -1,6 +1,7 @@
 use memorum_eval::assertions::assert_xml_valid;
 use memorum_eval::daemon_scaffold::DaemonScaffold;
 use memorum_eval::simulator::{SimulatorAction, SimulatorAgent, SimulatorConfig};
+use memorum_eval::{eval_assert, eval_assert_eq, eval_flush_assertion_count};
 
 use crate::support::{
     promoted_project_meta, search_hits, startup_invoked_total, write_id, write_project_file, DEFAULT_PROJECT_ID,
@@ -42,26 +43,29 @@ async fn exact_identifier_survives_startup_recall_and_search() {
         .await;
 
     let recall_block = observations.last_startup_block.as_deref().expect("startup recall block captured");
-    assert_xml_valid(recall_block).expect("startup recall block is valid XML");
-    assert!(
+    eval_assert!(assert_xml_valid(recall_block).is_ok(), "startup recall block is valid XML");
+    eval_assert!(
         recall_block.contains(&sentinel_id),
         "recall block should include sentinel id {sentinel_id}:\n{recall_block}"
     );
-    assert!(recall_block.contains(SENTINEL), "recall block should include sentinel body text:\n{recall_block}");
+    eval_assert!(recall_block.contains(SENTINEL), "recall block should include sentinel body text:\n{recall_block}");
 
     let search_json = observations.last_search_json.as_deref().expect("search response captured");
     let hits = search_hits(search_json);
     let top = hits.first().unwrap_or_else(|| panic!("sentinel search returned no hits:\n{search_json}"));
-    assert_eq!(top.get("id").and_then(|id| id.as_str()), Some(sentinel_id.as_str()));
-    assert!(
+    eval_assert_eq!(top.get("id").and_then(|id| id.as_str()), Some(sentinel_id.as_str()));
+    eval_assert!(
         top.get("snippet").and_then(|snippet| snippet.as_str()).is_some_and(|snippet| snippet.contains(SENTINEL)),
         "top search hit should preserve sentinel body text: {top:#?}"
     );
-    assert_eq!(
+    eval_assert_eq!(
         hits.iter().filter(|hit| hit.get("id").and_then(|id| id.as_str()) == Some(sentinel_id.as_str())).count(),
         1
     );
 
     let status_json = observations.last_status_json.as_deref().expect("status response captured");
-    assert!(startup_invoked_total(status_json) >= 1, "startup counter should increment: {status_json}");
+    eval_assert!(startup_invoked_total(status_json) >= 1, "startup counter should increment: {status_json}");
+
+    // Print assertion count for orchestrator JSON output accuracy. (H-B3)
+    eval_flush_assertion_count();
 }

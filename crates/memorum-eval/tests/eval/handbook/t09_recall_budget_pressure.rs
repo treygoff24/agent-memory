@@ -1,6 +1,7 @@
 use memorum_eval::assertions::assert_xml_valid;
 use memorum_eval::daemon_scaffold::DaemonScaffold;
 use memorum_eval::simulator::{SimulatorAction, SimulatorAgent, SimulatorConfig};
+use memorum_eval::{eval_assert, eval_assert_eq, eval_flush_assertion_count};
 use serde_json::Value;
 
 use crate::support::{payload, promoted_project_meta, write_id, write_project_file, DEFAULT_PROJECT_ID};
@@ -26,7 +27,7 @@ async fn recall_budget_pressure_keeps_high_value_gold_memory_and_reports_omissio
                 meta_json: promoted_project_meta(&format!("t09-competitor-{index}"), "claim"),
             }])
             .await;
-        assert_eq!(observations.last_write_outcome.as_deref(), Some("promoted"), "{observations:#?}");
+        eval_assert_eq!(observations.last_write_outcome.as_deref(), Some("promoted"), "{observations:#?}");
     }
 
     let gold_body = format!("{GOLD_SENTINEL}: ent_budget_test production incident owner is release engineering.");
@@ -54,16 +55,16 @@ async fn recall_budget_pressure_keeps_high_value_gold_memory_and_reports_omissio
         .await;
 
     let recall_block = observations.last_startup_block.as_deref().expect("startup recall block captured");
-    assert_xml_valid(recall_block).expect("startup recall block is valid XML");
-    assert!(recall_block.contains(&gold_id), "gold memory should survive budget pressure:\n{recall_block}");
-    assert!(recall_block.contains(GOLD_SENTINEL), "gold sentinel should be visible in recall:\n{recall_block}");
+    eval_assert!(assert_xml_valid(recall_block).is_ok(), "startup recall block is valid XML");
+    eval_assert!(recall_block.contains(&gold_id), "gold memory should survive budget pressure:\n{recall_block}");
+    eval_assert!(recall_block.contains(GOLD_SENTINEL), "gold sentinel should be visible in recall:\n{recall_block}");
 
     let startup_json = observations.last_startup_json.as_deref().expect("startup response captured");
     let startup = payload(startup_json, "startup");
     let explanation = startup.get("recall_explanation").expect("recall_explanation present");
     let omitted = explanation.get("omitted").and_then(Value::as_array).expect("omitted array present");
-    assert!(!omitted.is_empty(), "budget pressure should omit at least one memory:\n{startup_json}");
-    assert!(
+    eval_assert!(!omitted.is_empty(), "budget pressure should omit at least one memory:\n{startup_json}");
+    eval_assert!(
         omitted.iter().all(|item| item.get("id").and_then(Value::as_str) != Some(gold_id.as_str())),
         "gold memory must not be omitted: {omitted:#?}"
     );
@@ -74,13 +75,15 @@ async fn recall_budget_pressure_keeps_high_value_gold_memory_and_reports_omissio
             sections.iter().find(|section| section.get("name").and_then(Value::as_str) == Some("recent-memory"))
         })
         .expect("recent-memory explanation present");
-    assert!(
+    eval_assert!(
         recent_section.get("omitted_count").and_then(Value::as_u64).is_some_and(|count| count > 0),
         "recent-memory omitted_count should reflect budget drops: {recent_section:#?}"
     );
-    assert_eq!(
+    eval_assert_eq!(
         explanation.get("budget_tokens").and_then(Value::as_u64),
         Some(512),
         "startup explanation should preserve configured budget:\n{startup_json}"
     );
+
+    eval_flush_assertion_count();
 }

@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use memorum_eval::daemon_scaffold::DaemonScaffold;
+use memorum_eval::{eval_assert, eval_flush_assertion_count};
 
 use crate::support::{command_output, debug_binary};
 
@@ -55,7 +56,7 @@ async fn t14_merge_driver_preserves_two_device_semantic_edits() {
             "agent/patterns/t14-merge-driver.md",
         ],
     );
-    assert!(
+    eval_assert!(
         output.status.success(),
         "merge driver should exit 0\nstdout={}\nstderr={}",
         String::from_utf8_lossy(&output.stdout),
@@ -63,14 +64,14 @@ async fn t14_merge_driver_preserves_two_device_semantic_edits() {
     );
 
     let merged = std::fs::read_to_string(&ours).expect("read merged ours file");
-    assert!(merged.contains("id: ent_merge_test_alpha"), "merged entities should include Device A:\n{merged}");
-    assert!(merged.contains("id: ent_merge_test_beta"), "merged entities should include Device B:\n{merged}");
-    assert!(merged.contains("confidence: 0.92"), "merged confidence should preserve Device A update:\n{merged}");
-    assert!(
+    eval_assert!(merged.contains("id: ent_merge_test_alpha"), "merged entities should include Device A:\n{merged}");
+    eval_assert!(merged.contains("id: ent_merge_test_beta"), "merged entities should include Device B:\n{merged}");
+    eval_assert!(merged.contains("confidence: 0.92"), "merged confidence should preserve Device A update:\n{merged}");
+    eval_assert!(
         merged.contains("summary: Device B refined the shared merge summary"),
         "merged summary should preserve Device B update:\n{merged}"
     );
-    assert!(
+    eval_assert!(
         merged.contains(&format!("updated_at: {DEVICE_A_UPDATED_AT}")),
         "merged updated_at should be no earlier than Device A's write timestamp:\n{merged}"
     );
@@ -81,7 +82,9 @@ async fn t14_merge_driver_preserves_two_device_semantic_edits() {
     std::fs::write(&merged_tree_path, merged).expect("write merged memory into scaffold tree");
 
     let doctor = scaffold.device_a.doctor().await;
-    assert!(doctor.healthy, "memoryd doctor should accept merged tree with zero validation errors: {doctor:?}");
+    eval_assert!(doctor.healthy, "memoryd doctor should accept merged tree with zero validation errors: {doctor:?}");
+
+    eval_flush_assertion_count();
 }
 
 struct EntityFixture<'a> {

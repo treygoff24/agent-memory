@@ -28,6 +28,12 @@ tracing.workspace = true
 which.workspace = true
 zstd.workspace = true
 
+[features]
+# test-utils: enables the TestInjectEvent daemon protocol variant used by Stream H
+# eval tests for injecting synthetic events-log entries. Not compiled in release
+# builds; production daemons receiving this variant return method_not_allowed.
+test-utils = []
+
 [dev-dependencies]
 memory-test-support = { path = "../memory-test-support" }
 rusqlite.workspace = true

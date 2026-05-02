@@ -1628,8 +1628,10 @@ dependencies = [
 name = "memorum-eval"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "clap",
  "memorum-coordination",
+ "rusqlite",
  "serde_json",
  "tokio",
 ]
