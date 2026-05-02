@@ -190,6 +190,7 @@ fn review_memory() -> Memory {
             scope: Scope::Agent,
             summary: "quarantined review memory".to_string(),
             confidence: 0.2,
+            original_confidence: None,
             trust_level: TrustLevel::Quarantined,
             sensitivity: Sensitivity::Internal,
             status: MemoryStatus::Quarantined,

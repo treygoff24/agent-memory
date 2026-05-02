@@ -411,7 +411,11 @@ impl DreamCliEnv {
     }
 
     fn memoryd<const N: usize>(&self, args: [&str; N]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_memoryd")).args(args).output().expect("memoryd command")
+        Command::new(env!("CARGO_BIN_EXE_memoryd"))
+            .env("MEMORYD_ENABLE_ECHO_DREAM_HARNESS", "1")
+            .args(args)
+            .output()
+            .expect("memoryd command")
     }
 
     fn repo_str(&self) -> &str {

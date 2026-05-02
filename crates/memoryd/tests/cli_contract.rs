@@ -1,7 +1,12 @@
 use std::process::Command;
 
+use chrono::{TimeZone, Utc};
 use clap::Parser as _;
-use memoryd::cli::Cli;
+use memoryd::cli::{
+    reality_check_request_payload, validate_snooze_until, validate_ui_stdin, web_request_payload, Cli,
+    Command as CliCommand, RealityCheckCommand, WebCommand,
+};
+use memoryd::protocol::{RealityCheckRequest, RequestPayload};
 
 #[test]
 fn cli_contract_help_exposes_daemon_and_agent_facing_client_commands() {
@@ -9,7 +14,20 @@ fn cli_contract_help_exposes_daemon_and_agent_facing_client_commands() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).expect("help is utf8");
-    for command in ["serve", "status", "doctor", "search", "get", "write-note", "privacy", "privacy-filter", "device"] {
+    for command in [
+        "serve",
+        "status",
+        "doctor",
+        "search",
+        "get",
+        "write-note",
+        "ui",
+        "web",
+        "reality-check",
+        "privacy",
+        "privacy-filter",
+        "device",
+    ] {
         assert!(stdout.contains(command), "help should list {command}");
     }
     assert!(stdout.contains("dream"), "top-level help should expose dream admin commands");
@@ -131,4 +149,172 @@ fn cli_contract_clap_parses_all_dream_subcommands_and_help_exposes_them() {
     for command in ["status", "now", "review", "enable", "disable"] {
         assert!(stdout.contains(command), "dream help should list {command}");
     }
+}
+
+#[test]
+fn test_clap_parses_memoryd_ui_panel_flag() {
+    let cli = Cli::try_parse_from(["memoryd", "ui", "--panel", "3"]).expect("ui parses");
+
+    match cli.command {
+        CliCommand::Ui(args) => assert_eq!(args.panel, 3),
+        other => panic!("expected ui command, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_clap_rejects_panel_out_of_range() {
+    assert!(Cli::try_parse_from(["memoryd", "ui", "--panel", "9"]).is_err());
+}
+
+#[test]
+fn test_clap_parses_web_enable_with_port() {
+    let cli = Cli::try_parse_from(["memoryd", "web", "enable", "--port", "7138"]).expect("web enable parses");
+
+    match cli.command {
+        CliCommand::Web(web) => match web.command {
+            WebCommand::Enable(args) => assert_eq!(args.port, 7138),
+            other => panic!("expected web enable, got {other:?}"),
+        },
+        other => panic!("expected web command, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_clap_parses_web_disable() {
+    let cli = Cli::try_parse_from(["memoryd", "web", "disable"]).expect("web disable parses");
+
+    match cli.command {
+        CliCommand::Web(web) => assert!(matches!(web.command, WebCommand::Disable(_))),
+        other => panic!("expected web command, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_clap_parses_web_status_json_flag() {
+    let cli = Cli::try_parse_from(["memoryd", "web", "status", "--json"]).expect("web status parses");
+
+    match cli.command {
+        CliCommand::Web(web) => match web.command {
+            WebCommand::Status(args) => assert!(args.json),
+            other => panic!("expected web status, got {other:?}"),
+        },
+        other => panic!("expected web command, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_clap_parses_reality_check_run() {
+    let cli = Cli::try_parse_from(["memoryd", "reality-check", "run", "--top-n", "5", "--namespace", "me"])
+        .expect("reality-check run parses");
+
+    match cli.command {
+        CliCommand::RealityCheck(args) => match args.command {
+            RealityCheckCommand::Run(run) => {
+                assert_eq!(run.top_n, Some(5));
+                assert_eq!(run.namespace.as_deref(), Some("me"));
+                assert!(!run.json);
+                assert!(!run.tui);
+            }
+            other => panic!("expected reality-check run, got {other:?}"),
+        },
+        other => panic!("expected reality-check command, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_clap_parses_reality_check_skip() {
+    let cli = Cli::try_parse_from(["memoryd", "reality-check", "skip"]).expect("reality-check skip parses");
+
+    match cli.command {
+        CliCommand::RealityCheck(args) => assert!(matches!(args.command, RealityCheckCommand::Skip(_))),
+        other => panic!("expected reality-check command, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_clap_parses_reality_check_snooze_until() {
+    let cli = Cli::try_parse_from(["memoryd", "reality-check", "snooze", "--until", "2026-05-10"])
+        .expect("reality-check snooze parses");
+
+    match cli.command {
+        CliCommand::RealityCheck(args) => match args.command {
+            RealityCheckCommand::Snooze(snooze) => assert_eq!(snooze.until.as_deref(), Some("2026-05-10")),
+            other => panic!("expected reality-check snooze, got {other:?}"),
+        },
+        other => panic!("expected reality-check command, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_memoryd_ui_rejects_non_tty() {
+    let error = validate_ui_stdin(false).expect_err("non-TTY stdin should be rejected");
+
+    assert_eq!(error.exit_code(), 2);
+    assert_eq!(error.message(), "memoryd ui requires an interactive terminal.");
+}
+
+#[test]
+fn test_memoryd_web_enable_delegates_to_daemon() {
+    let cli = Cli::try_parse_from(["memoryd", "web", "enable"]).expect("web enable parses");
+
+    let CliCommand::Web(web) = cli.command else {
+        panic!("expected web command");
+    };
+
+    assert_eq!(
+        web_request_payload(&web.command),
+        RequestPayload::WebEnable { port: 7137, socket_path: "/tmp/memoryd.sock".to_owned() }
+    );
+}
+
+#[test]
+fn test_memoryd_reality_check_run_json_exits_without_interactive() {
+    let cli = Cli::try_parse_from(["memoryd", "reality-check", "run", "--json", "--top-n", "5"])
+        .expect("reality-check run --json parses");
+
+    let CliCommand::RealityCheck(args) = cli.command else {
+        panic!("expected reality-check command");
+    };
+
+    assert_eq!(
+        reality_check_request_payload(&args.command).expect("json run maps to request"),
+        RequestPayload::RealityCheck(RealityCheckRequest::List { namespace: None, limit: Some(5) })
+    );
+}
+
+#[test]
+fn test_memoryd_reality_check_run_interactive_forwards_top_n() {
+    let cli =
+        Cli::try_parse_from(["memoryd", "reality-check", "run", "--top-n", "5"]).expect("reality-check run parses");
+
+    let CliCommand::RealityCheck(args) = cli.command else {
+        panic!("expected reality-check command");
+    };
+
+    assert_eq!(
+        reality_check_request_payload(&args.command).expect("interactive run maps to request"),
+        RequestPayload::RealityCheck(RealityCheckRequest::Run { session_id: None, namespace: None, limit: Some(5) })
+    );
+}
+
+#[test]
+fn test_memoryd_reality_check_snooze_until_reaches_daemon_request() {
+    let cli = Cli::try_parse_from(["memoryd", "reality-check", "snooze", "--until", "2026-05-10"])
+        .expect("reality-check snooze parses");
+
+    let CliCommand::RealityCheck(args) = cli.command else {
+        panic!("expected reality-check command");
+    };
+
+    assert_eq!(
+        reality_check_request_payload(&args.command).expect("snooze maps to request"),
+        RequestPayload::RealityCheck(RealityCheckRequest::Snooze {
+            until: Some(Utc.with_ymd_and_hms(2026, 5, 10, 0, 0, 0).unwrap())
+        })
+    );
+}
+
+#[test]
+fn test_memoryd_reality_check_snooze_invalid_date_exits_1() {
+    assert_eq!(validate_snooze_until(Some("next-week")), Err(1));
 }

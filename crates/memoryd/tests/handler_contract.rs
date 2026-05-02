@@ -111,6 +111,7 @@ async fn write_note_creates_candidate_safe_record_through_substrate() {
 
 #[tokio::test]
 async fn dreaming_protocol_echo_request_returns_dream_now_report() {
+    enable_echo_harness_for_test();
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
     let substrate = init_substrate(roots).await;
@@ -138,6 +139,7 @@ async fn dreaming_protocol_echo_request_returns_dream_now_report() {
 
 #[tokio::test]
 async fn dreaming_protocol_echo_writes_pass_2_candidate_to_canonical_queue() {
+    enable_echo_harness_for_test();
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
     let substrate = init_substrate(roots).await;
@@ -235,6 +237,7 @@ async fn dream_candidate_writer_refuses_encrypt_at_rest_candidates_without_plain
 
 #[tokio::test]
 async fn dreaming_protocol_masks_disk_loaded_substrate_privacy_spans_before_prompting() {
+    enable_echo_harness_for_test();
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
     let substrate = init_substrate(roots).await;
@@ -316,6 +319,7 @@ async fn dreaming_protocol_masks_disk_loaded_substrate_privacy_spans_before_prom
 
 #[tokio::test]
 async fn dreaming_protocol_rejects_active_foreign_lease_without_writing_journal() {
+    enable_echo_harness_for_test();
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
     let substrate = init_substrate(roots).await;
@@ -344,6 +348,7 @@ async fn dreaming_protocol_rejects_active_foreign_lease_without_writing_journal(
 
 #[tokio::test]
 async fn dreaming_protocol_force_overrides_active_foreign_lease() {
+    enable_echo_harness_for_test();
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
     let substrate = init_substrate(roots).await;
@@ -368,6 +373,7 @@ async fn dreaming_protocol_force_overrides_active_foreign_lease() {
 
 #[tokio::test]
 async fn dreaming_protocol_acquires_lease_before_writing_pipeline_outputs() {
+    enable_echo_harness_for_test();
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
     let substrate = init_substrate(roots).await;
@@ -439,6 +445,7 @@ async fn dreaming_protocol_rejects_invalid_or_unavailable_harness_requests_with_
 
 #[tokio::test]
 async fn dreaming_protocol_respects_device_disabled_sentinel_before_lease_or_outputs() {
+    enable_echo_harness_for_test();
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
     let substrate = init_substrate(roots).await;
@@ -467,6 +474,10 @@ async fn dreaming_protocol_respects_device_disabled_sentinel_before_lease_or_out
         !substrate.roots().repo.join("dreams/journal/me").exists(),
         "disabled daemon dreams must not write pass outputs"
     );
+}
+
+fn enable_echo_harness_for_test() {
+    std::env::set_var("MEMORYD_ENABLE_ECHO_DREAM_HARNESS", "1");
 }
 
 #[tokio::test]
@@ -511,6 +522,63 @@ async fn status_response_includes_default_dream_counters() {
 
     assert_eq!(status.dreams.dream_runs_invoked_total, 0);
     assert!(status.dreams.pass_failed_total.is_empty());
+}
+
+#[tokio::test]
+async fn status_response_surfaces_shared_passive_notifications() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let substrate = init_substrate(roots).await;
+    let state = memoryd::handlers::HandlerState::new();
+    state.passive_notifications().append("Blocked secret write attempt detected.");
+
+    let response = memoryd::handlers::handle_request_with_state(
+        &substrate,
+        &state,
+        RequestEnvelope::new("req-status", RequestPayload::Status),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::Status(status)) = response.result else {
+        panic!("expected status success, got {:?}", response.result);
+    };
+
+    assert_eq!(status.passive_notifications.len(), 1);
+    assert_eq!(status.passive_notifications[0].message, "Blocked secret write attempt detected.");
+}
+
+#[tokio::test]
+async fn trust_artifact_handler_returns_daemon_assembled_artifact() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let substrate = init_substrate(roots).await;
+    let memory = sample_memory("mem_20260501_0123456789abcdef_000009", "Trust artifact handler memory body");
+
+    substrate
+        .write_memory(WriteRequest {
+            operation_id: None,
+            memory: memory.clone(),
+            expected_base_hash: None,
+            write_mode: WriteMode::CreateNew,
+            index_projection: None,
+            event_context: EventContext::default(),
+            allow_best_effort_durability: true,
+            classification: ClassificationOutcome::Trusted,
+        })
+        .await
+        .expect("write memory through substrate");
+
+    let response = handle_request(
+        &substrate,
+        RequestEnvelope::new("req-trust", RequestPayload::TrustArtifact { id: memory.frontmatter.id.to_string() }),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::TrustArtifact(artifact)) = response.result else {
+        panic!("expected trust artifact success, got {:?}", response.result);
+    };
+
+    assert_eq!(artifact.id, memory.frontmatter.id);
+    assert_eq!(artifact.body.display_text(), "Trust artifact handler memory body");
+    assert_eq!(artifact.title.display_text(), "handler contract memory");
 }
 
 async fn init_substrate(roots: Roots) -> Substrate {
@@ -584,6 +652,7 @@ fn sample_memory(id: &str, body: &str) -> Memory {
             scope: Scope::Agent,
             summary: "handler contract memory".to_string(),
             confidence: 1.0,
+            original_confidence: None,
             trust_level: TrustLevel::Trusted,
             sensitivity: Sensitivity::Internal,
             status: MemoryStatus::Active,

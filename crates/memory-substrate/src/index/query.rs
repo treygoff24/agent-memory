@@ -10,11 +10,12 @@ use chrono::{DateTime, Utc};
 use rusqlite::{named_params, params, params_from_iter, Connection, Transaction};
 
 use crate::error::{SubstrateError, SubstrateResult, VectorError};
+use crate::events::{Event, EventKind};
 use crate::index::chunking::chunk_memory;
 use crate::markdown::hash_bytes;
 use crate::model::{
-    ChunkResult, EmbeddingTriple, EmbeddingUpdate, Entity, Memory, MemoryId, MemoryQuery, MemoryStatus, QueryResult,
-    RecallIndexQuery, RecallIndexRow, RepoPath, Scope, Sensitivity, SourceKind,
+    ChunkResult, EmbeddingTriple, EmbeddingUpdate, Entity, EventsLogMirrorHealth, Memory, MemoryId, MemoryQuery,
+    MemoryStatus, QueryResult, RecallIndexQuery, RecallIndexRow, RepoPath, Scope, Sensitivity, SourceKind,
 };
 
 /// Index handle.  Owns a single SQLite connection; all mutating methods take
@@ -56,6 +57,26 @@ impl Index {
     /// Borrow the underlying connection (read-only callers).
     pub fn connection(&self) -> &Connection {
         &self.connection
+    }
+
+    /// Mirror one canonical JSONL event into the derived SQLite projection.
+    pub fn mirror_event(&mut self, event: &Event) -> rusqlite::Result<()> {
+        mirror_event_row(&self.connection, event)
+    }
+
+    /// Rebuild the derived SQLite events-log projection from canonical JSONL events.
+    pub fn rebuild_events_log_mirror(&mut self, events: &[Event]) -> rusqlite::Result<()> {
+        let txn = self.connection.transaction()?;
+        txn.execute("DELETE FROM events_log", [])?;
+        for event in events {
+            mirror_event_row(&txn, event)?;
+        }
+        txn.commit()
+    }
+
+    /// Return mirror lag and row-identity drift against canonical JSONL events.
+    pub fn events_log_mirror_health(&self, canonical_events: &[Event]) -> rusqlite::Result<EventsLogMirrorHealth> {
+        query_events_log_mirror_health(&self.connection, canonical_events)
     }
 
     // -- Write methods -------------------------------------------------------
@@ -284,17 +305,33 @@ impl Index {
 
     /// Query recall-index rows without hydrating full memory envelopes.
     pub fn query_recall_index(&self, query: &RecallIndexQuery) -> SubstrateResult<Vec<RecallIndexRow>> {
+        self.query_recall_index_inner(query, false)
+    }
+
+    /// Query recall-index rows including encrypted metadata-only projections.
+    pub fn query_recall_index_including_metadata_only(
+        &self,
+        query: &RecallIndexQuery,
+    ) -> SubstrateResult<Vec<RecallIndexRow>> {
+        self.query_recall_index_inner(query, true)
+    }
+
+    fn query_recall_index_inner(
+        &self,
+        query: &RecallIndexQuery,
+        include_metadata_only: bool,
+    ) -> SubstrateResult<Vec<RecallIndexRow>> {
         let mut sql = String::from(
             "SELECT memories.id,memories.path,memories.summary,memories.status,memories.scope,
-                    memories.canonical_namespace_id,memories.updated_at,memories.confidence,
-                    memories.source_kind,memories.sensitivity,memories.passive_recall,memories.index_body,
+                    memories.canonical_namespace_id,memories.updated_at,memories.indexed_at,memories.confidence,
+                    memories.source_kind,memories.source_device,memories.sensitivity,memories.passive_recall,memories.index_body,
                     memories.requires_user_confirmation,memories.review_state,
                     memories.human_review_required,memories.max_scope
              FROM memories",
         );
         let mut filters = Vec::new();
         let mut bindings = Vec::new();
-        append_recall_index_filters(query, &mut filters, &mut bindings)?;
+        append_recall_index_filters(query, include_metadata_only, &mut filters, &mut bindings)?;
         append_match_term_filters(query, &mut filters, &mut bindings);
         append_filters_and_order(&mut sql, filters, "memories.id");
 
@@ -306,6 +343,101 @@ impl Index {
         }
         hydrate_recall_index_auxiliary(&self.connection, &mut results)?;
         Ok(results)
+    }
+}
+
+/// Health helper for the derived events-log mirror.
+pub fn query_events_log_mirror_health(
+    connection: &Connection,
+    canonical_events: &[Event],
+) -> rusqlite::Result<EventsLogMirrorHealth> {
+    let jsonl_max_seq = canonical_events.iter().map(|event| event.seq).max().unwrap_or(0);
+    let jsonl_count = canonical_events.len() as u64;
+    let sqlite_max_seq =
+        connection.query_row("SELECT COALESCE(MAX(seq), 0) FROM events_log", [], |row| row.get::<_, i64>(0))? as u64;
+    let sqlite_count = connection.query_row("SELECT COUNT(*) FROM events_log", [], |row| row.get::<_, i64>(0))? as u64;
+    let missing_count = count_missing_events_log_rows(connection, canonical_events)?;
+    Ok(EventsLogMirrorHealth {
+        jsonl_max_seq,
+        sqlite_max_seq,
+        lag: jsonl_max_seq.saturating_sub(sqlite_max_seq),
+        jsonl_count,
+        sqlite_count,
+        missing_count,
+    })
+}
+
+fn mirror_event_row(connection: &Connection, event: &Event) -> rusqlite::Result<()> {
+    let payload_json =
+        serde_json::to_string(&event.kind).map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?;
+    connection.execute(
+        "INSERT OR REPLACE INTO events_log(event_id, device, seq, kind, memory_id, ts, payload_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            event.id.as_str(),
+            event.device.as_str(),
+            event.seq as i64,
+            event_kind_name(&event.kind),
+            event_memory_id(&event.kind),
+            event.at.to_rfc3339(),
+            payload_json,
+        ],
+    )?;
+    Ok(())
+}
+
+fn count_missing_events_log_rows(connection: &Connection, canonical_events: &[Event]) -> rusqlite::Result<u64> {
+    let mut stmt = connection.prepare("SELECT EXISTS(SELECT 1 FROM events_log WHERE event_id = ?1)")?;
+    let mut missing = 0_u64;
+    for event in canonical_events {
+        let exists: i64 = stmt.query_row([event.id.as_str()], |row| row.get(0))?;
+        if exists == 0 {
+            missing = missing.saturating_add(1);
+        }
+    }
+    Ok(missing)
+}
+
+fn event_kind_name(kind: &EventKind) -> &'static str {
+    match kind {
+        EventKind::WriteCommitted { .. } => "write_committed",
+        EventKind::EncryptedWriteCommitted { .. } => "encrypted_write_committed",
+        EventKind::TombstoneCommitted { .. } => "tombstone_committed",
+        EventKind::DuplicateIdRepaired { .. } => "duplicate_id_repaired",
+        EventKind::EmbeddingModelChanged { .. } => "embedding_model_changed",
+        EventKind::StartupReconciliationCompleted { .. } => "startup_reconciliation_completed",
+        EventKind::OperatorRepairRequired { .. } => "operator_repair_required",
+        EventKind::GitPushFailed { .. } => "git_push_failed",
+        EventKind::WriteRefused { .. } => "write_refused",
+        EventKind::EncryptedContentRevealed { .. } => "encrypted_content_revealed",
+        EventKind::SubstrateFragmentWritten { .. } => "substrate_fragment_written",
+        EventKind::RecallHit { .. } => "recall_hit",
+        EventKind::RealityCheckConfirmed { .. } => "reality_check_confirmed",
+        EventKind::RealityCheckForgotten { .. } => "reality_check_forgotten",
+        EventKind::RealityCheckNotRelevant { .. } => "reality_check_not_relevant",
+        EventKind::ClaimLockContention { .. } => "claim_lock_contention",
+    }
+}
+
+fn event_memory_id(kind: &EventKind) -> Option<&str> {
+    match kind {
+        EventKind::WriteCommitted { id, .. }
+        | EventKind::EncryptedWriteCommitted { id, .. }
+        | EventKind::TombstoneCommitted { id }
+        | EventKind::WriteRefused { id: Some(id), .. }
+        | EventKind::EncryptedContentRevealed { id, .. }
+        | EventKind::RecallHit { id, .. }
+        | EventKind::RealityCheckConfirmed { id, .. }
+        | EventKind::RealityCheckForgotten { id, .. }
+        | EventKind::RealityCheckNotRelevant { id, .. } => Some(id.as_str()),
+        EventKind::ClaimLockContention { memory_id, .. } => Some(memory_id.as_str()),
+        EventKind::WriteRefused { id: None, .. }
+        | EventKind::DuplicateIdRepaired { .. }
+        | EventKind::EmbeddingModelChanged { .. }
+        | EventKind::StartupReconciliationCompleted { .. }
+        | EventKind::OperatorRepairRequired { .. }
+        | EventKind::GitPushFailed { .. }
+        | EventKind::SubstrateFragmentWritten { .. } => None,
     }
 }
 
@@ -434,6 +566,7 @@ fn upsert_memory_row_with_full_metadata(
     let indexed_at = chrono::Utc::now().to_rfc3339();
     let created_at = memory.frontmatter.created_at.to_rfc3339();
     let updated_at = memory.frontmatter.updated_at.to_rfc3339();
+    let observed_at = observed_at_for_index(memory).unwrap_or_else(|| created_at.clone());
 
     let passive_recall = memory.frontmatter.retrieval_policy.passive_recall as i64;
     let index_body = memory.frontmatter.retrieval_policy.index_body as i64;
@@ -443,7 +576,7 @@ fn upsert_memory_row_with_full_metadata(
     txn.execute(
         "INSERT INTO memories(
              id, path, schema_version, type, scope, namespace, canonical_namespace_id,
-             summary, confidence, trust_level, sensitivity, status, review_state,
+             summary, confidence, original_confidence, trust_level, sensitivity, status, review_state,
              requires_user_confirmation, created_at, updated_at,
              observed_at, valid_from, valid_until, ttl,
              author, source_kind, source_harness, source_device,
@@ -451,7 +584,7 @@ fn upsert_memory_row_with_full_metadata(
              passive_recall, index_body, human_review_required, max_scope
          ) VALUES (
              :id, :path, :schema_version, :type, :scope, :namespace, :canonical_namespace_id,
-             :summary, :confidence, :trust_level, :sensitivity, :status, :review_state,
+             :summary, :confidence, :original_confidence, :trust_level, :sensitivity, :status, :review_state,
              :requires_user_confirmation, :created_at, :updated_at,
              :observed_at, :valid_from, :valid_until, :ttl,
              :author, :source_kind, :source_harness, :source_device,
@@ -463,6 +596,7 @@ fn upsert_memory_row_with_full_metadata(
              type=excluded.type, scope=excluded.scope,
              namespace=excluded.namespace, canonical_namespace_id=excluded.canonical_namespace_id,
              summary=excluded.summary, confidence=excluded.confidence,
+             original_confidence=excluded.original_confidence,
              trust_level=excluded.trust_level, sensitivity=excluded.sensitivity,
              status=excluded.status, review_state=excluded.review_state,
              requires_user_confirmation=excluded.requires_user_confirmation,
@@ -487,6 +621,7 @@ fn upsert_memory_row_with_full_metadata(
             ":canonical_namespace_id":    &memory.frontmatter.canonical_namespace_id,
             ":summary":                   &memory.frontmatter.summary,
             ":confidence":                memory.frontmatter.confidence,
+            ":original_confidence":       memory.frontmatter.original_confidence,
             ":trust_level":               trust_level,
             ":sensitivity":               sensitivity,
             ":status":                    status,
@@ -494,8 +629,7 @@ fn upsert_memory_row_with_full_metadata(
             ":requires_user_confirmation": memory.frontmatter.requires_user_confirmation as i64,
             ":created_at":                &created_at,
             ":updated_at":                &updated_at,
-            // Deferred: add observed_at, valid_from, valid_until, ttl to Frontmatter model.
-            ":observed_at":               rusqlite::types::Null,
+            ":observed_at":               &observed_at,
             ":valid_from":                rusqlite::types::Null,
             ":valid_until":               rusqlite::types::Null,
             ":ttl":                       rusqlite::types::Null,
@@ -556,18 +690,19 @@ fn upsert_memory_row_with_full_metadata(
     txn.commit()
 }
 
-/// Sync priority auxiliary tables: tags, aliases, entities, evidence.
+/// Sync priority auxiliary tables: tags, aliases, entities, evidence, supersession.
 ///
 /// Each table is replaced wholesale for this memory_id — safe because these
 /// are derived projections; canonical data lives in the Markdown file.
 ///
-/// Deferred: memory_supersession, memory_related, memory_regressions tables.
+/// Deferred: memory_related, memory_regressions tables.
 fn sync_auxiliary_tables(txn: &Transaction<'_>, memory: &Memory) -> rusqlite::Result<()> {
     let id = memory.frontmatter.id.as_str();
     sync_tags(txn, id, &memory.frontmatter.tags)?;
     sync_aliases(txn, id, &memory.frontmatter.aliases)?;
     sync_entities(txn, id, &memory.frontmatter.entities)?;
     sync_evidence(txn, id, &memory.frontmatter.evidence)?;
+    sync_supersession(txn, id, &memory.frontmatter.supersedes)?;
     Ok(())
 }
 
@@ -617,6 +752,17 @@ fn sync_evidence(txn: &Transaction<'_>, memory_id: &str, evidence: &[crate::mode
                  memory_id, evidence_id, quote, quote_norm_hash, ref_text, weight, observed_at
              ) VALUES (?1,?2,?3,?4,?5,?6,?7)",
             params![memory_id, ev.id, ev.quote, ev.quote_norm_hash, ev.reference, ev.weight, observed_at],
+        )?;
+    }
+    Ok(())
+}
+
+fn sync_supersession(txn: &Transaction<'_>, memory_id: &str, supersedes: &[MemoryId]) -> rusqlite::Result<()> {
+    txn.execute("DELETE FROM memory_supersession WHERE memory_id = ?1", [memory_id])?;
+    for supersedes_id in supersedes {
+        txn.execute(
+            "INSERT OR IGNORE INTO memory_supersession(memory_id, supersedes_id) VALUES (?1, ?2)",
+            params![memory_id, supersedes_id.as_str()],
         )?;
     }
     Ok(())
@@ -743,11 +889,14 @@ fn append_memory_query_filters(
 
 fn append_recall_index_filters(
     query: &RecallIndexQuery,
+    include_metadata_only: bool,
     filters: &mut Vec<String>,
     bindings: &mut Vec<rusqlite::types::Value>,
 ) -> SubstrateResult<()> {
     append_namespace_filter(query.namespace_prefix.as_deref(), filters, bindings)?;
-    filters.push("memories.metadata_only = 0".to_string());
+    if !include_metadata_only {
+        filters.push("memories.metadata_only = 0".to_string());
+    }
     if !query.statuses.is_empty() {
         let placeholders = vec!["?"; query.statuses.len()].join(",");
         filters.push(format!("memories.status IN ({placeholders})"));
@@ -763,6 +912,16 @@ fn append_recall_index_filters(
         bindings.push(rusqlite::types::Value::Text(updated_since.to_rfc3339()));
     }
     Ok(())
+}
+
+fn observed_at_for_index(memory: &Memory) -> Option<String> {
+    memory
+        .frontmatter
+        .extras
+        .get("observed_at")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&chrono::Utc).to_rfc3339())
 }
 
 fn append_namespace_filter(
@@ -878,15 +1037,17 @@ fn row_to_recall_index_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RecallIn
         scope: scope_from_str(row.get::<_, String>(4)?.as_str())?,
         canonical_namespace_id: row.get(5)?,
         updated_at: parse_index_time(row.get::<_, String>(6)?.as_str())?,
-        confidence: row.get(7)?,
-        source_kind: source_kind_from_str(row.get::<_, String>(8)?.as_str())?,
-        sensitivity: sensitivity_from_str(row.get::<_, String>(9)?.as_str())?,
-        passive_recall: row.get::<_, i64>(10)? != 0,
-        index_body: row.get::<_, i64>(11)? != 0,
-        requires_user_confirmation: row.get::<_, i64>(12)? != 0,
-        review_state: row.get(13)?,
-        human_review_required: row.get::<_, i64>(14)? != 0,
-        max_scope: scope_from_str(row.get::<_, String>(15)?.as_str())?,
+        indexed_at: parse_index_time(row.get::<_, String>(7)?.as_str())?,
+        confidence: row.get(8)?,
+        source_kind: source_kind_from_str(row.get::<_, String>(9)?.as_str())?,
+        source_device: row.get(10)?,
+        sensitivity: sensitivity_from_str(row.get::<_, String>(11)?.as_str())?,
+        passive_recall: row.get::<_, i64>(12)? != 0,
+        index_body: row.get::<_, i64>(13)? != 0,
+        requires_user_confirmation: row.get::<_, i64>(14)? != 0,
+        review_state: row.get(15)?,
+        human_review_required: row.get::<_, i64>(16)? != 0,
+        max_scope: scope_from_str(row.get::<_, String>(17)?.as_str())?,
         tags: Vec::new(),
         aliases: Vec::new(),
         entities: Vec::new(),

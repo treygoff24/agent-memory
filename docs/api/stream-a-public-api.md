@@ -42,7 +42,7 @@ The merge-driver public surface remains `memory_substrate::merge::merge_markdown
 
 ## Query API
 
-`MemoryQuery` remains default-compatible with the original Stream A behavior: `MemoryQuery::default()` returns all non-metadata-only indexed memories ordered by memory id. The Stream E extension adds index-side filters:
+`MemoryQuery` remains default-compatible with the original Stream A behavior: `MemoryQuery::default()` returns all non-metadata-only indexed memories ordered by memory id. The Stream E extension adds index-side filters, and Stream G consumes the same covering index pattern for observability without adding a second persistence layer:
 
 ```rust
 pub struct MemoryQuery {
@@ -128,3 +128,76 @@ Opening an existing v1/v2 index runs the v3 migration in a transaction that:
 2. adds any missing column with `ALTER TABLE`;
 3. backfills `human_review_required` and `max_scope` from `frontmatter_json` exactly during the migration;
 4. records schema version 3 only after the DDL and backfills succeed.
+
+## Stream G / Stream I substrate additions (schema v4)
+
+Stream A remains the canonical substrate and index surface. Stream G observability and Stream I cross-session coordination add only additive surfaces here.
+
+### EventKind additions
+
+`memory_substrate::events::EventKind` includes five new serde-compatible variants using the existing adjacent tag shape (`{"kind":"...","data":{...}}`):
+
+- `RecallHit { id, recalled_at }`
+- `RealityCheckConfirmed { id, session_id }`
+- `RealityCheckForgotten { id, session_id, reason }`
+- `RealityCheckNotRelevant { id, session_id }`
+- `ClaimLockContention { memory_id, holder, contender }`
+
+Existing variants are unchanged. Stream E owns future `RecallHit` emission from recall rendering; Stream I owns future `ClaimLockContention` emission from claim-lock handling.
+
+### `events_log` SQLite mirror
+
+Canonical events remain the per-device JSONL logs under `events/<device_id>.jsonl`. Schema v4 adds a rebuildable SQLite mirror for SQL consumers:
+
+```sql
+CREATE TABLE IF NOT EXISTS events_log (
+  event_id      TEXT PRIMARY KEY,
+  device        TEXT NOT NULL,
+  seq           INTEGER NOT NULL,
+  kind          TEXT NOT NULL,
+  memory_id     TEXT,
+  ts            TEXT NOT NULL,
+  payload_json  TEXT NOT NULL CHECK (json_valid(payload_json))
+);
+CREATE INDEX IF NOT EXISTS idx_events_log_kind_memory_ts
+  ON events_log(kind, memory_id, ts);
+```
+
+`idx_events_log_kind_memory_ts` is the covering index for Stream G's recall-history and drift-risk reads: `RecallHit` count over 30 days, total recall count, and `MAX(ts)` for last-recalled can be answered from `(kind, memory_id, ts)` without hydrating memory files or scanning full JSONL. Stream G is an authorized consumer of this derived projection; JSONL remains canonical.
+
+`event_id` is the mirror identity because `seq` is only monotonic within a device log. The mirror also stores `device` so rebuilding from multiple `events/<device_id>.jsonl` files preserves all events even when devices share sequence numbers. `Substrate` write paths append JSONL first. After the canonical append succeeds, Stream A best-effort mirrors the same event into SQLite. A mirror-write failure is logged and does not roll back JSONL. `Substrate::doctor_reindex_events_log()` rebuilds the mirror from JSONL, and `Substrate::events_log_mirror_health()` returns `EventsLogMirrorHealth { jsonl_max_seq, sqlite_max_seq, lag, jsonl_count, sqlite_count, missing_count }` so daemon doctor code can surface stale mirrors, including missing middle rows when max sequence still matches.
+
+`Substrate::record_event_best_effort(kind)` and `Substrate::record_recall_hit(id)` expose a best-effort observability append that still uses Stream A's central sequence allocator and incremental mirror hook. Recall rendering uses this API for `RecallHit` events and does not rebuild the full mirror on the recall hot path.
+
+Current architecture note: `open_index(path)` does not know the repository events directory, so migration v4 creates the table/index but repository-level JSONL backfill runs through `Substrate` open/reindex helpers, where both repo and runtime roots are available.
+
+### Supersession projection
+
+Schema v4 adds `memory_supersession(memory_id, supersedes_id)` as a derived projection from `Frontmatter.supersedes`:
+
+```sql
+CREATE TABLE IF NOT EXISTS memory_supersession (
+  memory_id     TEXT NOT NULL,
+  supersedes_id TEXT NOT NULL,
+  PRIMARY KEY(memory_id, supersedes_id),
+  FOREIGN KEY(memory_id) REFERENCES memories(id) ON DELETE CASCADE,
+  FOREIGN KEY(supersedes_id) REFERENCES memories(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_memory_supersession_supersedes_id
+  ON memory_supersession(supersedes_id);
+```
+
+`Index::upsert_memory` replaces a memory's supersession edges wholesale from frontmatter, matching the tags/aliases/entities/evidence projection pattern. Frontmatter remains canonical; this table is rebuildable.
+
+### Frontmatter and memories projection
+
+`Frontmatter` adds `original_confidence: Option<f64>` with serde default and skip-when-none behavior. The `memories` table adds nullable `original_confidence REAL`, populated from the frontmatter field on upsert and backfilled from `frontmatter_json` during schema v4 migration when present.
+
+### RecallIndexRow additions
+
+`RecallIndexRow` now exposes:
+
+- `indexed_at: DateTime<Utc>` from `memories.indexed_at` (typed RFC3339 parse; no epoch fallback).
+- `source_device: Option<String>` from `memories.source_device`.
+
+No new columns are introduced for these fields; both already existed in the Stream A `memories` table.

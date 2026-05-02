@@ -42,6 +42,7 @@ async fn server_smoke_serves_status_over_newline_delimited_json() {
             guidance: "memoryd local daemon is accepting requests; substrate is not attached yet".to_owned(),
             recall: Default::default(),
             dreams: Default::default(),
+            passive_notifications: Default::default(),
         }))
     );
 

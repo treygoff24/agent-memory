@@ -241,6 +241,7 @@ impl DreamRecallFixture {
                 scope: Scope::User,
                 summary: format!("seed memory for {}", entities.join(",")),
                 confidence: 0.9,
+                original_confidence: None,
                 trust_level: TrustLevel::Trusted,
                 sensitivity: Sensitivity::Internal,
                 status: MemoryStatus::Active,

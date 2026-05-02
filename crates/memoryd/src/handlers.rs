@@ -1,8 +1,20 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::path::Path;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex as StdMutex};
+use std::time::{Duration, Instant};
 
+use memorum_coordination::claim_lock::{
+    ClaimLockAcquireRequest, ClaimLockAcquireResult, ClaimLockClock, ClaimLockRegistry,
+};
+use memorum_coordination::presence::ClaimLockHeartbeatRenewal;
+use memorum_coordination::{
+    handle_peer_heartbeat as coordination_handle_peer_heartbeat, ClaimLockInfo, CoordinationConfig, PeerHeartbeatError,
+    PeerHeartbeatOptions, PresenceConfig, PresenceRegistry,
+};
 use memory_governance::{
     CandidateMemory, ContradictionTiebreaker, ExistingMemorySummary, FileSourceResolver, GovernanceEngine,
     GovernanceProviders, GovernanceRefusalReason, GovernanceWriteDecision, GroundingVerifier, PolicySet, PolicySource,
@@ -15,25 +27,32 @@ use memory_privacy::{
     PrivacyStorageAction, SafeFragmentDecision,
 };
 use memory_substrate::{
-    Author, AuthorKind, ChunkQuery, ClassificationOutcome, EncryptedSubstrateDescriptor, EncryptedWriteRequest,
-    EventContext, Frontmatter, IndexProjection, Memory, MemoryContent, MemoryId, MemoryStatus, MemoryType, ObserveKind,
-    PrivacySpanRecord, RepoPath, RetrievalPolicy, Scope, Sensitivity, Source, SourceKind, Substrate,
-    SubstrateFragmentAppendRequest, SubstrateFragmentEncryption, SubstrateFragmentPayload,
+    events::EventKind, Author, AuthorKind, ChunkQuery, ClassificationOutcome, EncryptedSubstrateDescriptor,
+    EncryptedWriteRequest, EventContext, Frontmatter, IndexProjection, Memory, MemoryContent, MemoryId, MemoryStatus,
+    MemoryType, ObserveKind, PrivacySpanRecord, RepoPath, RetrievalPolicy, Scope, Sensitivity, Source, SourceKind,
+    Substrate, SubstrateFragmentAppendRequest, SubstrateFragmentEncryption, SubstrateFragmentPayload,
     SupersedeRequest as SubstrateSupersedeRequest, TombstoneRequest, TrustLevel, WriteMode, WritePolicy,
     WriteRequest as SubstrateWriteRequest,
 };
 use serde::Deserialize;
 use serde_json::Value;
+use tokio::sync::{broadcast, Mutex};
 
 use crate::dream::rehydration;
 use crate::protocol::{
-    DoctorFinding, DoctorResponse, GetResponse, GovernanceForgetResponse, GovernanceStatus,
-    GovernanceSupersedeResponse, GovernanceWriteResponse, ObserveResponse, ObserveTarget, RequestEnvelope,
-    RequestPayload, ResponseEnvelope, ResponsePayload, RevealResponse, ReviewDecisionResponse, ReviewQueueItemResponse,
-    ReviewQueueResponse, SearchHit, SearchResponse, StatusResponse, WriteNoteResponse, MAX_FRAME_BYTES,
+    ClaimLockWarning, DoctorFinding, DoctorResponse, GetResponse, GovernanceForgetResponse, GovernanceStatus,
+    GovernanceSupersedeResponse, GovernanceWriteResponse, ObserveResponse, ObserveTarget, PassiveNotificationStatus,
+    PeerActivityResponse, PeerDeliveryAuditEntry, PeerReleaseLockResponse, PeerReleaseLockStatus, PeerSessionStatus,
+    PeerStatusResponse, RealityCheckAction, RealityCheckRequest, RealityCheckResponse, RequestEnvelope, RequestPayload,
+    RespondRefusalKind, ResponseEnvelope, ResponsePayload, RevealResponse, ReviewDecisionResponse,
+    ReviewQueueItemResponse, ReviewQueueResponse, SearchHit, SearchResponse, StatusResponse, WebDashboardStatus,
+    WriteNoteResponse, MAX_FRAME_BYTES, NOTIFICATION_CHANNEL_CAPACITY,
 };
+use crate::reality_check::{RcAdvanceRequest, RcRunRequest, RcSessionAdvance, RcSessionHandler};
 use crate::recall::{
-    build_delta_response, build_startup_response, OmissionReason, RecallError, SharedRecallCounters, StartupResponse,
+    build_delta_response_with_coordination, build_startup_response_with_coordination_config, ConcurrentSessionMode,
+    DeltaCoordinationContext, DeltaPeerCooldownStore, DeltaPeerDelivery, DeltaPeerDeliveryRecorder, OmissionReason,
+    RecallError, SessionBinding, SharedRecallCounters, StartupResponse,
 };
 
 const SEARCH_LIMIT_DEFAULT: usize = 10;
@@ -45,6 +64,7 @@ const OBSERVE_ENTITIES_MAX: usize = 32;
 const OBSERVE_ENTITY_MAX_BYTES: usize = 128;
 const OBSERVE_ENTITY_BODY_MAX_BYTES: usize = 124;
 const OBSERVE_BINDING_FIELD_MAX_BYTES: usize = 128;
+const CLAIM_LOCK_IDENTITY_MAX_BYTES: usize = 128;
 const REVIEW_QUEUE_LIMIT_DEFAULT: usize = 50;
 const REVIEW_QUEUE_LIMIT_MAX: usize = 100;
 const REVIEW_QUEUE_SUMMARY_MAX: usize = 512;
@@ -54,15 +74,392 @@ const REVIEW_QUEUE_ACTION_MAX: usize = 96;
 const REVIEW_DECISION_SUMMARY_MAX: usize = 512;
 const REVIEW_RESPONSE_FRAME_BUDGET: usize = MAX_FRAME_BYTES - 1024;
 const DEFAULT_PROJECT_NAMESPACE: &str = "agent-memory";
+const OBSERVED_AT_EXTRA: &str = "observed_at";
+const REDACTED_FORGET_REASON: &str = "[redacted]";
+const FORGET_REASON_MAX_CHARS: usize = 160;
+const DEFAULT_SUPERSEDE_SESSION_ID: &str = "synthetic-memory-supersede";
+const DEFAULT_SUPERSEDE_HARNESS: &str = "unknown";
+const PEER_DELIVERY_AUDIT_CAPACITY: usize = 200;
+const PEER_ACTIVITY_LIMIT_DEFAULT: usize = 50;
+const PEER_ACTIVITY_LIMIT_MAX: usize = 200;
+const PEER_STATUS_RECENT_DELIVERIES: usize = 5;
+const WEB_DASHBOARD_READY_TIMEOUT: Duration = Duration::from_millis(750);
+const WEB_DASHBOARD_READY_POLL: Duration = Duration::from_millis(25);
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug)]
 pub struct HandlerState {
     recall: SharedRecallCounters,
+    reality_check_lock: Mutex<()>,
+    notifications: broadcast::Sender<crate::protocol::NotificationEvent>,
+    passive_notifications: crate::notifications::PassiveQueue,
+    presence: Arc<PresenceRegistry>,
+    claim_locks: Arc<ClaimLockRegistry>,
+    peer_deliveries: Arc<PeerDeliveryAudit>,
+    peer_update_cooldowns: Arc<PeerUpdateCooldowns>,
+    web_dashboard: StdMutex<WebDashboardRuntime>,
+    coordination_config: CoordinationConfig,
 }
 
 impl HandlerState {
     pub fn new() -> Self {
+        Self::with_coordination_config(CoordinationConfig::default())
+    }
+
+    pub fn with_coordination_level(coordination_level: u8) -> Self {
+        let config = CoordinationConfig { level: coordination_level, ..CoordinationConfig::default() };
+        Self::with_coordination_config(config)
+    }
+
+    pub fn with_coordination_config(coordination_config: CoordinationConfig) -> Self {
+        let (notifications, _) = broadcast::channel(NOTIFICATION_CHANNEL_CAPACITY);
+        Self {
+            recall: SharedRecallCounters::default(),
+            reality_check_lock: Mutex::new(()),
+            notifications,
+            passive_notifications: crate::notifications::PassiveQueue::new(),
+            presence: Arc::new(PresenceRegistry::new()),
+            claim_locks: Arc::new(ClaimLockRegistry::new()),
+            peer_deliveries: Arc::new(PeerDeliveryAudit::new()),
+            peer_update_cooldowns: Arc::new(PeerUpdateCooldowns::new()),
+            web_dashboard: StdMutex::new(WebDashboardRuntime::default()),
+            coordination_config,
+        }
+    }
+
+    pub fn subscribe_notifications(&self) -> broadcast::Receiver<crate::protocol::NotificationEvent> {
+        self.notifications.subscribe()
+    }
+
+    pub fn passive_notifications(&self) -> crate::notifications::PassiveQueue {
+        self.passive_notifications.clone()
+    }
+
+    pub fn claim_locks(&self) -> &ClaimLockRegistry {
+        self.claim_locks.as_ref()
+    }
+
+    pub fn claim_lock_registry(&self) -> Arc<ClaimLockRegistry> {
+        self.claim_locks.clone()
+    }
+
+    pub fn presence(&self) -> &PresenceRegistry {
+        self.presence.as_ref()
+    }
+
+    pub fn presence_registry(&self) -> Arc<PresenceRegistry> {
+        self.presence.clone()
+    }
+
+    pub fn record_peer_delivery(&self, entry: PeerDeliveryAuditEntry) {
+        self.peer_deliveries.record(entry);
+    }
+
+    pub fn claim_lock_ttl(&self) -> Duration {
+        self.coordination_config.claim_lock.ttl()
+    }
+
+    pub fn presence_config(&self) -> PresenceConfig {
+        self.coordination_config.presence.clone()
+    }
+
+    pub fn coordination_config(&self) -> &CoordinationConfig {
+        &self.coordination_config
+    }
+
+    pub fn coordination_level(&self) -> u8 {
+        self.coordination_config.level
+    }
+
+    fn effective_coordination_level(&self, meta: &GovernanceMeta) -> u8 {
+        match meta.concurrent_session_mode {
+            Some(ConcurrentSessionMode::Minimal) => 1,
+            Some(ConcurrentSessionMode::Default) => 2,
+            Some(ConcurrentSessionMode::Collaborative) => 3,
+            None => self.coordination_level(),
+        }
+    }
+
+    pub fn fire_reality_check_due_if_due(
+        &self,
+        reality_check: &crate::state::RealityCheckState,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> bool {
+        crate::reality_check::RcScheduler::default().check_and_fire_if_due(reality_check, now, &self.notifications)
+    }
+}
+
+impl DeltaPeerDeliveryRecorder for HandlerState {
+    fn record_delta_peer_delivery(&self, delivery: DeltaPeerDelivery) {
+        self.record_peer_delivery(PeerDeliveryAuditEntry {
+            delivered_at: delivery.delivered_at,
+            from_harness: delivery.from_harness,
+            from_session_id: delivery.from_session_id,
+            to_harness: delivery.to_harness,
+            to_session_id: delivery.to_session_id,
+            memory_id: delivery.memory_id,
+            relevance: delivery.relevance,
+            summary: delivery.summary,
+        });
+    }
+}
+
+impl DeltaPeerCooldownStore for HandlerState {
+    fn surfaced_peer_writes(&self, session_binding: &SessionBinding) -> HashSet<String> {
+        self.peer_update_cooldowns.surfaced_peer_writes(session_binding)
+    }
+
+    fn record_surfaced_peer_writes(&self, session_binding: &SessionBinding, memory_ids: &[String]) {
+        self.peer_update_cooldowns.record_surfaced_peer_writes(session_binding, memory_ids);
+    }
+}
+
+#[derive(Debug, Default)]
+struct PeerDeliveryAudit {
+    entries: StdMutex<VecDeque<PeerDeliveryAuditEntry>>,
+}
+
+#[derive(Debug, Default)]
+struct PeerUpdateCooldowns {
+    surfaced: StdMutex<BTreeMap<PeerUpdateCooldownKey, BTreeSet<String>>>,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct PeerUpdateCooldownKey {
+    harness: String,
+    session_id: String,
+    namespaces: Vec<String>,
+}
+
+trait WebDashboardLauncher: std::fmt::Debug + Send + Sync {
+    fn ensure_port_available(&self, port: u16) -> Result<(), String>;
+    fn spawn(&self, socket_path: &str, port: u16) -> Result<Box<dyn WebDashboardChild>, String>;
+    fn wait_until_ready(&self, port: u16, child: &mut dyn WebDashboardChild) -> Result<(), String>;
+}
+
+trait WebDashboardChild: std::fmt::Debug + Send {
+    fn try_wait(&mut self) -> Result<Option<String>, String>;
+    fn kill(&mut self) -> Result<(), String>;
+    fn wait(&mut self) -> Result<(), String>;
+}
+
+#[derive(Debug)]
+struct OsWebDashboardLauncher;
+
+impl WebDashboardLauncher for OsWebDashboardLauncher {
+    fn ensure_port_available(&self, port: u16) -> Result<(), String> {
+        ensure_web_dashboard_port_available(port)
+    }
+
+    fn spawn(&self, socket_path: &str, port: u16) -> Result<Box<dyn WebDashboardChild>, String> {
+        let binary = resolve_memoryd_web_binary()?;
+        let child = Command::new(binary)
+            .arg("--socket")
+            .arg(socket_path)
+            .arg("--port")
+            .arg(port.to_string())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| format!("start memoryd-web: {error}"))?;
+        Ok(Box::new(OsWebDashboardChild { child }))
+    }
+
+    fn wait_until_ready(&self, port: u16, child: &mut dyn WebDashboardChild) -> Result<(), String> {
+        wait_for_web_dashboard_ready(port, child)
+    }
+}
+
+#[derive(Debug)]
+struct OsWebDashboardChild {
+    child: Child,
+}
+
+impl WebDashboardChild for OsWebDashboardChild {
+    fn try_wait(&mut self) -> Result<Option<String>, String> {
+        self.child.try_wait().map(|status| status.map(|status| status.to_string())).map_err(|error| error.to_string())
+    }
+
+    fn kill(&mut self) -> Result<(), String> {
+        self.child.kill().map_err(|error| error.to_string())
+    }
+
+    fn wait(&mut self) -> Result<(), String> {
+        self.child.wait().map(drop).map_err(|error| error.to_string())
+    }
+}
+
+#[derive(Debug)]
+struct WebDashboardRuntime {
+    port: Option<u16>,
+    enabled_at: Option<chrono::DateTime<chrono::Utc>>,
+    child: Option<Box<dyn WebDashboardChild>>,
+    launcher: Arc<dyn WebDashboardLauncher>,
+}
+
+impl Default for WebDashboardRuntime {
+    fn default() -> Self {
+        Self { port: None, enabled_at: None, child: None, launcher: Arc::new(OsWebDashboardLauncher) }
+    }
+}
+
+impl WebDashboardRuntime {
+    #[cfg(test)]
+    fn with_launcher(launcher: Arc<dyn WebDashboardLauncher>) -> Self {
+        Self { port: None, enabled_at: None, child: None, launcher }
+    }
+
+    fn enable(
+        &mut self,
+        port: u16,
+        socket_path: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<WebDashboardStatus, HandlerError> {
+        if self.child.as_mut().is_some_and(|child| child.try_wait().ok().flatten().is_none()) && self.port == Some(port)
+        {
+            return Ok(self.status(now));
+        }
+        self.stop_child();
+        self.launcher.ensure_port_available(port).map_err(HandlerError::port_in_use)?;
+        let mut child = self.launcher.spawn(socket_path, port).map_err(HandlerError::web_unavailable)?;
+        if let Err(error) = self.launcher.wait_until_ready(port, child.as_mut()) {
+            terminate_web_dashboard_child(child);
+            return Err(HandlerError::web_unavailable(error));
+        }
+        self.port = Some(port);
+        self.enabled_at = Some(now);
+        self.child = Some(child);
+        Ok(self.status(now))
+    }
+
+    fn disable(&mut self) -> WebDashboardStatus {
+        self.stop_child();
+        self.port = None;
+        self.enabled_at = None;
+        WebDashboardStatus::stopped()
+    }
+
+    fn status(&self, now: chrono::DateTime<chrono::Utc>) -> WebDashboardStatus {
+        let Some(port) = self.port else {
+            return WebDashboardStatus::stopped();
+        };
+        let uptime_seconds = self
+            .enabled_at
+            .map(|started_at| now.signed_duration_since(started_at).num_seconds().max(0) as u64)
+            .unwrap_or(0);
+        WebDashboardStatus::running(port, uptime_seconds)
+    }
+
+    fn refresh_status(&mut self, now: chrono::DateTime<chrono::Utc>) -> WebDashboardStatus {
+        if self.child.as_mut().and_then(|child| child.try_wait().ok().flatten()).is_some() {
+            self.child = None;
+            self.port = None;
+            self.enabled_at = None;
+            return WebDashboardStatus::stopped();
+        }
+        self.status(now)
+    }
+
+    fn stop_child(&mut self) {
+        let Some(child) = self.child.take() else {
+            return;
+        };
+        terminate_web_dashboard_child(child);
+    }
+}
+
+fn ensure_web_dashboard_port_available(port: u16) -> Result<(), String> {
+    let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+    TcpListener::bind(address)
+        .map(drop)
+        .map_err(|error| format!("web dashboard port {address} is unavailable before start: {error}"))
+}
+
+fn wait_for_web_dashboard_ready(port: u16, child: &mut dyn WebDashboardChild) -> Result<(), String> {
+    let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+    let started_at = Instant::now();
+    while started_at.elapsed() < WEB_DASHBOARD_READY_TIMEOUT {
+        if let Some(status) =
+            child.try_wait().map_err(|error| format!("check memoryd-web readiness status: {error}"))?
+        {
+            return Err(format!("memoryd-web exited before binding {address}: {status}"));
+        }
+        if TcpStream::connect_timeout(&address, WEB_DASHBOARD_READY_POLL).is_ok() {
+            return Ok(());
+        }
+        std::thread::sleep(WEB_DASHBOARD_READY_POLL);
+    }
+    Err(format!("memoryd-web did not bind {address} before readiness timeout"))
+}
+
+fn terminate_web_dashboard_child(mut child: Box<dyn WebDashboardChild>) {
+    if child.try_wait().ok().flatten().is_none() {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
+}
+
+impl Drop for WebDashboardRuntime {
+    fn drop(&mut self) {
+        self.stop_child();
+    }
+}
+
+impl PeerDeliveryAudit {
+    fn new() -> Self {
         Self::default()
+    }
+
+    fn record(&self, entry: PeerDeliveryAuditEntry) {
+        let mut entries = self.entries.lock().expect("peer delivery audit lock poisoned");
+        if entries.len() == PEER_DELIVERY_AUDIT_CAPACITY {
+            entries.pop_front();
+        }
+        entries.push_back(entry);
+    }
+
+    fn snapshot(&self) -> Vec<PeerDeliveryAuditEntry> {
+        self.entries.lock().expect("peer delivery audit lock poisoned").iter().cloned().collect()
+    }
+}
+
+impl PeerUpdateCooldowns {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn surfaced_peer_writes(&self, session_binding: &SessionBinding) -> HashSet<String> {
+        self.surfaced
+            .lock()
+            .expect("peer update cooldown lock poisoned")
+            .get(&PeerUpdateCooldownKey::from(session_binding))
+            .into_iter()
+            .flatten()
+            .cloned()
+            .collect()
+    }
+
+    fn record_surfaced_peer_writes(&self, session_binding: &SessionBinding, memory_ids: &[String]) {
+        if memory_ids.is_empty() {
+            return;
+        }
+        let mut surfaced = self.surfaced.lock().expect("peer update cooldown lock poisoned");
+        surfaced.entry(PeerUpdateCooldownKey::from(session_binding)).or_default().extend(memory_ids.iter().cloned());
+    }
+}
+
+impl PeerUpdateCooldownKey {
+    fn from(session_binding: &SessionBinding) -> Self {
+        let mut namespaces = session_binding.namespaces_in_scope.clone();
+        namespaces.sort();
+        namespaces.dedup();
+        Self { harness: session_binding.harness.clone(), session_id: session_binding.session_id.clone(), namespaces }
+    }
+}
+
+impl Default for HandlerState {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -94,13 +491,19 @@ async fn dispatch(
             search_response(substrate, &query, limit, include_body).await
         }
         RequestPayload::Get { id, include_provenance } => get_response(substrate, &id, include_provenance).await,
+        RequestPayload::TrustArtifact { id } => trust_artifact_response(substrate, &id).await,
         RequestPayload::Reveal { id, reason } => reveal_response(substrate, &id, &reason).await,
         RequestPayload::WriteNote { text } => write_note_response(substrate, &text).await,
         RequestPayload::WriteMemory { body, title, tags, meta } => {
             governance_write_response(substrate, GovernanceWriteRequest { body, title, tags, meta }).await
         }
         RequestPayload::Supersede { old_id, content, reason, meta } => {
-            governance_supersede_response(substrate, GovernanceSupersedeRequest { old_id, content, reason, meta }).await
+            governance_supersede_response(
+                substrate,
+                Some(state),
+                GovernanceSupersedeRequest { old_id, content, reason, meta },
+            )
+            .await
         }
         RequestPayload::Forget { id, reason } => governance_forget_response(substrate, id, reason).await,
         RequestPayload::ReviewQueue { limit } => review_queue_response(substrate, limit).await,
@@ -110,6 +513,14 @@ async fn dispatch(
         }
         RequestPayload::Startup(request) => startup_response(substrate, state, request).await,
         RequestPayload::Delta(request) => delta_response(substrate, state, request).await,
+        RequestPayload::PeerHeartbeat(heartbeat) => peer_heartbeat_response(substrate, state, heartbeat).await,
+        RequestPayload::PeerStatus => Ok(ResponsePayload::PeerStatus(peer_status_response(state))),
+        RequestPayload::PeerActivity { session, since, limit, format: _ } => Ok(ResponsePayload::PeerActivity(
+            peer_activity_response(state, session.as_deref(), since.as_deref(), limit)?,
+        )),
+        RequestPayload::PeerReleaseLock { memory_id } => {
+            Ok(ResponsePayload::PeerReleaseLock(peer_release_lock_response(state, &memory_id)?))
+        }
         RequestPayload::Observe { text, kind, entities, cwd, session_id, harness, harness_version } => {
             observe_response(
                 substrate,
@@ -121,7 +532,230 @@ async fn dispatch(
             dream_now_response(substrate, scope, force, cli_override).await
         }
         RequestPayload::DreamStatus {} => dream_status_response(substrate).await,
+        RequestPayload::WebEnable { port, socket_path } => web_enable_response(state, port, &socket_path),
+        RequestPayload::WebDisable => web_disable_response(state),
+        RequestPayload::WebStatus => web_status_response(state),
+        RequestPayload::RealityCheck(request) => reality_check_response(substrate, state, request).await,
     }
+}
+
+fn web_enable_response(state: &HandlerState, port: u16, socket_path: &str) -> Result<ResponsePayload, HandlerError> {
+    if port < 1024 {
+        return Err(HandlerError::invalid_request("web dashboard port must be in 1024..=65535"));
+    }
+    let mut dashboard = state.web_dashboard.lock().expect("web dashboard lock poisoned");
+    Ok(ResponsePayload::WebStatus(dashboard.enable(port, socket_path, chrono::Utc::now())?))
+}
+
+fn web_disable_response(state: &HandlerState) -> Result<ResponsePayload, HandlerError> {
+    let mut dashboard = state.web_dashboard.lock().expect("web dashboard lock poisoned");
+    Ok(ResponsePayload::WebStatus(dashboard.disable()))
+}
+
+fn web_status_response(state: &HandlerState) -> Result<ResponsePayload, HandlerError> {
+    let mut dashboard = state.web_dashboard.lock().expect("web dashboard lock poisoned");
+    Ok(ResponsePayload::WebStatus(dashboard.refresh_status(chrono::Utc::now())))
+}
+
+async fn trust_artifact_response(substrate: &Substrate, id: &str) -> Result<ResponsePayload, HandlerError> {
+    let memory_id = MemoryId::try_new(id.to_owned()).map_err(|err| HandlerError::invalid_request(err.to_string()))?;
+    let artifact = crate::trust_artifact::TrustArtifactBuilder::new(substrate)
+        .build(&memory_id)
+        .await
+        .map_err(HandlerError::trust_artifact)?;
+    Ok(ResponsePayload::TrustArtifact(Box::new(artifact)))
+}
+
+async fn peer_heartbeat_response(
+    substrate: &Substrate,
+    state: &HandlerState,
+    heartbeat: crate::protocol::PeerHeartbeat,
+) -> Result<ResponsePayload, HandlerError> {
+    let clock = ClaimLockClock::now();
+    let mut ack = coordination_handle_peer_heartbeat(
+        state.presence(),
+        heartbeat.clone(),
+        PeerHeartbeatOptions {
+            default_level: state.coordination_level(),
+            now: clock.instant,
+            stale_threshold: state.presence_config().stale_after(),
+            claim_lock_renewal: Some(ClaimLockHeartbeatRenewal {
+                registry: state.claim_locks(),
+                ttl: state.claim_lock_ttl(),
+                clock,
+            }),
+        },
+    )
+    .map_err(peer_heartbeat_error)?;
+    if ack.active_level == 3 {
+        ack.conflicting_claim_locks = conflicting_claim_locks_for_heartbeat(substrate, state, &heartbeat).await;
+    }
+    Ok(ResponsePayload::PeerHeartbeat(ack))
+}
+
+fn peer_heartbeat_error(error: PeerHeartbeatError) -> HandlerError {
+    match error {
+        PeerHeartbeatError::InvalidRequest { message } => HandlerError::invalid_request(message),
+    }
+}
+
+async fn conflicting_claim_locks_for_heartbeat(
+    substrate: &Substrate,
+    state: &HandlerState,
+    heartbeat: &crate::protocol::PeerHeartbeat,
+) -> Vec<ClaimLockInfo> {
+    let heartbeat_entities = heartbeat
+        .salient_entities
+        .iter()
+        .map(|entity| entity.trim().to_ascii_lowercase())
+        .filter(|entity| !entity.is_empty())
+        .collect::<HashSet<_>>();
+    if heartbeat_entities.is_empty() {
+        return Vec::new();
+    }
+
+    let mut locks = Vec::new();
+    for lock in state.claim_locks().active_locks() {
+        if lock.holder_harness == heartbeat.harness && lock.holder_session_id == heartbeat.session_id {
+            continue;
+        }
+        let Ok(memory_id) = MemoryId::try_new(lock.memory_id.clone()) else {
+            continue;
+        };
+        let Ok(memory) = substrate.read_memory(&memory_id).await else {
+            continue;
+        };
+        let intersects = memory.frontmatter.entities.iter().any(|entity| {
+            heartbeat_entities.contains(entity.id.trim().to_ascii_lowercase().as_str())
+                || entity
+                    .aliases
+                    .iter()
+                    .any(|alias| heartbeat_entities.contains(alias.trim().to_ascii_lowercase().as_str()))
+        });
+        if intersects {
+            locks.push(lock);
+        }
+    }
+    locks.sort_by(|left, right| {
+        left.memory_id
+            .cmp(&right.memory_id)
+            .then_with(|| left.holder_harness.cmp(&right.holder_harness))
+            .then_with(|| left.holder_session_id.cmp(&right.holder_session_id))
+    });
+    locks
+}
+
+fn peer_status_response(state: &HandlerState) -> PeerStatusResponse {
+    let now = Instant::now();
+    let stale_after = state.presence_config().stale_after();
+    let mut active_sessions = state
+        .presence()
+        .all_records()
+        .into_iter()
+        .filter(|record| now.duration_since(record.last_heartbeat_at) <= stale_after)
+        .map(|record| PeerSessionStatus {
+            session_id: record.session_id,
+            harness: record.harness,
+            namespace: record.namespace,
+            salient_entities: record.salient_entities.into_iter().take(5).collect(),
+            started_at: record.started_at,
+            last_heartbeat_age_seconds: now.duration_since(record.last_heartbeat_at).as_secs(),
+        })
+        .collect::<Vec<_>>();
+    active_sessions.sort_by(|left, right| {
+        left.harness
+            .cmp(&right.harness)
+            .then_with(|| left.session_id.cmp(&right.session_id))
+            .then_with(|| left.namespace.cmp(&right.namespace))
+    });
+
+    let mut claim_locks = state.claim_locks().active_locks();
+    claim_locks.sort_by(|left, right| {
+        left.memory_id
+            .cmp(&right.memory_id)
+            .then_with(|| left.holder_harness.cmp(&right.holder_harness))
+            .then_with(|| left.holder_session_id.cmp(&right.holder_session_id))
+    });
+
+    let recent_deliveries = recent_deliveries(state, PEER_STATUS_RECENT_DELIVERIES);
+
+    PeerStatusResponse {
+        coordination_level: state.coordination_level(),
+        active_sessions,
+        claim_locks,
+        recent_deliveries,
+    }
+}
+
+fn peer_activity_response(
+    state: &HandlerState,
+    session: Option<&str>,
+    since: Option<&str>,
+    limit: Option<usize>,
+) -> Result<PeerActivityResponse, HandlerError> {
+    let limit = limit.unwrap_or(PEER_ACTIVITY_LIMIT_DEFAULT).min(PEER_ACTIVITY_LIMIT_MAX);
+    let since = since.map(parse_peer_activity_since).transpose()?;
+    let mut entries = state
+        .peer_deliveries
+        .snapshot()
+        .into_iter()
+        .filter(|entry| session.is_none_or(|session| peer_delivery_matches_session(entry, session)))
+        .filter(|entry| since.is_none_or(|since| entry.delivered_at >= since))
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| {
+        right
+            .delivered_at
+            .cmp(&left.delivered_at)
+            .then_with(|| left.from_session_id.cmp(&right.from_session_id))
+            .then_with(|| left.to_session_id.cmp(&right.to_session_id))
+            .then_with(|| left.memory_id.cmp(&right.memory_id))
+    });
+    let total_recorded = entries.len();
+    entries.truncate(limit);
+    Ok(PeerActivityResponse { entries, limit, total_recorded })
+}
+
+fn peer_release_lock_response(state: &HandlerState, memory_id: &str) -> Result<PeerReleaseLockResponse, HandlerError> {
+    let memory_id = memory_id.trim();
+    if memory_id.is_empty() {
+        return Err(HandlerError::invalid_request("memory_id must not be empty"));
+    }
+
+    let released = state
+        .claim_locks()
+        .get(memory_id)
+        .and_then(|lock| state.claim_locks().release(memory_id, &lock.holder_harness, &lock.holder_session_id));
+    let status = if released.is_some() { PeerReleaseLockStatus::Released } else { PeerReleaseLockStatus::NoLockFound };
+
+    Ok(PeerReleaseLockResponse { memory_id: memory_id.to_owned(), status, released })
+}
+
+fn recent_deliveries(state: &HandlerState, limit: usize) -> Vec<PeerDeliveryAuditEntry> {
+    let mut deliveries = state.peer_deliveries.snapshot();
+    deliveries.sort_by(|left, right| right.delivered_at.cmp(&left.delivered_at));
+    deliveries.truncate(limit);
+    deliveries
+}
+
+fn peer_delivery_matches_session(entry: &PeerDeliveryAuditEntry, session: &str) -> bool {
+    entry.from_session_id == session || entry.to_session_id == session
+}
+
+fn parse_peer_activity_since(raw: &str) -> Result<chrono::DateTime<chrono::Utc>, HandlerError> {
+    if let Ok(date_time) = chrono::DateTime::parse_from_rfc3339(raw) {
+        return Ok(date_time.with_timezone(&chrono::Utc));
+    }
+    if let Ok(date) = chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d") {
+        let Some(date_time) = date.and_hms_opt(0, 0, 0) else {
+            return Err(HandlerError::invalid_request("invalid peer activity --since date"));
+        };
+        return Ok(date_time.and_utc());
+    }
+    if let Ok(time) = chrono::NaiveTime::parse_from_str(raw, "%H:%M") {
+        let date = chrono::Utc::now().date_naive();
+        return Ok(date.and_time(time).and_utc());
+    }
+    Err(HandlerError::invalid_request("peer activity --since must be HH:MM, YYYY-MM-DD, or RFC3339"))
 }
 
 fn status_response(state: &HandlerState) -> StatusResponse {
@@ -130,6 +764,12 @@ fn status_response(state: &HandlerState) -> StatusResponse {
         guidance: "memoryd handlers are backed by the Stream A substrate.".to_string(),
         recall: state.recall.snapshot(),
         dreams: Default::default(),
+        passive_notifications: state
+            .passive_notifications
+            .entries()
+            .into_iter()
+            .map(|entry| PassiveNotificationStatus { message: entry.message, created_at: entry.created_at })
+            .collect(),
     }
 }
 
@@ -138,6 +778,380 @@ async fn dream_status_response(substrate: &Substrate) -> Result<ResponsePayload,
         .await
         .map(|report| ResponsePayload::DreamStatus(Box::new(report)))
         .map_err(HandlerError::substrate)
+}
+
+async fn reality_check_response(
+    substrate: &Substrate,
+    state: &HandlerState,
+    request: RealityCheckRequest,
+) -> Result<ResponsePayload, HandlerError> {
+    match request {
+        RealityCheckRequest::List { namespace, limit } => {
+            let handler = RcSessionHandler::new(substrate);
+            let now = chrono::Utc::now();
+            let response = handler.list(namespace, limit, now).await.map_err(HandlerError::substrate)?;
+            Ok(ResponsePayload::RealityCheck(response))
+        }
+        mutating_request => {
+            let _guard = state.reality_check_lock.lock().await;
+            reality_check_mutating_response(substrate, mutating_request).await
+        }
+    }
+}
+
+async fn reality_check_mutating_response(
+    substrate: &Substrate,
+    request: RealityCheckRequest,
+) -> Result<ResponsePayload, HandlerError> {
+    let handler = RcSessionHandler::new(substrate);
+    let now = chrono::Utc::now();
+    let response = match request {
+        RealityCheckRequest::List { .. } => unreachable!("list requests are handled without the mutation lock"),
+        RealityCheckRequest::Run { session_id, namespace, limit } => handler
+            .run(RcRunRequest { requested_session_id: session_id, namespace, limit, now })
+            .await
+            .map_err(HandlerError::substrate)?,
+        RealityCheckRequest::Respond { session_id, memory_id, action } => {
+            reality_check_respond(RealityCheckRespondRequest {
+                substrate,
+                handler: &handler,
+                session_id,
+                memory_id,
+                action,
+                now,
+            })
+            .await?
+        }
+        RealityCheckRequest::Skip => {
+            let skipped_until = now + chrono::Duration::days(7);
+            let mut state = crate::state::DaemonState::load(&substrate.roots().runtime);
+            state.reality_check.snooze_until = Some(skipped_until);
+            state.save(&substrate.roots().runtime).map_err(HandlerError::substrate)?;
+            RealityCheckResponse::Skipped { skipped_until }
+        }
+        RealityCheckRequest::Snooze { until } => {
+            let snooze_until = until.unwrap_or_else(|| now + chrono::Duration::days(7));
+            let mut state = crate::state::DaemonState::load(&substrate.roots().runtime);
+            state.reality_check.snooze_until = Some(snooze_until);
+            state.save(&substrate.roots().runtime).map_err(HandlerError::substrate)?;
+            RealityCheckResponse::Snoozed { snooze_until }
+        }
+        RealityCheckRequest::Reset => {
+            let cleared_session = crate::state::RcSessionStore::new(&substrate.roots().runtime)
+                .load_if_recent(now)
+                .ok()
+                .flatten()
+                .is_some();
+            crate::state::RcSessionStore::new(&substrate.roots().runtime).delete().map_err(HandlerError::substrate)?;
+            crate::state::RcPendingCache::delete(&substrate.roots().runtime).map_err(HandlerError::substrate)?;
+            RealityCheckResponse::Reset { cleared_pending: 0, cleared_session }
+        }
+    };
+    Ok(ResponsePayload::RealityCheck(response))
+}
+
+async fn reality_check_respond(request: RealityCheckRespondRequest<'_>) -> Result<RealityCheckResponse, HandlerError> {
+    let RealityCheckRespondRequest { substrate, handler, session_id, memory_id, action, now } = request;
+    let session = match handler.load_session_for_response(&session_id, &memory_id, now) {
+        Ok(session) => session,
+        Err(response) => return Ok(*response),
+    };
+
+    let advance = match action {
+        RealityCheckAction::Confirm => {
+            confirm_reality_check_item(substrate, &session_id, &memory_id, now).await?;
+            RcSessionAdvance::Reviewed
+        }
+        RealityCheckAction::Correct { new_body } => {
+            match correct_reality_check_item(substrate, &session_id, &memory_id, new_body).await? {
+                None => {
+                    return Ok(reality_check_refused(
+                        &session_id,
+                        &memory_id,
+                        "correction refused",
+                        RespondRefusalKind::GovernanceRefused,
+                    ))
+                }
+                Some(response) => {
+                    if let RealityCheckResponse::RespondRefused { .. } = response {
+                        return Ok(response);
+                    }
+                }
+            }
+            RcSessionAdvance::Reviewed
+        }
+        RealityCheckAction::Forget { reason } => {
+            if reason.trim().len() < 3 {
+                return Ok(reality_check_refused(
+                    &session_id,
+                    &memory_id,
+                    "reason too short",
+                    RespondRefusalKind::InvalidAction,
+                ));
+            }
+            forget_reality_check_item(substrate, &session_id, &memory_id, sanitize_forget_reason(&reason)).await?;
+            RcSessionAdvance::Reviewed
+        }
+        RealityCheckAction::NotRelevant => {
+            not_relevant_reality_check_item(substrate, &session_id, &memory_id).await?;
+            RcSessionAdvance::Reviewed
+        }
+        RealityCheckAction::SkipThisWeek => RcSessionAdvance::Deferred,
+    };
+
+    handler.advance(RcAdvanceRequest { session, memory_id, advance, now }).await.map_err(HandlerError::substrate)
+}
+
+struct RealityCheckRespondRequest<'a> {
+    substrate: &'a Substrate,
+    handler: &'a RcSessionHandler<'a>,
+    session_id: String,
+    memory_id: MemoryId,
+    action: RealityCheckAction,
+    now: chrono::DateTime<chrono::Utc>,
+}
+
+async fn confirm_reality_check_item(
+    substrate: &Substrate,
+    session_id: &str,
+    memory_id: &MemoryId,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<(), HandlerError> {
+    mutate_reality_check_metadata(substrate, memory_id, |memory| {
+        memory.frontmatter.updated_at = now;
+        memory.frontmatter.extras.insert(OBSERVED_AT_EXTRA.to_owned(), Value::String(now.to_rfc3339()));
+        memory.frontmatter.confidence = (memory.frontmatter.confidence + 0.02).min(1.0);
+    })
+    .await?;
+    substrate
+        .record_event_best_effort(EventKind::RealityCheckConfirmed {
+            id: memory_id.clone(),
+            session_id: session_id.to_owned(),
+        })
+        .map_err(|error| HandlerError::substrate(format!("record reality check confirmation: {error}")))
+}
+
+async fn correct_reality_check_item(
+    substrate: &Substrate,
+    session_id: &str,
+    memory_id: &MemoryId,
+    new_body: String,
+) -> Result<Option<RealityCheckResponse>, HandlerError> {
+    if new_body.trim().is_empty() {
+        return Ok(Some(reality_check_refused(
+            session_id,
+            memory_id,
+            "correction body must not be empty",
+            RespondRefusalKind::InvalidAction,
+        )));
+    }
+    let old = substrate.read_memory(memory_id).await.map_err(HandlerError::substrate)?;
+    let response = governance_supersede_response(
+        substrate,
+        None,
+        GovernanceSupersedeRequest {
+            old_id: memory_id.as_str().to_owned(),
+            content: new_body,
+            reason: "reality check correction".to_owned(),
+            meta: serde_json::json!({
+                "namespace": governance_namespace_meta(&old.frontmatter),
+                "type": governance_type_meta(old.frontmatter.memory_type),
+                "summary": old.frontmatter.summary,
+                "confidence": old.frontmatter.confidence,
+                "sensitivity": sensitivity_meta(old.frontmatter.sensitivity),
+                "source_kind": "user",
+                "explicit_user_context": true
+            }),
+        },
+    )
+    .await?;
+    let ResponsePayload::GovernanceSupersede(supersede) = response else {
+        return Ok(Some(reality_check_refused(
+            session_id,
+            memory_id,
+            "unexpected correction response",
+            RespondRefusalKind::GovernanceRefused,
+        )));
+    };
+    if supersede.status == GovernanceStatus::Promoted {
+        return Ok(Some(RealityCheckResponse::Pending {
+            session_id: Some(session_id.to_owned()),
+            items: Vec::new(),
+            total_scored: 0,
+            last_completed_at: None,
+        }));
+    }
+
+    let kind = if supersede.reason == Some(GovernanceRefusalReason::Tombstone) {
+        RespondRefusalKind::TombstoneMatch
+    } else {
+        RespondRefusalKind::GovernanceRefused
+    };
+    Ok(Some(reality_check_refused(
+        session_id,
+        memory_id,
+        format!("governance refused correction: {:?}", supersede.reason),
+        kind,
+    )))
+}
+
+async fn forget_reality_check_item(
+    substrate: &Substrate,
+    session_id: &str,
+    memory_id: &MemoryId,
+    reason: String,
+) -> Result<(), HandlerError> {
+    let response = governance_forget_response(substrate, memory_id.as_str().to_owned(), reason.clone()).await?;
+    let ResponsePayload::GovernanceForget(forget) = response else {
+        return Err(HandlerError::substrate("unexpected forget response"));
+    };
+    if forget.status != GovernanceStatus::Tombstoned {
+        return Err(HandlerError::substrate("governance did not tombstone memory"));
+    }
+    substrate
+        .record_event_best_effort(EventKind::RealityCheckForgotten {
+            id: memory_id.clone(),
+            session_id: session_id.to_owned(),
+            reason,
+        })
+        .map_err(|error| HandlerError::substrate(format!("record reality check forgotten: {error}")))
+}
+
+async fn not_relevant_reality_check_item(
+    substrate: &Substrate,
+    session_id: &str,
+    memory_id: &MemoryId,
+) -> Result<(), HandlerError> {
+    mutate_reality_check_metadata(substrate, memory_id, |memory| {
+        memory.frontmatter.updated_at = chrono::Utc::now();
+        memory.frontmatter.retrieval_policy.passive_recall = false;
+        if !memory.frontmatter.tags.iter().any(|tag| tag == "reality_check_not_relevant") {
+            memory.frontmatter.tags.push("reality_check_not_relevant".to_owned());
+        }
+    })
+    .await?;
+    substrate
+        .record_event_best_effort(EventKind::RealityCheckNotRelevant {
+            id: memory_id.clone(),
+            session_id: session_id.to_owned(),
+        })
+        .map_err(|error| HandlerError::substrate(format!("record reality check not relevant: {error}")))
+}
+
+async fn mutate_reality_check_metadata(
+    substrate: &Substrate,
+    memory_id: &MemoryId,
+    mutate: impl FnOnce(&mut Memory),
+) -> Result<(), HandlerError> {
+    let envelope = substrate.read_memory_envelope(memory_id).await.map_err(HandlerError::substrate)?;
+    if !matches!(envelope.content, MemoryContent::Plaintext(_)) {
+        return substrate.update_encrypted_memory_metadata(memory_id, mutate).await.map_err(HandlerError::substrate);
+    }
+    let mut memory = envelope.metadata;
+    mutate(&mut memory);
+    substrate
+        .write_memory(SubstrateWriteRequest {
+            operation_id: None,
+            memory,
+            expected_base_hash: None,
+            write_mode: WriteMode::AdminRepair,
+            index_projection: None,
+            event_context: EventContext {
+                actor: Some("memoryd-reality-check".to_owned()),
+                reason: Some("reality check metadata update".to_owned()),
+            },
+            allow_best_effort_durability: true,
+            classification: ClassificationOutcome::Trusted,
+        })
+        .await
+        .map(|_| ())
+        .map_err(HandlerError::substrate)
+}
+
+fn reality_check_refused(
+    session_id: &str,
+    memory_id: &MemoryId,
+    reason: impl Into<String>,
+    kind: RespondRefusalKind,
+) -> RealityCheckResponse {
+    RealityCheckResponse::RespondRefused {
+        session_id: session_id.to_owned(),
+        memory_id: memory_id.clone(),
+        reason: reason.into(),
+        kind,
+    }
+}
+
+fn governance_namespace_meta(frontmatter: &Frontmatter) -> &'static str {
+    match frontmatter.scope {
+        Scope::User => "me",
+        Scope::Project | Scope::Org => "project",
+        Scope::Agent | Scope::Subagent => "agent",
+    }
+}
+
+fn governance_type_meta(memory_type: MemoryType) -> &'static str {
+    match memory_type {
+        MemoryType::Claim => "claim",
+        MemoryType::Decision => "decision",
+        MemoryType::Pattern => "pattern",
+        MemoryType::Playbook => "playbook",
+        MemoryType::Procedure => "procedure",
+        MemoryType::Artifact => "artifact",
+        MemoryType::Project => "project",
+        MemoryType::Person
+        | MemoryType::Episode
+        | MemoryType::Prospective
+        | MemoryType::Postmortem
+        | MemoryType::AntiPattern
+        | MemoryType::Heuristic
+        | MemoryType::Regression
+        | MemoryType::Correction
+        | MemoryType::Invariant
+        | MemoryType::OpenQuestion => "claim",
+    }
+}
+
+fn sensitivity_meta(sensitivity: Sensitivity) -> &'static str {
+    match sensitivity {
+        Sensitivity::Public => "public",
+        Sensitivity::Internal => "internal",
+        Sensitivity::Confidential => "confidential",
+        Sensitivity::Personal => "personal",
+    }
+}
+
+fn sanitize_forget_reason(reason: &str) -> String {
+    let trimmed = reason.trim();
+    if trimmed.is_empty() {
+        return REDACTED_FORGET_REASON.to_owned();
+    }
+    if !is_safe_plaintext_for_indexing(trimmed) || contains_secret_or_pii_marker(trimmed) {
+        return REDACTED_FORGET_REASON.to_owned();
+    }
+    trimmed.chars().take(FORGET_REASON_MAX_CHARS).collect()
+}
+
+fn contains_secret_or_pii_marker(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("sk-")
+        || lower.contains("api key")
+        || lower.contains("secret")
+        || lower.contains("token")
+        || contains_email_like_token(text)
+        || contains_phone_like_token(text)
+}
+
+fn contains_email_like_token(text: &str) -> bool {
+    text.split_whitespace().any(|token| {
+        let token = token.trim_matches(|ch: char| ch.is_ascii_punctuation() && ch != '@' && ch != '.');
+        token.contains('@') && token.contains('.')
+    })
+}
+
+fn contains_phone_like_token(text: &str) -> bool {
+    let digit_count = text.chars().filter(|ch| ch.is_ascii_digit()).count();
+    digit_count >= 7 && text.chars().any(|ch| matches!(ch, '-' | '(' | ')' | '+' | '.'))
 }
 
 async fn dream_now_response(
@@ -240,7 +1254,14 @@ async fn delta_response(
     state: &HandlerState,
     request: crate::recall::DeltaRequest,
 ) -> Result<ResponsePayload, HandlerError> {
-    match build_delta_response(substrate, request).await {
+    let coordination = DeltaCoordinationContext {
+        config: state.coordination_config(),
+        presence: state.presence(),
+        claim_locks: state.claim_locks(),
+        delivery_recorder: Some(state),
+        peer_cooldown: Some(state),
+    };
+    match build_delta_response_with_coordination(substrate, request, coordination).await {
         Ok(response) => {
             state.recall.record_delta_success();
             Ok(ResponsePayload::Delta(response))
@@ -257,7 +1278,8 @@ async fn startup_response(
     state: &HandlerState,
     request: crate::recall::StartupRequest,
 ) -> Result<ResponsePayload, HandlerError> {
-    match build_startup_response(substrate, request).await {
+    match build_startup_response_with_coordination_config(substrate, request, state.coordination_config().clone()).await
+    {
         Ok(response) => {
             record_budget_exhaustions(state, &response);
             state.recall.record_dream_question_omissions(&response.dream_question_omissions);
@@ -281,7 +1303,7 @@ fn record_budget_exhaustions(state: &HandlerState, response: &StartupResponse) {
 
 async fn doctor_response(substrate: &Substrate) -> DoctorResponse {
     let report = substrate.doctor().await;
-    let findings = report
+    let mut findings = report
         .warnings
         .into_iter()
         .map(|message| DoctorFinding { code: "warning".to_string(), message, repair: None })
@@ -291,6 +1313,19 @@ async fn doctor_response(substrate: &Substrate) -> DoctorResponse {
             repair: Some("Run substrate repair before relying on daemon recall.".to_string()),
         }))
         .collect::<Vec<_>>();
+    if let Ok(health) = substrate.events_log_mirror_health() {
+        let stale_count = health.lag.max(health.missing_count);
+        if stale_count > 0 {
+            let plural = if stale_count == 1 { "" } else { "s" };
+            findings.push(DoctorFinding {
+                code: "events_log_mirror_lag".to_string(),
+                message: format!(
+                    "{stale_count} event{plural} not mirrored to SQLite - drift scoring may be stale; run `memoryd doctor --reindex`"
+                ),
+                repair: Some("memoryd doctor --reindex".to_string()),
+            });
+        }
+    }
     DoctorResponse {
         healthy: findings.is_empty(),
         findings,
@@ -542,6 +1577,24 @@ fn is_observe_binding_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b':' | b'-')
 }
 
+fn validated_claim_lock_identity_field(name: &str, value: String) -> Result<String, HandlerError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(HandlerError::invalid_request(format!("{name} must be non-empty")));
+    }
+    if trimmed.len() > CLAIM_LOCK_IDENTITY_MAX_BYTES {
+        return Err(HandlerError::invalid_request(format!("{name} must be at most 128 bytes")));
+    }
+    if !trimmed.bytes().all(is_observe_binding_byte) {
+        return Err(HandlerError::invalid_request(format!("{name} must contain only safe id characters")));
+    }
+    validate_observe_metadata_is_safe(name, trimmed)?;
+    if contains_secret_or_pii_marker(trimmed) {
+        return Err(HandlerError::invalid_request(format!("{name} must not contain sensitive material")));
+    }
+    Ok(trimmed.to_string())
+}
+
 fn validate_observe_metadata_is_safe(name: &str, value: &str) -> Result<(), HandlerError> {
     if !is_safe_plaintext_for_indexing(value) || contains_observe_metadata_canary(value) {
         return Err(HandlerError::invalid_request(format!("{name} must not contain sensitive material")));
@@ -704,6 +1757,7 @@ async fn governance_write_response(
 
 async fn governance_supersede_response(
     substrate: &Substrate,
+    state: Option<&HandlerState>,
     request: GovernanceSupersedeRequest,
 ) -> Result<ResponsePayload, HandlerError> {
     let GovernanceSupersedeRequest { old_id, content, reason, meta } = request;
@@ -720,6 +1774,7 @@ async fn governance_supersede_response(
             chain: None,
             policy_applied: refusal.policy_applied,
             policy_source: refusal.policy_source,
+            warning: None,
         }));
     }
 
@@ -736,6 +1791,7 @@ async fn governance_supersede_response(
                 chain: None,
                 policy_applied: None,
                 policy_source: Some(error.message),
+                warning: None,
             }));
         }
     };
@@ -750,6 +1806,7 @@ async fn governance_supersede_response(
                 chain: None,
                 policy_applied: None,
                 policy_source: Some(error.message),
+                warning: None,
             }));
         }
     };
@@ -782,6 +1839,7 @@ async fn governance_supersede_response(
             chain: None,
             policy_applied: Some(policy_applied),
             policy_source: Some(policy_source_string(policy_source)),
+            warning: None,
         }));
     }
 
@@ -798,9 +1856,13 @@ async fn governance_supersede_response(
             "encrypted supersession replacements require Stream A encrypted supersession atomicity",
         )));
     }
+    let claim_lock = match state {
+        Some(state) => acquire_claim_lock_for_supersede(substrate, state, &old_memory_id, &input.meta),
+        None => SupersedeClaimLock::inactive(),
+    };
     substrate
         .supersede_memory(SubstrateSupersedeRequest {
-            old_id: old_memory_id,
+            old_id: old_memory_id.clone(),
             replacement,
             reason,
             classification: privacy.tier.classification(),
@@ -808,6 +1870,7 @@ async fn governance_supersede_response(
         })
         .await
         .map_err(HandlerError::substrate)?;
+    let warning = claim_lock.release_after_success();
 
     Ok(ResponsePayload::GovernanceSupersede(GovernanceSupersedeResponse {
         status: GovernanceStatus::Promoted,
@@ -817,7 +1880,167 @@ async fn governance_supersede_response(
         chain: Some(serde_json::json!({ "supersedes": [old_id] })),
         policy_applied: Some(policy_applied),
         policy_source: Some(policy_source_string(policy_source)),
+        warning,
     }))
+}
+
+fn acquire_claim_lock_for_supersede<'a>(
+    substrate: &Substrate,
+    state: &'a HandlerState,
+    memory_id: &MemoryId,
+    meta: &GovernanceMeta,
+) -> SupersedeClaimLock<'a> {
+    if state.effective_coordination_level(meta) < 2 {
+        return SupersedeClaimLock::inactive();
+    }
+
+    let result = state.claim_locks.acquire(ClaimLockAcquireRequest::new(
+        memory_id.as_str(),
+        meta.session_id.as_str(),
+        meta.harness.as_str(),
+        state.claim_lock_ttl(),
+    ));
+    match result {
+        ClaimLockAcquireResult::Acquired(_) => SupersedeClaimLock::acquired(state, memory_id, meta),
+        ClaimLockAcquireResult::AlreadyHeld(_) => SupersedeClaimLock::already_held(state, memory_id, meta),
+        ClaimLockAcquireResult::Contended(contention) => {
+            let holder = contention.holder_label();
+            let contender = contention.contender_label();
+            if let Err(error) = substrate.record_event_best_effort(EventKind::ClaimLockContention {
+                memory_id: memory_id.clone(),
+                holder: holder.clone(),
+                contender,
+            }) {
+                tracing::warn!(
+                    memory_id = memory_id.as_str(),
+                    "claim-lock contention event append failed; proceeding with advisory warning: {error}"
+                );
+            }
+
+            SupersedeClaimLock::contended(
+                state,
+                SupersedeClaimIdentity::new(memory_id, meta),
+                contention.holder,
+                ClaimLockWarning { code: contention.warning_code.to_string(), message: contention.message, holder },
+            )
+        }
+    }
+}
+
+enum ClaimLockRollback {
+    None,
+    ReleaseAcquired,
+    RestorePrevious(ClaimLockInfo),
+}
+
+struct SupersedeClaimLock<'a> {
+    state: Option<&'a HandlerState>,
+    memory_id: String,
+    harness: String,
+    session_id: String,
+    release_on_success: bool,
+    rollback: ClaimLockRollback,
+    warning: Option<ClaimLockWarning>,
+    completed: bool,
+}
+
+impl<'a> SupersedeClaimLock<'a> {
+    fn inactive() -> Self {
+        Self {
+            state: None,
+            memory_id: String::new(),
+            harness: String::new(),
+            session_id: String::new(),
+            release_on_success: false,
+            rollback: ClaimLockRollback::None,
+            warning: None,
+            completed: true,
+        }
+    }
+
+    fn acquired(state: &'a HandlerState, memory_id: &MemoryId, meta: &GovernanceMeta) -> Self {
+        Self::active(state, SupersedeClaimIdentity::new(memory_id, meta), ClaimLockRollback::ReleaseAcquired, None)
+    }
+
+    fn already_held(state: &'a HandlerState, memory_id: &MemoryId, meta: &GovernanceMeta) -> Self {
+        Self::active(state, SupersedeClaimIdentity::new(memory_id, meta), ClaimLockRollback::None, None)
+    }
+
+    fn contended(
+        state: &'a HandlerState,
+        identity: SupersedeClaimIdentity,
+        previous_holder: ClaimLockInfo,
+        warning: ClaimLockWarning,
+    ) -> Self {
+        Self::active(state, identity, ClaimLockRollback::RestorePrevious(previous_holder), Some(warning))
+    }
+
+    fn active(
+        state: &'a HandlerState,
+        identity: SupersedeClaimIdentity,
+        rollback: ClaimLockRollback,
+        warning: Option<ClaimLockWarning>,
+    ) -> Self {
+        Self {
+            state: Some(state),
+            memory_id: identity.memory_id,
+            harness: identity.harness,
+            session_id: identity.session_id,
+            release_on_success: true,
+            rollback,
+            warning,
+            completed: false,
+        }
+    }
+
+    fn release_after_success(mut self) -> Option<ClaimLockWarning> {
+        if self.release_on_success {
+            if let Some(state) = self.state {
+                state.claim_locks.release(&self.memory_id, &self.harness, &self.session_id);
+            }
+        }
+        self.completed = true;
+        self.warning.take()
+    }
+}
+
+struct SupersedeClaimIdentity {
+    memory_id: String,
+    harness: String,
+    session_id: String,
+}
+
+impl SupersedeClaimIdentity {
+    fn new(memory_id: &MemoryId, meta: &GovernanceMeta) -> Self {
+        Self {
+            memory_id: memory_id.as_str().to_string(),
+            harness: meta.harness.clone(),
+            session_id: meta.session_id.clone(),
+        }
+    }
+}
+
+impl Drop for SupersedeClaimLock<'_> {
+    fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
+
+        let Some(state) = self.state else {
+            return;
+        };
+
+        match &self.rollback {
+            ClaimLockRollback::None => {}
+            ClaimLockRollback::ReleaseAcquired => {
+                state.claim_locks.release(&self.memory_id, &self.harness, &self.session_id);
+            }
+            ClaimLockRollback::RestorePrevious(previous_holder) => {
+                state.claim_locks.release(&self.memory_id, &self.harness, &self.session_id);
+                let _restored = state.claim_locks.restore(previous_holder.clone());
+            }
+        }
+    }
 }
 
 async fn governance_forget_response(
@@ -1275,6 +2498,7 @@ fn supersede_refusal(
         chain: None,
         policy_applied,
         policy_source: Some(policy_source_string(policy_source)),
+        warning: None,
     }
 }
 
@@ -1291,6 +2515,7 @@ fn supersede_privacy_refusal(
         chain: None,
         policy_applied,
         policy_source: Some(policy_source.into()),
+        warning: None,
     }
 }
 
@@ -1493,6 +2718,11 @@ struct GovernanceMeta {
     source_ref: Option<String>,
     explicit_user_context: bool,
     privacy_descriptors: Option<PrivacyDescriptors>,
+    #[serde(default = "default_supersede_session_id")]
+    session_id: String,
+    #[serde(default = "default_supersede_harness")]
+    harness: String,
+    concurrent_session_mode: Option<ConcurrentSessionMode>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -1574,8 +2804,19 @@ impl Default for GovernanceMeta {
             source_ref: None,
             explicit_user_context: false,
             privacy_descriptors: None,
+            session_id: default_supersede_session_id(),
+            harness: default_supersede_harness(),
+            concurrent_session_mode: None,
         }
     }
+}
+
+fn default_supersede_session_id() -> String {
+    DEFAULT_SUPERSEDE_SESSION_ID.to_owned()
+}
+
+fn default_supersede_harness() -> String {
+    DEFAULT_SUPERSEDE_HARNESS.to_owned()
 }
 
 impl Default for GovernanceNamespace {
@@ -1605,11 +2846,13 @@ impl GovernanceWriteInput {
         if body.is_empty() {
             return Err(HandlerError::invalid_request("memory body must not be empty"));
         }
-        let meta = if meta.is_null() {
+        let mut meta = if meta.is_null() {
             GovernanceMeta::default()
         } else {
             serde_json::from_value(meta).map_err(|err| HandlerError::invalid_request(err.to_string()))?
         };
+        meta.session_id = validated_claim_lock_identity_field("session_id", meta.session_id)?;
+        meta.harness = validated_claim_lock_identity_field("harness", meta.harness)?;
         if !meta.confidence.is_finite() || !(0.0..=1.0).contains(&meta.confidence) {
             return Err(HandlerError::invalid_request("confidence must be finite and between 0.0 and 1.0"));
         }
@@ -1693,6 +2936,7 @@ impl GovernanceWriteInput {
                 scope: self.substrate_scope(),
                 summary,
                 confidence: self.meta.confidence,
+                original_confidence: None,
                 trust_level: lifecycle.trust_level,
                 sensitivity,
                 status: lifecycle.status,
@@ -1981,6 +3225,7 @@ fn candidate_memory(id: MemoryId, text: &str, storage_action: PrivacyStorageActi
             scope: Scope::Agent,
             summary: if encrypted { "encrypted note".to_string() } else { bounded(text, 120) },
             confidence: 0.5,
+            original_confidence: None,
             trust_level: TrustLevel::Candidate,
             sensitivity,
             status: MemoryStatus::Candidate,
@@ -2090,6 +3335,21 @@ fn bounded_with_truncation(text: &str, max_chars: usize) -> (String, bool) {
     (bounded, truncated)
 }
 
+fn resolve_memoryd_web_binary() -> Result<PathBuf, String> {
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(sibling) = current_exe.parent().map(|dir| dir.join("memoryd-web")).filter(|path| path.is_file()) {
+            return Ok(sibling);
+        }
+    }
+    let Some(path_env) = std::env::var_os("PATH") else {
+        return Err("memoryd-web binary not found on PATH".to_owned());
+    };
+    std::env::split_paths(&path_env)
+        .map(|dir| dir.join("memoryd-web"))
+        .find(|path| path.is_file())
+        .ok_or_else(|| "memoryd-web binary not found on PATH".to_owned())
+}
+
 #[derive(Debug)]
 struct HandlerError {
     code: String,
@@ -2110,12 +3370,43 @@ impl HandlerError {
         Self { code: "dream_disabled".to_string(), message: message.into(), retryable: false }
     }
 
+    fn web_unavailable(message: impl Into<String>) -> Self {
+        Self { code: "web_unavailable".to_string(), message: message.into(), retryable: false }
+    }
+
+    fn port_in_use(message: impl Into<String>) -> Self {
+        Self { code: "port_in_use".to_string(), message: message.into(), retryable: false }
+    }
+
     fn substrate(error: impl std::fmt::Display) -> Self {
         Self { code: "substrate_error".to_string(), message: error.to_string(), retryable: true }
     }
 
     fn privacy(error: impl std::fmt::Display) -> Self {
         Self { code: "privacy_error".to_string(), message: bounded(&error.to_string(), 240), retryable: false }
+    }
+
+    fn trust_artifact(error: crate::trust_artifact::TrustArtifactError) -> Self {
+        match error {
+            crate::trust_artifact::TrustArtifactError::MemoryNotFound(memory_id) => Self {
+                code: "not_found".to_string(),
+                message: format!("memory {} was not found", memory_id.as_str()),
+                retryable: false,
+            },
+            crate::trust_artifact::TrustArtifactError::ReadMemory {
+                id,
+                source: memory_substrate::ReadError::NotFound(_),
+            } => Self {
+                code: "not_found".to_string(),
+                message: format!("memory {} was not found", id.as_str()),
+                retryable: false,
+            },
+            other => Self {
+                code: "trust_artifact_error".to_string(),
+                message: bounded(&other.to_string(), 240),
+                retryable: true,
+            },
+        }
     }
 
     fn from_recall(error: RecallError) -> Self {
@@ -2136,5 +3427,218 @@ impl HandlerError {
             crate::dream::lease::LeaseError::Held { .. } | crate::dream::lease::LeaseError::Unavailable { .. }
         );
         Self { code: error.code().to_string(), message: bounded(&error.to_string(), 240), retryable }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct LaunchRecord {
+        program: String,
+        args: Vec<String>,
+    }
+
+    #[derive(Clone, Debug)]
+    struct FakeChildHandle {
+        state: Arc<Mutex<FakeChildState>>,
+    }
+
+    #[derive(Clone, Debug, Default)]
+    struct FakeChildState {
+        running: bool,
+        killed: bool,
+        waited: bool,
+    }
+
+    #[derive(Debug)]
+    struct FakeWebDashboardLauncher {
+        readiness: FakeReadiness,
+        launches: Mutex<Vec<LaunchRecord>>,
+        children: Mutex<Vec<FakeChildHandle>>,
+    }
+
+    #[derive(Debug)]
+    enum FakeReadiness {
+        Ready,
+        ExitedBeforeBinding,
+        Timeout,
+    }
+
+    impl FakeWebDashboardLauncher {
+        fn ready() -> Self {
+            Self::new(FakeReadiness::Ready)
+        }
+
+        fn exited_before_binding() -> Self {
+            Self::new(FakeReadiness::ExitedBeforeBinding)
+        }
+
+        fn timeout() -> Self {
+            Self::new(FakeReadiness::Timeout)
+        }
+
+        fn new(readiness: FakeReadiness) -> Self {
+            Self { readiness, launches: Mutex::new(Vec::new()), children: Mutex::new(Vec::new()) }
+        }
+
+        fn launches(&self) -> Vec<LaunchRecord> {
+            self.launches.lock().expect("launches lock poisoned").clone()
+        }
+
+        fn only_child(&self) -> FakeChildState {
+            let children = self.children.lock().expect("children lock poisoned");
+            let child = children.first().expect("launcher recorded child");
+            let state = child.state.lock().expect("child state lock poisoned").clone();
+            state
+        }
+    }
+
+    impl WebDashboardLauncher for FakeWebDashboardLauncher {
+        fn ensure_port_available(&self, _port: u16) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn spawn(&self, socket_path: &str, port: u16) -> Result<Box<dyn WebDashboardChild>, String> {
+            self.launches.lock().expect("launches lock poisoned").push(LaunchRecord {
+                program: "memoryd-web".to_owned(),
+                args: vec!["--socket".to_owned(), socket_path.to_owned(), "--port".to_owned(), port.to_string()],
+            });
+            let state = Arc::new(Mutex::new(FakeChildState {
+                running: matches!(self.readiness, FakeReadiness::Ready | FakeReadiness::Timeout),
+                killed: false,
+                waited: false,
+            }));
+            self.children.lock().expect("children lock poisoned").push(FakeChildHandle { state: Arc::clone(&state) });
+            Ok(Box::new(FakeWebDashboardChild { state }))
+        }
+
+        fn wait_until_ready(&self, port: u16, child: &mut dyn WebDashboardChild) -> Result<(), String> {
+            let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+            match self.readiness {
+                FakeReadiness::Ready => Ok(()),
+                FakeReadiness::ExitedBeforeBinding => {
+                    let status = child.try_wait()?.expect("fake child exited before binding");
+                    Err(format!("memoryd-web exited before binding {address}: {status}"))
+                }
+                FakeReadiness::Timeout => Err(format!("memoryd-web did not bind {address} before readiness timeout")),
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct FakeWebDashboardChild {
+        state: Arc<Mutex<FakeChildState>>,
+    }
+
+    impl WebDashboardChild for FakeWebDashboardChild {
+        fn try_wait(&mut self) -> Result<Option<String>, String> {
+            let state = self.state.lock().expect("child state lock poisoned");
+            Ok((!state.running).then(|| "exit status: 1".to_owned()))
+        }
+
+        fn kill(&mut self) -> Result<(), String> {
+            let mut state = self.state.lock().expect("child state lock poisoned");
+            state.running = false;
+            state.killed = true;
+            Ok(())
+        }
+
+        fn wait(&mut self) -> Result<(), String> {
+            self.state.lock().expect("child state lock poisoned").waited = true;
+            Ok(())
+        }
+    }
+
+    fn unused_localhost_port() -> u16 {
+        let listener =
+            TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)).expect("test listener binds");
+        listener.local_addr().expect("test listener has local address").port()
+    }
+
+    #[test]
+    fn web_dashboard_enable_success_records_running_status_and_spawn_argv() {
+        let launcher = Arc::new(FakeWebDashboardLauncher::ready());
+        let mut runtime = WebDashboardRuntime::with_launcher(launcher.clone());
+        let port = unused_localhost_port();
+        let socket_path = "/tmp/memoryd-test.sock";
+
+        let status = runtime.enable(port, socket_path, chrono::Utc::now()).expect("dashboard starts");
+
+        assert!(status.running);
+        assert_eq!(status.port, Some(port));
+        assert_eq!(status.url.as_deref(), Some(format!("http://localhost:{port}").as_str()));
+        assert_eq!(
+            launcher.launches(),
+            vec![LaunchRecord {
+                program: "memoryd-web".to_owned(),
+                args: vec!["--socket".to_owned(), socket_path.to_owned(), "--port".to_owned(), port.to_string()],
+            }]
+        );
+    }
+
+    #[test]
+    fn web_dashboard_enable_child_exit_before_binding_cleans_up_and_stops_status() {
+        let launcher = Arc::new(FakeWebDashboardLauncher::exited_before_binding());
+        let mut runtime = WebDashboardRuntime::with_launcher(launcher.clone());
+
+        let error = runtime
+            .enable(unused_localhost_port(), "/tmp/memoryd-test.sock", chrono::Utc::now())
+            .expect_err("start fails");
+
+        assert_eq!(error.code, "web_unavailable");
+        assert!(error.message.contains("exited before binding"));
+        assert!(!runtime.status(chrono::Utc::now()).running);
+        let child = launcher.only_child();
+        assert!(!child.killed);
+        assert!(child.waited);
+    }
+
+    #[test]
+    fn web_dashboard_enable_readiness_timeout_kills_child_and_stops_status() {
+        let launcher = Arc::new(FakeWebDashboardLauncher::timeout());
+        let mut runtime = WebDashboardRuntime::with_launcher(launcher.clone());
+
+        let error = runtime
+            .enable(unused_localhost_port(), "/tmp/memoryd-test.sock", chrono::Utc::now())
+            .expect_err("start fails");
+
+        assert_eq!(error.code, "web_unavailable");
+        assert!(error.message.contains("did not bind"));
+        assert!(!runtime.status(chrono::Utc::now()).running);
+        let child = launcher.only_child();
+        assert!(child.killed);
+        assert!(child.waited);
+    }
+
+    #[test]
+    fn web_dashboard_enable_same_live_port_is_idempotent_without_second_spawn() {
+        let launcher = Arc::new(FakeWebDashboardLauncher::ready());
+        let mut runtime = WebDashboardRuntime::with_launcher(launcher.clone());
+        let port = unused_localhost_port();
+
+        let first = runtime.enable(port, "/tmp/memoryd-test.sock", chrono::Utc::now()).expect("dashboard starts");
+        let second = runtime.enable(port, "/tmp/memoryd-test.sock", chrono::Utc::now()).expect("dashboard is reused");
+
+        assert!(first.running);
+        assert!(second.running);
+        assert_eq!(second.port, Some(port));
+        assert_eq!(launcher.launches().len(), 1);
+    }
+
+    #[test]
+    fn web_dashboard_enable_rejects_preoccupied_port_before_spawn() {
+        let listener =
+            TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)).expect("test listener binds");
+        let port = listener.local_addr().expect("test listener has local address").port();
+        let mut runtime = WebDashboardRuntime::default();
+
+        let error = runtime.enable(port, "/tmp/memoryd-test.sock", chrono::Utc::now()).expect_err("port is rejected");
+
+        assert_eq!(error.code, "port_in_use");
+        assert!(error.message.contains("is unavailable before start"));
+        assert!(!runtime.status(chrono::Utc::now()).running);
     }
 }

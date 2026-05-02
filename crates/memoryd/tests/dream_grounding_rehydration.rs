@@ -447,6 +447,7 @@ fn base_memory(id: &str, status: MemoryStatus, trust_level: TrustLevel) -> Memor
             scope: Scope::Agent,
             summary: "dream rehydration candidate".to_string(),
             confidence: 0.99,
+            original_confidence: None,
             trust_level,
             sensitivity: Sensitivity::Internal,
             status,

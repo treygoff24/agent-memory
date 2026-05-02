@@ -1,6 +1,10 @@
-use std::path::PathBuf;
+use std::ffi::{OsStr, OsString};
+use std::path::{Path, PathBuf};
 
+use chrono::NaiveDate;
 use clap::{ArgAction, Args, Parser, Subcommand};
+
+use crate::protocol::{PeerActivityFormat, RealityCheckRequest, RequestPayload};
 
 #[derive(Debug, Parser)]
 #[command(name = "memoryd")]
@@ -36,6 +40,14 @@ pub enum Command {
     Recall(RecallArgs),
     /// Stream F dreaming admin commands.
     Dream(DreamArgs),
+    /// Cross-session peer coordination admin commands.
+    Peer(PeerArgs),
+    /// Launch the local terminal UI.
+    Ui(UiArgs),
+    /// Local web dashboard lifecycle commands.
+    Web(WebArgs),
+    /// Weekly Reality Check ritual commands.
+    RealityCheck(RealityCheckArgs),
     /// Admin privacy inspection commands.
     Privacy(PrivacyArgs),
     /// Optional Privacy Filter commands.
@@ -49,6 +61,97 @@ pub struct SocketArgs {
     /// Unix socket path used to reach memoryd.
     #[arg(long, default_value = "/tmp/memoryd.sock")]
     pub socket: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub struct UiArgs {
+    /// Start with panel N active.
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=8))]
+    pub panel: u8,
+    /// Unix socket path used to reach memoryd.
+    #[arg(long, default_value = "/tmp/memoryd.sock")]
+    pub socket: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub struct WebArgs {
+    #[command(subcommand)]
+    pub command: WebCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum WebCommand {
+    /// Enable the localhost web dashboard.
+    Enable(WebEnableArgs),
+    /// Disable the localhost web dashboard.
+    Disable(SocketArgs),
+    /// Show web dashboard status.
+    Status(WebStatusArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct WebEnableArgs {
+    /// Unix socket path used to reach memoryd.
+    #[arg(long, default_value = "/tmp/memoryd.sock")]
+    pub socket: PathBuf,
+    /// Localhost port for the dashboard.
+    #[arg(long, default_value_t = 7137, value_parser = clap::value_parser!(u16).range(1024..=65535))]
+    pub port: u16,
+}
+
+#[derive(Debug, Args)]
+pub struct WebStatusArgs {
+    /// Unix socket path used to reach memoryd.
+    #[arg(long, default_value = "/tmp/memoryd.sock")]
+    pub socket: PathBuf,
+    /// Emit machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct RealityCheckArgs {
+    #[command(subcommand)]
+    pub command: RealityCheckCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RealityCheckCommand {
+    /// Start, resume, or list a Reality Check session.
+    Run(RealityCheckRunArgs),
+    /// Skip the current week's Reality Check.
+    Skip(SocketArgs),
+    /// Snooze the Reality Check reminder.
+    Snooze(RealityCheckSnoozeArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct RealityCheckRunArgs {
+    /// Unix socket path used to reach memoryd.
+    #[arg(long, default_value = "/tmp/memoryd.sock")]
+    pub socket: PathBuf,
+    /// Override the number of scored items returned for this run.
+    #[arg(long)]
+    pub top_n: Option<usize>,
+    /// Restrict scoring to a namespace.
+    #[arg(long)]
+    pub namespace: Option<String>,
+    /// Route the session to an already-open TUI.
+    #[arg(long)]
+    pub tui: bool,
+    /// Print JSON and do not start an interactive session.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct RealityCheckSnoozeArgs {
+    /// Unix socket path used to reach memoryd.
+    #[arg(long, default_value = "/tmp/memoryd.sock")]
+    pub socket: PathBuf,
+    /// ISO date (YYYY-MM-DD) to snooze until.
+    #[arg(long)]
+    pub until: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -211,6 +314,60 @@ pub struct ReviewRejectArgs {
 pub struct RecallArgs {
     #[command(subcommand)]
     pub command: RecallCommand,
+}
+
+#[derive(Debug, Args)]
+pub struct PeerArgs {
+    #[command(subcommand)]
+    pub command: PeerCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PeerCommand {
+    /// Show current cross-session coordination state.
+    Status(PeerStatusArgs),
+    /// Show recent peer-update delivery audit entries.
+    Activity(PeerActivityArgs),
+    /// Forcibly release one advisory claim lock.
+    ReleaseLock(PeerReleaseLockArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct PeerStatusArgs {
+    /// Unix socket path used to reach memoryd.
+    #[arg(long, default_value = "/tmp/memoryd.sock")]
+    pub socket: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub struct PeerActivityArgs {
+    /// Unix socket path used to reach memoryd.
+    #[arg(long, default_value = "/tmp/memoryd.sock")]
+    pub socket: PathBuf,
+    /// Filter to deliveries from or to one session id.
+    #[arg(long)]
+    pub session: Option<String>,
+    /// Filter by time: HH:MM, YYYY-MM-DD, or RFC3339.
+    #[arg(long)]
+    pub since: Option<String>,
+    /// Maximum number of audit entries to print.
+    #[arg(long, default_value_t = 50)]
+    pub limit: usize,
+    /// Output format.
+    #[arg(long, value_enum, default_value = "human")]
+    pub format: PeerActivityFormat,
+}
+
+#[derive(Debug, Args)]
+pub struct PeerReleaseLockArgs {
+    /// Unix socket path used to reach memoryd.
+    #[arg(long, default_value = "/tmp/memoryd.sock")]
+    pub socket: PathBuf,
+    /// Memory id whose advisory claim lock should be released.
+    pub memory_id: String,
+    /// Skip the interactive y/N confirmation prompt.
+    #[arg(long)]
+    pub yes: bool,
 }
 
 #[derive(Debug, Args)]
@@ -483,4 +640,95 @@ pub struct DeviceRevokeArgs {
     /// Local per-device runtime root.
     #[arg(long, default_value = ".memoryd")]
     pub runtime: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UiLaunchError {
+    NonInteractiveStdin,
+    BinaryMissing,
+}
+
+impl UiLaunchError {
+    pub const fn exit_code(self) -> i32 {
+        match self {
+            Self::NonInteractiveStdin => 2,
+            Self::BinaryMissing => 4,
+        }
+    }
+
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::NonInteractiveStdin => "memoryd ui requires an interactive terminal.",
+            Self::BinaryMissing => {
+                "memoryd-tui binary not found; reinstall with `cargo install memoryd-tui` or ensure both binaries are in the same prefix"
+            }
+        }
+    }
+}
+
+pub fn validate_ui_stdin(stdin_is_tty: bool) -> Result<(), UiLaunchError> {
+    if stdin_is_tty {
+        Ok(())
+    } else {
+        Err(UiLaunchError::NonInteractiveStdin)
+    }
+}
+
+pub fn ui_subprocess_args(args: &UiArgs) -> Vec<OsString> {
+    vec![
+        OsString::from("--panel"),
+        OsString::from(args.panel.to_string()),
+        OsString::from("--socket"),
+        args.socket.as_os_str().to_owned(),
+    ]
+}
+
+pub fn resolve_memoryd_tui_binary(current_exe: &Path, path_env: Option<&OsStr>) -> Result<PathBuf, UiLaunchError> {
+    if let Some(sibling) = current_exe.parent().map(|dir| dir.join("memoryd-tui")).filter(|path| path.is_file()) {
+        return Ok(sibling);
+    }
+
+    let Some(path_env) = path_env else {
+        return Err(UiLaunchError::BinaryMissing);
+    };
+    std::env::split_paths(path_env)
+        .map(|dir| dir.join("memoryd-tui"))
+        .find(|path| path.is_file())
+        .ok_or(UiLaunchError::BinaryMissing)
+}
+
+pub fn web_request_payload(command: &WebCommand) -> RequestPayload {
+    match command {
+        WebCommand::Enable(args) => {
+            RequestPayload::WebEnable { port: args.port, socket_path: args.socket.to_string_lossy().into_owned() }
+        }
+        WebCommand::Disable(_) => RequestPayload::WebDisable,
+        WebCommand::Status(_) => RequestPayload::WebStatus,
+    }
+}
+
+pub fn reality_check_request_payload(command: &RealityCheckCommand) -> Result<RequestPayload, i32> {
+    match command {
+        RealityCheckCommand::Run(args) if args.json => Ok(RequestPayload::RealityCheck(RealityCheckRequest::List {
+            namespace: args.namespace.clone(),
+            limit: args.top_n,
+        })),
+        RealityCheckCommand::Run(args) => Ok(RequestPayload::RealityCheck(RealityCheckRequest::Run {
+            session_id: None,
+            namespace: args.namespace.clone(),
+            limit: args.top_n,
+        })),
+        RealityCheckCommand::Skip(_) => Ok(RequestPayload::RealityCheck(RealityCheckRequest::Skip)),
+        RealityCheckCommand::Snooze(args) => {
+            validate_snooze_until(args.until.as_deref())?;
+            Ok(RequestPayload::RealityCheck(RealityCheckRequest::Snooze {
+                until: validate_snooze_until(args.until.as_deref())?
+                    .map(|date| date.and_hms_opt(0, 0, 0).expect("midnight is valid").and_utc()),
+            }))
+        }
+    }
+}
+
+pub fn validate_snooze_until(raw: Option<&str>) -> Result<Option<NaiveDate>, i32> {
+    raw.map(|value| NaiveDate::parse_from_str(value, "%Y-%m-%d").map_err(|_| 1)).transpose()
 }

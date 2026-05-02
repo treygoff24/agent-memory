@@ -10,7 +10,7 @@ use tokio::task;
 use tokio::time;
 
 use crate::recall::error::RecallError;
-use crate::recall::types::{ProjectBinding, ProjectBindingSource};
+use crate::recall::types::{ConcurrentSessionMode, ProjectBinding, ProjectBindingSource};
 
 const PROJECT_FILE: &str = ".memory-project.yaml";
 const MAX_PROJECT_FIELD_BYTES: usize = 128;
@@ -22,6 +22,7 @@ const GIT_POLL_INTERVAL: Duration = Duration::from_millis(20);
 struct ProjectFile {
     canonical_id: String,
     alias: Option<String>,
+    concurrent_session_mode: Option<ConcurrentSessionMode>,
 }
 
 pub async fn resolve_project_binding(cwd: &Path) -> Result<Option<ProjectBinding>, RecallError> {
@@ -34,7 +35,12 @@ pub async fn resolve_project_binding(cwd: &Path) -> Result<Option<ProjectBinding
     };
     let normalized = normalize_remote(&remote)?;
     let canonical_id = format!("proj_{}", hex::encode(Sha256::digest(normalized.as_bytes())));
-    Ok(Some(ProjectBinding { canonical_id, alias: None, resolved_via: ProjectBindingSource::GitRemote }))
+    Ok(Some(ProjectBinding {
+        canonical_id,
+        alias: None,
+        concurrent_session_mode: None,
+        resolved_via: ProjectBindingSource::GitRemote,
+    }))
 }
 
 fn find_project_file(cwd: &Path) -> Option<PathBuf> {
@@ -56,7 +62,12 @@ fn parse_project_file(path: &Path) -> Result<ProjectBinding, RecallError> {
     let canonical_id = validate_canonical_id(&project.canonical_id)?;
     let alias = project.alias.as_deref().map(validate_alias).transpose()?;
 
-    Ok(ProjectBinding { canonical_id, alias, resolved_via: ProjectBindingSource::YamlOverride })
+    Ok(ProjectBinding {
+        canonical_id,
+        alias,
+        concurrent_session_mode: project.concurrent_session_mode,
+        resolved_via: ProjectBindingSource::YamlOverride,
+    })
 }
 
 fn reject_malformed_project_yaml(yaml: &str) -> Result<(), RecallError> {
@@ -78,7 +89,7 @@ fn reject_malformed_project_yaml(yaml: &str) -> Result<(), RecallError> {
             return Err(RecallError::invalid_request(format!("{PROJECT_FILE} must be a mapping")));
         };
         let key = key.trim();
-        if key.is_empty() || !matches!(key, "canonical_id" | "alias") {
+        if key.is_empty() || !matches!(key, "canonical_id" | "alias" | "concurrent_session_mode") {
             return Err(RecallError::invalid_request(format!("unknown {PROJECT_FILE} field: {key}")));
         }
         if !keys.insert(key.to_owned()) {

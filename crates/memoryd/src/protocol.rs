@@ -2,17 +2,25 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
+use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::recall::{DeltaRequest, DeltaResponse, RecallStatusCounters, StartupRequest, StartupResponse};
 
+pub use memorum_coordination::{ClaimLockInfo, PeerHeartbeat, PeerHeartbeatAck};
 pub use memory_governance::GovernanceRefusalReason;
-pub use memory_substrate::ObserveKind;
+pub use memory_substrate::{MemoryId, MemoryStatus, ObserveKind, Sensitivity};
 
 /// Maximum byte length of a single newline-delimited request or response frame.
 /// Defined here so both the server-side reader and client-side reader share the same limit.
 pub const MAX_FRAME_BYTES: usize = 64 * 1024;
+
+/// Capacity for the internal `memoryd` notification broadcast channel.
+///
+/// Stream G §6.3 defines the channel as process-internal. Dispatchers tolerate
+/// lagged receivers; notifications are not persisted by this protocol layer.
+pub const NOTIFICATION_CHANNEL_CAPACITY: usize = 256;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RequestEnvelope {
@@ -47,6 +55,9 @@ pub enum RequestPayload {
     Get {
         id: String,
         include_provenance: bool,
+    },
+    TrustArtifact {
+        id: String,
     },
     Reveal {
         id: String,
@@ -83,6 +94,17 @@ pub enum RequestPayload {
     },
     Startup(StartupRequest),
     Delta(DeltaRequest),
+    PeerHeartbeat(PeerHeartbeat),
+    PeerStatus,
+    PeerActivity {
+        session: Option<String>,
+        since: Option<String>,
+        limit: Option<usize>,
+        format: PeerActivityFormat,
+    },
+    PeerReleaseLock {
+        memory_id: String,
+    },
     Observe {
         text: String,
         kind: ObserveKind,
@@ -103,6 +125,13 @@ pub enum RequestPayload {
         cli_override: Option<String>,
     },
     DreamStatus {},
+    WebEnable {
+        port: u16,
+        socket_path: String,
+    },
+    WebDisable,
+    WebStatus,
+    RealityCheck(RealityCheckRequest),
 }
 
 pub fn default_observe_cwd() -> String {
@@ -115,6 +144,27 @@ pub fn default_observe_session_id() -> String {
 
 pub fn default_observe_harness() -> String {
     "unknown".to_owned()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RealityCheckRequest {
+    List { namespace: Option<String>, limit: Option<usize> },
+    Run { session_id: Option<String>, namespace: Option<String>, limit: Option<usize> },
+    Respond { session_id: String, memory_id: MemoryId, action: RealityCheckAction },
+    Skip,
+    Snooze { until: Option<DateTime<Utc>> },
+    Reset,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RealityCheckAction {
+    Confirm,
+    Correct { new_body: String },
+    Forget { reason: String },
+    NotRelevant,
+    SkipThisWeek,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -159,6 +209,7 @@ pub enum ResponsePayload {
     Doctor(DoctorResponse),
     Search(SearchResponse),
     Get(GetResponse),
+    TrustArtifact(Box<crate::trust_artifact::TrustArtifact>),
     Reveal(RevealResponse),
     WriteNote(WriteNoteResponse),
     GovernanceWrite(GovernanceWriteResponse),
@@ -169,9 +220,124 @@ pub enum ResponsePayload {
     ReviewReject(ReviewDecisionResponse),
     Startup(Box<StartupResponse>),
     Delta(DeltaResponse),
+    PeerHeartbeat(PeerHeartbeatAck),
+    PeerStatus(PeerStatusResponse),
+    PeerActivity(PeerActivityResponse),
+    PeerReleaseLock(PeerReleaseLockResponse),
     Observe(ObserveResponse),
     DreamNow(Box<DreamRunReport>),
     DreamStatus(Box<DreamStatusReport>),
+    WebStatus(WebDashboardStatus),
+    RealityCheck(RealityCheckResponse),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebDashboardStatus {
+    pub running: bool,
+    pub url: Option<String>,
+    pub port: Option<u16>,
+    pub uptime_seconds: Option<u64>,
+    pub active_connections: u32,
+}
+
+impl WebDashboardStatus {
+    pub fn stopped() -> Self {
+        Self { running: false, url: None, port: None, uptime_seconds: None, active_connections: 0 }
+    }
+
+    pub fn running(port: u16, uptime_seconds: u64) -> Self {
+        Self {
+            running: true,
+            url: Some(format!("http://localhost:{port}")),
+            port: Some(port),
+            uptime_seconds: Some(uptime_seconds),
+            active_connections: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RealityCheckResponse {
+    Pending {
+        session_id: Option<String>,
+        items: Vec<RealityCheckItem>,
+        total_scored: usize,
+        last_completed_at: Option<DateTime<Utc>>,
+    },
+    RespondAccepted {
+        session_id: String,
+        memory_id: MemoryId,
+        next_item: Option<RealityCheckItem>,
+        completion: RealityCheckCompletion,
+    },
+    RespondRefused {
+        session_id: String,
+        memory_id: MemoryId,
+        reason: String,
+        kind: RespondRefusalKind,
+    },
+    Snoozed {
+        snooze_until: DateTime<Utc>,
+    },
+    Skipped {
+        skipped_until: DateTime<Utc>,
+    },
+    Reset {
+        cleared_pending: usize,
+        cleared_session: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RealityCheckItem {
+    pub memory_id: MemoryId,
+    pub title: String,
+    pub namespace: String,
+    pub status: MemoryStatus,
+    pub sensitivity: Option<Sensitivity>,
+    pub score: f64,
+    pub component_scores: ComponentScores,
+    pub encrypted: bool,
+    pub last_observed_at: DateTime<Utc>,
+    pub recall_count_30d: u32,
+    pub last_recalled_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ComponentScores {
+    pub days_since_observed_norm: f64,
+    pub recall_frequency_norm: f64,
+    pub cross_source_corroboration: f64,
+    pub confidence_decay: f64,
+    pub sensitivity_weight: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RealityCheckCompletion {
+    Progress { remaining: usize, deferred: usize },
+    Complete { reviewed: usize, deferred: usize, completed_at: DateTime<Utc> },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RespondRefusalKind {
+    GovernanceRefused,
+    TombstoneMatch,
+    InvalidAction,
+    SessionExpired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NotificationEvent {
+    LeakedSecretDetected { memory_id: MemoryId },
+    BlockingMergeConflict { path: String },
+    ReviewQueueOverThreshold { count: usize, threshold: usize },
+    DreamRunCompleted { scope: String, promoted: usize, queued: usize, dropped: usize },
+    RealityCheckDue { due_at: DateTime<Utc> },
+    RealityCheckOverdue { last_completed_at: Option<DateTime<Utc>>, weeks_skipped: u32 },
+    DailySynthesisSummaryReady { scope: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -182,6 +348,192 @@ pub struct StatusResponse {
     pub recall: RecallStatusCounters,
     #[serde(default)]
     pub dreams: DreamStatusCounters,
+    #[serde(default)]
+    pub passive_notifications: Vec<PassiveNotificationStatus>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PassiveNotificationStatus {
+    pub message: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
+#[serde(rename_all = "snake_case")]
+pub enum PeerActivityFormat {
+    Human,
+    Json,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PeerStatusResponse {
+    pub coordination_level: u8,
+    pub active_sessions: Vec<PeerSessionStatus>,
+    pub claim_locks: Vec<ClaimLockInfo>,
+    pub recent_deliveries: Vec<PeerDeliveryAuditEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PeerSessionStatus {
+    pub session_id: String,
+    pub harness: String,
+    pub namespace: String,
+    pub salient_entities: Vec<String>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub last_heartbeat_age_seconds: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PeerActivityResponse {
+    pub entries: Vec<PeerDeliveryAuditEntry>,
+    pub limit: usize,
+    pub total_recorded: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PeerDeliveryAuditEntry {
+    pub delivered_at: DateTime<Utc>,
+    pub from_harness: String,
+    pub from_session_id: String,
+    pub to_harness: String,
+    pub to_session_id: String,
+    pub memory_id: String,
+    pub relevance: f64,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PeerReleaseLockResponse {
+    pub memory_id: String,
+    pub status: PeerReleaseLockStatus,
+    pub released: Option<ClaimLockInfo>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PeerReleaseLockStatus {
+    Released,
+    NoLockFound,
+}
+
+pub fn render_peer_status_human(status: &PeerStatusResponse) -> String {
+    let mut output = String::new();
+    output.push_str(&format!(
+        "Coordination level: {} ({})\n\n",
+        status.coordination_level,
+        coordination_level_label(status.coordination_level)
+    ));
+
+    output.push_str("Active peer sessions (same device):\n");
+    if status.active_sessions.is_empty() {
+        output.push_str("  [none]\n");
+    } else {
+        for session in &status.active_sessions {
+            let entities = if session.salient_entities.is_empty() {
+                "[none]".to_owned()
+            } else {
+                session.salient_entities.join(", ")
+            };
+            output.push_str(&format!(
+                "  {}:{}   project:{}   entities: {}\n",
+                session.harness,
+                truncated_session_id(&session.session_id),
+                session.namespace,
+                entities
+            ));
+            output.push_str(&format!(
+                "  started {}, last heartbeat {} ago\n",
+                session
+                    .started_at
+                    .map_or_else(|| "unknown".to_owned(), |started_at| { started_at.format("%H:%M").to_string() }),
+                human_duration_seconds(session.last_heartbeat_age_seconds)
+            ));
+        }
+    }
+
+    output.push_str("\nActive claim locks:\n");
+    if status.claim_locks.is_empty() {
+        output.push_str("  [none]\n");
+    } else {
+        let now = Utc::now();
+        for lock in &status.claim_locks {
+            let ttl_seconds =
+                lock.expires_at.signed_duration_since(now).to_std().map_or(0, |duration| duration.as_secs());
+            output.push_str(&format!(
+                "  {}   held by {}:{}   expires in {}\n",
+                lock.memory_id,
+                lock.holder_harness,
+                lock.holder_session_id,
+                human_duration_seconds(ttl_seconds)
+            ));
+        }
+    }
+
+    output.push_str("\nRecent peer-update deliveries (this session):\n");
+    if status.recent_deliveries.is_empty() {
+        output.push_str("  [none - run memoryd peer activity for session history]\n");
+    } else {
+        for delivery in &status.recent_deliveries {
+            output.push_str(&format!(
+                "  {}:{} -> {}:{}   {}   relevance={:.2}\n",
+                delivery.from_harness,
+                truncated_session_id(&delivery.from_session_id),
+                delivery.to_harness,
+                truncated_session_id(&delivery.to_session_id),
+                delivery.memory_id,
+                delivery.relevance
+            ));
+        }
+    }
+
+    output
+}
+
+pub fn render_peer_activity_human(activity: &PeerActivityResponse) -> String {
+    let mut output = format!("Peer-update audit (last {} deliveries, this device):\n\n", activity.limit);
+    if activity.entries.is_empty() {
+        output.push_str("[none]\n");
+        return output;
+    }
+
+    for entry in &activity.entries {
+        output.push_str(&format!(
+            "{}  {}:{} -> {}:{}   {}   relevance={:.2}\n",
+            entry.delivered_at.format("%Y-%m-%d %H:%M"),
+            entry.from_harness,
+            truncated_session_id(&entry.from_session_id),
+            entry.to_harness,
+            truncated_session_id(&entry.to_session_id),
+            entry.memory_id,
+            entry.relevance
+        ));
+        output.push_str(&format!("  summary: \"{}\"\n\n", entry.summary));
+    }
+    output
+}
+
+fn coordination_level_label(level: u8) -> &'static str {
+    match level {
+        1 => "minimal",
+        2 => "default - writes + candidates + notes",
+        3 => "collaborative",
+        _ => "unknown",
+    }
+}
+
+fn truncated_session_id(session_id: &str) -> String {
+    session_id.chars().take(6).collect()
+}
+
+fn human_duration_seconds(seconds: u64) -> String {
+    if seconds < 60 {
+        return format!("{seconds}s");
+    }
+    let minutes = seconds / 60;
+    if minutes < 60 {
+        return format!("{minutes}m {}s", seconds % 60);
+    }
+    format!("{}h {}m", minutes / 60, minutes % 60)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -379,6 +731,15 @@ pub struct GovernanceSupersedeResponse {
     pub chain: Option<Value>,
     pub policy_applied: Option<String>,
     pub policy_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<ClaimLockWarning>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClaimLockWarning {
+    pub code: String,
+    pub message: String,
+    pub holder: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -416,6 +777,32 @@ pub struct ProtocolError {
     pub code: String,
     pub message: String,
     pub retryable: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProtocolErrorCode {
+    /// Admin/UI protocol methods are reachable through the daemon socket, CLI,
+    /// and dashboard only. Stream G §5.7 and system-v0.2 §19 require MCP to
+    /// reject Reality Check requests with this stable protocol code.
+    MethodNotAllowedOnMcp,
+}
+
+impl ProtocolErrorCode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::MethodNotAllowedOnMcp => "method_not_allowed_on_mcp",
+        }
+    }
+}
+
+impl ProtocolError {
+    pub fn method_not_allowed_on_mcp() -> Self {
+        Self {
+            code: ProtocolErrorCode::MethodNotAllowedOnMcp.as_str().to_owned(),
+            message: "request payload is not allowed through the MCP forwarder".to_owned(),
+            retryable: false,
+        }
+    }
 }
 
 fn encode_json_line<T>(value: &T) -> serde_json::Result<String>

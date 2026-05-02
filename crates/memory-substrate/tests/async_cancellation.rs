@@ -50,6 +50,7 @@ fn sample_memory(id: &str) -> Memory {
             scope: Scope::Agent,
             summary: "cancel".to_string(),
             confidence: 1.0,
+            original_confidence: None,
             trust_level: TrustLevel::Trusted,
             sensitivity: Sensitivity::Internal,
             status: MemoryStatus::Active,

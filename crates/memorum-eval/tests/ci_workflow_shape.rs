@@ -1,0 +1,55 @@
+use std::fs;
+use std::path::PathBuf;
+
+#[test]
+fn stream_h_eval_workflow_matches_ci_contract() {
+    let workflow = read_workflow();
+
+    assert_contains(&workflow, "v[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+", "release-candidate tag pattern");
+    assert_contains(&workflow, r#"cron: "0 3 * * *""#, "daily cron schedule");
+    assert_contains(&workflow, "workflow_dispatch:", "manual dispatch trigger");
+    assert_contains(&workflow, "harness_mode:", "manual harness_mode input");
+
+    assert_contains(&workflow, r#"jq -r '.failed' "$RESULT_FILE""#, "failed-count jq expression");
+    assert_contains(&workflow, r#"[ "$FAILED" != "0" ]"#, "failed-count comparison");
+    assert_contains(&workflow, ".number", "failure diagnostic test number field");
+    assert_contains(&workflow, ".failure_detail", "failure diagnostic detail field");
+    assert_not_contains(&workflow, ".test_id", "obsolete diagnostic test_id field");
+    assert_not_contains(&workflow, ".failure_reason", "obsolete diagnostic failure_reason field");
+
+    assert_contains(&workflow, r#"jq -r '.partial // false' "$RESULT_FILE""#, "partial-run jq expression");
+    assert_contains(
+        &workflow,
+        r#"jq -r '.missing_credentials // [] | join(", ")' "$RESULT_FILE""#,
+        "missing-credentials jq expression",
+    );
+
+    assert_contains(
+        &workflow,
+        "MEMORUM_EVAL_CLAUDE_KEY: ${{ secrets.MEMORUM_EVAL_CLAUDE_KEY }}",
+        "Claude auth secret injection",
+    );
+    assert_contains(
+        &workflow,
+        "MEMORUM_EVAL_CODEX_KEY: ${{ secrets.MEMORUM_EVAL_CODEX_KEY }}",
+        "Codex auth secret injection",
+    );
+    assert_contains(&workflow, "uses: actions/upload-artifact@v4", "artifact upload step");
+    assert_contains(&workflow, "if: always()", "unconditional artifact upload");
+}
+
+fn read_workflow() -> String {
+    fs::read_to_string(workflow_path()).expect("Stream H eval workflow should exist")
+}
+
+fn workflow_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.github/workflows/stream-h-eval.yml")
+}
+
+fn assert_contains(workflow: &str, expected: &str, label: &str) {
+    assert!(workflow.contains(expected), "workflow should contain {label}: {expected}");
+}
+
+fn assert_not_contains(workflow: &str, unexpected: &str, label: &str) {
+    assert!(!workflow.contains(unexpected), "workflow should not contain {label}: {unexpected}");
+}

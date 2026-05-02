@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS memories(
   canonical_namespace_id      TEXT,
   summary                     TEXT NOT NULL,
   confidence                  REAL NOT NULL,
+  original_confidence         REAL,
   trust_level                 TEXT NOT NULL,
   sensitivity                 TEXT NOT NULL,
   status                      TEXT NOT NULL,
@@ -58,6 +59,18 @@ CREATE INDEX IF NOT EXISTS idx_memories_review
   ON memories(review_state, requires_user_confirmation);
 CREATE INDEX IF NOT EXISTS idx_memories_path_nocase
   ON memories(path COLLATE NOCASE);
+
+CREATE TABLE IF NOT EXISTS events_log(
+  event_id      TEXT PRIMARY KEY,
+  device        TEXT NOT NULL,
+  seq           INTEGER NOT NULL,
+  kind          TEXT NOT NULL,
+  memory_id     TEXT,
+  ts            TEXT NOT NULL,
+  payload_json  TEXT NOT NULL CHECK (json_valid(payload_json))
+);
+CREATE INDEX IF NOT EXISTS idx_events_log_kind_memory_ts
+  ON events_log(kind, memory_id, ts);
 
 CREATE TABLE IF NOT EXISTS memory_chunks(
   chunk_rowid INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -124,11 +137,12 @@ CREATE TABLE IF NOT EXISTS dropped_embedding_triples(
   PRIMARY KEY(provider, model_ref, dimension)
 );
 
--- Priority auxiliary tables (spec §10.1): tags, aliases, entities, evidence.
+-- Priority auxiliary tables (spec §10.1): tags, aliases, entities, evidence,
+-- supersession.
 -- All foreign-key on DELETE CASCADE so they clean up automatically with
 -- memory row deletes.
--- Deferred: memory_supersession, memory_related, memory_regressions,
--- memory_regression_occurrences — add when query paths need them.
+-- Deferred: memory_related, memory_regressions, memory_regression_occurrences
+-- — add when query paths need them.
 
 CREATE TABLE IF NOT EXISTS memory_tags(
   memory_id  TEXT NOT NULL,
@@ -174,6 +188,16 @@ CREATE TABLE IF NOT EXISTS memory_evidence(
   PRIMARY KEY(memory_id, evidence_id),
   FOREIGN KEY(memory_id) REFERENCES memories(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS memory_supersession(
+  memory_id     TEXT NOT NULL,
+  supersedes_id TEXT NOT NULL,
+  PRIMARY KEY(memory_id, supersedes_id),
+  FOREIGN KEY(memory_id) REFERENCES memories(id) ON DELETE CASCADE,
+  FOREIGN KEY(supersedes_id) REFERENCES memories(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_memory_supersession_supersedes_id
+  ON memory_supersession(supersedes_id);
 
 INSERT OR IGNORE INTO schema_migrations(version) VALUES (1);
 "#;

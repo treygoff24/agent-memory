@@ -2,10 +2,16 @@
 
 pub mod cli;
 pub mod client;
+pub mod coordination_config;
 pub mod dream;
 pub mod handlers;
 pub mod mcp;
+pub mod notifications;
 pub mod protocol;
+pub mod reality_check;
 pub mod recall;
 pub mod server;
+pub mod slash_commands;
+pub mod state;
+pub mod trust_artifact;
 pub mod workers;

@@ -12,7 +12,7 @@ use crate::index::schema::SCHEMA_SQL;
 /// Spec §10.1 makes `schema_migrations` the canonical version row; opening a
 /// database whose `MAX(version)` exceeds this constant returns
 /// [`OpenError::IndexSchemaVersionUnsupported`] without applying any DDL.
-pub const INDEX_SUPPORTED_SCHEMA_VERSION: u32 = 3;
+pub const INDEX_SUPPORTED_SCHEMA_VERSION: u32 = 4;
 
 /// Open and migrate an index database, applying spec §10.1 pragmas before any DDL.
 pub fn open_index(path: &Path) -> Result<Connection, OpenError> {
@@ -24,6 +24,7 @@ pub fn open_index(path: &Path) -> Result<Connection, OpenError> {
     apply_pragmas(&connection).map_err(sqlite_to_open)?;
     connection.execute_batch(SCHEMA_SQL).map_err(sqlite_to_open)?;
     migrate_schema(&mut connection)?;
+    ensure_events_log_identity_schema(&mut connection).map_err(sqlite_to_open)?;
     Ok(connection)
 }
 
@@ -55,6 +56,9 @@ fn migrate_schema(connection: &mut Connection) -> Result<(), OpenError> {
     }
     if found < 3 {
         migrate_v3(connection).map_err(sqlite_to_open)?;
+    }
+    if found < 4 {
+        migrate_v4(connection).map_err(sqlite_to_open)?;
     }
     Ok(())
 }
@@ -116,6 +120,89 @@ SET max_scope =
     )?;
     tx.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (?1)", params![3_i64])?;
     tx.commit()
+}
+
+fn migrate_v4(connection: &mut Connection) -> rusqlite::Result<()> {
+    let tx = connection.transaction()?;
+    add_column_if_missing(&tx, "original_confidence", "REAL")?;
+    tx.execute_batch(
+        r#"
+CREATE TABLE IF NOT EXISTS events_log(
+  event_id      TEXT PRIMARY KEY,
+  device        TEXT NOT NULL,
+  seq           INTEGER NOT NULL,
+  kind          TEXT NOT NULL,
+  memory_id     TEXT,
+  ts            TEXT NOT NULL,
+  payload_json  TEXT NOT NULL CHECK (json_valid(payload_json))
+);
+CREATE INDEX IF NOT EXISTS idx_events_log_kind_memory_ts
+  ON events_log(kind, memory_id, ts);
+
+CREATE TABLE IF NOT EXISTS memory_supersession(
+  memory_id     TEXT NOT NULL,
+  supersedes_id TEXT NOT NULL,
+  PRIMARY KEY(memory_id, supersedes_id),
+  FOREIGN KEY(memory_id) REFERENCES memories(id) ON DELETE CASCADE,
+  FOREIGN KEY(supersedes_id) REFERENCES memories(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_memory_supersession_supersedes_id
+  ON memory_supersession(supersedes_id);
+
+UPDATE memories
+SET original_confidence = json_extract(frontmatter_json, '$.original_confidence')
+WHERE json_type(frontmatter_json, '$.original_confidence') IN ('integer', 'real');
+
+INSERT OR IGNORE INTO memory_supersession(memory_id, supersedes_id)
+SELECT memories.id, superseded.value
+FROM memories, json_each(memories.frontmatter_json, '$.supersedes') AS superseded
+WHERE superseded.value IS NOT NULL
+  AND EXISTS (SELECT 1 FROM memories AS target WHERE target.id = superseded.value);
+"#,
+    )?;
+    tx.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (?1)", params![4_i64])?;
+    tx.commit()
+}
+
+fn ensure_events_log_identity_schema(connection: &mut Connection) -> rusqlite::Result<()> {
+    if !events_log_needs_identity_migration(connection)? {
+        return Ok(());
+    }
+
+    let tx = connection.transaction()?;
+    tx.execute_batch(
+        r#"
+ALTER TABLE events_log RENAME TO events_log_legacy_seq_key;
+
+CREATE TABLE events_log(
+  event_id      TEXT PRIMARY KEY,
+  device        TEXT NOT NULL,
+  seq           INTEGER NOT NULL,
+  kind          TEXT NOT NULL,
+  memory_id     TEXT,
+  ts            TEXT NOT NULL,
+  payload_json  TEXT NOT NULL CHECK (json_valid(payload_json))
+);
+
+DROP TABLE events_log_legacy_seq_key;
+
+CREATE INDEX IF NOT EXISTS idx_events_log_kind_memory_ts
+  ON events_log(kind, memory_id, ts);
+"#,
+    )?;
+    tx.commit()
+}
+
+fn events_log_needs_identity_migration(connection: &Connection) -> rusqlite::Result<bool> {
+    let mut stmt = connection.prepare("PRAGMA table_info(events_log)")?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(1)?;
+        if name == "event_id" {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn add_column_if_missing(tx: &Transaction<'_>, column: &'static str, definition: &'static str) -> rusqlite::Result<()> {

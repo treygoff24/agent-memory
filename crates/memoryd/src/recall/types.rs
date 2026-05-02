@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 pub const STREAM_E_POLICY: &str = "stream-e-v0.5";
@@ -39,11 +40,23 @@ pub struct DeltaRequest {
     pub budget_tokens: Option<usize>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeltaResponse {
     pub delta_block: String,
     pub budget_used_tokens: usize,
     pub guidance: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeltaPeerDelivery {
+    pub delivered_at: DateTime<Utc>,
+    pub from_harness: String,
+    pub from_session_id: String,
+    pub to_harness: String,
+    pub to_session_id: String,
+    pub memory_id: String,
+    pub relevance: f64,
+    pub summary: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,7 +76,17 @@ pub struct ProjectBinding {
     pub canonical_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub concurrent_session_mode: Option<ConcurrentSessionMode>,
     pub resolved_via: ProjectBindingSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConcurrentSessionMode {
+    Collaborative,
+    Minimal,
+    Default,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -1,5 +1,7 @@
-use memoryd::mcp::{manifest, request_from_args, ObserveKindRequest, ToolName, ToolRequest};
-use memoryd::protocol::{ObserveResponse, ObserveTarget};
+use std::path::Path;
+
+use memoryd::mcp::{forward_payload_to_daemon, manifest, request_from_args, ObserveKindRequest, ToolName, ToolRequest};
+use memoryd::protocol::{ObserveResponse, ObserveTarget, PeerHeartbeat, RequestPayload, ResponseResult};
 
 #[test]
 fn mcp_manifest_declares_exact_agent_facing_tools_in_order() {
@@ -45,6 +47,12 @@ fn mcp_manifest_excludes_admin_tools_and_provides_descriptors() {
         "memory_dream_status",
         "memory_dream_enable",
         "memory_dream_disable",
+        "memory_web_enable",
+        "memory_web_disable",
+        "memory_web_status",
+        "memory_reality_check_run",
+        "memory_reality_check_skip",
+        "memory_reality_check_snooze",
     ] {
         assert!(
             manifest.tools.iter().all(|tool| tool.name != admin_tool),
@@ -56,6 +64,49 @@ fn mcp_manifest_excludes_admin_tools_and_provides_descriptors() {
         assert!(!tool.description.trim().is_empty(), "{} needs a description", tool.name);
         assert!(tool.input_schema.is_object(), "{} needs an object input schema", tool.name);
         assert!(tool.output_schema.is_object(), "{} needs an object output schema", tool.name);
+    }
+}
+
+#[tokio::test]
+async fn mcp_forward_rejects_admin_web_payloads_before_socket_io() {
+    for payload in [
+        RequestPayload::WebEnable { port: 7137, socket_path: "/tmp/memoryd.sock".to_owned() },
+        RequestPayload::WebDisable,
+        RequestPayload::WebStatus,
+    ] {
+        let response =
+            forward_payload_to_daemon(Path::new("/tmp/memoryd-definitely-missing.sock"), "mcp-test", payload)
+                .await
+                .expect("admin web payload rejection is local");
+
+        match response.result {
+            ResponseResult::Error(error) => assert_eq!(error.code, "method_not_allowed_on_mcp"),
+            other => panic!("expected MCP method-not-allowed error, got {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn mcp_forward_rejects_peer_heartbeat_before_socket_io() {
+    let payload = RequestPayload::PeerHeartbeat(PeerHeartbeat {
+        session_id: "sess_mcp_forbidden".to_owned(),
+        device_id: None,
+        harness: "codex".to_owned(),
+        project_binding: None,
+        namespace: "project:agent-memory".to_owned(),
+        salient_entities: Vec::new(),
+        salient_paths: Vec::new(),
+        capabilities: Vec::new(),
+        started_at: None,
+        claim_locks_held: Vec::new(),
+    });
+    let response = forward_payload_to_daemon(Path::new("/tmp/memoryd-definitely-missing.sock"), "mcp-test", payload)
+        .await
+        .expect("peer heartbeat rejection is local");
+
+    match response.result {
+        ResponseResult::Error(error) => assert_eq!(error.code, "method_not_allowed_on_mcp"),
+        other => panic!("expected MCP method-not-allowed error, got {other:?}"),
     }
 }
 

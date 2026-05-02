@@ -14,7 +14,9 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::{DateTime, Duration, Utc};
 use serde::Serialize;
 
-use crate::error::{OpenError, ReadError, SubstrateResult, VectorError, WriteFailure, WriteFailureKind};
+use crate::error::{
+    OpenError, ReadError, SubstrateError, SubstrateResult, VectorError, WriteFailure, WriteFailureKind,
+};
 use crate::events::{
     append_event, append_event_best_effort, decode_line, read_events, reserve_event_sequence,
     sync_event_sequence_state, Event, EventKind,
@@ -354,7 +356,7 @@ impl Substrate {
             kind: write_event_kind,
             crc32c: 0,
         };
-        if let Err(err) = append_event(&self.event_log, &event) {
+        if let Err(err) = self.append_event_and_mirror(&event, false) {
             let pending = PendingEventOp {
                 op_id: operation_id.clone(),
                 event_id: event.id.clone(),
@@ -555,20 +557,9 @@ impl Substrate {
                 WriteFailureKind::Io(err.to_string())
             },
         })?;
-        let mut indexed_memory = request.metadata_memory.clone();
-        indexed_memory.path = Some(path.clone());
-        let metadata_only =
-            match request.safe_index_projection.as_ref().and_then(|projection| projection.safe_body.as_ref()) {
-                Some(safe_body) => {
-                    indexed_memory.body = safe_body.clone();
-                    indexed_memory.frontmatter.retrieval_policy.index_body = true;
-                    false
-                }
-                None => {
-                    indexed_memory.body.clear();
-                    true
-                }
-            };
+        let mut stored_for_index = stored_memory.clone();
+        stored_for_index.path = Some(path.clone());
+        let (indexed_memory, metadata_only) = encrypted_index_projection(&stored_for_index);
         self.index
             .lock()
             .map_err(|err| WriteFailure {
@@ -636,7 +627,7 @@ impl Substrate {
             kind: encrypted_event_kind,
             crc32c: 0,
         };
-        if let Err(err) = append_event(&self.event_log, &event) {
+        if let Err(err) = self.append_event_and_mirror(&event, false) {
             let pending = PendingEventOp {
                 op_id: operation_id.clone(),
                 event_id: event.id.clone(),
@@ -688,6 +679,105 @@ impl Substrate {
             repair_required: None,
             operation_id,
         })
+    }
+
+    /// Update encrypted memory metadata without decrypting or replacing the ciphertext body.
+    pub async fn update_encrypted_memory_metadata(
+        &self,
+        id: &MemoryId,
+        mutate: impl FnOnce(&mut Memory),
+    ) -> Result<(), WriteFailure> {
+        let operation_id = new_operation_id();
+        let outcome = WriteOutcome::not_committed(operation_id.clone(), self.durability);
+        let envelope = self.read_memory_envelope(id).await.map_err(|err| WriteFailure {
+            outcome: outcome.clone(),
+            kind: WriteFailureKind::Validation(err.to_string()),
+        })?;
+        if matches!(envelope.content, MemoryContent::Plaintext(_)) {
+            return Err(WriteFailure {
+                outcome,
+                kind: WriteFailureKind::Validation("encrypted metadata update requires encrypted content".to_string()),
+            });
+        }
+
+        let mut memory = envelope.metadata;
+        let path = encrypted_metadata_path(&memory).map_err(|message| WriteFailure {
+            outcome: outcome.clone(),
+            kind: WriteFailureKind::Validation(message),
+        })?;
+        let current_hash = std::fs::read(self.roots.repo.join(path.as_path()))
+            .map(|bytes| crate::markdown::hash_bytes(&bytes))
+            .map_err(|err| WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::Io(err.to_string()) })?;
+        let preserved_body = memory.body.clone();
+        let preserved_encryption = memory.frontmatter.extras.get("encryption").cloned();
+
+        mutate(&mut memory);
+
+        memory.path = Some(path.clone());
+        memory.body = preserved_body;
+        match preserved_encryption {
+            Some(encryption) => {
+                memory.frontmatter.extras.insert("encryption".to_string(), encryption);
+            }
+            None => {
+                memory.frontmatter.extras.remove("encryption");
+            }
+        }
+        validate_frontmatter(&memory.frontmatter).map_err(|err| WriteFailure {
+            outcome: outcome.clone(),
+            kind: WriteFailureKind::Validation(err.to_string()),
+        })?;
+        let final_hash = atomic_write(crate::markdown::AtomicWrite {
+            repo: &self.roots.repo,
+            memory: &memory,
+            expected_base_hash: Some(&current_hash),
+            mode: WriteMode::ReplaceExisting,
+            operation_id: &operation_id,
+            durability: self.durability,
+            suppression: Some(&self.suppression),
+            allow_encrypted_namespace: true,
+        })?;
+        let (indexed_memory, metadata_only) = encrypted_index_projection(&memory);
+        self.index
+            .lock()
+            .map_err(|err| WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::Io(err.to_string()) })?
+            .upsert_memory(&indexed_memory, metadata_only)
+            .map_err(|_err| {
+                let pending = PendingEncryptedIndexOp {
+                    op_id: operation_id.clone(),
+                    indexed_memory: indexed_memory.clone(),
+                    metadata_only,
+                    expected_ciphertext_hash: final_hash.clone(),
+                    enqueued_at: Utc::now(),
+                    attempts: 0,
+                    last_error: None,
+                };
+                let (repair_required, kind) = if enqueue_pending_encrypted_index(&self.roots.runtime, &pending).is_ok()
+                {
+                    (Some(RepairRequired::PendingIndex), WriteFailureKind::IndexAfterCommitFailed)
+                } else if write_startup_marker(&self.roots.runtime, "pending encrypted metadata index enqueue failed")
+                    .is_ok()
+                {
+                    (Some(RepairRequired::FullStartupScan), WriteFailureKind::RepairQueueFailed)
+                } else {
+                    (
+                        Some(RepairRequired::OperatorRequired("repair state not durable".to_string())),
+                        WriteFailureKind::RepairStateNotDurable,
+                    )
+                };
+                WriteFailure {
+                    outcome: WriteOutcome {
+                        committed: true,
+                        indexed: false,
+                        event_recorded: false,
+                        durability: self.durability,
+                        repair_required,
+                        operation_id: operation_id.clone(),
+                    },
+                    kind,
+                }
+            })?;
+        Ok(())
     }
 
     /// Append a Stream F substrate fragment to the per-device JSONL series.
@@ -969,7 +1059,7 @@ impl Substrate {
             kind: EventKind::TombstoneCommitted { id: request.id },
             crc32c: 0,
         };
-        if let Err(err) = append_event(&self.event_log, &event) {
+        if let Err(err) = self.append_event_and_mirror(&event, false) {
             let pending = PendingEventOp {
                 op_id: operation_id.clone(),
                 event_id: event.id.clone(),
@@ -1052,6 +1142,17 @@ impl Substrate {
     /// Query recall-index rows without hydrating memory envelopes.
     pub async fn query_recall_index(&self, query: RecallIndexQuery) -> SubstrateResult<Vec<RecallIndexRow>> {
         self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.query_recall_index(&query)
+    }
+
+    /// Query recall-index rows, including encrypted metadata-only rows.
+    pub async fn query_recall_index_including_metadata_only(
+        &self,
+        query: RecallIndexQuery,
+    ) -> SubstrateResult<Vec<RecallIndexRow>> {
+        self.index
+            .lock()
+            .map_err(|err| OpenError::InvalidRoots(err.to_string()))?
+            .query_recall_index_including_metadata_only(&query)
     }
 
     /// Query chunks.
@@ -1163,6 +1264,48 @@ impl Substrate {
         read_events(&self.event_log)
     }
 
+    /// Rebuild the derived SQLite events-log mirror from canonical JSONL logs.
+    pub fn doctor_reindex_events_log(&self) -> SubstrateResult<usize> {
+        let events = self.read_all_event_logs().map_err(|source| SubstrateError::Io {
+            path: self.roots.repo.join("events").display().to_string(),
+            source,
+        })?;
+        self.index
+            .lock()
+            .map_err(|err| OpenError::InvalidRoots(err.to_string()))?
+            .rebuild_events_log_mirror(&events)?;
+        Ok(events.len())
+    }
+
+    /// Return derived SQLite mirror lag against canonical JSONL event logs.
+    pub fn events_log_mirror_health(&self) -> SubstrateResult<EventsLogMirrorHealth> {
+        let events = self.read_all_event_logs().map_err(|source| SubstrateError::Io {
+            path: self.roots.repo.join("events").display().to_string(),
+            source,
+        })?;
+        self.index
+            .lock()
+            .map_err(|err| OpenError::InvalidRoots(err.to_string()))?
+            .events_log_mirror_health(&events)
+            .map_err(Into::into)
+    }
+
+    /// Record a best-effort observability event through Stream A's central
+    /// sequence allocator and incremental SQLite mirror path.
+    pub fn record_event_best_effort(&self, kind: EventKind) -> std::io::Result<()> {
+        let device = DeviceId::try_new(&self.device_id)
+            .map_err(|err| std::io::Error::other(format!("invalid device_id in Substrate: {err}")))?;
+        sync_event_sequence_state(&self.roots.runtime, &self.event_log, &device)?;
+        let event = self.build_recorded_event(kind, &new_operation_id())?;
+        self.best_effort_event_seq.fetch_max(event.seq.saturating_add(1), Ordering::Relaxed);
+        self.append_event_and_mirror(&event, true)
+    }
+
+    /// Record that a memory was included in a rendered recall response.
+    pub fn record_recall_hit(&self, id: MemoryId) -> std::io::Result<()> {
+        self.record_event_best_effort(EventKind::RecallHit { id, recalled_at: Utc::now() })
+    }
+
     /// Record that encrypted content was intentionally revealed without
     /// persisting the revealed plaintext.
     pub fn record_encrypted_content_revealed(&self, id: MemoryId, reason: String) -> std::io::Result<()> {
@@ -1196,6 +1339,12 @@ impl Substrate {
             .map_err(|err| OpenError::OperatorRepairRequired(err.to_string()))?;
         full_reindex_from_repo(&roots.repo, &mut index)
             .map_err(|err| OpenError::OperatorRepairRequired(err.to_string()))?;
+        match read_all_event_logs_from_repo(&roots.repo).and_then(|events| {
+            index.rebuild_events_log_mirror(&events).map_err(|err| std::io::Error::other(err.to_string()))
+        }) {
+            Ok(()) => {}
+            Err(err) => tracing::warn!("events_log SQLite mirror rebuild during open failed: {err}"),
+        }
         Ok(Self {
             roots,
             device_id,
@@ -1315,11 +1464,64 @@ impl Substrate {
                 kind,
                 crc32c: 0,
             };
-            return append_event_best_effort(&self.event_log, &event);
+            return self.append_event_and_mirror(&event, true);
         }
         let event = self.build_recorded_event(kind, operation_id)?;
-        append_event(&self.event_log, &event)
+        self.append_event_and_mirror(&event, false)
     }
+
+    fn append_event_and_mirror(&self, event: &Event, best_effort: bool) -> std::io::Result<()> {
+        if best_effort {
+            append_event_best_effort(&self.event_log, event)?;
+        } else {
+            append_event(&self.event_log, event)?;
+        }
+        self.mirror_event_fail_soft(event);
+        Ok(())
+    }
+
+    fn mirror_event_fail_soft(&self, event: &Event) {
+        match self.index.lock() {
+            Ok(mut index) => {
+                if let Err(err) = index.mirror_event(event) {
+                    tracing::warn!(event_id = event.id.as_str(), "events_log SQLite mirror write failed: {err}");
+                }
+            }
+            Err(err) => {
+                tracing::warn!(event_id = event.id.as_str(), "events_log SQLite mirror lock failed: {err}");
+            }
+        }
+    }
+
+    fn read_all_event_logs(&self) -> std::io::Result<Vec<Event>> {
+        read_all_event_logs_from_repo(&self.roots.repo)
+    }
+}
+
+fn read_all_event_logs_from_repo(repo: &std::path::Path) -> std::io::Result<Vec<Event>> {
+    let events_dir = repo.join("events");
+    if !events_dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut paths = std::fs::read_dir(&events_dir)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::io::Result<Vec<_>>>()?;
+    paths.sort();
+
+    let mut events = Vec::new();
+    for path in paths {
+        if path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
+            events.extend(read_events(&path)?);
+        }
+    }
+    events.sort_by(|left, right| {
+        left.device
+            .as_str()
+            .cmp(right.device.as_str())
+            .then_with(|| left.seq.cmp(&right.seq))
+            .then_with(|| left.id.as_str().cmp(right.id.as_str()))
+    });
+    Ok(events)
 }
 
 fn best_effort_event_seq_start(event_log: &std::path::Path, device: &DeviceId) -> u64 {
@@ -1604,6 +1806,40 @@ fn encrypted_ciphertext_path(memory: &Memory) -> Result<RepoPath, String> {
     RepoPath::try_new(encrypted.to_string_lossy().replace('\\', "/"))
 }
 
+fn encrypted_metadata_path(memory: &Memory) -> Result<RepoPath, String> {
+    let Some(path) = memory.path.clone() else {
+        return Err(format!("encrypted memory {} is missing a repo path", memory.frontmatter.id.as_str()));
+    };
+    if !path.is_safe_relative() {
+        return Err(format!("invalid repo path: {}", path.as_str()));
+    }
+    if !path.as_str().starts_with("encrypted/") {
+        return Err(format!("encrypted metadata update cannot target plaintext path: {}", path.as_str()));
+    }
+    Ok(path)
+}
+
+fn encrypted_index_projection(stored_memory: &Memory) -> (Memory, bool) {
+    let mut indexed_memory = stored_memory.clone();
+    match stored_memory
+        .frontmatter
+        .extras
+        .get("index_projection")
+        .and_then(|projection| projection.get("safe_body"))
+        .and_then(serde_json::Value::as_str)
+    {
+        Some(safe_body) => {
+            indexed_memory.body = safe_body.to_owned();
+            indexed_memory.frontmatter.retrieval_policy.index_body = true;
+            (indexed_memory, false)
+        }
+        None => {
+            indexed_memory.body.clear();
+            (indexed_memory, true)
+        }
+    }
+}
+
 /// Load the device id from `local-device.yaml`.
 ///
 /// Per Q4, `git::adopt_clone` is the sole authority for minting
@@ -1679,6 +1915,7 @@ fn placeholder_frontmatter(id: &MemoryId) -> Frontmatter {
         scope: Scope::Agent,
         summary: String::new(),
         confidence: 1.0,
+        original_confidence: None,
         trust_level: TrustLevel::Trusted,
         sensitivity: Sensitivity::Confidential,
         status: MemoryStatus::Active,

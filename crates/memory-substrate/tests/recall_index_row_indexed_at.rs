@@ -1,0 +1,116 @@
+use chrono::{Duration, TimeZone, Utc};
+use memory_substrate::index::{open_index, Index};
+use memory_substrate::{
+    Author, AuthorKind, Frontmatter, Memory, MemoryId, MemoryStatus, MemoryType, RecallIndexQuery, RepoPath,
+    RetrievalPolicy, Scope, Sensitivity, Source, SourceKind, TrustLevel, WritePolicy,
+};
+
+#[test]
+fn recall_index_row_hydrates_indexed_at_from_local_ingest_time() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let mut index = Index::new(open_index(&temp.path().join("index.sqlite")).expect("open index"));
+    let authored_at = Utc.with_ymd_and_hms(2026, 4, 1, 1, 2, 3).single().expect("fixture time");
+    let before = Utc::now() - Duration::seconds(1);
+
+    index
+        .upsert_memory(&sample_memory("mem_20260501_a1b2c3d4e5f60718_000301", authored_at), false)
+        .expect("upsert memory");
+    let after = Utc::now() + Duration::seconds(1);
+
+    let rows = index.query_recall_index(&RecallIndexQuery::default()).expect("query recall index");
+    assert_eq!(rows.len(), 1);
+    assert_ne!(rows[0].indexed_at, rows[0].updated_at);
+    assert!(rows[0].indexed_at >= before, "indexed_at should be local ingest time");
+    assert!(rows[0].indexed_at <= after, "indexed_at should be local ingest time");
+}
+
+#[test]
+fn recall_index_writes_observed_at_from_frontmatter_extra_or_created_at() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let mut index = Index::new(open_index(&temp.path().join("index.sqlite")).expect("open index"));
+    let created_at = Utc.with_ymd_and_hms(2026, 4, 1, 1, 2, 3).single().expect("fixture time");
+    let observed_at = Utc.with_ymd_and_hms(2026, 5, 1, 1, 2, 3).single().expect("fixture time");
+    let mut observed = sample_memory("mem_20260501_a1b2c3d4e5f60718_000302", created_at);
+    observed.frontmatter.extras.insert("observed_at".to_string(), serde_json::Value::String(observed_at.to_rfc3339()));
+    let mut fallback = sample_memory("mem_20260501_a1b2c3d4e5f60718_000303", created_at);
+    fallback.body = "fallback body".to_string();
+
+    index.upsert_memory(&observed, false).expect("upsert observed");
+    index.upsert_memory(&fallback, false).expect("upsert fallback");
+
+    let conn = index.connection();
+    let observed_value: String = conn
+        .query_row("SELECT observed_at FROM memories WHERE id=?1", [observed.frontmatter.id.as_str()], |row| row.get(0))
+        .expect("observed_at row");
+    let fallback_value: String = conn
+        .query_row("SELECT observed_at FROM memories WHERE id=?1", [fallback.frontmatter.id.as_str()], |row| row.get(0))
+        .expect("fallback observed_at row");
+    assert_eq!(observed_value, observed_at.to_rfc3339());
+    assert_eq!(fallback_value, created_at.to_rfc3339());
+}
+
+fn sample_memory(id: &str, updated_at: chrono::DateTime<Utc>) -> Memory {
+    Memory {
+        frontmatter: Frontmatter {
+            schema_version: 1,
+            id: MemoryId::new(id),
+            memory_type: MemoryType::Pattern,
+            scope: Scope::Agent,
+            summary: "indexed_at fixture".to_string(),
+            confidence: 0.7,
+            original_confidence: None,
+            trust_level: TrustLevel::Trusted,
+            sensitivity: Sensitivity::Internal,
+            status: MemoryStatus::Active,
+            created_at: updated_at,
+            updated_at,
+            author: Author {
+                kind: AuthorKind::System,
+                user_handle: None,
+                harness: None,
+                harness_version: None,
+                session_id: None,
+                subagent_id: None,
+                phase: None,
+                component: Some("test".to_string()),
+            },
+            namespace: None,
+            canonical_namespace_id: None,
+            tags: Vec::new(),
+            entities: Vec::new(),
+            aliases: Vec::new(),
+            source: Source {
+                kind: SourceKind::Import,
+                reference: None,
+                harness: None,
+                harness_version: None,
+                session_id: None,
+                subagent_id: None,
+                device: None,
+            },
+            evidence: Vec::new(),
+            requires_user_confirmation: false,
+            review_state: None,
+            supersedes: Vec::new(),
+            superseded_by: Vec::new(),
+            related: Vec::new(),
+            tombstone_events: Vec::new(),
+            retrieval_policy: RetrievalPolicy {
+                passive_recall: true,
+                max_scope: Scope::Agent,
+                mask_personal_for_synthesis: false,
+                index_body: true,
+                index_embeddings: false,
+            },
+            write_policy: WritePolicy {
+                human_review_required: false,
+                policy_applied: "default-v1".to_string(),
+                expected_base_hash: None,
+            },
+            merge_diagnostics: None,
+            extras: Default::default(),
+        },
+        body: "body".to_string(),
+        path: Some(RepoPath::new(format!("agent/patterns/{id}.md"))),
+    }
+}

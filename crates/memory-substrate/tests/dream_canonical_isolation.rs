@@ -387,6 +387,7 @@ fn memory_frontmatter(id: &str) -> memory_substrate::Frontmatter {
         canonical_namespace_id: None,
         summary: "stream-f-isolation canonical summary".to_string(),
         confidence: 1.0,
+        original_confidence: None,
         trust_level: TrustLevel::Trusted,
         sensitivity: Sensitivity::Internal,
         status: MemoryStatus::Active,

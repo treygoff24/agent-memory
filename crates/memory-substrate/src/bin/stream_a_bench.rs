@@ -314,6 +314,7 @@ fn sample_memory(index: usize, seed: u64) -> Memory {
             scope: Scope::Agent,
             summary: format!("bench fixture {index}"),
             confidence: 1.0,
+            original_confidence: None,
             trust_level: TrustLevel::Trusted,
             sensitivity: Sensitivity::Internal,
             status: MemoryStatus::Active,

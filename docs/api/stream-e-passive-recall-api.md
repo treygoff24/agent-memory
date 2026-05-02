@@ -152,6 +152,22 @@ Question text is classified with Stream D `safe_plaintext_fragment` before emiss
 
 Recent-window suppressions are not currently represented in `dream_question_omitted_total`: Stream F v0.2 enumerates the stable status keys below and does not define a dedicated `recent_window` reason. The suppression remains observable in the rendered `<pending-attention>` output and resets with the in-process ring on daemon restart.
 
+## Stream G Reality Check pending attention
+
+Stream G adds one fixed pending-attention item when the weekly Reality Check is due and not snoozed:
+
+```xml
+<pending-attention>
+  <item kind="reality_check_due" count="1">Weekly Reality Check is ready — run `memoryd reality-check run` or open TUI panel 8.</item>
+</pending-attention>
+```
+
+Shorthand references to `<pending-attention kind="reality_check_due">` mean this item inside the existing `<pending-attention>` block; the shipped XML shape does not add attributes to the block itself.
+
+The text is fixed and contains no memory title, body, entity name, or score. It emits at most once per 7-day window and is suppressed while `memoryd reality-check snooze` is active for the current week.
+
+The item counts against Stream E's existing pending-attention caps: at most 2 items per scope and 6 total. If the 6-total cap is already full with higher-priority pending-attention items, `reality_check_due` is omitted and counted in the section's omitted count; the `stream-e-v0.5` XML version string does not change.
+
 ## Status counters
 
 `StatusResponse.recall` is always present on new daemon status responses and is additive for older clients.

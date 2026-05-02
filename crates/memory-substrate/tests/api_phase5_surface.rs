@@ -272,6 +272,7 @@ fn sample_memory(id: &str) -> Memory {
             scope: Scope::Agent,
             summary: format!("phase 5 fixture {id}"),
             confidence: 1.0,
+            original_confidence: None,
             trust_level: TrustLevel::Trusted,
             sensitivity: Sensitivity::Internal,
             status: MemoryStatus::Active,

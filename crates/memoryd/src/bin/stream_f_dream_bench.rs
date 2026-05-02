@@ -746,6 +746,7 @@ fn bench_memory(index: usize, scope: Scope, canonical_project_id: Option<&str>) 
             scope,
             summary: format!("Stream F deterministic benchmark memory {index} references auth rotation."),
             confidence: 0.85,
+            original_confidence: None,
             trust_level: TrustLevel::Trusted,
             sensitivity: Sensitivity::Internal,
             status,

@@ -9,7 +9,7 @@ use crate::client;
 pub use crate::protocol::ObserveKind as ObserveKindRequest;
 use crate::protocol::{
     default_observe_cwd, default_observe_harness, default_observe_session_id, ObserveKind, RequestPayload,
-    ResponseEnvelope,
+    ResponseEnvelope, ResponseResult,
 };
 pub use crate::recall::StartupRequest;
 
@@ -173,6 +173,11 @@ pub fn args_from_request(request: &ToolRequest) -> Result<Value, serde_json::Err
 ///   `MemoryNote`    → `RequestPayload::WriteNote`
 ///   `MemoryObserve` → `RequestPayload::Observe`
 ///   `MemoryStartup` → `RequestPayload::Startup`
+///
+/// Admin/UI daemon payloads are rejected before socket I/O. Stream G adds
+/// `RealityCheck` and trust artifact lookup; Stream I peer-state payloads and
+/// Stream H test-injection payloads will reuse the same
+/// `method_not_allowed_on_mcp` error.
 pub async fn forward_to_daemon(
     socket_path: &Path,
     id: impl Into<String>,
@@ -212,7 +217,30 @@ pub async fn forward_to_daemon(
         ToolRequest::MemoryStartup(args) => RequestPayload::Startup(args),
     };
 
-    client::request(socket_path, id, payload).await
+    forward_payload_to_daemon(socket_path, id, payload).await
+}
+
+pub async fn forward_payload_to_daemon(
+    socket_path: &Path,
+    id: impl Into<String>,
+    payload: RequestPayload,
+) -> Result<ResponseEnvelope> {
+    let id = id.into();
+    match payload {
+        RequestPayload::TrustArtifact { .. }
+        | RequestPayload::WebEnable { .. }
+        | RequestPayload::WebDisable
+        | RequestPayload::WebStatus
+        | RequestPayload::RealityCheck(_)
+        | RequestPayload::PeerHeartbeat(_)
+        | RequestPayload::PeerStatus
+        | RequestPayload::PeerActivity { .. }
+        | RequestPayload::PeerReleaseLock { .. } => Ok(ResponseEnvelope {
+            id,
+            result: ResponseResult::Error(crate::protocol::ProtocolError::method_not_allowed_on_mcp()),
+        }),
+        payload => client::request(socket_path, id, payload).await,
+    }
 }
 
 impl ToolName {

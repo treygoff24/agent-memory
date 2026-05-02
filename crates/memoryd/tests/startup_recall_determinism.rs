@@ -81,6 +81,7 @@ fn project_binding_serde_and_rendering_match_stream_e_contract() {
     let yaml_override = ProjectBinding {
         canonical_id: "proj_canonical".to_owned(),
         alias: Some("project alias".to_owned()),
+        concurrent_session_mode: None,
         resolved_via: ProjectBindingSource::YamlOverride,
     };
 
@@ -259,6 +260,7 @@ fn session_binding() -> SessionBinding {
         project: Some(ProjectBinding {
             canonical_id: "proj_test".to_owned(),
             alias: Some("agent-memory".to_owned()),
+            concurrent_session_mode: None,
             resolved_via: ProjectBindingSource::GitRemote,
         }),
         namespaces_in_scope: vec!["me".to_owned(), "project:proj_test".to_owned(), "agent".to_owned()],

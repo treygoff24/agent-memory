@@ -88,6 +88,7 @@ async fn mcp_governance_forward_memory_supersede_forwards_to_governed_daemon_pay
                 })),
                 policy_applied: Some("project-standard@v2".to_string()),
                 policy_source: Some("built_in_fallback".to_string()),
+                warning: None,
             }),
         )
     })

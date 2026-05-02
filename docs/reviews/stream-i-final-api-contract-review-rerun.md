@@ -1,0 +1,32 @@
+# Stream I Final API Contract Review Rerun
+
+Status: Changes requested
+
+## Findings
+
+- Severity 2, `crates/memoryd/src/recall/startup.rs:285-289` and `crates/memoryd/src/recall/startup.rs:312-317`, startup peer-update relevance still uses candidate peer rows to make themselves relevant, and then falls back to surfacing project candidates even when the relevance gate returns no entries. `same_device_updates` clones the receiving startup context but calls `add_project_candidate_entities(&mut session, &rows)` before `RelevanceGate::evaluate`, then falls back to `project_startup_insertion` if the gate returns empty. The cross-device path repeats the same pattern. `add_project_candidate_entities` inserts every project candidate row entity into `session.salient_entities` (`crates/memoryd/src/recall/startup.rs:337-348`), and `project_startup_insertion` emits project candidates with `relevance: 1.0` without a relevance score (`crates/memoryd/src/recall/startup.rs:355-376`). This violates the spec's contract that `score(p, s)` uses `s` as the current session context (`docs/specs/stream-i-cross-session-v0.1.md:212-221`), that session salient entities/paths come from startup recall/session inputs rather than peer candidates (`docs/specs/stream-i-cross-session-v0.1.md:292-308`), and that startup injects only peer activity that is salient and within the recency window (`docs/specs/stream-i-cross-session-v0.1.md:392-398`, `docs/specs/stream-i-cross-session-v0.1.md:420-422`). The new regression test only covers a non-project peer row: it calls `write_peer_memory` (`crates/memoryd/tests/startup_recall_mcp.rs:139-154`), and the fixture builds that row as `Scope::Agent` (`crates/memoryd/tests/startup_recall_mcp.rs:550-558`). It does not cover the project-scope code paths that mutate the receiving session context and bypass an empty gate. Suggested fix: remove candidate-derived mutation of `SessionContext` and remove/replace the unconditional `project_startup_insertion` fallback with a path that only emits entries selected by the relevance gate against the precomputed receiving startup context; add same-device and cross-device project-scope negative tests where the peer row shares namespace but no receiving-session entity/path salience.
+- Severity 2, `docs/specs/stream-i-cross-session-v0.1.md:473-482` versus `docs/api/stream-i-cross-session-api.md:37-43` and `crates/memorum-coordination/src/protocol.rs:23-29`, the heartbeat ACK shape is still not reconciled between the normative spec and implemented API. The spec's §6.1 `PeerHeartbeatAck` has `session_id`, `active_level`, `peer_session_count`, and `conflicting_claim_locks` only, while the API docs and DTO include an additional `active_peers: Vec<ActivePeer>`. The production handler now fills `conflicting_claim_locks` at Level 3 (`crates/memoryd/src/handlers.rs:569-593`) by intersecting live locks with heartbeat salient entities (`crates/memoryd/src/handlers.rs:602-645`), and that part is covered by `crates/memoryd/tests/heartbeat_protocol.rs:107-124`; however, the stable contract still has two ACK shapes. Suggested fix: either add `active_peers` to spec §6.1 with its privacy/field-cap invariants, or remove it from the API/DTO before declaring the heartbeat protocol stable.
+
+## Fixes verified
+
+- Peer-presence cap ordering is fixed for the reviewed delta path. `active_peer_presence` filters to overlapping records, sorts descending by `presence_entity_overlap_score`, then applies deterministic harness/session tie-breakers before taking four entries (`crates/memoryd/src/recall/delta.rs:304-322`, `crates/memoryd/src/recall/delta.rs:333-350`). The targeted integration regression asserts that a low-overlap alphabetically-first peer is omitted while four higher-overlap peers are rendered and one capped entry is counted (`crates/memoryd/tests/coordination_integration.rs:175-206`).
+- Production heartbeat conflict population is fixed in `memoryd`: the handler replaces the coordination-crate default empty vector with entity-intersecting active locks for Level 3 (`crates/memoryd/src/handlers.rs:569-645`), and the targeted protocol test verifies a conflicting lock appears in `ack.conflicting_claim_locks` (`crates/memoryd/tests/heartbeat_protocol.rs:107-124`).
+
+## Evidence reviewed
+
+- Specs/API: `docs/specs/stream-i-cross-session-v0.1.md` §§5, 6.1, 7, 8.1, 9; `docs/api/stream-i-cross-session-api.md`; original artifact `docs/reviews/stream-i-final-api-contract-review.md`.
+- Source: `crates/memoryd/src/recall/startup.rs`, `crates/memoryd/src/recall/delta.rs`, `crates/memoryd/src/handlers.rs`, `crates/memorum-coordination/src/gate.rs`, `crates/memorum-coordination/src/presence.rs`, `crates/memorum-coordination/src/protocol.rs`, `crates/memorum-coordination/src/claim_lock.rs`.
+- Tests inspected: `crates/memoryd/tests/startup_recall_mcp.rs`, `crates/memoryd/tests/coordination_integration.rs`, `crates/memoryd/tests/heartbeat_protocol.rs`, `crates/memorum-coordination/tests/presence_unit.rs`, `crates/memoryd/tests/coordination_recall_render.rs`.
+- Commands run:
+  - `git status --short`
+  - `rg -n "PeerHeartbeatAck|conflicting_claim_locks|peer.*presence|presence.*peer|entity overlap|overlap|receiving session|self-match|peer-update|peer update|startup|Heartbeat|ClaimLock|PeerPresence|claim_locks" crates docs/api/stream-i-cross-session-api.md docs/specs/stream-i-cross-session-v0.1.md`
+  - `cargo test -p memoryd --test startup_recall_mcp test_startup_peer_update_requires_receiving_session_salience` (passed: 1 test)
+  - `cargo test -p memoryd --test coordination_integration level3_presence_cap_prefers_highest_entity_overlap_before_tie_breakers` (passed: 1 test)
+  - `cargo test -p memoryd --test heartbeat_protocol level3_heartbeat_ack_reports_conflicting_claim_locks_for_salient_entities` (passed: 1 test)
+  - `cargo test -p memorum-coordination --test presence_unit heartbeat` (passed: 11 tests)
+
+## Residual risks
+
+- I did not run full workspace gates (`cargo fmt --all -- --check`, full clippy, full workspace tests, docs). This rerun used source/API review plus targeted tests for the three original findings.
+- The repo was already heavily dirty before review; I only wrote this review artifact. Broader gate outcomes may be affected by unrelated modified/untracked files.
+- The passing startup regression does not exercise the still-risky project-scope startup code paths called out above.

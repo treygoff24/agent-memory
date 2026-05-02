@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "fixture_version": "stream-i-cross-session-v0.1-task-21",
+  "profile": "darwin-arm64",
+  "runs": 1,
+  "platform": {
+    "os": "macos",
+    "arch": "aarch64"
+  },
+  "fixture": {
+    "run_date": "2026-05-02",
+    "run_at": "2026-05-02T12:00:00Z",
+    "candidate_count": 100,
+    "within_recency_count": 50,
+    "outside_recency_count": 50,
+    "salient_entity_count": 10,
+    "salient_path_count": 10,
+    "precomputed_embedding_dimension": 16,
+    "sample_count": 301
+  },
+  "peer_relevance_gate": {
+    "description": "Per-candidate in-memory relevance gate latency over 100 fixed peer-write candidates.",
+    "statistic_unit": "milliseconds_per_candidate",
+    "p50_ms": 0.005927,
+    "p95_ms": 0.006917,
+    "p99_ms": 0.00767,
+    "budget_ms": 5.0,
+    "budget_operator": "less_than_or_equal",
+    "sample_count": 301,
+    "pass": true,
+    "selected_peer_updates": 2,
+    "capped_peer_updates": 48,
+    "embedding_worker_wait_excluded": true
+  }
+}

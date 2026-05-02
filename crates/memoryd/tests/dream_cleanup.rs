@@ -423,6 +423,7 @@ fn sample_memory(id: &str, status: MemoryStatus) -> Memory {
             scope: Scope::Agent,
             summary: "cleanup fixture".to_string(),
             confidence: 0.8,
+            original_confidence: None,
             trust_level: if status == MemoryStatus::Candidate { TrustLevel::Candidate } else { TrustLevel::Trusted },
             sensitivity: Sensitivity::Internal,
             status,

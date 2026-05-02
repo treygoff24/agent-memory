@@ -10,8 +10,12 @@ anyhow.workspace = true
 chrono.workspace = true
 clap.workspace = true
 memory-governance = { path = "../memory-governance" }
+memorum-coordination = { path = "../memorum-coordination" }
 memory-privacy = { path = "../memory-privacy" }
 memory-substrate = { path = "../memory-substrate" }
+lettre = { version = "0.11", default-features = false, features = ["builder", "rustls-tls", "smtp-transport"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
@@ -20,7 +24,11 @@ hex.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tracing.workspace = true
+which.workspace = true
 zstd.workspace = true
 
 [dev-dependencies]
 memory-test-support = { path = "../memory-test-support" }
+rusqlite.workspace = true
+tokio = { workspace = true, features = ["test-util"] }

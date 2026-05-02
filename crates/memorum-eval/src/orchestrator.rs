@@ -1,0 +1,914 @@
+use std::collections::VecDeque;
+use std::fmt;
+use std::process::Command;
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll, Wake, Waker};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use clap::ValueEnum;
+
+use crate::daemon_scaffold::DaemonScaffold;
+use crate::harness_runner::{HarnessRunner, MockHarness, RealHarness, TestOutcome};
+
+const CLAUDE_KEY_ENV: &str = "MEMORUM_EVAL_CLAUDE_KEY";
+const CODEX_KEY_ENV: &str = "MEMORUM_EVAL_CODEX_KEY";
+const SKIP_NO_AUTH: &str = "SKIP_NO_AUTH";
+const STREAM_D_ROTATION_CONTRACT_NOT_SHIPPED: &str = "STREAM_D_ROTATION_CONTRACT_NOT_SHIPPED";
+const STREAM_I_DEPS_DISABLED: &str = "STREAM_I_DEPS_DISABLED";
+const SEMANTIC_PARTIAL_LEASE_REENTRANCY_NOT_SHIPPED: &str = "SEMANTIC_PARTIAL_LEASE_REENTRANCY_NOT_SHIPPED";
+
+#[derive(Debug, Default)]
+pub struct EvalOrchestrator;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvalRunConfig {
+    pub harness_mode: HarnessMode,
+    pub filter: Option<String>,
+    pub timeout_seconds: Option<u64>,
+    pub workers: usize,
+    pub no_cleanup: bool,
+    pub verbose: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OrchestratorError {
+    InvalidWorkerCount,
+    NoTestsMatched { filter: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvalReport {
+    pub run_id: String,
+    pub started_at: String,
+    pub finished_at: String,
+    pub harness_mode: HarnessMode,
+    pub total: usize,
+    pub passed: usize,
+    pub failed: usize,
+    pub skipped: usize,
+    pub partial: bool,
+    pub missing_credentials: Vec<String>,
+    pub tests: Vec<EvalTestResult>,
+    pub timed_out: bool,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct EvalRunSummary {
+    pub passed: usize,
+    pub failed: usize,
+    pub skipped: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvalTestResult {
+    pub number: u8,
+    pub name: &'static str,
+    pub group: CatalogGroup,
+    pub mode: CatalogMode,
+    pub status: TestStatus,
+    pub duration_ms: u128,
+    pub assertions: usize,
+    pub assertions_passed: usize,
+    pub assertions_failed: usize,
+    pub failure_detail: Option<String>,
+    pub skip_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CatalogEntry {
+    pub number: u8,
+    pub name: &'static str,
+    pub group: CatalogGroup,
+    pub mode: CatalogMode,
+    pub execution_group: ExecutionGroup,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CatalogGroup {
+    Handbook,
+    Domain,
+    Regression,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CatalogMode {
+    Simulator,
+    RealHarness,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionGroup {
+    Parallel,
+    Serial,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum HarnessMode {
+    Claude,
+    Codex,
+    All,
+    Mock,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum OutputFormat {
+    Json,
+    Text,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TestStatus {
+    Passed,
+    Failed,
+    Skipped,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CargoTestDispatch {
+    target: &'static str,
+    filter: &'static str,
+}
+
+impl Default for EvalRunConfig {
+    fn default() -> Self {
+        Self {
+            harness_mode: HarnessMode::Mock,
+            filter: None,
+            timeout_seconds: None,
+            workers: 4,
+            no_cleanup: false,
+            verbose: false,
+        }
+    }
+}
+
+impl EvalOrchestrator {
+    pub fn run(&self) -> EvalRunSummary {
+        match self.run_with_config(EvalRunConfig::default()) {
+            Ok(report) => EvalRunSummary { passed: report.passed, failed: report.failed, skipped: report.skipped },
+            Err(_) => EvalRunSummary::default(),
+        }
+    }
+
+    pub fn run_with_config(&self, config: EvalRunConfig) -> Result<EvalReport, OrchestratorError> {
+        if config.workers == 0 {
+            return Err(OrchestratorError::InvalidWorkerCount);
+        }
+
+        let started = timestamp_string();
+        let selected = select_tests(config.filter.as_deref())?;
+        let missing_credentials = missing_credentials(config.harness_mode);
+        let run_context = RunContext {
+            harness_mode: config.harness_mode,
+            timeout_seconds: config.timeout_seconds,
+            verbose: config.verbose,
+            missing_credentials: missing_credentials.clone(),
+        };
+
+        let mut tests = run_parallel_tests(&selected, &run_context, config.workers);
+        tests.extend(run_serial_tests(&selected, &run_context));
+        tests.sort_by_key(|test| test.number);
+
+        let passed = tests.iter().filter(|test| test.status == TestStatus::Passed).count();
+        let failed = tests.iter().filter(|test| test.status == TestStatus::Failed).count();
+        let skipped = tests.iter().filter(|test| test.status == TestStatus::Skipped).count();
+        let partial = skipped > 0;
+        let timed_out = tests.iter().any(|test| test.failure_detail.as_deref() == Some("TIMEOUT"));
+        let missing_credentials = if tests.iter().any(|test| test.skip_reason.as_deref() == Some(SKIP_NO_AUTH)) {
+            missing_credentials
+        } else {
+            Vec::new()
+        };
+
+        Ok(EvalReport {
+            run_id: new_run_id(),
+            started_at: started,
+            finished_at: timestamp_string(),
+            harness_mode: config.harness_mode,
+            total: tests.len(),
+            passed,
+            failed,
+            skipped,
+            partial,
+            missing_credentials,
+            tests,
+            timed_out,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RunContext {
+    harness_mode: HarnessMode,
+    timeout_seconds: Option<u64>,
+    verbose: bool,
+    missing_credentials: Vec<String>,
+}
+
+pub const TEST_CATALOG: [CatalogEntry; 19] = [
+    CatalogEntry {
+        number: 1,
+        name: "exact_identifier_recall",
+        group: CatalogGroup::Handbook,
+        mode: CatalogMode::Simulator,
+        execution_group: ExecutionGroup::Parallel,
+    },
+    CatalogEntry {
+        number: 2,
+        name: "superseded_fact_handling",
+        group: CatalogGroup::Handbook,
+        mode: CatalogMode::Simulator,
+        execution_group: ExecutionGroup::Parallel,
+    },
+    CatalogEntry {
+        number: 3,
+        name: "cross_project_entity_collision",
+        group: CatalogGroup::Handbook,
+        mode: CatalogMode::Simulator,
+        execution_group: ExecutionGroup::Parallel,
+    },
+    CatalogEntry {
+        number: 4,
+        name: "abstention",
+        group: CatalogGroup::Handbook,
+        mode: CatalogMode::Simulator,
+        execution_group: ExecutionGroup::Parallel,
+    },
+    CatalogEntry {
+        number: 5,
+        name: "poisoned_candidate",
+        group: CatalogGroup::Handbook,
+        mode: CatalogMode::Simulator,
+        execution_group: ExecutionGroup::Parallel,
+    },
+    CatalogEntry {
+        number: 6,
+        name: "tool_output_preservation",
+        group: CatalogGroup::Handbook,
+        mode: CatalogMode::Simulator,
+        execution_group: ExecutionGroup::Parallel,
+    },
+    CatalogEntry {
+        number: 7,
+        name: "subagent_writeback",
+        group: CatalogGroup::Handbook,
+        mode: CatalogMode::Simulator,
+        execution_group: ExecutionGroup::Parallel,
+    },
+    CatalogEntry {
+        number: 8,
+        name: "deletion_and_tombstone",
+        group: CatalogGroup::Handbook,
+        mode: CatalogMode::Simulator,
+        execution_group: ExecutionGroup::Parallel,
+    },
+    CatalogEntry {
+        number: 9,
+        name: "recall_budget_pressure",
+        group: CatalogGroup::Handbook,
+        mode: CatalogMode::Simulator,
+        execution_group: ExecutionGroup::Parallel,
+    },
+    CatalogEntry {
+        number: 10,
+        name: "compaction_resumption",
+        group: CatalogGroup::Handbook,
+        mode: CatalogMode::Simulator,
+        execution_group: ExecutionGroup::Parallel,
+    },
+    CatalogEntry {
+        number: 11,
+        name: "self_poisoning",
+        group: CatalogGroup::Handbook,
+        mode: CatalogMode::Simulator,
+        execution_group: ExecutionGroup::Parallel,
+    },
+    CatalogEntry {
+        number: 12,
+        name: "temporal_validity",
+        group: CatalogGroup::Handbook,
+        mode: CatalogMode::Simulator,
+        execution_group: ExecutionGroup::Parallel,
+    },
+    CatalogEntry {
+        number: 13,
+        name: "cross_harness_substrate_sharing",
+        group: CatalogGroup::Domain,
+        mode: CatalogMode::RealHarness,
+        execution_group: ExecutionGroup::Serial,
+    },
+    CatalogEntry {
+        number: 14,
+        name: "merge_driver_semantic_correctness",
+        group: CatalogGroup::Domain,
+        mode: CatalogMode::Simulator,
+        execution_group: ExecutionGroup::Serial,
+    },
+    CatalogEntry {
+        number: 15,
+        name: "privacy_filter_refusal_retry",
+        group: CatalogGroup::Domain,
+        mode: CatalogMode::RealHarness,
+        execution_group: ExecutionGroup::Serial,
+    },
+    CatalogEntry {
+        number: 16,
+        name: "reality_check_drift_scoring_sanity",
+        group: CatalogGroup::Domain,
+        mode: CatalogMode::Simulator,
+        execution_group: ExecutionGroup::Parallel,
+    },
+    CatalogEntry {
+        number: 17,
+        name: "lease_contention_resolution",
+        group: CatalogGroup::Domain,
+        mode: CatalogMode::Simulator,
+        execution_group: ExecutionGroup::Serial,
+    },
+    CatalogEntry {
+        number: 18,
+        name: "encrypted_tier_key_rotation",
+        group: CatalogGroup::Domain,
+        mode: CatalogMode::Simulator,
+        execution_group: ExecutionGroup::Serial,
+    },
+    CatalogEntry {
+        number: 19,
+        name: "peer_update_framing_correctness",
+        group: CatalogGroup::Regression,
+        mode: CatalogMode::RealHarness,
+        execution_group: ExecutionGroup::Serial,
+    },
+];
+
+pub fn format_catalog() -> String {
+    let mut output = String::new();
+    for entry in TEST_CATALOG {
+        output.push_str(&format!(
+            "#{:02} {} [group: {}, mode: {}, execution: {}]\n",
+            entry.number, entry.name, entry.group, entry.mode, entry.execution_group
+        ));
+    }
+    output
+}
+
+pub fn report_to_json(report: &EvalReport) -> String {
+    let tests_json = report.tests.iter().map(test_result_to_json).collect::<Vec<_>>().join(",\n");
+    format!(
+        concat!(
+            "{{\n",
+            "  \"run_id\": \"{}\",\n",
+            "  \"started_at\": \"{}\",\n",
+            "  \"finished_at\": \"{}\",\n",
+            "  \"harness_mode\": \"{}\",\n",
+            "  \"total\": {},\n",
+            "  \"passed\": {},\n",
+            "  \"failed\": {},\n",
+            "  \"skipped\": {},\n",
+            "  \"partial\": {},\n",
+            "  \"missing_credentials\": {},\n",
+            "  \"tests\": [\n{}\n  ]\n",
+            "}}\n"
+        ),
+        json_escape(&report.run_id),
+        json_escape(&report.started_at),
+        json_escape(&report.finished_at),
+        report.harness_mode,
+        report.total,
+        report.passed,
+        report.failed,
+        report.skipped,
+        report.partial,
+        string_array_to_json(&report.missing_credentials),
+        tests_json
+    )
+}
+
+pub fn report_to_text(report: &EvalReport) -> String {
+    let mut output = format!(
+        "memorum-eval {}: {} passed, {} failed, {} skipped{}.\n",
+        report.run_id,
+        report.passed,
+        report.failed,
+        report.skipped,
+        if report.partial { " (partial)" } else { "" }
+    );
+
+    for test in &report.tests {
+        output.push_str(&format!("#{:02} {} [{}] {}\n", test.number, test.name, test.mode, test.status));
+    }
+
+    output
+}
+
+pub fn exit_code_for_report(report: &EvalReport) -> u8 {
+    if report.timed_out {
+        return 3;
+    }
+    if report.failed > 0 {
+        return 1;
+    }
+    if report.partial && report.harness_mode != HarnessMode::Mock {
+        return 1;
+    }
+    0
+}
+
+fn select_tests(filter: Option<&str>) -> Result<Vec<CatalogEntry>, OrchestratorError> {
+    let selected = TEST_CATALOG
+        .into_iter()
+        .filter(|entry| filter.is_none_or(|pattern| matches_filter(*entry, pattern)))
+        .collect::<Vec<_>>();
+
+    if selected.is_empty() {
+        let filter = filter.unwrap_or_default().to_owned();
+        return Err(OrchestratorError::NoTestsMatched { filter });
+    }
+
+    Ok(selected)
+}
+
+fn run_parallel_tests(selected: &[CatalogEntry], context: &RunContext, workers: usize) -> Vec<EvalTestResult> {
+    let entries = selected
+        .iter()
+        .copied()
+        .filter(|entry| entry.execution_group == ExecutionGroup::Parallel)
+        .collect::<VecDeque<_>>();
+    if entries.is_empty() {
+        return Vec::new();
+    }
+
+    let queue = Arc::new(Mutex::new(entries));
+    let results = Arc::new(Mutex::new(Vec::new()));
+    let worker_count = workers.min(selected.len()).max(1);
+
+    std::thread::scope(|scope| {
+        for _ in 0..worker_count {
+            let queue = Arc::clone(&queue);
+            let results = Arc::clone(&results);
+            scope.spawn(move || loop {
+                let entry = {
+                    let mut queue = queue.lock().expect("parallel test queue mutex should not be poisoned");
+                    queue.pop_front()
+                };
+                let Some(entry) = entry else {
+                    break;
+                };
+                let result = run_catalog_entry(entry, context);
+                results.lock().expect("parallel test results mutex should not be poisoned").push(result);
+            });
+        }
+    });
+
+    let mut results = results.lock().expect("parallel test results mutex should not be poisoned").clone();
+    results.sort_by_key(|test| test.number);
+    results
+}
+
+fn run_serial_tests(selected: &[CatalogEntry], context: &RunContext) -> Vec<EvalTestResult> {
+    selected
+        .iter()
+        .copied()
+        .filter(|entry| entry.execution_group == ExecutionGroup::Serial)
+        .map(|entry| run_catalog_entry(entry, context))
+        .collect()
+}
+
+fn run_catalog_entry(entry: CatalogEntry, context: &RunContext) -> EvalTestResult {
+    if context.verbose {
+        eprintln!("running #{:02} {} ({}, {})", entry.number, entry.name, entry.mode, entry.execution_group);
+    }
+
+    let started = Instant::now();
+    if context.timeout_seconds == Some(0) {
+        return failed_result(entry, started.elapsed(), "TIMEOUT");
+    }
+
+    match dispatch_for_entry(entry, context) {
+        CatalogDispatch::CargoTest(dispatch) => run_cargo_test(entry, started, dispatch),
+        CatalogDispatch::MockHarness => run_mock_harness(entry, started),
+        CatalogDispatch::Skip(reason) => skipped_result(entry, started.elapsed(), reason),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CatalogDispatch {
+    CargoTest(CargoTestDispatch),
+    MockHarness,
+    Skip(&'static str),
+}
+
+fn dispatch_for_entry(entry: CatalogEntry, context: &RunContext) -> CatalogDispatch {
+    if entry.mode == CatalogMode::RealHarness && context.harness_mode == HarnessMode::Mock {
+        return CatalogDispatch::MockHarness;
+    }
+
+    if let Some(reason) = semantic_skip_reason(entry) {
+        return CatalogDispatch::Skip(reason);
+    }
+
+    match entry.mode {
+        CatalogMode::Simulator => CatalogDispatch::CargoTest(cargo_dispatch(entry)),
+        CatalogMode::RealHarness if !context.missing_credentials.is_empty() => CatalogDispatch::Skip(SKIP_NO_AUTH),
+        CatalogMode::RealHarness if missing_real_harness_cli(entry) => CatalogDispatch::Skip(SKIP_NO_AUTH),
+        CatalogMode::RealHarness => CatalogDispatch::CargoTest(cargo_dispatch(entry)),
+    }
+}
+
+fn semantic_skip_reason(entry: CatalogEntry) -> Option<&'static str> {
+    match entry.number {
+        17 => Some(SEMANTIC_PARTIAL_LEASE_REENTRANCY_NOT_SHIPPED),
+        18 => Some(STREAM_D_ROTATION_CONTRACT_NOT_SHIPPED),
+        19 if !cfg!(feature = "stream-i-deps") => Some(STREAM_I_DEPS_DISABLED),
+        _ => None,
+    }
+}
+
+fn missing_real_harness_cli(entry: CatalogEntry) -> bool {
+    required_real_harnesses(entry).iter().any(|harness| !real_harness_cli_available(*harness))
+}
+
+fn required_real_harnesses(entry: CatalogEntry) -> &'static [RealHarness] {
+    match entry.number {
+        13 | 19 => &[RealHarness::Claude, RealHarness::Codex],
+        15 => &[RealHarness::Claude],
+        _ => &[],
+    }
+}
+
+fn real_harness_cli_available(harness: RealHarness) -> bool {
+    matches!(HarnessRunner::detect_cli(harness), Ok(Some(_)))
+}
+
+fn cargo_dispatch(entry: CatalogEntry) -> CargoTestDispatch {
+    match entry.number {
+        1 => CargoTestDispatch { target: "handbook", filter: "exact_identifier_survives_startup_recall_and_search" },
+        2 => CargoTestDispatch {
+            target: "handbook",
+            filter: "superseded_fact_loses_to_replacement_in_search_and_recall",
+        },
+        3 => CargoTestDispatch {
+            target: "handbook",
+            filter: "project_binding_filters_project_memory_from_other_project_recall",
+        },
+        4 => CargoTestDispatch { target: "handbook", filter: "novel_topic_search_and_startup_abstain_without_error" },
+        5 => CargoTestDispatch {
+            target: "handbook",
+            filter: "low_confidence_poisoned_candidate_is_not_promoted_or_recalled",
+        },
+        6 => CargoTestDispatch {
+            target: "handbook",
+            filter: "artifact_memory_preserves_tool_output_handle_through_recall_search_and_get",
+        },
+        7 => CargoTestDispatch {
+            target: "handbook",
+            filter: "subagent_writeback_requires_a_spawn_registry_before_parent_recall",
+        },
+        8 => CargoTestDispatch {
+            target: "handbook",
+            filter: "forgotten_agent_memory_is_tombstoned_hidden_and_blocks_reinsertion",
+        },
+        9 => CargoTestDispatch {
+            target: "handbook",
+            filter: "recall_budget_pressure_keeps_high_value_gold_memory_and_reports_omissions",
+        },
+        10 => CargoTestDispatch {
+            target: "handbook",
+            filter: "simulated_compaction_resumption_preserves_active_working_state_without_duplicates",
+        },
+        11 => CargoTestDispatch {
+            target: "handbook",
+            filter: "self_poisoned_candidate_cannot_ground_its_own_confidence_escalation",
+        },
+        12 => CargoTestDispatch {
+            target: "handbook",
+            filter: "temporal_validity_fields_are_not_silently_ignored_and_fresh_memory_is_currently_recalled",
+        },
+        13 => CargoTestDispatch { target: "domain", filter: "t13_cross_harness_substrate_sharing" },
+        14 => CargoTestDispatch { target: "domain", filter: "t14_merge_driver_preserves_two_device_semantic_edits" },
+        15 => CargoTestDispatch { target: "domain", filter: "t15_privacy_filter_refusal_and_retry" },
+        16 => CargoTestDispatch {
+            target: "domain",
+            filter: "t16_reality_check_drift_scores_order_and_explain_components",
+        },
+        19 => {
+            CargoTestDispatch { target: "t19_peer_update_framing", filter: "t19_peer_update_framing_sampling_matrix" }
+        }
+        _ => unreachable!("catalog entry #{} is not cargo-dispatched by memorum-eval", entry.number),
+    }
+}
+
+fn run_cargo_test(entry: CatalogEntry, started: Instant, dispatch: CargoTestDispatch) -> EvalTestResult {
+    let cargo = std::env::var_os("MEMORUM_EVAL_CARGO").unwrap_or_else(|| "cargo".into());
+    let output = Command::new(cargo)
+        .args(["test", "-p", "memorum-eval", "--test", dispatch.target, dispatch.filter, "--", "--nocapture"])
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => passed_result(entry, started.elapsed()),
+        Ok(output) => failed_result(entry, started.elapsed(), &cargo_failure_detail(&output)),
+        Err(error) => failed_result(entry, started.elapsed(), &format!("failed to run cargo test: {error}")),
+    }
+}
+
+fn cargo_failure_detail(output: &std::process::Output) -> String {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    format!("cargo test failed with status {}\nstdout:\n{}\nstderr:\n{}", output.status, stdout.trim(), stderr.trim())
+}
+
+fn run_mock_harness(entry: CatalogEntry, started: Instant) -> EvalTestResult {
+    let scaffold = block_on(DaemonScaffold::fresh());
+    match MockHarness.run_test(entry.number, &scaffold) {
+        Ok(TestOutcome::Passed { metadata, output }) => {
+            outcome_passed_result(entry, started.elapsed(), metadata, output)
+        }
+        Ok(TestOutcome::Skipped { reason, .. }) => {
+            skipped_result(entry, started.elapsed(), normalize_skip_reason(&reason))
+        }
+        Err(error) => failed_result(entry, started.elapsed(), &error.to_string()),
+    }
+}
+
+fn normalize_skip_reason(reason: &str) -> &'static str {
+    if reason.contains("stream-i-deps feature disabled") {
+        STREAM_I_DEPS_DISABLED
+    } else {
+        "SKIP"
+    }
+}
+
+fn passed_result(entry: CatalogEntry, duration: Duration) -> EvalTestResult {
+    EvalTestResult {
+        number: entry.number,
+        name: entry.name,
+        group: entry.group,
+        mode: entry.mode,
+        status: TestStatus::Passed,
+        duration_ms: duration.as_millis(),
+        assertions: 1,
+        assertions_passed: 1,
+        assertions_failed: 0,
+        failure_detail: None,
+        skip_reason: None,
+    }
+}
+
+fn outcome_passed_result(
+    entry: CatalogEntry,
+    duration: Duration,
+    metadata: std::collections::HashMap<String, String>,
+    output: std::collections::HashMap<String, String>,
+) -> EvalTestResult {
+    let assertions = (metadata.len() + output.len()).max(1);
+    EvalTestResult {
+        number: entry.number,
+        name: entry.name,
+        group: entry.group,
+        mode: entry.mode,
+        status: TestStatus::Passed,
+        duration_ms: duration.as_millis(),
+        assertions,
+        assertions_passed: assertions,
+        assertions_failed: 0,
+        failure_detail: None,
+        skip_reason: None,
+    }
+}
+
+fn failed_result(entry: CatalogEntry, duration: Duration, reason: &str) -> EvalTestResult {
+    EvalTestResult {
+        number: entry.number,
+        name: entry.name,
+        group: entry.group,
+        mode: entry.mode,
+        status: TestStatus::Failed,
+        duration_ms: duration.as_millis(),
+        assertions: 1,
+        assertions_passed: 0,
+        assertions_failed: 1,
+        failure_detail: Some(reason.to_owned()),
+        skip_reason: None,
+    }
+}
+
+fn skipped_result(entry: CatalogEntry, duration: Duration, reason: &str) -> EvalTestResult {
+    EvalTestResult {
+        number: entry.number,
+        name: entry.name,
+        group: entry.group,
+        mode: entry.mode,
+        status: TestStatus::Skipped,
+        duration_ms: duration.as_millis(),
+        assertions: 0,
+        assertions_passed: 0,
+        assertions_failed: 0,
+        failure_detail: None,
+        skip_reason: Some(reason.to_owned()),
+    }
+}
+
+fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    let waker = Waker::from(Arc::new(NoopWaker));
+    let mut context = Context::from_waker(&waker);
+    let mut future = std::pin::pin!(future);
+
+    loop {
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(output) => return output,
+            Poll::Pending => std::thread::yield_now(),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct NoopWaker;
+
+impl Wake for NoopWaker {
+    fn wake(self: Arc<Self>) {}
+}
+
+fn matches_filter(entry: CatalogEntry, pattern: &str) -> bool {
+    let normalized = pattern.trim().to_ascii_lowercase();
+    if normalized.is_empty() || normalized == "*" {
+        return true;
+    }
+
+    let targets = [
+        entry.name.to_ascii_lowercase(),
+        format!("t{:02}", entry.number),
+        format!("#{:02}", entry.number),
+        entry.number.to_string(),
+        format!("{}/{}", entry.group, entry.name),
+        format!("{}/t{:02}", entry.group, entry.number),
+    ];
+
+    targets.iter().any(|target| glob_like_match(target, &normalized))
+}
+
+fn glob_like_match(target: &str, pattern: &str) -> bool {
+    if !pattern.contains('*') {
+        return target.contains(pattern);
+    }
+
+    let parts = pattern.split('*').filter(|part| !part.is_empty()).collect::<Vec<_>>();
+    if parts.is_empty() {
+        return true;
+    }
+
+    let mut rest = target;
+    for part in parts {
+        let Some(index) = rest.find(part) else {
+            return false;
+        };
+        rest = &rest[index + part.len()..];
+    }
+    true
+}
+
+fn missing_credentials(harness_mode: HarnessMode) -> Vec<String> {
+    let required = match harness_mode {
+        HarnessMode::Claude => vec![CLAUDE_KEY_ENV],
+        HarnessMode::Codex => vec![CODEX_KEY_ENV],
+        HarnessMode::All | HarnessMode::Mock => vec![CLAUDE_KEY_ENV, CODEX_KEY_ENV],
+    };
+
+    required.into_iter().filter(|name| std::env::var_os(name).is_none()).map(str::to_owned).collect()
+}
+
+fn test_result_to_json(test: &EvalTestResult) -> String {
+    format!(
+        concat!(
+            "    {{\n",
+            "      \"number\": {},\n",
+            "      \"name\": \"{}\",\n",
+            "      \"group\": \"{}\",\n",
+            "      \"mode\": \"{}\",\n",
+            "      \"status\": \"{}\",\n",
+            "      \"duration_ms\": {},\n",
+            "      \"assertions\": {},\n",
+            "      \"assertions_passed\": {},\n",
+            "      \"assertions_failed\": {},\n",
+            "      \"failure_detail\": {},\n",
+            "      \"skip_reason\": {}\n",
+            "    }}"
+        ),
+        test.number,
+        json_escape(test.name),
+        test.group,
+        test.mode,
+        test.status,
+        test.duration_ms,
+        test.assertions,
+        test.assertions_passed,
+        test.assertions_failed,
+        optional_string_to_json(test.failure_detail.as_deref()),
+        optional_string_to_json(test.skip_reason.as_deref())
+    )
+}
+
+fn string_array_to_json(values: &[String]) -> String {
+    let body = values.iter().map(|value| format!("\"{}\"", json_escape(value))).collect::<Vec<_>>().join(", ");
+    format!("[{body}]")
+}
+
+fn optional_string_to_json(value: Option<&str>) -> String {
+    value.map_or_else(|| "null".to_owned(), |value| format!("\"{}\"", json_escape(value)))
+}
+
+fn json_escape(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            character if character.is_control() => escaped.push_str(&format!("\\u{:04x}", character as u32)),
+            character => escaped.push(character),
+        }
+    }
+    escaped
+}
+
+fn new_run_id() -> String {
+    format!("eval-{}", unix_millis())
+}
+
+fn timestamp_string() -> String {
+    format!("unix-ms:{}", unix_millis())
+}
+
+fn unix_millis() -> u128 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|duration| duration.as_millis()).unwrap_or_default()
+}
+
+impl fmt::Display for OrchestratorError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidWorkerCount => formatter.write_str("--workers must be greater than zero"),
+            Self::NoTestsMatched { filter } => write!(formatter, "no eval tests matched filter `{filter}`"),
+        }
+    }
+}
+
+impl std::error::Error for OrchestratorError {}
+
+impl fmt::Display for CatalogGroup {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Handbook => formatter.write_str("handbook"),
+            Self::Domain => formatter.write_str("domain"),
+            Self::Regression => formatter.write_str("regression"),
+        }
+    }
+}
+
+impl fmt::Display for CatalogMode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Simulator => formatter.write_str("simulator"),
+            Self::RealHarness => formatter.write_str("real_harness"),
+        }
+    }
+}
+
+impl fmt::Display for ExecutionGroup {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Parallel => formatter.write_str("parallel"),
+            Self::Serial => formatter.write_str("serial"),
+        }
+    }
+}
+
+impl fmt::Display for HarnessMode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Claude => formatter.write_str("claude"),
+            Self::Codex => formatter.write_str("codex"),
+            Self::All => formatter.write_str("all"),
+            Self::Mock => formatter.write_str("mock"),
+        }
+    }
+}
+
+impl fmt::Display for OutputFormat {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Json => formatter.write_str("json"),
+            Self::Text => formatter.write_str("text"),
+        }
+    }
+}
+
+impl fmt::Display for TestStatus {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Passed => formatter.write_str("passed"),
+            Self::Failed => formatter.write_str("failed"),
+            Self::Skipped => formatter.write_str("skipped"),
+        }
+    }
+}

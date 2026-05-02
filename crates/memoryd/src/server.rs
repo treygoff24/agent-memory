@@ -3,12 +3,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use memorum_coordination::spawn_stale_session_cleanup_task;
 use memory_substrate::Substrate;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::watch;
+use tokio::time::{interval_at, Instant, MissedTickBehavior};
 
 use crate::handlers::{self, HandlerState};
+use crate::notifications::config::NotificationConfig;
+use crate::notifications::NotificationDispatcher;
 use crate::protocol::{RequestEnvelope, RequestPayload, ResponseEnvelope, ResponsePayload, StatusResponse};
 
 pub use crate::protocol::MAX_FRAME_BYTES;
@@ -48,9 +52,15 @@ pub async fn serve(socket_path: impl AsRef<Path>) -> Result<()> {
 /// [`serve_substrate_with`].
 pub async fn serve_substrate(socket_path: impl AsRef<Path>, substrate: Substrate) -> Result<()> {
     let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+    let substrate = Arc::new(substrate);
+    let state = Arc::new(state_for_substrate(substrate.as_ref())?);
+    spawn_notification_dispatcher(&state);
+    spawn_coordination_cleanup_for_state(state.clone(), shutdown_rx.clone());
+    fire_reality_check_due_on_startup(&substrate, &state);
+    spawn_reality_check_scheduler(substrate.clone(), state.clone(), shutdown_rx.clone());
     serve_with_dispatcher(
         socket_path.as_ref(),
-        Dispatch::Substrate { substrate: Arc::new(substrate), state: Arc::new(HandlerState::new()) },
+        Dispatch::Substrate { substrate, state },
         ServerOptions::default(),
         shutdown_rx,
     )
@@ -71,13 +81,63 @@ pub async fn serve_substrate_with(
     options: ServerOptions,
     shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
-    serve_with_dispatcher(
-        socket_path.as_ref(),
-        Dispatch::Substrate { substrate: Arc::new(substrate), state: Arc::new(HandlerState::new()) },
-        options,
+    let substrate = Arc::new(substrate);
+    let state = Arc::new(state_for_substrate(substrate.as_ref())?);
+    spawn_notification_dispatcher(&state);
+    spawn_coordination_cleanup_for_state(state.clone(), shutdown.clone());
+    fire_reality_check_due_on_startup(&substrate, &state);
+    spawn_reality_check_scheduler(substrate.clone(), state.clone(), shutdown.clone());
+    serve_with_dispatcher(socket_path.as_ref(), Dispatch::Substrate { substrate, state }, options, shutdown).await
+}
+
+fn state_for_substrate(substrate: &Substrate) -> Result<HandlerState> {
+    let config = crate::coordination_config::load_coordination_config(&substrate.roots().repo)
+        .map_err(anyhow::Error::msg)
+        .context("load coordination config")?;
+    Ok(HandlerState::with_coordination_config(config))
+}
+
+fn spawn_notification_dispatcher(state: &HandlerState) {
+    let receiver = state.subscribe_notifications();
+    let dispatcher = NotificationDispatcher::production(state.passive_notifications(), NotificationConfig::default());
+    tokio::spawn(dispatcher.run(receiver));
+}
+
+pub fn spawn_coordination_cleanup_for_state(
+    state: Arc<HandlerState>,
+    shutdown: watch::Receiver<bool>,
+) -> tokio::task::JoinHandle<()> {
+    spawn_stale_session_cleanup_task(
+        state.presence_registry(),
+        state.claim_lock_registry(),
+        state.presence_config(),
         shutdown,
     )
-    .await
+}
+
+fn fire_reality_check_due_on_startup(substrate: &Substrate, state: &HandlerState) {
+    let daemon_state = crate::state::DaemonState::load(&substrate.roots().runtime);
+    state.fire_reality_check_due_if_due(&daemon_state.reality_check, chrono::Utc::now());
+}
+
+fn spawn_reality_check_scheduler(
+    substrate: Arc<Substrate>,
+    state: Arc<HandlerState>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    tokio::spawn(async move {
+        let mut hourly = interval_at(Instant::now() + Duration::from_secs(3600), Duration::from_secs(3600));
+        hourly.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                _ = shutdown.changed() => break,
+                _ = hourly.tick() => {
+                    let daemon_state = crate::state::DaemonState::load(&substrate.roots().runtime);
+                    state.fire_reality_check_due_if_due(&daemon_state.reality_check, chrono::Utc::now());
+                }
+            }
+        }
+    });
 }
 
 async fn serve_with_dispatcher(
@@ -287,6 +347,7 @@ fn healthy_status() -> StatusResponse {
         guidance: "memoryd local daemon is accepting requests; substrate is not attached yet".to_owned(),
         recall: Default::default(),
         dreams: Default::default(),
+        passive_notifications: Default::default(),
     }
 }
 

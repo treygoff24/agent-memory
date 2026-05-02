@@ -1,0 +1,175 @@
+{
+  "schema_version": 1,
+  "fixture_version": "stream-g-observability-v0.1-task-17",
+  "profile": "darwin-arm64",
+  "runs": 1,
+  "platform": {
+    "os": "macos",
+    "arch": "aarch64"
+  },
+  "fixture": {
+    "run_date": "2026-05-02",
+    "scoring_memory_count": 10000,
+    "entity_graph_node_count": 5000,
+    "tui_panel_count": 8,
+    "typeahead_debounce_ms": 96,
+    "passive_queue_sample_count": 1001,
+    "slack_dispatch_sample_count": 7
+  },
+  "measurements": [
+    {
+      "name": "scoring_10k_memories",
+      "description": "Reality Check score computation over 10,000 indexed active/pinned memories.",
+      "statistic": "p95",
+      "measured_ms": 190.762,
+      "budget_ms": 500.0,
+      "budget_operator": "less_than_or_equal",
+      "sample_count": 5,
+      "pass": true,
+      "details": {
+        "event_log_recall_hits": 29994,
+        "implementation_path": "memoryd::reality_check::score_memories_at",
+        "input_memory_count": 10000,
+        "scored_memory_count": 10000,
+        "supersession_edges": 2499
+      }
+    },
+    {
+      "name": "top_n_selection_10k",
+      "description": "Top-N sort and take over 10,000 pre-scored memories.",
+      "statistic": "p95",
+      "measured_ms": 3.606,
+      "budget_ms": 50.0,
+      "budget_operator": "less_than_or_equal",
+      "sample_count": 21,
+      "pass": true,
+      "details": {
+        "candidate_count": 10000,
+        "selected_count": 12,
+        "selection": "sort_descending_score_then_take_default_top_n"
+      }
+    },
+    {
+      "name": "session_resume_from_persisted_state",
+      "description": "Deserialize a persisted Reality Check session with 10k item ids.",
+      "statistic": "p95",
+      "measured_ms": 3.074,
+      "budget_ms": 100.0,
+      "budget_operator": "less_than_or_equal",
+      "sample_count": 21,
+      "pass": true,
+      "details": {
+        "items_remaining": 9904,
+        "items_total": 10000,
+        "state_file": "reality-check-session.json"
+      }
+    },
+    {
+      "name": "tui_panel_switch",
+      "description": "Synthetic TUI key-event-to-frame panel switch latency.",
+      "statistic": "p95",
+      "measured_ms": 0.001,
+      "budget_ms": 16.0,
+      "budget_operator": "less_than_or_equal",
+      "sample_count": 80,
+      "pass": true,
+      "details": {
+        "fixture": "synthetic in-process key event to frame render",
+        "panel_count": 8,
+        "rendered_bytes_last_frame": 144
+      }
+    },
+    {
+      "name": "tui_detail_modal_open",
+      "description": "Synthetic memory detail modal open round-trip.",
+      "statistic": "p95",
+      "measured_ms": 0.001,
+      "budget_ms": 32.0,
+      "budget_operator": "less_than_or_equal",
+      "sample_count": 80,
+      "pass": true,
+      "details": {
+        "detail_records": 256,
+        "fixture": "synthetic trust artifact fetch from in-memory daemon fixture",
+        "rendered_bytes_last_modal": 251
+      }
+    },
+    {
+      "name": "tui_entity_typeahead",
+      "description": "Synthetic entity search typeahead latency including debounce.",
+      "statistic": "p95",
+      "measured_ms": 96.129,
+      "budget_ms": 100.0,
+      "budget_operator": "less_than_or_equal",
+      "sample_count": 80,
+      "pass": true,
+      "details": {
+        "debounce_window_ms": 96,
+        "entity_records": 2048,
+        "fixture": "synthetic typeahead filter + render including debounce window",
+        "last_result_count": 886
+      }
+    },
+    {
+      "name": "web_entity_graph_serialization_5k",
+      "description": "Serialize web entity graph response with 5,000 nodes.",
+      "statistic": "p95",
+      "measured_ms": 24.516,
+      "budget_ms": 200.0,
+      "budget_operator": "less_than_or_equal",
+      "sample_count": 15,
+      "pass": true,
+      "details": {
+        "edge_count": 4999,
+        "measurement": "server-side serde_json serialization",
+        "node_count": 5000,
+        "serialized_bytes": 1285209
+      }
+    },
+    {
+      "name": "web_status_p99",
+      "description": "Serialize web status response payload under no load with mock daemon data.",
+      "statistic": "p99",
+      "measured_ms": 0.015,
+      "budget_ms": 50.0,
+      "budget_operator": "less_than_or_equal",
+      "sample_count": 101,
+      "pass": true,
+      "details": {
+        "measurement": "GET /api/status payload serialization with mock daemon response",
+        "serialized_bytes": 710
+      }
+    },
+    {
+      "name": "passive_notification_queue_append",
+      "description": "In-process passive notification queue append latency.",
+      "statistic": "p95",
+      "measured_ms": 0.0,
+      "budget_ms": 1.0,
+      "budget_operator": "less_than_or_equal",
+      "sample_count": 1001,
+      "pass": true,
+      "details": {
+        "append_count": 1001,
+        "implementation_path": "memoryd::notifications::PassiveQueue::append_at",
+        "retained_capacity": 100
+      }
+    },
+    {
+      "name": "slack_mock_first_dispatch",
+      "description": "External Slack notification first dispatch through local mock webhook.",
+      "statistic": "p95",
+      "measured_ms": 0.009,
+      "budget_ms": 2000.0,
+      "budget_operator": "less_than_or_equal",
+      "sample_count": 7,
+      "pass": true,
+      "details": {
+        "attempts": 7,
+        "fixture": "local in-process SlackWebhook mock",
+        "passive_failures": 0,
+        "retry_max": 1
+      }
+    }
+  ]
+}

@@ -129,6 +129,7 @@ pub async fn select_harness(
 
 pub(crate) fn echo_cli_override_enabled() -> bool {
     cfg!(debug_assertions)
+        || std::env::var_os("MEMORYD_ENABLE_ECHO_DREAM_HARNESS").as_deref() == Some(std::ffi::OsStr::new("1"))
 }
 
 #[derive(Clone)]
@@ -220,6 +221,7 @@ fn candidate_memory(id: memory_substrate::MemoryId, request: &CandidateWriteRequ
         scope,
         summary: bounded_summary(&request.claim),
         confidence: request.confidence,
+        original_confidence: None,
         trust_level: TrustLevel::Candidate,
         sensitivity: Sensitivity::Internal,
         status: MemoryStatus::Candidate,

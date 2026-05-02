@@ -1,11 +1,15 @@
 [workspace]
 members = [
+    "crates/memorum-coordination",
     "crates/memory-substrate",
     "crates/memory-merge-driver",
     "crates/memory-test-support",
     "crates/memory-governance",
     "crates/memory-privacy",
     "crates/memoryd",
+    "crates/memoryd-tui",
+    "crates/memoryd-web",
+    "crates/memorum-eval",
 ]
 resolver = "2"
 
@@ -22,6 +26,7 @@ chrono = { version = "0.4", features = ["serde", "clock"] }
 clap = { version = "4.5", features = ["derive"] }
 crc32c = "0.6"
 crc32fast = "1.4"
+dashmap = "6.1"
 fs2 = "0.4"
 hex = "0.4"
 imara-diff = "0.2"

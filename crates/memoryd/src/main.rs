@@ -1,3 +1,4 @@
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -11,12 +12,19 @@ use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::watch;
 
 use memoryd::cli::{
-    Cli, Command, DeviceCommand, DreamCommand, PrivacyCommand, PrivacyFilterCommand, RecallCommand, ReviewCommand,
+    Cli, Command, DeviceCommand, DreamCommand, PeerCommand, PrivacyCommand, PrivacyFilterCommand, RealityCheckCommand,
+    RecallCommand, ReviewCommand, WebCommand,
 };
 use memoryd::client;
-use memoryd::protocol::{DreamRunReport, PassStatus, RequestPayload, ResponsePayload, ResponseResult};
+use memoryd::protocol::{
+    render_peer_activity_human, render_peer_status_human, DreamRunReport, PassStatus, PeerActivityFormat,
+    PeerReleaseLockStatus, RequestPayload, ResponsePayload, ResponseResult,
+};
 use memoryd::recall::{DeltaRequest, StartupRequest};
 use memoryd::server::{self, ServerOptions};
+
+#[allow(dead_code)]
+mod state;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
@@ -29,6 +37,11 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 Substrate::open(roots).await?
             };
+            let runtime_root = substrate.roots().runtime.clone();
+            let _daemon_state = state::DaemonState::load(&runtime_root);
+            if let Err(error) = state::RcSessionStore::new(&runtime_root).load_if_recent(Utc::now()) {
+                eprintln!("warning: failed to recover daemon session state: {error}");
+            }
 
             let (shutdown_tx, shutdown_rx) = watch::channel(false);
             tokio::spawn(install_termination_handler(shutdown_tx));
@@ -228,6 +241,98 @@ async fn main() -> anyhow::Result<()> {
                 println!("disabled: created device-local sentinel {}", path.display());
             }
         },
+        Command::Peer(args) => match args.command {
+            PeerCommand::Status(args) => {
+                print_peer_status(client::request(&args.socket, "cli-peer-status", RequestPayload::PeerStatus).await);
+            }
+            PeerCommand::Activity(args) => {
+                print_peer_activity(
+                    client::request(
+                        &args.socket,
+                        "cli-peer-activity",
+                        RequestPayload::PeerActivity {
+                            session: args.session,
+                            since: args.since,
+                            limit: Some(args.limit),
+                            format: args.format,
+                        },
+                    )
+                    .await,
+                    args.format,
+                );
+            }
+            PeerCommand::ReleaseLock(args) => {
+                run_peer_release_lock(args).await?;
+            }
+        },
+        Command::Ui(args) => {
+            run_tui(args)?;
+        }
+        Command::Web(args) => match args.command {
+            WebCommand::Enable(args) => {
+                let response = client::request(
+                    &args.socket,
+                    "cli-web-enable",
+                    RequestPayload::WebEnable {
+                        port: args.port,
+                        socket_path: args.socket.to_string_lossy().into_owned(),
+                    },
+                )
+                .await;
+                print_web_response(response, WebOperation::Enable);
+            }
+            WebCommand::Disable(args) => {
+                let response = client::request(&args.socket, "cli-web-disable", RequestPayload::WebDisable).await;
+                print_web_response(response, WebOperation::Disable);
+            }
+            WebCommand::Status(args) => {
+                let response = client::request(&args.socket, "cli-web-status", RequestPayload::WebStatus).await;
+                print_web_status(response, args.json);
+            }
+        },
+        Command::RealityCheck(args) => match args.command {
+            RealityCheckCommand::Run(args) => {
+                let request = if args.json {
+                    RequestPayload::RealityCheck(memoryd::protocol::RealityCheckRequest::List {
+                        namespace: args.namespace.clone(),
+                        limit: args.top_n,
+                    })
+                } else {
+                    RequestPayload::RealityCheck(memoryd::protocol::RealityCheckRequest::Run {
+                        session_id: None,
+                        namespace: args.namespace.clone(),
+                        limit: args.top_n,
+                    })
+                };
+                let response = client::request(&args.socket, "cli-reality-check-run", request).await;
+                print_reality_check_run(response, args.json, args.tui);
+            }
+            RealityCheckCommand::Skip(args) => {
+                let response = client::request(
+                    &args.socket,
+                    "cli-reality-check-skip",
+                    RequestPayload::RealityCheck(memoryd::protocol::RealityCheckRequest::Skip),
+                )
+                .await;
+                print_reality_check_skip(response);
+            }
+            RealityCheckCommand::Snooze(args) => {
+                let until = match memoryd::cli::validate_snooze_until(args.until.as_deref()) {
+                    Ok(until) => until.map(|date| date.and_hms_opt(0, 0, 0).expect("midnight is valid").and_utc()),
+                    Err(_) => {
+                        eprintln!("invalid date: --until must be YYYY-MM-DD");
+                        std::process::exit(1);
+                    }
+                };
+                let response = client::request(
+                    &args.socket,
+                    "cli-reality-check-snooze",
+                    RequestPayload::RealityCheck(memoryd::protocol::RealityCheckRequest::Snooze { until }),
+                )
+                .await;
+                print_reality_check_snooze(response);
+            }
+        },
         Command::Privacy(args) => match args.command {
             PrivacyCommand::Status(args) => {
                 let key_provider = FileKeyProvider::runtime_default(&args.runtime);
@@ -384,6 +489,221 @@ async fn run_manual_dream(args: memoryd::cli::DreamNowArgs) -> anyhow::Result<Dr
     }
 
     run_result
+}
+
+fn run_tui(args: memoryd::cli::UiArgs) -> anyhow::Result<()> {
+    if let Err(error) = memoryd::cli::validate_ui_stdin(std::io::stdin().is_terminal()) {
+        eprintln!("{}", error.message());
+        std::process::exit(error.exit_code());
+    }
+
+    let current_exe = std::env::current_exe()?;
+    let path_env = std::env::var_os("PATH");
+    let binary = match memoryd::cli::resolve_memoryd_tui_binary(&current_exe, path_env.as_deref()) {
+        Ok(binary) => binary,
+        Err(error) => {
+            eprintln!("{}", error.message());
+            std::process::exit(error.exit_code());
+        }
+    };
+
+    let status = std::process::Command::new(binary).args(memoryd::cli::ui_subprocess_args(&args)).status()?;
+    std::process::exit(status.code().unwrap_or(1));
+}
+
+#[derive(Debug, Clone, Copy)]
+enum WebOperation {
+    Enable,
+    Disable,
+}
+
+fn print_web_response(response: anyhow::Result<memoryd::protocol::ResponseEnvelope>, operation: WebOperation) -> ! {
+    match response {
+        Ok(envelope) => match envelope.result {
+            ResponseResult::Success(ResponsePayload::WebStatus(status)) => {
+                match operation {
+                    WebOperation::Enable => {
+                        let url = status.url.as_deref().unwrap_or("http://localhost:7137");
+                        println!("Web dashboard enabled at {url}");
+                    }
+                    WebOperation::Disable => println!("Web dashboard disabled"),
+                }
+                std::process::exit(0);
+            }
+            ResponseResult::Error(error) => {
+                eprintln!("{}: {}", error.code, error.message);
+                std::process::exit(web_protocol_exit_code(&error.code, operation));
+            }
+            other => {
+                eprintln!("internal_error: daemon returned non-web response: {other:?}");
+                std::process::exit(1);
+            }
+        },
+        Err(error) => {
+            eprintln!("daemon_unavailable: {error:#}");
+            std::process::exit(match operation {
+                WebOperation::Enable => 3,
+                WebOperation::Disable => 1,
+            });
+        }
+    }
+}
+
+fn print_web_status(response: anyhow::Result<memoryd::protocol::ResponseEnvelope>, json: bool) -> ! {
+    match response {
+        Ok(envelope) => match envelope.result {
+            ResponseResult::Success(ResponsePayload::WebStatus(status)) => {
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&status).expect("web status serializes"));
+                } else if status.running {
+                    println!("Web dashboard: running");
+                    if let Some(url) = &status.url {
+                        println!("URL: {url}");
+                    }
+                    if let Some(port) = status.port {
+                        println!("Port: {port}");
+                    }
+                    if let Some(uptime) = status.uptime_seconds {
+                        println!("Uptime: {uptime}s");
+                    }
+                    println!("Active connections: {}", status.active_connections);
+                } else {
+                    println!("Web dashboard: stopped");
+                }
+                std::process::exit(0);
+            }
+            ResponseResult::Error(error) => {
+                eprintln!("{}: {}", error.code, error.message);
+                std::process::exit(1);
+            }
+            other => {
+                eprintln!("internal_error: daemon returned non-web-status response: {other:?}");
+                std::process::exit(1);
+            }
+        },
+        Err(error) => {
+            eprintln!("daemon_unavailable: {error:#}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn web_protocol_exit_code(code: &str, operation: WebOperation) -> i32 {
+    match (operation, code) {
+        (WebOperation::Enable, "port_in_use") => 1,
+        (WebOperation::Enable, "invalid_request") => 2,
+        (WebOperation::Enable, _) => 3,
+        (WebOperation::Disable, _) => 1,
+    }
+}
+
+fn print_reality_check_run(response: anyhow::Result<memoryd::protocol::ResponseEnvelope>, json: bool, tui: bool) -> ! {
+    match response {
+        Ok(envelope) => match envelope.result {
+            ResponseResult::Success(ResponsePayload::RealityCheck(reality_check)) => {
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&reality_check).expect("reality check serializes"));
+                    std::process::exit(0);
+                }
+                print_reality_check_summary(&reality_check, tui);
+            }
+            ResponseResult::Error(error) => {
+                eprintln!("{}: {}", error.code, error.message);
+                std::process::exit(reality_check_error_exit_code(&error.code));
+            }
+            other => {
+                eprintln!("internal_error: daemon returned non-reality-check response: {other:?}");
+                std::process::exit(3);
+            }
+        },
+        Err(error) => {
+            eprintln!("daemon_unavailable: {error:#}");
+            std::process::exit(3);
+        }
+    }
+}
+
+fn print_reality_check_summary(reality_check: &memoryd::protocol::RealityCheckResponse, tui: bool) -> ! {
+    match reality_check {
+        memoryd::protocol::RealityCheckResponse::Pending { session_id, items, total_scored, .. } => {
+            if items.is_empty() {
+                println!("No Reality Check items.");
+                std::process::exit(1);
+            }
+            if tui {
+                println!("Reality Check routed to TUI panel 8.");
+            }
+            println!("Reality Check session: {}", session_id.as_deref().unwrap_or("preview"));
+            println!("Items: {} of {total_scored}", items.len());
+            for item in items {
+                println!("- {} [{}] score {:.2}: {}", item.memory_id.as_str(), item.namespace, item.score, item.title);
+            }
+            std::process::exit(0);
+        }
+        other => {
+            println!("{}", serde_json::to_string_pretty(other).expect("reality check serializes"));
+            std::process::exit(0);
+        }
+    }
+}
+
+fn print_reality_check_skip(response: anyhow::Result<memoryd::protocol::ResponseEnvelope>) -> ! {
+    match response {
+        Ok(envelope) => match envelope.result {
+            ResponseResult::Success(ResponsePayload::RealityCheck(
+                memoryd::protocol::RealityCheckResponse::Skipped { skipped_until },
+            )) => {
+                println!("Reality Check skipped until {skipped_until}");
+                std::process::exit(0);
+            }
+            ResponseResult::Error(error) => {
+                eprintln!("{}: {}", error.code, error.message);
+                std::process::exit(reality_check_error_exit_code(&error.code));
+            }
+            other => {
+                eprintln!("internal_error: daemon returned non-skip response: {other:?}");
+                std::process::exit(2);
+            }
+        },
+        Err(error) => {
+            eprintln!("daemon_unavailable: {error:#}");
+            std::process::exit(2);
+        }
+    }
+}
+
+fn print_reality_check_snooze(response: anyhow::Result<memoryd::protocol::ResponseEnvelope>) -> ! {
+    match response {
+        Ok(envelope) => match envelope.result {
+            ResponseResult::Success(ResponsePayload::RealityCheck(
+                memoryd::protocol::RealityCheckResponse::Snoozed { snooze_until },
+            )) => {
+                println!("Reality Check snoozed until {snooze_until}");
+                std::process::exit(0);
+            }
+            ResponseResult::Error(error) => {
+                eprintln!("{}: {}", error.code, error.message);
+                std::process::exit(reality_check_error_exit_code(&error.code));
+            }
+            other => {
+                eprintln!("internal_error: daemon returned non-snooze response: {other:?}");
+                std::process::exit(2);
+            }
+        },
+        Err(error) => {
+            eprintln!("daemon_unavailable: {error:#}");
+            std::process::exit(2);
+        }
+    }
+}
+
+fn reality_check_error_exit_code(code: &str) -> i32 {
+    match code {
+        "no_items" => 1,
+        "session_abandoned" => 2,
+        "invalid_request" => 1,
+        _ => 3,
+    }
 }
 
 async fn run_scheduled_dream(
@@ -563,6 +883,134 @@ fn print_recall_delta(response: anyhow::Result<memoryd::protocol::ResponseEnvelo
         },
         Err(error) => exit_recall_unavailable(error),
     }
+}
+
+fn print_peer_status(response: anyhow::Result<memoryd::protocol::ResponseEnvelope>) -> ! {
+    match response {
+        Ok(envelope) => match envelope.result {
+            ResponseResult::Success(ResponsePayload::PeerStatus(status)) => {
+                print!("{}", render_peer_status_human(&status));
+                std::process::exit(0);
+            }
+            ResponseResult::Error(error) => {
+                eprintln!("{}: {}", error.code, error.message);
+                std::process::exit(2);
+            }
+            other => {
+                eprintln!("internal_error: daemon returned non-peer-status response: {other:?}");
+                std::process::exit(2);
+            }
+        },
+        Err(error) => {
+            eprintln!("peer_unreachable: {error:#}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn print_peer_activity(response: anyhow::Result<memoryd::protocol::ResponseEnvelope>, format: PeerActivityFormat) -> ! {
+    match response {
+        Ok(envelope) => match envelope.result {
+            ResponseResult::Success(ResponsePayload::PeerActivity(activity)) => {
+                match format {
+                    PeerActivityFormat::Human => print!("{}", render_peer_activity_human(&activity)),
+                    PeerActivityFormat::Json => {
+                        for entry in activity.entries {
+                            match serde_json::to_string(&entry) {
+                                Ok(line) => println!("{line}"),
+                                Err(error) => {
+                                    eprintln!("internal_error: failed to serialize peer activity: {error}");
+                                    std::process::exit(2);
+                                }
+                            }
+                        }
+                    }
+                }
+                std::process::exit(0);
+            }
+            ResponseResult::Error(error) => {
+                eprintln!("{}: {}", error.code, error.message);
+                std::process::exit(2);
+            }
+            other => {
+                eprintln!("internal_error: daemon returned non-peer-activity response: {other:?}");
+                std::process::exit(2);
+            }
+        },
+        Err(error) => {
+            eprintln!("peer_unreachable: {error:#}");
+            std::process::exit(1);
+        }
+    }
+}
+
+async fn run_peer_release_lock(args: memoryd::cli::PeerReleaseLockArgs) -> anyhow::Result<()> {
+    if !args.yes {
+        let status = match client::request(&args.socket, "cli-peer-release-status", RequestPayload::PeerStatus).await {
+            Ok(envelope) => envelope,
+            Err(error) => {
+                eprintln!("peer_unreachable: {error:#}");
+                std::process::exit(2);
+            }
+        };
+        let ResponseResult::Success(ResponsePayload::PeerStatus(status)) = status.result else {
+            eprintln!("internal_error: daemon did not return peer status before release-lock");
+            std::process::exit(2);
+        };
+        let Some(lock) = status.claim_locks.iter().find(|lock| lock.memory_id == args.memory_id) else {
+            eprintln!("no_lock_found: no active claim lock for {}", args.memory_id);
+            std::process::exit(1);
+        };
+        eprint!(
+            "Release claim lock on {} held by {}:{}? [y/N] ",
+            lock.memory_id, lock.holder_harness, lock.holder_session_id
+        );
+        if !confirmed_on_stdin()? {
+            eprintln!("aborted");
+            std::process::exit(1);
+        }
+    }
+
+    let response = match client::request(
+        &args.socket,
+        "cli-peer-release-lock",
+        RequestPayload::PeerReleaseLock { memory_id: args.memory_id },
+    )
+    .await
+    {
+        Ok(response) => response,
+        Err(error) => {
+            eprintln!("peer_unreachable: {error:#}");
+            std::process::exit(2);
+        }
+    };
+
+    match response.result {
+        ResponseResult::Success(ResponsePayload::PeerReleaseLock(release)) => match release.status {
+            PeerReleaseLockStatus::Released => {
+                println!("Released.");
+                std::process::exit(0);
+            }
+            PeerReleaseLockStatus::NoLockFound => {
+                eprintln!("no_lock_found: no active claim lock for {}", release.memory_id);
+                std::process::exit(1);
+            }
+        },
+        ResponseResult::Error(error) => {
+            eprintln!("{}: {}", error.code, error.message);
+            std::process::exit(2);
+        }
+        other => {
+            eprintln!("internal_error: daemon returned non-peer-release-lock response: {other:?}");
+            std::process::exit(2);
+        }
+    }
+}
+
+fn confirmed_on_stdin() -> anyhow::Result<bool> {
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    Ok(matches!(input.trim(), "y" | "Y" | "yes" | "YES"))
 }
 
 fn exit_protocol_error(error: memoryd::protocol::ProtocolError) -> ! {

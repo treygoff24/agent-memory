@@ -103,6 +103,45 @@ pub enum EventKind {
         /// Classification that selected plaintext vs encrypted substrate.
         classification: ClassificationOutcome,
     },
+    /// Memory was included in a rendered recall response.
+    RecallHit {
+        /// Recalled memory id.
+        id: MemoryId,
+        /// Response render timestamp.
+        recalled_at: DateTime<Utc>,
+    },
+    /// User confirmed a Reality Check item.
+    RealityCheckConfirmed {
+        /// Confirmed memory id.
+        id: MemoryId,
+        /// Reality Check session id.
+        session_id: String,
+    },
+    /// User forgot a Reality Check item.
+    RealityCheckForgotten {
+        /// Forgotten memory id.
+        id: MemoryId,
+        /// Reality Check session id.
+        session_id: String,
+        /// User-visible forget reason.
+        reason: String,
+    },
+    /// User marked a Reality Check item as not relevant.
+    RealityCheckNotRelevant {
+        /// Memory id marked not relevant.
+        id: MemoryId,
+        /// Reality Check session id.
+        session_id: String,
+    },
+    /// Stream I claim-lock contention warning.
+    ClaimLockContention {
+        /// Contended memory id.
+        memory_id: MemoryId,
+        /// Current lock holder.
+        holder: String,
+        /// Contending session.
+        contender: String,
+    },
     // Deferred §12.2 event kinds: WriteStarted, WriteIndexed, WriteEventAppendFailed,
     // Deleted, Superseded, IndexUpdated, IndexFailed, VectorReconciled,
     // EmbeddingJobEnqueued, EventLogRecovered, MergeQuarantined,

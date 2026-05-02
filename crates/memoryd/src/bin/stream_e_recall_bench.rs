@@ -205,6 +205,7 @@ fn bench_memory(index: usize) -> Memory {
             scope,
             summary: format!("entity-alpha fixture recall memory {index}"),
             confidence: 0.5 + ((index % 50) as f64 / 100.0),
+            original_confidence: None,
             trust_level: trust_for_status(status),
             sensitivity: Sensitivity::Internal,
             status,

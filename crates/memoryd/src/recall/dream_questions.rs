@@ -83,10 +83,6 @@ pub fn select_pending_attention_questions(
     DreamQuestionSelection { lines: selected.into_iter().map(render_question_line).collect(), omitted_total }
 }
 
-pub fn render_pending_attention_body(review_line: Option<String>, dream_question_lines: &[String]) -> String {
-    review_line.into_iter().chain(dream_question_lines.iter().cloned()).collect::<Vec<_>>().join("\n")
-}
-
 fn collect_candidates_from_file(
     selection: QuestionFileSelection<'_>,
     candidates: &mut Vec<CandidateQuestion>,

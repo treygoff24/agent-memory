@@ -1,10 +1,11 @@
 use chrono::{TimeZone, Utc};
+use memory_substrate::{MemoryId, MemoryStatus, Sensitivity};
 use memoryd::protocol::{
-    CandidateWriteResult, DreamRunReport, DreamStatusCounters, DreamStatusReport, GetResponse,
+    CandidateWriteResult, ComponentScores, DreamRunReport, DreamStatusCounters, DreamStatusReport, GetResponse,
     GovernanceForgetResponse, GovernanceStatus, GovernanceSupersedeResponse, GovernanceWriteResponse, HarnessCliStatus,
     LeaseRecord, ObserveKind, ObserveResponse, ObserveTarget, PassOutcome, PassStatus, PromptTransport,
-    RequestEnvelope, RequestPayload, ResponseEnvelope, ResponsePayload, RevealResponse, ScopeRunSummary, SearchHit,
-    SearchResponse, WriteNoteResponse,
+    RealityCheckAction, RealityCheckItem, RealityCheckRequest, RealityCheckResponse, RequestEnvelope, RequestPayload,
+    ResponseEnvelope, ResponsePayload, RevealResponse, ScopeRunSummary, SearchHit, SearchResponse, WriteNoteResponse,
 };
 use memoryd::recall::StartupRequest;
 
@@ -20,6 +21,10 @@ fn protocol_contract_round_trips_request_variants_as_snake_case_json() {
         RequestEnvelope::new(
             "req-get",
             RequestPayload::Get { id: "mem_20260428_0123456789abcdef_000001".to_owned(), include_provenance: true },
+        ),
+        RequestEnvelope::new(
+            "req-trust-artifact",
+            RequestPayload::TrustArtifact { id: "mem_20260428_0123456789abcdef_000001".to_owned() },
         ),
         RequestEnvelope::new(
             "req-reveal",
@@ -93,10 +98,226 @@ fn protocol_contract_status_recall_is_json_additive() {
     assert!(decoded.recall.startup_failed_total.is_empty());
     assert_eq!(decoded.dreams.dream_runs_invoked_total, 0);
     assert!(decoded.dreams.substrate_fragments_written_total.is_empty());
+    assert!(decoded.passive_notifications.is_empty());
 
     let encoded = serde_json::to_value(decoded).expect("status encodes");
     assert!(encoded.get("recall").is_some(), "new status responses always serialize recall counters");
     assert!(encoded.get("dreams").is_some(), "new status responses always serialize dream counters");
+    assert!(encoded.get("passive_notifications").is_some(), "status serializes passive notifications");
+}
+
+#[test]
+fn protocol_contract_trust_artifact_response_round_trips_daemon_dto() {
+    let response = ResponseEnvelope::success(
+        "req-trust-artifact",
+        ResponsePayload::TrustArtifact(Box::new(sample_trust_artifact())),
+    );
+
+    let line = response.to_json_line().expect("trust artifact response serializes");
+    let decoded = ResponseEnvelope::from_json_line(&line).expect("trust artifact response deserializes");
+
+    assert_eq!(decoded, response);
+    assert!(line.contains("\"trust_artifact\""));
+    assert!(line.contains("mem_20260501_0123456789abcdef_000009"));
+}
+
+#[test]
+fn test_reality_check_request_list_round_trips_serde() {
+    let request = RequestPayload::RealityCheck(RealityCheckRequest::List { namespace: None, limit: Some(12) });
+
+    let decoded = round_trip(&request);
+
+    assert_eq!(decoded, request);
+}
+
+#[test]
+fn test_reality_check_request_run_round_trips_serde() {
+    let request = RequestPayload::RealityCheck(RealityCheckRequest::Run {
+        session_id: None,
+        namespace: Some("me".to_owned()),
+        limit: None,
+    });
+
+    let decoded = round_trip(&request);
+
+    assert_eq!(decoded, request);
+}
+
+#[test]
+fn test_reality_check_request_respond_round_trips_serde() {
+    let memory_id = MemoryId::new("mem_20260501_0123456789abcdef_000001");
+    let request = RequestPayload::RealityCheck(RealityCheckRequest::Respond {
+        session_id: "s1".to_owned(),
+        memory_id,
+        action: RealityCheckAction::Confirm,
+    });
+
+    let decoded = round_trip(&request);
+
+    assert_eq!(decoded, request);
+}
+
+#[test]
+fn test_web_dashboard_requests_round_trip_serde() {
+    for request in [
+        RequestPayload::WebEnable { port: 7137, socket_path: "/tmp/memoryd.sock".to_owned() },
+        RequestPayload::WebDisable,
+        RequestPayload::WebStatus,
+    ] {
+        let decoded = round_trip(&request);
+
+        assert_eq!(decoded, request);
+    }
+}
+
+#[test]
+fn test_reality_check_request_skip_round_trips_serde() {
+    let request = RequestPayload::RealityCheck(RealityCheckRequest::Skip);
+
+    let decoded = round_trip(&request);
+
+    assert_eq!(decoded, request);
+}
+
+#[test]
+fn test_reality_check_request_snooze_until_round_trips_serde() {
+    let request = RequestPayload::RealityCheck(RealityCheckRequest::Snooze {
+        until: Some(Utc.with_ymd_and_hms(2026, 5, 10, 0, 0, 0).unwrap()),
+    });
+
+    let decoded = round_trip(&request);
+
+    assert_eq!(decoded, request);
+}
+
+#[test]
+fn test_reality_check_response_pending_round_trips_serde() {
+    let response = ResponsePayload::RealityCheck(RealityCheckResponse::Pending {
+        session_id: None,
+        items: vec![],
+        total_scored: 5,
+        last_completed_at: None,
+    });
+
+    let decoded = round_trip(&response);
+
+    assert_eq!(decoded, response);
+}
+
+#[test]
+fn test_reality_check_item_component_scores_round_trips_serde() {
+    let last_observed_at = Utc.with_ymd_and_hms(2026, 5, 1, 9, 0, 0).unwrap();
+    let last_recalled_at = Utc.with_ymd_and_hms(2026, 5, 1, 10, 0, 0).unwrap();
+    let item = RealityCheckItem {
+        memory_id: MemoryId::new("mem_20260501_0123456789abcdef_000001"),
+        title: "Contract-driven APIs need stable errors".to_owned(),
+        namespace: "project".to_owned(),
+        status: MemoryStatus::Active,
+        sensitivity: Some(Sensitivity::Internal),
+        score: 0.74,
+        component_scores: ComponentScores {
+            days_since_observed_norm: 0.20,
+            recall_frequency_norm: 0.30,
+            cross_source_corroboration: 1.0,
+            confidence_decay: 0.40,
+            sensitivity_weight: 0.50,
+        },
+        encrypted: false,
+        last_observed_at,
+        recall_count_30d: 7,
+        last_recalled_at: Some(last_recalled_at),
+    };
+
+    let json = serde_json::to_value(&item).expect("reality check item serializes");
+
+    assert_eq!(json["component_scores"]["days_since_observed_norm"], 0.20);
+    assert_eq!(json["component_scores"]["recall_frequency_norm"], 0.30);
+    assert_eq!(json["component_scores"]["cross_source_corroboration"], 1.0);
+    assert_eq!(json["component_scores"]["confidence_decay"], 0.40);
+    assert_eq!(json["component_scores"]["sensitivity_weight"], 0.50);
+    assert_eq!(round_trip(&item), item);
+}
+
+#[test]
+fn test_existing_protocol_variants_unchanged() {
+    let existing_shapes = [
+        (serde_json::to_value(RequestPayload::Status).unwrap(), serde_json::json!("status")),
+        (
+            serde_json::to_value(RequestPayload::Search {
+                query: "stable".to_owned(),
+                limit: Some(5),
+                include_body: false,
+            })
+            .unwrap(),
+            serde_json::json!({"search":{"query":"stable","limit":5,"include_body":false}}),
+        ),
+        (
+            serde_json::to_value(RequestPayload::Startup(StartupRequest {
+                cwd: "/tmp/agent-memory".to_owned(),
+                session_id: "sess_protocol".to_owned(),
+                harness: "codex".to_owned(),
+                harness_version: None,
+                include_recent: true,
+                since_event_id: None,
+                budget_tokens: Some(3_600),
+            }))
+            .unwrap(),
+            serde_json::json!({"startup":{
+                "cwd":"/tmp/agent-memory",
+                "session_id":"sess_protocol",
+                "harness":"codex",
+                "harness_version":null,
+                "include_recent":true,
+                "since_event_id":null,
+                "budget_tokens":3600
+            }}),
+        ),
+        (
+            serde_json::to_value(RequestPayload::WriteMemory {
+                body: "body".to_owned(),
+                title: Some("Title".to_owned()),
+                tags: vec!["tag".to_owned()],
+                meta: serde_json::json!({"namespace":"project"}),
+            })
+            .unwrap(),
+            serde_json::json!({"write_memory":{
+                "body":"body",
+                "title":"Title",
+                "tags":["tag"],
+                "meta":{"namespace":"project"}
+            }}),
+        ),
+        (
+            serde_json::to_value(RequestPayload::Supersede {
+                old_id: "mem_20260428_0123456789abcdef_000001".to_owned(),
+                content: "replacement".to_owned(),
+                reason: "stale".to_owned(),
+                meta: serde_json::Value::Null,
+            })
+            .unwrap(),
+            serde_json::json!({"supersede":{
+                "old_id":"mem_20260428_0123456789abcdef_000001",
+                "content":"replacement",
+                "reason":"stale",
+                "meta":null
+            }}),
+        ),
+        (
+            serde_json::to_value(RequestPayload::Forget {
+                id: "mem_20260428_0123456789abcdef_000001".to_owned(),
+                reason: "user requested removal".to_owned(),
+            })
+            .unwrap(),
+            serde_json::json!({"forget":{
+                "id":"mem_20260428_0123456789abcdef_000001",
+                "reason":"user requested removal"
+            }}),
+        ),
+    ];
+
+    for (actual, expected) in existing_shapes {
+        assert_eq!(actual, expected);
+    }
 }
 
 #[test]
@@ -325,6 +546,7 @@ fn protocol_contract_success_responses_are_bounded_and_guided() {
             chain: Some(serde_json::json!({ "supersedes": ["mem_20260428_0123456789abcdef_000003"] })),
             policy_applied: Some("project-standard@v2".to_owned()),
             policy_source: Some("built_in_fallback".to_owned()),
+            warning: None,
         }),
     );
     let forget = ResponseEnvelope::success(
@@ -388,4 +610,45 @@ fn observe_request_payload_accepts_spec_shaped_json_without_binding_fields() {
     assert_eq!(session_id, "synthetic-memory-observe");
     assert_eq!(harness, "unknown");
     assert_eq!(harness_version, None);
+}
+
+fn sample_trust_artifact() -> memoryd::trust_artifact::TrustArtifact {
+    serde_json::from_value(serde_json::json!({
+        "id": "mem_20260501_0123456789abcdef_000009",
+        "namespace": "project:atlasos",
+        "status": "active",
+        "sensitivity": "internal",
+        "source": "substrate:projects/atlasos/deploy-target.md",
+        "title": {
+            "kind": "plaintext",
+            "value": "Deploy target is production ECS"
+        },
+        "body": {
+            "kind": "plaintext",
+            "value": "Daemon-built trust artifact body."
+        },
+        "current_confidence": "0.95",
+        "original_confidence": "0.90",
+        "confidence_reason": "user confirmed",
+        "trust_summary": "trusted / project-standard@v2",
+        "recall": {
+            "total": 1,
+            "last_30_days": 1,
+            "last_recalled_at": "2026-05-01T11:02:00Z"
+        },
+        "provenance_chain": [],
+        "policy_decisions": [],
+        "privacy_scan": {
+            "labels_detected": ["none"],
+            "storage_action": "plaintext"
+        },
+        "supersedes": [],
+        "superseded_by": [],
+        "sync_state": {
+            "devices": ["macbook"],
+            "merge_status": "clean",
+            "claim_lock_status": null
+        }
+    }))
+    .expect("sample trust artifact fixture matches daemon DTO")
 }

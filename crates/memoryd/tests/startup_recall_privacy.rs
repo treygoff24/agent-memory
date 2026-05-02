@@ -197,6 +197,7 @@ impl PrivacyFixture {
                 scope: Scope::User,
                 summary: summary.to_owned(),
                 confidence: 0.9,
+                original_confidence: None,
                 trust_level: trust_for_status(status),
                 sensitivity: Sensitivity::Internal,
                 status,

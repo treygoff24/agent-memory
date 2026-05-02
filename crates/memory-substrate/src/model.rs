@@ -76,6 +76,23 @@ pub struct DoctorReport {
     pub repairs_required: Vec<String>,
 }
 
+/// Derived SQLite events-log mirror freshness.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct EventsLogMirrorHealth {
+    /// Highest event sequence observed in canonical JSONL logs.
+    pub jsonl_max_seq: u64,
+    /// Highest event sequence currently mirrored into SQLite.
+    pub sqlite_max_seq: u64,
+    /// Saturating `jsonl_max_seq - sqlite_max_seq`.
+    pub lag: u64,
+    /// Canonical JSONL event count across all device logs.
+    pub jsonl_count: u64,
+    /// SQLite mirror event count.
+    pub sqlite_count: u64,
+    /// Canonical JSONL events missing from the SQLite mirror by event id.
+    pub missing_count: u64,
+}
+
 /// Caller-supplied classification result from Stream D.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -453,6 +470,9 @@ pub struct Frontmatter {
     pub summary: String,
     /// Confidence score.
     pub confidence: f64,
+    /// Confidence at first observation, used by drift scoring as the baseline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_confidence: Option<f64>,
     /// Trust level.
     pub trust_level: TrustLevel,
     /// Sensitivity.
@@ -1231,10 +1251,16 @@ pub struct RecallIndexRow {
     pub canonical_namespace_id: Option<String>,
     /// Updated-at timestamp.
     pub updated_at: DateTime<Utc>,
+    /// Timestamp this device's index ingested this memory.
+    ///
+    /// Stream I uses this as `local_observed_at` for peer-update recency.
+    pub indexed_at: DateTime<Utc>,
     /// Confidence score.
     pub confidence: f64,
     /// Source kind.
     pub source_kind: SourceKind,
+    /// Device id that authored the most recent write, when known.
+    pub source_device: Option<String>,
     /// Sensitivity classification.
     pub sensitivity: Sensitivity,
     /// Indexed retrieval_policy.passive_recall value.

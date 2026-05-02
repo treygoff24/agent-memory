@@ -1,0 +1,21 @@
+[package]
+name = "memorum-eval"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+clap.workspace = true
+memorum-coordination = { path = "../memorum-coordination", optional = true }
+
+[features]
+stream-i-deps = ["dep:memorum-coordination"]
+
+[dev-dependencies]
+serde_json.workspace = true
+tokio.workspace = true
+
+[[test]]
+name = "t19_peer_update_framing"
+path = "tests/eval/regression/t19_peer_update_framing.rs"

@@ -1,6 +1,6 @@
 # agent-memory
 
-Local memory substrate, daemon, MCP bridge, and Stream C governance workspace.
+Local Memorum memory substrate, daemon, MCP bridge, governance, privacy, recall, dreaming, and observability workspace. Streams A-F are shipped. Stream G is implemented in this worktree with the canonical observability benchmark baseline promoted; final Stream G shipped status is pending final review/gate signoff. Streams H/I are not claimed here.
 
 ## Local gates
 
@@ -28,7 +28,10 @@ This repo carries a project-local Rust skill at `.codex/skills/rust-engineer`. R
 - Stream D privacy API: `docs/api/stream-d-privacy-api.md`
 - Stream E passive recall API: `docs/api/stream-e-passive-recall-api.md`
 - Stream F dreaming API: `docs/api/stream-f-dreaming-api.md`
+- Stream G observability API: `docs/api/stream-g-observability-api.md`
+- Stream G architecture: `docs/dev/stream-g-architecture.md`
 - Governance review runbook: `docs/runbooks/governance-review.md`
+- Reality Check runbook: `docs/runbooks/reality-check.md`
 - Privacy leak response runbook: `docs/runbooks/privacy-leak-response-placeholder.md`
 
 Stream C governs `memory_write`, `memory_supersede`, and `memory_forget`
@@ -38,7 +41,13 @@ and personal/confidential content to encrypted Stream A writes, and exposes
 explicit `memory_reveal` for audited user-directed decrypt access. Stream E
 ships passive recall: `memory_startup` forwards through the daemon, `memoryd
 recall startup-block` and `memoryd recall delta-block` emit XML for hooks, and
-status responses include additive recall counters.
+status responses include additive recall counters. Stream G implements human
+observability: `memoryd ui`, localhost web dashboard, trust artifact rendering,
+notifications, Reality Check CLI/TUI/web surfaces, `NotificationEvent`, and the
+`reality_check_due` pending-attention hook. The canonical Stream G observability
+benchmark baseline is promoted at
+`bench/stream-g-observability-results.darwin-arm64.json`; final Stream G shipped
+status is pending final review/gate signoff.
 
 ## Stream F dreaming status
 

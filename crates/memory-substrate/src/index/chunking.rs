@@ -267,6 +267,7 @@ mod tests {
                 scope: Scope::Agent,
                 summary: "test".to_string(),
                 confidence: 1.0,
+                original_confidence: None,
                 trust_level: TrustLevel::Trusted,
                 sensitivity: Sensitivity::Internal,
                 status: MemoryStatus::Active,
