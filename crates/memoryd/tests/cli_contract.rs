@@ -16,6 +16,7 @@ fn cli_contract_help_exposes_daemon_and_agent_facing_client_commands() {
     let stdout = String::from_utf8(output.stdout).expect("help is utf8");
     for command in [
         "serve",
+        "mcp",
         "status",
         "doctor",
         "search",
@@ -76,6 +77,8 @@ fn cli_contract_clap_parses_all_subcommands() {
     // serve
     Cli::try_parse_from(["memoryd", "serve", "--repo", "/tmp/repo", "--runtime", "/tmp/rt"]).expect("serve parses");
     Cli::try_parse_from(["memoryd", "serve", "--init"]).expect("serve --init parses");
+    Cli::try_parse_from(["memoryd", "mcp"]).expect("mcp parses");
+    Cli::try_parse_from(["memoryd", "mcp", "--socket", "/tmp/test.sock"]).expect("mcp with socket parses");
 
     // doctor
     Cli::try_parse_from(["memoryd", "doctor"]).expect("doctor parses");

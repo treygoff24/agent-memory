@@ -17,6 +17,7 @@ pub const CANONICAL_KEYS: &[&str] = &[
     "status",
     "created_at",
     "updated_at",
+    "observed_at",
     "author",
     "namespace",
     "canonical_namespace_id",

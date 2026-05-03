@@ -1,5 +1,6 @@
-use chrono::Utc;
+use chrono::{TimeZone, Utc};
 use memory_substrate::{
+    frontmatter::{parse_frontmatter_yaml, serialize_frontmatter},
     Author, AuthorKind, Frontmatter, MemoryId, MemoryStatus, MemoryType, RetrievalPolicy, Scope, Sensitivity, Source,
     SourceKind, TrustLevel, WritePolicy,
 };
@@ -36,6 +37,26 @@ fn frontmatter_skips_original_confidence_when_none() {
     assert!(!encoded.contains("original_confidence"));
 }
 
+#[test]
+fn frontmatter_promotes_observed_at_to_typed_round_trip_field() {
+    let observed_at = Utc.with_ymd_and_hms(2026, 5, 2, 14, 30, 0).single().expect("fixture time");
+    let mut frontmatter = sample_frontmatter();
+    frontmatter.observed_at = Some(observed_at);
+
+    let yaml = serialize_frontmatter(&frontmatter).expect("serialize frontmatter");
+    assert!(yaml.contains("observed_at: 2026-05-02T14:30:00"));
+    let (decoded, warnings) = parse_frontmatter_yaml(&yaml).expect("parse frontmatter");
+
+    assert_eq!(decoded.observed_at, Some(observed_at));
+    assert!(!decoded.extras.contains_key("observed_at"));
+    assert!(!warnings.iter().any(|warning| {
+        matches!(
+            warning,
+            memory_substrate::ValidationWarning::UnknownFieldPreserved { field } if field == "observed_at"
+        )
+    }));
+}
+
 fn sample_frontmatter() -> Frontmatter {
     let now = Utc::now();
     Frontmatter {
@@ -51,6 +72,7 @@ fn sample_frontmatter() -> Frontmatter {
         status: MemoryStatus::Active,
         created_at: now,
         updated_at: now,
+        observed_at: None,
         author: Author {
             kind: AuthorKind::System,
             user_handle: None,

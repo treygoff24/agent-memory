@@ -923,6 +923,92 @@ async fn encrypted_write_uses_encrypted_path_and_metadata_only_index() {
     assert_eq!(recovered[0].path.as_str(), format!("encrypted/agent/patterns/{}.md", memory.frontmatter.id.as_str()));
 }
 
+#[tokio::test]
+async fn update_encrypted_memory_metadata_preserves_ciphertext_envelope() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let substrate =
+        Substrate::init(roots, InitOptions { force_unsafe_durability: true, device_id: Some("dev_test".to_string()) })
+            .await
+            .expect("init");
+    let mut memory = sample_memory("mem_20260424_a1b2c3d4e5f60718_000031");
+    memory.frontmatter.sensitivity = Sensitivity::Confidential;
+    memory.frontmatter.retrieval_policy.index_body = false;
+    memory.frontmatter.retrieval_policy.index_embeddings = false;
+    memory.body = "metadata-only placeholder body".to_string();
+    memory.path = None;
+
+    substrate
+        .write_encrypted(EncryptedWriteRequest {
+            operation_id: None,
+            metadata_memory: memory.clone(),
+            ciphertext: b"stable ciphertext bytes".to_vec(),
+            safe_index_projection: None,
+            event_context: EventContext::default(),
+            allow_best_effort_durability: true,
+            classification: ClassificationOutcome::RequiresEncryption,
+        })
+        .await
+        .expect("encrypted write");
+    let before = substrate.read_memory_envelope(&memory.frontmatter.id).await.expect("read encrypted before");
+
+    substrate
+        .update_encrypted_memory_metadata(&memory.frontmatter.id, |metadata| {
+            metadata.frontmatter.summary = "updated safe metadata".to_string();
+            metadata.frontmatter.confidence = 0.64;
+            metadata
+                .frontmatter
+                .extras
+                .insert("encryption".to_string(), serde_json::json!({"scheme": "tampered", "recipient": "tampered"}));
+            metadata.body = "attempted plaintext replacement".to_string();
+        })
+        .await
+        .expect("metadata update");
+
+    let after = substrate.read_memory_envelope(&memory.frontmatter.id).await.expect("read encrypted after");
+    assert_eq!(after.metadata.frontmatter.summary, "updated safe metadata");
+    assert_eq!(after.metadata.frontmatter.confidence, 0.64);
+    assert_eq!(after.metadata.body, before.metadata.body);
+    assert_eq!(after.content, before.content);
+}
+
+#[tokio::test]
+async fn recall_index_including_metadata_only_does_not_expose_encrypted_plaintext_fragments() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let substrate =
+        Substrate::init(roots, InitOptions { force_unsafe_durability: true, device_id: Some("dev_test".to_string()) })
+            .await
+            .expect("init");
+    let mut memory = sample_memory("mem_20260424_a1b2c3d4e5f60718_000032");
+    memory.frontmatter.summary = "safe encrypted summary".to_string();
+    memory.frontmatter.sensitivity = Sensitivity::Confidential;
+    memory.frontmatter.retrieval_policy.index_body = false;
+    memory.frontmatter.retrieval_policy.index_embeddings = false;
+    memory.body = "plaintext-leak-needle must not be surfaced".to_string();
+    memory.path = None;
+
+    substrate
+        .write_encrypted(EncryptedWriteRequest {
+            operation_id: None,
+            metadata_memory: memory.clone(),
+            ciphertext: b"opaque ciphertext".to_vec(),
+            safe_index_projection: None,
+            event_context: EventContext::default(),
+            allow_best_effort_durability: true,
+            classification: ClassificationOutcome::RequiresEncryption,
+        })
+        .await
+        .expect("encrypted write");
+
+    let rows =
+        substrate.query_recall_index_including_metadata_only(RecallIndexQuery::default()).await.expect("recall index");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].summary, "safe encrypted summary");
+    let serialized = serde_json::to_string(&rows).expect("serialize rows");
+    assert!(!serialized.contains("plaintext-leak-needle"));
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn encrypted_write_refuses_symlinked_encrypted_parent_escape() {
@@ -1396,6 +1482,7 @@ fn sample_memory(id: &str) -> Memory {
             status: MemoryStatus::Active,
             created_at: now,
             updated_at: now,
+            observed_at: None,
             author: Author {
                 kind: AuthorKind::System,
                 user_handle: None,

@@ -591,6 +591,7 @@ fn peer_memory(spec: &StartupPeerMemorySpec<'_>) -> Memory {
             status: MemoryStatus::Active,
             created_at: authored_at,
             updated_at: authored_at,
+            observed_at: None,
             author: Author {
                 kind: AuthorKind::Agent,
                 user_handle: None,

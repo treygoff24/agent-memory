@@ -1,4 +1,5 @@
 use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use chrono::{DateTime, Utc};
@@ -7,6 +8,7 @@ use memoryd::trust_artifact::{
     PolicyDecision, PrivacyScan, ProvenanceEvent, SupersessionLink, SyncState, TrustArtifact,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use crate::routes::status::daemon_error;
 use crate::server::{backend_unavailable, WebState};
@@ -77,6 +79,29 @@ pub struct ProvenanceWalkQuery {
     pub depth: Option<u8>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WalkDirection {
+    Up,
+    Down,
+}
+
+impl WalkDirection {
+    fn parse(raw: Option<String>) -> Result<Self, String> {
+        match raw.as_deref().unwrap_or("up") {
+            "up" => Ok(Self::Up),
+            "down" => Ok(Self::Down),
+            other => Err(format!("direction must be `up` or `down`, got `{other}`")),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Up => "up",
+            Self::Down => "down",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct ProvenanceWalkResponse {
     pub memory_id: String,
@@ -143,33 +168,32 @@ pub async fn audit_walk(
     Path(id): Path<String>,
     Query(query): Query<ProvenanceWalkQuery>,
 ) -> impl IntoResponse {
-    if state.dashboard_data().is_none() {
-        if state.daemon_socket().is_some() {
-            return crate::routes::deferred_response("audit_walk").into_response();
-        }
-        return backend_unavailable("audit_walk").into_response();
+    let direction = match WalkDirection::parse(query.direction.clone()) {
+        Ok(direction) => direction,
+        Err(message) => return invalid_query("audit_walk", message).into_response(),
+    };
+    if let Some(data) = state.dashboard_data() {
+        return Json(provenance_walk_from_artifact(&id, query, direction, data.audit_for(&id))).into_response();
     }
-    let direction = query.direction.unwrap_or_else(|| "up".to_owned());
-    let depth = query.depth.unwrap_or(3);
-    Json(ProvenanceWalkResponse {
-        memory_id: id.clone(),
-        direction,
-        depth,
-        nodes: vec![
-            WalkNode { id: id.clone(), kind: "memory".to_owned(), label: "selected memory".to_owned() },
-            WalkNode {
-                id: "event_governance_promoted".to_owned(),
-                kind: "event".to_owned(),
-                label: "governance promoted".to_owned(),
-            },
-        ],
-        edges: vec![WalkEdge {
-            source: "event_governance_promoted".to_owned(),
-            target: id,
-            kind: "provenance".to_owned(),
-        }],
-    })
-    .into_response()
+    let Some(socket_path) = state.daemon_socket() else {
+        return backend_unavailable("audit_walk").into_response();
+    };
+    match memoryd::client::request(
+        socket_path,
+        format!("web-audit-walk-{id}"),
+        RequestPayload::TrustArtifact { id: id.clone() },
+    )
+    .await
+    {
+        Ok(response) => match response.result {
+            ResponseResult::Success(ResponsePayload::TrustArtifact(artifact)) => {
+                Json(provenance_walk_from_artifact(&id, query, direction, *artifact)).into_response()
+            }
+            ResponseResult::Error(error) => daemon_error("audit_walk", error.code, error.message).into_response(),
+            other => daemon_error("audit_walk", "unexpected_response", format!("{other:?}")).into_response(),
+        },
+        Err(error) => daemon_error("audit_walk", "daemon_unavailable", error.to_string()).into_response(),
+    }
 }
 
 pub async fn audit_temporal(
@@ -218,6 +242,64 @@ fn supersession_history(artifact: &TrustArtifact) -> Vec<SupersessionHistoryEntr
         .map(|link| supersession_entry(SupersessionDirection::Supersedes, link))
         .chain(artifact.superseded_by.iter().map(|link| supersession_entry(SupersessionDirection::SupersededBy, link)))
         .collect()
+}
+
+fn provenance_walk_from_artifact(
+    id: &str,
+    query: ProvenanceWalkQuery,
+    direction: WalkDirection,
+    artifact: TrustArtifact,
+) -> ProvenanceWalkResponse {
+    let depth = query.depth.unwrap_or(3).clamp(1, 8);
+    let mut nodes = vec![WalkNode {
+        id: id.to_owned(),
+        kind: "memory".to_owned(),
+        label: artifact.title.display_text().to_owned(),
+    }];
+    let mut edges = Vec::new();
+
+    for (index, event) in artifact.provenance_chain.into_iter().take(depth as usize).enumerate() {
+        let event_id = format!("event_{index}_{}", event.kind);
+        nodes.push(WalkNode {
+            id: event_id.clone(),
+            kind: "event".to_owned(),
+            label: format!("{} at {}", event.summary, event.timestamp),
+        });
+        edges.push(WalkEdge { source: event_id, target: id.to_owned(), kind: "provenance".to_owned() });
+    }
+
+    for link in artifact.supersedes.into_iter().take(depth as usize) {
+        let link_id = link.id.to_string();
+        nodes.push(WalkNode {
+            id: link_id.clone(),
+            kind: "memory".to_owned(),
+            label: link.title.display_text().to_owned(),
+        });
+        edges.push(WalkEdge { source: id.to_owned(), target: link_id, kind: "supersedes".to_owned() });
+    }
+
+    for link in artifact.superseded_by.into_iter().take(depth as usize) {
+        let link_id = link.id.to_string();
+        nodes.push(WalkNode {
+            id: link_id.clone(),
+            kind: "memory".to_owned(),
+            label: link.title.display_text().to_owned(),
+        });
+        edges.push(WalkEdge { source: link_id, target: id.to_owned(), kind: "superseded_by".to_owned() });
+    }
+
+    ProvenanceWalkResponse { memory_id: id.to_owned(), direction: direction.as_str().to_owned(), depth, nodes, edges }
+}
+
+fn invalid_query(route: &'static str, message: String) -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({
+            "error": "invalid_query",
+            "route": route,
+            "message": message
+        })),
+    )
 }
 
 fn parse_confidence(raw: &str) -> f64 {

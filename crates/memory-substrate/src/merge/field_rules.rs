@@ -421,11 +421,13 @@ fn merge_required_user_confirmation(
     }
 }
 
-/// Spec §14.4: `updated_at = max`, `created_at = min`.
+/// Spec §14.4: `updated_at = max`, `created_at = min`, observed timestamps
+/// keep the latest known observation.
 fn merge_timestamps(base: &Frontmatter, ours: &Frontmatter, theirs: &Frontmatter, merged: &mut Frontmatter) {
     let _ = base; // base is only consulted for individual scalar rules; min/max suffice here
     merged.updated_at = max_datetime(ours.updated_at, theirs.updated_at);
     merged.created_at = min_datetime(ours.created_at, theirs.created_at);
+    merged.observed_at = max_optional_datetime(ours.observed_at, theirs.observed_at);
 }
 
 fn max_datetime(a: DateTime<Utc>, b: DateTime<Utc>) -> DateTime<Utc> {
@@ -441,6 +443,14 @@ fn min_datetime(a: DateTime<Utc>, b: DateTime<Utc>) -> DateTime<Utc> {
         a
     } else {
         b
+    }
+}
+
+fn max_optional_datetime(a: Option<DateTime<Utc>>, b: Option<DateTime<Utc>>) -> Option<DateTime<Utc>> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(max_datetime(a, b)),
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
     }
 }
 

@@ -483,6 +483,9 @@ pub struct Frontmatter {
     pub created_at: DateTime<Utc>,
     /// Updated timestamp.
     pub updated_at: DateTime<Utc>,
+    /// Timestamp when the memory's claim was last observed or confirmed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_at: Option<DateTime<Utc>>,
     /// Author.
     pub author: Author,
     /// Optional namespace.

@@ -915,13 +915,7 @@ fn append_recall_index_filters(
 }
 
 fn observed_at_for_index(memory: &Memory) -> Option<String> {
-    memory
-        .frontmatter
-        .extras
-        .get("observed_at")
-        .and_then(serde_json::Value::as_str)
-        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
-        .map(|value| value.with_timezone(&chrono::Utc).to_rfc3339())
+    memory.frontmatter.observed_at.as_ref().map(chrono::DateTime::to_rfc3339)
 }
 
 fn append_namespace_filter(

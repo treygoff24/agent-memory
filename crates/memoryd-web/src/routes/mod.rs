@@ -12,6 +12,7 @@ use serde_json::json;
 pub mod audit;
 pub mod entity_graph;
 pub mod reality_check;
+pub mod recall_hits;
 pub mod review;
 pub mod roi;
 pub mod status;
@@ -19,6 +20,7 @@ pub mod status;
 pub use audit::{audit, audit_temporal, audit_walk};
 pub use entity_graph::{entity_detail, entity_graph, EntityDetailResponse, EntityGraphResponse};
 pub use reality_check::{reality_check, reality_check_history, reality_check_respond, RealityCheckHistoryResponse};
+pub use recall_hits::recall_hits;
 pub use review::{review_action, review_queue, ReviewActionRequest};
 pub use roi::{roi, RoiResponse};
 pub use status::{notifications_stream, status, StatusDashboardResponse};
@@ -38,6 +40,7 @@ pub struct DashboardData {
     pub audit_artifact: TrustArtifact,
     pub reviewable_memory_ids: BTreeSet<String>,
     pub notifications: Vec<NotificationSnapshot>,
+    pub recall_hits: Vec<memoryd::protocol::RecallHitSummary>,
 }
 
 #[derive(Clone, Debug)]
@@ -78,6 +81,11 @@ impl Default for DashboardData {
                 message: "Review queue is over threshold: 7/5".to_owned(),
                 created_at: now,
             }],
+            recall_hits: vec![recall_hits::fixture_recall_hit(
+                REVIEWABLE_MEMORY_ID,
+                now,
+                "Review Stream G dashboard contract",
+            )],
         }
     }
 }

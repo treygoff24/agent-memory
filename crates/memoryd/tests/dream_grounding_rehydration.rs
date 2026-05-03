@@ -453,6 +453,7 @@ fn base_memory(id: &str, status: MemoryStatus, trust_level: TrustLevel) -> Memor
             status,
             created_at: now,
             updated_at: now,
+            observed_at: None,
             author: Author {
                 kind: AuthorKind::System,
                 user_handle: None,

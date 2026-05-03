@@ -1,3 +1,4 @@
+use serde_json::Value;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Mutex;
@@ -64,15 +65,15 @@ fn writes_harness_specific_mcp_config_files_without_extra_temp_files() {
     assert_eq!(codex_config, sandbox.join(".harness-mcp/codex-run-codex.toml"));
 
     let claude_body = fs::read_to_string(&claude_config).expect("claude config should be readable");
-    assert!(claude_body.contains(r#""mcpServers""#));
-    assert!(claude_body.contains(r#""memorum_eval""#));
-    assert!(claude_body.contains(r#""command": "memoryd""#));
-    assert!(claude_body.contains(&socket_path.to_string_lossy().to_string()));
+    let claude_json: Value = serde_json::from_str(&claude_body).expect("claude config should be valid json");
+    let claude_server = &claude_json["mcpServers"]["memorum_eval"];
+    assert_eq!(claude_server["command"], "memoryd");
+    assert_eq!(claude_server["args"], serde_json::json!(["mcp", "--socket", socket_path.to_string_lossy()]));
 
     let codex_body = fs::read_to_string(&codex_config).expect("codex config should be readable");
     assert!(codex_body.contains("[mcp.memorum_eval]"));
     assert!(codex_body.contains("command = \"memoryd\""));
-    assert!(codex_body.contains(&format!("\"{}\"", socket_path.display())));
+    assert!(codex_body.contains(&format!("args = [\"mcp\", \"--socket\", \"{}\"]", socket_path.display())));
 
     let mut entries = fs::read_dir(sandbox.join(".harness-mcp"))
         .expect("mcp config directory should exist")

@@ -48,6 +48,9 @@ async fn main() -> anyhow::Result<()> {
 
             server::serve_substrate_with(args.socket, substrate, ServerOptions::default(), shutdown_rx).await?;
         }
+        Command::Mcp(args) => {
+            memoryd::mcp_stdio::serve_stdio(&args.socket).await?;
+        }
         Command::Status(args) => {
             print_response(client::request(&args.socket, "cli-status", RequestPayload::Status).await?)?;
         }

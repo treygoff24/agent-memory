@@ -1027,4 +1027,4 @@ bench_peer_relevance_gate:
   pass criterion: p95 ≤ 5ms
 ```
 
-Baseline is recorded at `bench/baseline.darwin-arm64.json` with a new `peer_relevance_gate` section; same `captured_at`/`captured_method` conventions as existing baselines. The human-authored-commit invariant applies.
+Baseline is recorded at `bench/stream-i-cross-session-results.<profile>.json`. The bench binary writes `.proposed` output by default; updating the canonical JSON requires `--output <path> --promote-canonical` from a human shell session after reviewing the proposed file. CI and autonomous automation must use assert mode or proposed-output mode only. See `bench/README.md`.

@@ -74,7 +74,6 @@ const REVIEW_QUEUE_ACTION_MAX: usize = 96;
 const REVIEW_DECISION_SUMMARY_MAX: usize = 512;
 const REVIEW_RESPONSE_FRAME_BUDGET: usize = MAX_FRAME_BYTES - 1024;
 const DEFAULT_PROJECT_NAMESPACE: &str = "agent-memory";
-const OBSERVED_AT_EXTRA: &str = "observed_at";
 const REDACTED_FORGET_REASON: &str = "[redacted]";
 const FORGET_REASON_MAX_CHARS: usize = 160;
 const DEFAULT_SUPERSEDE_SESSION_ID: &str = "synthetic-memory-supersede";
@@ -492,6 +491,7 @@ async fn dispatch(
         }
         RequestPayload::Get { id, include_provenance } => get_response(substrate, &id, include_provenance).await,
         RequestPayload::TrustArtifact { id } => trust_artifact_response(substrate, &id).await,
+        RequestPayload::RecallHits { since, limit } => recall_hits_response(substrate, since, limit).await,
         RequestPayload::Reveal { id, reason } => reveal_response(substrate, &id, &reason).await,
         RequestPayload::WriteNote { text } => write_note_response(substrate, &text).await,
         RequestPayload::WriteMemory { body, title, tags, meta } => {
@@ -541,6 +541,16 @@ async fn dispatch(
                 .await
         }
     }
+}
+
+async fn recall_hits_response(
+    substrate: &Substrate,
+    since: Option<chrono::DateTime<chrono::Utc>>,
+    limit: Option<usize>,
+) -> Result<ResponsePayload, HandlerError> {
+    crate::recall_hits::recent_recall_hits(substrate, since, limit)
+        .map(ResponsePayload::RecallHits)
+        .map_err(HandlerError::substrate)
 }
 
 fn web_enable_response(state: &HandlerState, port: u16, socket_path: &str) -> Result<ResponsePayload, HandlerError> {
@@ -932,7 +942,7 @@ async fn confirm_reality_check_item(
 ) -> Result<(), HandlerError> {
     mutate_reality_check_metadata(substrate, memory_id, |memory| {
         memory.frontmatter.updated_at = now;
-        memory.frontmatter.extras.insert(OBSERVED_AT_EXTRA.to_owned(), Value::String(now.to_rfc3339()));
+        memory.frontmatter.observed_at = Some(now);
         memory.frontmatter.confidence = (memory.frontmatter.confidence + 0.02).min(1.0);
     })
     .await?;
@@ -3026,6 +3036,7 @@ impl GovernanceWriteInput {
                 status: lifecycle.status,
                 created_at: now,
                 updated_at: now,
+                observed_at: None,
                 author: self.author(),
                 namespace: self.substrate_namespace(),
                 canonical_namespace_id: self.substrate_namespace(),
@@ -3315,6 +3326,7 @@ fn candidate_memory(id: MemoryId, text: &str, storage_action: PrivacyStorageActi
             status: MemoryStatus::Candidate,
             created_at: now,
             updated_at: now,
+            observed_at: None,
             author: Author {
                 kind: AuthorKind::System,
                 user_handle: None,

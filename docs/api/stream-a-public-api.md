@@ -5,8 +5,8 @@
 Key calls:
 
 - `Substrate::init`, `Substrate::open`, `Substrate::adopt_clone`
-- `write_memory`, `write_encrypted`, `tombstone_memory`
-- `read_memory`, `read_path`, `query_memory`, `query_recall_index`, `query_chunks`
+- `write_memory`, `write_encrypted`, `update_encrypted_memory_metadata`, `tombstone_memory`
+- `read_memory`, `read_path`, `query_memory`, `query_recall_index`, `query_recall_index_including_metadata_only`, `query_chunks`
 - `next_memory_id`, `reindex`, `durability_tier`
 - `git_preflight`, `fetch_inspect`, `auto_commit`, `fetch_and_merge`, `push`
 - `watch`
@@ -14,6 +14,8 @@ Key calls:
 Every plaintext and encrypted write request carries an explicit `ClassificationOutcome`. `Secret` is refused before disk effects; `RequiresEncryption` is refused on the plaintext path; `Trusted` is accepted only for public/internal frontmatter sensitivity.
 
 `WriteOutcome` preserves committed-state semantics so callers do not retry a canonical file write after any error with `committed = true`.
+
+`Frontmatter::observed_at: Option<DateTime<Utc>>` is a typed field, not an `extras` string convention. Parsers hydrate it directly from YAML/JSON, serializers emit it in canonical order when present, and index upserts read the typed field before falling back to `created_at`.
 
 ## Stream F noncanonical repo files
 
@@ -39,6 +41,8 @@ The merge-driver public surface remains `memory_substrate::merge::merge_markdown
 `Substrate::read_path_envelope(&RepoPath)` returns `ReadError::NotACanonicalMemory { path }` for these valid-but-noncanonical paths before attempting frontmatter parsing. `Substrate::read_memory_envelope(&MemoryId)` remains ID-based and resolves only canonical memories.
 
 `query_memory`, `query_recall_index`, and `query_chunks` are restricted to canonical memory index rows; Stream F dream/substrate/lease files are never indexed by those APIs.
+
+`Substrate::update_encrypted_memory_metadata(&MemoryId, mutate)` is the public safe-metadata mutation seam for encrypted canonical memories. It rejects plaintext memories, reads the existing encrypted envelope, runs the caller's mutation on the metadata only, then restores the original body, encrypted path, and encryption envelope before validating and atomically replacing the metadata file. The function must not decrypt, rewrite, or re-key ciphertext.
 
 ## Query API
 
@@ -93,6 +97,8 @@ pub struct RecallIndexQuery {
 - `memory_entities` and `memory_entity_aliases`: deterministic entity list, with entity aliases embedded in each `Entity`.
 
 `match_terms` match existing index projections only: entity id, entity label, entity alias, memory alias, and tag. Rows are returned sorted by memory id so Stream E scoring starts from deterministic input.
+
+`Substrate::query_recall_index_including_metadata_only(RecallIndexQuery)` has the same query shape and row shape, but includes encrypted metadata-only rows for Stream G/I scoring and observability consumers that need safe metadata for encrypted memories. It is still an index projection: it never hydrates encrypted envelopes, never decrypts ciphertext, and never returns plaintext body fragments from encrypted rows. Safe fields are limited to indexed frontmatter metadata plus deterministic auxiliary rows (`tags`, `aliases`, `entities`).
 
 ## Index schema v2
 

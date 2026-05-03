@@ -169,6 +169,14 @@ fn ensure_events_log_identity_schema(connection: &mut Connection) -> rusqlite::R
         return Ok(());
     }
 
+    tracing::warn!(
+        table = "events_log",
+        old_primary_key = "seq",
+        new_primary_key = "event_id",
+        source_of_truth = "JSONL events log",
+        "recreating legacy events_log mirror with event_id primary key; SQLite mirror rows are derived and will be replayed from JSONL"
+    );
+
     let tx = connection.transaction()?;
     tx.execute_batch(
         r#"
@@ -223,4 +231,99 @@ fn memory_column_exists(tx: &Transaction<'_>, column: &str) -> rusqlite::Result<
         }
     }
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fmt;
+    use std::sync::{Arc, Mutex};
+
+    use rusqlite::Connection;
+    use tracing::field::{Field, Visit};
+    use tracing::span::{Attributes, Record};
+    use tracing::{Event, Id, Metadata, Subscriber};
+
+    use super::ensure_events_log_identity_schema;
+
+    #[test]
+    fn events_log_identity_migration_warns_before_recreating_legacy_mirror() -> Result<(), Box<dyn std::error::Error>> {
+        let warnings = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = RecordingSubscriber { warnings: Arc::clone(&warnings) };
+        let mut connection = Connection::open_in_memory()?;
+        connection.execute_batch(
+            r#"
+CREATE TABLE events_log(
+  seq           INTEGER PRIMARY KEY,
+  kind          TEXT NOT NULL,
+  memory_id     TEXT,
+  ts            TEXT NOT NULL,
+  payload_json  TEXT NOT NULL
+);
+"#,
+        )?;
+
+        tracing::subscriber::with_default(subscriber, || ensure_events_log_identity_schema(&mut connection))?;
+
+        let warnings = warnings.lock().map_err(|_| "warnings lock poisoned")?;
+        assert!(
+            warnings.iter().any(|warning| {
+                warning.contains("recreating legacy events_log mirror")
+                    && warning.contains("old_primary_key=\"seq\"")
+                    && warning.contains("new_primary_key=\"event_id\"")
+            }),
+            "expected structured warning, got {warnings:?}"
+        );
+        let event_id_pk: i64 = connection.query_row(
+            "SELECT pk FROM pragma_table_info('events_log') WHERE name = 'event_id'",
+            [],
+            |row| row.get(0),
+        )?;
+        let seq_pk: i64 =
+            connection
+                .query_row("SELECT pk FROM pragma_table_info('events_log') WHERE name = 'seq'", [], |row| row.get(0))?;
+        assert_eq!(event_id_pk, 1);
+        assert_eq!(seq_pk, 0);
+        Ok(())
+    }
+
+    struct RecordingSubscriber {
+        warnings: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl Subscriber for RecordingSubscriber {
+        fn enabled(&self, metadata: &Metadata<'_>) -> bool {
+            *metadata.level() == tracing::Level::WARN
+        }
+
+        fn new_span(&self, _span: &Attributes<'_>) -> Id {
+            Id::from_u64(1)
+        }
+
+        fn record(&self, _span: &Id, _values: &Record<'_>) {}
+
+        fn record_follows_from(&self, _span: &Id, _follows: &Id) {}
+
+        fn event(&self, event: &Event<'_>) {
+            let mut visitor = EventVisitor::default();
+            event.record(&mut visitor);
+            if let Ok(mut warnings) = self.warnings.lock() {
+                warnings.push(visitor.fields.join(" "));
+            }
+        }
+
+        fn enter(&self, _span: &Id) {}
+
+        fn exit(&self, _span: &Id) {}
+    }
+
+    #[derive(Default)]
+    struct EventVisitor {
+        fields: Vec<String>,
+    }
+
+    impl Visit for EventVisitor {
+        fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
+            self.fields.push(format!("{}={value:?}", field.name()));
+        }
+    }
 }

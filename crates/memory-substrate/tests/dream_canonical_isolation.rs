@@ -393,6 +393,7 @@ fn memory_frontmatter(id: &str) -> memory_substrate::Frontmatter {
         status: MemoryStatus::Active,
         created_at: "2026-04-30T12:00:00Z".parse().expect("created_at"),
         updated_at: "2026-04-30T12:00:00Z".parse().expect("updated_at"),
+        observed_at: None,
         author: memory_substrate::Author {
             kind: memory_substrate::AuthorKind::System,
             user_handle: None,

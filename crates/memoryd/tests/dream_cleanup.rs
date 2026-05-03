@@ -148,7 +148,7 @@ async fn observed_at_refresh_is_deterministic_from_live_source_mtime() {
     let saved = fixture.substrate.read_memory(&memory.frontmatter.id).await.expect("read refreshed");
 
     assert_eq!(report.operations.observed_at_refreshed, 1);
-    assert_eq!(saved.frontmatter.extras["observed_at"], serde_json::json!(source_mtime.to_rfc3339()));
+    assert_eq!(saved.frontmatter.observed_at, Some(source_mtime));
 }
 
 #[tokio::test]
@@ -429,6 +429,7 @@ fn sample_memory(id: &str, status: MemoryStatus) -> Memory {
             status,
             created_at: now,
             updated_at: now,
+            observed_at: None,
             author: Author {
                 kind: AuthorKind::System,
                 user_handle: None,

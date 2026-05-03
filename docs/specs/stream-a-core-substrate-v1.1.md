@@ -28,6 +28,11 @@
 17. The release gate must distinguish CI-enforceable criteria from manual-evidence criteria. macOS arm64 is currently manual; the spec must say so honestly rather than imply uniform CI coverage.
 18. Spec acceptance signals must be mechanically traceable to named tests via a coverage manifest, the same way event kinds and error variants already are.
 
+**Post-v1.1 authorized additions (2026-05-02, F-003 ratification):** Stream G's review loop surfaced two substrate APIs that are intentionally part of the public Stream A surface:
+
+19. `Substrate::update_encrypted_memory_metadata(&self, id: &MemoryId, mutate: impl FnOnce(&mut Memory)) -> Result<(), WriteFailure>` may update safe metadata for an encrypted canonical memory without decrypting or replacing ciphertext. The implementation must reject plaintext memories, preserve the encrypted ciphertext bytes and encryption envelope, preserve the encrypted path, validate the mutated frontmatter, and apply the same compare-and-swap atomic write semantics as other metadata writes.
+20. `Substrate::query_recall_index_including_metadata_only(&self, query: RecallIndexQuery) -> SubstrateResult<Vec<RecallIndexRow>>` may include encrypted metadata-only rows in the recall-index projection for observability/scoring consumers. It must project only indexed safe metadata and auxiliary tables; it must not hydrate encrypted envelopes or expose plaintext body fragments from encrypted rows.
+
 ---
 
 ## 1. Purpose
@@ -1680,6 +1685,7 @@ impl Substrate {
     pub async fn read_path(&self, path: &RepoPath) -> Result<MemoryEnvelope, ReadError>;
     pub async fn write_memory(&self, req: WriteRequest) -> Result<WriteOutcome, WriteFailure>;
     pub async fn write_encrypted(&self, req: EncryptedWriteRequest) -> Result<WriteOutcome, WriteFailure>;
+    pub async fn update_encrypted_memory_metadata(&self, id: &MemoryId, mutate: impl FnOnce(&mut Memory)) -> Result<(), WriteFailure>;
     pub async fn tombstone_memory(&self, req: TombstoneRequest) -> Result<WriteOutcome, WriteFailure>;
 }
 ```
@@ -1711,6 +1717,8 @@ pub fn parse_memory_id(s: &str) -> Result<MemoryId, IdError>;
 impl Substrate {
     pub async fn reindex(&self, opts: ReindexOptions) -> Result<ReindexReport, IndexError>;
     pub async fn query_memory(&self, query: MemoryQuery) -> Result<Vec<MemoryHit>, QueryError>;
+    pub async fn query_recall_index(&self, query: RecallIndexQuery) -> Result<Vec<RecallIndexRow>, QueryError>;
+    pub async fn query_recall_index_including_metadata_only(&self, query: RecallIndexQuery) -> Result<Vec<RecallIndexRow>, QueryError>;
     pub async fn query_chunks(&self, query: ChunkQuery) -> Result<Vec<ChunkHit>, QueryError>;
     pub async fn update_embedding(&self, req: EmbeddingUpdate) -> Result<(), VectorError>;
     pub async fn drop_embedding_model(&self, triple: EmbeddingTriple) -> Result<DropTripleReport, VectorError>;

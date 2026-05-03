@@ -538,8 +538,21 @@ Rules:
 
 - Section tags are always present and in the order above.
 - Empty sections contain no placeholder prose.
-- Memory entries use one line per fact:
-  `- [<id>] <summary> (updated <YYYY-MM-DD>; source <source_kind>; confidence <0.00..1.00>)`
+- Memory entries inside `<entity-recall>` and `<recent-memory>` are XML
+  elements, not free-form bullets. The exact shape is:
+  ```xml
+  <memory ref="<id>" updated="<RFC3339>" source="<source_kind>" confidence="<0.00..1.00>">
+    <summary>...</summary>
+    <snippet>...</snippet>
+  </memory>
+  ```
+- The `ref`, `updated`, `source`, and `confidence` attributes are always
+  present. `<summary>` and `<snippet>` child elements are always present; when
+  no body snippet is eligible, `<snippet>` is empty.
+- Attribute values must be XML-escaped for attributes; summary/snippet content
+  must be XML-escaped as text. Renderer output must be deterministic: stable
+  attribute order (`ref`, `updated`, `source`, `confidence`), stable child order
+  (`summary`, `snippet`), and no free-form suffix text outside the XML element.
 - Body snippets are included only for plaintext memories whose
   `retrieval_policy.index_body` is true and only inside entity/recent sections.
 - Summaries are bounded to 240 UTF-8 bytes per memory entry; snippets to 360
@@ -731,12 +744,20 @@ For plaintext records, one bounded snippet may be emitted when it helps identify
 the remembered fact. For encrypted records, emit only summary and safe
 descriptors; never emit body text or masked-body projections.
 
+Each selected memory is rendered with the `<memory ref="..." updated="..."
+source="..." confidence="..."><summary>...</summary><snippet>...</snippet></memory>`
+format defined in §5. Eval harness assertions parse the `ref` attribute; do not
+replace these entries with bullets or prose.
+
 ### 9.4 `<recent-memory>`
 
 Included only when `include_recent` is true. Includes active/pinned memories in
 scope updated within the last seven days, after higher-priority sections have
 already selected their entries. Duplicate ids already emitted in earlier
 sections are skipped.
+
+Each selected memory is rendered with the same `<memory>` element format defined
+in §5. The Stream H eval parser depends on this exact `ref` attribute contract.
 
 ### 9.5 `<pending-attention>`
 

@@ -247,6 +247,7 @@ impl RecallHitFixture {
                 status,
                 created_at: instant("2026-05-01T12:00:00Z"),
                 updated_at: instant("2026-05-01T12:00:00Z"),
+                observed_at: None,
                 author: Author {
                     kind: AuthorKind::Agent,
                     user_handle: None,

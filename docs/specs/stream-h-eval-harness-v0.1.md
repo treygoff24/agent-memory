@@ -7,6 +7,8 @@
 
 **Revision goal (initial v0.1):** initial Stream H contract for v1 release. Establishes the **19-test catalog** (12 handbook tests + 6 Memorum-specific domain tests + 1 Stream I peer-update framing test, see §10.1), defines the simulator-driven test architecture, the three real-harness end-to-end tests (#13, #15, #19), the `memorum-eval` orchestrator binary, CI integration with blocking release-candidate gate and non-blocking daily main-branch run, and the regression-as-test workflow.
 
+**Post-shipping audit amendment (2026-05-02):** tests #17 and #18 are authored but deferred for v1 because their underlying contracts are not shipped: #17 depends on same-device/re-entrant Stream F lease semantics, and #18 depends on full Stream D key-rotation/decommissioned-key semantics. The test bodies remain in place and self-skip through `MEMORUM_EVAL_SKIP`; JSON reports include `skip_kind: "feature_deferred"` for these absent-feature skips so they are distinct from auth skips and ordinary runtime skips. Catalog accounting is **19 authored, 17 active, 2 deferred** until the upstream contracts ship or the tests are rewritten to target shipped behavior.
+
 Stream H is the evaluation harness for Memorum. Its job is narrow and permanent: provide a test suite that can fail, run it on every release candidate, and grow it by one test for every production failure. The handbook is explicit: "A memory architecture is not real until it has tests that can fail. The intuition 'it feels memoryful' is unreliable." Stream H is the structural implementation of that principle.
 
 ---
@@ -45,6 +47,25 @@ Stream H is a pure test consumer. It requires no new production surface addition
 
 - **Stream A `Substrate::read_memory_envelope` returns `ReadError::NotACanonicalMemory` for dream/substrate/lease paths.** Test #3 in §9 (meta) asserts this. No change required; it is already part of the Stream F contract.
 - **Stream C governance refusal reason codes are stable enum values.** Tests #5 and #15 assert on `"refused"` status with specific `reason` codes. No change required; the Stream C governance API documents these as stable.
+
+### 1.3 Recall assertion XML contract
+
+Stream H recall assertions consume the Stream E renderer output directly. A
+passive recall item is a `<memory>` element inside `<entity-recall>` or
+`<recent-memory>` with this exact shape:
+
+```xml
+<memory ref="<id>" updated="<RFC3339>" source="<source_kind>" confidence="<0.00..1.00>">
+  <summary>...</summary>
+  <snippet>...</snippet>
+</memory>
+```
+
+`parse_recall_block` and `assert_memory_in_recall` use the `ref` attribute as
+the stable memory id. Assertion fixtures that exercise recall content must be
+generated from `memoryd::recall::render_memory_entry` where practical, so Stream
+H cannot silently drift from Stream E by hand-crafting incompatible recall XML.
+Bullet-list recall entries are not valid Stream H recall-memory fixtures.
 
 ---
 
@@ -482,8 +503,8 @@ These tests exercise Memorum-specific behaviors not covered by the handbook's ge
 
 | Harness | Config file format | Path strategy | CLI flag |
 |---|---|---|---|
-| `claude -p` (Claude Code CLI) | JSON `{ "mcpServers": { "<server_name>": { "command": "memoryd", "args": ["--socket", "<socket_path>"] } } }` | Per-invocation temp file under `<sandbox>/.harness-mcp/claude-<run_id>.json` | `--mcp-config <path>` |
-| `codex exec` (Codex CLI) | TOML `[mcp.<server_name>]\n command = "memoryd"\n args = ["--socket", "<socket_path>"]` | Per-invocation temp file under `<sandbox>/.harness-mcp/codex-<run_id>.toml` | `--mcp-config <path>` (or whichever flag matches the shipped Codex CLI version) |
+| `claude -p` (Claude Code CLI) | JSON `{ "mcpServers": { "<server_name>": { "command": "memoryd", "args": ["mcp", "--socket", "<socket_path>"] } } }` | Per-invocation temp file under `<sandbox>/.harness-mcp/claude-<run_id>.json` | `--mcp-config <path>` |
+| `codex exec` (Codex CLI) | TOML `[mcp.<server_name>]\n command = "memoryd"\n args = ["mcp", "--socket", "<socket_path>"]` | Per-invocation temp file under `<sandbox>/.harness-mcp/codex-<run_id>.toml` | `--mcp-config <path>` (or whichever flag matches the shipped Codex CLI version) |
 
 The exact flag names are validated against the installed CLI's `--help` output by `HarnessRunner::detect_cli()` at orchestrator startup; if the flag name has changed in a CLI update, the test fails at startup with `HARNESS_INCOMPATIBLE_CLI` rather than emitting confusing per-test errors.
 
@@ -614,6 +635,8 @@ This test is in the serial execution group (§6.3) because it mutates filesystem
 
 #### Test #17 — Lease contention resolution
 
+**v1 status:** deferred/self-skipped. The shipped Stream F lease model does not include the same-device/re-entrant lease behavior this test needs. The test remains in the catalog as a tracking guard and reports `MEMORUM_EVAL_SKIP:SEMANTIC_PARTIAL_LEASE_REENTRANCY_NOT_SHIPPED` with `skip_kind: "feature_deferred"` until Stream F either ships that contract or this test is rewritten around shipped lease semantics.
+
 **Source:** Memorum-specific. Validates that when two simulated devices attempt to acquire the same dream journal lease simultaneously, only one succeeds and the other backs off gracefully.
 
 **Mode:** simulator-driven.
@@ -646,6 +669,8 @@ This test is in the serial execution group (§6.3) because it involves two `memo
 ---
 
 #### Test #18 — Encrypted tier key rotation
+
+**v1 status:** deferred/self-skipped. The shipped Stream D/device surface does not implement the full key-rotation contract below (`keys/active.json`, `keys/decommissioned/`, old-key fallback reads, and forward-secrecy assertions). The test remains in the catalog as a tracking guard and reports `MEMORUM_EVAL_SKIP:STREAM_D_ROTATION_CONTRACT_NOT_SHIPPED` with `skip_kind: "feature_deferred"` until Stream D ships that contract or this test is rewritten around shipped key behavior.
 
 **Source:** Memorum-specific. Validates that rotating the age X25519 key allows existing encrypted memories to remain readable, new writes use the new key, and the decommissioned key cannot decrypt new content.
 
@@ -849,7 +874,7 @@ pub struct HarnessRunResult {
 
 **Stdin transport.** Prompts are passed via stdin exclusively (same requirement as Stream F §2.10 — argv is visible to local users). The `HarnessRunner` opens the subprocess with a stdin pipe and writes the rendered prompt. No prompt text appears in argv.
 
-**MCP wiring.** The real harness must be configured to use the test's `memoryd` instance as its MCP server. This is passed via the daemon socket path in an environment variable (`MEMORUM_EVAL_SOCKET_PATH`). The prompt template for each test includes an instruction to configure the MCP connection accordingly — or the `HarnessRunner` injects a harness-specific MCP configuration into the environment before spawning.
+**MCP wiring.** The real harness must be configured to launch `memoryd mcp --socket <socket_path>` as the stdio MCP server for the test's daemon instance. The socket path may also be passed to harness-runner plumbing as `MEMORUM_EVAL_SOCKET_PATH`, but prompt templates do not configure MCP themselves; the `HarnessRunner` injects a harness-specific MCP configuration before spawning.
 
 ### 5.2 Prompt template format
 
@@ -935,11 +960,11 @@ JSON output (emitted to stdout or `--output-file`):
   "started_at": "2026-05-01T03:00:00Z",
   "finished_at": "2026-05-01T03:02:13Z",
   "harness_mode": "mock",
-  "total": 18,
-  "passed": 17,
-  "failed": 1,
-  "skipped": 0,
-  "partial": false,
+  "total": 19,
+  "passed": 16,
+  "failed": 0,
+  "skipped": 3,
+  "partial": true,
   "tests": [
     {
       "number": 1,
@@ -951,7 +976,9 @@ JSON output (emitted to stdout or `--output-file`):
       "assertions": 5,
       "assertions_passed": 5,
       "assertions_failed": 0,
-      "failure_detail": null
+      "failure_detail": null,
+      "skip_reason": null,
+      "skip_kind": null
     },
     {
       "number": 13,
@@ -960,13 +987,14 @@ JSON output (emitted to stdout or `--output-file`):
       "mode": "real_harness",
       "status": "skipped",
       "skip_reason": "SKIP_NO_AUTH",
+      "skip_kind": "auth_missing",
       "duration_ms": 0
     }
   ]
 }
 ```
 
-When `partial: true`, at least one real-harness test was skipped due to missing auth. The run is not counted as a full pass for dogfood gate purposes.
+When `partial: true`, at least one test was skipped. `skip_kind` distinguishes `auth_missing`, `feature_deferred`, and `runtime_self_skip`. Feature-deferred skips (#17/#18 in v1) are honest absent-contract tracking entries, not passes. Auth-missing skips are not counted as a full dogfood pass.
 
 ### 6.3 Parallel and serial groups
 

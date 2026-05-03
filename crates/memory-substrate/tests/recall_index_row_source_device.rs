@@ -38,6 +38,7 @@ fn sample_memory(id: &str, source_device: Option<&str>) -> Memory {
             status: MemoryStatus::Active,
             created_at: now,
             updated_at: now,
+            observed_at: None,
             author: Author {
                 kind: AuthorKind::System,
                 user_handle: None,

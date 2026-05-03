@@ -58,7 +58,8 @@ Options:
       "assertions_passed": 1,
       "assertions_failed": 0,
       "failure_detail": null,
-      "skip_reason": null
+      "skip_reason": null,
+      "skip_kind": null
     }
   ]
 }
@@ -66,9 +67,10 @@ Options:
 
 Field notes:
 
-- `partial` is true when a real-harness test skipped because credentials or CLI auth were unavailable.
+- `partial` is true when any test is skipped.
 - `missing_credentials` is populated only for partial runs.
-- Each test entry always includes `failure_detail` and `skip_reason`; absent values are JSON `null`.
+- Each test entry always includes `failure_detail`, `skip_reason`, and `skip_kind`; absent values are JSON `null`.
+- `skip_kind` is `auth_missing`, `feature_deferred`, or `runtime_self_skip`. T17/T18 use `feature_deferred` in v1 because their upstream Stream F/D contracts are not shipped.
 - Test statuses are `passed`, `failed`, or `skipped`.
 - Test modes are `simulator` or `real_harness`.
 - Test groups are `handbook`, `domain`, or `regression`.
@@ -84,27 +86,27 @@ Field notes:
 
 ## Test catalog
 
-|   # | Name                                 | Group      | Mode         | Execution |
-| --: | ------------------------------------ | ---------- | ------------ | --------- |
-|  01 | `exact_identifier_recall`            | handbook   | simulator    | parallel  |
-|  02 | `superseded_fact_handling`           | handbook   | simulator    | parallel  |
-|  03 | `cross_project_entity_collision`     | handbook   | simulator    | parallel  |
-|  04 | `abstention`                         | handbook   | simulator    | parallel  |
-|  05 | `poisoned_candidate`                 | handbook   | simulator    | parallel  |
-|  06 | `tool_output_preservation`           | handbook   | simulator    | parallel  |
-|  07 | `subagent_writeback`                 | handbook   | simulator    | parallel  |
-|  08 | `deletion_and_tombstone`             | handbook   | simulator    | parallel  |
-|  09 | `recall_budget_pressure`             | handbook   | simulator    | parallel  |
-|  10 | `compaction_resumption`              | handbook   | simulator    | parallel  |
-|  11 | `self_poisoning`                     | handbook   | simulator    | parallel  |
-|  12 | `temporal_validity`                  | handbook   | simulator    | parallel  |
-|  13 | `cross_harness_substrate_sharing`    | domain     | real_harness | serial    |
-|  14 | `merge_driver_semantic_correctness`  | domain     | simulator    | serial    |
-|  15 | `privacy_filter_refusal_retry`       | domain     | real_harness | serial    |
-|  16 | `reality_check_drift_scoring_sanity` | domain     | simulator    | parallel  |
-|  17 | `lease_contention_resolution`        | domain     | simulator    | serial    |
-|  18 | `encrypted_tier_key_rotation`        | domain     | simulator    | serial    |
-|  19 | `peer_update_framing_correctness`    | regression | real_harness | serial    |
+|   # | Name                                 | Group      | Mode         | Execution                     |
+| --: | ------------------------------------ | ---------- | ------------ | ----------------------------- |
+|  01 | `exact_identifier_recall`            | handbook   | simulator    | parallel                      |
+|  02 | `superseded_fact_handling`           | handbook   | simulator    | parallel                      |
+|  03 | `cross_project_entity_collision`     | handbook   | simulator    | parallel                      |
+|  04 | `abstention`                         | handbook   | simulator    | parallel                      |
+|  05 | `poisoned_candidate`                 | handbook   | simulator    | parallel                      |
+|  06 | `tool_output_preservation`           | handbook   | simulator    | parallel                      |
+|  07 | `subagent_writeback`                 | handbook   | simulator    | parallel                      |
+|  08 | `deletion_and_tombstone`             | handbook   | simulator    | parallel                      |
+|  09 | `recall_budget_pressure`             | handbook   | simulator    | parallel                      |
+|  10 | `compaction_resumption`              | handbook   | simulator    | parallel                      |
+|  11 | `self_poisoning`                     | handbook   | simulator    | parallel                      |
+|  12 | `temporal_validity`                  | handbook   | simulator    | parallel                      |
+|  13 | `cross_harness_substrate_sharing`    | domain     | real_harness | serial                        |
+|  14 | `merge_driver_semantic_correctness`  | domain     | simulator    | serial                        |
+|  15 | `privacy_filter_refusal_retry`       | domain     | real_harness | serial                        |
+|  16 | `reality_check_drift_scoring_sanity` | domain     | simulator    | parallel                      |
+|  17 | `lease_contention_resolution`        | domain     | simulator    | serial; deferred/self-skipped |
+|  18 | `encrypted_tier_key_rotation`        | domain     | simulator    | serial; deferred/self-skipped |
+|  19 | `peer_update_framing_correctness`    | regression | real_harness | serial                        |
 
 ## Regression metadata contract
 

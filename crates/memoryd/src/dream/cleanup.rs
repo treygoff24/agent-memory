@@ -14,7 +14,6 @@ use memory_substrate::{
     ClassificationOutcome, EventContext, Memory, MemoryId, MemoryQuery, MemoryStatus, RepoPath, Sha256, Substrate,
     WriteMode, WriteRequest,
 };
-use serde_json::Value;
 use thiserror::Error;
 
 use crate::dream::rehydration::resolve_repo_relative_file_ref;
@@ -302,11 +301,10 @@ async fn refresh_observed_at(
             }
         };
         let mtime = DateTime::<Utc>::from(modified);
-        let next = Value::String(mtime.to_rfc3339());
-        if memory.frontmatter.extras.get("observed_at") == Some(&next) {
+        if memory.frontmatter.observed_at == Some(mtime) {
             continue;
         }
-        memory.frontmatter.extras.insert("observed_at".to_string(), next);
+        memory.frontmatter.observed_at = Some(mtime);
         memory.frontmatter.updated_at = config.now;
         if let Err(err) =
             write_cleanup_memory(substrate, memory, base_hash, "memoryd cleanup refreshed observed_at").await

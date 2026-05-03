@@ -5,30 +5,77 @@ use memorum_eval::assertions::{
     assert_memory_in_recall, assert_no_memory_in_recall, assert_no_pii_on_disk, assert_xml_valid, parse_recall_block,
     AssertionError,
 };
+use memoryd::recall::{
+    render_memory_entry, render_startup_frame, RecallEntry, RecallExplanation, RecallSectionName,
+    RenderedRecallSection, SessionBinding,
+};
 
-fn sample_recall_xml() -> &'static str {
-    r#"<memory-recall omitted_count="2">
-        <memory ref="mem-alpha">Alpha body</memory>
-        <memory ref="mem-beta" />
-        <pending-attention>
-            <item kind="drift" count="3">Review stale claims</item>
-        </pending-attention>
-    </memory-recall>"#
+fn sample_recall_xml() -> String {
+    let memories = [
+        RecallEntry {
+            id: "mem-alpha".to_owned(),
+            summary: "Alpha body".to_owned(),
+            snippet: Some("Alpha snippet".to_owned()),
+            updated: "2026-05-02T00:00:00Z".to_owned(),
+            source_kind: "agent_primary".to_owned(),
+            confidence: "0.95".to_owned(),
+        },
+        RecallEntry {
+            id: "mem-beta".to_owned(),
+            summary: "Beta body".to_owned(),
+            snippet: None,
+            updated: "2026-05-02T00:00:01Z".to_owned(),
+            source_kind: "agent_primary".to_owned(),
+            confidence: "0.90".to_owned(),
+        },
+    ]
+    .iter()
+    .map(render_memory_entry)
+    .collect::<Vec<_>>()
+    .join("\n");
+
+    render_startup_frame(
+        &SessionBinding {
+            session_id: "sess_eval_assertions".to_owned(),
+            harness: "memorum-eval".to_owned(),
+            harness_version: None,
+            cwd: "/tmp/memorum-eval".to_owned(),
+            project: None,
+            namespaces_in_scope: vec!["me".to_owned(), "agent".to_owned()],
+        },
+        &RecallExplanation::empty(3600),
+        &[
+            RenderedRecallSection { name: RecallSectionName::RecentMemory, body: memories },
+            RenderedRecallSection {
+                name: RecallSectionName::PendingAttention,
+                body: r#"<item kind="drift" count="3">Review stale claims</item>"#.to_owned(),
+            },
+        ],
+    )
 }
 
 #[test]
-fn parses_recall_block_memories_omissions_and_pending_attention() {
-    let block = parse_recall_block(sample_recall_xml()).expect("recall block should parse");
+fn parses_renderer_generated_recall_block_memories_and_pending_attention() {
+    let block = parse_recall_block(&sample_recall_xml()).expect("recall block should parse");
 
     assert_eq!(block.memories.len(), 2);
     assert_eq!(block.memories[0].ref_id, "mem-alpha");
-    assert_eq!(block.memories[0].body, "Alpha body");
+    assert!(block.memories[0].body.contains("<summary>Alpha body</summary>"));
+    assert!(block.memories[0].body.contains("<snippet>Alpha snippet</snippet>"));
     assert_eq!(block.memories[1].ref_id, "mem-beta");
-    assert_eq!(block.omitted_count, Some(2));
+    assert_eq!(block.omitted_count, None);
     assert_eq!(block.pending_attention_items.len(), 1);
     assert_eq!(block.pending_attention_items[0].kind, Some("drift".to_string()));
     assert_eq!(block.pending_attention_items[0].count, Some(3));
     assert_eq!(block.pending_attention_items[0].text, "Review stale claims");
+}
+
+#[test]
+fn parses_omitted_count_attribute_when_present() {
+    let block =
+        parse_recall_block(r#"<memory-recall omitted_count="2"></memory-recall>"#).expect("recall block should parse");
+
+    assert_eq!(block.omitted_count, Some(2));
 }
 
 #[test]
@@ -47,7 +94,7 @@ fn parses_omitted_count_element_when_attribute_is_absent() {
 
 #[test]
 fn asserts_memory_presence_with_rich_failure() {
-    let block = parse_recall_block(sample_recall_xml()).expect("recall block should parse");
+    let block = parse_recall_block(&sample_recall_xml()).expect("recall block should parse");
 
     assert_memory_in_recall(&block, "mem-alpha").expect("present memory should pass");
 
@@ -61,7 +108,7 @@ fn asserts_memory_presence_with_rich_failure() {
 
 #[test]
 fn asserts_memory_absence_with_rich_failure() {
-    let block = parse_recall_block(sample_recall_xml()).expect("recall block should parse");
+    let block = parse_recall_block(&sample_recall_xml()).expect("recall block should parse");
 
     assert_no_memory_in_recall(&block, "missing-ref").expect("absent memory should pass");
 
@@ -75,7 +122,7 @@ fn asserts_memory_absence_with_rich_failure() {
 
 #[test]
 fn validates_well_formed_and_rejects_malformed_xml() {
-    assert_xml_valid(sample_recall_xml()).expect("well-formed recall block should be valid");
+    assert_xml_valid(&sample_recall_xml()).expect("well-formed recall block should be valid");
 
     let error = assert_xml_valid("<memory-recall><memory ref=\"oops\"></memory-recall>")
         .expect_err("malformed block should fail");

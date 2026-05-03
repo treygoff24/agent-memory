@@ -78,14 +78,7 @@ async fn test_confirm_updates_observed_at_and_bumps_confidence() {
         RealityCheckResponse::RespondAccepted { completion: RealityCheckCompletion::Complete { .. }, .. }
     ));
     let after = fixture.substrate.read_memory(&id).await.expect("memory after");
-    let observed_at = after
-        .frontmatter
-        .extras
-        .get("observed_at")
-        .and_then(serde_json::Value::as_str)
-        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
-        .map(|value| value.with_timezone(&Utc))
-        .expect("confirm persists observed_at");
+    let observed_at = after.frontmatter.observed_at.expect("confirm persists observed_at");
     assert!(observed_at > before.frontmatter.updated_at);
     assert!(after.frontmatter.updated_at >= before.frontmatter.updated_at);
     assert!((after.frontmatter.confidence - 0.82).abs() < 0.000_001);
@@ -109,7 +102,7 @@ async fn test_metadata_update_does_not_reset_observed_at() {
         })
         .await;
     let confirmed = fixture.substrate.read_memory(&id).await.expect("confirmed memory");
-    let observed_at = confirmed.frontmatter.extras.get("observed_at").cloned();
+    let observed_at = confirmed.frontmatter.observed_at;
 
     let session_id =
         fixture.reality_check(RealityCheckRequest::Run { session_id: None, namespace: None, limit: None }).await;
@@ -125,7 +118,7 @@ async fn test_metadata_update_does_not_reset_observed_at() {
         .await;
 
     let updated = fixture.substrate.read_memory(&id).await.expect("updated memory");
-    assert_eq!(updated.frontmatter.extras.get("observed_at"), observed_at.as_ref());
+    assert_eq!(updated.frontmatter.observed_at, observed_at);
 }
 
 #[tokio::test]
@@ -327,15 +320,7 @@ async fn test_confirm_updates_encrypted_metadata_without_plaintext_body() {
     assert!(matches!(response, RealityCheckResponse::RespondAccepted { .. }));
     let after = fixture.substrate.read_memory_envelope(&id).await.expect("encrypted after");
     assert_ciphertext_preserved(&before.content, &after.content);
-    let observed_at = after
-        .metadata
-        .frontmatter
-        .extras
-        .get("observed_at")
-        .and_then(serde_json::Value::as_str)
-        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
-        .map(|value| value.with_timezone(&Utc))
-        .expect("encrypted confirm persists observed_at");
+    let observed_at = after.metadata.frontmatter.observed_at.expect("encrypted confirm persists observed_at");
     assert!(observed_at > before.metadata.frontmatter.updated_at);
     assert!((after.metadata.frontmatter.confidence - 0.82).abs() < 0.000_001);
     assert!(fixture.events().iter().any(|event| {
@@ -631,6 +616,7 @@ fn sample_memory(id: MemoryId, summary: &str, body: &str, scope: Scope) -> Memor
             status: MemoryStatus::Active,
             created_at: now,
             updated_at: now,
+            observed_at: None,
             author: Author {
                 kind: AuthorKind::User,
                 user_handle: Some("memoryd-test".to_owned()),

@@ -4,8 +4,9 @@ use memoryd::protocol::{
     CandidateWriteResult, ComponentScores, DreamRunReport, DreamStatusCounters, DreamStatusReport, GetResponse,
     GovernanceForgetResponse, GovernanceStatus, GovernanceSupersedeResponse, GovernanceWriteResponse, HarnessCliStatus,
     LeaseRecord, ObserveKind, ObserveResponse, ObserveTarget, PassOutcome, PassStatus, PromptTransport,
-    RealityCheckAction, RealityCheckItem, RealityCheckRequest, RealityCheckResponse, RequestEnvelope, RequestPayload,
-    ResponseEnvelope, ResponsePayload, RevealResponse, ScopeRunSummary, SearchHit, SearchResponse, WriteNoteResponse,
+    RealityCheckAction, RealityCheckItem, RealityCheckRequest, RealityCheckResponse, RecallHitSummary,
+    RecallHitsResponse, RequestEnvelope, RequestPayload, ResponseEnvelope, ResponsePayload, RevealResponse,
+    ScopeRunSummary, SearchHit, SearchResponse, WriteNoteResponse,
 };
 use memoryd::recall::StartupRequest;
 
@@ -25,6 +26,13 @@ fn protocol_contract_round_trips_request_variants_as_snake_case_json() {
         RequestEnvelope::new(
             "req-trust-artifact",
             RequestPayload::TrustArtifact { id: "mem_20260428_0123456789abcdef_000001".to_owned() },
+        ),
+        RequestEnvelope::new(
+            "req-recall-hits",
+            RequestPayload::RecallHits {
+                since: Some(Utc.with_ymd_and_hms(2026, 5, 2, 0, 0, 0).unwrap()),
+                limit: Some(5),
+            },
         ),
         RequestEnvelope::new(
             "req-reveal",
@@ -88,6 +96,32 @@ fn protocol_contract_round_trips_request_variants_as_snake_case_json() {
         let decoded = RequestEnvelope::from_json_line(&line).expect("request deserializes");
         assert_eq!(decoded, request);
     }
+}
+
+#[test]
+fn protocol_contract_recall_hits_response_round_trips_daemon_dto() {
+    let response = ResponseEnvelope::success(
+        "req-recall-hits",
+        ResponsePayload::RecallHits(RecallHitsResponse {
+            since: None,
+            limit: 1,
+            hits: vec![RecallHitSummary {
+                event_id: "evt_recall_hit".to_owned(),
+                device: "dev_protocol".to_owned(),
+                seq: 7,
+                memory_id: MemoryId::new("mem_20260502_0123456789abcdef_000001"),
+                recalled_at: Utc.with_ymd_and_hms(2026, 5, 2, 12, 0, 0).unwrap(),
+                summary: Some("Protocol recall-hit fixture".to_owned()),
+            }],
+        }),
+    );
+
+    let line = response.to_json_line().expect("recall hits response serializes");
+    let decoded = ResponseEnvelope::from_json_line(&line).expect("recall hits response deserializes");
+
+    assert_eq!(decoded, response);
+    assert!(line.contains("\"recall_hits\""));
+    assert!(line.contains("Protocol recall-hit fixture"));
 }
 
 #[test]

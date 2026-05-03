@@ -72,21 +72,21 @@ pub struct StartupCoordinationRender<'a> {
 
 pub fn render_memory_entry(entry: &RecallEntry) -> String {
     let summary = truncate_utf8_bytes(&entry.summary, SUMMARY_MAX_BYTES).value;
-    let suffix = format!(
-        " (updated {}; source {}; confidence {})",
-        escape_xml_text(&entry.updated),
-        escape_xml_text(&entry.source_kind),
-        escape_xml_text(&entry.confidence)
-    );
+    let snippet = entry
+        .snippet
+        .as_deref()
+        .map(|snippet| truncate_utf8_bytes(snippet, SNIPPET_MAX_BYTES).value)
+        .unwrap_or_default();
 
-    let mut rendered = format!("- [{}] {}", escape_xml_text(&entry.id), escape_xml_text(&summary));
-    if let Some(snippet) = &entry.snippet {
-        let snippet = truncate_utf8_bytes(snippet, SNIPPET_MAX_BYTES).value;
-        rendered.push_str(" — ");
-        rendered.push_str(&escape_xml_text(&snippet));
-    }
-    rendered.push_str(&suffix);
-    rendered
+    format!(
+        "<memory ref=\"{}\" updated=\"{}\" source=\"{}\" confidence=\"{}\">\n  <summary>{}</summary>\n  <snippet>{}</snippet>\n</memory>",
+        escape_xml_attr(&entry.id),
+        escape_xml_attr(&entry.updated),
+        escape_xml_attr(&entry.source_kind),
+        escape_xml_attr(&entry.confidence),
+        escape_xml_text(&summary),
+        escape_xml_text(&snippet)
+    )
 }
 
 pub fn render_pending_attention_body(

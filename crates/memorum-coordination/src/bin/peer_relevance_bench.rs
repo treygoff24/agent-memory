@@ -41,9 +41,16 @@ struct Args {
     #[arg(long)]
     baseline: Option<PathBuf>,
 
-    /// Explicit release/update mode. This is the only mode that writes the canonical output file.
+    /// Explicit release/update mode target. Without --promote-canonical this writes PATH.proposed only.
+    #[arg(long, alias = "write-output")]
+    output: Option<PathBuf>,
+
+    /// Promote --output directly to the canonical file.
+    ///
+    /// This must only be run from a human shell session after reviewing the proposed file;
+    /// automation should omit this flag so canonical Stream I baselines are never self-promoted.
     #[arg(long)]
-    write_output: Option<PathBuf>,
+    promote_canonical: bool,
 
     /// Embedding vector dimension used to construct the synthetic fixture.
     /// Default is 1536 (typical production dimension).  Pass a higher value
@@ -127,10 +134,20 @@ fn main() -> anyhow::Result<()> {
         enforce_budget(&report)?;
     }
 
-    if let Some(output_path) = args.write_output.as_ref() {
+    if let Some(output_path) = args.output.as_ref() {
         guard_immutable_baseline_path(output_path)?;
         enforce_budget(&report)?;
-        write_report(output_path, &report)?;
+        let destination = output_destination(output_path, args.promote_canonical);
+        write_report(&destination, &report)?;
+        if args.promote_canonical {
+            eprintln!("promoted canonical Stream I benchmark output to {}", destination.display());
+        } else {
+            eprintln!(
+                "wrote proposed Stream I benchmark output to {}; rerun with --promote-canonical from a human shell to update {}",
+                destination.display(),
+                output_path.display()
+            );
+        }
     }
 
     println!("{}", serde_json::to_string_pretty(&report)?);
@@ -141,14 +158,17 @@ fn validate_mode(args: &Args) -> anyhow::Result<()> {
     if args.profile.trim().is_empty() {
         bail!("--profile requires a non-empty value");
     }
-    if args.assert == args.write_output.is_some() {
-        bail!("choose exactly one mode: --assert with --baseline, or --write-output <path>");
+    if args.assert == args.output.is_some() {
+        bail!("choose exactly one mode: --assert with --baseline, or --output <path> [--promote-canonical]");
     }
     if args.assert && args.baseline.is_none() {
         bail!("--assert requires --baseline <path>");
     }
     if !args.assert && args.baseline.is_some() {
         bail!("--baseline is only valid with --assert");
+    }
+    if args.promote_canonical && args.output.is_none() {
+        bail!("--promote-canonical requires --output <path>");
     }
     Ok(())
 }
@@ -282,6 +302,14 @@ fn proposed_baseline_path(path: &Path) -> PathBuf {
     let mut proposed = path.as_os_str().to_os_string();
     proposed.push(".proposed");
     PathBuf::from(proposed)
+}
+
+fn output_destination(path: &Path, promote_canonical: bool) -> PathBuf {
+    if promote_canonical {
+        path.to_path_buf()
+    } else {
+        proposed_baseline_path(path)
+    }
 }
 
 fn guard_immutable_baseline_path(path: &Path) -> anyhow::Result<()> {
@@ -453,4 +481,48 @@ fn embedding_vector(index: usize, dimension: usize) -> Vec<f32> {
 
 fn fixture_now() -> anyhow::Result<DateTime<Utc>> {
     Utc.with_ymd_and_hms(2026, 5, 2, 12, 0, 0).single().context("fixed Stream I bench timestamp must be valid")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn output_without_promote_targets_proposed_file() {
+        let args = Args::try_parse_from([
+            "peer_relevance_bench",
+            "--profile",
+            "darwin-arm64",
+            "--output",
+            "bench/stream-i-cross-session-results.darwin-arm64.json",
+        ])
+        .expect("args parse");
+
+        validate_mode(&args).expect("mode valid");
+        assert!(!args.promote_canonical);
+        assert_eq!(
+            output_destination(args.output.as_deref().expect("output"), false),
+            PathBuf::from("bench/stream-i-cross-session-results.darwin-arm64.json.proposed")
+        );
+    }
+
+    #[test]
+    fn promote_canonical_requires_explicit_flag() {
+        let args = Args::try_parse_from([
+            "peer_relevance_bench",
+            "--profile",
+            "darwin-arm64",
+            "--output",
+            "bench/stream-i-cross-session-results.darwin-arm64.json",
+            "--promote-canonical",
+        ])
+        .expect("args parse");
+
+        validate_mode(&args).expect("mode valid");
+        assert_eq!(
+            output_destination(args.output.as_deref().expect("output"), args.promote_canonical),
+            PathBuf::from("bench/stream-i-cross-session-results.darwin-arm64.json")
+        );
+    }
 }

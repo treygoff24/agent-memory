@@ -196,6 +196,7 @@ fn review_memory() -> Memory {
             status: MemoryStatus::Quarantined,
             created_at: now,
             updated_at: now,
+            observed_at: None,
             author: Author {
                 kind: AuthorKind::System,
                 user_handle: None,

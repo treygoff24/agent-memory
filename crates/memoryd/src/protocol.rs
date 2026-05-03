@@ -59,6 +59,10 @@ pub enum RequestPayload {
     TrustArtifact {
         id: String,
     },
+    RecallHits {
+        since: Option<DateTime<Utc>>,
+        limit: Option<usize>,
+    },
     Reveal {
         id: String,
         reason: String,
@@ -245,6 +249,7 @@ pub enum ResponsePayload {
     Search(SearchResponse),
     Get(GetResponse),
     TrustArtifact(Box<crate::trust_artifact::TrustArtifact>),
+    RecallHits(RecallHitsResponse),
     Reveal(RevealResponse),
     WriteNote(WriteNoteResponse),
     GovernanceWrite(GovernanceWriteResponse),
@@ -265,6 +270,23 @@ pub enum ResponsePayload {
     WebStatus(WebDashboardStatus),
     RealityCheck(RealityCheckResponse),
     TestInjectEvent(TestInjectEventResponse),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecallHitsResponse {
+    pub since: Option<DateTime<Utc>>,
+    pub limit: usize,
+    pub hits: Vec<RecallHitSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecallHitSummary {
+    pub event_id: String,
+    pub device: String,
+    pub seq: u64,
+    pub memory_id: MemoryId,
+    pub recalled_at: DateTime<Utc>,
+    pub summary: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

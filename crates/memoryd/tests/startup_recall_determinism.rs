@@ -28,7 +28,7 @@ fn truncate_utf8_bytes_preserves_character_boundaries_and_marks_only_truncation(
 }
 
 #[test]
-fn rendered_entry_truncates_summary_and_snippet_before_fixed_suffix() {
+fn rendered_entry_truncates_summary_and_snippet_inside_xml_fields() {
     let entry = RecallEntry {
         id: "mem_1".to_owned(),
         summary: "a".repeat(241),
@@ -40,10 +40,12 @@ fn rendered_entry_truncates_summary_and_snippet_before_fixed_suffix() {
 
     let rendered = render_memory_entry(&entry);
 
-    assert!(rendered.contains("aaa… — bbb"));
-    assert!(rendered.contains("bbb… (updated 2026-04-30; source agent_primary; confidence 0.93)"));
-    assert!(rendered.ends_with("(updated 2026-04-30; source agent_primary; confidence 0.93)"));
-    assert!(!rendered.ends_with('…'));
+    assert!(rendered.contains(&format!("<summary>{}…</summary>", "a".repeat(237))));
+    assert!(rendered.contains(&format!("<snippet>{}…</snippet>", "b".repeat(357))));
+    assert!(rendered.contains("updated=\"2026-04-30\""));
+    assert!(rendered.contains("source=\"agent_primary\""));
+    assert!(rendered.contains("confidence=\"0.93\""));
+    assert!(rendered.ends_with("</memory>"));
 }
 
 #[test]
@@ -137,7 +139,7 @@ fn rendering_is_byte_identical_and_uses_stable_xml_escaping() {
     });
     assert_eq!(
         entry,
-        "- [mem&lt;&amp;&gt;] use &lt;xml&gt; &amp; plain text (updated 2026-04-30; source agent&amp;tool; confidence 1.00)"
+        "<memory ref=\"mem&lt;&amp;&gt;\" updated=\"2026-04-30\" source=\"agent&amp;tool\" confidence=\"1.00\">\n  <summary>use &lt;xml&gt; &amp; plain text</summary>\n  <snippet></snippet>\n</memory>"
     );
 }
 

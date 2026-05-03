@@ -574,6 +574,7 @@ fn sample_memory(id: &str, updated_at: &str) -> Memory {
             status: MemoryStatus::Active,
             created_at,
             updated_at,
+            observed_at: None,
             author: Author {
                 kind: AuthorKind::System,
                 user_handle: None,

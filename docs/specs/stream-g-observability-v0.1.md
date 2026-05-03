@@ -9,11 +9,13 @@
 
 v0.1: Initial Stream G contract for v1 release. Defines all observability-facing user surfaces: TUI (8-panel `ratatui`), localhost web dashboard (4 sections), Reality Check ritual, notification dispatcher, trust artifact rendering, and CLI command additions. Stream G is a consumer of shipped Streams A–F; it does not mutate canonical memory state, does not add MCP tools, and does not modify governance or privacy logic.
 
-v0.1 (micro-clarifications, 2026-05-02): Four implementation-accuracy fixes from the post-12-hour-run fresh-eyes review — no contract changes, only documentation alignment and deferred-list updates:
+v0.1 (micro-clarifications, 2026-05-02): Four implementation-accuracy fixes from the post-12-hour-run fresh-eyes review:
 1. §4.4 bind_address clarification: explicitly documents `::1` as a valid value alongside `127.0.0.1`; the §8 config block already listed both but §4.4 prose was underspecified.
-2. §11.8 (new): `GET /api/audit/:id/walk` (audit_walk) is formally moved to the v1.1+ deferred list. The route was shipped as a 501 stub by the Codex 12-hour run; the 501 is correct behavior — the route is now explicitly deferred rather than silently stubbed.
+2. §4.3 / §11.8: `GET /api/audit/:id/walk` now ships a shallow provenance graph from the same trust-artifact DTO used by `GET /api/audit/:id`. Deeper recursive graph traversal over all event/supersession hops remains tracked for v1.1+.
 3. §12.1 (annotation added): The TUI benchmark entries `tui_panel_switch` and `tui_detail_modal_open` in the canonical baseline use synthetic 144-byte frames, not a full ratatui render path. Real-load TUI bench (full terminal-emulator integration) is deferred to v1.1+. The synthetic measurements remain valid as smoke-test regression detectors for the in-process render code path.
 4. §5.5 / §5.2 clarification: `is_overdue` must treat `None` (never-completed) as overdue, mirroring `is_due`'s `is_none_or` semantics. Aligns implementation with spec intent.
+
+v0.1 (post-shipping audit fixes, 2026-05-02): Stream G now includes a user-visible recall-hit consumer. `GET /api/recall-hits?since=<rfc3339>&limit=<n>` reads recent `RecallHit` rows from the daemon's events-log mirror, joins memory summaries when available, and returns event id, device, sequence, memory id, timestamp, and safe summary. The bench promotion contract is also tightened: Stream G/I bench binaries write `.proposed` output by default; canonical files require an explicit `--promote-canonical` flag run from a human shell.
 
 ---
 
@@ -46,6 +48,8 @@ v0.1 (micro-clarifications, 2026-05-02): Four implementation-accuracy fixes from
 
 All cross-stream additions below are authorized by system-v0.2 §19 ("Cross-stream surface authorizations") as additive-only. Each entry maps to that table; if anything here drifts from the system spec authorization, the system spec is the source of truth and Stream G must be brought back into alignment.
 
+**Revision note (2026-05-02, F-005):** the `events_log` SQLite mirror uses `event_id TEXT PRIMARY KEY`; `seq` is non-key per-device sequence metadata. Earlier drafts listed `seq INTEGER PRIMARY KEY`, which would collide when multiple device logs are replayed into one mirror. `event_id` is globally unique and therefore the correct table identity.
+
 **Stream A surface additions (substrate):**
 
 1. **`EventKind` enum gets four new variants** on `memory_substrate::EventKind` (`crates/memory-substrate/src/events/log.rs`):
@@ -59,11 +63,13 @@ All cross-stream additions below are authorized by system-v0.2 §19 ("Cross-stre
 2. **`events_log` SQLite mirror table** — Stream A's shipped event log is per-device JSONL on disk (`events/<device_id>.jsonl`); v0.2 adds a SQLite mirror table as a **derived projection** so SQL queries can answer "how many recall hits for this memory in the last 30 days?" sub-millisecond. Schema (added in migration v4):
 
    ```sql
-   CREATE TABLE IF NOT EXISTS events_log (
-     seq           INTEGER PRIMARY KEY,
+   CREATE TABLE IF NOT EXISTS events_log(
+     event_id      TEXT PRIMARY KEY,
+     device        TEXT NOT NULL,
+     seq           INTEGER NOT NULL,
      kind          TEXT NOT NULL,
-     memory_id     TEXT,           -- NULL for events not memory-scoped
-     ts            TEXT NOT NULL,  -- ISO 8601 UTC
+     memory_id     TEXT,
+     ts            TEXT NOT NULL,
      payload_json  TEXT NOT NULL CHECK (json_valid(payload_json))
    );
    CREATE INDEX IF NOT EXISTS idx_events_log_kind_memory_ts
@@ -662,6 +668,10 @@ GET  /api/reality-check/history
      ?limit=<int>
      → RealityCheckHistoryResponse
 
+GET  /api/recall-hits
+     ?since=<iso_timestamp>&limit=<int>
+     → RecallHitsResponse (recent RecallHit events from events_log)
+
 GET  /api/audit/:id
      → AuditMemoryResponse (full trust artifact)
 
@@ -755,6 +765,22 @@ POST /api/review/action
     "on_devices": ["macbook", "desktop"],
     "merge_status": "clean"
   }
+}
+
+// GET /api/recall-hits?since=2026-05-01T00:00:00Z&limit=50
+{
+  "since": "2026-05-01T00:00:00Z",
+  "limit": 50,
+  "hits": [
+    {
+      "event_id": "evt_…",
+      "device": "dev_macbook",
+      "seq": 1281,
+      "memory_id": "mem_20260501_abc_000009",
+      "recalled_at": "2026-05-01T11:02:00Z",
+      "summary": "Deploy target is production ECS"
+    }
+  ]
 }
 ```
 
@@ -1808,11 +1834,11 @@ SMTP password storage via env var (`smtp_password_env`) covers the basic case. F
 
 The `/memory-reality-check` slash command (§9.8) prints a summary for the human. Open question: should the output include memory titles (which could surface private memory content in the harness's visible context window)? Decision for v0.1: yes, titles are shown, because (a) the harness context is already trusted (Tier 1), (b) `memoryd reality-check run --json` — which backs this command — applies `safe_plaintext_fragment` on the title before outputting, and (c) omitting titles makes the summary useless. If Stream D's safe_plaintext_fragment returns `OmitEncryptedBodyHidden` for a title, the item is rendered as `[encrypted item, score: X.XX]` with no title.
 
-### 11.8 `GET /api/audit/:id/walk` — deeper audit-walk provenance traversal (deferred v1.1+)
+### 11.8 `GET /api/audit/:id/walk` — shipped shallow walk; deeper traversal deferred v1.1+
 
-`GET /api/audit/:id/walk?direction=up|down&depth=<int>` (§4.3, `ProvenanceWalkResponse`) was shipped as a 501 Not Implemented stub by the Codex 12-hour implementation run. The route and its response type are defined; the backend traversal logic (walking the `events_log` mirror and `memory_supersession` join table to build a multi-hop provenance DAG) was scoped out due to the complexity of reliable recursive graph walks within the 12-hour constraint.
+`GET /api/audit/:id/walk?direction=up|down&depth=<int>` (§4.3, `ProvenanceWalkResponse`) is part of v1. The shipped v1 route builds a shallow provenance DAG from the daemon trust-artifact DTO: selected memory node, provenance event nodes, and supersession/superseded-by memory links already present in the artifact. This closes the prior 501 stub while staying inside the existing daemon API surface.
 
-**v1 behavior:** The route returns `{"status": "not_implemented", "route": "audit_walk"}` with HTTP 501. The dashboard "Walk provenance" button is visible in the UI but triggers this 501; users see a "Provenance walk not yet available" message in the dashboard. No silent failure.
+**v1.1+ tracked enhancement:** full recursive traversal directly over the `events_log` mirror and `memory_supersession` join table, including multi-hop depth semantics and richer event grouping. That enhancement is not allowed to regress the v1 shallow route back to a stub.
 
 **v1.1+ scope:** Implement the full provenance walk using the bounded CTE shape from §5.1 (`distinct_sources`), extended to walk `EventKind` provenance events and supersession edges simultaneously. The response shape (`ProvenanceWalkResponse` with `nodes[]` and `edges[]`) is already defined and stable.
 
@@ -1834,6 +1860,8 @@ The `/memory-reality-check` slash command (§9.8) prints a summary for the human
 **Failure mode on budget miss:** log a WARNING to the daemon log at `WARN` level: "TUI render budget exceeded: <op> took <ms> ms". No error state; no crash. Budget misses above 3× (48 ms) are logged at `ERROR`.
 
 **Synthetic benchmark caveat (v1 baseline):** The canonical baseline entries `tui_panel_switch` and `tui_detail_modal_open` in `bench/stream-g-observability-results.darwin-arm64.json` measure in-process state transitions against a synthetic 144-byte mock frame, not a full ratatui render path with a real terminal backend and live daemon socket responses. Measured times (≤0.001 ms p95) reflect the state-machine cost only and will not catch regressions in the ratatui buffer-diff or crossterm write paths. The entries remain in the baseline as smoke-test regression detectors for the in-process render logic. A real-load TUI bench (terminal-emulator integration, realistic frame sizes, mock daemon socket) is deferred to v1.1+. TODO(v1.1): replace `tui_panel_switch` and `tui_detail_modal_open` with full-fidelity terminal-emulator integration bench using e.g. a headless vt100 backend or ratatui's TestBackend with realistic content sizes.
+
+**Canonical promotion guard:** `stream_g_bench` writes proposed result files by default. Updating `bench/stream-g-observability-results.<profile>.json` requires `--output <path> --promote-canonical`, and that flag is reserved for a human shell session after reviewing the `.proposed` output. Automation must run assert mode or proposed-output mode only.
 
 ### 12.2 Web dashboard performance
 

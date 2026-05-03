@@ -335,6 +335,35 @@ fn skip_marker_in_cargo_stdout_produces_skipped_result_not_pass() {
         test["skip_reason"].as_str().is_some_and(|r| r.contains("STREAM_G_RC_HANDLER_NOT_SHIPPED")),
         "skip_reason should contain the extracted reason: {test:#?}"
     );
+    assert_eq!(test["skip_kind"], "runtime_self_skip", "ordinary runtime skip markers are classified distinctly");
+}
+
+#[test]
+fn deferred_feature_skip_marker_reports_feature_deferred_kind() {
+    let fake_bin = std::env::temp_dir().join(format!("memorum-eval-deferred-cargo-{}.sh", std::process::id()));
+    std::fs::write(
+        &fake_bin,
+        "#!/bin/sh\nprintf 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\\n'\nprintf 'MEMORUM_EVAL_SKIP:STREAM_D_ROTATION_CONTRACT_NOT_SHIPPED\\n'\nexit 0\n",
+    )
+    .expect("write fake cargo");
+    let mut perms = fs::metadata(&fake_bin).expect("fake cargo metadata").permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&fake_bin, perms).expect("chmod fake cargo");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_memorum-eval"))
+        .env("MEMORUM_EVAL_CARGO", &fake_bin)
+        .args(["--harness", "mock", "--filter", "18", "--output", "json"])
+        .output()
+        .expect("run memorum-eval");
+
+    assert!(output.status.success(), "deferred feature skip run should exit 0: {}", diagnostic(&output));
+    let report = json_stdout(output);
+    let test = &report["tests"][0];
+    assert_eq!(test["status"], "skipped");
+    assert_eq!(test["skip_reason"], "STREAM_D_ROTATION_CONTRACT_NOT_SHIPPED");
+    assert_eq!(test["skip_kind"], "feature_deferred");
+
+    let _ = fs::remove_file(fake_bin);
 }
 
 /// H-B3 regression: cargo-test success that includes MEMORUM_EVAL_ASSERTIONS=<n>

@@ -25,13 +25,13 @@ fn recall_index_row_hydrates_indexed_at_from_local_ingest_time() {
 }
 
 #[test]
-fn recall_index_writes_observed_at_from_frontmatter_extra_or_created_at() {
+fn recall_index_writes_observed_at_from_typed_frontmatter_or_created_at() {
     let temp = tempfile::tempdir().expect("tempdir");
     let mut index = Index::new(open_index(&temp.path().join("index.sqlite")).expect("open index"));
     let created_at = Utc.with_ymd_and_hms(2026, 4, 1, 1, 2, 3).single().expect("fixture time");
     let observed_at = Utc.with_ymd_and_hms(2026, 5, 1, 1, 2, 3).single().expect("fixture time");
     let mut observed = sample_memory("mem_20260501_a1b2c3d4e5f60718_000302", created_at);
-    observed.frontmatter.extras.insert("observed_at".to_string(), serde_json::Value::String(observed_at.to_rfc3339()));
+    observed.frontmatter.observed_at = Some(observed_at);
     let mut fallback = sample_memory("mem_20260501_a1b2c3d4e5f60718_000303", created_at);
     fallback.body = "fallback body".to_string();
 
@@ -64,6 +64,7 @@ fn sample_memory(id: &str, updated_at: chrono::DateTime<Utc>) -> Memory {
             status: MemoryStatus::Active,
             created_at: updated_at,
             updated_at,
+            observed_at: None,
             author: Author {
                 kind: AuthorKind::System,
                 user_handle: None,

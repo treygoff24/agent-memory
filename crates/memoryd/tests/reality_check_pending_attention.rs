@@ -225,6 +225,7 @@ impl PendingAttentionFixture {
                 status: fixture.status,
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
+                observed_at: None,
                 author: Author {
                     kind: AuthorKind::Agent,
                     user_handle: None,

@@ -18,6 +18,8 @@ pub struct Cli {
 pub enum Command {
     /// Run the local daemon.
     Serve(ServeArgs),
+    /// Run the stdio MCP server that forwards tool calls to the daemon.
+    Mcp(SocketArgs),
     /// Query daemon health.
     Status(SocketArgs),
     /// Check local substrate and daemon configuration.

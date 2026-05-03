@@ -24,6 +24,8 @@ TUI / web / CLI
 
 Reads such as status, review queue, timeline, audit, and Reality Check list all enter through the daemon. Mutations such as confirm/correct/forget/not-relevant/skip are serialized by daemon handlers. This preserves Stream A as the only canonical substrate/index and prevents UI crates from bypassing governance or privacy checks.
 
+`GET /api/recall-hits` is the v1 user-visible consumer for `EventKind::RecallHit`: web asks the daemon for `RequestPayload::RecallHits { since, limit }`, and the daemon reads the derived `events_log` mirror joined to safe memory summaries. The dashboard never opens SQLite directly.
+
 ## Reality Check scoring
 
 Scoring is computed from index-visible fields plus event aggregates. It does not hydrate every memory body.
@@ -53,10 +55,29 @@ Pipeline:
 Canonical events remain JSONL under the repo/runtime event log. Stream A mirrors them into rebuildable SQLite `events_log` for SQL consumers. The covering index supports:
 
 - `RecallHit` count and max timestamp lookups for scoring and trust artifact rendering.
+- recent `RecallHit` timeline rows for `/api/recall-hits`.
 - timeline filtering by kind/memory/time.
 - ROI windows and notification/report metrics.
 
 Mirror health is observable through daemon doctor. If JSONL has events missing from SQLite, doctor reports `events_log_mirror_lag` and repair is `memoryd doctor --reindex`.
+
+The mirror schema is:
+
+```sql
+CREATE TABLE IF NOT EXISTS events_log(
+  event_id      TEXT PRIMARY KEY,
+  device        TEXT NOT NULL,
+  seq           INTEGER NOT NULL,
+  kind          TEXT NOT NULL,
+  memory_id     TEXT,
+  ts            TEXT NOT NULL,
+  payload_json  TEXT NOT NULL CHECK (json_valid(payload_json))
+);
+CREATE INDEX IF NOT EXISTS idx_events_log_kind_memory_ts
+  ON events_log(kind, memory_id, ts);
+```
+
+`event_id` is the primary key because it is globally unique across device logs. `seq` is intentionally non-PK device-local sequence metadata; making it the primary key would reject valid multi-device replay rows that share a sequence number.
 
 ## Notification dispatch
 

@@ -68,15 +68,37 @@ API routes return `application/json`:
 | `GET /api/reality-check`                            | `RealityCheckResponse::Pending`-compatible status/list           |
 | `POST /api/reality-check/respond`                   | body `{ memory_id, action, correction? }`; returns action result |
 | `GET /api/reality-check/history?limit=`             | completed-session summaries                                      |
+| `GET /api/recall-hits?since=&limit=`                | recent `RecallHit` events from the events-log mirror             |
 | `GET /api/audit/:id`                                | top-level audit/trust artifact object                            |
 | `GET /api/audit/:id/walk?direction=up\|down&depth=` | provenance graph walk                                            |
 | `GET /api/audit/:id/temporal?at=`                   | read-only temporal state                                         |
 | `GET /api/review?status=&namespace=&limit=&offset=` | review queue page                                                |
 | `POST /api/review/action`                           | body `{ id, action, reason? }`; returns review action result     |
 
+`GET /api/recall-hits` returns:
+
+```json
+{
+  "since": "2026-05-01T00:00:00Z",
+  "limit": 50,
+  "hits": [
+    {
+      "event_id": "evt_...",
+      "device": "dev_macbook",
+      "seq": 1281,
+      "memory_id": "mem_20260501_a1b2c3d4e5f60718_000010",
+      "recalled_at": "2026-05-01T12:00:00Z",
+      "summary": "Task 14 audit fixture"
+    }
+  ]
+}
+```
+
+`since` must be RFC3339 when provided. `limit` is clamped to 1..=500. The endpoint is read-only and backed by `events_log` (`kind = 'recall_hit'`) plus a safe join to memory summary metadata when present.
+
 CSRF: on server start, the dashboard generates a random 32-byte token, emits it in `<meta name="csrf-token">`, and requires `X-Memorum-CSRF` on every POST. Missing or wrong CSRF returns 403. Concurrent mutations serialize through the daemon; stale review/reality-check mutations return 409 with a typed JSON error.
 
-Deferred v1.1+ web sections: policy editor and sync dashboard routes are not implemented in v1. They should return 501 with a JSON note until a v1.1+ stream owns them.
+Deferred v1.1+ web sections: policy editor and sync dashboard routes are not implemented in v1. They should return 501 with a JSON note until a v1.1+ stream owns them. Audit walk's deeper recursive graph traversal is also v1.1+; the v1 `/api/audit/:id/walk` route returns the shallow trust-artifact-derived graph and must not return a stub.
 
 ## Reality Check CLI
 

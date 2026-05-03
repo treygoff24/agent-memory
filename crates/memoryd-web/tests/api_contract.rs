@@ -1,7 +1,20 @@
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Request, StatusCode};
+use chrono::{DateTime, Utc};
+use memory_substrate::{
+    Author, AuthorKind, ClassificationOutcome, EventContext, Frontmatter, InitOptions, Memory, MemoryId, MemoryStatus,
+    MemoryType, RepoPath, RetrievalPolicy, Roots, Scope, Sensitivity, Source, SourceKind, Substrate, TrustLevel,
+    WriteMode, WritePolicy, WriteRequest,
+};
+use memoryd::protocol::{RequestPayload, ResponsePayload, ResponseResult};
+use memoryd::recall::StartupRequest;
+use memoryd::server::{serve_substrate_with, ServerOptions};
 use memoryd_web::{fixture_router, router, router_with_state, WebState};
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
+use tokio::net::UnixStream;
+use tokio::sync::watch;
+use tokio::time::{sleep, timeout, Duration};
 use tower::ServiceExt;
 
 const RESPONSE_LIMIT: usize = 64 * 1024;
@@ -49,6 +62,79 @@ async fn test_daemon_router_attempts_socket_backend_instead_of_backendless_route
     assert_eq!(body["error"], "daemon_request_failed");
     assert_eq!(body["code"], "daemon_unavailable");
     assert_ne!(body["error"], "dashboard_backend_unavailable");
+}
+
+#[tokio::test]
+async fn test_daemon_backed_recall_hits_route_surfaces_live_recall_emission() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let repo = temp.path().join("repo");
+    let runtime = temp.path().join("runtime");
+    let socket = temp.path().join("memoryd.sock");
+    let substrate = Substrate::init(
+        Roots::new(&repo, &runtime),
+        InitOptions { force_unsafe_durability: true, device_id: Some("dev_webrecall01".to_owned()) },
+    )
+    .await
+    .expect("substrate init");
+    let memory_id = MemoryId::new("mem_20260502_bbbbbbbbbbbbbbbb_000001");
+    write_recall_hit_memory(&substrate, memory_id.clone()).await;
+
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let server = tokio::spawn(serve_substrate_with(
+        socket.clone(),
+        substrate,
+        ServerOptions { idle_frame_timeout: Duration::from_secs(5) },
+        shutdown_rx,
+    ));
+    wait_for_socket(&socket).await;
+
+    let startup = memoryd::client::request(
+        &socket,
+        "web-recall-hit-startup",
+        RequestPayload::Startup(StartupRequest {
+            cwd: repo.to_string_lossy().into_owned(),
+            session_id: "sess_web_recall_hits".to_owned(),
+            harness: "codex".to_owned(),
+            harness_version: None,
+            include_recent: true,
+            since_event_id: None,
+            budget_tokens: Some(1024),
+        }),
+    )
+    .await
+    .expect("startup request succeeds");
+    match startup.result {
+        ResponseResult::Success(ResponsePayload::Startup(startup)) => {
+            assert!(startup.recall_block.contains(memory_id.as_str()));
+        }
+        other => panic!("expected startup success, got {other:?}"),
+    }
+
+    let response = router_with_state(WebState::daemon(&socket))
+        .oneshot(
+            Request::builder()
+                .uri("/api/recall-hits?since=2026-05-01T00:00:00Z&limit=10")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("request succeeds");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    let hits = body["hits"].as_array().expect("hits array");
+    assert!(
+        hits.iter().any(|hit| hit["memory_id"] == memory_id.as_str()),
+        "daemon-backed web API should surface the RecallHit emitted by startup recall: {body}"
+    );
+
+    shutdown_tx.send(true).expect("shutdown signal lands");
+    timeout(Duration::from_secs(2), server)
+        .await
+        .expect("server stops before timeout")
+        .expect("server task joins")
+        .expect("server exits ok");
+    let _ = std::fs::remove_file(socket);
 }
 
 #[tokio::test]
@@ -128,6 +214,66 @@ async fn test_get_audit_temporal_returns_historical_state() {
     assert_eq!(response["at"], "2026-04-30T12:00:00Z");
     assert_eq!(response["viewing_historical_state"], true);
     assert_eq!(response["artifact"]["id"], AUDIT_MEMORY_ID);
+}
+
+#[tokio::test]
+async fn test_get_audit_walk_returns_provenance_graph_not_deferred_stub() {
+    let response = fixture_router()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/audit/{AUDIT_MEMORY_ID}/walk?direction=up&depth=2"))
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("request succeeds");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    assert_eq!(body["memory_id"], AUDIT_MEMORY_ID);
+    assert_eq!(body["direction"], "up");
+    assert!(body["nodes"].as_array().expect("nodes array").len() >= 2);
+    assert!(body["edges"].as_array().expect("edges array").iter().any(|edge| edge["kind"] == "provenance"));
+    assert_ne!(body["status"], "not_implemented");
+}
+
+#[tokio::test]
+async fn test_get_audit_walk_rejects_invalid_direction() {
+    let response = fixture_router()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/audit/{AUDIT_MEMORY_ID}/walk?direction=sideways"))
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("request succeeds");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = json_body(response).await;
+    assert_eq!(body["error"], "invalid_query");
+    assert_eq!(body["route"], "audit_walk");
+}
+
+#[tokio::test]
+async fn test_get_audit_walk_accepts_down_direction() {
+    let response = get_json(&format!("/api/audit/{AUDIT_MEMORY_ID}/walk?direction=down&depth=2")).await;
+
+    assert_eq!(response["memory_id"], AUDIT_MEMORY_ID);
+    assert_eq!(response["direction"], "down");
+    assert!(response["edges"].as_array().expect("edges array").iter().any(|edge| edge["kind"] == "supersedes"));
+}
+
+#[tokio::test]
+async fn test_get_recall_hits_returns_recent_recall_hit_surface() {
+    let response = get_json("/api/recall-hits?limit=1").await;
+
+    assert_eq!(response["limit"], 1);
+    let hits = response["hits"].as_array().expect("hits array");
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0]["memory_id"], REVIEWABLE_MEMORY_ID);
+    assert_eq!(hits[0]["recalled_at"], "2026-05-01T12:00:00Z");
+    assert_eq!(hits[0]["summary"], "Review Stream G dashboard contract");
 }
 
 #[tokio::test]
@@ -234,6 +380,7 @@ async fn test_non_audit_routes_do_not_leak_audit_body() {
         "/api/roi",
         "/api/reality-check",
         "/api/reality-check/history",
+        "/api/recall-hits",
         "/api/review",
     ] {
         let response = fixture_router()
@@ -302,4 +449,97 @@ fn csrf_token_from_html(html: &str) -> &str {
     let tail = &tag[start..];
     let end = tail.find('"').expect("csrf meta content closes");
     &tail[..end]
+}
+
+async fn write_recall_hit_memory(substrate: &Substrate, id: MemoryId) {
+    substrate
+        .write_memory(WriteRequest {
+            operation_id: None,
+            memory: Memory {
+                frontmatter: Frontmatter {
+                    schema_version: 1,
+                    id: id.clone(),
+                    memory_type: MemoryType::Project,
+                    scope: Scope::User,
+                    summary: "Live recall-hit web fixture".to_owned(),
+                    confidence: 0.9,
+                    original_confidence: None,
+                    trust_level: TrustLevel::Trusted,
+                    sensitivity: Sensitivity::Internal,
+                    status: MemoryStatus::Pinned,
+                    created_at: instant("2026-05-01T00:00:00Z"),
+                    updated_at: instant("2026-05-01T00:00:00Z"),
+                    observed_at: None,
+                    author: Author {
+                        kind: AuthorKind::Agent,
+                        user_handle: None,
+                        harness: Some("codex".to_owned()),
+                        harness_version: None,
+                        session_id: Some("sess_web_recall_hits".to_owned()),
+                        subagent_id: None,
+                        phase: None,
+                        component: None,
+                    },
+                    namespace: None,
+                    canonical_namespace_id: None,
+                    tags: Vec::new(),
+                    entities: Vec::new(),
+                    aliases: Vec::new(),
+                    source: Source {
+                        kind: SourceKind::AgentPrimary,
+                        reference: None,
+                        harness: Some("codex".to_owned()),
+                        harness_version: None,
+                        session_id: Some("sess_web_recall_hits".to_owned()),
+                        subagent_id: None,
+                        device: None,
+                    },
+                    evidence: Vec::new(),
+                    requires_user_confirmation: false,
+                    review_state: None,
+                    supersedes: Vec::new(),
+                    superseded_by: Vec::new(),
+                    related: Vec::new(),
+                    tombstone_events: Vec::new(),
+                    retrieval_policy: RetrievalPolicy {
+                        passive_recall: true,
+                        max_scope: Scope::User,
+                        mask_personal_for_synthesis: false,
+                        index_body: true,
+                        index_embeddings: true,
+                    },
+                    write_policy: WritePolicy {
+                        human_review_required: false,
+                        policy_applied: "web-recall-hit-live-test".to_owned(),
+                        expected_base_hash: None,
+                    },
+                    merge_diagnostics: None,
+                    extras: BTreeMap::new(),
+                },
+                body: "Live recall-hit web fixture body".to_owned(),
+                path: Some(RepoPath::new(format!("me/{}.md", id.as_str()))),
+            },
+            expected_base_hash: None,
+            write_mode: WriteMode::CreateNew,
+            index_projection: None,
+            event_context: EventContext::default(),
+            allow_best_effort_durability: true,
+            classification: ClassificationOutcome::Trusted,
+        })
+        .await
+        .expect("fixture write");
+}
+
+async fn wait_for_socket(socket: &std::path::Path) {
+    for _ in 0..200 {
+        if UnixStream::connect(socket).await.is_ok() {
+            return;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    panic!("daemon did not bind socket at {}", socket.display());
+}
+
+fn instant(value: &str) -> DateTime<Utc> {
+    DateTime::parse_from_rfc3339(value).expect("fixture timestamp parses").with_timezone(&Utc)
 }

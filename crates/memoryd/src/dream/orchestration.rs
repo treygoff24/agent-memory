@@ -227,6 +227,7 @@ fn candidate_memory(id: memory_substrate::MemoryId, request: &CandidateWriteRequ
         status: MemoryStatus::Candidate,
         created_at: now,
         updated_at: now,
+        observed_at: None,
         author: Author {
             kind: AuthorKind::Dreaming,
             user_handle: None,

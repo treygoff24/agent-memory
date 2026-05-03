@@ -171,7 +171,7 @@ impl HarnessRunner {
                 "  \"mcpServers\": {{\n",
                 "    \"{server}\": {{\n",
                 "      \"command\": \"memoryd\",\n",
-                "      \"args\": [\"--socket\", \"{socket}\"]\n",
+                "      \"args\": [\"mcp\", \"--socket\", \"{socket}\"]\n",
                 "    }}\n",
                 "  }}\n",
                 "}}\n"
@@ -183,7 +183,7 @@ impl HarnessRunner {
 
     fn codex_mcp_config(&self) -> String {
         format!(
-            concat!("[mcp.{server}]\n", "command = \"memoryd\"\n", "args = [\"--socket\", \"{socket}\"]\n"),
+            concat!("[mcp.{server}]\n", "command = \"memoryd\"\n", "args = [\"mcp\", \"--socket\", \"{socket}\"]\n"),
             server = MCP_SERVER_NAME,
             socket = toml_escape(&self.socket_path.to_string_lossy())
         )

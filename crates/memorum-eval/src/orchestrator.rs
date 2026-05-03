@@ -15,6 +15,8 @@ const CLAUDE_KEY_ENV: &str = "MEMORUM_EVAL_CLAUDE_KEY";
 const CODEX_KEY_ENV: &str = "MEMORUM_EVAL_CODEX_KEY";
 const SKIP_NO_AUTH: &str = "SKIP_NO_AUTH";
 const STREAM_I_DEPS_DISABLED: &str = "STREAM_I_DEPS_DISABLED";
+const STREAM_D_ROTATION_CONTRACT_NOT_SHIPPED: &str = "STREAM_D_ROTATION_CONTRACT_NOT_SHIPPED";
+const SEMANTIC_PARTIAL_LEASE_REENTRANCY_NOT_SHIPPED: &str = "SEMANTIC_PARTIAL_LEASE_REENTRANCY_NOT_SHIPPED";
 /// Marker printed to stdout by a test that wants a clean skip rather than a pass.
 /// Format: `MEMORUM_EVAL_SKIP:<reason>` on its own line.
 const CARGO_TEST_SKIP_MARKER: &str = "MEMORUM_EVAL_SKIP:";
@@ -77,6 +79,7 @@ pub struct EvalTestResult {
     pub assertions_failed: usize,
     pub failure_detail: Option<String>,
     pub skip_reason: Option<String>,
+    pub skip_kind: Option<SkipKind>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,6 +129,13 @@ pub enum TestStatus {
     Passed,
     Failed,
     Skipped,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkipKind {
+    AuthMissing,
+    FeatureDeferred,
+    RuntimeSelfSkip,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -702,6 +712,7 @@ fn passed_result_with_count(entry: CatalogEntry, duration: Duration, assertions:
         assertions_failed: 0,
         failure_detail: None,
         skip_reason: None,
+        skip_kind: None,
     }
 }
 
@@ -724,6 +735,7 @@ fn outcome_passed_result(
         assertions_failed: 0,
         failure_detail: None,
         skip_reason: None,
+        skip_kind: None,
     }
 }
 
@@ -740,6 +752,7 @@ fn failed_result(entry: CatalogEntry, duration: Duration, reason: &str) -> EvalT
         assertions_failed: 1,
         failure_detail: Some(reason.to_owned()),
         skip_reason: None,
+        skip_kind: None,
     }
 }
 
@@ -756,6 +769,20 @@ fn skipped_result(entry: CatalogEntry, duration: Duration, reason: &str) -> Eval
         assertions_failed: 0,
         failure_detail: None,
         skip_reason: Some(reason.to_owned()),
+        skip_kind: Some(skip_kind_for_reason(reason)),
+    }
+}
+
+fn skip_kind_for_reason(reason: &str) -> SkipKind {
+    if reason == SKIP_NO_AUTH {
+        SkipKind::AuthMissing
+    } else if matches!(
+        reason,
+        STREAM_D_ROTATION_CONTRACT_NOT_SHIPPED | SEMANTIC_PARTIAL_LEASE_REENTRANCY_NOT_SHIPPED | STREAM_I_DEPS_DISABLED
+    ) {
+        SkipKind::FeatureDeferred
+    } else {
+        SkipKind::RuntimeSelfSkip
     }
 }
 
@@ -835,7 +862,8 @@ fn test_result_to_json(test: &EvalTestResult) -> String {
             "      \"assertions_passed\": {},\n",
             "      \"assertions_failed\": {},\n",
             "      \"failure_detail\": {},\n",
-            "      \"skip_reason\": {}\n",
+            "      \"skip_reason\": {},\n",
+            "      \"skip_kind\": {}\n",
             "    }}"
         ),
         test.number,
@@ -848,7 +876,8 @@ fn test_result_to_json(test: &EvalTestResult) -> String {
         test.assertions_passed,
         test.assertions_failed,
         optional_string_to_json(test.failure_detail.as_deref()),
-        optional_string_to_json(test.skip_reason.as_deref())
+        optional_string_to_json(test.skip_reason.as_deref()),
+        optional_skip_kind_to_json(test.skip_kind)
     )
 }
 
@@ -859,6 +888,10 @@ fn string_array_to_json(values: &[String]) -> String {
 
 fn optional_string_to_json(value: Option<&str>) -> String {
     value.map_or_else(|| "null".to_owned(), |value| format!("\"{}\"", json_escape(value)))
+}
+
+fn optional_skip_kind_to_json(value: Option<SkipKind>) -> String {
+    value.map_or_else(|| "null".to_owned(), |value| format!("\"{}\"", value))
 }
 
 fn json_escape(value: &str) -> String {
@@ -955,6 +988,16 @@ impl fmt::Display for TestStatus {
             Self::Passed => formatter.write_str("passed"),
             Self::Failed => formatter.write_str("failed"),
             Self::Skipped => formatter.write_str("skipped"),
+        }
+    }
+}
+
+impl fmt::Display for SkipKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AuthMissing => formatter.write_str("auth_missing"),
+            Self::FeatureDeferred => formatter.write_str("feature_deferred"),
+            Self::RuntimeSelfSkip => formatter.write_str("runtime_self_skip"),
         }
     }
 }

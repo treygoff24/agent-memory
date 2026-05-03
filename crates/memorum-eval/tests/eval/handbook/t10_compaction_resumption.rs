@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use memorum_eval::assertions::assert_xml_valid;
+use memorum_eval::assertions::{assert_xml_valid, parse_recall_block};
 use memorum_eval::daemon_scaffold::DaemonScaffold;
 use memorum_eval::simulator::{SimulatorAction, SimulatorAgent, SimulatorConfig};
 use memorum_eval::{eval_assert, eval_flush_assertion_count};
@@ -92,11 +92,12 @@ async fn simulated_compaction_resumption_preserves_active_working_state_without_
 
 fn assert_no_duplicate_recall_ids(recall_block: &str) {
     let mut seen = HashSet::new();
-    for line in recall_block.lines() {
-        let Some(start) = line.find("- [") else { continue };
-        let id_start = start + 3;
-        let Some(end) = line[id_start..].find(']') else { continue };
-        let id = &line[id_start..id_start + end];
-        eval_assert!(seen.insert(id.to_owned()), "duplicate recall id {id} in block:\n{recall_block}");
+    let block = parse_recall_block(recall_block).expect("recall XML was already validated");
+    for memory in block.memories {
+        eval_assert!(
+            seen.insert(memory.ref_id.clone()),
+            "duplicate recall id {} in block:\n{recall_block}",
+            memory.ref_id
+        );
     }
 }

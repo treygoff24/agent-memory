@@ -1921,6 +1921,7 @@ fn placeholder_frontmatter(id: &MemoryId) -> Frontmatter {
         status: MemoryStatus::Active,
         created_at: epoch,
         updated_at: epoch,
+        observed_at: None,
         author: Author {
             kind: AuthorKind::System,
             user_handle: None,

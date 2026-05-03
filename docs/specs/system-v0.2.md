@@ -42,6 +42,8 @@ The substance of Stream A–F's design — files canonical, SQLite derived, Mark
 
 Memorum is a local-first, harness-agnostic, daemon-backed shared memory layer that works across Claude Code, Codex CLI, Cursor, OpenClaw, Factory, and any other MCP-speaking harness without forking, modifying, or wrapping the harness. It provides durable memory, passive recall, cross-harness coordination, and governance primitives as a single system the user runs once and every agent on the machine can talk to.
 
+**Review-fix decision policy:** when review finds a gap between implementation and the live spec, the default is to fix the implementation. Spec amendments are valid only when the contract was technically wrong, unsafe, or explicitly deferred with user-visible behavior and tracking. See `docs/review-fix-policy.md`; review-fix commits that amend a contract must identify whether they are a code fix, spec correction, or explicit deferral.
+
 Concretely:
 
 1. **One durable memory surface shared across every agent harness on the machine.** What Codex learns is immediately available to Claude Code; what Cursor notices is visible to both; the user never has to rebuild context across tools.
@@ -212,7 +214,7 @@ Unchanged from v0.1 §4 and shipped per Stream A v1.1 §3 + Stream B's `RequestP
 
 - Auto-starts at login via `launchd` (macOS) / `systemd` (Linux) / `NSSM` (Windows; v1 platform support is macOS + Linux only — Windows is v2).
 - Unix socket at `$XDG_RUNTIME_DIR/memoryd.sock` (`~/.memoryd/socket` fallback on macOS). Owner-only chmod after bind (Stream D §13.x).
-- MCP servers (one per connecting harness session) are thin clients: they expose the MCP protocol to the harness, forward calls over the socket to `memoryd`, return responses.
+- MCP servers (one per connecting harness session) are thin clients: they expose the MCP protocol to the harness, forward calls over the socket to `memoryd`, return responses. The shipped stdio entrypoint is `memoryd mcp --socket <socket_path>`, which keeps stdout reserved for newline-delimited JSON-RPC protocol frames and writes diagnostics to stderr.
 - `memoryd` owns:
   - File watcher on the memory tree (notify on Linux/macOS).
   - SQLite writer (single-writer model; no lock contention).
@@ -833,7 +835,7 @@ Replaces v0.1 §19. As of 2026-05-01:
 ### Shipped
 
 - **Stream A — Core substrate.** Shipped in `d227dce` on `main`. Live contract: `stream-a-core-substrate-v1.1.md`.
-- **Stream B — Daemon + MCP.** Shipped in `f9d9c2b` on `main`. 9 MCP tools across A/C/D/E/F. Reviews: `docs/reviews/stream-b-*`.
+- **Stream B — Daemon + MCP.** Shipped in `f9d9c2b` on `main` as the daemon/socket protocol and MCP forwarder; post-shipping remediation added the launchable stdio MCP server (`memoryd mcp --socket <path>`) on 2026-05-02. 9 MCP tools across A/C/D/E/F. Reviews: `docs/reviews/stream-b-*`.
 - **Stream C — Governance.** Shipped in `6f583ec` on `main`. Live contract: `stream-c-governance-v0.1.md`.
 - **Stream D — Privacy.** Shipped in `17a0a04` and `5f7d926` on `main`. Live contract: `stream-d-privacy-v0.1.md`.
 - **Stream E — Passive recall.** Shipped 2026-04-30. Live contract: `stream-e-passive-recall-v0.5.md`. API: `docs/api/stream-e-passive-recall-api.md`.
@@ -877,7 +879,7 @@ Streams G/H/I touch shipped-stream surfaces. Each touch listed here is **authori
 
 | Surface | Change | Authorized for |
 |---|---|---|
-| `RequestPayload` enum | Add variants for Stream G reality-check (`RealityCheckRun`, `RealityCheckRespond`, `RealityCheckList`, `RealityCheckAcknowledge`) and Stream I peer-state (`PeerPresenceHeartbeat`, `PeerClaimAcquire`, `PeerClaimRelease`). Add `TestInjectEvent` variant gated behind the `test-utils` cargo feature (Stream H — production builds reject with `MethodNotAllowedOnMcp`). | Stream G: TUI/dashboard wire; Stream I: cross-device coordination; Stream H: deterministic events-log fixture. Wire shapes in each stream's spec. |
+| `RequestPayload` enum | Add variants for Stream G reality-check (`RealityCheckRun`, `RealityCheckRespond`, `RealityCheckList`, `RealityCheckAcknowledge`) plus `RecallHits { since, limit }` for the web recall-hit consumer; Stream I peer-state (`PeerPresenceHeartbeat`, `PeerClaimAcquire`, `PeerClaimRelease`); and `TestInjectEvent` gated behind the `test-utils` cargo feature (Stream H — production builds reject with `MethodNotAllowedOnMcp`). | Stream G: TUI/dashboard wire and recall-hit observability; Stream I: cross-device coordination; Stream H: deterministic events-log fixture. Wire shapes in each stream's spec. |
 | `ResponsePayload` enum | Companion variants for the above | Same. |
 | Daemon error taxonomy (`crates/memoryd/src/protocol.rs`) | Add `MethodNotAllowedOnMcp` error variant. Returned by the MCP forwarder when an admin/UI surface variant (RC, peer-state, privacy admin, device admin, review admin, `TestInjectEvent`) is invoked through the MCP tool path. CLI/socket access remains permitted; only MCP is rejected. | Authoritative rejection for admin variants per §14.3. Single error variant rather than per-stream ad-hoc rejection text. |
 | `DoctorResponse` (`crates/memoryd/src/protocol.rs`) and `doctor_response` handler (`crates/memoryd/src/handlers.rs`) | Additive: `doctor_response` calls `Substrate::events_log_mirror_health()` and on `lag > 0` appends a `DoctorFinding { code: "events_log_mirror_lag", repair: Some("memoryd doctor --reindex") }` and sets `healthy = false`. No struct schema change — the existing `Vec<DoctorFinding>` is used. | Surfacing dual-write fail-soft mode so a stale SQLite mirror (the failure mode where JSONL succeeds, SQLite write fails, WARN logged) is observable instead of silently corrupting drift scores. Owned by Stream G plan Task 4. |

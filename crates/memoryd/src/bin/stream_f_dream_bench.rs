@@ -752,6 +752,7 @@ fn bench_memory(index: usize, scope: Scope, canonical_project_id: Option<&str>) 
             status,
             created_at: instant("2026-04-01T12:00:00Z"),
             updated_at: instant(RUN_AT) + chrono::Duration::seconds(index as i64),
+            observed_at: None,
             author: Author {
                 kind: AuthorKind::Agent,
                 user_handle: None,

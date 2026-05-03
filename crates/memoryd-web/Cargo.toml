@@ -29,5 +29,6 @@ tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+memory-substrate = { path = "../memory-substrate" }
 tempfile.workspace = true
 tower = { version = "0.5", features = ["util"] }
