@@ -19,7 +19,7 @@ fn test_salient_entities_from_startup_recall() {
 
     assert_eq!(session.salient_entities, set(["ent_alpha", "ent_beta", "ent_gamma", "ent_from_fts5"]));
     assert!(session.recent_query_embedding.is_none());
-    assert!(session.is_tier1());
+    assert!(session.is_full_coordination_harness());
 }
 
 #[test]
@@ -29,7 +29,7 @@ fn test_salient_entities_tier3_from_binding_only() {
     assert_eq!(session.salient_entities, set(["proj_abc", "my-project", "code"]));
     assert!(session.salient_paths.is_empty());
     assert!(session.recent_query_embedding.is_none());
-    assert!(session.is_tier3());
+    assert!(session.is_observe_only_harness());
 }
 
 #[test]

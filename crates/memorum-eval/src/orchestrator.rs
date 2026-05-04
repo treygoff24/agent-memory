@@ -72,6 +72,7 @@ pub struct EvalTestResult {
     pub name: &'static str,
     pub group: CatalogGroup,
     pub mode: CatalogMode,
+    pub deferred: bool,
     pub status: TestStatus,
     pub duration_ms: u128,
     pub assertions: usize,
@@ -88,6 +89,7 @@ pub struct CatalogEntry {
     pub name: &'static str,
     pub group: CatalogGroup,
     pub mode: CatalogMode,
+    pub deferred: bool,
     pub execution_group: ExecutionGroup,
 }
 
@@ -226,6 +228,7 @@ pub const TEST_CATALOG: [CatalogEntry; 19] = [
         name: "exact_identifier_recall",
         group: CatalogGroup::Handbook,
         mode: CatalogMode::Simulator,
+        deferred: false,
         execution_group: ExecutionGroup::Parallel,
     },
     CatalogEntry {
@@ -233,6 +236,7 @@ pub const TEST_CATALOG: [CatalogEntry; 19] = [
         name: "superseded_fact_handling",
         group: CatalogGroup::Handbook,
         mode: CatalogMode::Simulator,
+        deferred: false,
         execution_group: ExecutionGroup::Parallel,
     },
     CatalogEntry {
@@ -240,6 +244,7 @@ pub const TEST_CATALOG: [CatalogEntry; 19] = [
         name: "cross_project_entity_collision",
         group: CatalogGroup::Handbook,
         mode: CatalogMode::Simulator,
+        deferred: false,
         execution_group: ExecutionGroup::Parallel,
     },
     CatalogEntry {
@@ -247,6 +252,7 @@ pub const TEST_CATALOG: [CatalogEntry; 19] = [
         name: "abstention",
         group: CatalogGroup::Handbook,
         mode: CatalogMode::Simulator,
+        deferred: false,
         execution_group: ExecutionGroup::Parallel,
     },
     CatalogEntry {
@@ -254,6 +260,7 @@ pub const TEST_CATALOG: [CatalogEntry; 19] = [
         name: "poisoned_candidate",
         group: CatalogGroup::Handbook,
         mode: CatalogMode::Simulator,
+        deferred: false,
         execution_group: ExecutionGroup::Parallel,
     },
     CatalogEntry {
@@ -261,6 +268,7 @@ pub const TEST_CATALOG: [CatalogEntry; 19] = [
         name: "tool_output_preservation",
         group: CatalogGroup::Handbook,
         mode: CatalogMode::Simulator,
+        deferred: false,
         execution_group: ExecutionGroup::Parallel,
     },
     CatalogEntry {
@@ -268,6 +276,7 @@ pub const TEST_CATALOG: [CatalogEntry; 19] = [
         name: "subagent_writeback",
         group: CatalogGroup::Handbook,
         mode: CatalogMode::Simulator,
+        deferred: false,
         execution_group: ExecutionGroup::Parallel,
     },
     CatalogEntry {
@@ -275,6 +284,7 @@ pub const TEST_CATALOG: [CatalogEntry; 19] = [
         name: "deletion_and_tombstone",
         group: CatalogGroup::Handbook,
         mode: CatalogMode::Simulator,
+        deferred: false,
         execution_group: ExecutionGroup::Parallel,
     },
     CatalogEntry {
@@ -282,6 +292,7 @@ pub const TEST_CATALOG: [CatalogEntry; 19] = [
         name: "recall_budget_pressure",
         group: CatalogGroup::Handbook,
         mode: CatalogMode::Simulator,
+        deferred: false,
         execution_group: ExecutionGroup::Parallel,
     },
     CatalogEntry {
@@ -289,6 +300,7 @@ pub const TEST_CATALOG: [CatalogEntry; 19] = [
         name: "compaction_resumption",
         group: CatalogGroup::Handbook,
         mode: CatalogMode::Simulator,
+        deferred: false,
         execution_group: ExecutionGroup::Parallel,
     },
     CatalogEntry {
@@ -296,6 +308,7 @@ pub const TEST_CATALOG: [CatalogEntry; 19] = [
         name: "self_poisoning",
         group: CatalogGroup::Handbook,
         mode: CatalogMode::Simulator,
+        deferred: false,
         execution_group: ExecutionGroup::Parallel,
     },
     CatalogEntry {
@@ -303,6 +316,7 @@ pub const TEST_CATALOG: [CatalogEntry; 19] = [
         name: "temporal_validity",
         group: CatalogGroup::Handbook,
         mode: CatalogMode::Simulator,
+        deferred: false,
         execution_group: ExecutionGroup::Parallel,
     },
     CatalogEntry {
@@ -310,6 +324,7 @@ pub const TEST_CATALOG: [CatalogEntry; 19] = [
         name: "cross_harness_substrate_sharing",
         group: CatalogGroup::Domain,
         mode: CatalogMode::RealHarness,
+        deferred: false,
         execution_group: ExecutionGroup::Serial,
     },
     CatalogEntry {
@@ -317,6 +332,7 @@ pub const TEST_CATALOG: [CatalogEntry; 19] = [
         name: "merge_driver_semantic_correctness",
         group: CatalogGroup::Domain,
         mode: CatalogMode::Simulator,
+        deferred: false,
         execution_group: ExecutionGroup::Serial,
     },
     CatalogEntry {
@@ -324,6 +340,7 @@ pub const TEST_CATALOG: [CatalogEntry; 19] = [
         name: "privacy_filter_refusal_retry",
         group: CatalogGroup::Domain,
         mode: CatalogMode::RealHarness,
+        deferred: false,
         execution_group: ExecutionGroup::Serial,
     },
     CatalogEntry {
@@ -331,6 +348,7 @@ pub const TEST_CATALOG: [CatalogEntry; 19] = [
         name: "reality_check_drift_scoring_sanity",
         group: CatalogGroup::Domain,
         mode: CatalogMode::Simulator,
+        deferred: false,
         execution_group: ExecutionGroup::Parallel,
     },
     CatalogEntry {
@@ -338,6 +356,7 @@ pub const TEST_CATALOG: [CatalogEntry; 19] = [
         name: "lease_contention_resolution",
         group: CatalogGroup::Domain,
         mode: CatalogMode::Simulator,
+        deferred: true,
         execution_group: ExecutionGroup::Serial,
     },
     CatalogEntry {
@@ -345,6 +364,7 @@ pub const TEST_CATALOG: [CatalogEntry; 19] = [
         name: "encrypted_tier_key_rotation",
         group: CatalogGroup::Domain,
         mode: CatalogMode::Simulator,
+        deferred: true,
         execution_group: ExecutionGroup::Serial,
     },
     CatalogEntry {
@@ -352,6 +372,7 @@ pub const TEST_CATALOG: [CatalogEntry; 19] = [
         name: "peer_update_framing_correctness",
         group: CatalogGroup::Regression,
         mode: CatalogMode::RealHarness,
+        deferred: false,
         execution_group: ExecutionGroup::Serial,
     },
 ];
@@ -360,8 +381,8 @@ pub fn format_catalog() -> String {
     let mut output = String::new();
     for entry in TEST_CATALOG {
         output.push_str(&format!(
-            "#{:02} {} [group: {}, mode: {}, execution: {}]\n",
-            entry.number, entry.name, entry.group, entry.mode, entry.execution_group
+            "#{:02} {} [group: {}, mode: {}, deferred: {}, execution: {}]\n",
+            entry.number, entry.name, entry.group, entry.mode, entry.deferred, entry.execution_group
         ));
     }
     output
@@ -705,6 +726,7 @@ fn passed_result_with_count(entry: CatalogEntry, duration: Duration, assertions:
         name: entry.name,
         group: entry.group,
         mode: entry.mode,
+        deferred: entry.deferred,
         status: TestStatus::Passed,
         duration_ms: duration.as_millis(),
         assertions,
@@ -728,6 +750,7 @@ fn outcome_passed_result(
         name: entry.name,
         group: entry.group,
         mode: entry.mode,
+        deferred: entry.deferred,
         status: TestStatus::Passed,
         duration_ms: duration.as_millis(),
         assertions,
@@ -745,6 +768,7 @@ fn failed_result(entry: CatalogEntry, duration: Duration, reason: &str) -> EvalT
         name: entry.name,
         group: entry.group,
         mode: entry.mode,
+        deferred: entry.deferred,
         status: TestStatus::Failed,
         duration_ms: duration.as_millis(),
         assertions: 1,
@@ -762,6 +786,7 @@ fn skipped_result(entry: CatalogEntry, duration: Duration, reason: &str) -> Eval
         name: entry.name,
         group: entry.group,
         mode: entry.mode,
+        deferred: entry.deferred,
         status: TestStatus::Skipped,
         duration_ms: duration.as_millis(),
         assertions: 0,
@@ -776,10 +801,14 @@ fn skipped_result(entry: CatalogEntry, duration: Duration, reason: &str) -> Eval
 fn skip_kind_for_reason(reason: &str) -> SkipKind {
     if reason == SKIP_NO_AUTH {
         SkipKind::AuthMissing
-    } else if matches!(
-        reason,
-        STREAM_D_ROTATION_CONTRACT_NOT_SHIPPED | SEMANTIC_PARTIAL_LEASE_REENTRANCY_NOT_SHIPPED | STREAM_I_DEPS_DISABLED
-    ) {
+    } else if [
+        STREAM_D_ROTATION_CONTRACT_NOT_SHIPPED,
+        SEMANTIC_PARTIAL_LEASE_REENTRANCY_NOT_SHIPPED,
+        STREAM_I_DEPS_DISABLED,
+    ]
+    .iter()
+    .any(|prefix| reason.starts_with(prefix))
+    {
         SkipKind::FeatureDeferred
     } else {
         SkipKind::RuntimeSelfSkip
@@ -856,6 +885,7 @@ fn test_result_to_json(test: &EvalTestResult) -> String {
             "      \"name\": \"{}\",\n",
             "      \"group\": \"{}\",\n",
             "      \"mode\": \"{}\",\n",
+            "      \"deferred\": {},\n",
             "      \"status\": \"{}\",\n",
             "      \"duration_ms\": {},\n",
             "      \"assertions\": {},\n",
@@ -870,6 +900,7 @@ fn test_result_to_json(test: &EvalTestResult) -> String {
         json_escape(test.name),
         test.group,
         test.mode,
+        test.deferred,
         test.status,
         test.duration_ms,
         test.assertions,

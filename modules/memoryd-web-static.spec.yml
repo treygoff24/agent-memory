@@ -1,0 +1,6 @@
+version: "2.2"
+module: memoryd-web/static-dashboard
+description: Stream G web dashboard static asset boundary.
+boundaries:
+  path: "crates/memoryd-web/static/**/*"
+constraints: []

@@ -449,6 +449,10 @@ impl memoryd::dream::harness::HarnessCli for CountingMalformedPass2Harness {
         true
     }
 
+    fn auth_probe(&self) -> memoryd::dream::harness::HarnessFuture<'_, memoryd::dream::harness::AuthProbeResult> {
+        Box::pin(async { memoryd::dream::harness::AuthProbeResult::Ok })
+    }
+
     fn is_authenticated(
         &self,
     ) -> memoryd::dream::harness::HarnessFuture<'_, Result<bool, memoryd::dream::error::HarnessCliError>> {

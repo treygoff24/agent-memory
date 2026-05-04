@@ -32,6 +32,7 @@ pub enum PanelId {
     Namespace,
     Policy,
     RealityCheck,
+    Recall,
 }
 
 impl PanelId {
@@ -45,6 +46,7 @@ impl PanelId {
             Self::Namespace => 6,
             Self::Policy => 7,
             Self::RealityCheck => 8,
+            Self::Recall => 9,
         }
     }
 
@@ -58,10 +60,11 @@ impl PanelId {
             Self::Namespace => "Namespaces",
             Self::Policy => "Policy",
             Self::RealityCheck => "Reality Check",
+            Self::Recall => "Recall",
         }
     }
 
-    pub const fn all() -> [Self; 8] {
+    pub const fn all() -> [Self; 9] {
         [
             Self::Overview,
             Self::ReviewQueue,
@@ -71,6 +74,7 @@ impl PanelId {
             Self::Namespace,
             Self::Policy,
             Self::RealityCheck,
+            Self::Recall,
         ]
     }
 
@@ -84,6 +88,7 @@ impl PanelId {
             6 => Some(Self::Namespace),
             7 => Some(Self::Policy),
             8 => Some(Self::RealityCheck),
+            9 => Some(Self::Recall),
             _ => None,
         }
     }
@@ -180,6 +185,7 @@ pub struct App {
     namespace_state: panels::namespace::NamespaceState,
     policy_state: panels::policy::PolicyState,
     reality_check_state: panels::reality_check::RealityCheckState,
+    recall_state: panels::recall::RecallState,
     memory_detail_state: TrustArtifactModalState,
 }
 
@@ -202,6 +208,7 @@ impl App {
             namespace_state: panels::namespace::NamespaceState::default(),
             policy_state: panels::policy::PolicyState::default(),
             reality_check_state: panels::reality_check::RealityCheckState::default(),
+            recall_state: panels::recall::RecallState::default(),
             memory_detail_state: TrustArtifactModalState::default(),
         }
     }
@@ -224,6 +231,7 @@ impl App {
             namespace_state: panels::namespace::NamespaceState::default(),
             policy_state: panels::policy::PolicyState::default(),
             reality_check_state: panels::reality_check::RealityCheckState::default(),
+            recall_state: panels::recall::RecallState::default(),
             memory_detail_state: TrustArtifactModalState::default(),
         }
     }
@@ -266,6 +274,10 @@ impl App {
 
     pub fn reality_check_state(&self) -> &panels::reality_check::RealityCheckState {
         &self.reality_check_state
+    }
+
+    pub fn recall_state(&self) -> &panels::recall::RecallState {
+        &self.recall_state
     }
 
     pub fn set_active_panel(&mut self, panel: PanelId) {
@@ -316,6 +328,9 @@ impl App {
                 self.snapshot.overview.recall_delta = status.recall.delta_invoked_total;
                 self.socket_state = SocketState::Connected;
                 self.load_pending_trust_artifact(client).await;
+                if self.active_panel == PanelId::Recall {
+                    self.load_recall_hits(client).await;
+                }
             }
             Err(error) => self.mark_socket_unreachable(client.socket_path(), error.to_string()),
         }
@@ -351,6 +366,19 @@ impl App {
                 self.pending_trust_artifact_id = Some(memory_id);
                 self.mark_socket_unreachable(client.socket_path(), error.to_string());
             }
+        }
+    }
+
+    async fn load_recall_hits(&mut self, client: &DaemonClient) {
+        match client.recall_hits(100).await {
+            Ok(response) => {
+                self.snapshot.recall = RecallPanelData {
+                    limit: response.limit,
+                    hits: response.hits.into_iter().map(RecallHitRow::from).collect(),
+                };
+                self.socket_state = SocketState::Connected;
+            }
+            Err(error) => self.mark_socket_unreachable(client.socket_path(), error.to_string()),
         }
     }
 
@@ -474,6 +502,7 @@ impl App {
                 panels::policy::handle_key(key, &mut self.policy_state, self.snapshot.policy.recent_decisions.len())
             }
             PanelId::RealityCheck => panels::reality_check::handle_key(key, &mut self.reality_check_state),
+            PanelId::Recall => panels::recall::handle_key(key, &mut self.recall_state, self.snapshot.recall.hits.len()),
         };
 
         if let Some(command) = command {
@@ -548,6 +577,10 @@ impl App {
             PanelId::Timeline => first_memory_id(self.snapshot.timeline.iter().map(|row| row.detail.as_str())),
             PanelId::Policy => first_memory_id(self.snapshot.policy.recent_decisions.iter().map(String::as_str)),
             PanelId::RealityCheck => self.selected_reality_check_memory_id().filter(|id| is_valid_memory_id(id)),
+            PanelId::Recall => selected_index(self.recall_state.cursor(), self.snapshot.recall.hits.len())
+                .and_then(|index| self.snapshot.recall.hits.get(index))
+                .map(|hit| hit.memory_id.clone())
+                .filter(|id| is_valid_memory_id(id)),
             PanelId::Overview | PanelId::Namespace => None,
         }
     }
@@ -610,9 +643,13 @@ impl TerminalGuard {
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        restore_terminal_blocking();
     }
+}
+
+pub fn restore_terminal_blocking() {
+    let _ = disable_raw_mode();
+    let _ = execute!(io::stdout(), LeaveAlternateScreen);
 }
 
 fn shell_areas(area: Rect) -> [Rect; 3] {
@@ -675,7 +712,7 @@ fn render_text_modal(frame: &mut Frame<'_>, area: Rect, modal: &Modal) {
         ),
         Modal::HelpOverlay => (
             "Help",
-            "Global: 1-8 switch panels  ?:help  q:quit  Ctrl-c:quit  Ctrl-r:refresh  ::command\nPanel: j/k move  h/l pane  Enter detail  / filter  tab focus  u undo\n\nEsc or ?: close",
+            "Global: 1-9 switch panels  ?:help  q:quit  Ctrl-c:quit  Ctrl-r:refresh  ::command\nPanel: j/k move  h/l pane  Enter detail  / filter  tab focus  u undo\n\nEsc or ?: close",
         ),
         Modal::ConfirmQuit => (
             "Confirm quit",
@@ -879,6 +916,7 @@ pub struct DaemonSnapshot {
     pub namespace: NamespacePanelData,
     pub policy: PolicyPanelData,
     pub reality_check: RealityCheckPanelData,
+    pub recall: RecallPanelData,
     pub trust_artifact: Option<TrustArtifact>,
 }
 
@@ -902,6 +940,7 @@ impl DaemonSnapshot {
             namespace: NamespacePanelData::empty(),
             policy: PolicyPanelData::empty(),
             reality_check: RealityCheckPanelData::empty(),
+            recall: RecallPanelData::empty(),
             trust_artifact: None,
         }
     }
@@ -918,6 +957,7 @@ impl DaemonSnapshot {
             namespace: NamespacePanelData::sample(),
             policy: PolicyPanelData::sample(),
             reality_check: RealityCheckPanelData::sample(),
+            recall: RecallPanelData::sample(),
             trust_artifact: Some(sample_trust_artifact()),
         }
     }
@@ -1275,4 +1315,63 @@ pub struct RealityCheckRow {
     pub last_observed: String,
     pub recall_count_30d: u32,
     pub breakdown: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecallPanelData {
+    pub limit: usize,
+    pub hits: Vec<RecallHitRow>,
+}
+
+impl RecallPanelData {
+    fn empty() -> Self {
+        Self { limit: 100, hits: Vec::new() }
+    }
+
+    fn sample() -> Self {
+        Self {
+            limit: 100,
+            hits: vec![
+                RecallHitRow {
+                    event_id: "evt_20260504_001".to_owned(),
+                    device: "macbook".to_owned(),
+                    seq: 41,
+                    memory_id: "mem_20260501_0123456789abcdef_000009".to_owned(),
+                    recalled_at: "2026-05-04T09:10:00Z".to_owned(),
+                    summary: Some("Deploy target is production ECS".to_owned()),
+                },
+                RecallHitRow {
+                    event_id: "evt_20260504_002".to_owned(),
+                    device: "desktop".to_owned(),
+                    seq: 42,
+                    memory_id: "mem_20260501_0123456789abcdef_000008".to_owned(),
+                    recalled_at: "2026-05-04T09:12:00Z".to_owned(),
+                    summary: Some("Preferred stack is TypeScript + Rust".to_owned()),
+                },
+            ],
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecallHitRow {
+    pub event_id: String,
+    pub device: String,
+    pub seq: u64,
+    pub memory_id: String,
+    pub recalled_at: String,
+    pub summary: Option<String>,
+}
+
+impl From<memoryd::protocol::RecallHitSummary> for RecallHitRow {
+    fn from(hit: memoryd::protocol::RecallHitSummary) -> Self {
+        Self {
+            event_id: hit.event_id,
+            device: hit.device,
+            seq: hit.seq,
+            memory_id: hit.memory_id.as_str().to_owned(),
+            recalled_at: hit.recalled_at.to_rfc3339(),
+            summary: hit.summary,
+        }
+    }
 }

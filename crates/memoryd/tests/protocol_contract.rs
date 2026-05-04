@@ -397,6 +397,7 @@ fn protocol_contract_stream_f_dreaming_dtos_round_trip_as_snake_case_json() {
         cli_used: Some("codex".to_owned()),
         pass_1: pass_1.clone(),
         pass_2: pass_2.clone(),
+        pass_2_refusal_counts_by_reason: std::collections::BTreeMap::from([("missing_grounding".to_owned(), 1)]),
         pass_3: pass_3.clone(),
         duration_ms: 450,
     };

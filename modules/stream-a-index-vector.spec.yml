@@ -1,6 +1,0 @@
-version: "2.2"
-module: stream-a/index-vector
-description: Stream A index-vector ownership boundary.
-boundaries:
-  path: "crates/memory-substrate/src/index/**/*"
-constraints: []

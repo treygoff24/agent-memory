@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.memorum.dream-scheduled</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>memoryd</string>
+    <string>dream</string>
+    <string>scheduled</string>
+    <string>--repo</string>
+    <string>{{REPO_PATH}}</string>
+    <string>--runtime</string>
+    <string>{{RUNTIME_PATH}}</string>
+    <string>--scope</string>
+    <string>me</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>3</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>{{RUNTIME_PATH}}/dream-scheduled.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>{{RUNTIME_PATH}}/dream-scheduled.err.log</string>
+</dict>
+</plist>

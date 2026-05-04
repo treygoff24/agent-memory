@@ -16,6 +16,7 @@ else
   echo "warning: specgate not installed; skipping specgate gates" >&2
 fi
 ./scripts/rust-boundary-check.sh
+./scripts/check-baseline-discipline.sh
 ./scripts/two-clone-convergence.sh --full
 BENCH_PROFILE="${BENCH_PROFILE:-$(./scripts/detect-bench-profile.sh)}"
 ./scripts/durability-probe-gate.sh --matrix apfs,tmpfs,ext4,einval,best-effort --output bench/durability-results.json

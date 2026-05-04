@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
 use memoryd::protocol::{
-    MemoryId, RealityCheckAction as ProtocolRealityCheckAction, RealityCheckRequest, RequestPayload, ResponsePayload,
-    StatusResponse,
+    MemoryId, RealityCheckAction as ProtocolRealityCheckAction, RealityCheckRequest, RecallHitsResponse,
+    RequestPayload, ResponsePayload, StatusResponse,
 };
 
 use crate::app::{DaemonCall, RealityCheckAction, ReviewAction};
@@ -41,6 +41,22 @@ impl DaemonClient {
             .result
         {
             memoryd::protocol::ResponseResult::Success(ResponsePayload::TrustArtifact(artifact)) => Ok(*artifact),
+            memoryd::protocol::ResponseResult::Success(other) => {
+                Err(anyhow!("daemon returned unexpected response: {other:?}"))
+            }
+            memoryd::protocol::ResponseResult::Error(error) => {
+                Err(anyhow!("daemon error {}: {}", error.code, error.message))
+            }
+        }
+    }
+
+    pub async fn recall_hits(&self, limit: usize) -> Result<RecallHitsResponse> {
+        match self
+            .request("memoryd-tui-recall-hits", RequestPayload::RecallHits { since: None, limit: Some(limit) })
+            .await?
+            .result
+        {
+            memoryd::protocol::ResponseResult::Success(ResponsePayload::RecallHits(response)) => Ok(response),
             memoryd::protocol::ResponseResult::Success(other) => {
                 Err(anyhow!("daemon returned unexpected response: {other:?}"))
             }

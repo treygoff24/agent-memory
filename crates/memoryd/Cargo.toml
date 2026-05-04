@@ -33,6 +33,9 @@ zstd.workspace = true
 # eval tests for injecting synthetic events-log entries. Not compiled in release
 # builds; production daemons receiving this variant return method_not_allowed.
 test-utils = []
+# dev-fixtures: enables deterministic harness fixtures for local tests and
+# benches. Release builds without this feature must not expose `--cli echo`.
+dev-fixtures = []
 
 [dev-dependencies]
 memory-test-support = { path = "../memory-test-support" }

@@ -16,6 +16,7 @@ tokio.workspace = true
 # build without needing --features stream-i-deps. (H-B2 fix)
 default = ["stream-i-deps"]
 stream-i-deps = ["dep:memorum-coordination"]
+live-harness = []
 
 [dev-dependencies]
 memoryd = { path = "../memoryd" }

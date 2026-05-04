@@ -602,14 +602,11 @@ async fn peer_heartbeat_response(
     )
     .map_err(peer_heartbeat_error)?;
     // INVARIANT: `conflicting_claim_locks` is populated only at Level 3.
-    // Spec §6.1 does not explicitly restrict this field to L3, but in practice
-    // the heartbeat path is only exercised by Level 3 sessions — the
-    // `PresenceRegistry::handle_peer_heartbeat` path in presence.rs returns an
-    // empty `active_peers` list (and Level 1/2 sessions do not send heartbeats).
-    // If a future Level 2 heartbeat path is introduced, this guard must be
-    // removed or explicitly extended so that L2 callers receive conflict signals
-    // too.  Do NOT silently drop this to "emit empty at L2" without a test.
-    // See: docs/api/stream-i-cross-session-api.md (heartbeat notes section).
+    // Level 1/2 acknowledgements intentionally return `[]`; Level 2 dogfood
+    // keeps same-device claim-lock conflict signals dormant until full
+    // concurrent-session mode is explicitly enabled.
+    // See docs/specs/stream-i-cross-session-v0.1.md §6 and
+    // docs/api/stream-i-cross-session-api.md (heartbeat notes).
     if ack.active_level == 3 {
         ack.conflicting_claim_locks = conflicting_claim_locks_for_heartbeat(substrate, state, &heartbeat).await;
     }
@@ -1420,10 +1417,23 @@ async fn doctor_response(substrate: &Substrate) -> DoctorResponse {
             });
         }
     }
+    let has_substrate_findings = !findings.is_empty();
+    let registry = crate::dream::registry::HarnessCliRegistry::builtin_v0_2();
+    for (name, adapter) in registry.adapters() {
+        let probe = adapter.auth_probe().await;
+        if !probe.is_ok() {
+            findings.push(DoctorFinding {
+                code: "harness_cli_warning".to_string(),
+                message: probe.operator_message(name),
+                repair: Some(format!("Install/authenticate `{name}` or remove it from dream CLI priority.")),
+            });
+        }
+    }
     DoctorResponse {
-        healthy: findings.is_empty(),
+        healthy: !has_substrate_findings,
         findings,
-        guidance: "Doctor reflects Stream A substrate validation and repair state.".to_string(),
+        guidance: "Doctor reflects Stream A substrate validation, repair state, and Stream F harness availability."
+            .to_string(),
     }
 }
 

@@ -1,6 +1,0 @@
-version: "2.2"
-module: stream-a/io-events
-description: Stream A io-events ownership boundary.
-boundaries:
-  path: "crates/memory-substrate/src/{markdown,events,runtime}/**/*"
-constraints: []

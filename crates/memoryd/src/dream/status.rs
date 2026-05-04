@@ -46,7 +46,7 @@ pub async fn build_dream_status_report(repo: &Path, runtime: &Path) -> Result<Dr
         enabled,
         last_runs: collect_last_runs(repo)?,
         active_leases: collect_active_leases(repo, Utc::now())?,
-        cli_inventory: cli_inventory(&registry),
+        cli_inventory: cli_inventory(&registry).await,
         counters: collect_counters(repo)?,
         privacy_disclosure: PRIVACY_DISCLOSURE.to_string(),
     })
@@ -85,18 +85,19 @@ pub fn render_human_status(report: &DreamStatusReport) -> String {
     out
 }
 
-fn cli_inventory(registry: &HarnessCliRegistry) -> Vec<HarnessCliStatus> {
-    let mut statuses = registry
-        .adapters()
-        .map(|(name, adapter)| HarnessCliStatus {
+async fn cli_inventory(registry: &HarnessCliRegistry) -> Vec<HarnessCliStatus> {
+    let mut statuses = Vec::new();
+    for (name, adapter) in registry.adapters() {
+        let probe = adapter.auth_probe().await;
+        statuses.push(HarnessCliStatus {
             name: name.to_string(),
             is_installed: adapter.is_installed(),
-            is_authenticated: None,
+            is_authenticated: Some(probe.is_ok()),
             prompt_transport: adapter.prompt_transport(),
-            last_probe_at: None,
-            last_probe_error: None,
-        })
-        .collect::<Vec<_>>();
+            last_probe_at: Some(Utc::now()),
+            last_probe_error: (!probe.is_ok()).then(|| probe.operator_message(name)),
+        });
+    }
     statuses.extend(registry.disabled_adapters().cloned());
     statuses.sort_by(|left, right| left.name.cmp(&right.name));
     statuses

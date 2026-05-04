@@ -200,7 +200,7 @@ async fn startup_peer_updates(
     config: &CoordinationConfig,
     startup_context: SessionContext,
 ) -> Result<StartupPeerUpdates, RecallError> {
-    if effective_coordination_level(session_binding, config.level) < 2 || startup_context.is_tier3() {
+    if effective_coordination_level(session_binding, config.level) < 2 || startup_context.is_observe_only_harness() {
         return Ok(StartupPeerUpdates::default());
     }
 

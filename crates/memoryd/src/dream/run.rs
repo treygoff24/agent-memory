@@ -275,6 +275,7 @@ where
             scope: self.options.scope.as_str(),
             cli_used: Some(self.options.harness.name().to_string()),
             pass_1: pass_1.outcome,
+            pass_2_refusal_counts_by_reason: refusal_counts_by_reason(&pass_2),
             pass_2,
             pass_3,
             duration_ms: started_at.elapsed().as_millis() as u64,
@@ -332,6 +333,15 @@ fn prompt_transport_name(transport: PromptTransport) -> &'static str {
         PromptTransport::Stdin => "stdin",
         PromptTransport::Argv => "argv",
     }
+}
+
+fn refusal_counts_by_reason(pass: &PassOutcome) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for result in pass.candidate_results.iter().filter(|result| !result.accepted) {
+        let reason = result.reason.as_deref().unwrap_or("unspecified");
+        *counts.entry(reason.to_owned()).or_insert(0) += 1;
+    }
+    counts
 }
 
 fn skipped_pass() -> PassOutcome {

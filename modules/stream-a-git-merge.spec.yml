@@ -1,6 +1,0 @@
-version: "2.2"
-module: stream-a/git-merge
-description: Stream A git-merge ownership boundary.
-boundaries:
-  path: "crates/memory-substrate/src/{git,merge}/**/*"
-constraints: []

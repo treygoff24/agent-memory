@@ -101,12 +101,12 @@ impl SessionContext {
         session
     }
 
-    pub fn is_tier1(&self) -> bool {
+    pub fn is_full_coordination_harness(&self) -> bool {
         matches!(self.harness.trim().to_ascii_lowercase().as_str(), "codex" | "codex-cli" | "claude-code")
     }
 
-    pub fn is_tier3(&self) -> bool {
-        !self.is_tier1()
+    pub fn is_observe_only_harness(&self) -> bool {
+        !self.is_full_coordination_harness()
     }
 
     pub fn populate_salient_paths_from_recall(&mut self, recall_block: &str) {
@@ -118,7 +118,7 @@ impl SessionContext {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        if self.is_tier1() {
+        if self.is_full_coordination_harness() {
             self.add_memory_paths(paths);
         }
     }

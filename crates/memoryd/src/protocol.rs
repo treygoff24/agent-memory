@@ -613,6 +613,8 @@ pub struct DreamRunReport {
     pub cli_used: Option<String>,
     pub pass_1: PassOutcome,
     pub pass_2: PassOutcome,
+    #[serde(default)]
+    pub pass_2_refusal_counts_by_reason: std::collections::BTreeMap<String, usize>,
     pub pass_3: PassOutcome,
     pub duration_ms: u64,
 }

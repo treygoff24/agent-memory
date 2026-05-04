@@ -147,7 +147,18 @@ async fn archive_stale_candidates(
     let cutoff = config.now - Duration::days(config.candidate_stale_days);
     let mut archived = 0usize;
     for path in relative_memory_paths(repo) {
-        let repo_path = repo_path_from_relative(&path);
+        let repo_path = match repo_path_from_relative(&path) {
+            Ok(repo_path) => repo_path,
+            Err(err) => {
+                findings.push(CleanupFinding::new(
+                    "memory_lint",
+                    path.to_string_lossy().into_owned(),
+                    None,
+                    err.to_string(),
+                ));
+                continue;
+            }
+        };
         let (mut memory, base_hash) = match read_memory_at(repo, &repo_path) {
             Ok(memory) => memory,
             Err(err) => {
@@ -188,7 +199,18 @@ fn collect_memory_findings(repo: &Path) -> Vec<CleanupFinding> {
     let mut parsed_memories = Vec::new();
 
     for relative in relative_memory_paths(repo) {
-        let repo_path = repo_path_from_relative(&relative);
+        let repo_path = match repo_path_from_relative(&relative) {
+            Ok(repo_path) => repo_path,
+            Err(err) => {
+                findings.push(CleanupFinding::new(
+                    "memory_lint",
+                    relative.to_string_lossy().into_owned(),
+                    None,
+                    err.to_string(),
+                ));
+                continue;
+            }
+        };
         let text = match fs::read_to_string(repo.join(&relative)) {
             Ok(text) => text,
             Err(err) => {
@@ -259,7 +281,18 @@ async fn refresh_observed_at(
     let repo = substrate.roots().repo.as_path();
     let mut refreshed = 0usize;
     for path in relative_memory_paths(repo) {
-        let repo_path = repo_path_from_relative(&path);
+        let repo_path = match repo_path_from_relative(&path) {
+            Ok(repo_path) => repo_path,
+            Err(err) => {
+                findings.push(CleanupFinding::new(
+                    "memory_lint",
+                    path.to_string_lossy().into_owned(),
+                    None,
+                    err.to_string(),
+                ));
+                continue;
+            }
+        };
         let (mut memory, base_hash) = match read_memory_at(repo, &repo_path) {
             Ok(memory) => memory,
             Err(err) => {
@@ -634,6 +667,6 @@ fn repo_relative(repo: &Path, path: &Path) -> Result<String, CleanupError> {
         .map_err(|err| CleanupError::Serialization(err.to_string()))
 }
 
-fn repo_path_from_relative(path: &Path) -> RepoPath {
-    RepoPath::new(path.to_string_lossy().replace('\\', "/"))
+fn repo_path_from_relative(path: &Path) -> Result<RepoPath, CleanupError> {
+    RepoPath::try_new(path.to_string_lossy().replace('\\', "/")).map_err(CleanupError::Serialization)
 }

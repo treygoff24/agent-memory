@@ -228,7 +228,7 @@ async fn dream_candidate_writer_refuses_encrypt_at_rest_candidates_without_plain
         .await;
 
     assert!(!result.accepted, "{result:?}");
-    assert_eq!(result.reason.as_deref(), Some("encrypt_at_rest_candidate_refused"));
+    assert_eq!(result.reason.as_deref(), Some("privacy_required_encryption"));
     assert!(
         !substrate.roots().repo.join("agent/claims").exists(),
         "dreaming-strict refuses encrypt-at-rest candidates instead of writing plaintext"

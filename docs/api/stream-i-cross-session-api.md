@@ -48,7 +48,7 @@ Notes:
 - `started_at` is optional on the wire so later heartbeats can omit it. The daemon retains the first non-`None` value for a session.
 - Heartbeats update `PresenceRegistry` only when the effective coordination level is Level 3. Lower levels can still receive an acknowledgement.
 - Level 3 heartbeat can renew advisory claim locks listed in `claim_locks_held`.
-- `conflicting_claim_locks` in `PeerHeartbeatAck` is populated only at Level 3. This is a named design constraint, not a silent gap: the heartbeat path in `handlers.rs` gates population behind `ack.active_level == 3` because in v1 only Level 3 sessions send heartbeats. If a Level 2 heartbeat path is added in a future release, the gate must be removed or explicitly extended so that Level 2 callers receive conflict signals too.
+- `conflicting_claim_locks` in `PeerHeartbeatAck` is populated only at Level 3. At coordination levels 1 and 2 it is `[]` by design: solo dogfood stays at Level 2, and same-device claim-lock conflict signals remain dormant until full concurrent-session mode is explicitly enabled.
 
 ### `PeerStatus`
 
@@ -81,6 +81,8 @@ pub struct PeerSessionStatus {
 ```
 
 `PeerStatus` is an admin/status projection of daemon RAM: current default coordination level, active same-device peer sessions, live claim locks, and recent peer-update deliveries.
+
+Status-style projections should use the same Level 3 boundary for conflict signals. Level 1/2 callers should treat an empty `conflicting_claim_locks` list as "conflict surfacing disabled at this coordination level," not as proof that no lock exists.
 
 ### `PeerActivity`
 

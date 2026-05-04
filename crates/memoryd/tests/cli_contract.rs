@@ -166,7 +166,7 @@ fn test_clap_parses_memoryd_ui_panel_flag() {
 
 #[test]
 fn test_clap_rejects_panel_out_of_range() {
-    assert!(Cli::try_parse_from(["memoryd", "ui", "--panel", "9"]).is_err());
+    assert!(Cli::try_parse_from(["memoryd", "ui", "--panel", "10"]).is_err());
 }
 
 #[test]

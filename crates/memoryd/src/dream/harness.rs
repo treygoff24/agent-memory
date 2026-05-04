@@ -44,6 +44,8 @@ pub trait HarnessCli: Send + Sync {
 
     fn is_installed(&self) -> bool;
 
+    fn auth_probe(&self) -> HarnessFuture<'_, AuthProbeResult>;
+
     fn is_authenticated(&self) -> HarnessFuture<'_, Result<bool, HarnessCliError>>;
 
     fn complete<'a>(
@@ -52,6 +54,37 @@ pub trait HarnessCli: Send + Sync {
         expect_json: bool,
         timeout: Duration,
     ) -> HarnessFuture<'a, Result<String, HarnessCliError>>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AuthProbeResult {
+    Ok,
+    CliMissing { which: &'static str, path: String },
+    AuthFailed { exit_code: Option<i32>, stderr_tail: String },
+    Timeout,
+    Error { message: String },
+}
+
+impl AuthProbeResult {
+    pub fn is_ok(&self) -> bool {
+        matches!(self, Self::Ok)
+    }
+
+    pub fn operator_message(&self, which: &'static str) -> String {
+        match self {
+            Self::Ok => format!("{which} CLI: ✓ authenticated"),
+            Self::CliMissing { path, .. } => {
+                format!(
+                    "{which} CLI: ✗ not on PATH (dreams disabled for {which}); try `which {which}`. daemon PATH={path}"
+                )
+            }
+            Self::AuthFailed { exit_code, stderr_tail } => {
+                format!("{which} CLI: ✗ auth probe failed (exit={exit_code:?}): {stderr_tail}")
+            }
+            Self::Timeout => format!("{which} CLI: ✗ auth probe timed out"),
+            Self::Error { message } => format!("{which} CLI: ✗ auth probe error: {message}"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -174,6 +207,10 @@ impl HarnessCli for EchoCli {
         true
     }
 
+    fn auth_probe(&self) -> HarnessFuture<'_, AuthProbeResult> {
+        Box::pin(async { AuthProbeResult::Ok })
+    }
+
     fn is_authenticated(&self) -> HarnessFuture<'_, Result<bool, HarnessCliError>> {
         Box::pin(async { Ok(true) })
     }
@@ -232,10 +269,10 @@ impl HarnessCli for ClaudeCodeCli {
         find_executable("claude", self.path_env.as_deref()).is_some()
     }
 
-    fn is_authenticated(&self) -> HarnessFuture<'_, Result<bool, HarnessCliError>> {
+    fn auth_probe(&self) -> HarnessFuture<'_, AuthProbeResult> {
         Box::pin(async move {
             if !self.is_installed() {
-                return Err(HarnessCliError::NotInstalled);
+                return AuthProbeResult::CliMissing { which: "claude", path: path_display(self.path_env.as_deref()) };
             }
 
             auth_probe(
@@ -249,6 +286,10 @@ impl HarnessCli for ClaudeCodeCli {
             )
             .await
         })
+    }
+
+    fn is_authenticated(&self) -> HarnessFuture<'_, Result<bool, HarnessCliError>> {
+        Box::pin(async move { Ok(self.auth_probe().await.is_ok()) })
     }
 
     fn complete<'a>(
@@ -310,10 +351,10 @@ impl HarnessCli for CodexCli {
         find_executable("codex", self.path_env.as_deref()).is_some()
     }
 
-    fn is_authenticated(&self) -> HarnessFuture<'_, Result<bool, HarnessCliError>> {
+    fn auth_probe(&self) -> HarnessFuture<'_, AuthProbeResult> {
         Box::pin(async move {
             if !self.is_installed() {
-                return Err(HarnessCliError::NotInstalled);
+                return AuthProbeResult::CliMissing { which: "codex", path: path_display(self.path_env.as_deref()) };
             }
 
             auth_probe(
@@ -327,6 +368,10 @@ impl HarnessCli for CodexCli {
             )
             .await
         })
+    }
+
+    fn is_authenticated(&self) -> HarnessFuture<'_, Result<bool, HarnessCliError>> {
+        Box::pin(async move { Ok(self.auth_probe().await.is_ok()) })
     }
 
     fn complete<'a>(
@@ -380,11 +425,7 @@ async fn complete_external(
     Ok(output.stdout)
 }
 
-async fn auth_probe(
-    plan: HarnessCommandPlan,
-    path_env: Option<OsString>,
-    env_allowlist: &[&str],
-) -> Result<bool, HarnessCliError> {
+async fn auth_probe(plan: HarnessCommandPlan, path_env: Option<OsString>, env_allowlist: &[&str]) -> AuthProbeResult {
     let result = run_hardened_command(
         HardenedCommand {
             program: PathBuf::from(plan.program),
@@ -401,10 +442,20 @@ async fn auth_probe(
     .await;
 
     match result {
-        Ok(_) => Ok(true),
-        Err(HarnessCliError::SubprocessExit { .. }) => Ok(false),
-        Err(error) => Err(error),
+        Ok(_) => AuthProbeResult::Ok,
+        Err(HarnessCliError::SubprocessExit { code, stderr_tail }) => {
+            AuthProbeResult::AuthFailed { exit_code: code, stderr_tail }
+        }
+        Err(HarnessCliError::Timeout { .. }) => AuthProbeResult::Timeout,
+        Err(error) => AuthProbeResult::Error { message: error.to_string() },
     }
+}
+
+fn path_display(path_env: Option<&OsStr>) -> String {
+    path_env
+        .map(|path| path.to_string_lossy().into_owned())
+        .or_else(|| std::env::var("PATH").ok())
+        .unwrap_or_else(|| "<unset>".to_owned())
 }
 
 fn prompt_hash(prompt: &str) -> String {

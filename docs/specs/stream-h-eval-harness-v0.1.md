@@ -18,7 +18,7 @@ Stream H is the evaluation harness for Memorum. Its job is narrow and permanent:
 Stream H owns:
 
 - `crates/memorum-eval/` — the eval crate and orchestrator binary;
-- 18 test definitions in the test catalog (§3);
+- 19 test definitions in the test catalog (§3): 17 active plus 2 explicitly deferred tracking tests;
 - the in-process `SimulatorAgent` and its daemon protocol harness (§4);
 - the real-harness end-to-end invocation pattern for tests #13 and #15 (§5);
 - the `memorum-eval` binary: orchestrator flags, parallel/serial grouping, JSON output (§6);

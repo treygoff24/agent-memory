@@ -45,7 +45,7 @@ impl RelevanceGate {
     where
         S: FnMut(&PeerWriteCandidate, &SessionContext, Option<&QueryEmbedding>) -> f64,
     {
-        if session.is_tier3() {
+        if session.is_observe_only_harness() {
             return CoordinationInsertion::empty();
         }
 

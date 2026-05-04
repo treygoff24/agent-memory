@@ -112,7 +112,7 @@ async fn build_delta_coordination(
 
     let now = Utc::now();
     let mut session = delta_session_context(session_binding, message);
-    if session.is_tier3() {
+    if session.is_observe_only_harness() {
         return Ok(DeltaCoordination::default());
     }
     let recency_cutoff = now

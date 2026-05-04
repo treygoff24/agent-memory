@@ -129,7 +129,8 @@ pub async fn select_harness(
 
 pub(crate) fn echo_cli_override_enabled() -> bool {
     cfg!(debug_assertions)
-        || std::env::var_os("MEMORYD_ENABLE_ECHO_DREAM_HARNESS").as_deref() == Some(std::ffi::OsStr::new("1"))
+        || (cfg!(feature = "dev-fixtures")
+            && std::env::var_os("MEMORYD_ENABLE_ECHO_DREAM_HARNESS").as_deref() == Some(std::ffi::OsStr::new("1")))
 }
 
 #[derive(Clone)]
@@ -169,7 +170,7 @@ impl SubstrateCandidateWriter {
                 return Ok(CandidateWriteResult {
                     id: None,
                     accepted: false,
-                    reason: Some("encrypt_at_rest_candidate_refused".to_string()),
+                    reason: Some("privacy_required_encryption".to_string()),
                     source_ref_count: request.evidence.len(),
                 });
             }

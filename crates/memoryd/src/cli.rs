@@ -68,7 +68,7 @@ pub struct SocketArgs {
 #[derive(Debug, Args)]
 pub struct UiArgs {
     /// Start with panel N active.
-    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=8))]
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=9))]
     pub panel: u8,
     /// Unix socket path used to reach memoryd.
     #[arg(long, default_value = "/tmp/memoryd.sock")]

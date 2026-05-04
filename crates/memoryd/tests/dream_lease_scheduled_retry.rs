@@ -367,6 +367,7 @@ fn non_stub_dream_report(scope: &str) -> DreamRunReport {
             duration_ms: 1,
         },
         pass_2: skipped_pass(),
+        pass_2_refusal_counts_by_reason: std::collections::BTreeMap::new(),
         pass_3: skipped_pass(),
         duration_ms: 3,
     }

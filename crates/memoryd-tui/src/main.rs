@@ -16,11 +16,20 @@ struct Args {
     tick_ms: Option<u64>,
     #[arg(long)]
     daemon_poll_ms: Option<u64>,
+    #[cfg(debug_assertions)]
+    #[arg(long, hide = true)]
+    inject_panic: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    install_panic_terminal_restore_hook();
     let args = Args::parse();
+    #[cfg(debug_assertions)]
+    if args.inject_panic {
+        panic!("injected memoryd-tui panic");
+    }
+
     let mut config = match args.config {
         Some(path) => UiConfig::from_config_yaml(path)?,
         None => UiConfig::default(),
@@ -37,4 +46,12 @@ async fn main() -> Result<()> {
     }
 
     app::run(config).await
+}
+
+fn install_panic_terminal_restore_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        app::restore_terminal_blocking();
+        default_hook(info);
+    }));
 }
