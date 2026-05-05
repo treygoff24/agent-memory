@@ -57,6 +57,12 @@ pub struct QueryEmbedding {
 
 pub type EmbeddingCache = HashMap<(String, String), (EmbeddingTriple, Vec<f32>)>;
 
+// Invariant: this explicit allowlist contains harness names known to support
+// full coordination (peer-update insertion and claim locks). Unknown harnesses
+// default to observe-only to prevent silent privilege escalation. Adding a
+// full-coordination harness requires updating the session_derivation tests.
+const FULL_COORDINATION_HARNESSES: &[&str] = &["codex", "codex-cli", "claude-code"];
+
 /// Working set for one active harness session.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SessionContext {
@@ -102,9 +108,11 @@ impl SessionContext {
     }
 
     pub fn is_full_coordination_harness(&self) -> bool {
-        matches!(self.harness.trim().to_ascii_lowercase().as_str(), "codex" | "codex-cli" | "claude-code")
+        let harness = self.harness.trim().to_ascii_lowercase();
+        FULL_COORDINATION_HARNESSES.contains(&harness.as_str())
     }
 
+    /// Harnesses outside `FULL_COORDINATION_HARNESSES` are observe-only.
     pub fn is_observe_only_harness(&self) -> bool {
         !self.is_full_coordination_harness()
     }

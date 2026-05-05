@@ -1,3 +1,5 @@
+#![cfg(feature = "dev-fixtures")]
+
 use std::{sync::Arc, time::Duration};
 
 use chrono::NaiveDate;

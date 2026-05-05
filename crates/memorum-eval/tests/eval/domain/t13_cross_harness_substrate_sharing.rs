@@ -19,7 +19,9 @@ const HARNESS_TIMEOUT: Duration = Duration::from_secs(180);
 #[tokio::test]
 async fn t13_cross_harness_substrate_sharing() {
     if missing_auth_keys() {
-        eprintln!("SKIP_NO_AUTH: set {CLAUDE_KEY_ENV} and {CODEX_KEY_ENV} to run real-harness Test #13.");
+        eprintln!(
+            "MEMORUM_EVAL_SKIP:SKIP_NO_AUTH: set {CLAUDE_KEY_ENV} and {CODEX_KEY_ENV} to run real-harness Test #13."
+        );
         return;
     }
 
@@ -83,7 +85,7 @@ fn missing_cli(harness: RealHarness) -> bool {
         Ok(Some(_)) => false,
         Ok(None) => {
             eprintln!(
-                "SKIP_MISSING_CLI: {} not found in PATH. Install and authenticate to run Test #13.",
+                "MEMORUM_EVAL_SKIP:SKIP_MISSING_CLI: {} not found in PATH. Install and authenticate to run Test #13.",
                 harness.binary_name()
             );
             true

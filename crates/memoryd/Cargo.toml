@@ -37,6 +37,11 @@ test-utils = []
 # benches. Release builds without this feature must not expose `--cli echo`.
 dev-fixtures = []
 
+[[bin]]
+name = "stream_f_dream_bench"
+path = "src/bin/stream_f_dream_bench.rs"
+required-features = ["dev-fixtures"]
+
 [dev-dependencies]
 memory-test-support = { path = "../memory-test-support" }
 rusqlite.workspace = true

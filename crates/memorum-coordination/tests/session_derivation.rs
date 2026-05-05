@@ -33,6 +33,34 @@ fn test_salient_entities_tier3_from_binding_only() {
 }
 
 #[test]
+fn known_full_coordination_harness_names_are_allowlisted() {
+    for harness in ["codex", "codex-cli", "claude-code", " CODEX "] {
+        let session = SessionContext::from_startup_recall(
+            "sess_full",
+            harness,
+            StartupRecallEntityInput { recall_block: "", last_three_turn_fts5_entity_ids: &[] },
+        );
+
+        assert!(session.is_full_coordination_harness(), "{harness} should be full coordination");
+        assert!(!session.is_observe_only_harness(), "{harness} should not be observe-only");
+    }
+}
+
+#[test]
+fn unknown_harness_names_default_to_observe_only() {
+    for harness in ["cursor", "claude-code-v2", "opencode"] {
+        let session = SessionContext::from_startup_recall(
+            "sess_observe",
+            harness,
+            StartupRecallEntityInput { recall_block: "", last_three_turn_fts5_entity_ids: &[] },
+        );
+
+        assert!(!session.is_full_coordination_harness(), "{harness} must not silently gain coordination");
+        assert!(session.is_observe_only_harness(), "{harness} should default observe-only");
+    }
+}
+
+#[test]
 fn test_relevance_gate_skipped_for_tier3() {
     let now = fixture_now();
     let candidate = candidate("mem_20260501_a1b2c3d4e5f60718_000101", ["proj_abc"], ["project:proj/shared.md"], now);

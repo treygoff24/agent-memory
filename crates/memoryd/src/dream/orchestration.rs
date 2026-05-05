@@ -22,12 +22,16 @@ use sha2::{Digest, Sha256};
 
 use crate::protocol::CandidateWriteResult;
 
+#[cfg(not(any(test, feature = "dev-fixtures")))]
+use super::{error::HarnessCliError, harness::AuthProbeResult};
+#[cfg(any(test, feature = "dev-fixtures"))]
+use super::{harness::EchoCli, run::deterministic_echo_harness};
 use super::{
-    harness::{EchoCli, HarnessCli, HarnessFuture},
+    harness::{HarnessCli, HarnessFuture},
     registry::HarnessCliRegistry,
     run::{
-        deterministic_echo_harness, CandidateEvidenceRef, CandidateWriteRequest, CandidateWriter,
-        DreamActiveMemoryInput, DreamRunOptions, DreamSubstrateFragmentInput,
+        CandidateEvidenceRef, CandidateWriteRequest, CandidateWriter, DreamActiveMemoryInput, DreamRunOptions,
+        DreamSubstrateFragmentInput,
     },
     scope::DreamScope,
     types::{ActiveMemory, DreamError, SubstrateFragment},
@@ -58,7 +62,10 @@ pub async fn build_dream_run(
     substrate: &Substrate,
     request: DreamRunBuildRequest,
 ) -> Result<DreamRunBuild, DreamError> {
+    #[cfg(any(test, feature = "dev-fixtures"))]
     let placeholder = Arc::new(EchoCli::default());
+    #[cfg(not(any(test, feature = "dev-fixtures")))]
+    let placeholder = Arc::new(UnselectedHarness);
     let substrate_fragments = load_substrate_fragments(
         substrate.roots().repo.as_path(),
         &request.scope,
@@ -86,10 +93,11 @@ pub async fn build_dream_run(
 pub async fn select_harness(
     cli_override: Option<&str>,
     priority: &[String],
-    options: &DreamRunOptions,
+    _options: &DreamRunOptions,
 ) -> Result<Arc<dyn HarnessCli>, DreamError> {
+    #[cfg(any(test, feature = "dev-fixtures"))]
     if cli_override == Some("echo") && echo_cli_override_enabled() {
-        return deterministic_echo_harness(options);
+        return deterministic_echo_harness(_options);
     }
 
     let registry = HarnessCliRegistry::builtin_v0_2();
@@ -127,10 +135,53 @@ pub async fn select_harness(
     })
 }
 
+#[cfg(any(test, feature = "dev-fixtures"))]
 pub(crate) fn echo_cli_override_enabled() -> bool {
-    cfg!(debug_assertions)
+    cfg!(test)
         || (cfg!(feature = "dev-fixtures")
             && std::env::var_os("MEMORYD_ENABLE_ECHO_DREAM_HARNESS").as_deref() == Some(std::ffi::OsStr::new("1")))
+}
+
+#[cfg(not(any(test, feature = "dev-fixtures")))]
+pub(crate) fn echo_cli_override_enabled() -> bool {
+    false
+}
+
+#[cfg(not(any(test, feature = "dev-fixtures")))]
+struct UnselectedHarness;
+
+#[cfg(not(any(test, feature = "dev-fixtures")))]
+impl HarnessCli for UnselectedHarness {
+    fn name(&self) -> &'static str {
+        "unselected"
+    }
+
+    fn prompt_transport(&self) -> crate::protocol::PromptTransport {
+        crate::protocol::PromptTransport::Stdin
+    }
+
+    fn is_installed(&self) -> bool {
+        false
+    }
+
+    fn auth_probe(&self) -> HarnessFuture<'_, AuthProbeResult> {
+        Box::pin(async { AuthProbeResult::Error { message: "harness not selected".to_owned() } })
+    }
+
+    fn is_authenticated(&self) -> HarnessFuture<'_, Result<bool, HarnessCliError>> {
+        Box::pin(async { Ok(false) })
+    }
+
+    fn complete<'a>(
+        &'a self,
+        _prompt: &'a str,
+        _expect_json: bool,
+        _timeout: Duration,
+    ) -> HarnessFuture<'a, Result<String, HarnessCliError>> {
+        Box::pin(async {
+            Err(HarnessCliError::SubprocessExit { code: Some(1), stderr_tail: "harness not selected".to_owned() })
+        })
+    }
 }
 
 #[derive(Clone)]

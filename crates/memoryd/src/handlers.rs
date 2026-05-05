@@ -1419,9 +1419,14 @@ async fn doctor_response(substrate: &Substrate) -> DoctorResponse {
     }
     let has_substrate_findings = !findings.is_empty();
     let registry = crate::dream::registry::HarnessCliRegistry::builtin_v0_2();
+    let mut enabled_harness_count = 0usize;
+    let mut authenticated_harness_count = 0usize;
     for (name, adapter) in registry.adapters() {
+        enabled_harness_count += 1;
         let probe = adapter.auth_probe().await;
-        if !probe.is_ok() {
+        if probe.is_ok() {
+            authenticated_harness_count += 1;
+        } else {
             findings.push(DoctorFinding {
                 code: "harness_cli_warning".to_string(),
                 message: probe.operator_message(name),
@@ -1430,11 +1435,19 @@ async fn doctor_response(substrate: &Substrate) -> DoctorResponse {
         }
     }
     DoctorResponse {
-        healthy: !has_substrate_findings,
+        healthy: doctor_is_healthy(has_substrate_findings, enabled_harness_count, authenticated_harness_count),
         findings,
         guidance: "Doctor reflects Stream A substrate validation, repair state, and Stream F harness availability."
             .to_string(),
     }
+}
+
+fn doctor_is_healthy(
+    has_substrate_findings: bool,
+    enabled_harness_count: usize,
+    authenticated_harness_count: usize,
+) -> bool {
+    !has_substrate_findings && (enabled_harness_count == 0 || authenticated_harness_count > 0)
 }
 
 async fn search_response(
@@ -3746,5 +3759,14 @@ mod tests {
         assert_eq!(error.code, "port_in_use");
         assert!(error.message.contains("is unavailable before start"));
         assert!(!runtime.status(chrono::Utc::now()).running);
+    }
+
+    #[test]
+    fn doctor_health_requires_clean_substrate_and_available_harness() {
+        assert!(doctor_is_healthy(false, 2, 1), "one authenticated enabled harness keeps doctor healthy");
+        assert!(!doctor_is_healthy(false, 2, 0), "zero authenticated enabled harnesses is unhealthy");
+        assert!(!doctor_is_healthy(true, 2, 2), "substrate findings are unhealthy regardless of harnesses");
+        assert!(!doctor_is_healthy(true, 0, 0), "substrate findings are unhealthy even with empty registry");
+        assert!(doctor_is_healthy(false, 0, 0), "empty registry is trivially healthy when substrate is clean");
     }
 }

@@ -7,6 +7,8 @@ use ratatui::Frame;
 
 use crate::app::{App, Modal, PanelCommand};
 
+// Real score/harness/session columns require a daemon protocol extension; see
+// docs/dev/stream-g-tui-recall-panel-design.md.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RecallState {
     cursor: usize,
@@ -58,13 +60,12 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
         }
         lines.push(String::new());
         lines.push("Recent hits".to_owned());
-        lines.push("score:n/a  harness:n/a  session:n/a until the daemon protocol carries those fields".to_owned());
 
         for (index, hit) in data.hits.iter().enumerate() {
             let marker =
                 if index == app.recall_state().cursor().min(data.hits.len().saturating_sub(1)) { ">" } else { " " };
             lines.push(format!(
-                "{marker} {}  {}  device:{} seq:{}  score:n/a harness:n/a session:n/a",
+                "{marker} {}  {}  device:{} seq:{}",
                 hit.recalled_at, hit.memory_id, hit.device, hit.seq
             ));
             if let Some(summary) = hit.summary.as_ref().filter(|summary| !summary.is_empty()) {

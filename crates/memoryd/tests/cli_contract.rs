@@ -2,6 +2,7 @@ use std::process::Command;
 
 use chrono::{TimeZone, Utc};
 use clap::Parser as _;
+use memory_substrate::{InitOptions, Roots, Substrate};
 use memoryd::cli::{
     reality_check_request_payload, validate_snooze_until, validate_ui_stdin, web_request_payload, Cli,
     Command as CliCommand, RealityCheckCommand, WebCommand,
@@ -45,6 +46,42 @@ fn cli_contract_client_commands_expose_help_without_requiring_daemon() {
         let output = Command::new(env!("CARGO_BIN_EXE_memoryd")).args(args).output().expect("run memoryd command");
         assert!(output.status.success(), "command failed: {args:?}");
     }
+}
+
+#[test]
+fn doctor_unhealthy_exit_is_nonzero_when_no_harness_is_authenticated() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let repo = temp.path().join("repo");
+    let runtime = temp.path().join("runtime");
+    let empty_path = temp.path().join("empty-path");
+    std::fs::create_dir_all(&empty_path).expect("empty path dir");
+
+    tokio::runtime::Builder::new_current_thread().enable_all().build().expect("tokio runtime").block_on(async {
+        Substrate::init(
+            Roots::new(&repo, &runtime),
+            InitOptions { force_unsafe_durability: true, device_id: Some("dev_doctorcli".to_owned()) },
+        )
+        .await
+        .expect("init substrate");
+    });
+
+    let output = Command::new(env!("CARGO_BIN_EXE_memoryd"))
+        .args(["doctor", "--repo"])
+        .arg(&repo)
+        .arg("--runtime")
+        .arg(&runtime)
+        .env("PATH", &empty_path)
+        .output()
+        .expect("run memoryd doctor");
+
+    assert_eq!(output.status.code(), Some(1), "unhealthy doctor should exit 1");
+    let stdout = String::from_utf8(output.stdout).expect("doctor stdout is utf8");
+    assert!(stdout.contains("\"doctor\""), "doctor should return a successful doctor response: {stdout}");
+    assert!(
+        stdout.contains("\"healthy\": false"),
+        "doctor should report unhealthy when no harness is available: {stdout}"
+    );
+    assert!(!stdout.contains("daemon PATH="), "doctor output should not disclose the full daemon PATH: {stdout}");
 }
 
 /// Parsing-coverage test using clap's in-process parser — does not spawn the binary

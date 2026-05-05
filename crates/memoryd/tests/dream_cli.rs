@@ -75,6 +75,7 @@ fn dream_status_json_omits_released_leases_from_active_leases() {
 }
 
 #[test]
+#[cfg(feature = "dev-fixtures")]
 fn dream_now_echo_runs_pipeline_after_acquiring_lease() {
     let env = DreamCliEnv::new("dev_echo");
 
@@ -103,6 +104,7 @@ fn dream_now_echo_runs_pipeline_after_acquiring_lease() {
 }
 
 #[test]
+#[cfg(feature = "dev-fixtures")]
 fn dream_now_respects_device_disabled_sentinel_before_lease_or_outputs() {
     let env = DreamCliEnv::new("dev_disabled_now");
     std::fs::write(env.runtime.join("dream-disabled"), "disabled\n").expect("disabled sentinel");
@@ -129,6 +131,7 @@ fn dream_now_respects_device_disabled_sentinel_before_lease_or_outputs() {
 }
 
 #[test]
+#[cfg(feature = "dev-fixtures")]
 fn dream_scheduled_echo_runs_pipeline_and_writes_scheduled_summary() {
     let env = DreamCliEnv::new("dev_scheduled");
 
@@ -157,6 +160,7 @@ fn dream_scheduled_echo_runs_pipeline_and_writes_scheduled_summary() {
 }
 
 #[test]
+#[cfg(feature = "dev-fixtures")]
 fn dream_scheduled_respects_device_disabled_sentinel_before_lease_or_outputs() {
     let env = DreamCliEnv::new("dev_disabled_scheduled");
     std::fs::write(env.runtime.join("dream-disabled"), "disabled\n").expect("disabled sentinel");
@@ -271,6 +275,7 @@ fn dream_enable_first_run_prints_privacy_disclosure_before_enabling() {
 }
 
 #[test]
+#[cfg(feature = "dev-fixtures")]
 fn dream_manual_lease_failure_exit_code_5_remains_covered() {
     let env = DreamCliEnv::new("dev_lease_failure");
     env.append_lease(LeaseRecord {
@@ -396,6 +401,7 @@ impl DreamCliEnv {
         writeln!(file, "{}", serde_json::to_string(&record).expect("lease serializes")).expect("append lease");
     }
 
+    #[cfg(feature = "dev-fixtures")]
     fn commit_all(&self, message: &str) {
         command_in(&self.repo, "git", ["add", "."]);
         command_in(&self.repo, "git", ["commit", "-m", message]);

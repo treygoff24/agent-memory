@@ -24,9 +24,9 @@ Use ratatui primitives already used by the other panels: `Block`, `Borders`, and
    - render newest six buckets;
    - draw proportional ASCII bars (`████`) so density is visible without custom widgets.
 2. **Scrollable hit list bottom**
-   - rows show `recalled_at`, `mem_id`, `score`, `harness_source_id`, and `surfaced_in_session` when known;
-   - current protocol has no score/session fields, so v1 renders `score:n/a`, `harness:n/a`, `session:n/a` explicitly instead of inventing values;
-   - include `device`, `seq`, and summary as available provenance.
+   - rows show only protocol-backed fields in v1: `recalled_at`, `mem_id`, `device`, `seq`, and summary when present;
+   - this intentionally chooses Claude review option B for the dogfood-readiness fix: unsupported `score`, `harness_source_id`, and `surfaced_in_session` columns are not rendered as `n/a` placeholders;
+   - adding those columns later requires an explicit Stream A / daemon protocol extension rather than a TUI-only change.
 
 ## Refresh model
 
@@ -46,6 +46,14 @@ A future version can add a dedicated 5s timer if the global daemon poll interval
 
 ## Test plan
 
-- Unit/render test: sample snapshot with recall hits renders the panel title, histogram, memory id, summary, and explicit `score:n/a` fields.
+- Unit/render test: sample snapshot with recall hits renders the panel title, histogram, memory id, summary, and does not render unsupported `score:n/a` placeholders.
 - Keymap test: `9` switches to `PanelId::Recall` through `PanelId::all()`.
 - Client behavior is covered by existing socket request helpers plus the app-level render test; daemon protocol coverage stays in `memoryd` tests for `RecallHits`.
+
+## Follow-up: real recall-hit dimensions
+
+Tracking item: extend the Stream A event payload and daemon `RecallHitSummary`
+protocol to carry score, harness source id, and surfaced-in-session values for
+recall-hit events. That is Claude review option A and needs explicit Stream A
+authorization because those fields are not currently persisted in the event log
+or exposed by the daemon protocol.

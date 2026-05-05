@@ -1,6 +1,6 @@
 # Memorum — System Spec v0.2
 
-**Status:** v1 release contract. Supersedes `system-v0.1.md`. Stream A–F implementation contracts (`stream-a-core-substrate-v1.1.md`, `stream-c-governance-v0.1.md`, `stream-d-privacy-v0.1.md`, `stream-e-passive-recall-v0.5.md`, `stream-f-dreaming-v0.2.md`) override this document on any conflict — those are the live, shipped contracts. This document is the system-level frame and the contract for the still-to-build streams (G observability, H eval, I cross-session) and for v1 release shape.
+**Status:** v1 release contract. Supersedes `system-v0.1.md`. Stream A–F implementation contracts (`stream-a-core-substrate-v1.1.md`, `stream-c-governance-v0.1.md`, `stream-d-privacy-v0.1.md`, `stream-e-passive-recall-v0.5.md`, `stream-f-dreaming-v0.3.md`) override this document on any conflict — those are the live, shipped contracts. This document is the system-level frame and the contract for the still-to-build streams (G observability, H eval, I cross-session) and for v1 release shape.
 
 **Date:** 2026-05-01.
 
@@ -28,7 +28,7 @@ Concretely:
 10. **MCP tool surface is updated to nine tools.** v0.1 listed seven agent-facing tools. Stream D added `memory_reveal` (eighth); Stream F added `memory_observe` (ninth) and left `memory_note` unchanged. v0.2 §14.1 enumerates the live nine and forbids tool-count creep in v1.
 11. **Open threads are resolved.** v0.1 §18 listed six unresolved areas. v0.2 §18 records: prospective memory deferred to v2; eval harness is Stream H (in v1); bootstrap UX is in v1 (interactive wizard + flags + `--non-interactive`); policy migration is in v1 (additive only, no breaking schema changes); multi-user is post-v2; naming is closed.
 12. **Reality Check is passive-only.** v0.1 §16.4 said "Slack/email reminder when due." v0.2 §16.4 makes the reminder Sunday morning Slack by default, with no active interruption — Reality Check surfaces silently in `memory status`, the next session's `<pending-attention>`, and the dashboard. Active OS notification is opt-in.
-13. **Dream-output disposition.** v0.1 §12 said grounded promotion happens; it didn't say where the candidate lands. v0.2 §12 aligns with Stream F v0.2 §13: every grounded Pass 2 candidate enters the review queue, no silent auto-promotion in v1. A `review_min` floor (default 0.65) drops obviously-low-confidence candidates to the cleanup log instead of the queue. v1.1 may add silent promotion once dogfood produces calibration data — see §12.
+13. **Dream-output disposition.** v0.1 §12 said grounded promotion happens; it didn't say where the candidate lands. v0.2 §12 aligns with Stream F v0.3 §13: every grounded Pass 2 candidate enters the review queue, no silent auto-promotion in v1. A `review_min` floor (default 0.65) drops obviously-low-confidence candidates to the cleanup log instead of the queue. v1.1 may add silent promotion once dogfood produces calibration data — see §12.
 14. **Drift-risk weights.** v0.1 §16.4 left `w1..w5` symbolic. v0.2 §16.4 picks: 0.35 staleness, 0.20 inverse-recall-frequency, 0.20 cross-source corroboration, 0.15 confidence decay, 0.10 sensitivity weight. These are dogfood-tunable but ship as defaults.
 15. **Bootstrap CLI shape locked.** Interactive wizard by default; flag overrides for every prompt; `--non-interactive` for scripts; dry-run plan + `y/N` confirm before any disk effect; age-key backup blocks until user confirms they have it. See §18.3.
 
@@ -43,6 +43,8 @@ The substance of Stream A–F's design — files canonical, SQLite derived, Mark
 Memorum is a local-first, harness-agnostic, daemon-backed shared memory layer that works across Claude Code, Codex CLI, Cursor, OpenClaw, Factory, and any other MCP-speaking harness without forking, modifying, or wrapping the harness. It provides durable memory, passive recall, cross-harness coordination, and governance primitives as a single system the user runs once and every agent on the machine can talk to.
 
 **Review-fix decision policy:** when review finds a gap between implementation and the live spec, the default is to fix the implementation. Spec amendments are valid only when the contract was technically wrong, unsafe, or explicitly deferred with user-visible behavior and tracking. See `docs/review-fix-policy.md`; review-fix commits that amend a contract must identify whether they are a code fix, spec correction, or explicit deferral.
+
+**Spec amendment/versioning policy:** additive public-surface amendments may stay in-version with a dated amendment block when they add no new required behavior for existing callers. Behavior-changing changes, return-shape changes, removed or renamed surface, and new enforced invariants require a version bump unless Trey explicitly directs otherwise.
 
 Concretely:
 
@@ -221,7 +223,7 @@ Unchanged from v0.1 §4 and shipped per Stream A v1.1 §3 + Stream B's `RequestP
   - Embedding worker (background; configurable provider, defaults specified by Stream A).
   - Indexer (chunk + embed + insert on file change, debounced).
   - Privacy classification (Layer 1 deterministic; ONNX Layer 2 deferred per Stream D v0.1).
-  - Dreaming scheduler (three-layer pipeline, leased; harness-CLI-delegated LLM calls per Stream F v0.2).
+  - Dreaming scheduler (three-layer pipeline, leased; harness-CLI-delegated LLM calls per Stream F v0.3).
   - Sync manager (git fetch/push, merge driver).
   - Event log appender.
   - Policy loader and validator.
@@ -338,7 +340,7 @@ Unchanged from v0.1 §8. Shipped per Stream A v1.1 §8 and Stream B's session-bi
 Unchanged from v0.1 §9 in shape. Shipped per Stream A v1.1 §13 (two-clone convergence as canonical-content equality, not raw `git diff`) and §14 (merge driver). v0.2 adds:
 
 - **Auto-commit policy** is unchanged: 30-second debounce, structured commit message.
-- **Daemon-authored commits** (Stream F lease + cleanup writes; Stream I peer-update metadata writes if any) follow the conventions specified in `stream-f-dreaming-v0.2.md` §1.1: explicit author identity (`memoryd lease-bot` / `memoryd cleanup-bot`), structured message prefix, dirty-tree handling.
+- **Daemon-authored commits** (Stream F lease + cleanup writes; Stream I peer-update metadata writes if any) follow the conventions specified in `stream-f-dreaming-v0.3.md` §1.1: explicit author identity (`memoryd lease-bot` / `memoryd cleanup-bot`), structured message prefix, dirty-tree handling.
 - **`memoryd-version` trailer** on every auto-commit for debuggability.
 
 ---
@@ -409,9 +411,9 @@ v0.2 additions:
 
 ## 12. Dreaming — three-layer pipeline
 
-Shipped per Stream F v0.2. Substrate / journal / cleanup layers as specified there, with harness-CLI-delegated LLM calls.
+Shipped per Stream F v0.3. Substrate / journal / cleanup layers as specified there, with harness-CLI-delegated LLM calls.
 
-**v1 dream-output disposition: review queue only, no silent auto-promotion.** Stream F v0.2 §13 explicitly defers Pass 2 auto-promotion ("Pass 2 auto-promotion … is explicitly out of scope"). Every grounded Pass 2 candidate enters `pending` review with reason `dream_pass_2_candidate` (or `dream_pass_2_low_confidence` if the candidate's self-reported confidence is below `dreaming.review_min` and the candidate is logged-and-dropped instead). The user batches through accept / reject / edit in the TUI or web dashboard.
+**v1 dream-output disposition: review queue only, no silent auto-promotion.** Stream F v0.3 §13 explicitly defers Pass 2 auto-promotion ("Pass 2 auto-promotion … is explicitly out of scope"). Every grounded Pass 2 candidate enters `pending` review with reason `dream_pass_2_candidate` (or `dream_pass_2_low_confidence` if the candidate's self-reported confidence is below `dreaming.review_min` and the candidate is logged-and-dropped instead). The user batches through accept / reject / edit in the TUI or web dashboard.
 
 The default config exposes one tunable boundary — the floor below which Pass 2 outputs are dropped without being shown:
 
@@ -424,7 +426,7 @@ Candidates with confidence `< review_min` are dropped to `dreams/cleanup/<device
 
 **Why no auto-promotion in v1.** Dream-pass confidence is a model self-report and its calibration vs. ground-truth correctness is unverified. Auto-promotion silently writes potentially-false memory the user has no signal to catch. The dogfood week (§20) collects the calibration data — confidence-vs-was-actually-correct on a per-candidate basis from review decisions — that would justify a v1.1 silent-promotion path. Until then, every grounded dream candidate gets a human eye on it.
 
-Other Stream F mechanics (lease semantics, scope path encoding, scheduled-vs-manual lease handling, Pass 3 entity sidecar, masked synthesis, harness-CLI status surfacing) are unchanged from `stream-f-dreaming-v0.2.md`.
+Other Stream F mechanics (lease semantics, scope path encoding, scheduled-vs-manual lease handling, Pass 3 entity sidecar, masked synthesis, harness-CLI status surfacing) are unchanged from `stream-f-dreaming-v0.3.md`.
 
 ---
 
@@ -839,7 +841,7 @@ Replaces v0.1 §19. As of 2026-05-01:
 - **Stream C — Governance.** Shipped in `6f583ec` on `main`. Live contract: `stream-c-governance-v0.1.md`.
 - **Stream D — Privacy.** Shipped in `17a0a04` and `5f7d926` on `main`. Live contract: `stream-d-privacy-v0.1.md`.
 - **Stream E — Passive recall.** Shipped 2026-04-30. Live contract: `stream-e-passive-recall-v0.5.md`. API: `docs/api/stream-e-passive-recall-api.md`.
-- **Stream F — Dreaming.** Shipped 2026-05-01. Live contract: `stream-f-dreaming-v0.2.md`. API: `docs/api/stream-f-dreaming-api.md`. Final gate evidence: `docs/reviews/stream-f-final-gate-report.md`.
+- **Stream F — Dreaming.** Shipped 2026-05-01. Live contract: `stream-f-dreaming-v0.3.md`. API: `docs/api/stream-f-dreaming-api.md`. Final gate evidence: `docs/reviews/stream-f-final-gate-report.md`.
 
 ### Remaining for v1 (parallel tracks)
 
@@ -1059,7 +1061,7 @@ If during dogfood it becomes clear the name actively confuses users (very low pr
 - `docs/specs/stream-c-governance-v0.1.md` — governance contract.
 - `docs/specs/stream-d-privacy-v0.1.md` — privacy contract.
 - `docs/specs/stream-e-passive-recall-v0.5.md` — recall contract.
-- `docs/specs/stream-f-dreaming-v0.2.md` — dreaming contract.
+- `docs/specs/stream-f-dreaming-v0.3.md` — dreaming contract.
 - `docs/specs/stream-g-observability-v0.1.md` — observability/UX contract (in this revision).
 - `docs/specs/stream-h-eval-harness-v0.1.md` — evaluation contract (in this revision).
 - `docs/specs/stream-i-cross-session-v0.1.md` — cross-session coordination contract (in this revision).

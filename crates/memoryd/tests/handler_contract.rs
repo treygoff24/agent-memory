@@ -1,21 +1,34 @@
 use std::path::Path;
 use std::process::Command;
 
-use chrono::{Duration, Utc};
-use memory_privacy::PrivacyLabel;
 use memory_substrate::{
     Author, AuthorKind, ClassificationOutcome, EventContext, Frontmatter, InitOptions, Memory, MemoryId, MemoryStatus,
-    MemoryType, ObserveKind as SubstrateObserveKind, PrivacySpanRecord, RetrievalPolicy, Roots, Scope, Sensitivity,
-    Source, SourceKind, Substrate, SubstrateFragmentAppendRequest, SubstrateFragmentPayload, TrustLevel, WriteMode,
+    MemoryType, RetrievalPolicy, Roots, Scope, Sensitivity, Source, SourceKind, Substrate, TrustLevel, WriteMode,
     WritePolicy, WriteRequest,
 };
 use memoryd::dream::{
-    orchestration::{build_dream_run, DreamRunBuildRequest, SubstrateCandidateWriter},
-    run::{CandidateEvidenceRef, CandidateWriteRequest, CandidateWriter, DreamRunner},
+    orchestration::{build_dream_run, DreamRunBuildRequest},
+    run::{CandidateEvidenceRef, CandidateWriteRequest, CandidateWriter},
     scope::DreamScope,
 };
+
+// Dev-fixtures-only imports: the dreaming protocol tests below are gated behind the
+// `dev-fixtures` feature (they exercise the deterministic EchoCli harness), and the
+// dependency surface they need is gated to match.
+#[cfg(feature = "dev-fixtures")]
+use memory_privacy::PrivacyLabel;
+#[cfg(feature = "dev-fixtures")]
+use memory_substrate::{
+    ObserveKind as SubstrateObserveKind, PrivacySpanRecord, SubstrateFragmentAppendRequest, SubstrateFragmentPayload,
+};
+#[cfg(feature = "dev-fixtures")]
+use memoryd::dream::{orchestration::SubstrateCandidateWriter, run::DreamRunner};
 use memoryd::handlers::handle_request;
-use memoryd::protocol::{LeaseRecord, ObserveKind, RequestEnvelope, RequestPayload, ResponsePayload, ResponseResult};
+#[cfg(feature = "dev-fixtures")]
+use memoryd::protocol::LeaseRecord;
+use memoryd::protocol::{ObserveKind, RequestEnvelope, RequestPayload, ResponsePayload, ResponseResult};
+#[cfg(feature = "dev-fixtures")]
+use {chrono::Duration, chrono::Utc};
 
 #[tokio::test]
 async fn search_and_get_return_bounded_protocol_responses_from_substrate() {
@@ -110,6 +123,7 @@ async fn write_note_creates_candidate_safe_record_through_substrate() {
 }
 
 #[tokio::test]
+#[cfg(feature = "dev-fixtures")]
 async fn dreaming_protocol_echo_request_returns_dream_now_report() {
     enable_echo_harness_for_test();
     let temp = tempfile::tempdir().expect("tempdir");
@@ -138,6 +152,7 @@ async fn dreaming_protocol_echo_request_returns_dream_now_report() {
 }
 
 #[tokio::test]
+#[cfg(feature = "dev-fixtures")]
 async fn dreaming_protocol_echo_writes_pass_2_candidate_to_canonical_queue() {
     enable_echo_harness_for_test();
     let temp = tempfile::tempdir().expect("tempdir");
@@ -236,6 +251,7 @@ async fn dream_candidate_writer_refuses_encrypt_at_rest_candidates_without_plain
 }
 
 #[tokio::test]
+#[cfg(feature = "dev-fixtures")]
 async fn dreaming_protocol_masks_disk_loaded_substrate_privacy_spans_before_prompting() {
     enable_echo_harness_for_test();
     let temp = tempfile::tempdir().expect("tempdir");
@@ -318,6 +334,7 @@ async fn dreaming_protocol_masks_disk_loaded_substrate_privacy_spans_before_prom
 }
 
 #[tokio::test]
+#[cfg(feature = "dev-fixtures")]
 async fn dreaming_protocol_rejects_active_foreign_lease_without_writing_journal() {
     enable_echo_harness_for_test();
     let temp = tempfile::tempdir().expect("tempdir");
@@ -347,6 +364,7 @@ async fn dreaming_protocol_rejects_active_foreign_lease_without_writing_journal(
 }
 
 #[tokio::test]
+#[cfg(feature = "dev-fixtures")]
 async fn dreaming_protocol_force_overrides_active_foreign_lease() {
     enable_echo_harness_for_test();
     let temp = tempfile::tempdir().expect("tempdir");
@@ -372,6 +390,7 @@ async fn dreaming_protocol_force_overrides_active_foreign_lease() {
 }
 
 #[tokio::test]
+#[cfg(feature = "dev-fixtures")]
 async fn dreaming_protocol_acquires_lease_before_writing_pipeline_outputs() {
     enable_echo_harness_for_test();
     let temp = tempfile::tempdir().expect("tempdir");
@@ -444,6 +463,7 @@ async fn dreaming_protocol_rejects_invalid_or_unavailable_harness_requests_with_
 }
 
 #[tokio::test]
+#[cfg(feature = "dev-fixtures")]
 async fn dreaming_protocol_respects_device_disabled_sentinel_before_lease_or_outputs() {
     enable_echo_harness_for_test();
     let temp = tempfile::tempdir().expect("tempdir");
@@ -476,8 +496,17 @@ async fn dreaming_protocol_respects_device_disabled_sentinel_before_lease_or_out
     );
 }
 
+#[cfg(feature = "dev-fixtures")]
 fn enable_echo_harness_for_test() {
-    std::env::set_var("MEMORYD_ENABLE_ECHO_DREAM_HARNESS", "1");
+    // SAFETY: `std::env::set_var` is `unsafe` since Rust 1.85 because libc setenv can
+    // race with concurrent getenv from other threads (logging, tokio init, etc.).
+    // This helper is a setup-only call from `dev-fixtures`-gated integration tests; the
+    // value never changes once written and is read via `var_os` from a single
+    // orchestration path. Threading the value through `DreamRunOptions` would remove
+    // the hazard entirely and is tracked as release-only follow-up.
+    unsafe {
+        std::env::set_var("MEMORYD_ENABLE_ECHO_DREAM_HARNESS", "1");
+    }
 }
 
 #[tokio::test]
@@ -606,6 +635,7 @@ fn commit_dirty_fixture_files(repo: &Path) {
     git(repo, ["commit", "-m", "prepare handler lease fixtures"]);
 }
 
+#[cfg(feature = "dev-fixtures")]
 fn seed_foreign_active_lease(substrate: &Substrate) {
     let lease = LeaseRecord {
         device: "dev_foreign".to_string(),

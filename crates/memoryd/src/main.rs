@@ -61,7 +61,11 @@ async fn main() -> anyhow::Result<()> {
                 memoryd::protocol::RequestEnvelope::new("cli-doctor", RequestPayload::Doctor),
             )
             .await;
+            let exit_code = doctor_cli_exit_code(&response);
             print_response(response)?;
+            if exit_code != 0 {
+                std::process::exit(exit_code);
+            }
         }
         Command::Search(args) => {
             print_response(
@@ -858,6 +862,13 @@ fn dream_report_failed(report: &DreamRunReport) -> bool {
 fn print_response(response: memoryd::protocol::ResponseEnvelope) -> anyhow::Result<()> {
     println!("{}", serde_json::to_string_pretty(&response)?);
     Ok(())
+}
+
+fn doctor_cli_exit_code(response: &memoryd::protocol::ResponseEnvelope) -> i32 {
+    match &response.result {
+        ResponseResult::Success(ResponsePayload::Doctor(doctor)) if !doctor.healthy => 1,
+        _ => 0,
+    }
 }
 
 fn print_recall_startup(response: anyhow::Result<memoryd::protocol::ResponseEnvelope>) -> anyhow::Result<()> {

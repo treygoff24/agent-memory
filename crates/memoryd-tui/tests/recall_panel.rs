@@ -15,9 +15,9 @@ fn recall_panel_renders_histogram_and_hit_rows() {
     assert!(frame.contains("Hourly density"));
     assert!(frame.contains("mem_20260501_0123456789abcdef_000009"));
     assert!(frame.contains("Deploy target is production ECS"));
-    assert!(frame.contains("score:n/a"));
-    assert!(frame.contains("harness:n/a"));
-    assert!(frame.contains("session:n/a"));
+    assert!(!frame.contains("score:n/a"));
+    assert!(!frame.contains("harness:n/a"));
+    assert!(!frame.contains("session:n/a"));
 }
 
 #[test]

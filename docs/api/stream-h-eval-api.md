@@ -87,27 +87,27 @@ Field notes:
 
 ## Test catalog
 
-|   # | Name                                 | Group      | Mode         | Deferred | Execution     |
-| --: | ------------------------------------ | ---------- | ------------ | -------- | ------------- |
-|  01 | `exact_identifier_recall`            | handbook   | simulator    | no       | parallel      |
-|  02 | `superseded_fact_handling`           | handbook   | simulator    | no       | parallel      |
-|  03 | `cross_project_entity_collision`     | handbook   | simulator    | no       | parallel      |
-|  04 | `abstention`                         | handbook   | simulator    | no       | parallel      |
-|  05 | `poisoned_candidate`                 | handbook   | simulator    | no       | parallel      |
-|  06 | `tool_output_preservation`           | handbook   | simulator    | no       | parallel      |
-|  07 | `subagent_writeback`                 | handbook   | simulator    | no       | parallel      |
-|  08 | `deletion_and_tombstone`             | handbook   | simulator    | no       | parallel      |
-|  09 | `recall_budget_pressure`             | handbook   | simulator    | no       | parallel      |
-|  10 | `compaction_resumption`              | handbook   | simulator    | no       | parallel      |
-|  11 | `self_poisoning`                     | handbook   | simulator    | no       | parallel      |
-|  12 | `temporal_validity`                  | handbook   | simulator    | no       | parallel      |
-|  13 | `cross_harness_substrate_sharing`    | domain     | real_harness | no       | serial        |
-|  14 | `merge_driver_semantic_correctness`  | domain     | simulator    | no       | serial        |
-|  15 | `privacy_filter_refusal_retry`       | domain     | real_harness | no       | serial        |
-|  16 | `reality_check_drift_scoring_sanity` | domain     | simulator    | no       | parallel      |
-|  17 | `lease_contention_resolution`        | domain     | simulator    | yes      | serial        |
-|  18 | `encrypted_tier_key_rotation`        | domain     | simulator    | yes      | serial        |
-|  19 | `peer_update_framing_correctness`    | regression | real_harness | no       | serial        |
+|   # | Name                                 | Group      | Mode         | Deferred | Execution |
+| --: | ------------------------------------ | ---------- | ------------ | -------- | --------- |
+|  01 | `exact_identifier_recall`            | handbook   | simulator    | no       | parallel  |
+|  02 | `superseded_fact_handling`           | handbook   | simulator    | no       | parallel  |
+|  03 | `cross_project_entity_collision`     | handbook   | simulator    | no       | parallel  |
+|  04 | `abstention`                         | handbook   | simulator    | no       | parallel  |
+|  05 | `poisoned_candidate`                 | handbook   | simulator    | no       | parallel  |
+|  06 | `tool_output_preservation`           | handbook   | simulator    | no       | parallel  |
+|  07 | `subagent_writeback`                 | handbook   | simulator    | no       | parallel  |
+|  08 | `deletion_and_tombstone`             | handbook   | simulator    | no       | parallel  |
+|  09 | `recall_budget_pressure`             | handbook   | simulator    | no       | parallel  |
+|  10 | `compaction_resumption`              | handbook   | simulator    | no       | parallel  |
+|  11 | `self_poisoning`                     | handbook   | simulator    | no       | parallel  |
+|  12 | `temporal_validity`                  | handbook   | simulator    | no       | parallel  |
+|  13 | `cross_harness_substrate_sharing`    | domain     | real_harness | no       | serial    |
+|  14 | `merge_driver_semantic_correctness`  | domain     | simulator    | no       | serial    |
+|  15 | `privacy_filter_refusal_retry`       | domain     | real_harness | no       | serial    |
+|  16 | `reality_check_drift_scoring_sanity` | domain     | simulator    | no       | parallel  |
+|  17 | `lease_contention_resolution`        | domain     | simulator    | yes      | serial    |
+|  18 | `encrypted_tier_key_rotation`        | domain     | simulator    | yes      | serial    |
+|  19 | `peer_update_framing_correctness`    | regression | real_harness | no       | serial    |
 
 See `docs/runbooks/eval-real-harness-ci.md` for wiring real-harness secrets in GitHub Actions.
 

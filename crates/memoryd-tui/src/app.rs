@@ -601,6 +601,15 @@ impl App {
 }
 
 pub async fn run(config: UiConfig) -> Result<()> {
+    run_inner(config, false).await
+}
+
+#[cfg(debug_assertions)]
+pub async fn run_with_mid_render_panic(config: UiConfig) -> Result<()> {
+    run_inner(config, true).await
+}
+
+async fn run_inner(config: UiConfig, panic_after_first_render: bool) -> Result<()> {
     let _terminal_guard = TerminalGuard::enter()?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
@@ -613,6 +622,9 @@ pub async fn run(config: UiConfig) -> Result<()> {
 
     loop {
         terminal.draw(|frame| app.render(frame))?;
+        if panic_after_first_render {
+            panic!("injected memoryd-tui mid-render panic");
+        }
 
         tokio::select! {
             _ = tick.tick() => {

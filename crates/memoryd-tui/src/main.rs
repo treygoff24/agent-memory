@@ -19,6 +19,9 @@ struct Args {
     #[cfg(debug_assertions)]
     #[arg(long, hide = true)]
     inject_panic: bool,
+    #[cfg(debug_assertions)]
+    #[arg(long, hide = true)]
+    inject_panic_mid_render: bool,
 }
 
 #[tokio::main]
@@ -43,6 +46,11 @@ async fn main() -> Result<()> {
     }
     if let Some(daemon_poll_ms) = args.daemon_poll_ms {
         config.daemon_poll_interval = std::time::Duration::from_millis(daemon_poll_ms);
+    }
+
+    #[cfg(debug_assertions)]
+    if args.inject_panic_mid_render {
+        return app::run_with_mid_render_panic(config).await;
     }
 
     app::run(config).await

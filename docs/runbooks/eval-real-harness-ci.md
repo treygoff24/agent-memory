@@ -24,6 +24,15 @@ The real-harness path is intentionally tiny: one Claude smoke and one Codex smok
 ## Local smoke
 
 ```bash
-MEMORUM_EVAL_CLAUDE_KEY=... cargo test -p memorum-eval --features live-harness -- live::claude_smoke
-MEMORUM_EVAL_CODEX_KEY=... cargo test -p memorum-eval --features live-harness -- live::codex_smoke
+MEMORUM_EVAL_CLAUDE_KEY=... MEMORUM_EVAL_CODEX_KEY=... \
+  cargo test -p memorum-eval --features live-harness --test live -- live::claude_smoke -- --nocapture
+
+MEMORUM_EVAL_CODEX_KEY=... \
+  cargo test -p memorum-eval --features live-harness --test live -- live::codex_smoke -- --nocapture
 ```
+
+`live::claude_smoke` is the cross-harness T13 path: Codex writes and Claude
+recalls, so it requires both eval keys and both CLIs. `live::codex_smoke` is the
+Codex T15 privacy refusal/retry path and requires the Codex eval key plus the
+Codex CLI. The outer live wrapper rejects nested `MEMORUM_EVAL_SKIP:*` output as
+a non-pass so a skipped inner domain test cannot look green.

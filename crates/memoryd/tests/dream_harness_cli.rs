@@ -1,8 +1,10 @@
 use std::time::Duration;
 
 use memoryd::dream::error::HarnessCliError;
+#[cfg(feature = "dev-fixtures")]
+use memoryd::dream::harness::EchoCli;
 use memoryd::dream::harness::{
-    run_hardened_command, ClaudeCodeCli, CodexCli, EchoCli, HardenedCommand, HarnessCli, MinimalEnvironment,
+    run_hardened_command, ClaudeCodeCli, CodexCli, HardenedCommand, HarnessCli, MinimalEnvironment,
     CLAUDE_ENV_ALLOWLIST, CODEX_ENV_ALLOWLIST,
 };
 use memoryd::dream::registry::HarnessCliRegistry;
@@ -11,6 +13,7 @@ use memoryd::protocol::PromptTransport;
 static SUBPROCESS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[tokio::test]
+#[cfg(feature = "dev-fixtures")]
 async fn echo_cli_replays_canned_outputs_deterministically() {
     let prompt = "masked dream prompt for pass 1";
     let echo = EchoCli::from_prompt_outputs([(prompt, "canned journal")]);

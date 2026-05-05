@@ -73,10 +73,8 @@ impl AuthProbeResult {
     pub fn operator_message(&self, which: &'static str) -> String {
         match self {
             Self::Ok => format!("{which} CLI: ✓ authenticated"),
-            Self::CliMissing { path, .. } => {
-                format!(
-                    "{which} CLI: ✗ not on PATH (dreams disabled for {which}); try `which {which}`. daemon PATH={path}"
-                )
+            Self::CliMissing { .. } => {
+                format!("{which} CLI: ✗ not on PATH (dreams disabled for {which}); try `which {which}` in the daemon environment")
             }
             Self::AuthFailed { exit_code, stderr_tail } => {
                 format!("{which} CLI: ✗ auth probe failed (exit={exit_code:?}): {stderr_tail}")
@@ -180,11 +178,13 @@ pub async fn run_hardened_command(command: HardenedCommand, prompt: &str) -> Res
         .map_err(|error| std::io::Error::other(format!("hardened command task failed: {error}")))?
 }
 
+#[cfg(any(test, feature = "dev-fixtures"))]
 #[derive(Debug, Clone, Default)]
 pub struct EchoCli {
     canned_outputs_by_prompt_hash: BTreeMap<String, String>,
 }
 
+#[cfg(any(test, feature = "dev-fixtures"))]
 impl EchoCli {
     pub fn from_prompt_outputs<const N: usize>(outputs: [(&str, &str); N]) -> Self {
         let canned_outputs_by_prompt_hash =
@@ -194,6 +194,7 @@ impl EchoCli {
     }
 }
 
+#[cfg(any(test, feature = "dev-fixtures"))]
 impl HarnessCli for EchoCli {
     fn name(&self) -> &'static str {
         "echo"
@@ -458,6 +459,7 @@ fn path_display(path_env: Option<&OsStr>) -> String {
         .unwrap_or_else(|| "<unset>".to_owned())
 }
 
+#[cfg(any(test, feature = "dev-fixtures"))]
 fn prompt_hash(prompt: &str) -> String {
     hex::encode(Sha256::digest(prompt.as_bytes()))
 }

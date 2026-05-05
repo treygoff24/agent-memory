@@ -7,7 +7,7 @@ use clap::{ArgAction, Args, Parser, Subcommand};
 use crate::protocol::{PeerActivityFormat, RealityCheckRequest, RequestPayload};
 
 #[derive(Debug, Parser)]
-#[command(name = "memoryd")]
+#[command(name = "memoryd", version)]
 #[command(about = "Local daemon and thin client for agent-memory")]
 pub struct Cli {
     #[command(subcommand)]

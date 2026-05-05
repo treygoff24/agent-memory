@@ -9,9 +9,11 @@ use memory_privacy::PrivacySpan;
 
 use crate::protocol::{CandidateWriteResult, DreamRunReport, PassOutcome, PassStatus, PromptTransport};
 
+#[cfg(any(test, feature = "dev-fixtures"))]
+use super::harness::EchoCli;
 use super::{
     evidence::build_evidence_catalog,
-    harness::{EchoCli, HarnessCli, HarnessFuture},
+    harness::{HarnessCli, HarnessFuture},
     masking::{DreamMaskingSession, MaskingDropObserver},
     pass1::run_pass_1,
     pass2::{run_pass_2, Pass2RunContext},
@@ -27,6 +29,9 @@ pub struct DreamRunOptions {
     pub scope: DreamScope,
     pub run_date: chrono::NaiveDate,
     pub run_id: String,
+    /// Populated by `select_harness` (or `with_harness`) before `DreamRunner::run`.
+    /// `build_dream_run` constructs this with a placeholder; live runs always replace
+    /// it before execution. See `orchestration::UnselectedHarness`.
     pub harness: Arc<dyn HarnessCli>,
     pub pass_timeout: Duration,
     pub pass_2_max_candidates: usize,
@@ -42,6 +47,7 @@ impl DreamRunOptions {
     }
 }
 
+#[cfg(any(test, feature = "dev-fixtures"))]
 pub fn deterministic_echo_harness(options: &DreamRunOptions) -> Result<Arc<dyn HarnessCli>, DreamError> {
     let pass_1_output = "# Dream Journal\nNo substrate fragments available.";
     let pass_1_prompt = DreamRunner::<NoopCandidateWriter>::preview_pass_1_prompt(options)?;
@@ -56,6 +62,7 @@ pub fn deterministic_echo_harness(options: &DreamRunOptions) -> Result<Arc<dyn H
     ])))
 }
 
+#[cfg(any(test, feature = "dev-fixtures"))]
 fn deterministic_echo_pass_2_output(options: &DreamRunOptions) -> Result<String, DreamError> {
     if let Some(input) = options.substrate_fragments.first() {
         let text = deterministic_masked_text(options, &input.fragment.text, &input.text_spans)?;
@@ -92,6 +99,7 @@ fn deterministic_echo_pass_2_output(options: &DreamRunOptions) -> Result<String,
     Ok("[]".to_string())
 }
 
+#[cfg(any(test, feature = "dev-fixtures"))]
 fn deterministic_masked_text(
     options: &DreamRunOptions,
     text: &str,

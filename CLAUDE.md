@@ -32,7 +32,7 @@ Stream F: Claude authored the spec across two revisions — v0.1 was reviewed by
 
 - **Stream A spec:** `docs/specs/stream-a-core-substrate-v1.1.md` is the live substrate contract. Older versions (`v0.1`, `v0.2`, `v1.0`) are kept for history; do not consult them for current behavior.
 - **Stream E spec:** `docs/specs/stream-e-passive-recall-v0.5.md` is the live passive-recall contract. `v0.1`–`v0.4` are kept for history; do not consult them for current behavior. v0.5's revision-goal block at the top documents what changed across each bump.
-- **Stream F spec:** `docs/specs/stream-f-dreaming-v0.2.md` is the live dreaming contract. API docs live at `docs/api/stream-f-dreaming-api.md`. `v0.1` is kept for history (Codex reviewed it in `docs/reviews/stream-f-codex-spec-review.md`); do not consult it for current behavior. v0.2's revision-goal block at the top documents what changed.
+- **Stream F spec:** `docs/specs/stream-f-dreaming-v0.3.md` is the live dreaming contract. API docs live at `docs/api/stream-f-dreaming-api.md`. `v0.1` is kept for history (Codex reviewed it in `docs/reviews/stream-f-codex-spec-review.md`); do not consult it for current behavior. v0.3's revision-goal block at the top documents what changed.
 - **Stream G spec:** `docs/specs/stream-g-observability-v0.1.md` is the live observability/UX contract (TUI + web dashboard + Reality Check + notifications). API/architecture/runbook docs live at `docs/api/stream-g-observability-api.md`, `docs/dev/stream-g-architecture.md`, and `docs/runbooks/reality-check.md`. Shipped with deferred v1.1+ sections documented explicitly; the canonical observability benchmark baseline is promoted.
 - **Stream H spec:** `docs/specs/stream-h-eval-harness-v0.1.md` is the live eval-harness contract (19-test catalog + CI workflow + regression-as-test workflow). API docs live at `docs/api/stream-h-eval-api.md`. Shipped with Streams A-H; live real-harness validation still depends on authenticated Claude/Codex CLIs.
 - **Stream I spec:** `docs/specs/stream-i-cross-session-v0.1.md` is the live cross-session/peer-coordination contract (peer-presence heartbeat, claim-locks, peer-update framing, three-level coordination model). API/architecture docs live at `docs/api/stream-i-cross-session-api.md` and `docs/dev/stream-i-architecture.md`. Shipped with Streams A-I.
@@ -62,11 +62,12 @@ When Trey says "the spec" or "the plan" without a version, he means the latest. 
 
 - Spec and plan files are **versioned by suffix** (`-v1.1.md`, `-v0.5.md`, `-v0.4.md`). New versions supersede; old versions stay on disk for history. Never mutate an older version.
 - Spec changes that affect the implementation contract get a version bump and a "Revision goal" entry at the top describing what changed and why.
+- Additive public-surface amendments may stay in-version with a dated amendment block when they add no new required behavior for existing callers. Behavior-changing changes, return-shape changes, removed or renamed surface, and new enforced invariants require a version bump unless Trey explicitly directs otherwise.
 - Plan changes get a "Plan revision history" entry. Plan revisions and spec revisions are independent counters; Stream E shipped from plan revision v0.4 against spec v0.5.
 - Current live pairs:
   - **Stream A:** `stream-a-core-substrate-v1.1.md` ↔ `2026-04-26-stream-a-core-substrate-implementation-plan-v0.3.md` (shipped).
   - **Stream E:** `stream-e-passive-recall-v0.5.md` ↔ `2026-04-30-stream-e-passive-recall.md` (plan revision v0.4, shipped).
-  - **Stream F:** `stream-f-dreaming-v0.2.md` ↔ `2026-04-30-stream-f-dreaming.md` (shipped).
+  - **Stream F:** `stream-f-dreaming-v0.3.md` ↔ `2026-04-30-stream-f-dreaming.md` (shipped).
   - **Stream G:** `stream-g-observability-v0.1.md` ↔ `2026-05-01-stream-g-observability.md` (implemented with canonical observability benchmark baseline promoted).
   - **Stream H:** `stream-h-eval-harness-v0.1.md` ↔ `2026-05-01-stream-h-eval-harness.md` (shipped; live real-harness validation remains auth-dependent).
   - **Stream I:** `stream-i-cross-session-v0.1.md` ↔ `2026-05-01-stream-i-cross-session.md` (shipped).

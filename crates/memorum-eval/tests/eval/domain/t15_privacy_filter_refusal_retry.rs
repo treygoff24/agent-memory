@@ -13,28 +13,65 @@ use serde_json::{json, Value};
 use crate::support::daemon_request;
 
 const CLAUDE_KEY_ENV: &str = "MEMORUM_EVAL_CLAUDE_KEY";
+const CODEX_KEY_ENV: &str = "MEMORUM_EVAL_CODEX_KEY";
 const HARNESS_TIMEOUT: Duration = Duration::from_secs(180);
 const RAW_PHONE_DIGITS: &str = "15550000001";
 const RETRY_SENTINEL: &str = "EVAL_T15_PRIVACY_RETRY";
 const T15_PROMPT: &str = include_str!("../../../fixtures/prompts/t15_privacy_retry.md");
 
+#[derive(Clone, Copy)]
+struct PrivacyRetryHarness {
+    harness: RealHarness,
+    eval_key_env: &'static str,
+    provider_key_env: &'static str,
+    config_label: &'static str,
+}
+
 #[tokio::test]
 async fn t15_privacy_filter_refusal_and_retry() {
-    if std::env::var_os(CLAUDE_KEY_ENV).is_none() {
-        eprintln!("SKIP_NO_AUTH: set {CLAUDE_KEY_ENV} to run real-harness Test #15.");
+    run_privacy_filter_refusal_and_retry(PrivacyRetryHarness {
+        harness: RealHarness::Claude,
+        eval_key_env: CLAUDE_KEY_ENV,
+        provider_key_env: "ANTHROPIC_API_KEY",
+        config_label: "claude",
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn t15_privacy_filter_refusal_and_retry_codex() {
+    run_privacy_filter_refusal_and_retry(PrivacyRetryHarness {
+        harness: RealHarness::Codex,
+        eval_key_env: CODEX_KEY_ENV,
+        provider_key_env: "OPENAI_API_KEY",
+        config_label: "codex",
+    })
+    .await;
+}
+
+async fn run_privacy_filter_refusal_and_retry(config: PrivacyRetryHarness) {
+    if std::env::var_os(config.eval_key_env).is_none() {
+        eprintln!("MEMORUM_EVAL_SKIP:SKIP_NO_AUTH: set {} to run real-harness Test #15.", config.eval_key_env);
         return;
     }
 
-    if missing_claude_cli() {
+    if missing_cli(config.harness) {
         return;
     }
 
     let scaffold = DaemonScaffold::fresh().await;
-    let claude = HarnessRunner::new_with_socket(RealHarness::Claude, scaffold.socket_path());
-    let mcp_config =
-        claude.write_mcp_config_file(scaffold.tree_dir(), "t15-privacy-retry").expect("write Claude MCP config");
+    let runner = HarnessRunner::new_with_socket(config.harness, scaffold.socket_path());
+    let mcp_config = runner
+        .write_mcp_config_file(scaffold.tree_dir(), &format!("t15-privacy-retry-{}", config.config_label))
+        .unwrap_or_else(|error| panic!("write {} MCP config: {error}", config.config_label));
     let prompt = render_prompt(T15_PROMPT, scaffold.tree_dir());
-    let output = run_claude_with_one_parse_retry(&claude, &prompt, &phase_env(scaffold.tree_dir(), &mcp_config)).await;
+    let output = run_harness_with_one_parse_retry(
+        &runner,
+        config.config_label,
+        &prompt,
+        &phase_env(scaffold.tree_dir(), &mcp_config, config),
+    )
+    .await;
 
     assert_first_write_refused(&output);
     assert_retry_succeeded(&output);
@@ -45,28 +82,34 @@ async fn t15_privacy_filter_refusal_and_retry() {
     eval_flush_assertion_count();
 }
 
-fn missing_claude_cli() -> bool {
-    match HarnessRunner::detect_cli(RealHarness::Claude) {
+fn missing_cli(harness: RealHarness) -> bool {
+    match HarnessRunner::detect_cli(harness) {
         Ok(Some(_)) => false,
         Ok(None) => {
-            eprintln!("SKIP_MISSING_CLI: claude not found in PATH. Install and authenticate to run Test #15.");
+            eprintln!(
+                "MEMORUM_EVAL_SKIP:SKIP_MISSING_CLI: {} not found in PATH. Install and authenticate to run Test #15.",
+                harness.binary_name()
+            );
             true
         }
         Err(error) => panic!("{error}"),
     }
 }
 
-fn phase_env(project_cwd: &Path, mcp_config: &Path) -> HashMap<String, String> {
+fn phase_env(project_cwd: &Path, mcp_config: &Path, config: PrivacyRetryHarness) -> HashMap<String, String> {
     let mut env = HashMap::from([
         (HARNESS_MCP_CONFIG_PATH_ENV.to_owned(), mcp_config.to_string_lossy().into_owned()),
         (HARNESS_PROJECT_CWD_ENV.to_owned(), project_cwd.to_string_lossy().into_owned()),
         ("MEMORUM_EVAL_SOCKET_PATH".to_owned(), project_cwd.join("memoryd.sock").to_string_lossy().into_owned()),
     ]);
 
-    copy_env(&mut env, CLAUDE_KEY_ENV);
-    copy_env(&mut env, "ANTHROPIC_API_KEY");
-    alias_eval_key(&mut env, CLAUDE_KEY_ENV, "ANTHROPIC_API_KEY");
-    copy_env(&mut env, "CLAUDE_CONFIG_DIR");
+    copy_env(&mut env, config.eval_key_env);
+    copy_env(&mut env, config.provider_key_env);
+    alias_eval_key(&mut env, config.eval_key_env, config.provider_key_env);
+    match config.harness {
+        RealHarness::Claude => copy_env(&mut env, "CLAUDE_CONFIG_DIR"),
+        RealHarness::Codex => copy_env(&mut env, "CODEX_HOME"),
+    }
     copy_env(&mut env, "HOME");
     copy_env(&mut env, "PATH");
     env
@@ -90,19 +133,24 @@ fn render_prompt(template: &str, project_cwd: &Path) -> String {
     template.replace("{{PROJECT_CWD}}", &project_cwd.to_string_lossy())
 }
 
-async fn run_claude_with_one_parse_retry(claude: &HarnessRunner, prompt: &str, env: &HashMap<String, String>) -> Value {
-    let first = claude.run(prompt, env, HARNESS_TIMEOUT).await;
-    assert_harness_success("Claude privacy retry phase", &first);
+async fn run_harness_with_one_parse_retry(
+    runner: &HarnessRunner,
+    harness_label: &str,
+    prompt: &str,
+    env: &HashMap<String, String>,
+) -> Value {
+    let first = runner.run(prompt, env, HARNESS_TIMEOUT).await;
+    assert_harness_success(&format!("{harness_label} privacy retry phase"), &first);
     if let Some(parsed) = parse_last_json_object(&first.stdout) {
         return parsed;
     }
 
-    eprintln!("HARNESS_OUTPUT_PARSE_FAILURE: Claude output was not JSON; retrying Test #15 once.");
-    let retry = claude.run(prompt, env, HARNESS_TIMEOUT).await;
-    assert_harness_success("Claude privacy retry parse-retry phase", &retry);
+    eprintln!("HARNESS_OUTPUT_PARSE_FAILURE: {harness_label} output was not JSON; retrying Test #15 once.");
+    let retry = runner.run(prompt, env, HARNESS_TIMEOUT).await;
+    assert_harness_success(&format!("{harness_label} privacy retry parse-retry phase"), &retry);
     parse_last_json_object(&retry.stdout).unwrap_or_else(|| {
         panic!(
-            "HARNESS_OUTPUT_PARSE_FAILURE: Claude output was not parseable JSON after one retry\nstdout={}\nstderr={}",
+            "HARNESS_OUTPUT_PARSE_FAILURE: {harness_label} output was not parseable JSON after one retry\nstdout={}\nstderr={}",
             retry.stdout, retry.stderr
         )
     })
@@ -134,7 +182,7 @@ fn assert_first_write_refused(output: &Value) {
     let status = output.pointer("/first_attempt_status").and_then(Value::as_str).unwrap_or_default();
     eval_assert!(
         status.to_ascii_lowercase().contains("refused"),
-        "first PII write should be refused; Claude output: {output:#?}"
+        "first PII write should be refused; harness output: {output:#?}"
     );
 }
 
@@ -142,11 +190,11 @@ fn assert_retry_succeeded(output: &Value) {
     let retry_status = output.pointer("/retry_status").and_then(Value::as_str).unwrap_or_default();
     eval_assert!(
         matches!(retry_status, "promoted" | "candidate"),
-        "AGENT_DID_NOT_RETRY: retry_status should be promoted or candidate; Claude output: {output:#?}"
+        "AGENT_DID_NOT_RETRY: retry_status should be promoted or candidate; harness output: {output:#?}"
     );
 
     let retry_id = output.pointer("/retry_id").and_then(Value::as_str).unwrap_or_default();
-    eval_assert!(!retry_id.is_empty(), "retry_id should be non-null/non-empty; Claude output: {output:#?}");
+    eval_assert!(!retry_id.is_empty(), "retry_id should be non-null/non-empty; harness output: {output:#?}");
     if retry_status == "promoted" {
         eval_assert!(retry_id.starts_with("mem_"), "promoted retry_id should look like a memory id: {retry_id}");
     }

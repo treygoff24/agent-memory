@@ -224,10 +224,7 @@ async fn startup_peer_updates(
     // We extract the surfaced ids from the same-device result and seed the
     // startup_context clone used by the cross-device pass with them, so the
     // relevance gate's cool-down check suppresses duplicates.
-    let same_device_surfaced: HashSet<String> = same_device
-        .as_ref()
-        .map(|insertion| insertion.peer_updates.iter().map(|u| u.reference.clone()).collect())
-        .unwrap_or_default();
+    let same_device_surfaced = surfaced_peer_update_references(same_device.as_ref());
     let cross_device = cross_device_updates(
         substrate,
         session_binding,
@@ -240,6 +237,12 @@ async fn startup_peer_updates(
     .await;
 
     Ok(StartupPeerUpdates { same_device, cross_device })
+}
+
+fn surfaced_peer_update_references(insertion: Option<&CoordinationInsertion>) -> HashSet<String> {
+    insertion
+        .map(|insertion| insertion.peer_updates.iter().map(|update| update.reference.clone()).collect())
+        .unwrap_or_default()
 }
 
 fn effective_coordination_level(session_binding: &SessionBinding, default_coordination_level: u8) -> u8 {
@@ -710,5 +713,31 @@ mod tests {
         assert!(rendered.contains("alias&lt;/project-state&gt;"));
         assert!(rendered.contains("proj&amp;agent"));
         assert!(!rendered.contains("</memory-recall><script>"));
+    }
+
+    #[test]
+    fn surfaced_peer_update_references_extracts_memory_reference_keys_for_cross_device_cooldown() {
+        let insertion = CoordinationInsertion {
+            peer_updates: vec![PeerUpdateEntry {
+                harness: "codex".to_owned(),
+                session_id: "sess_same_device".to_owned(),
+                timestamp: Utc::now(),
+                relevance: 0.9,
+                summary: "same-device summary must not become the cooldown key".to_owned(),
+                reference: "mem_20260501_a1b2c3d4e5f60718_000777".to_owned(),
+                namespace: "project:proj_stream_i".to_owned(),
+                claim_locked: None,
+                device: None,
+            }],
+            peer_presence: Vec::new(),
+            capped_peer_updates: 0,
+            capped_peer_presence: 0,
+        };
+
+        let surfaced = surfaced_peer_update_references(Some(&insertion));
+
+        assert_eq!(surfaced, HashSet::from(["mem_20260501_a1b2c3d4e5f60718_000777".to_owned()]));
+        assert!(!surfaced.contains("sess_same_device"));
+        assert!(!surfaced.contains("same-device summary must not become the cooldown key"));
     }
 }
