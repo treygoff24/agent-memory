@@ -26,6 +26,7 @@ use memory_privacy::{
     EncryptedPayload, FileKeyProvider, PrivacyClassifier, PrivacyDecision, PrivacyEncryptor, PrivacyNamespace,
     PrivacyStorageAction, SafeFragmentDecision,
 };
+use memory_source::{capture_web_source, ArtifactStore, CaptureWebSourceRequest, SourceError};
 use memory_substrate::{
     events::EventKind, Author, AuthorKind, ChunkQuery, ClassificationOutcome, EncryptedSubstrateDescriptor,
     EncryptedWriteRequest, EventContext, Frontmatter, IndexProjection, Memory, MemoryContent, MemoryId, MemoryStatus,
@@ -40,9 +41,9 @@ use tokio::sync::{broadcast, Mutex};
 
 use crate::dream::rehydration;
 use crate::protocol::{
-    ClaimLockWarning, DoctorFinding, DoctorResponse, GetResponse, GovernanceForgetResponse, GovernanceStatus,
-    GovernanceSupersedeResponse, GovernanceWriteResponse, InjectableEventKind, ObserveResponse, ObserveTarget,
-    PassiveNotificationStatus, PeerActivityResponse, PeerDeliveryAuditEntry, PeerReleaseLockResponse,
+    CaptureSourceResponse, ClaimLockWarning, DoctorFinding, DoctorResponse, GetResponse, GovernanceForgetResponse,
+    GovernanceStatus, GovernanceSupersedeResponse, GovernanceWriteResponse, InjectableEventKind, ObserveResponse,
+    ObserveTarget, PassiveNotificationStatus, PeerActivityResponse, PeerDeliveryAuditEntry, PeerReleaseLockResponse,
     PeerReleaseLockStatus, PeerSessionStatus, PeerStatusResponse, RealityCheckAction, RealityCheckRequest,
     RealityCheckResponse, RequestEnvelope, RequestPayload, RespondRefusalKind, ResponseEnvelope, ResponsePayload,
     RevealResponse, ReviewDecisionResponse, ReviewQueueItemResponse, ReviewQueueResponse, SearchHit, SearchResponse,
@@ -491,6 +492,9 @@ async fn dispatch(
         }
         RequestPayload::Get { id, include_provenance } => get_response(substrate, &id, include_provenance).await,
         RequestPayload::TrustArtifact { id } => trust_artifact_response(substrate, &id).await,
+        RequestPayload::CaptureSource { url, excerpts, note } => {
+            capture_source_response(substrate, url, excerpts, note).await
+        }
         RequestPayload::RecallHits { since, limit } => recall_hits_response(substrate, since, limit).await,
         RequestPayload::Reveal { id, reason } => reveal_response(substrate, &id, &reason).await,
         RequestPayload::WriteNote { text } => write_note_response(substrate, &text).await,
@@ -578,6 +582,47 @@ async fn trust_artifact_response(substrate: &Substrate, id: &str) -> Result<Resp
         .await
         .map_err(HandlerError::trust_artifact)?;
     Ok(ResponsePayload::TrustArtifact(Box::new(artifact)))
+}
+
+async fn capture_source_response(
+    substrate: &Substrate,
+    url: String,
+    excerpts: Vec<String>,
+    note: Option<String>,
+) -> Result<ResponsePayload, HandlerError> {
+    if excerpts.is_empty() {
+        return Err(HandlerError::invalid_request("source capture requires at least one excerpt"));
+    }
+    if excerpts.len() > 8 {
+        return Err(HandlerError::invalid_request("source capture accepts at most 8 excerpts"));
+    }
+    for excerpt in &excerpts {
+        if excerpt.trim().is_empty() {
+            return Err(HandlerError::invalid_request("source capture excerpts must be non-empty"));
+        }
+        if excerpt.len() > 2 * 1024 {
+            return Err(HandlerError::invalid_request("source capture excerpts must be at most 2 KiB"));
+        }
+    }
+    if let Some(note) = &note {
+        if note.len() > 2 * 1024 {
+            return Err(HandlerError::invalid_request("source capture note must be at most 2 KiB"));
+        }
+        if !is_safe_plaintext_for_indexing(note) {
+            return Err(HandlerError::invalid_request("source capture note must not contain sensitive material"));
+        }
+    }
+    let response = capture_web_source(substrate.roots().repo.clone(), CaptureWebSourceRequest { url, excerpts, note })
+        .await
+        .map_err(HandlerError::source_capture)?;
+    Ok(ResponsePayload::CaptureSource(CaptureSourceResponse {
+        artifact_id: response.artifact_id,
+        source_refs: response.source_refs,
+        final_url: response.final_url,
+        captured_at: response.captured_at,
+        capture_status: response.capture_status,
+        warnings: response.warnings,
+    }))
 }
 
 async fn peer_heartbeat_response(
@@ -1865,6 +1910,7 @@ async fn governance_write_response(
         tombstones,
         tiebreak_mode: TiebreakMode::Unclear,
         allow_top_k: false,
+        repo_root: substrate.roots().repo.clone(),
     });
     let decision = engine.evaluate_write(&candidate);
     let response =
@@ -1942,6 +1988,7 @@ async fn governance_supersede_response(
         tombstones,
         tiebreak_mode: TiebreakMode::Contradiction { existing_id: old_id.clone() },
         allow_top_k: true,
+        repo_root: substrate.roots().repo.clone(),
     });
     let decision = engine.evaluate_write(&candidate);
     let GovernanceWriteDecision::Supersession { existing_id, policy_applied, .. } = decision else {
@@ -2679,14 +2726,19 @@ struct GovernanceEngineInput {
     tombstones: TombstoneIndex,
     tiebreak_mode: TiebreakMode,
     allow_top_k: bool,
+    repo_root: PathBuf,
 }
 
 fn governance_engine(
     input: GovernanceEngineInput,
-) -> GovernanceEngine<MemorydSimilaritySearch, MemorydTiebreaker, MemorydSessionResolver> {
+) -> GovernanceEngine<MemorydSimilaritySearch, MemorydTiebreaker, MemorydSessionResolver, ArtifactStore> {
     GovernanceEngine::new(
         input.policies,
-        GroundingVerifier::new(FileSourceResolver, MemorydSessionResolver),
+        GroundingVerifier::new_with_web_capture_resolver(
+            FileSourceResolver,
+            MemorydSessionResolver,
+            ArtifactStore::new(input.repo_root),
+        ),
         input.tombstones,
         GovernanceProviders::new(
             MemorydSimilaritySearch { active: input.active, allow_top_k: input.allow_top_k },
@@ -2907,6 +2959,7 @@ enum GovernanceSourceKindMeta {
     AgentPrimary,
     Subagent,
     File,
+    WebCapture,
 }
 
 impl Default for GovernanceMeta {
@@ -2984,8 +3037,10 @@ impl GovernanceWriteInput {
         if let Some(summary) = &self.meta.summary {
             fields.push(summary.as_str());
         }
-        if let Some(source_ref) = &self.meta.source_ref {
-            fields.push(source_ref.as_str());
+        if !matches!(self.meta.source_kind, GovernanceSourceKindMeta::WebCapture) {
+            if let Some(source_ref) = &self.meta.source_ref {
+                fields.push(source_ref.as_str());
+            }
         }
         fields.extend(self.tags.iter().map(String::as_str));
         let mut text = fields.join("\n");
@@ -3170,6 +3225,7 @@ impl GovernanceWriteInput {
         let kind = match self.meta.source_kind {
             GovernanceSourceKindMeta::User => GovernanceSourceKind::User,
             GovernanceSourceKindMeta::Subagent => GovernanceSourceKind::Subagent,
+            GovernanceSourceKindMeta::WebCapture => GovernanceSourceKind::WebCapture,
             GovernanceSourceKindMeta::AgentPrimary | GovernanceSourceKindMeta::File => {
                 GovernanceSourceKind::AgentPrimary
             }
@@ -3181,6 +3237,7 @@ impl GovernanceWriteInput {
         let kind = match self.meta.source_kind {
             GovernanceSourceKindMeta::User => SourceKind::User,
             GovernanceSourceKindMeta::Subagent => SourceKind::AgentSubagent,
+            GovernanceSourceKindMeta::WebCapture => SourceKind::Web,
             GovernanceSourceKindMeta::File => SourceKind::File,
             GovernanceSourceKindMeta::AgentPrimary => SourceKind::AgentPrimary,
         };
@@ -3246,7 +3303,9 @@ impl GovernanceWriteInput {
                 phase: None,
                 component: None,
             },
-            GovernanceSourceKindMeta::AgentPrimary | GovernanceSourceKindMeta::File => Author {
+            GovernanceSourceKindMeta::AgentPrimary
+            | GovernanceSourceKindMeta::File
+            | GovernanceSourceKindMeta::WebCapture => Author {
                 kind: AuthorKind::Agent,
                 user_handle: None,
                 harness: Some("memoryd".to_string()),
@@ -3503,6 +3562,21 @@ impl HandlerError {
 
     fn privacy(error: impl std::fmt::Display) -> Self {
         Self { code: "privacy_error".to_string(), message: bounded(&error.to_string(), 240), retryable: false }
+    }
+
+    fn source_capture(error: SourceError) -> Self {
+        let code = match &error {
+            SourceError::InvalidId(_)
+            | SourceError::InvalidSourceRef(_)
+            | SourceError::Unsupported(_)
+            | SourceError::UrlSafety(_)
+            | SourceError::Privacy(_)
+            | SourceError::ExcerptNotFound(_) => "invalid_request",
+            SourceError::Io(_) | SourceError::Json(_) | SourceError::Integrity(_) | SourceError::CaptureFailed(_) => {
+                "source_capture_failed"
+            }
+        };
+        Self { code: code.to_string(), message: bounded(&error.to_string(), 240), retryable: false }
     }
 
     fn trust_artifact(error: crate::trust_artifact::TrustArtifactError) -> Self {

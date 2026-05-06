@@ -13,7 +13,7 @@ use tokio::sync::watch;
 
 use memoryd::cli::{
     Cli, Command, DeviceCommand, DreamCommand, PeerCommand, PrivacyCommand, PrivacyFilterCommand, RealityCheckCommand,
-    RecallCommand, ReviewCommand, WebCommand,
+    RecallCommand, ReviewCommand, SourceCommand, WebCommand,
 };
 use memoryd::client;
 use memoryd::protocol::{
@@ -111,6 +111,22 @@ async fn main() -> anyhow::Result<()> {
                 .await?,
             )?;
         }
+        Command::Source(args) => match args.command {
+            SourceCommand::Capture(capture) => {
+                print_response(
+                    client::request(
+                        &capture.socket,
+                        "cli-source-capture",
+                        RequestPayload::CaptureSource {
+                            url: capture.url,
+                            excerpts: capture.excerpts,
+                            note: capture.note,
+                        },
+                    )
+                    .await?,
+                )?;
+            }
+        },
         Command::Supersede(args) => {
             print_response(
                 client::request(

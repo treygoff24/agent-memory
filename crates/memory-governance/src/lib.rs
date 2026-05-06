@@ -19,8 +19,8 @@ pub use decision::{GovernanceDecision, GovernanceRefusalReason, GovernanceStatus
 pub use engine::{GovernanceEngine, GovernanceProviders, GovernanceWriteDecision, NextWriteAction};
 pub use error::{GovernanceError, GovernanceResult};
 pub use grounding::{
-    FileSourceResolver, GroundingContext, GroundingVerifier, SessionSpawnResolver, Source, SourceKind,
-    SourceRefResolver, SourceResolution,
+    FileSourceResolver, GroundingContext, GroundingVerifier, NeverResolveWebCapture, SessionSpawnResolver, Source,
+    SourceKind, SourceRefResolver, SourceResolution, WebCaptureResolver,
 };
 pub use policy::{
     CandidateContext, ContradictionPolicy, Policy, PolicyError, PolicyPreview, PolicyResult, PolicySet, PolicySource,

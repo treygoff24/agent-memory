@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use memory_governance::{
     FileSourceResolver, GovernanceDecision, GovernanceRefusalReason, GroundingContext, GroundingVerifier, NextAction,
-    SessionSpawnResolver, Source, SourceKind,
+    SessionSpawnResolver, Source, SourceKind, SourceResolution, WebCaptureResolver,
 };
 
 #[test]
@@ -103,6 +103,37 @@ fn subagent_refs_require_a_session_spawn_registry_entry() {
     assert!(matches!(known_registry_entry.verify(&context), GovernanceDecision::Promoted { .. }));
 }
 
+#[test]
+fn web_capture_refs_require_verified_artifact_and_excerpt() {
+    let context = GroundingContext::new(
+        "memory-1",
+        "project/agent-memory",
+        vec![Source::new(SourceKind::WebCapture, Some("webcap:src_01J0Z7Y8Q9R0ABCDE123456789#quote_0001"))],
+    );
+    let verifier = GroundingVerifier::new_with_web_capture_resolver(
+        FileSourceResolver,
+        FakeSessionSpawnResolver::new([]),
+        FakeWebCaptureResolver(SourceResolution::Resolved),
+    );
+    assert!(matches!(verifier.verify(&context), GovernanceDecision::Promoted { .. }));
+
+    let naked_url = GroundingContext::new(
+        "memory-1",
+        "project/agent-memory",
+        vec![Source::new(SourceKind::WebCapture, Some("https://example.com"))],
+    );
+    assert_grounding_refusal(verifier.verify(&naked_url));
+
+    for resolution in [SourceResolution::Missing, SourceResolution::IntegrityFailed, SourceResolution::Unsupported] {
+        let verifier = GroundingVerifier::new_with_web_capture_resolver(
+            FileSourceResolver,
+            FakeSessionSpawnResolver::new([]),
+            FakeWebCaptureResolver(resolution),
+        );
+        assert_grounding_refusal(verifier.verify(&context));
+    }
+}
+
 fn context_with_user_source(source: Source) -> GroundingContext<'static> {
     GroundingContext::new("memory-1", "project/agent-memory", vec![source]).with_explicit_user_context()
 }
@@ -145,5 +176,17 @@ impl FakeSessionSpawnResolver {
 impl SessionSpawnResolver for FakeSessionSpawnResolver {
     fn spawned_in_session(&self, spawn_id: &str) -> bool {
         self.known_spawn_ids.contains(spawn_id)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct FakeWebCaptureResolver(SourceResolution);
+
+impl WebCaptureResolver for FakeWebCaptureResolver {
+    fn resolve_web_capture(&self, source_ref: &str) -> SourceResolution {
+        if !source_ref.starts_with("webcap:") || !source_ref.contains('#') {
+            return SourceResolution::Unsupported;
+        }
+        self.0
     }
 }

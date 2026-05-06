@@ -5,14 +5,18 @@ use std::process::Command;
 use serde_json::Value;
 
 #[test]
-fn list_outputs_all_19_catalog_entries() {
+fn list_outputs_all_20_catalog_entries() {
     let output = memorum_eval(["--list"]);
 
     assert!(output.status.success(), "expected --list to exit 0: {}", diagnostic(&output));
 
     let stdout = String::from_utf8(output.stdout).expect("--list stdout should be utf-8");
     let entry_count = stdout.lines().filter(|line| line.starts_with('#')).count();
-    assert_eq!(entry_count, 19, "catalog output should list all Stream H tests:\n{stdout}");
+    assert_eq!(entry_count, 20, "catalog output should list all eval tests:\n{stdout}");
+    assert!(
+        stdout.contains("#20 web_source_grounding"),
+        "catalog output should include the web source grounding eval:\n{stdout}"
+    );
 }
 
 #[test]
@@ -38,34 +42,28 @@ fn filtered_json_run_reports_spec_result_fields() {
 }
 
 #[test]
-fn mock_harness_skips_real_harness_tests_without_counting_failures() {
-    let output = memorum_eval(["--harness", "mock", "--output", "json"]);
+fn mock_harness_runs_catalog_without_live_credentials_or_real_cargo_failures() {
+    let fake_cargo = fake_passing_cargo();
+    let output = Command::new(env!("CARGO_BIN_EXE_memorum-eval"))
+        .args(["--harness", "mock", "--output", "json"])
+        .env("MEMORUM_EVAL_CARGO", &fake_cargo)
+        .output()
+        .expect("spawn memorum-eval");
 
     assert!(output.status.success(), "expected partial mock run to exit 0: {}", diagnostic(&output));
 
     let report = json_stdout(output);
-    assert_eq!(report["total"], 19);
+    assert_eq!(report["total"], 20);
     assert_eq!(report["failed"], 0);
-    // With stream-i-deps enabled by default (H-B2), T19 runs through MockHarness.
-    // T16/T17/T18 are Simulator-mode tests that skip at runtime via their own
-    // internal MEMORUM_EVAL_SKIP guards (T16 needs test-utils; T17/T18 depend on
-    // unshipped feature gates). These runtime skips set partial=true. Zero tests
-    // are pre-skipped at the orchestrator level, so failed is still 0.
-    assert_eq!(report["failed"], 0, "no tests should fail in mock mode: {report:#?}");
-    // partial is true because T16/T17/T18 produce runtime SKIP markers.
-    #[cfg(feature = "stream-i-deps")]
-    assert_eq!(report["partial"], true, "partial reflects runtime skips from T16/T17/T18: {report:#?}");
-    #[cfg(not(feature = "stream-i-deps"))]
-    assert_eq!(
-        report["partial"], true,
-        "partial is true (T16/T17/T18 runtime skips, and T19 pre-skipped): {report:#?}"
-    );
+    assert_eq!(report["partial"], false, "fake cargo makes simulator dispatches pass: {report:#?}");
 
     let tests = report["tests"].as_array().expect("tests should be an array");
     let t13 = find_test(tests, 13);
     let t15 = find_test(tests, 15);
+    let t20 = find_test(tests, 20);
     assert_eq!(t13["status"], "passed", "mock mode should execute MockHarness test #13: {t13:#?}");
     assert_eq!(t15["status"], "passed", "mock mode should execute MockHarness test #15: {t15:#?}");
+    assert_eq!(t20["status"], "passed", "mock mode should dispatch simulator test #20: {t20:#?}");
 
     let skipped_real_harness_tests = skipped_real_harness_tests(tests);
 
@@ -204,6 +202,19 @@ fn fake_failing_cargo() -> std::path::PathBuf {
     let mut permissions = fs::metadata(&path).expect("fake cargo metadata").permissions();
     permissions.set_mode(0o755);
     fs::set_permissions(&path, permissions).expect("chmod fake cargo");
+    path
+}
+
+fn fake_passing_cargo() -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!("memorum-eval-fake-pass-cargo-{}.sh", std::process::id()));
+    fs::write(
+        &path,
+        "#!/bin/sh\nprintf 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\\n'\nprintf 'MEMORUM_EVAL_ASSERTIONS=1\\n'\nexit 0\n",
+    )
+    .expect("write fake passing cargo");
+    let mut permissions = fs::metadata(&path).expect("fake passing cargo metadata").permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&path, permissions).expect("chmod fake passing cargo");
     path
 }
 

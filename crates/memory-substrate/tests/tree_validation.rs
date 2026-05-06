@@ -256,3 +256,21 @@ fn yaml_array(values: &[&str]) -> String {
         format!("[{}]", values.join(", "))
     }
 }
+
+#[test]
+fn source_web_tree_is_bootstrapped_and_not_memory_markdown() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    bootstrap_repo_tree(temp.path()).expect("tree");
+    assert!(temp.path().join("sources").is_dir());
+    assert!(temp.path().join("sources/web").is_dir());
+    let gitattributes = std::fs::read_to_string(temp.path().join(".gitattributes")).expect("gitattributes");
+    assert!(gitattributes.contains("sources/web/**/manifest.json merge=memory-merge-driver"));
+    assert!(gitattributes.contains("sources/web/**/raw.bin.zst binary"));
+
+    let artifact_dir = temp.path().join("sources/web/2026/05/src_01J0Z7Y8Q9R0ABCDE123456789");
+    std::fs::create_dir_all(&artifact_dir).expect("artifact dir");
+    std::fs::write(artifact_dir.join("note.md"), "# not a memory").expect("source md");
+    std::fs::write(artifact_dir.join("manifest.json"), "{}").expect("source json");
+    let paths = memory_substrate::tree::relative_memory_paths(temp.path());
+    assert!(paths.iter().all(|path| !path.to_string_lossy().starts_with("sources/web/")));
+}

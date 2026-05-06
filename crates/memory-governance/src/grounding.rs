@@ -17,6 +17,8 @@ pub enum SourceKind {
     AgentPrimary,
     /// A spawned subagent generated the candidate.
     Subagent,
+    /// The candidate cites a verified local web capture artifact.
+    WebCapture,
 }
 
 /// Typed source descriptor used for grounding decisions.
@@ -98,21 +100,70 @@ pub trait SessionSpawnResolver {
     fn spawned_in_session(&self, spawn_id: &str) -> bool;
 }
 
-/// Grounding verifier composed from typed resolvers.
-#[derive(Clone, Debug)]
-pub struct GroundingVerifier<S> {
-    file_resolver: FileSourceResolver,
-    session_spawn_resolver: S,
+/// Registry used to prove a web capture ref resolves to verified local evidence.
+pub trait WebCaptureResolver {
+    /// Resolve a `webcap:<artifact>#<excerpt>` source reference.
+    fn resolve_web_capture(&self, source_ref: &str) -> SourceResolution;
 }
 
-impl<S> GroundingVerifier<S>
+/// Default resolver used by compatibility constructors: never resolves web captures.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NeverResolveWebCapture;
+
+impl WebCaptureResolver for NeverResolveWebCapture {
+    fn resolve_web_capture(&self, _source_ref: &str) -> SourceResolution {
+        SourceResolution::Unsupported
+    }
+}
+
+impl WebCaptureResolver for memory_source::ArtifactStore {
+    fn resolve_web_capture(&self, source_ref: &str) -> SourceResolution {
+        match self.resolve_excerpt_ref(source_ref) {
+            Ok(_) => SourceResolution::Resolved,
+            Err(memory_source::SourceError::InvalidSourceRef(_)) => SourceResolution::Unsupported,
+            Err(memory_source::SourceError::InvalidId(_)) => SourceResolution::Unsupported,
+            Err(memory_source::SourceError::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {
+                SourceResolution::Missing
+            }
+            Err(memory_source::SourceError::Integrity(_)) => SourceResolution::IntegrityFailed,
+            Err(memory_source::SourceError::ExcerptNotFound(_)) => SourceResolution::Missing,
+            Err(_) => SourceResolution::Unsupported,
+        }
+    }
+}
+
+/// Grounding verifier composed from typed resolvers.
+#[derive(Clone, Debug)]
+pub struct GroundingVerifier<S, W = NeverResolveWebCapture> {
+    file_resolver: FileSourceResolver,
+    session_spawn_resolver: S,
+    web_capture_resolver: W,
+}
+
+impl<S> GroundingVerifier<S, NeverResolveWebCapture>
 where
     S: SessionSpawnResolver,
 {
     /// Create a grounding verifier.
     #[must_use]
     pub fn new(file_resolver: FileSourceResolver, session_spawn_resolver: S) -> Self {
-        Self { file_resolver, session_spawn_resolver }
+        Self { file_resolver, session_spawn_resolver, web_capture_resolver: NeverResolveWebCapture }
+    }
+}
+
+impl<S, W> GroundingVerifier<S, W>
+where
+    S: SessionSpawnResolver,
+    W: WebCaptureResolver,
+{
+    /// Create a grounding verifier with an explicit web-capture resolver.
+    #[must_use]
+    pub fn new_with_web_capture_resolver(
+        file_resolver: FileSourceResolver,
+        session_spawn_resolver: S,
+        web_capture_resolver: W,
+    ) -> Self {
+        Self { file_resolver, session_spawn_resolver, web_capture_resolver }
     }
 
     /// Verify that every supplied source has acceptable local grounding.
@@ -141,6 +192,10 @@ where
                     .strip_prefix(SESSION_SPAWN_REF_PREFIX)
                     .is_some_and(|spawn_id| self.session_spawn_resolver.spawned_in_session(spawn_id))
             }),
+            SourceKind::WebCapture => source
+                .source_ref
+                .as_deref()
+                .is_some_and(|source_ref| self.web_capture_resolver.resolve_web_capture(source_ref).is_resolved()),
         }
     }
 }
@@ -156,6 +211,8 @@ pub enum SourceResolution {
     ForbiddenDreamJournal,
     /// The reference kind is unsupported by this resolver.
     Unsupported,
+    /// The artifact exists but failed integrity/excerpt verification.
+    IntegrityFailed,
 }
 
 impl SourceResolution {

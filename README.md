@@ -89,3 +89,5 @@ cargo test --workspace
 - Review-fix policy: `docs/review-fix-policy.md`
 - Bench promotion flow: `bench/README.md`
 - Agent-oriented project context: `CLAUDE.md`
+
+- Web source grounding: see `docs/api/web-source-grounding-api.md` and `docs/runbooks/web-source-grounding.md` for `memory_capture_source`, `memoryd source capture`, and `webcap:` refs.

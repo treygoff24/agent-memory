@@ -59,6 +59,11 @@ pub enum RequestPayload {
     TrustArtifact {
         id: String,
     },
+    CaptureSource {
+        url: String,
+        excerpts: Vec<String>,
+        note: Option<String>,
+    },
     RecallHits {
         since: Option<DateTime<Utc>>,
         limit: Option<usize>,
@@ -249,6 +254,7 @@ pub enum ResponsePayload {
     Search(SearchResponse),
     Get(GetResponse),
     TrustArtifact(Box<crate::trust_artifact::TrustArtifact>),
+    CaptureSource(CaptureSourceResponse),
     RecallHits(RecallHitsResponse),
     Reveal(RevealResponse),
     WriteNote(WriteNoteResponse),
@@ -277,6 +283,16 @@ pub struct RecallHitsResponse {
     pub since: Option<DateTime<Utc>>,
     pub limit: usize,
     pub hits: Vec<RecallHitSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CaptureSourceResponse {
+    pub artifact_id: String,
+    pub source_refs: Vec<String>,
+    pub final_url: String,
+    pub captured_at: DateTime<Utc>,
+    pub capture_status: String,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

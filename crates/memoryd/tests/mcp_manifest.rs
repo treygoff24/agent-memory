@@ -20,9 +20,10 @@ fn mcp_manifest_declares_exact_agent_facing_tools_in_order() {
             "memory_startup",
             "memory_note",
             "memory_observe",
+            "memory_capture_source",
         ]
     );
-    assert_eq!(manifest.tools.len(), 9);
+    assert_eq!(manifest.tools.len(), 10);
 }
 
 #[test]
@@ -202,6 +203,33 @@ fn tool_name_conversion_accepts_memory_observe() {
     let parsed = ToolName::try_from("memory_observe").expect("memory_observe parses");
 
     assert_eq!(parsed.as_str(), "memory_observe");
+}
+
+#[test]
+fn mcp_manifest_memory_capture_source_schema_has_no_bypass_flags() {
+    let manifest = manifest();
+    let tool = manifest.tools.iter().find(|tool| tool.name == "memory_capture_source").expect("capture tool");
+
+    assert_eq!(tool.input_schema["required"], serde_json::json!(["url", "excerpts"]));
+    assert_eq!(tool.input_schema["additionalProperties"], serde_json::json!(false));
+    assert!(tool.input_schema["properties"].get("allow_private_network").is_none());
+    assert!(tool.input_schema["properties"].get("local_file").is_none());
+    assert!(tool.input_schema["properties"].get("auth").is_none());
+
+    let request = request_from_args(
+        ToolName::try_from("memory_capture_source").expect("capture tool parses"),
+        serde_json::json!({
+            "url": "https://example.com/report",
+            "excerpts": ["exact quote"],
+            "note": "safe note"
+        }),
+    )
+    .expect("capture request parses");
+
+    let ToolRequest::MemoryCaptureSource(args) = request else {
+        panic!("expected MemoryCaptureSource request");
+    };
+    assert_eq!(args.excerpts, vec!["exact quote"]);
 }
 
 #[test]

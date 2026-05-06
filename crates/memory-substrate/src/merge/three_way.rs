@@ -14,6 +14,7 @@ use super::quarantine::{
     build_add_add_alternate, build_unparsed_side, fresh_diagnostic, splice_diagnostic, union_diagnostics,
     AddAddAlternate, MergeStatus, UnparsedSide,
 };
+use super::source_artifact::merge_source_artifact;
 use super::MERGE_DRIVER_SUPPORTED_SCHEMA_VERSION;
 
 /// Merge input blobs.
@@ -39,6 +40,9 @@ pub enum MergeResult {
 
 /// Merge three Markdown blobs per spec §14.
 pub fn merge_markdown(input: MergeInput<'_>) -> Result<MergeResult, MergeError> {
+    if let Some(result) = merge_source_artifact(&input) {
+        return result;
+    }
     if let Some(result) = merge_stream_f_file(&input) {
         return result;
     }

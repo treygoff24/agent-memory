@@ -15,7 +15,11 @@ dreams/questions/**/*.jsonl merge=memory-merge-driver\n\
 dreams/cleanup/**/*.json merge=memory-merge-driver\n\
 dreams/journal/**/*.md merge=memory-merge-driver\n\
 leases/journal.lease merge=memory-merge-driver\n\
-tombstones/*.jsonl merge=union\n";
+tombstones/*.jsonl merge=union\n\
+sources/web/**/manifest.json merge=memory-merge-driver\n\
+sources/web/**/excerpts.jsonl merge=memory-merge-driver\n\
+sources/web/**/extracted.txt merge=memory-merge-driver\n\
+sources/web/**/raw.bin.zst binary\n";
 
 const MANAGED_GITATTRIBUTES_PATTERNS: &[&str] = &[
     "*",
@@ -28,6 +32,10 @@ const MANAGED_GITATTRIBUTES_PATTERNS: &[&str] = &[
     "dreams/journal/**/*.md",
     "leases/journal.lease",
     "tombstones/*.jsonl",
+    "sources/web/**/manifest.json",
+    "sources/web/**/excerpts.jsonl",
+    "sources/web/**/extracted.txt",
+    "sources/web/**/raw.bin.zst",
 ];
 
 /// Directories that should exist after init/adoption.
@@ -60,6 +68,8 @@ pub fn memory_dirs() -> Vec<&'static str> {
         "events",
         "policies",
         "leases",
+        "sources",
+        "sources/web",
     ]
 }
 
@@ -175,5 +185,5 @@ fn is_canonical_memory_markdown_path(relative: &Path) -> bool {
         return false;
     }
     let rel = relative.to_string_lossy().replace('\\', "/");
-    !rel.starts_with("dreams/journal/")
+    !rel.starts_with("dreams/journal/") && !rel.starts_with("sources/web/")
 }

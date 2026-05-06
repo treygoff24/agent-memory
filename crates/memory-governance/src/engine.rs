@@ -4,8 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     CandidateContext, CandidateMemory, ContradictionDecision, ContradictionDetector, ContradictionTiebreaker,
-    GovernanceDecision, GovernanceRefusalReason, GroundingContext, GroundingVerifier, PolicySet, SessionSpawnResolver,
-    SimilaritySearch, SourceKind, TombstoneEnforcementMode, TombstoneIndex,
+    GovernanceDecision, GovernanceRefusalReason, GroundingContext, GroundingVerifier, NeverResolveWebCapture,
+    PolicySet, SessionSpawnResolver, SimilaritySearch, SourceKind, TombstoneEnforcementMode, TombstoneIndex,
+    WebCaptureResolver,
 };
 
 /// Caller action implied by a governance write decision.
@@ -110,9 +111,9 @@ pub struct GovernanceProviders<S, T> {
 
 /// Engine configuration and providers.
 #[derive(Clone, Debug)]
-pub struct GovernanceEngine<S, T, R> {
+pub struct GovernanceEngine<S, T, R, W = NeverResolveWebCapture> {
     policies: PolicySet,
-    grounding_verifier: GroundingVerifier<R>,
+    grounding_verifier: GroundingVerifier<R, W>,
     tombstones: TombstoneIndex,
     search: S,
     tiebreaker: T,
@@ -127,16 +128,17 @@ impl<S, T> GovernanceProviders<S, T> {
     }
 }
 
-impl<S, T, R> GovernanceEngine<S, T, R>
+impl<S, T, R, W> GovernanceEngine<S, T, R, W>
 where
     S: SimilaritySearch,
     T: ContradictionTiebreaker,
     R: SessionSpawnResolver,
+    W: WebCaptureResolver,
 {
     /// Build an engine from deterministic providers.
     pub fn new(
         policies: PolicySet,
-        grounding_verifier: GroundingVerifier<R>,
+        grounding_verifier: GroundingVerifier<R, W>,
         tombstones: TombstoneIndex,
         providers: GovernanceProviders<S, T>,
     ) -> Self {

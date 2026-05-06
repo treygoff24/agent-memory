@@ -37,6 +37,7 @@ pub enum ToolName {
     Startup,
     Note,
     Observe,
+    CaptureSource,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +57,7 @@ pub enum ToolRequest {
     MemoryStartup(StartupRequest),
     MemoryNote(NoteRequest),
     MemoryObserve(ObserveRequest),
+    MemoryCaptureSource(CaptureSourceRequest),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -129,6 +131,15 @@ pub struct ObserveRequest {
     pub harness_version: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaptureSourceRequest {
+    pub url: String,
+    pub excerpts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
 pub fn manifest() -> Manifest {
     Manifest { tools: ToolName::all().iter().map(|name| descriptor(*name)).collect() }
 }
@@ -144,6 +155,7 @@ pub fn request_from_args(name: ToolName, args: Value) -> Result<ToolRequest, ser
         ToolName::Startup => serde_json::from_value(args).map(ToolRequest::MemoryStartup),
         ToolName::Note => serde_json::from_value(args).map(ToolRequest::MemoryNote),
         ToolName::Observe => serde_json::from_value(args).map(ToolRequest::MemoryObserve),
+        ToolName::CaptureSource => serde_json::from_value(args).map(ToolRequest::MemoryCaptureSource),
     }
 }
 
@@ -158,6 +170,7 @@ pub fn args_from_request(request: &ToolRequest) -> Result<Value, serde_json::Err
         ToolRequest::MemoryStartup(args) => serde_json::to_value(args),
         ToolRequest::MemoryNote(args) => serde_json::to_value(args),
         ToolRequest::MemoryObserve(args) => serde_json::to_value(args),
+        ToolRequest::MemoryCaptureSource(args) => serde_json::to_value(args),
     }
 }
 
@@ -215,6 +228,9 @@ pub async fn forward_to_daemon(
         ToolRequest::MemoryForget(args) => RequestPayload::Forget { id: args.id, reason: args.reason },
         ToolRequest::MemoryReveal(args) => RequestPayload::Reveal { id: args.id, reason: args.reason },
         ToolRequest::MemoryStartup(args) => RequestPayload::Startup(args),
+        ToolRequest::MemoryCaptureSource(args) => {
+            RequestPayload::CaptureSource { url: args.url, excerpts: args.excerpts, note: args.note }
+        }
     };
 
     forward_payload_to_daemon(socket_path, id, payload).await
@@ -244,7 +260,7 @@ pub async fn forward_payload_to_daemon(
 }
 
 impl ToolName {
-    pub const fn all() -> [Self; 9] {
+    pub const fn all() -> [Self; 10] {
         [
             Self::Search,
             Self::Get,
@@ -255,6 +271,7 @@ impl ToolName {
             Self::Startup,
             Self::Note,
             Self::Observe,
+            Self::CaptureSource,
         ]
     }
 
@@ -269,6 +286,7 @@ impl ToolName {
             Self::Startup => "memory_startup",
             Self::Note => "memory_note",
             Self::Observe => "memory_observe",
+            Self::CaptureSource => "memory_capture_source",
         }
     }
 }
@@ -287,6 +305,7 @@ impl TryFrom<&str> for ToolName {
             "memory_startup" => Ok(Self::Startup),
             "memory_note" => Ok(Self::Note),
             "memory_observe" => Ok(Self::Observe),
+            "memory_capture_source" => Ok(Self::CaptureSource),
             name => Err(UnknownToolName { name: name.to_owned() }),
         }
     }
@@ -388,6 +407,21 @@ fn descriptor(name: ToolName) -> ToolDescriptor {
             observe_input_schema(),
             observe_output_schema(),
         ),
+        ToolName::CaptureSource => (
+            "Capture a public HTTP(S) source as a local verified webcap artifact before writing a grounded memory.",
+            capture_source_input_schema(),
+            object_schema(
+                &[
+                    ("artifact_id", "string"),
+                    ("source_refs", "array"),
+                    ("final_url", "string"),
+                    ("captured_at", "string"),
+                    ("capture_status", "string"),
+                    ("warnings", "array"),
+                ],
+                &["artifact_id", "source_refs", "final_url", "captured_at", "capture_status", "warnings"],
+            ),
+        ),
     };
 
     ToolDescriptor { name: name.as_str().to_owned(), description: description.to_owned(), input_schema, output_schema }
@@ -441,6 +475,24 @@ fn observe_output_schema() -> Value {
             "target": { "type": "string", "enum": ["plaintext_substrate", "encrypted_substrate"] }
         },
         "required": ["fragment_id", "target"],
+        "additionalProperties": false,
+    })
+}
+
+fn capture_source_input_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "url": { "type": "string", "minLength": 1 },
+            "excerpts": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 8,
+                "items": { "type": "string", "minLength": 1, "maxLength": 2048 }
+            },
+            "note": { "type": "string", "maxLength": 2048 }
+        },
+        "required": ["url", "excerpts"],
         "additionalProperties": false,
     })
 }

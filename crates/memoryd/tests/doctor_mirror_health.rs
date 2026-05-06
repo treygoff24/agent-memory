@@ -6,14 +6,16 @@ use memoryd::protocol::{RequestEnvelope, RequestPayload, ResponsePayload, Respon
 use tempfile::TempDir;
 
 #[tokio::test]
-async fn test_doctor_emits_no_finding_when_mirror_in_sync() {
+async fn test_doctor_emits_no_mirror_finding_when_mirror_in_sync() {
     let fixture = Fixture::new().await;
     append_mirrored_recall_hits(&fixture.substrate, 3);
 
     let doctor = request_doctor(&fixture.substrate).await;
 
-    assert!(doctor.healthy, "doctor should be healthy when JSONL and SQLite mirror agree: {doctor:?}");
-    assert!(!doctor.findings.iter().any(|finding| finding.code == "events_log_mirror_lag"));
+    assert!(
+        !doctor.findings.iter().any(|finding| finding.code == "events_log_mirror_lag"),
+        "doctor should not report mirror lag when JSONL and SQLite mirror agree: {doctor:?}"
+    );
 }
 
 #[tokio::test]

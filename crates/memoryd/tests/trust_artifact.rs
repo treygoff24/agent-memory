@@ -1,4 +1,10 @@
 use chrono::{TimeZone, Utc};
+use memory_source::hash::sha256_prefixed;
+use memory_source::storage::excerpts_jsonl;
+use memory_source::{
+    ArtifactStore, CaptureMethod, CaptureRequestSnapshot, CaptureResponseSnapshot, CaptureStatus, ExcerptLocator,
+    ExcerptMatchKind, ExcerptRecord, RawStorage, SourceArtifactId, WebCaptureArtifact, WebCaptureManifest,
+};
 use memory_substrate::events::{append_event, Event, EventKind, EVENT_SCHEMA_VERSION};
 use memory_substrate::{
     Author, AuthorKind, ClassificationOutcome, DeviceId, EncryptedWriteRequest, EventContext, EventId, Frontmatter,
@@ -35,6 +41,28 @@ async fn all_sections_present_for_plaintext_memory() {
     assert!(artifact.supersedes.is_empty());
     assert!(artifact.superseded_by.is_empty());
     assert!(!artifact.sync_state.devices.is_empty());
+}
+
+#[tokio::test]
+async fn web_grounded_memory_shows_bounded_source_evidence_without_raw_body() {
+    let fixture = Fixture::new().await;
+    let source_ref = write_web_artifact(&fixture);
+    let mut memory = sample_memory(TARGET_ID, "Web grounded", "The memory cites only the bounded excerpt.");
+    memory.frontmatter.source.kind = SourceKind::Web;
+    memory.frontmatter.source.reference = Some(source_ref);
+    fixture.write(memory).await;
+    fixture.reindex_events();
+
+    let artifact = fixture.artifact(TARGET_ID).await;
+    let evidence = artifact.source_evidence.as_ref().expect("web evidence projected");
+
+    assert!(evidence.available);
+    assert_eq!(evidence.kind, "web");
+    assert_eq!(evidence.original_url.as_deref(), Some("https://example.com/report"));
+    assert_eq!(evidence.final_url.as_deref(), Some("https://example.com/report"));
+    assert_eq!(evidence.quote.as_deref(), Some("bounded exact quote"));
+    let json = serde_json::to_string(&artifact).expect("serialize artifact");
+    assert!(!json.contains("full raw captured page body"));
 }
 
 #[tokio::test]
@@ -383,6 +411,48 @@ fn sample_memory(id: &str, summary: &str, body: &str) -> Memory {
         body: body.to_owned(),
         path: Some(RepoPath::new(format!("projects/agent-memory/{id}.md"))),
     }
+}
+
+fn write_web_artifact(fixture: &Fixture) -> String {
+    let artifact_id = SourceArtifactId::try_new("src_01J0Z7Y8Q9R0ABCDE123456789").expect("artifact id");
+    let extracted_text = "bounded exact quote from the captured page".to_string();
+    let excerpts = vec![ExcerptRecord {
+        excerpt_id: "quote_0001".to_string(),
+        artifact_id: artifact_id.clone(),
+        quote: "bounded exact quote".to_string(),
+        quote_sha256: sha256_prefixed("bounded exact quote".as_bytes()),
+        locator: ExcerptLocator::ByteRange { start: 0, end: 19 },
+        match_kind: ExcerptMatchKind::Exact,
+        created_at: Utc.with_ymd_and_hms(2026, 5, 5, 18, 0, 0).single().expect("fixture time"),
+    }];
+    let excerpts_text = excerpts_jsonl(&excerpts).expect("excerpts jsonl");
+    let manifest = WebCaptureManifest {
+        schema_version: 1,
+        artifact_id: artifact_id.clone(),
+        kind: "web_capture".to_string(),
+        original_url: "https://example.com/report".to_string(),
+        final_url: "https://example.com/report".to_string(),
+        redirect_chain: Vec::new(),
+        captured_at: Utc.with_ymd_and_hms(2026, 5, 5, 18, 0, 0).single().expect("fixture time"),
+        capture_method: CaptureMethod::HttpStaticV1,
+        request: CaptureRequestSnapshot::default(),
+        response: CaptureResponseSnapshot { http_status: 200, ..CaptureResponseSnapshot::default() },
+        raw_sha256: Some(sha256_prefixed(b"full raw captured page body")),
+        raw_zstd_sha256: None,
+        raw_storage: RawStorage::OmittedPrivacy,
+        raw_omitted_reason: Some("privacy".to_string()),
+        extracted_text_sha256: sha256_prefixed(extracted_text.as_bytes()),
+        excerpts_sha256: sha256_prefixed(excerpts_text.as_bytes()),
+        raw_byte_len: "full raw captured page body".len(),
+        extracted_text_byte_len: extracted_text.len(),
+        capture_status: CaptureStatus::CompleteTextOnly,
+        warnings: Vec::new(),
+        merge_conflict: None,
+    };
+    ArtifactStore::new(fixture.roots.repo.clone())
+        .write_web_capture(&WebCaptureArtifact { manifest, extracted_text, excerpts, raw_bytes: None })
+        .expect("write web artifact");
+    format!("webcap:{artifact_id}#quote_0001")
 }
 
 struct TimestampParts {

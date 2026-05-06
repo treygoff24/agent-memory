@@ -222,7 +222,7 @@ struct RunContext {
     missing_credentials: Vec<String>,
 }
 
-pub const TEST_CATALOG: [CatalogEntry; 19] = [
+pub const TEST_CATALOG: [CatalogEntry; 20] = [
     CatalogEntry {
         number: 1,
         name: "exact_identifier_recall",
@@ -372,6 +372,14 @@ pub const TEST_CATALOG: [CatalogEntry; 19] = [
         name: "peer_update_framing_correctness",
         group: CatalogGroup::Regression,
         mode: CatalogMode::RealHarness,
+        deferred: false,
+        execution_group: ExecutionGroup::Serial,
+    },
+    CatalogEntry {
+        number: 20,
+        name: "web_source_grounding",
+        group: CatalogGroup::Domain,
+        mode: CatalogMode::Simulator,
         deferred: false,
         execution_group: ExecutionGroup::Serial,
     },
@@ -640,6 +648,7 @@ fn cargo_dispatch(entry: CatalogEntry) -> CargoTestDispatch {
         19 => {
             CargoTestDispatch { target: "t19_peer_update_framing", filter: "t19_peer_update_framing_sampling_matrix" }
         }
+        20 => CargoTestDispatch { target: "domain", filter: "t20_web_source_grounding" },
         _ => unreachable!("catalog entry #{} is not cargo-dispatched by memorum-eval", entry.number),
     }
 }

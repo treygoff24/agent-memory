@@ -1,12 +1,12 @@
 use chrono::{TimeZone, Utc};
 use memory_substrate::{MemoryId, MemoryStatus, Sensitivity};
 use memoryd::protocol::{
-    CandidateWriteResult, ComponentScores, DreamRunReport, DreamStatusCounters, DreamStatusReport, GetResponse,
-    GovernanceForgetResponse, GovernanceStatus, GovernanceSupersedeResponse, GovernanceWriteResponse, HarnessCliStatus,
-    LeaseRecord, ObserveKind, ObserveResponse, ObserveTarget, PassOutcome, PassStatus, PromptTransport,
-    RealityCheckAction, RealityCheckItem, RealityCheckRequest, RealityCheckResponse, RecallHitSummary,
-    RecallHitsResponse, RequestEnvelope, RequestPayload, ResponseEnvelope, ResponsePayload, RevealResponse,
-    ScopeRunSummary, SearchHit, SearchResponse, WriteNoteResponse,
+    CandidateWriteResult, CaptureSourceResponse, ComponentScores, DreamRunReport, DreamStatusCounters,
+    DreamStatusReport, GetResponse, GovernanceForgetResponse, GovernanceStatus, GovernanceSupersedeResponse,
+    GovernanceWriteResponse, HarnessCliStatus, LeaseRecord, ObserveKind, ObserveResponse, ObserveTarget, PassOutcome,
+    PassStatus, PromptTransport, RealityCheckAction, RealityCheckItem, RealityCheckRequest, RealityCheckResponse,
+    RecallHitSummary, RecallHitsResponse, RequestEnvelope, RequestPayload, ResponseEnvelope, ResponsePayload,
+    RevealResponse, ScopeRunSummary, SearchHit, SearchResponse, WriteNoteResponse,
 };
 use memoryd::recall::StartupRequest;
 
@@ -26,6 +26,14 @@ fn protocol_contract_round_trips_request_variants_as_snake_case_json() {
         RequestEnvelope::new(
             "req-trust-artifact",
             RequestPayload::TrustArtifact { id: "mem_20260428_0123456789abcdef_000001".to_owned() },
+        ),
+        RequestEnvelope::new(
+            "req-capture-source",
+            RequestPayload::CaptureSource {
+                url: "https://example.com/report".to_owned(),
+                excerpts: vec!["exact quote".to_owned()],
+                note: Some("operator note".to_owned()),
+            },
         ),
         RequestEnvelope::new(
             "req-recall-hits",
@@ -96,6 +104,29 @@ fn protocol_contract_round_trips_request_variants_as_snake_case_json() {
         let decoded = RequestEnvelope::from_json_line(&line).expect("request deserializes");
         assert_eq!(decoded, request);
     }
+}
+
+#[test]
+fn protocol_contract_capture_source_response_round_trips() {
+    let captured_at = Utc.with_ymd_and_hms(2026, 5, 5, 18, 0, 0).unwrap();
+    let response = ResponseEnvelope::success(
+        "req-capture-source",
+        ResponsePayload::CaptureSource(CaptureSourceResponse {
+            artifact_id: "src_01J0Z7Y8Q9R0ABCDE123456789".to_owned(),
+            source_refs: vec!["webcap:src_01J0Z7Y8Q9R0ABCDE123456789#quote_0001".to_owned()],
+            final_url: "https://example.com/report".to_owned(),
+            captured_at,
+            capture_status: "complete_text_only".to_owned(),
+            warnings: vec!["raw_omitted_privacy".to_owned()],
+        }),
+    );
+
+    let line = response.to_json_line().expect("capture source response serializes");
+    let decoded = ResponseEnvelope::from_json_line(&line).expect("capture source response deserializes");
+
+    assert_eq!(decoded, response);
+    assert!(line.contains("\"capture_source\""));
+    assert!(line.contains("webcap:src_01J0Z7Y8Q9R0ABCDE123456789#quote_0001"));
 }
 
 #[test]

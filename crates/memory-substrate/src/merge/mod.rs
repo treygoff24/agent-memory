@@ -4,6 +4,7 @@ mod body_diff3;
 mod field_rules;
 mod lifecycle;
 mod quarantine;
+mod source_artifact;
 mod three_way;
 
 pub use three_way::{merge_markdown, MergeInput, MergeResult};

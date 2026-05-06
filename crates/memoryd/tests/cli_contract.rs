@@ -23,6 +23,7 @@ fn cli_contract_help_exposes_daemon_and_agent_facing_client_commands() {
         "search",
         "get",
         "write-note",
+        "source",
         "ui",
         "web",
         "reality-check",
@@ -104,6 +105,16 @@ fn cli_contract_clap_parses_all_subcommands() {
 
     // write-note
     Cli::try_parse_from(["memoryd", "write-note", "a quick note"]).expect("write-note parses");
+    Cli::try_parse_from([
+        "memoryd",
+        "source",
+        "capture",
+        "--url",
+        "https://example.com/report",
+        "--excerpt",
+        "exact quote",
+    ])
+    .expect("source capture parses");
 
     // write-note must NOT accept --entity (flag was removed)
     assert!(

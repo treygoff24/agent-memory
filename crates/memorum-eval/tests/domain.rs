@@ -10,6 +10,8 @@ mod t16_drift_scoring_sanity;
 mod t17_lease_contention_resolution;
 #[path = "eval/domain/t18_encrypted_tier_key_rotation.rs"]
 mod t18_encrypted_tier_key_rotation;
+#[path = "eval/domain/t20_web_source_grounding.rs"]
+mod t20_web_source_grounding;
 
 mod support {
     use std::io::{BufRead, BufReader, Write};

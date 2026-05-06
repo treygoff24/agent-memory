@@ -124,6 +124,7 @@ fn trust_artifact_fixture(id: MemoryId, now: DateTime<Utc>) -> TrustArtifact {
         status: "active".to_owned(),
         sensitivity: "internal".to_owned(),
         source: "agent/patterns/task-14-audit.md".to_owned(),
+        source_evidence: None,
         title: SafeContent::Plaintext("Task 14 audit fixture".to_owned()),
         body: SafeContent::Plaintext("Task 14 audit-only fixture body".to_owned()),
         current_confidence: "0.95".to_owned(),

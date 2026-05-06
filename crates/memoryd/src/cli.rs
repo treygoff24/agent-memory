@@ -32,6 +32,8 @@ pub enum Command {
     WriteNote(WriteNoteArgs),
     /// Write a governed structured memory.
     Write(WriteMemoryArgs),
+    /// Capture source artifacts for grounded memory writes.
+    Source(SourceArgs),
     /// Supersede an existing memory through governance.
     Supersede(SupersedeArgs),
     /// Tombstone a memory through governance.
@@ -234,6 +236,34 @@ pub struct WriteMemoryArgs {
     pub meta: Option<String>,
     /// Markdown body.
     pub body: String,
+}
+
+#[derive(Debug, Args)]
+pub struct SourceArgs {
+    #[command(subcommand)]
+    pub command: SourceCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SourceCommand {
+    /// Capture a public HTTP(S) page and return webcap refs for exact excerpts.
+    Capture(SourceCaptureArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct SourceCaptureArgs {
+    /// Unix socket path used to reach memoryd.
+    #[arg(long, default_value = "/tmp/memoryd.sock")]
+    pub socket: PathBuf,
+    /// Public HTTP(S) URL to capture.
+    #[arg(long)]
+    pub url: String,
+    /// Exact quote to anchor in extracted page text. Repeat for multiple quotes.
+    #[arg(long = "excerpt")]
+    pub excerpts: Vec<String>,
+    /// Optional safe operator note.
+    #[arg(long)]
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Args)]

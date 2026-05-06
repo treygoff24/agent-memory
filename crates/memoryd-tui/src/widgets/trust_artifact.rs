@@ -46,6 +46,7 @@ impl<'a> TrustArtifactWidget<'a> {
                 artifact.namespace, artifact.status, artifact.sensitivity
             )),
             Line::from(format!("source: {}", artifact.source)),
+            Line::from(web_evidence_summary(artifact)),
             Line::from(format!("trust: {}", artifact.trust_summary)),
             Line::from(""),
             Line::from("Body:"),
@@ -121,6 +122,21 @@ impl<'a> TrustArtifactWidget<'a> {
 
 fn section(title: &str) -> Line<'static> {
     Line::from(format!("--- {title} ---"))
+}
+
+fn web_evidence_summary(artifact: &TrustArtifact) -> String {
+    let Some(evidence) = &artifact.source_evidence else {
+        return "web evidence: none".to_string();
+    };
+    let status = if evidence.available { "available" } else { "unavailable" };
+    let mut summary = format!("web evidence: {}#{} ({status})", evidence.artifact_id, evidence.excerpt_id);
+    if let Some(final_url) = &evidence.final_url {
+        summary.push_str(&format!(" final_url={final_url}"));
+    }
+    if let Some(quote) = &evidence.quote {
+        summary.push_str(&format!(" quote=\"{quote}\""));
+    }
+    summary
 }
 
 fn render_supersession_links(label: &str, links: &[SupersessionLink]) -> Vec<Line<'static>> {

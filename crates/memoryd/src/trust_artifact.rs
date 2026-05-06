@@ -4,6 +4,7 @@ use chrono::{DateTime, Duration, Utc};
 use memory_privacy::{
     DeterministicPrivacyClassifier, PrivacyClassifier, PrivacyLabel, PrivacyNamespace, PrivacyStorageAction,
 };
+use memory_source::{ArtifactStore, WebCaptureSourceRef};
 use memory_substrate::{MemoryContent, MemoryEnvelope, MemoryId, Substrate};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -83,6 +84,8 @@ pub struct TrustArtifact {
     pub status: String,
     pub sensitivity: String,
     pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_evidence: Option<WebSourceEvidence>,
     pub title: SafeContent,
     pub body: SafeContent,
     pub current_confidence: String,
@@ -96,6 +99,19 @@ pub struct TrustArtifact {
     pub supersedes: Vec<SupersessionLink>,
     pub superseded_by: Vec<SupersessionLink>,
     pub sync_state: SyncState,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct WebSourceEvidence {
+    pub kind: String,
+    pub artifact_id: String,
+    pub excerpt_id: String,
+    pub available: bool,
+    pub original_url: Option<String>,
+    pub final_url: Option<String>,
+    pub captured_at: Option<DateTime<Utc>>,
+    pub quote: Option<String>,
+    pub unavailable_reason: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -165,6 +181,7 @@ impl<'a> TrustArtifactBuilder<'a> {
             .map(|path| path.as_str().to_owned())
             .or_else(|| frontmatter.source.reference.clone())
             .unwrap_or_else(|| frontmatter.source.kind.to_string());
+        let source_evidence = web_source_evidence(self.substrate, &frontmatter.source);
         let privacy_scan = build_privacy_scan(&frontmatter.extras, &body, privacy_namespace(&frontmatter.scope))?;
         let supersedes_ids = query_supersession_ids(connection, id, SupersessionDirection::Supersedes)?;
         let superseded_by_ids = query_supersession_ids(connection, id, SupersessionDirection::SupersededBy)?;
@@ -176,6 +193,7 @@ impl<'a> TrustArtifactBuilder<'a> {
                 status: enum_value(&frontmatter.status),
                 sensitivity: enum_value(&frontmatter.sensitivity),
                 source,
+                source_evidence,
                 title,
                 body,
                 current_confidence: format_confidence(frontmatter.confidence),
@@ -235,6 +253,62 @@ fn query_recall_stats(
         last_30_days: last_30_days as u32,
         last_recalled_at: last_recalled_at.as_deref().and_then(parse_time),
     })
+}
+
+fn web_source_evidence(substrate: &Substrate, source: &memory_substrate::Source) -> Option<WebSourceEvidence> {
+    if source.kind != memory_substrate::SourceKind::Web {
+        return None;
+    }
+    let source_ref = source.reference.as_deref()?;
+    let parsed = match WebCaptureSourceRef::parse(source_ref) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            return Some(WebSourceEvidence {
+                kind: "web".to_string(),
+                artifact_id: String::new(),
+                excerpt_id: String::new(),
+                available: false,
+                original_url: None,
+                final_url: None,
+                captured_at: None,
+                quote: None,
+                unavailable_reason: Some(error.to_string()),
+            });
+        }
+    };
+    let artifact_id = parsed.artifact_id().to_string();
+    let excerpt_id = parsed.excerpt_id().to_string();
+    match ArtifactStore::new(substrate.roots().repo.clone()).verify_artifact_id(parsed.artifact_id()) {
+        Ok(artifact) => {
+            let quote = artifact
+                .excerpts
+                .iter()
+                .find(|record| record.excerpt_id == excerpt_id)
+                .map(|record| bounded(&record.quote, 500));
+            Some(WebSourceEvidence {
+                kind: "web".to_string(),
+                artifact_id,
+                excerpt_id,
+                available: quote.is_some(),
+                original_url: Some(artifact.manifest.original_url),
+                final_url: Some(artifact.manifest.final_url),
+                captured_at: Some(artifact.manifest.captured_at),
+                quote,
+                unavailable_reason: None,
+            })
+        }
+        Err(error) => Some(WebSourceEvidence {
+            kind: "web".to_string(),
+            artifact_id,
+            excerpt_id,
+            available: false,
+            original_url: None,
+            final_url: None,
+            captured_at: None,
+            quote: None,
+            unavailable_reason: Some(error.to_string()),
+        }),
+    }
 }
 
 fn query_original_confidence(connection: &Connection, id: &MemoryId) -> Result<Option<f64>, TrustArtifactError> {
@@ -534,4 +608,15 @@ fn storage_action_name(action: PrivacyStorageAction) -> &'static str {
         PrivacyStorageAction::EncryptAtRest => "encrypted",
         PrivacyStorageAction::Refuse => "refuse",
     }
+}
+
+fn bounded(text: &str, max_chars: usize) -> String {
+    if text.len() <= max_chars {
+        return text.to_string();
+    }
+    let mut end = max_chars;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &text[..end])
 }

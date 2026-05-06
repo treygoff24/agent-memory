@@ -6,6 +6,7 @@ members = [
     "crates/memory-test-support",
     "crates/memory-governance",
     "crates/memory-privacy",
+    "crates/memory-source",
     "crates/memoryd",
     "crates/memoryd-tui",
     "crates/memoryd-web",
@@ -27,6 +28,7 @@ clap = { version = "4.5", features = ["derive"] }
 crc32c = "0.6"
 crc32fast = "1.4"
 dashmap = "6.1"
+encoding_rs = "0.8"
 fs2 = "0.4"
 hex = "0.4"
 imara-diff = "0.2"
@@ -36,11 +38,13 @@ proptest = "1.6"
 pulldown-cmark = "0.12"
 rand = "0.8"
 regex = "1.11"
+reqwest = { version = "0.12", default-features = false, features = ["charset", "http2", "rustls-tls"] }
 rusqlite = { version = "0.32", features = ["bundled", "serde_json"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
 sha2 = "0.10"
+scraper = "0.23"
 sqlite-vec = "=0.1.9"
 tempfile = "3.14"
 thiserror = "2.0"
@@ -57,6 +61,7 @@ tokio = { version = "1.42", features = [
     "time",
 ] }
 ulid = "1.1"
+url = "2.5"
 uuid = { version = "1.11", features = ["v4", "serde"] }
 which = "6"
 walkdir = "2.5"
