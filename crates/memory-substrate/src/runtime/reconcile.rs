@@ -15,7 +15,7 @@ use crate::events::{
 };
 use crate::index::Index;
 use crate::markdown::read_memory_file;
-use crate::model::{EventId, Memory, MemoryId, OperationId, RepoPath, Sha256};
+use crate::model::{EventId, Memory, MemoryId, MemoryStatus, OperationId, RepoPath, Sha256, TrustLevel};
 
 /// Durable pending index operation kind.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -103,6 +103,10 @@ pub struct ReconcileReport {
     pub recovery_required: bool,
     /// Whether an auto-commit was performed during reconciliation.
     pub auto_committed: bool,
+    /// Repository-relative memory paths whose merge was quarantined and require
+    /// operator attention. Consumed by the daemon to emit
+    /// NotificationEvent::BlockingMergeConflict per entry.
+    pub blocking_conflicts: Vec<String>,
 }
 
 /// Startup reconciliation phase counts (legacy compat alias; prefer ReconcileReport).
@@ -315,6 +319,11 @@ fn phase_6_index_consistency(repo: &Path, index: &mut Index, report: &mut Reconc
     let reindexed = reindex_stale_memories(repo, index)
         .map_err(|err| std::io::Error::other(format!("index consistency: {err}")))?;
     report.reindexed_memories = reindexed;
+    report.blocking_conflicts =
+        scan_blocking_conflicts(repo).map_err(|err| std::io::Error::other(format!("blocking conflict scan: {err}")))?;
+    if !report.blocking_conflicts.is_empty() {
+        report.operator_action_required = true;
+    }
     report.phases_run.push("index_consistency");
     Ok(())
 }
@@ -363,11 +372,22 @@ pub fn reconcile_startup(runtime: &Path, event_log: &Path) -> std::io::Result<Re
 /// Useful when the repo root is available at call time. Phase 5 may migrate
 /// `api.rs` to call this instead of `reconcile_startup` to enable phase 1.
 pub fn reconcile_startup_pre_index(runtime: &Path, event_log: &Path, repo: &Path) -> std::io::Result<ReconcileCounts> {
+    let report = reconcile_startup_pre_index_report(runtime, event_log, repo)?;
+    Ok(ReconcileCounts { reindexed: 0, repaired_events: report.event_repairs as usize, replayed_pending_events: 0 })
+}
+
+/// Extended pre-index startup reconciliation with a full report.
+pub fn reconcile_startup_pre_index_report(
+    runtime: &Path,
+    event_log: &Path,
+    repo: &Path,
+) -> std::io::Result<ReconcileReport> {
     std::fs::create_dir_all(runtime.join("pending"))?;
     let mut report = ReconcileReport::default();
     phase_1_crash_recovery_scan(repo, runtime, &mut report)?;
-    let repaired_events = recover_event_log(event_log)? as usize;
-    Ok(ReconcileCounts { reindexed: 0, repaired_events, replayed_pending_events: 0 })
+    report.event_repairs = recover_event_log(event_log)? as u32;
+    report.phases_run.push("event_log_recovery");
+    Ok(report)
 }
 
 /// Replay durable pending repairs after the index handle exists (phases 3–6 + 9).
@@ -382,17 +402,42 @@ pub fn replay_pending_repairs(
     device_id: &crate::model::DeviceId,
     index: &mut Index,
 ) -> std::io::Result<ReconcileCounts> {
-    let mut report = ReconcileReport::default();
-    phase_3_replay_pending_index(repo, runtime, index, &mut report)?;
-    phase_4_replay_pending_encrypted_index(repo, runtime, index, &mut report)?;
-    phase_5_replay_pending_events(runtime, event_log, &mut report)?;
-    phase_6_index_consistency(repo, index, &mut report)?;
-    phase_9_emit_completion(runtime, event_log, device_id, &mut report)?;
+    let report = replay_pending_repairs_report(repo, runtime, event_log, device_id, index)?;
     Ok(ReconcileCounts {
         reindexed: report.reindexed_memories as usize,
         repaired_events: report.event_repairs as usize,
         replayed_pending_events: report.event_repairs as usize,
     })
+}
+
+/// Replay durable pending repairs and return the full reconciliation report.
+#[allow(clippy::too_many_arguments)]
+pub fn replay_pending_repairs_report(
+    repo: &Path,
+    runtime: &Path,
+    event_log: &Path,
+    device_id: &crate::model::DeviceId,
+    index: &mut Index,
+) -> std::io::Result<ReconcileReport> {
+    replay_pending_repairs_into_report(repo, runtime, event_log, device_id, index, ReconcileReport::default())
+}
+
+/// Replay durable pending repairs, appending phase results into an existing report.
+#[allow(clippy::too_many_arguments)]
+pub fn replay_pending_repairs_into_report(
+    repo: &Path,
+    runtime: &Path,
+    event_log: &Path,
+    device_id: &crate::model::DeviceId,
+    index: &mut Index,
+    mut report: ReconcileReport,
+) -> std::io::Result<ReconcileReport> {
+    phase_3_replay_pending_index(repo, runtime, index, &mut report)?;
+    phase_4_replay_pending_encrypted_index(repo, runtime, index, &mut report)?;
+    phase_5_replay_pending_events(runtime, event_log, &mut report)?;
+    phase_6_index_consistency(repo, index, &mut report)?;
+    phase_9_emit_completion(runtime, event_log, device_id, &mut report)?;
+    Ok(report)
 }
 
 enum ReplayOutcome {
@@ -480,6 +525,38 @@ fn reindex_stale_memories(repo: &Path, index: &mut Index) -> Result<u32, Box<dyn
         }
     }
     Ok(count)
+}
+
+fn scan_blocking_conflicts(repo: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let mut conflicts = Vec::new();
+    for entry in walkdir::WalkDir::new(repo).follow_links(false) {
+        let entry = entry?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if path.extension().is_none_or(|ext| ext != "md") {
+            continue;
+        }
+        if path.components().any(|c| c.as_os_str() == ".git") {
+            continue;
+        }
+        let Ok(repo_relative) = path.strip_prefix(repo) else { continue };
+        if repo_relative.components().next().is_some_and(|c| c.as_os_str() == "encrypted") {
+            continue;
+        }
+        let Ok(relative_str) = repo_relative.to_str().ok_or("non-utf8 path") else { continue };
+        let repo_path = RepoPath::new(relative_str);
+        let (memory, _) = read_memory_file(repo, &repo_path)?;
+        if memory.frontmatter.status == MemoryStatus::Quarantined
+            || memory.frontmatter.trust_level == TrustLevel::Quarantined
+        {
+            conflicts.push(repo_path.as_str().to_string());
+        }
+    }
+    conflicts.sort();
+    conflicts.dedup();
+    Ok(conflicts)
 }
 
 /// Delete or rewrite a pending queue file after replay.

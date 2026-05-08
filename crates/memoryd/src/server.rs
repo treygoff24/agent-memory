@@ -13,7 +13,9 @@ use tokio::time::{interval_at, Instant, MissedTickBehavior};
 use crate::handlers::{self, HandlerState};
 use crate::notifications::config::NotificationConfig;
 use crate::notifications::NotificationDispatcher;
-use crate::protocol::{RequestEnvelope, RequestPayload, ResponseEnvelope, ResponsePayload, StatusResponse};
+use crate::protocol::{
+    NotificationEvent, RequestEnvelope, RequestPayload, ResponseEnvelope, ResponsePayload, StatusResponse,
+};
 use crate::socket::{probe_live_socket, SocketProbe};
 
 pub use crate::protocol::MAX_FRAME_BYTES;
@@ -56,6 +58,7 @@ pub async fn serve_substrate(socket_path: impl AsRef<Path>, substrate: Substrate
     let substrate = Arc::new(substrate);
     let state = Arc::new(state_for_substrate(substrate.as_ref())?);
     spawn_notification_dispatcher(&state);
+    emit_startup_blocking_conflicts(&substrate, &state);
     spawn_coordination_cleanup_for_state(state.clone(), shutdown_rx.clone());
     fire_reality_check_due_on_startup(&substrate, &state);
     spawn_reality_check_scheduler(substrate.clone(), state.clone(), shutdown_rx.clone());
@@ -85,6 +88,7 @@ pub async fn serve_substrate_with(
     let substrate = Arc::new(substrate);
     let state = Arc::new(state_for_substrate(substrate.as_ref())?);
     spawn_notification_dispatcher(&state);
+    emit_startup_blocking_conflicts(&substrate, &state);
     spawn_coordination_cleanup_for_state(state.clone(), shutdown.clone());
     fire_reality_check_due_on_startup(&substrate, &state);
     spawn_reality_check_scheduler(substrate.clone(), state.clone(), shutdown.clone());
@@ -102,6 +106,12 @@ fn spawn_notification_dispatcher(state: &HandlerState) {
     let receiver = state.subscribe_notifications();
     let dispatcher = NotificationDispatcher::production(state.passive_notifications(), NotificationConfig::default());
     tokio::spawn(dispatcher.run(receiver));
+}
+
+fn emit_startup_blocking_conflicts(substrate: &Substrate, state: &HandlerState) {
+    for path in &substrate.startup_reconcile_report().blocking_conflicts {
+        state.emit_notification(NotificationEvent::BlockingMergeConflict { path: path.clone() });
+    }
 }
 
 pub fn spawn_coordination_cleanup_for_state(

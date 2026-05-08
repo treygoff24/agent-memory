@@ -198,7 +198,7 @@ impl HandlerState {
         crate::reality_check::RcScheduler::default().check_and_fire_if_due(reality_check, now, &self.notifications)
     }
 
-    fn emit_notification(&self, event: NotificationEvent) {
+    pub(crate) fn emit_notification(&self, event: NotificationEvent) {
         let _ = self.notifications.send(event);
     }
 }

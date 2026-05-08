@@ -28,9 +28,9 @@ use crate::index::{open_index, Index};
 use crate::markdown::{atomic_write, probe_durability, read_memory_file};
 use crate::model::*;
 use crate::runtime::reconcile::{
-    enqueue_pending_encrypted_index, enqueue_pending_event, enqueue_pending_index, reconcile_startup_pre_index,
-    replay_pending_repairs, write_startup_marker, PendingEncryptedIndexOp, PendingEventOp, PendingIndexKind,
-    PendingIndexOp,
+    enqueue_pending_encrypted_index, enqueue_pending_event, enqueue_pending_index, reconcile_startup_pre_index_report,
+    replay_pending_repairs_into_report, write_startup_marker, PendingEncryptedIndexOp, PendingEventOp,
+    PendingIndexKind, PendingIndexOp, ReconcileReport,
 };
 use crate::tree::{has_substrate_marker, validate_tree, TreeValidationMode};
 use crate::watcher::{watch_root_with_suppression, SuppressionLedger, WatchSubscription};
@@ -45,12 +45,18 @@ pub struct Substrate {
     event_log: PathBuf,
     best_effort_event_seq: Arc<AtomicU64>,
     suppression: Arc<Mutex<SuppressionLedger>>,
+    startup_reconcile_report: Arc<ReconcileReport>,
 }
 
 impl Substrate {
     /// Roots backing this substrate handle.
     pub fn roots(&self) -> &Roots {
         &self.roots
+    }
+
+    /// Full startup reconciliation report captured when this handle was opened.
+    pub fn startup_reconcile_report(&self) -> &ReconcileReport {
+        &self.startup_reconcile_report
     }
 
     /// Initialize a new memory repository and open it.
@@ -1327,7 +1333,7 @@ impl Substrate {
         }
         let device_id = load_device_id(&roots.runtime)?;
         let event_log = roots.repo.join("events").join(format!("{device_id}.jsonl"));
-        reconcile_startup_pre_index(&roots.runtime, &event_log, &roots.repo)
+        let startup_reconcile_report = reconcile_startup_pre_index_report(&roots.runtime, &event_log, &roots.repo)
             .map_err(|err| OpenError::OperatorRepairRequired(err.to_string()))?;
         let device = DeviceId::try_new(&device_id)
             .map_err(|err| OpenError::InvalidRoots(format!("invalid device id in local-device.yaml: {err}")))?;
@@ -1341,8 +1347,15 @@ impl Substrate {
         let connection =
             open_index(&roots.runtime.join("index.sqlite")).map_err(|err| OpenError::InvalidRoots(err.to_string()))?;
         let mut index = Index::with_active_embedding(connection, active_embedding);
-        replay_pending_repairs(&roots.repo, &roots.runtime, &event_log, &device, &mut index)
-            .map_err(|err| OpenError::OperatorRepairRequired(err.to_string()))?;
+        let startup_reconcile_report = replay_pending_repairs_into_report(
+            &roots.repo,
+            &roots.runtime,
+            &event_log,
+            &device,
+            &mut index,
+            startup_reconcile_report,
+        )
+        .map_err(|err| OpenError::OperatorRepairRequired(err.to_string()))?;
         full_reindex_from_repo(&roots.repo, &mut index)
             .map_err(|err| OpenError::OperatorRepairRequired(err.to_string()))?;
         match read_all_event_logs_from_repo(&roots.repo).and_then(|events| {
@@ -1359,6 +1372,7 @@ impl Substrate {
             best_effort_event_seq: Arc::new(AtomicU64::new(best_effort_event_seq_start(&event_log, &device))),
             event_log,
             suppression: Arc::new(Mutex::new(SuppressionLedger::default())),
+            startup_reconcile_report: Arc::new(startup_reconcile_report),
         })
     }
 
