@@ -13,7 +13,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "typecheck": "tsc -b --pretty false",
-    "test": "vitest",
+    "test": "node scripts/run-vitest.mjs",
     "test:visual": "node scripts/run-playwright.mjs visual",
     "test:e2e": "node scripts/run-playwright.mjs e2e",
     "test:a11y": "node scripts/run-playwright.mjs a11y",

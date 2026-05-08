@@ -1,1 +1,1 @@
-export * from './DreamList';
+export { DreamList } from './DreamList';

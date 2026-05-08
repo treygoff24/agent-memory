@@ -1,2 +1,2 @@
-export * from './RecallList';
-export * from './TimelineStrip';
+export { RecallList } from './RecallList';
+export { TimelineStrip, type TimelineBucket } from './TimelineStrip';

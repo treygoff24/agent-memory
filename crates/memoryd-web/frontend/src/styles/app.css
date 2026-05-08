@@ -2423,3 +2423,8 @@ a:hover {
 .list-item.focused {
     border-color: var(--border);
 }
+
+.dream-run-row {
+    background: color-mix(in oklab, var(--surface), var(--accent) 6%);
+    border-color: var(--border-soft);
+}
