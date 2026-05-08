@@ -1,5 +1,10 @@
 use std::process::Command;
 
+// `--inject-panic` only exists under `#[cfg(debug_assertions)]`. In release
+// builds clap rejects the unknown flag with exit code 2 and a stderr that does
+// not contain the panic message, so the assertion below would fail for the
+// wrong reason. Gate the test to match the production scope of the flag.
+#[cfg(debug_assertions)]
 #[test]
 fn pre_run_inject_panic_flag_invokes_hook_before_default_hook() {
     let output = Command::new(env!("CARGO_BIN_EXE_memoryd-tui"))

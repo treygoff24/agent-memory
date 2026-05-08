@@ -93,7 +93,8 @@ pub fn render_pending_attention_body(
     existing_items: Vec<String>,
     include_reality_check_due: bool,
 ) -> RenderedPendingAttention {
-    let mut items = existing_items;
+    let mut seen = HashSet::new();
+    let mut items = existing_items.into_iter().filter(|item| seen.insert(item.clone())).collect::<Vec<_>>();
     let mut omitted_count = 0;
     let mut reality_check_due_emitted = false;
 
@@ -483,4 +484,21 @@ fn escape_xml(value: &str, escape_quotes: bool) -> String {
         }
     }
     escaped
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pending_attention_body_dedupes_before_applying_cap() {
+        let rendered = render_pending_attention_body(
+            vec!["- duplicate item".to_string(), "- duplicate item".to_string(), "- distinct item".to_string()],
+            false,
+        );
+
+        assert_eq!(rendered.body.matches("duplicate item").count(), 1);
+        assert!(rendered.body.contains("distinct item"));
+        assert_eq!(rendered.omitted_count, 0);
+    }
 }

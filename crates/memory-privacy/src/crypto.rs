@@ -40,10 +40,25 @@ impl<P: KeyProvider> PrivacyEncryptor<P> {
 
     /// Decrypt an encrypted payload. Used for rotation tests and local repair tooling.
     pub fn decrypt(&self, payload: &EncryptedPayload) -> PrivacyResult<String> {
+        validate_envelope_metadata(&payload.envelope)?;
         let key = self.key_provider.load_key()?;
         let identity = key.identity()?;
         let plaintext =
             age::decrypt(&identity, &payload.ciphertext).map_err(|err| PrivacyError::Crypto(err.to_string()))?;
         String::from_utf8(plaintext).map_err(|err| PrivacyError::Crypto(err.to_string()))
+    }
+}
+
+fn validate_envelope_metadata(envelope: &serde_json::Value) -> PrivacyResult<()> {
+    if envelope.is_null() {
+        return Ok(());
+    }
+    let Some(object) = envelope.as_object() else {
+        return Err(PrivacyError::Crypto("invalid encryption envelope metadata".to_string()));
+    };
+    match object.get("scheme").and_then(serde_json::Value::as_str) {
+        Some("age-x25519") => Ok(()),
+        Some(scheme) => Err(PrivacyError::Crypto(format!("unsupported encryption envelope scheme `{scheme}`"))),
+        None => Err(PrivacyError::Crypto("encryption envelope missing scheme".to_string())),
     }
 }

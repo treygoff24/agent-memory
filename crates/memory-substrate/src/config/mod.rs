@@ -1,11 +1,24 @@
 //! Synced and local config loading.
 
+mod privacy;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::model::{EmbeddingTriple, Roots};
+
+pub use privacy::PrivacyEnforcement;
+
+/// Dream prompt template generation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum PromptVersion {
+    /// Original Stream F dogfood prompts.
+    V1,
+    /// Schema-heavy prompts with examples and stricter refusal guidance.
+    V2,
+}
 
 /// Synced Stream A config.
 ///
@@ -52,6 +65,9 @@ pub struct LocalDeviceConfig {
     /// Local paths.
     #[serde(default)]
     pub paths: PathsConfig,
+    /// Per-device runtime privacy enforcement switches. Never synced.
+    #[serde(default)]
+    pub privacy: PrivacyEnforcement,
 }
 
 /// Local device identity; never read from synced config.
@@ -76,12 +92,22 @@ pub struct LoadedConfig {
     pub roots: Roots,
 }
 
+impl LoadedConfig {
+    /// Effective local runtime privacy enforcement.
+    pub fn privacy_enforcement(&self) -> PrivacyEnforcement {
+        self.local.as_ref().map(|local| local.privacy).unwrap_or_default()
+    }
+}
+
 /// Stream F dreaming configuration.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DreamsConfig {
     /// Enable scheduled dreaming unless disabled by local sentinel.
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Prompt template version for all dream passes.
+    #[serde(default = "default_prompt_version")]
+    pub prompt_version: PromptVersion,
     /// Harness priority used when a scope has no override.
     #[serde(default = "default_cli_priority")]
     pub default_cli_priority: Vec<String>,
@@ -132,6 +158,7 @@ pub struct DreamsConfig {
 impl PartialEq for DreamsConfig {
     fn eq(&self, other: &Self) -> bool {
         self.enabled == other.enabled
+            && self.prompt_version == other.prompt_version
             && self.default_cli_priority == other.default_cli_priority
             && self.scope_overrides == other.scope_overrides
             && self.per_pass_timeout_seconds == other.per_pass_timeout_seconds
@@ -156,6 +183,7 @@ impl Default for DreamsConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            prompt_version: default_prompt_version(),
             default_cli_priority: default_cli_priority(),
             scope_overrides: BTreeMap::new(),
             per_pass_timeout_seconds: default_per_pass_timeout_seconds(),
@@ -350,6 +378,10 @@ fn first_path(
 
 fn default_true() -> bool {
     true
+}
+
+fn default_prompt_version() -> PromptVersion {
+    PromptVersion::V2
 }
 
 fn default_cli_priority() -> Vec<String> {

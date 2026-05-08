@@ -1,0 +1,11 @@
+too-many-lines-threshold = 60
+cognitive-complexity-threshold = 15
+too-many-arguments-threshold = 4
+
+disallowed-methods = [
+    { path = "ratatui::style::Style::default", reason = "construct Style via theme tokens, not defaults", allow-invalid = true },
+]
+
+disallowed-types = [
+    { path = "ratatui::style::Color", reason = "use memorum_theme::ResolvedColor and the theme_glue translation seam" },
+]

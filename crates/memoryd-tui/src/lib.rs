@@ -1,5 +1,11 @@
 pub mod app;
 pub mod client;
 pub mod config;
-pub mod panels;
+pub mod focus;
+pub mod inbox;
+pub mod inspector;
+pub mod palette;
+pub mod state;
+pub mod status;
+pub mod theme_glue;
 pub mod widgets;

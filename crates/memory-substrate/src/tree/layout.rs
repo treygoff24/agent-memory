@@ -3,6 +3,10 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
+/// Directory marker that identifies a repo as an initialized Memorum substrate.
+pub const SUBSTRATE_MARKER_DIR: &str = ".memorum";
+const SUBSTRATE_MARKER_FILE: &str = "substrate";
+
 /// Canonical `.gitattributes` body emitted by `git::init` per spec §13.1 step 2.
 /// The driver name `memory-merge-driver` is the value resolved by
 /// `decisions/open-questions-resolved.md` Q3.
@@ -76,6 +80,7 @@ pub fn memory_dirs() -> Vec<&'static str> {
 /// Create tree directories and tracked bootstrap files, but do not seed
 /// synced config.
 pub fn bootstrap_repo_layout(root: &Path) -> std::io::Result<()> {
+    write_substrate_marker(root)?;
     for dir in memory_dirs() {
         std::fs::create_dir_all(root.join(dir))?;
     }
@@ -85,6 +90,17 @@ pub fn bootstrap_repo_layout(root: &Path) -> std::io::Result<()> {
         write_if_missing(&root.join(dir).join(".keep"), "")?;
     }
     Ok(())
+}
+
+/// Return true when `root` has the explicit Memorum substrate marker.
+pub fn has_substrate_marker(root: &Path) -> bool {
+    root.join(SUBSTRATE_MARKER_DIR).join(SUBSTRATE_MARKER_FILE).is_file()
+}
+
+fn write_substrate_marker(root: &Path) -> std::io::Result<()> {
+    let marker_dir = root.join(SUBSTRATE_MARKER_DIR);
+    std::fs::create_dir_all(&marker_dir)?;
+    write_if_missing(&marker_dir.join(SUBSTRATE_MARKER_FILE), "schema_version: 1\nkind: memorum-substrate\n")
 }
 
 /// Create tree directories, tracked bootstrap files, and a synthetic synced

@@ -313,7 +313,7 @@ async fn memory_startup_validation_failure_increments_failure_counter_by_code() 
 }
 
 #[tokio::test]
-async fn memory_startup_since_event_id_is_only_not_implemented_startup_path() {
+async fn memory_startup_since_event_id_missing_event_falls_back_to_full_startup() {
     let temp = tempfile::tempdir().expect("tempdir");
     let repo = temp.path().join("repo");
     let substrate = Substrate::init(
@@ -334,11 +334,10 @@ async fn memory_startup_since_event_id_is_only_not_implemented_startup_path() {
     .await;
 
     match response.result {
-        ResponseResult::Error(error) => {
-            assert_eq!(error.code, "not_implemented");
-            assert!(!error.retryable);
+        ResponseResult::Success(ResponsePayload::Startup(startup)) => {
+            assert!(startup.recall_block.contains("<recall"));
         }
-        other => panic!("expected not_implemented, got {other:?}"),
+        other => panic!("expected startup fallback success, got {other:?}"),
     }
 }
 

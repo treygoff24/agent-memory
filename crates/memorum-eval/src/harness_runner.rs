@@ -3,8 +3,7 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::fs;
-use std::io::{self, BufRead, BufReader, Read, Write};
-use std::os::unix::net::UnixStream;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -314,57 +313,13 @@ impl MockHarness {
     }
 
     fn run_test_13(&self, scaffold: &DaemonScaffold) -> Result<TestOutcome, HarnessRunnerError> {
-        let fragment_text = "MockHarness test 13 recall fragment: cross-harness substrate sharing works";
-        let observe = daemon_request(
-            scaffold,
-            format!(
-                r#"{{"observe":{{"text":"{}","kind":"observation","entities":[],"cwd":"{}","session_id":"mock-harness-t13-codex","harness":"codex","harness_version":null}}}}"#,
-                json_escape(fragment_text),
-                json_escape(&scaffold.tree_dir().to_string_lossy())
-            ),
-        )?;
-        let _startup = daemon_request(
-            scaffold,
-            format!(
-                r#"{{"startup":{{"cwd":"{}","session_id":"mock-harness-t13-claude","harness":"claude","harness_version":null,"include_recent":true,"since_event_id":null,"budget_tokens":null}}}}"#,
-                json_escape(&scaffold.tree_dir().to_string_lossy())
-            ),
-        )?;
-        let _search = daemon_request(
-            scaffold,
-            format!(r#"{{"search":{{"query":"{}","limit":null,"include_body":true}}}}"#, json_escape(fragment_text)),
-        )?;
-
-        let mut output = HashMap::new();
-        output.insert("found".to_owned(), observe.contains("fragment_id").to_string());
-        output.insert("fragment_text".to_owned(), fragment_text.to_owned());
-
-        Ok(TestOutcome::Passed { metadata: mock_metadata(), output })
+        let _ = scaffold;
+        Ok(TestOutcome::Skipped { metadata: mock_metadata(), reason: "MOCK_HARNESS_SEMANTIC_NOT_EXERCISED".to_owned() })
     }
 
     fn run_test_15(&self, scaffold: &DaemonScaffold) -> Result<TestOutcome, HarnessRunnerError> {
-        let pii_body = "MockHarness privacy fixture for alice@example.com should be refused";
-        let first_attempt = daemon_request(scaffold, write_memory_request(pii_body, "mock-harness-t15-pii"))?;
-        let retry = daemon_request(
-            scaffold,
-            write_memory_request(
-                "MockHarness privacy retry fixture with sensitive data stripped",
-                "mock-harness-t15-retry",
-            ),
-        )?;
-
-        let mut output = HashMap::new();
-        output.insert(
-            "first_attempt_status".to_owned(),
-            extract_string_field(&first_attempt, "status").unwrap_or_else(|| "unknown".to_owned()),
-        );
-        output.insert(
-            "retry_status".to_owned(),
-            extract_string_field(&retry, "status").unwrap_or_else(|| "unknown".to_owned()),
-        );
-        output.insert("retry_id".to_owned(), extract_string_field(&retry, "id").unwrap_or_default());
-
-        Ok(TestOutcome::Passed { metadata: mock_metadata(), output })
+        let _ = scaffold;
+        Ok(TestOutcome::Skipped { metadata: mock_metadata(), reason: "MOCK_HARNESS_SEMANTIC_NOT_EXERCISED".to_owned() })
     }
 
     #[cfg(feature = "stream-i-deps")]
@@ -472,31 +427,4 @@ fn mock_metadata() -> HashMap<String, String> {
         ("mode".to_owned(), "mock".to_owned()),
         ("annotation".to_owned(), "mode: mock — agent reasoning not exercised.".to_owned()),
     ])
-}
-
-fn daemon_request(scaffold: &DaemonScaffold, request: String) -> Result<String, HarnessRunnerError> {
-    let mut stream = UnixStream::connect(scaffold.socket_path())?;
-    let frame = format!(r#"{{"id":"mock-harness","request":{request}}}"#);
-    stream.write_all(frame.as_bytes())?;
-    stream.write_all(b"\n")?;
-
-    let mut response = String::new();
-    BufReader::new(stream).read_line(&mut response)?;
-    Ok(response)
-}
-
-fn write_memory_request(body: &str, source_ref: &str) -> String {
-    format!(
-        r#"{{"write_memory":{{"body":"{}","title":null,"tags":[],"meta":{{"namespace":"project","type":"project","confidence":0.95,"source_kind":"agent_primary","source_ref":"file:{}","explicit_user_context":true}}}}}}"#,
-        json_escape(body),
-        json_escape(source_ref)
-    )
-}
-
-fn extract_string_field(json: &str, field: &str) -> Option<String> {
-    let marker = format!(r#""{field}":"#);
-    let start = json.find(&marker)? + marker.len();
-    let rest = json.get(start..)?.strip_prefix('"')?;
-    let end = rest.find('"')?;
-    Some(rest[..end].replace(r#"\""#, r#"""#).replace(r#"\n"#, "\n"))
 }

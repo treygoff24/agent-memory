@@ -1,4 +1,5 @@
-use memoryd_tui::app::{App, DaemonSnapshot, PanelId};
+use memoryd_tui::app::{App, DaemonSnapshot};
+use memoryd_tui::inbox::InboxFilter;
 use ratatui::{backend::TestBackend, Terminal};
 
 fn render(app: &mut App, width: u16, height: u16) -> String {
@@ -23,13 +24,13 @@ fn test_below_minimum_shows_warning_banner() {
 #[test]
 fn test_resize_above_minimum_resumes() {
     let mut app = App::with_snapshot(DaemonSnapshot::sample());
-    app.set_active_panel(PanelId::ReviewQueue);
+    app.set_filter(InboxFilter::Review);
 
     let small = render(&mut app, 79, 23);
     assert!(small.contains("Terminal too small"));
 
     let normal = render(&mut app, 80, 24);
-    assert!(normal.contains("Review Queue"));
+    assert!(normal.contains("Inbox"));
     assert!(normal.contains("Prefer CITEXT"));
     assert!(!normal.contains("Terminal too small"));
 }

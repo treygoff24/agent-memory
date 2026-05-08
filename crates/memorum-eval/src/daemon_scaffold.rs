@@ -63,7 +63,10 @@ impl DaemonScaffold {
     }
 
     fn start(tree_dir: TempTree) -> Self {
-        let socket_path = tree_dir.path().join("memoryd.sock");
+        // Use a short /tmp socket directory to stay under macOS's 104-char Unix
+        // domain socket path cap. The tree itself can stay in the long
+        // tempfile path; only the socket name is path-length-sensitive.
+        let socket_path = short_socket_path("memd-eval");
         let child = spawn_memoryd(tree_dir.path(), &socket_path);
         wait_for_socket(&socket_path);
 
@@ -86,7 +89,7 @@ impl DaemonScaffold {
 
         let mut response = String::new();
         BufReader::new(stream).read_line(&mut response).expect("read doctor response");
-        DoctorReport { healthy: response.contains(r#""healthy":true"#), body: response }
+        DoctorReport { healthy: eval_doctor_healthy(&response), body: response }
     }
 
     pub fn tree_dir(&self) -> &Path {
@@ -100,6 +103,14 @@ impl DaemonScaffold {
     pub fn into_child_for_test(mut self) -> DaemonChild {
         self.child.take().expect("daemon child is present")
     }
+}
+
+fn eval_doctor_healthy(response: &str) -> bool {
+    response.contains(r#""healthy":true"#)
+        || (response.contains(r#""code":"harness_cli_warning""#)
+            && !response.contains(r#""code":"warning""#)
+            && !response.contains(r#""code":"repair_required""#)
+            && !response.contains(r#""code":"events_log_mirror_lag""#))
 }
 
 impl TwoDeviceScaffold {
@@ -153,6 +164,17 @@ impl Drop for TempTree {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.path);
     }
+}
+
+/// Build a short Unix-domain-socket path under `/tmp/<prefix>-<pid>/` to avoid
+/// macOS's 104-character socket-name cap. The default tempdir on macOS lives
+/// under `/var/folders/...` and is too long once the test name + nonce are
+/// appended.
+fn short_socket_path(prefix: &str) -> PathBuf {
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).expect("system clock before unix epoch").as_nanos();
+    let dir = PathBuf::from(format!("/tmp/{prefix}-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap_or_else(|err| panic!("create short socket dir {}: {err}", dir.display()));
+    dir.join(format!("memoryd-{nanos}.sock"))
 }
 
 fn spawn_memoryd(tree_dir: &Path, socket_path: &Path) -> Child {

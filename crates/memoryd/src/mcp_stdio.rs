@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 
 use crate::mcp::{self, ToolDescriptor, ToolName};
 use crate::protocol::{ProtocolError, ResponsePayload, ResponseResult};
+use crate::socket::{probe_live_socket, SocketProbe};
 
 const PROTOCOL_VERSION: &str = "2025-11-25";
 const JSONRPC_VERSION: &str = "2.0";
@@ -152,6 +153,10 @@ async fn handle_tools_call(socket_path: &Path, id: Option<Value>, params: Value)
         }
     };
 
+    if !matches!(probe_live_socket(socket_path), SocketProbe::Live) {
+        return daemon_not_running_response(id, socket_path);
+    }
+
     let daemon_id = id.as_ref().map(jsonrpc_id_to_daemon_id).unwrap_or_else(|| format!("mcp-{}", tool_name.as_str()));
     match mcp::forward_to_daemon(socket_path, daemon_id, request).await {
         Ok(envelope) => success_response(id, call_result(envelope.result)),
@@ -159,6 +164,19 @@ async fn handle_tools_call(socket_path: &Path, id: Option<Value>, params: Value)
             error_response(id, -32000, "daemon request failed", Some(json!({ "message": format!("{error:#}") })))
         }
     }
+}
+
+fn daemon_not_running_response(id: Option<Value>, socket_path: &Path) -> JsonRpcResponse {
+    error_response(
+        id,
+        -32001,
+        "daemon_not_running",
+        Some(json!({
+            "code": "daemon_not_running",
+            "socket": socket_path.display().to_string(),
+            "guidance": "Start memoryd or run memoryd doctor to inspect daemon health."
+        })),
+    )
 }
 
 fn initialize_result() -> Value {

@@ -75,9 +75,22 @@ impl RcScheduler {
         if !self.is_due(state, now) {
             return false;
         }
+        if self.is_overdue(state, now) {
+            let _ = notifications.send(NotificationEvent::RealityCheckOverdue {
+                last_completed_at: state.last_completed_at,
+                weeks_skipped: skipped_weeks(state.last_completed_at, now),
+            });
+        }
         let _ = notifications.send(NotificationEvent::RealityCheckDue { due_at: now });
         true
     }
+}
+
+fn skipped_weeks(last_completed_at: Option<DateTime<Utc>>, now: DateTime<Utc>) -> u32 {
+    let Some(last_completed_at) = last_completed_at else {
+        return (OVERDUE_WINDOW.num_days() / WEEKLY_CADENCE.num_days()) as u32;
+    };
+    (now.signed_duration_since(last_completed_at).num_days() / WEEKLY_CADENCE.num_days()).max(0) as u32
 }
 
 fn is_valid_weekly_expression(expression: &str) -> bool {

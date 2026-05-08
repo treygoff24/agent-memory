@@ -33,7 +33,7 @@ The schema exposes no local-network, auth, cookie, proxy, or file-capture bypass
 
 ```bash
 memoryd source capture \
-  --socket /tmp/memoryd.sock \
+  --socket <runtime>/memoryd.sock \
   --url https://example.com/report \
   --excerpt 'exact quote present in extracted page text'
 ```

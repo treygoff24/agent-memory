@@ -1,7 +1,7 @@
 name: me-strict
 version: 1
 scope: me
-confidence_floor: 0.9
+confidence_floor: 0.85
 requires_grounding: true
 tombstone_enforcement: refuse
 contradiction_policy: quarantine

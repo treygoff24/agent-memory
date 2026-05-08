@@ -145,7 +145,7 @@ struct McpServerProcess {
 impl McpServerProcess {
     fn spawn(socket: &Path) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_memoryd"))
-            .args(["mcp", "--socket"])
+            .args(["mcp", "--auto-start", "false", "--socket"])
             .arg(socket)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -233,5 +233,7 @@ async fn init_substrate(temp: &tempfile::TempDir) -> Substrate {
 
 fn unique_socket_path(test_name: &str) -> PathBuf {
     let nonce = SystemTime::now().duration_since(UNIX_EPOCH).expect("system clock is after epoch").as_nanos();
-    std::env::temp_dir().join(format!("memoryd-{test_name}-{nonce}.sock"))
+    let dir = PathBuf::from(format!("/tmp/memd-mcpstdio-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create short socket directory");
+    dir.join(format!("{test_name}-{nonce}.sock"))
 }

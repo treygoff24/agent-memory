@@ -1,12 +1,12 @@
 use chrono::{TimeZone, Utc};
-use memory_substrate::{MemoryId, MemoryStatus, Sensitivity};
+use memory_substrate::{EventId, MemoryId, MemoryStatus, Sensitivity};
 use memoryd::protocol::{
     CandidateWriteResult, CaptureSourceResponse, ComponentScores, DreamRunReport, DreamStatusCounters,
-    DreamStatusReport, GetResponse, GovernanceForgetResponse, GovernanceStatus, GovernanceSupersedeResponse,
-    GovernanceWriteResponse, HarnessCliStatus, LeaseRecord, ObserveKind, ObserveResponse, ObserveTarget, PassOutcome,
-    PassStatus, PromptTransport, RealityCheckAction, RealityCheckItem, RealityCheckRequest, RealityCheckResponse,
-    RecallHitSummary, RecallHitsResponse, RequestEnvelope, RequestPayload, ResponseEnvelope, ResponsePayload,
-    RevealResponse, ScopeRunSummary, SearchHit, SearchResponse, WriteNoteResponse,
+    DreamStatusReport, GetProvenance, GetResponse, GovernanceForgetResponse, GovernanceStatus,
+    GovernanceSupersedeResponse, GovernanceWriteResponse, HarnessCliStatus, LeaseRecord, ObserveKind, ObserveResponse,
+    ObserveTarget, PassOutcome, PassStatus, PromptTransport, RealityCheckAction, RealityCheckItem, RealityCheckRequest,
+    RealityCheckResponse, RecallHitSummary, RecallHitsResponse, RequestEnvelope, RequestPayload, ResponseEnvelope,
+    ResponsePayload, ResponseResult, RevealResponse, ScopeRunSummary, SearchHit, SearchResponse, WriteNoteResponse,
 };
 use memoryd::recall::StartupRequest;
 
@@ -225,13 +225,57 @@ fn test_reality_check_request_respond_round_trips_serde() {
 #[test]
 fn test_web_dashboard_requests_round_trip_serde() {
     for request in [
-        RequestPayload::WebEnable { port: 7137, socket_path: "/tmp/memoryd.sock".to_owned() },
+        RequestPayload::WebEnable {
+            port: 7137,
+            socket_path: memoryd::socket::resolve_socket_path(&memoryd::socket::default_runtime_root())
+                .to_string_lossy()
+                .into_owned(),
+        },
         RequestPayload::WebDisable,
         RequestPayload::WebStatus,
     ] {
         let decoded = round_trip(&request);
 
         assert_eq!(decoded, request);
+    }
+}
+
+#[test]
+fn test_tui_read_only_protocol_requests_round_trip_serde() {
+    let requests = [
+        RequestPayload::InspectEntities { limit: Some(10), prefix: Some("ent_project".to_owned()) },
+        RequestPayload::EventsLogPage { since: Some(EventId::new("evt_cursor")), limit: 25, kind_filter: None },
+        RequestPayload::NamespaceTree { root: Some("project:agent-memory".to_owned()), depth: Some(2) },
+        RequestPayload::GovernancePolicyDump,
+        RequestPayload::ConflictsList { limit: Some(5) },
+    ];
+
+    for request in requests {
+        let decoded = round_trip(&request);
+
+        assert_eq!(decoded, request);
+    }
+}
+
+#[tokio::test]
+async fn test_tui_read_only_protocol_requests_are_rejected_by_mcp_forwarder() {
+    let socket_path = tempfile::tempdir().expect("tempdir").path().join("missing.sock");
+    let requests = [
+        RequestPayload::InspectEntities { limit: None, prefix: None },
+        RequestPayload::EventsLogPage { since: None, limit: 10, kind_filter: None },
+        RequestPayload::NamespaceTree { root: None, depth: None },
+        RequestPayload::GovernancePolicyDump,
+        RequestPayload::ConflictsList { limit: None },
+    ];
+
+    for request in requests {
+        let response = memoryd::mcp::forward_payload_to_daemon(&socket_path, "req-tui", request)
+            .await
+            .expect("mcp rejection is local and does not touch socket");
+        let ResponseResult::Error(error) = response.result else {
+            panic!("expected MCP method_not_allowed error");
+        };
+        assert_eq!(error.code, "method_not_allowed_on_mcp");
     }
 }
 
@@ -556,6 +600,7 @@ fn protocol_contract_success_responses_are_bounded_and_guided() {
                 id: "mem_20260428_0123456789abcdef_000001".to_owned(),
                 summary: "Protocol DTOs are newline-delimited JSON.".to_owned(),
                 snippet: "Protocol DTOs are newline-delimited JSON with bounded snippets.".to_owned(),
+                body: None,
                 score: 0.87,
             }],
             total: 1,
@@ -569,6 +614,15 @@ fn protocol_contract_success_responses_are_bounded_and_guided() {
             summary: "Protocol DTOs are stable.".to_owned(),
             body: "Short bounded body preview.".to_owned(),
             truncated: true,
+            provenance: Some(GetProvenance {
+                path: Some("agent/patterns/mem_20260428_0123456789abcdef_000001.md".to_owned()),
+                source_kind: "import".to_owned(),
+                source_ref: Some("fixture".to_owned()),
+                author_kind: "system".to_owned(),
+                harness: None,
+                session_id: None,
+                evidence_refs: Vec::new(),
+            }),
             guidance: "Body preview truncated; call memory_get for full body.".to_owned(),
         }),
     );

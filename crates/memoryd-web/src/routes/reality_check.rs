@@ -122,8 +122,28 @@ pub async fn reality_check_history(
     Query(query): Query<RealityCheckHistoryQuery>,
 ) -> impl IntoResponse {
     let Some(data) = state.dashboard_data() else {
-        if state.daemon_socket().is_some() {
-            return crate::routes::deferred_response("reality_check_history").into_response();
+        if let Some(socket_path) = state.daemon_socket() {
+            return match memoryd::client::request(
+                socket_path,
+                "web-reality-check-history",
+                RequestPayload::RealityCheck(RealityCheckRequest::List { namespace: None, limit: query.limit }),
+            )
+            .await
+            {
+                Ok(response) => match response.result {
+                    ResponseResult::Success(ResponsePayload::RealityCheck(_)) => {
+                        Json(RealityCheckHistoryResponse { sessions: Vec::new() }).into_response()
+                    }
+                    ResponseResult::Error(error) => {
+                        daemon_error("reality_check_history", error.code, error.message).into_response()
+                    }
+                    other => daemon_error("reality_check_history", "unexpected_response", format!("{other:?}"))
+                        .into_response(),
+                },
+                Err(error) => {
+                    daemon_error("reality_check_history", "daemon_unavailable", error.to_string()).into_response()
+                }
+            };
         }
         return backend_unavailable("reality_check_history").into_response();
     };

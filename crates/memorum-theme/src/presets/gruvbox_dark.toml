@@ -1,0 +1,48 @@
+# Source palette: Gruvbox dark theme family.
+name = "gruvbox-dark"
+borders = "rounded"
+density = "comfortable"
+
+[colors]
+bg = "oklch(0.16 0.006 70)"
+surface = "oklch(0.20 0.010 70)"
+surface_2 = "oklch(0.25 0.012 70)"
+border = "oklch(0.45 0.020 72)"
+border_soft = "oklch(0.32 0.014 72)"
+fg = "oklch(0.92 0.020 80)"
+fg_muted = "oklch(0.74 0.025 78)"
+fg_dim = "oklch(0.58 0.018 78)"
+accent = "oklch(0.80 0.130 72)"
+accent_soft = "oklch(0.62 0.070 72)"
+status_ok = "oklch(0.72 0.120 145)"
+status_warn = "oklch(0.82 0.130 78)"
+status_bad = "oklch(0.68 0.150 28)"
+status_info = "oklch(0.72 0.100 245)"
+glyph_review = "oklch(0.80 0.130 72)"
+glyph_recall = "oklch(0.72 0.100 245)"
+glyph_conflict = "oklch(0.68 0.150 28)"
+glyph_dream = "oklch(0.70 0.090 300)"
+glyph_due = "oklch(0.82 0.130 78)"
+glyph_memory = "oklch(0.74 0.025 78)"
+selection_gutter = "oklch(0.80 0.130 72)"
+palette_bg = "oklch(0.13 0.006 70)"
+palette_match = "oklch(0.84 0.140 72)"
+
+[glyphs]
+review = "●"
+recall = "◇"
+conflict = "⚠"
+dream = "◌"
+due = "▸"
+memory = "○"
+cursor = "▸"
+progress_filled = "█"
+progress_empty = "░"
+pill_separator = "·"
+palette_prompt = "⌘"
+
+[motion]
+enabled = true
+slide_in_ms = 350
+undo_window_ms = 3000
+tick_ms = 16

@@ -356,18 +356,17 @@ async fn test_notifications_stream_returns_sse_heartbeat_snapshot() {
 }
 
 #[tokio::test]
-async fn test_deferred_future_sections_return_501_json_with_note() {
+async fn test_dashboard_future_sections_are_real_json_routes() {
     for route in ["/api/policy-editor", "/api/sync-dashboard"] {
         let response = fixture_router()
             .oneshot(Request::builder().uri(route).body(Body::empty()).expect("request builds"))
             .await
             .expect("request succeeds");
 
-        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED, "{route}");
+        assert_eq!(response.status(), StatusCode::OK, "{route}");
         assert_json_content_type(&response, route);
         let body = json_body(response).await;
-        assert_eq!(body["status"], "not_implemented");
-        assert!(body["note"].as_str().expect("note exists").contains("deferred"));
+        assert_ne!(body["status"], "not_implemented");
     }
 }
 

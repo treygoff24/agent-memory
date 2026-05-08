@@ -7,7 +7,7 @@ fn public_api_contracts_compile() {
 
     let roots = Roots::new("repo", "runtime");
     let init = InitOptions { force_unsafe_durability: true, device_id: Some("dev_test".to_string()) };
-    let adopt = AdoptOptions { force_new_device: true };
+    let adopt = AdoptOptions { force_new_device: true, merge_driver_path: Some("memory-merge-driver".into()) };
     let triple = EmbeddingTriple { provider: "synthetic".into(), model_ref: "test".into(), dimension: 32 };
     let _ = (roots, init, adopt, triple);
 }

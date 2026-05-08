@@ -29,3 +29,9 @@ Thumbs.db
 
 # Atomic-write temp files (spec §13.4 step 3; B-IO-6)
 /.*.tmp
+crates/memoryd-web/frontend/node_modules/
+crates/memoryd-web/frontend/dist/
+crates/memoryd-web/frontend/playwright-report/
+crates/memoryd-web/frontend/test-results/
+crates/memoryd-web/frontend/.vite/
+crates/memoryd-web/frontend/tsconfig.tsbuildinfo

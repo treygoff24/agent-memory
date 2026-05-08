@@ -21,7 +21,7 @@ async fn fresh_init_creates_working_tree_dirs_and_tracked_bootstrap_files() {
 }
 
 #[tokio::test]
-async fn open_preserves_existing_gitignore_and_reconciles_gitattributes() {
+async fn open_preserves_existing_gitignore_and_gitattributes_without_mutating() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
     let substrate = Substrate::init(
@@ -41,10 +41,10 @@ async fn open_preserves_existing_gitignore_and_reconciles_gitattributes() {
         std::fs::read_to_string(roots.repo.join(".gitignore")).expect("gitignore"),
         "/.memoryd/\ncustom-user-rule\n"
     );
-    let gitattributes = std::fs::read_to_string(roots.repo.join(".gitattributes")).expect("gitattributes");
-    assert!(gitattributes.contains("*.md merge=memory-merge-driver\n"));
-    assert!(gitattributes.contains("*.txt merge=union\n"));
-    assert!(gitattributes.contains("dreams/questions/**/*.jsonl merge=memory-merge-driver\n"));
+    assert_eq!(
+        std::fs::read_to_string(roots.repo.join(".gitattributes")).expect("gitattributes"),
+        "*.md merge=memory-merge-driver\n*.txt merge=union\n"
+    );
 }
 
 #[test]

@@ -1,7 +1,7 @@
 use std::process::Command;
 
 #[test]
-fn list_outputs_the_19_test_catalog() {
+fn list_outputs_the_20_test_catalog() {
     let output =
         Command::new(env!("CARGO_BIN_EXE_memorum-eval")).arg("--list").output().expect("spawn memorum-eval --list");
 
@@ -16,5 +16,5 @@ fn list_outputs_the_19_test_catalog() {
     let stdout = String::from_utf8(output.stdout).expect("catalog output is utf-8");
     let entry_lines: Vec<&str> = stdout.lines().filter(|line| line.starts_with('#')).collect();
 
-    assert_eq!(entry_lines.len(), 19, "catalog should contain exactly 19 test entries:\n{stdout}");
+    assert_eq!(entry_lines.len(), 20, "catalog should contain exactly 20 test entries:\n{stdout}");
 }

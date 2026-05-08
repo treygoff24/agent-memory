@@ -17,6 +17,7 @@ pub mod tree;
 pub mod watcher;
 
 pub use api::Substrate;
+pub use config::PromptVersion;
 pub use error::*;
 pub use model::*;
 

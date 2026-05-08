@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use chrono::{Duration, Utc};
+use memory_substrate::tree::bootstrap_repo_tree;
 use memoryd::protocol::{DreamStatusReport, LeaseRecord};
 use serde_json::Value;
 use tempfile::TempDir;
@@ -364,8 +365,7 @@ impl DreamCliEnv {
         let temp = tempfile::tempdir().expect("tempdir");
         let repo = temp.path().join("repo");
         let runtime = temp.path().join("runtime");
-        std::fs::create_dir_all(repo.join("leases")).expect("leases dir");
-        std::fs::create_dir_all(repo.join("me")).expect("me dir");
+        bootstrap_repo_tree(&repo).expect("bootstrap repo tree");
         std::fs::create_dir_all(&runtime).expect("runtime dir");
         std::fs::write(
             runtime.join("local-device.yaml"),
@@ -379,13 +379,8 @@ impl DreamCliEnv {
         command_in(&repo, "git", ["init", "-b", "main"]);
         command_in(&repo, "git", ["config", "user.email", "test@example.com"]);
         command_in(&repo, "git", ["config", "user.name", "Test User"]);
-        std::fs::write(
-            repo.join("config.yaml"),
-            "schema_version: 1\nactive_embedding:\n  provider: synthetic\n  model_ref: stream-a-test\n  dimension: 32\n",
-        )
-        .expect("config");
         std::fs::write(repo.join("leases/journal.lease"), "").expect("lease file");
-        command_in(&repo, "git", ["add", "config.yaml", "leases/journal.lease"]);
+        command_in(&repo, "git", ["add", "."]);
         command_in(&repo, "git", ["commit", "-m", "bootstrap"]);
         let origin = temp.path().join("origin.git");
         command_in(temp.path(), "git", ["init", "--bare", origin.to_str().expect("origin path")]);

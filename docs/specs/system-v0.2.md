@@ -25,7 +25,7 @@ Concretely:
 7. **Versioning starts at SemVer 1.0.0.** Public release is 1.0.0 after the dogfood window. v1 is the durable contract; v1.x releases are bug-fixes and additive; v2.0.0 is the next breaking shape change. See §21.
 8. **Implementation phasing replaced with status.** v0.1 §19 enumerated streams; v0.2 §19 records what shipped and what's left. Streams G/H/I are the only remaining v1 work. Stream J (open threads) is post-v1.
 9. **Dogfood plan is part of the contract.** §20 specifies the 1-week multi-machine dogfood gate between code-complete and 1.0.0 release, including the recursive condition (Memorum tracks its own development; if it can't carry the project's own context across a week of multi-machine, multi-harness work, it isn't ready).
-10. **MCP tool surface is updated to nine tools.** v0.1 listed seven agent-facing tools. Stream D added `memory_reveal` (eighth); Stream F added `memory_observe` (ninth) and left `memory_note` unchanged. v0.2 §14.1 enumerates the live nine and forbids tool-count creep in v1.
+10. **MCP tool surface is updated to ten tools.** v0.1 listed seven agent-facing tools. Stream D added `memory_reveal` (eighth); Stream F added `memory_observe` (ninth) and left `memory_note` unchanged; source grounding added `memory_capture_source` (tenth). v0.2 §14.1 enumerates the live ten and forbids further tool-count creep in v1.
 11. **Open threads are resolved.** v0.1 §18 listed six unresolved areas. v0.2 §18 records: prospective memory deferred to v2; eval harness is Stream H (in v1); bootstrap UX is in v1 (interactive wizard + flags + `--non-interactive`); policy migration is in v1 (additive only, no breaking schema changes); multi-user is post-v2; naming is closed.
 12. **Reality Check is passive-only.** v0.1 §16.4 said "Slack/email reminder when due." v0.2 §16.4 makes the reminder Sunday morning Slack by default, with no active interruption — Reality Check surfaces silently in `memory status`, the next session's `<pending-attention>`, and the dashboard. Active OS notification is opt-in.
 13. **Dream-output disposition.** v0.1 §12 said grounded promotion happens; it didn't say where the candidate lands. v0.2 §12 aligns with Stream F v0.3 §13: every grounded Pass 2 candidate enters the review queue, no silent auto-promotion in v1. A `review_min` floor (default 0.65) drops obviously-low-confidence candidates to the cleanup log instead of the queue. v1.1 may add silent promotion once dogfood produces calibration data — see §12.
@@ -370,7 +370,7 @@ Harnesses that speak MCP but do not expose hooks Memorum can wire into. Examples
 
 Integration surface:
 
-- All nine MCP tools (§14.1) work normally.
+- All ten MCP tools (§14.1) work normally.
 - The agent must call `memory_search` / `memory_get` / `memory_startup` itself to retrieve recall content. Memorum does not push to it.
 - Cross-session peer updates: not delivered (no hook to inject into).
 
@@ -447,9 +447,9 @@ Shipped per Stream D v0.1 (`crates/memory-privacy/`). Unchanged in v0.2:
 
 ## 14. MCP tool surface
 
-### 14.1 Agent-facing — exactly nine tools (frozen for v1)
+### 14.1 Agent-facing — exactly ten tools (frozen for v1)
 
-The v1 contract is nine MCP tools. No tool addition or removal in v1.x. New tools require v2.0.0.
+The v1 contract is ten MCP tools. No further tool addition or removal in v1.x. New tools require v2.0.0.
 
 | # | Tool | Stream | Purpose |
 |---|---|---|---|
@@ -462,6 +462,7 @@ The v1 contract is nine MCP tools. No tool addition or removal in v1.x. New tool
 | 7 | `memory_note` | A/B | substrate-layer write; cheap, no governance gates beyond Privacy Filter; feeds dreaming |
 | 8 | `memory_reveal` | D | audited unmask of an encrypted memory; bounded reason validation |
 | 9 | `memory_observe` | F | dream-substrate fragment write; entity-bearing; never becomes a canonical memory directly |
+| 10 | `memory_capture_source` | Source grounding | capture a public HTTP(S) source as a local verified `webcap:` artifact |
 
 Schemas as documented in:
 
@@ -470,6 +471,7 @@ Schemas as documented in:
 - `docs/api/stream-d-privacy-api.md` (`memory_reveal`)
 - `docs/api/stream-e-passive-recall-api.md` (`memory_startup`)
 - `docs/api/stream-f-dreaming-api.md` (`memory_observe`)
+- `docs/api/web-source-grounding-api.md` (`memory_capture_source`)
 
 ### 14.2 Event subscription — REMOVED in v0.2
 
@@ -837,7 +839,7 @@ Replaces v0.1 §19. As of 2026-05-01:
 ### Shipped
 
 - **Stream A — Core substrate.** Shipped in `d227dce` on `main`. Live contract: `stream-a-core-substrate-v1.1.md`.
-- **Stream B — Daemon + MCP.** Shipped in `f9d9c2b` on `main` as the daemon/socket protocol and MCP forwarder; post-shipping remediation added the launchable stdio MCP server (`memoryd mcp --socket <path>`) on 2026-05-02. 9 MCP tools across A/C/D/E/F. Reviews: `docs/reviews/stream-b-*`.
+- **Stream B — Daemon + MCP.** Shipped in `f9d9c2b` on `main` as the daemon/socket protocol and MCP forwarder; post-shipping remediation added the launchable stdio MCP server (`memoryd mcp --socket <path>`) on 2026-05-02. 10 MCP tools across A/C/D/E/F/source-grounding. Reviews: `docs/reviews/stream-b-*`.
 - **Stream C — Governance.** Shipped in `6f583ec` on `main`. Live contract: `stream-c-governance-v0.1.md`.
 - **Stream D — Privacy.** Shipped in `17a0a04` and `5f7d926` on `main`. Live contract: `stream-d-privacy-v0.1.md`.
 - **Stream E — Passive recall.** Shipped 2026-04-30. Live contract: `stream-e-passive-recall-v0.5.md`. API: `docs/api/stream-e-passive-recall-api.md`.
@@ -886,7 +888,7 @@ Streams G/H/I touch shipped-stream surfaces. Each touch listed here is **authori
 | Daemon error taxonomy (`crates/memoryd/src/protocol.rs`) | Add `MethodNotAllowedOnMcp` error variant. Returned by the MCP forwarder when an admin/UI surface variant (RC, peer-state, privacy admin, device admin, review admin, `TestInjectEvent`) is invoked through the MCP tool path. CLI/socket access remains permitted; only MCP is rejected. | Authoritative rejection for admin variants per §14.3. Single error variant rather than per-stream ad-hoc rejection text. |
 | `DoctorResponse` (`crates/memoryd/src/protocol.rs`) and `doctor_response` handler (`crates/memoryd/src/handlers.rs`) | Additive: `doctor_response` calls `Substrate::events_log_mirror_health()` and on `lag > 0` appends a `DoctorFinding { code: "events_log_mirror_lag", repair: Some("memoryd doctor --reindex") }` and sets `healthy = false`. No struct schema change — the existing `Vec<DoctorFinding>` is used. | Surfacing dual-write fail-soft mode so a stale SQLite mirror (the failure mode where JSONL succeeds, SQLite write fails, WARN logged) is observable instead of silently corrupting drift scores. Owned by Stream G plan Task 4. |
 | `NotificationEvent` broadcast channel | Stream G defines seven variants (declared in `stream-g-observability-v0.1.md` §1.3). Frozen at seven in v1. | Stream G TUI live updates and dashboard SSE stream. |
-| MCP tool surface | **No changes.** Frozen at the nine tools in §14.1. Stream G/H/I add nothing to MCP. | Anti-feature 1 in §1.3. |
+| MCP tool surface | **No Stream G/H/I changes.** Frozen at the ten tools in §14.1 after source grounding's `memory_capture_source` addition. Stream G/H/I add nothing to MCP. | Anti-feature 1 in §1.3. |
 
 **Stream E surface additions** (passive recall — frozen contract, additive only):
 

@@ -7,10 +7,11 @@ use tokio::net::UnixStream;
 use crate::protocol::{RequestEnvelope, RequestPayload, ResponseEnvelope, MAX_FRAME_BYTES};
 
 pub async fn request(
-    socket_path: &Path,
+    socket_path: impl AsRef<Path>,
     request_id: impl Into<String>,
     request: RequestPayload,
 ) -> Result<ResponseEnvelope> {
+    let socket_path = socket_path.as_ref();
     let stream = UnixStream::connect(socket_path)
         .await
         .with_context(|| format!("connect to memoryd socket {}", socket_path.display()))?;

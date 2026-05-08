@@ -83,7 +83,7 @@ Daemon-level tool errors are returned as MCP tool results with `isError: true`; 
 
 ## 4. Agent-facing MCP tools
 
-The MCP surface is exactly the nine tools produced by `memoryd::mcp::manifest()`:
+The MCP surface is exactly the ten tools produced by `memoryd::mcp::manifest()`:
 
 1. `memory_search`
 2. `memory_get`
@@ -94,6 +94,7 @@ The MCP surface is exactly the nine tools produced by `memoryd::mcp::manifest()`
 7. `memory_startup`
 8. `memory_note`
 9. `memory_observe`
+10. `memory_capture_source`
 
 Admin, UI, dashboard, Reality Check, peer-admin, privacy-admin, device-admin, and test-injection surfaces are not MCP tools. If a daemon payload from those surfaces reaches the MCP forwarder, it returns `method_not_allowed_on_mcp` before socket I/O when possible.
 

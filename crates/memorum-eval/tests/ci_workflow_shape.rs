@@ -18,6 +18,17 @@ fn stream_h_eval_workflow_matches_ci_contract() {
     assert_not_contains(&workflow, ".failure_reason", "obsolete diagnostic failure_reason field");
 
     assert_contains(&workflow, r#"jq -r '.partial // false' "$RESULT_FILE""#, "partial-run jq expression");
+    assert_contains(&workflow, r#"HARNESS_MODE=$(jq -r '.harness_mode' "$RESULT_FILE")"#, "harness-mode jq expression");
+    assert_contains(
+        &workflow,
+        r#"[ "$PARTIAL" = "true" ] && [ "$HARNESS_MODE" != "mock" ]"#,
+        "non-mock partial run rejection",
+    );
+    assert_contains(
+        &workflow,
+        r#"select(.status == "passed" and .mode == "real_harness" and (.number == 13 or .number == 15))"#,
+        "mock semantic pass guard",
+    );
     assert_contains(
         &workflow,
         r#"jq -r '.missing_credentials // [] | join(", ")' "$RESULT_FILE""#,

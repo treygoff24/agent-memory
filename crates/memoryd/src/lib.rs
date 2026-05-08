@@ -14,6 +14,7 @@ pub mod recall;
 pub mod recall_hits;
 pub mod server;
 pub mod slash_commands;
+pub mod socket;
 pub mod state;
 pub mod trust_artifact;
 pub mod workers;

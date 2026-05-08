@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.memorum.daemon</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>memoryd</string>
+    <string>serve</string>
+    <string>--repo</string>
+    <string>{{REPO_PATH}}</string>
+    <string>--runtime</string>
+    <string>{{RUNTIME_PATH}}</string>
+    <string>--socket</string>
+    <string>{{RUNTIME_PATH}}/memoryd.sock</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:{{HOME}}/.cargo/bin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+    <key>NetworkState</key>
+    <false/>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>{{RUNTIME_PATH}}/daemon.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>{{RUNTIME_PATH}}/daemon.err.log</string>
+</dict>
+</plist>

@@ -1,10 +1,11 @@
 use std::path::Path;
 use std::process::Command;
 
+use memory_privacy::FileKeyProvider;
 use memory_substrate::{
-    Author, AuthorKind, ClassificationOutcome, EventContext, Frontmatter, InitOptions, Memory, MemoryId, MemoryStatus,
-    MemoryType, RetrievalPolicy, Roots, Scope, Sensitivity, Source, SourceKind, Substrate, TrustLevel, WriteMode,
-    WritePolicy, WriteRequest,
+    config::PromptVersion, Author, AuthorKind, ClassificationOutcome, EventContext, Frontmatter, InitOptions, Memory,
+    MemoryContent, MemoryId, MemoryStatus, MemoryType, RetrievalPolicy, Roots, Scope, Sensitivity, Source, SourceKind,
+    Substrate, TrustLevel, WriteMode, WritePolicy, WriteRequest,
 };
 use memoryd::dream::{
     orchestration::{build_dream_run, DreamRunBuildRequest},
@@ -26,7 +27,10 @@ use memoryd::dream::{orchestration::SubstrateCandidateWriter, run::DreamRunner};
 use memoryd::handlers::handle_request;
 #[cfg(feature = "dev-fixtures")]
 use memoryd::protocol::LeaseRecord;
-use memoryd::protocol::{ObserveKind, RequestEnvelope, RequestPayload, ResponsePayload, ResponseResult};
+use memoryd::protocol::{
+    GovernanceRefusalReason, GovernanceStatus, ObserveKind, RequestEnvelope, RequestPayload, ResponsePayload,
+    ResponseResult,
+};
 #[cfg(feature = "dev-fixtures")]
 use {chrono::Duration, chrono::Utc};
 
@@ -75,7 +79,25 @@ async fn search_and_get_return_bounded_protocol_responses_from_substrate() {
     assert_eq!(search.total, 1);
     assert_eq!(search.hits[0].id, memory.frontmatter.id.as_str());
     assert!(search.hits[0].snippet.len() <= 240, "search snippets stay bounded");
+    assert_eq!(search.hits[0].body, None);
     assert!(search.guidance.contains("memory_get"));
+
+    let search_with_body = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "req-search-body",
+            RequestPayload::Search {
+                query: "bounded protocol snippets".to_string(),
+                limit: Some(1),
+                include_body: true,
+            },
+        ),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::Search(search_with_body)) = search_with_body.result else {
+        panic!("expected search success with body");
+    };
+    assert_eq!(search_with_body.hits[0].body.as_deref(), Some(memory.body.as_str()));
 
     let get = handle_request(
         &substrate,
@@ -92,7 +114,24 @@ async fn search_and_get_return_bounded_protocol_responses_from_substrate() {
     assert_eq!(get.id, memory.frontmatter.id.as_str());
     assert_eq!(get.summary, memory.frontmatter.summary);
     assert!(get.body.len() <= 4_096, "get bodies are bounded protocol previews");
+    assert_eq!(get.provenance, None);
     assert!(get.guidance.contains("bounded"));
+
+    let get_with_provenance = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "req-get-provenance",
+            RequestPayload::Get { id: memory.frontmatter.id.as_str().to_string(), include_provenance: true },
+        ),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::Get(get_with_provenance)) = get_with_provenance.result else {
+        panic!("expected get provenance success");
+    };
+    let provenance = get_with_provenance.provenance.expect("provenance included");
+    assert_eq!(provenance.path.as_deref(), memory.path.as_ref().map(|path| path.as_str()));
+    assert_eq!(provenance.source_kind, "import");
+    assert_eq!(provenance.author_kind, "system");
 }
 
 #[tokio::test]
@@ -120,6 +159,386 @@ async fn write_note_creates_candidate_safe_record_through_substrate() {
     assert!(saved.frontmatter.tags.iter().any(|tag| tag == "candidate"));
     assert!(saved.frontmatter.requires_user_confirmation);
     assert_eq!(saved.body, "Candidate note from handler");
+}
+
+#[tokio::test]
+async fn mcp_human_write_defaults_to_explicit_context_and_promotes_project_memory() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let substrate = init_substrate(roots).await;
+
+    let response = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "req-governance-human-default",
+            RequestPayload::WriteMemory {
+                body: "Human MCP writes should not fight the operator during dogfood.".to_string(),
+                title: Some("dogfood human write".to_string()),
+                tags: vec!["dogfood".to_string()],
+                meta: serde_json::Value::Null,
+            },
+        ),
+    )
+    .await;
+
+    let ResponseResult::Success(ResponsePayload::GovernanceWrite(write)) = response.result else {
+        panic!("expected governance write success, got {:?}", response.result);
+    };
+    assert_eq!(write.status, GovernanceStatus::Promoted);
+    assert_eq!(write.reason, None);
+    let id = write.id.expect("promoted id");
+    let saved = substrate.read_memory(&MemoryId::new(&id)).await.expect("read promoted memory");
+    assert_eq!(saved.frontmatter.status, MemoryStatus::Active);
+    assert_eq!(saved.frontmatter.confidence, 0.9);
+    assert_eq!(saved.frontmatter.write_policy.policy_applied, "project-standard@v2");
+}
+
+#[tokio::test]
+async fn mcp_human_write_with_partial_meta_inherits_human_defaults() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let substrate = init_substrate(roots).await;
+
+    let response = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "req-governance-human-partial-meta",
+            RequestPayload::WriteMemory {
+                body: "Trey prefers narrow verification after isolated stale assertions.".to_string(),
+                title: None,
+                tags: Vec::new(),
+                meta: serde_json::json!({ "type": "claim" }),
+            },
+        ),
+    )
+    .await;
+
+    let ResponseResult::Success(ResponsePayload::GovernanceWrite(write)) = response.result else {
+        panic!("expected governance write success, got {:?}", response.result);
+    };
+    assert_eq!(write.status, GovernanceStatus::Promoted);
+    let id = write.id.expect("promoted id");
+    let saved = substrate.read_memory(&MemoryId::new(&id)).await.expect("read promoted memory");
+    assert_eq!(saved.frontmatter.status, MemoryStatus::Active);
+    assert_eq!(saved.frontmatter.confidence, 0.9);
+    assert_eq!(saved.frontmatter.scope, Scope::Project);
+}
+
+#[tokio::test]
+async fn supersede_null_meta_keeps_strict_programmatic_defaults() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let substrate = init_substrate(roots).await;
+
+    let old_response = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "req-governance-old",
+            RequestPayload::WriteMemory {
+                body: "The deployment target is staging.".to_string(),
+                title: None,
+                tags: Vec::new(),
+                meta: serde_json::Value::Null,
+            },
+        ),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::GovernanceWrite(old_write)) = old_response.result else {
+        panic!("expected old write success, got {:?}", old_response.result);
+    };
+    let old_id = old_write.id.expect("old id");
+
+    let response = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "req-supersede-default",
+            RequestPayload::Supersede {
+                old_id,
+                content: "The deployment target is production.".to_string(),
+                reason: "target changed".to_string(),
+                meta: serde_json::Value::Null,
+            },
+        ),
+    )
+    .await;
+
+    let ResponseResult::Success(ResponsePayload::GovernanceSupersede(supersede)) = response.result else {
+        panic!("expected supersede response, got {:?}", response.result);
+    };
+    assert_eq!(supersede.status, GovernanceStatus::Refused);
+    assert_eq!(supersede.reason, Some(GovernanceRefusalReason::Grounding));
+}
+
+#[tokio::test]
+async fn supersede_plaintext_memory_succeeds_and_encrypted_memory_reports_reveal_rewrite_runbook() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let substrate = init_substrate(roots).await;
+
+    let old_response = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "req-supersede-old-plain",
+            RequestPayload::WriteMemory {
+                body: "The deployment target is staging.".to_string(),
+                title: Some("deployment target".to_string()),
+                tags: Vec::new(),
+                meta: serde_json::json!({
+                    "explicit_user_context": true,
+                    "confidence": 0.95,
+                    "source_kind": "user"
+                }),
+            },
+        ),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::GovernanceWrite(old_write)) = old_response.result else {
+        panic!("expected old write success, got {:?}", old_response.result);
+    };
+    let old_id = old_write.id.expect("old id");
+
+    let supersede_response = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "req-supersede-plain",
+            RequestPayload::Supersede {
+                old_id: old_id.clone(),
+                content: "The deployment target is production.".to_string(),
+                reason: "operator corrected target".to_string(),
+                meta: serde_json::json!({
+                    "explicit_user_context": true,
+                    "confidence": 0.95,
+                    "source_kind": "user"
+                }),
+            },
+        ),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::GovernanceSupersede(supersede)) = supersede_response.result else {
+        panic!("expected supersede success response, got {:?}", supersede_response.result);
+    };
+    assert_eq!(supersede.status, GovernanceStatus::Promoted);
+    assert_eq!(supersede.old_id.as_deref(), Some(old_id.as_str()));
+    assert!(supersede.new_id.is_some());
+
+    FileKeyProvider::runtime_default(&substrate.roots().runtime).onboard_local_file().expect("privacy key");
+    let encrypted_old = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "req-supersede-old-encrypted",
+            RequestPayload::WriteMemory {
+                body: "Rep. Mills Chief of Staff cell is 202-555-0198.".to_string(),
+                title: Some("Rep. Mills Chief of Staff cell".to_string()),
+                tags: vec!["contact".to_string()],
+                meta: serde_json::json!({
+                    "explicit_user_context": true,
+                    "confidence": 0.95,
+                    "source_kind": "user",
+                    "summary": "Rep. Mills Chief of Staff cell phone",
+                    "privacy_descriptors": {
+                        "subject": "Rep. Mills Chief of Staff",
+                        "role": "Chief of Staff",
+                        "value_kind": "phone"
+                    }
+                }),
+            },
+        ),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::GovernanceWrite(encrypted_write)) = encrypted_old.result else {
+        panic!("expected encrypted write response, got {:?}", encrypted_old.result);
+    };
+    let encrypted_id = encrypted_write.id.expect("encrypted id");
+    let encrypted_envelope =
+        substrate.read_memory_envelope(&MemoryId::new(&encrypted_id)).await.expect("encrypted envelope");
+    assert!(matches!(encrypted_envelope.content, MemoryContent::Ciphertext { .. }));
+
+    let encrypted_supersede = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "req-supersede-encrypted",
+            RequestPayload::Supersede {
+                old_id: encrypted_id,
+                content: "Rep. Mills Chief of Staff cell is 202-555-0100.".to_string(),
+                reason: "operator corrected contact".to_string(),
+                meta: serde_json::json!({
+                    "explicit_user_context": true,
+                    "confidence": 0.95,
+                    "source_kind": "user",
+                    "privacy_descriptors": {
+                        "subject": "Rep. Mills Chief of Staff",
+                        "role": "Chief of Staff",
+                        "value_kind": "phone"
+                    }
+                }),
+            },
+        ),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::GovernanceSupersede(encrypted_refusal)) = encrypted_supersede.result
+    else {
+        panic!("expected encrypted supersede refusal response, got {:?}", encrypted_supersede.result);
+    };
+    assert_eq!(encrypted_refusal.status, GovernanceStatus::Refused);
+    assert_eq!(encrypted_refusal.reason, Some(GovernanceRefusalReason::Privacy));
+    let policy_source = encrypted_refusal.policy_source.expect("runbook pointer");
+    assert!(policy_source.contains("reveal+rewrite cycle"), "{policy_source}");
+    assert!(policy_source.contains("docs/runbooks/encrypted-supersession.md"), "{policy_source}");
+}
+
+#[tokio::test]
+async fn forget_rejects_empty_reason_and_sanitizes_sensitive_reason_before_tombstone_write() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let substrate = init_substrate(roots).await;
+
+    let write = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "req-forget-write",
+            RequestPayload::WriteMemory {
+                body: "The stale onboarding code is alpha-42.".to_string(),
+                title: Some("stale onboarding code".to_string()),
+                tags: Vec::new(),
+                meta: serde_json::Value::Null,
+            },
+        ),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::GovernanceWrite(write)) = write.result else {
+        panic!("expected write success, got {:?}", write.result);
+    };
+    let id = write.id.expect("memory id");
+
+    let empty = handle_request(
+        &substrate,
+        RequestEnvelope::new("req-forget-empty", RequestPayload::Forget { id: id.clone(), reason: "  ".to_string() }),
+    )
+    .await;
+    let ResponseResult::Error(error) = empty.result else {
+        panic!("expected empty forget reason error, got {:?}", empty.result);
+    };
+    assert_eq!(error.code, "invalid_request");
+    assert!(error.message.contains("forget reason must not be empty"));
+
+    let forget = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "req-forget-sensitive",
+            RequestPayload::Forget { id, reason: "remove after email from reviewer@example.com".to_string() },
+        ),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::GovernanceForget(forget)) = forget.result else {
+        panic!("expected forget success, got {:?}", forget.result);
+    };
+    assert_eq!(forget.status, GovernanceStatus::Tombstoned);
+    let tombstones =
+        std::fs::read_to_string(substrate.roots().repo.join("tombstones/memoryd-forget.jsonl")).expect("tombstones");
+    assert!(tombstones.contains(r#""reason_text":"[redacted]""#), "{tombstones}");
+    assert!(!tombstones.contains("reviewer@example.com"), "{tombstones}");
+}
+
+#[tokio::test]
+async fn reveal_accepts_url_reason_uses_envelope_metadata_and_bounds_reason_length() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let substrate = init_substrate(roots).await;
+    FileKeyProvider::runtime_default(&substrate.roots().runtime).onboard_local_file().expect("privacy key");
+
+    let write = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "req-reveal-write",
+            RequestPayload::WriteMemory {
+                body: "Rep. Mills Chief of Staff cell is 202-555-0198.".to_string(),
+                title: Some("Rep. Mills Chief of Staff cell".to_string()),
+                tags: vec!["contact".to_string()],
+                meta: serde_json::json!({
+                    "explicit_user_context": true,
+                    "confidence": 0.95,
+                    "source_kind": "user",
+                    "summary": "Rep. Mills Chief of Staff cell phone",
+                    "privacy_descriptors": {
+                        "subject": "Rep. Mills Chief of Staff",
+                        "role": "Chief of Staff",
+                        "value_kind": "phone"
+                    }
+                }),
+            },
+        ),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::GovernanceWrite(write)) = write.result else {
+        panic!("expected encrypted write success, got {:?}", write.result);
+    };
+    let id = write.id.expect("encrypted id");
+
+    let reveal = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "req-reveal-url-reason",
+            RequestPayload::Reveal {
+                id: id.clone(),
+                reason: "operator opened https://example.com/tickets/123?email=reviewer@example.com".to_string(),
+            },
+        ),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::Reveal(reveal)) = reveal.result else {
+        panic!("expected reveal success for URL reason, got {:?}", reveal.result);
+    };
+    assert!(reveal.body.contains("202-555-0198"));
+
+    let empty = handle_request(
+        &substrate,
+        RequestEnvelope::new("req-reveal-empty", RequestPayload::Reveal { id: id.clone(), reason: " ".to_string() }),
+    )
+    .await;
+    let ResponseResult::Error(error) = empty.result else {
+        panic!("expected empty reveal reason error, got {:?}", empty.result);
+    };
+    assert_eq!(error.code, "invalid_request");
+    assert!(error.message.contains("reveal reason must not be empty"));
+
+    let long = handle_request(
+        &substrate,
+        RequestEnvelope::new("req-reveal-long", RequestPayload::Reveal { id, reason: "a".repeat(513) }),
+    )
+    .await;
+    let ResponseResult::Error(error) = long.result else {
+        panic!("expected long reveal reason error, got {:?}", long.result);
+    };
+    assert_eq!(error.code, "invalid_request");
+    assert!(error.message.contains("at most 512"));
+}
+
+#[tokio::test]
+async fn mcp_human_write_still_refuses_secret_content_before_governance() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let substrate = init_substrate(roots).await;
+
+    let response = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "req-governance-secret",
+            RequestPayload::WriteMemory {
+                body: "SSN 123-45-6789 must not persist.".to_string(),
+                title: None,
+                tags: Vec::new(),
+                meta: serde_json::Value::Null,
+            },
+        ),
+    )
+    .await;
+
+    let ResponseResult::Success(ResponsePayload::GovernanceWrite(write)) = response.result else {
+        panic!("expected governance write response, got {:?}", response.result);
+    };
+    assert_eq!(write.status, GovernanceStatus::Refused);
+    assert_eq!(write.reason, Some(GovernanceRefusalReason::Privacy));
+    assert!(write.id.is_none());
 }
 
 #[tokio::test]
@@ -216,6 +635,8 @@ async fn dream_candidate_writer_refuses_encrypt_at_rest_candidates_without_plain
             scope: DreamScope::Agent,
             run_id: "run_private_candidate".to_string(),
             run_date: chrono::Utc::now().date_naive(),
+            prompt_version: PromptVersion::V2,
+            notifications: None,
             pass_timeout: std::time::Duration::from_secs(1),
             pass_2_max_candidates: 8,
             pass_1_window_days: 7,
@@ -299,6 +720,8 @@ async fn dreaming_protocol_masks_disk_loaded_substrate_privacy_spans_before_prom
             scope: DreamScope::parse("agent").expect("scope"),
             run_id: "run_masked_prompt_preview".to_string(),
             run_date: chrono::Utc::now().date_naive(),
+            prompt_version: PromptVersion::V2,
+            notifications: None,
             pass_timeout: std::time::Duration::from_secs(1),
             pass_2_max_candidates: 8,
             pass_1_window_days: 7,

@@ -12,6 +12,7 @@ pub mod masking;
 pub mod policy;
 pub mod privacy_filter;
 pub mod regex;
+pub mod secret_only_scan;
 
 pub use classifier::{DeterministicPrivacyClassifier, PrivacyClassifier};
 pub use crypto::{EncryptedPayload, PrivacyEncryptor};
@@ -23,5 +24,9 @@ pub use descriptor::{safe_descriptor_projection, SafeDescriptorProjection};
 pub use error::{PrivacyError, PrivacyResult};
 pub use keys::{FileKeyProvider, KeyMaterial, KeyProvider};
 pub use masking::{MaskingSession, MaskingSessionId};
-pub use policy::{CallerSensitivity, PrivacyPolicy, ResolvedPrivacyPolicy};
+pub use policy::{
+    install_runtime_enforcement, AlreadyInstalled, CallerSensitivity, PrivacyEnforcement, PrivacyPolicy,
+    ResolvedPrivacyPolicy,
+};
 pub use privacy_filter::{DisabledPrivacyFilter, FixturePrivacyFilter, PrivacyFilterProvider};
+pub use secret_only_scan::{SecretFinding, SecretOnlyScan};

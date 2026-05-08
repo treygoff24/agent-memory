@@ -1,7 +1,33 @@
+use std::sync::OnceLock;
+
+pub use memory_substrate::config::PrivacyEnforcement;
 use serde::{Deserialize, Serialize};
 
 use crate::decision::{PrivacyNamespace, PrivacySpan, PrivacyStorageAction, PrivacyTier};
 use crate::error::{PrivacyError, PrivacyResult};
+
+static RUNTIME_ENFORCEMENT: OnceLock<PrivacyEnforcement> = OnceLock::new();
+
+/// Error returned when runtime privacy enforcement was already installed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AlreadyInstalled;
+
+impl std::fmt::Display for AlreadyInstalled {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("privacy runtime enforcement already installed")
+    }
+}
+
+impl std::error::Error for AlreadyInstalled {}
+
+/// Install process-wide runtime privacy enforcement once.
+pub fn install_runtime_enforcement(enforcement: PrivacyEnforcement) -> Result<(), AlreadyInstalled> {
+    RUNTIME_ENFORCEMENT.set(enforcement).map_err(|_| AlreadyInstalled)
+}
+
+pub(crate) fn current_enforcement() -> PrivacyEnforcement {
+    RUNTIME_ENFORCEMENT.get().copied().unwrap_or_else(PrivacyEnforcement::paranoid)
+}
 
 /// Caller-supplied sensitivity metadata accepted at daemon boundaries.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

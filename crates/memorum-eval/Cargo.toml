@@ -18,6 +18,11 @@ default = ["stream-i-deps"]
 stream-i-deps = ["dep:memorum-coordination"]
 live-harness = []
 
+[[bin]]
+name = "memorum-eval"
+path = "src/main.rs"
+test = false
+
 [dev-dependencies]
 memory-source = { path = "../memory-source" }
 memoryd = { path = "../memoryd" }

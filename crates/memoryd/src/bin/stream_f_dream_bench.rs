@@ -518,6 +518,8 @@ fn pass_1_options() -> anyhow::Result<DreamRunOptions> {
         scope: DreamScope::Project("proj_stream_f_bench".to_owned()),
         run_date: run_date()?,
         run_id: "run_stream_f_bench".to_owned(),
+        prompt_version: memory_substrate::config::PromptVersion::V2,
+        notifications: None,
         harness,
         pass_timeout: Duration::from_secs(300),
         pass_2_max_candidates: 8,

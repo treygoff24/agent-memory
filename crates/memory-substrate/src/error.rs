@@ -76,6 +76,12 @@ pub enum SubstrateError {
 /// Open errors.
 #[derive(Debug, thiserror::Error)]
 pub enum OpenError {
+    /// Root is not an initialized Memorum substrate.
+    #[error("not a Memorum substrate: {}; run explicit init or adopt_clone first", path.display())]
+    NotAMemorumSubstrate {
+        /// Rejected repository root.
+        path: PathBuf,
+    },
     /// Durability unsupported.
     #[error("durability unsupported: {tier:?}")]
     DurabilityUnsupported { tier: DurabilityTier },

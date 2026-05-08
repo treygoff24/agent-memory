@@ -1,4 +1,5 @@
 use chrono::NaiveDate;
+use memory_substrate::config::PromptVersion;
 use memoryd::dream::prompts::{render_prompt, DreamPromptInput};
 use memoryd::dream::scope::DreamScope;
 use memoryd::dream::types::{
@@ -105,12 +106,12 @@ fn dream_prompts_are_deterministic_embedded_and_pass_2_gets_evidence_catalog() {
     let original_cwd = std::env::current_dir().expect("cwd before test");
     std::env::set_current_dir(temp_dir.path()).expect("move cwd away from repo prompts directory");
 
-    let pass_1 = render_prompt(DreamPass::Pass1, &input).expect("render pass 1");
-    let pass_1_again = render_prompt(DreamPass::Pass1, &input).expect("render pass 1 again");
-    let pass_2 = render_prompt(DreamPass::Pass2, &input).expect("render pass 2");
-    let pass_2_again = render_prompt(DreamPass::Pass2, &input).expect("render pass 2 again");
-    let pass_3 = render_prompt(DreamPass::Pass3, &input).expect("render pass 3");
-    let pass_3_again = render_prompt(DreamPass::Pass3, &input).expect("render pass 3 again");
+    let pass_1 = render_prompt(DreamPass::Pass1, &input, PromptVersion::V2).expect("render pass 1");
+    let pass_1_again = render_prompt(DreamPass::Pass1, &input, PromptVersion::V2).expect("render pass 1 again");
+    let pass_2 = render_prompt(DreamPass::Pass2, &input, PromptVersion::V2).expect("render pass 2");
+    let pass_2_again = render_prompt(DreamPass::Pass2, &input, PromptVersion::V2).expect("render pass 2 again");
+    let pass_3 = render_prompt(DreamPass::Pass3, &input, PromptVersion::V2).expect("render pass 3");
+    let pass_3_again = render_prompt(DreamPass::Pass3, &input, PromptVersion::V2).expect("render pass 3 again");
 
     std::env::set_current_dir(original_cwd).expect("restore cwd after prompt test");
 

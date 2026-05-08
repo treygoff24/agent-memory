@@ -80,7 +80,7 @@ async fn encrypted_memory_shows_content_redacted_but_keeps_other_sections() {
     assert_eq!(artifact.recall.total, 1);
     assert_eq!(artifact.privacy_scan.storage_action, "encrypted");
     assert!(!artifact.provenance_chain.is_empty());
-    assert_eq!(artifact.sync_state.claim_lock_status.as_deref(), Some("Stream I not active"));
+    assert_eq!(artifact.sync_state.claim_lock_status, None);
 }
 
 #[tokio::test]

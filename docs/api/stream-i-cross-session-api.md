@@ -240,7 +240,7 @@ All `memoryd peer` commands are admin CLI surfaces and are explicitly rejected f
 Shows the daemon's coordination state.
 
 ```text
-memoryd peer status [--socket /tmp/memoryd.sock]
+memoryd peer status [--socket <runtime>/memoryd.sock]
 ```
 
 Output includes the current coordination level, active peer sessions, active claim locks, and recent peer-update deliveries.
@@ -258,7 +258,7 @@ Exit codes:
 Shows the in-memory peer-update delivery audit.
 
 ```text
-memoryd peer activity [--socket /tmp/memoryd.sock] [--session <id>] [--since <HH:MM|YYYY-MM-DD|RFC3339>] [--limit <n>] [--format human|json]
+memoryd peer activity [--socket <runtime>/memoryd.sock] [--session <id>] [--since <HH:MM|YYYY-MM-DD|RFC3339>] [--limit <n>] [--format human|json]
 ```
 
 Exit codes:
@@ -274,7 +274,7 @@ Exit codes:
 Forcibly releases a claim lock by memory id.
 
 ```text
-memoryd peer release-lock <memory_id> [--socket /tmp/memoryd.sock] [--yes]
+memoryd peer release-lock <memory_id> [--socket <runtime>/memoryd.sock] [--yes]
 ```
 
 Without `--yes`, the CLI first fetches `PeerStatus`, prompts `y/N`, and aborts unless confirmed.

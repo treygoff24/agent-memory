@@ -1,0 +1,928 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>memorum — TUI design study</title>
+    <link
+      rel="preconnect"
+      href="https://fonts.googleapis.com"
+    />
+    <link
+      rel="preconnect"
+      href="https://fonts.gstatic.com"
+      crossorigin
+    />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        /* OKLCH palette — warm dark, amber-tinted neutrals. NOT cyan-on-dark. */
+        --bg: oklch(0.16 0.006 70);
+        --surface: oklch(0.2 0.007 70);
+        --surface-2: oklch(0.24 0.008 70);
+        --border: oklch(0.3 0.01 70);
+        --border-soft: oklch(0.26 0.008 70);
+        --fg: oklch(0.93 0.012 80);
+        --fg-2: oklch(0.72 0.014 75);
+        --fg-3: oklch(0.52 0.012 70);
+        --fg-4: oklch(0.4 0.01 70);
+        --accent: oklch(0.8 0.13 72); /* warm amber, used sparingly */
+        --accent-soft: oklch(0.32 0.04 72);
+        --ok: oklch(0.74 0.13 145);
+        --warn: oklch(0.82 0.14 80);
+        --bad: oklch(0.66 0.2 25);
+        --info: oklch(0.72 0.08 230); /* muted, not neon */
+
+        --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        font-family: var(--mono);
+        font-size: 13px;
+        line-height: 1.5;
+        color: var(--fg);
+        background: oklch(0.1 0.004 70);
+        padding: 32px 24px 64px;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      .wrap {
+        max-width: 1180px;
+        margin: 0 auto;
+        display: flex;
+        flex-direction: column;
+        gap: 36px;
+      }
+
+      .caption {
+        color: var(--fg-3);
+        font-size: 12px;
+        letter-spacing: 0.02em;
+        margin: 0 0 10px 4px;
+        display: flex;
+        align-items: baseline;
+        gap: 12px;
+      }
+      .caption b {
+        color: var(--fg);
+        font-weight: 600;
+      }
+      .caption span {
+        color: var(--fg-4);
+      }
+
+      /* Terminal frame */
+      .term {
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        box-shadow:
+          0 1px 0 oklch(1 0 0 / 0.04) inset,
+          0 14px 40px -20px oklch(0 0 0 / 0.5);
+        overflow: hidden;
+      }
+      .term-chrome {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 14px;
+        background: var(--surface);
+        border-bottom: 1px solid var(--border-soft);
+        color: var(--fg-3);
+        font-size: 12px;
+      }
+      .term-chrome .dot {
+        width: 11px;
+        height: 11px;
+        border-radius: 50%;
+        background: var(--fg-4);
+        opacity: 0.6;
+      }
+      .term-chrome .dot.r {
+        background: oklch(0.62 0.18 25);
+        opacity: 0.55;
+      }
+      .term-chrome .dot.y {
+        background: oklch(0.78 0.14 80);
+        opacity: 0.55;
+      }
+      .term-chrome .dot.g {
+        background: oklch(0.7 0.13 145);
+        opacity: 0.55;
+      }
+      .term-chrome .title {
+        margin-left: 12px;
+        font-style: italic;
+        color: var(--fg-3);
+      }
+
+      .term-body {
+        padding: 12px 16px 14px;
+      }
+
+      /* Header — brand + filter pills */
+      .head {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        padding-bottom: 10px;
+        border-bottom: 1px solid var(--border-soft);
+      }
+      .brand {
+        color: var(--fg);
+        font-weight: 600;
+        letter-spacing: 0.04em;
+      }
+      .brand .sigil {
+        color: var(--accent);
+        margin-right: 6px;
+      }
+      .pills {
+        display: flex;
+        gap: 4px;
+        flex-wrap: wrap;
+        margin-left: 8px;
+      }
+      .pill {
+        padding: 2px 9px;
+        color: var(--fg-2);
+        border: 1px solid transparent;
+        border-radius: 999px;
+        font-size: 12.5px;
+      }
+      .pill .n {
+        color: var(--fg-3);
+        margin-left: 4px;
+        font-variant-numeric: tabular-nums;
+      }
+      .pill.active {
+        color: var(--fg);
+        border-color: var(--border);
+        background: var(--surface);
+      }
+      .pill.active .n {
+        color: var(--accent);
+      }
+      .head-right {
+        margin-left: auto;
+        color: var(--fg-3);
+        font-size: 12px;
+        display: flex;
+        gap: 14px;
+        align-items: center;
+      }
+      .head-right kbd {
+        font-family: var(--mono);
+        border: 1px solid var(--border-soft);
+        background: var(--surface);
+        color: var(--fg-2);
+        padding: 1px 6px;
+        border-radius: 4px;
+        font-size: 11px;
+      }
+
+      /* Two-pane: inbox + inspector. Single shared border (no doubled separator). */
+      .panes {
+        display: grid;
+        grid-template-columns: minmax(340px, 36%) 1fr;
+        min-height: 520px;
+      }
+      .pane {
+        padding: 10px 14px 12px;
+      }
+      .inbox {
+        border-right: 1px solid var(--border-soft);
+      }
+
+      /* Item list */
+      .list {
+        display: flex;
+        flex-direction: column;
+      }
+      .item {
+        display: grid;
+        grid-template-columns: 22px 1fr auto;
+        column-gap: 10px;
+        padding: 8px 10px 8px 6px;
+        border-radius: 6px;
+        cursor: default;
+        align-items: start;
+      }
+      .item .glyph {
+        color: var(--fg-3);
+        text-align: center;
+        line-height: 1.4;
+        padding-top: 1px;
+      }
+      .item .meta {
+        color: var(--fg-3);
+        font-size: 11.5px;
+        text-align: right;
+        line-height: 1.5;
+        padding-top: 1px;
+        font-variant-numeric: tabular-nums;
+      }
+      .item .body {
+        min-width: 0;
+      }
+      .item .title {
+        color: var(--fg);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .item .sub {
+        color: var(--fg-3);
+        font-size: 11.5px;
+        margin-top: 2px;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      .item .scope {
+        color: var(--fg-2);
+        font-style: italic;
+      }
+
+      .item.focus {
+        background: var(--surface);
+        box-shadow: inset 2px 0 0 var(--accent);
+      }
+      .item.focus .glyph,
+      .item.focus .title {
+        color: var(--fg);
+      }
+      .item.focus .glyph {
+        color: var(--accent);
+      }
+
+      .glyph.review {
+        color: var(--accent);
+      }
+      .glyph.recall {
+        color: var(--info);
+      }
+      .glyph.conflict {
+        color: var(--bad);
+      }
+      .glyph.dream {
+        color: var(--warn);
+      }
+      .glyph.due {
+        color: var(--warn);
+      }
+      .glyph.memory {
+        color: var(--fg-3);
+      }
+
+      .more {
+        margin-top: 6px;
+        color: var(--fg-4);
+        padding: 6px 10px;
+        font-size: 12px;
+      }
+
+      /* Inspector */
+      .insp-head {
+        display: flex;
+        align-items: baseline;
+        gap: 12px;
+        flex-wrap: wrap;
+        padding-bottom: 8px;
+        border-bottom: 1px solid var(--border-soft);
+      }
+      .insp-title {
+        font-weight: 600;
+        color: var(--fg);
+        font-size: 14px;
+      }
+      .insp-scope {
+        color: var(--fg-2);
+        font-style: italic;
+      }
+      .badge {
+        font-size: 11px;
+        padding: 1px 7px;
+        border-radius: 3px;
+        border: 1px solid var(--border);
+        color: var(--fg-2);
+        background: var(--surface);
+        letter-spacing: 0.02em;
+      }
+      .badge.warn {
+        color: var(--warn);
+        border-color: oklch(0.45 0.08 80);
+      }
+      .badge.ok {
+        color: var(--ok);
+        border-color: oklch(0.45 0.08 145);
+      }
+
+      .insp-grid {
+        display: grid;
+        grid-template-columns: 1fr 240px;
+        gap: 22px;
+        padding-top: 10px;
+      }
+      .section-label {
+        color: var(--fg-4);
+        font-size: 11px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        margin: 8px 0 6px;
+      }
+      .body-text {
+        color: var(--fg);
+        line-height: 1.65;
+        font-size: 13px;
+        max-width: 70ch;
+      }
+      .body-text code {
+        background: var(--surface);
+        padding: 0 5px;
+        border-radius: 3px;
+        color: var(--fg);
+      }
+
+      .kv {
+        display: grid;
+        grid-template-columns: max-content 1fr;
+        gap: 4px 14px;
+        font-size: 12.5px;
+      }
+      .kv dt {
+        color: var(--fg-3);
+      }
+      .kv dd {
+        color: var(--fg);
+        margin: 0;
+        font-variant-numeric: tabular-nums;
+      }
+      .kv dd a {
+        color: var(--info);
+        text-decoration: none;
+        border-bottom: 1px dotted oklch(0.55 0.06 230);
+      }
+
+      .recent-recall {
+        display: grid;
+        grid-template-columns: max-content 1fr max-content;
+        gap: 2px 12px;
+        font-size: 12px;
+        color: var(--fg-2);
+      }
+      .recent-recall .when {
+        color: var(--fg-3);
+      }
+      .recent-recall .none {
+        color: var(--fg-4);
+        font-style: italic;
+        grid-column: 1 / -1;
+      }
+
+      /* Footer / status line */
+      .foot {
+        border-top: 1px solid var(--border-soft);
+        margin-top: 10px;
+        padding-top: 8px;
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        color: var(--fg-3);
+        font-size: 12px;
+      }
+      .foot .vital {
+        color: var(--fg-2);
+      }
+      .foot .ok::before {
+        content: '● ';
+        color: var(--ok);
+      }
+      .foot .actions {
+        margin-left: auto;
+        display: flex;
+        gap: 14px;
+      }
+      .foot .actions span {
+        color: var(--fg-2);
+      }
+      .foot .actions span b {
+        color: var(--accent);
+        font-weight: 500;
+        margin-right: 3px;
+      }
+
+      /* Reality Check focus mode */
+      .rc-head {
+        display: flex;
+        align-items: baseline;
+        gap: 14px;
+        padding-bottom: 10px;
+        border-bottom: 1px solid var(--border-soft);
+      }
+      .rc-head h2 {
+        margin: 0;
+        font-size: 14px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+      }
+      .rc-head .progress-text {
+        color: var(--fg-3);
+        font-variant-numeric: tabular-nums;
+      }
+      .gauge {
+        flex: 1;
+        height: 2px;
+        background: var(--border-soft);
+        border-radius: 999px;
+        overflow: hidden;
+        margin: 0 8px;
+        align-self: center;
+      }
+      .gauge > i {
+        display: block;
+        height: 100%;
+        width: 25%;
+        background: var(--accent);
+      }
+
+      .rc-stage {
+        display: grid;
+        grid-template-columns: 1fr 220px;
+        min-height: 380px;
+        gap: 28px;
+        padding: 28px 18px 12px;
+      }
+
+      .rc-card .scope-line {
+        color: var(--fg-3);
+        font-size: 12px;
+        letter-spacing: 0.04em;
+        margin-bottom: 8px;
+      }
+      .rc-card .scope-line .scope {
+        color: var(--fg-2);
+        font-style: italic;
+      }
+      .rc-card .question {
+        color: var(--fg);
+        font-size: 19px;
+        line-height: 1.45;
+        font-weight: 500;
+        max-width: 38ch;
+        margin: 0 0 18px;
+      }
+      .rc-card .last {
+        color: var(--fg-3);
+        font-size: 12px;
+        margin: 22px 0 26px;
+      }
+      .rc-card .last b {
+        color: var(--fg-2);
+        font-weight: 500;
+      }
+
+      .rc-actions {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        margin-top: 18px;
+      }
+      .rc-action {
+        display: grid;
+        grid-template-columns: 28px 1fr max-content;
+        gap: 14px;
+        align-items: center;
+        padding: 9px 14px;
+        border: 1px solid var(--border-soft);
+        border-radius: 6px;
+        color: var(--fg-2);
+        background: oklch(0.18 0.006 70);
+        font-size: 13px;
+        max-width: 360px;
+      }
+      .rc-action .key {
+        color: var(--accent);
+        border: 1px solid var(--border);
+        border-radius: 3px;
+        padding: 0 6px;
+        text-align: center;
+        background: var(--surface);
+      }
+      .rc-action .desc {
+        color: var(--fg-2);
+        font-size: 11.5px;
+      }
+      .rc-action.primary {
+        border-color: oklch(0.4 0.06 72);
+        background: oklch(0.22 0.02 72);
+        color: var(--fg);
+      }
+      .rc-action.primary .key {
+        color: var(--accent);
+      }
+
+      .rc-side {
+        border-left: 1px solid var(--border-soft);
+        padding-left: 22px;
+        color: var(--fg-3);
+      }
+      .rc-side h3 {
+        font-size: 11px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--fg-4);
+        margin: 0 0 10px;
+        font-weight: 500;
+      }
+      .rc-side ul {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        font-size: 12px;
+      }
+      .rc-side li {
+        display: grid;
+        grid-template-columns: 14px 1fr;
+        gap: 8px;
+        align-items: baseline;
+      }
+      .rc-side li .mark {
+        color: var(--fg-4);
+      }
+      .rc-side li.done .mark {
+        color: var(--ok);
+      }
+      .rc-side li.done {
+        color: var(--fg-3);
+      }
+      .rc-side li.now {
+        color: var(--fg);
+      }
+      .rc-side li.now .mark {
+        color: var(--accent);
+      }
+
+      /* Helpers */
+      .scope {
+        font-style: italic;
+        color: var(--fg-2);
+      }
+      .dim {
+        color: var(--fg-3);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <!-- ===== View 1: Inbox + Inspector ===== -->
+      <section>
+        <p class="caption">
+          <b>view 1</b> — unified inbox + inspector.
+          <span
+            >everything you'd reach for lives in one stream, sliced by filter pills. inspector adapts to item kind.
+            <kbd style="font-family: inherit">:</kbd> opens the command palette.</span
+          >
+        </p>
+
+        <div class="term">
+          <div class="term-chrome">
+            <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+            <span class="title">memorum-tui · ghostty · 138×38</span>
+          </div>
+          <div class="term-body">
+            <div class="head">
+              <span class="brand"><span class="sigil">◆</span>memorum</span>
+              <div class="pills">
+                <span class="pill active">all <span class="n">14</span></span>
+                <span class="pill">review <span class="n">7</span></span>
+                <span class="pill">conflicts <span class="n">1</span></span>
+                <span class="pill">recall</span>
+                <span class="pill">dreams <span class="n">2</span></span>
+                <span class="pill">due <span class="n">3</span></span>
+              </div>
+              <div class="head-right">
+                <span><kbd>/</kbd> search</span>
+                <span><kbd>:</kbd> palette</span>
+                <span><kbd>?</kbd> help</span>
+              </div>
+            </div>
+
+            <div class="panes">
+              <!-- INBOX -->
+              <div class="pane inbox">
+                <div class="list">
+                  <div class="item focus">
+                    <span class="glyph review">●</span>
+                    <div class="body">
+                      <div class="title">Project uses pnpm, never npm</div>
+                      <div class="sub">
+                        <span class="scope">coding/typescript</span>
+                        <span>·</span>
+                        <span>candidate</span>
+                        <span>·</span>
+                        <span>claude-code</span>
+                      </div>
+                    </div>
+                    <div class="meta">2m</div>
+                  </div>
+
+                  <div class="item">
+                    <span class="glyph recall">▸</span>
+                    <div class="body">
+                      <div class="title">Acme renewal date — Mar 14, 2026</div>
+                      <div class="sub">
+                        <span class="scope">work/clients/acme</span>
+                        <span>·</span>
+                        <span>recalled in session a8b…</span>
+                      </div>
+                    </div>
+                    <div class="meta">12m</div>
+                  </div>
+
+                  <div class="item">
+                    <span class="glyph conflict">⚠</span>
+                    <div class="body">
+                      <div class="title">Editor preference disagreement</div>
+                      <div class="sub">
+                        <span class="scope">prefs/editor</span>
+                        <span>·</span>
+                        <span>mbp ↔ mini</span>
+                      </div>
+                    </div>
+                    <div class="meta">1h</div>
+                  </div>
+
+                  <div class="item">
+                    <span class="glyph due">▣</span>
+                    <div class="body">
+                      <div class="title">Daughter's school name (verify)</div>
+                      <div class="sub">
+                        <span class="scope">personal/family</span>
+                        <span>·</span>
+                        <span>last verified 92d</span>
+                      </div>
+                    </div>
+                    <div class="meta">1d</div>
+                  </div>
+
+                  <div class="item">
+                    <span class="glyph dream">◇</span>
+                    <div class="body">
+                      <div class="title">Pattern: prefers Rust over Go for systems work</div>
+                      <div class="sub">
+                        <span class="scope">meta/preferences</span>
+                        <span>·</span>
+                        <span>dream · low confidence</span>
+                      </div>
+                    </div>
+                    <div class="meta">3h</div>
+                  </div>
+
+                  <div class="item">
+                    <span class="glyph review">●</span>
+                    <div class="body">
+                      <div class="title">Strict null checks always on</div>
+                      <div class="sub">
+                        <span class="scope">coding/typescript</span>
+                        <span>·</span>
+                        <span>candidate</span>
+                      </div>
+                    </div>
+                    <div class="meta">5h</div>
+                  </div>
+
+                  <div class="item">
+                    <span class="glyph memory">○</span>
+                    <div class="body">
+                      <div class="title">Wedding anniversary — June 18</div>
+                      <div class="sub">
+                        <span class="scope">personal/family</span>
+                        <span>·</span>
+                        <span>manual</span>
+                      </div>
+                    </div>
+                    <div class="meta">3d</div>
+                  </div>
+
+                  <div class="item">
+                    <span class="glyph recall">▸</span>
+                    <div class="body">
+                      <div class="title">Ghostty is the daily-driver terminal</div>
+                      <div class="sub">
+                        <span class="scope">tools/terminal</span>
+                        <span>·</span>
+                        <span>recalled 2× today</span>
+                      </div>
+                    </div>
+                    <div class="meta">6h</div>
+                  </div>
+                </div>
+                <div class="more">
+                  … 6 more · <span style="color: var(--fg-3)">↑↓ navigate · enter inspect · / search</span>
+                </div>
+              </div>
+
+              <!-- INSPECTOR -->
+              <div class="pane">
+                <div class="insp-head">
+                  <span class="insp-title">Project uses pnpm, never npm</span>
+                  <span class="insp-scope">coding/typescript</span>
+                  <span class="badge warn">candidate</span>
+                  <span class="badge">plaintext</span>
+                </div>
+
+                <div class="insp-grid">
+                  <div>
+                    <div class="section-label">body</div>
+                    <p class="body-text">
+                      Project uses <code>pnpm</code> for all package management. Running <code>npm install</code> or
+                      <code>yarn</code> will create stray <code>package-lock.json</code> / <code>yarn.lock</code> files
+                      that conflict with <code>pnpm-lock.yaml</code> on the next install. Always use
+                      <code>pnpm</code> verbs.
+                    </p>
+
+                    <div class="section-label">recent recall</div>
+                    <div class="recent-recall">
+                      <div class="none">no recall events yet — written 2m ago</div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div class="section-label">provenance</div>
+                    <dl class="kv">
+                      <dt>written</dt>
+                      <dd>2m ago by claude-code</dd>
+                      <dt>session</dt>
+                      <dd><a href="#">a8b3f2c</a></dd>
+                      <dt>grounding</dt>
+                      <dd><a href="#">commit 8a3f2c</a></dd>
+                      <dt>confidence</dt>
+                      <dd>0.84</dd>
+                      <dt>device</dt>
+                      <dd>mbp</dd>
+                      <dt>peers seen</dt>
+                      <dd>0 of 2</dd>
+                    </dl>
+
+                    <div
+                      class="section-label"
+                      style="margin-top: 18px"
+                    >
+                      policy
+                    </div>
+                    <dl class="kv">
+                      <dt>privacy</dt>
+                      <dd>plaintext</dd>
+                      <dt>governance</dt>
+                      <dd>auto-approve</dd>
+                      <dt>tombstone</dt>
+                      <dd>none</dd>
+                    </dl>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="foot">
+              <span class="vital ok">daemon</span>
+              <span class="vital ok">sync · 3 peers</span>
+              <span>next dream <b style="color: var(--fg-2)">14:00</b></span>
+              <span>filter <b style="color: var(--fg-2)">all</b></span>
+              <span class="actions">
+                <span><b>a</b>accept</span>
+                <span><b>r</b>reject</span>
+                <span><b>e</b>edit</span>
+                <span><b>f</b>forget</span>
+                <span><b>:</b>palette</span>
+                <span><b>q</b>quit</span>
+              </span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== View 2: Reality Check focus mode ===== -->
+      <section>
+        <p class="caption">
+          <b>view 2</b> — reality check focus mode.
+          <span
+            >opt-in ritual. inbox dissolves; one memory at a time, big text, three answers, quiet progress gauge. one
+            place where small ceremony is appropriate.</span
+          >
+        </p>
+
+        <div class="term">
+          <div class="term-chrome">
+            <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+            <span class="title">memorum-tui · reality check · 138×38</span>
+          </div>
+          <div class="term-body">
+            <div class="rc-head">
+              <h2><span style="color: var(--accent)">▣</span> Reality Check</h2>
+              <div class="gauge"><i></i></div>
+              <span class="progress-text">3 of 12</span>
+            </div>
+
+            <div class="rc-stage">
+              <div class="rc-card">
+                <div class="scope-line">
+                  <span class="scope">personal/family</span>
+                  · written 4 months ago · last verified 92d
+                </div>
+
+                <p class="question">Does Maeve still attend Pacific Crest Montessori?</p>
+
+                <p class="last">
+                  <b>What memorum thinks:</b> Maeve started kindergarten at Pacific Crest Montessori in Sept 2025.
+                  Source: claude-code session on 2025-09-12. Recalled 4× since.
+                </p>
+
+                <div class="rc-actions">
+                  <div class="rc-action primary">
+                    <span class="key">y</span>
+                    <span>Confirm — still true</span>
+                    <span class="desc">keep, refresh verified-at</span>
+                  </div>
+                  <div class="rc-action">
+                    <span class="key">k</span>
+                    <span>Correct — replace with…</span>
+                    <span class="desc">opens text input</span>
+                  </div>
+                  <div class="rc-action">
+                    <span class="key">f</span>
+                    <span>Forget</span>
+                    <span class="desc">tombstone, no recall</span>
+                  </div>
+                  <div class="rc-action">
+                    <span class="key">s</span>
+                    <span>Skip — ask later</span>
+                    <span class="desc">defer 30 days</span>
+                  </div>
+                </div>
+              </div>
+
+              <aside class="rc-side">
+                <h3>Session</h3>
+                <ul>
+                  <li class="done"><span class="mark">✓</span> Wedding anniversary date</li>
+                  <li class="done"><span class="mark">✓</span> Spouse's job title</li>
+                  <li class="done"><span class="mark">✓</span> Home neighborhood</li>
+                  <li class="now"><span class="mark">▸</span> School name</li>
+                  <li><span class="mark">·</span> Pediatrician</li>
+                  <li><span class="mark">·</span> Allergy list</li>
+                  <li><span class="mark">·</span> Friend group names</li>
+                  <li><span class="mark">·</span> + 4 more</li>
+                </ul>
+                <p
+                  class="dim"
+                  style="margin-top: 18px; font-size: 11.5px"
+                >
+                  <kbd
+                    style="
+                      font-family: var(--mono);
+                      border: 1px solid var(--border-soft);
+                      padding: 0 5px;
+                      border-radius: 3px;
+                      background: var(--surface);
+                      color: var(--fg-2);
+                      font-size: 10.5px;
+                    "
+                    >esc</kbd
+                  >
+                  pause session
+                </p>
+              </aside>
+            </div>
+
+            <div class="foot">
+              <span class="vital ok">daemon</span>
+              <span class="vital ok">sync · 3 peers</span>
+              <span>session started <b style="color: var(--fg-2)">2m ago</b></span>
+              <span class="actions">
+                <span><b>y</b>confirm</span>
+                <span><b>k</b>correct</span>
+                <span><b>f</b>forget</span>
+                <span><b>s</b>skip</span>
+                <span><b>esc</b>pause</span>
+              </span>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </body>
+</html>

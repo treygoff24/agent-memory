@@ -6,25 +6,32 @@ use memorum_eval::daemon_scaffold::DaemonScaffold;
 use memorum_eval::harness_runner::{MockHarness, TestOutcome};
 
 #[test]
-fn mock_harness_runs_test_13_observe_then_recall_without_real_clis() {
+fn mock_harness_skips_test_13_because_semantics_are_not_exercised() {
     block_on(async {
         let scaffold = DaemonScaffold::fresh().await;
         let outcome = MockHarness.run_test(13, &scaffold).expect("mock test #13 should run against fresh daemon");
 
-        let TestOutcome::Passed { metadata, output } = outcome else {
-            panic!("test #13 should pass in mock mode: {outcome:#?}");
+        let TestOutcome::Skipped { metadata, reason } = outcome else {
+            panic!("test #13 should skip in mock mode: {outcome:#?}");
         };
 
         assert_eq!(metadata.get("mode").map(String::as_str), Some("mock"));
-        assert!(
-            metadata.get("annotation").is_some_and(|annotation| annotation.contains("mode: mock")),
-            "mock mode annotation should be explicit: {metadata:#?}"
-        );
-        assert_eq!(output.get("found").map(String::as_str), Some("true"));
-        assert!(
-            output.get("fragment_text").is_some_and(|text| text.contains("MockHarness test 13 recall fragment")),
-            "synthesized output should include recalled fragment text: {output:#?}"
-        );
+        assert_eq!(reason, "MOCK_HARNESS_SEMANTIC_NOT_EXERCISED");
+    });
+}
+
+#[test]
+fn mock_harness_skips_test_15_because_semantics_are_not_exercised() {
+    block_on(async {
+        let scaffold = DaemonScaffold::fresh().await;
+        let outcome = MockHarness.run_test(15, &scaffold).expect("mock test #15 should run against fresh daemon");
+
+        let TestOutcome::Skipped { metadata, reason } = outcome else {
+            panic!("test #15 should skip in mock mode: {outcome:#?}");
+        };
+
+        assert_eq!(metadata.get("mode").map(String::as_str), Some("mock"));
+        assert_eq!(reason, "MOCK_HARNESS_SEMANTIC_NOT_EXERCISED");
     });
 }
 

@@ -108,6 +108,7 @@ printf 'stdout without prompt\n'
                 kill_grace: Duration::from_millis(500),
                 scratch_root: scratch_root.clone(),
                 environment: env.clone(),
+                redact_stderr: true,
             },
             prompt,
         )
@@ -193,6 +194,7 @@ while :; do sleep 1; done
                     ("PATH", std::env::var("PATH").expect("PATH is set")),
                     ("HOME", temp.path().display().to_string()),
                 ]),
+                redact_stderr: true,
             },
             "prompt sent before timeout",
         )
@@ -238,13 +240,14 @@ while :; do sleep 1; done
                     args: vec![record_prefix.display().to_string()],
                     prompt_transport: PromptTransport::Stdin,
                     expect_json: false,
-                    timeout: Duration::from_millis(250),
-                    kill_grace: Duration::from_millis(250),
+                    timeout: Duration::from_millis(500),
+                    kill_grace: Duration::from_millis(500),
                     scratch_root,
                     environment: MinimalEnvironment::from_pairs([
                         ("PATH", std::env::var("PATH").expect("PATH is set")),
                         ("HOME", temp.path().display().to_string()),
                     ]),
+                    redact_stderr: true,
                 },
                 &prompt,
             ),
@@ -293,6 +296,7 @@ exit 0
                     ("PATH", std::env::var("PATH").expect("PATH is set")),
                     ("HOME", temp.path().display().to_string()),
                 ]),
+                redact_stderr: true,
             },
             &"large masked prompt\n".repeat(64 * 1024),
         )
@@ -333,6 +337,7 @@ exit 23
                     ("PATH", std::env::var("PATH").expect("PATH is set")),
                     ("HOME", temp.path().display().to_string()),
                 ]),
+                redact_stderr: true,
             },
             prompt,
         )
@@ -348,6 +353,51 @@ exit 23
                 assert!(!stderr_tail.contains("MASKED_PROMPT_ALPHA"));
                 assert!(!stderr_tail.contains("MASKED_PROMPT_BETA"));
                 assert!(!stderr_tail.contains("MASKED_PROMPT_GAMMA"));
+            }
+            other => panic!("expected subprocess exit, got {other:?}"),
+        }
+    });
+}
+
+#[test]
+fn auth_probe_mode_preserves_stderr_tail_for_operator_diagnostics() {
+    let _guard = SUBPROCESS_TEST_LOCK.lock().expect("subprocess test lock");
+    run_async(async {
+        let temp = tempfile::tempdir().expect("auth stderr tempdir");
+        let auth_probe = temp.path().join("auth-probe");
+
+        write_executable(
+            &auth_probe,
+            r#"#!/bin/sh
+printf 'not logged in: run cli auth login\n' >&2
+exit 1
+"#,
+        );
+
+        let error = run_hardened_command(
+            HardenedCommand {
+                program: auth_probe,
+                args: Vec::new(),
+                prompt_transport: PromptTransport::Stdin,
+                expect_json: false,
+                timeout: Duration::from_secs(2),
+                kill_grace: Duration::from_millis(250),
+                scratch_root: temp.path().join("scratch"),
+                environment: MinimalEnvironment::from_pairs([
+                    ("PATH", std::env::var("PATH").expect("PATH is set")),
+                    ("HOME", temp.path().display().to_string()),
+                ]),
+                redact_stderr: false,
+            },
+            "",
+        )
+        .await
+        .expect_err("auth probe should fail");
+
+        match error {
+            HarnessCliError::SubprocessExit { stderr_tail, .. } => {
+                assert!(stderr_tail.contains("run cli auth login"), "{stderr_tail}");
+                assert!(!stderr_tail.contains("[stderr redacted"), "{stderr_tail}");
             }
             other => panic!("expected subprocess exit, got {other:?}"),
         }

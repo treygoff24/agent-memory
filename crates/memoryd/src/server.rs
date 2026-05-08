@@ -14,6 +14,7 @@ use crate::handlers::{self, HandlerState};
 use crate::notifications::config::NotificationConfig;
 use crate::notifications::NotificationDispatcher;
 use crate::protocol::{RequestEnvelope, RequestPayload, ResponseEnvelope, ResponsePayload, StatusResponse};
+use crate::socket::{probe_live_socket, SocketProbe};
 
 pub use crate::protocol::MAX_FRAME_BYTES;
 
@@ -146,7 +147,7 @@ async fn serve_with_dispatcher(
     options: ServerOptions,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
-    remove_stale_socket(socket_path).await?;
+    prepare_socket_path(socket_path).await?;
 
     let listener = UnixListener::bind(socket_path).with_context(|| format!("bind socket {}", socket_path.display()))?;
     harden_socket_permissions(socket_path)?;
@@ -172,6 +173,10 @@ async fn serve_with_dispatcher(
 
 #[cfg(unix)]
 fn harden_socket_permissions(socket_path: &Path) -> Result<()> {
+    if let Some(parent) = socket_path.parent() {
+        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("chmod owner-only socket parent {}", parent.display()))?;
+    }
     std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))
         .with_context(|| format!("chmod owner-only socket {}", socket_path.display()))
 }
@@ -351,11 +356,21 @@ fn healthy_status() -> StatusResponse {
     }
 }
 
-async fn remove_stale_socket(socket_path: &Path) -> Result<()> {
-    match tokio::fs::remove_file(socket_path).await {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error).with_context(|| format!("remove stale socket {}", socket_path.display())),
+async fn prepare_socket_path(socket_path: &Path) -> Result<()> {
+    if let Some(parent) = socket_path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .with_context(|| format!("create socket parent {}", parent.display()))?;
+    }
+
+    match probe_live_socket(socket_path) {
+        SocketProbe::Live => anyhow::bail!("socket_in_use: live memoryd already owns {}", socket_path.display()),
+        SocketProbe::Absent => Ok(()),
+        SocketProbe::Stale => match tokio::fs::remove_file(socket_path).await {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error).with_context(|| format!("remove stale socket {}", socket_path.display())),
+        },
     }
 }
 

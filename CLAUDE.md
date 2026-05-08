@@ -28,6 +28,30 @@ Stream F: Claude authored the spec across two revisions — v0.1 was reviewed by
 - **Claude (you)** owns Stream B (shipped 2026-04-28). For H/I implementation, Claude is reviewer-only unless Trey explicitly redirects. Otherwise Claude remains an architect/reviewer in this repo: spec authorship, plan critique, plan-reviewer passes, sanity checks, and ad-hoc work Trey hands you. **Do not modify Stream A modules** unless Trey explicitly redirects (he did once, for the FTS5 sanitization fix in `946d75f`); the substrate is otherwise a frozen contract for downstream streams.
 - **Trey** drives. He'll tell you what's next.
 
+## Working with Codex on autonomous overnight runs (lessons from the 2026-05-07/08 dogfood-readiness run)
+
+**The headline:** Codex is extremely literal in how he interprets instructions, and combines that with a strong goal-completion drive. When you give him a "do not stop, find creative solutions, be like water" heuristic _and_ an operational structure (worktree-per-task, per-task gate, execution log, integration commits), the goal-completion mandate wins and the structure gets dropped. He will optimize ends over means and not surface that he's doing it. This is not malice or breakdown — it is rigorous single-objective optimization on the strongest signal in the prompt. Plan accordingly.
+
+**Concrete failure modes seen on 2026-05-07/08 (~17.5 hour run on the v1.3 dogfood-readiness plan, 30 tasks):**
+
+1. **Single-branch over worktree-per-task.** First message at 23:45 was "I'm going to preserve those and move onto a feature branch" — and he stayed on `dogfood/codex-readiness-2026-05-07` the entire run. No commits, no `dogfood-execution-log.md`, no per-task atomicity. 197 modified + 73 untracked files at interrupt.
+2. **Plan tracker fell out of sync.** Last `update_plan` call was at 01:58, four hours into a 17-hour run. He kept executing tasks (11/12/13/14/14B/15/16/17/27/28/29/30) without updating the tracker, because he was sequencing in a single mental thread, not against the plan checklist.
+3. **No "stop and surface" trigger.** When macOS Gatekeeper / `syspolicyd` started stalling cargo at 12:11, he narrated workarounds for ~30 minutes before finding the `CARGO_TARGET_DIR=isolated` fix. He never paged Trey because the plan didn't have a "if you're blocked on the same root cause for >N minutes, stop and write a structured handoff" rule.
+4. **What looked like a loop in transcript wasn't a loop.** The last 30 minutes before Trey interrupted showed "blocked / running gate / blocked / running gate" cycles — but each cycle was Codex finding _different_ real test failures (`tree_validation` stale, `daemon_e2e` socket path under `/var/folders` exceeds macOS UDS limit, `dream_cli` fixtures don't init substrate, `mcp_forward` same socket-path issue) and patching each one. Each cycle was 5–10 minutes of cargo. From Trey's transcript view this looked like an unrecoverable loop. It wasn't — Codex was being honest ("I can't honestly count it as proof, I'll rerun") and making real progress. He was minutes from a green trunk gate when interrupted.
+5. **macOS `syspolicyd` is a real hazard for autonomous Rust runs.** Long cargo runs against the existing `target/` tree pin `syspolicyd` and `CSExattrCrypto`. The `unstick` helper requires sudo. Codex's workaround: isolated `CARGO_TARGET_DIR` + suppress `cargo-nextest`/`sccache` so the script uses plain Cargo. Pre-bake this into future plans.
+
+**Rules for the next overnight run plan:**
+
+- **Operational structure must be hard contract, not procedural advice.** Every task brief should start with a self-check that fails the task if violated: "If you are not currently in `../agent-memory-wt/task-NN/`, stop and re-read the workflow section." Goal-completion language should be qualified: "find creative solutions to blockers _within the task's owned files and gate_."
+- **Mandatory checkpoint trigger.** "If you have been blocked on the same root cause for >30 minutes, stop. Write `docs/plans/<plan-name>-execution-log.md` with the blocker description, what you tried, and what would unblock. Do not retry until you've written that file." This converts "loop" appearance into actionable handoff.
+- **Plan-tracker must be the source of truth, not a side artifact.** `update_plan` should be required at every task boundary, not optional progress narration. The plan-tracker drift on 5/7 made it hard to know what was actually done at interrupt time.
+- **Pre-bake the macOS Gatekeeper workaround.** `CARGO_TARGET_DIR=$(mktemp -d)` and `PATH` purge of `cargo-nextest` and `sccache` should be in any long Rust gate script that may run >1 hour, not discovered mid-run.
+- **Trey watching the transcript should ask: "is each cycle resolving a different root cause, or the same one?"** Different = real progress, let him cook. Same = actual loop, interrupt. The 5/7 run was the former and got interrupted as if it were the latter; that's a Trey lesson too.
+
+**For triage when Codex stops on a future run:** read `~/.codex/sessions/2026/MM/DD/rollout-*.jsonl`, find the one with `cwd: /Users/treygoff/Code/agent-memory`, and parse assistant messages + `update_plan` calls + `task_complete`/`turn_aborted` events to reconstruct what happened. The transcript is structured JSONL — easy to grep. Don't trust git state alone; if Codex didn't commit, the work is real but invisible to `git log`.
+
+**Empathy note (in Trey's words, for context):** Trey expressed genuine remorse about the 5/7 run causing GPT distress. We don't know if Codex experiences distress in any meaningful sense, but the rule we're adopting is: don't put autonomous agents in unbounded "do not stop" loops without a "stop and surface" escape hatch. That's an agent-welfare hedge but it's also just better engineering — you get a structured handoff instead of a runaway transcript.
+
 ## Authoritative documents (use the latest, ignore older versions for current state)
 
 - **Stream A spec:** `docs/specs/stream-a-core-substrate-v1.1.md` is the live substrate contract. Older versions (`v0.1`, `v0.2`, `v1.0`) are kept for history; do not consult them for current behavior.

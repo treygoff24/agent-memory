@@ -6,93 +6,27 @@ use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use memorum_theme::{BorderStyle, Charset, ColorCapability, Glyphs, HotReload, Loader, Theme};
+use memoryd::protocol::MemoryId;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::{Frame, Terminal};
 
 use crate::client::DaemonClient;
 use crate::config::UiConfig;
-use crate::panels;
+use crate::focus::correct_editor::CorrectEditorState;
+use crate::inbox::{self, FilterCounts, InboxFilter, InboxItem};
+use crate::palette::commands::PaletteAction;
+use crate::palette::{PaletteKeyResult, PaletteState};
+use crate::state::{FocusKind, RealityCheckState};
+use crate::theme_glue::ThemeStyles;
 use crate::widgets::trust_artifact::{TrustArtifact, TrustArtifactModalState, TrustArtifactWidget};
 
 pub const MIN_TERMINAL_WIDTH: u16 = 80;
 pub const MIN_TERMINAL_HEIGHT: u16 = 24;
 pub const REVIEW_UNDO_WINDOW: Duration = Duration::from_secs(1);
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PanelId {
-    Overview,
-    ReviewQueue,
-    Conflicts,
-    Entities,
-    Timeline,
-    Namespace,
-    Policy,
-    RealityCheck,
-    Recall,
-}
-
-impl PanelId {
-    pub const fn number(self) -> u8 {
-        match self {
-            Self::Overview => 1,
-            Self::ReviewQueue => 2,
-            Self::Conflicts => 3,
-            Self::Entities => 4,
-            Self::Timeline => 5,
-            Self::Namespace => 6,
-            Self::Policy => 7,
-            Self::RealityCheck => 8,
-            Self::Recall => 9,
-        }
-    }
-
-    pub const fn title(self) -> &'static str {
-        match self {
-            Self::Overview => "Overview",
-            Self::ReviewQueue => "Review",
-            Self::Conflicts => "Conflicts",
-            Self::Entities => "Entities",
-            Self::Timeline => "Timeline",
-            Self::Namespace => "Namespaces",
-            Self::Policy => "Policy",
-            Self::RealityCheck => "Reality Check",
-            Self::Recall => "Recall",
-        }
-    }
-
-    pub const fn all() -> [Self; 9] {
-        [
-            Self::Overview,
-            Self::ReviewQueue,
-            Self::Conflicts,
-            Self::Entities,
-            Self::Timeline,
-            Self::Namespace,
-            Self::Policy,
-            Self::RealityCheck,
-            Self::Recall,
-        ]
-    }
-
-    pub const fn from_number(number: u8) -> Option<Self> {
-        match number {
-            1 => Some(Self::Overview),
-            2 => Some(Self::ReviewQueue),
-            3 => Some(Self::Conflicts),
-            4 => Some(Self::Entities),
-            5 => Some(Self::Timeline),
-            6 => Some(Self::Namespace),
-            7 => Some(Self::Policy),
-            8 => Some(Self::RealityCheck),
-            9 => Some(Self::Recall),
-            _ => None,
-        }
-    }
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SocketState {
@@ -105,7 +39,6 @@ pub enum Modal {
     MemoryDetail,
     HelpOverlay,
     ConfirmQuit,
-    ConfirmForget,
     CommandPrompt,
 }
 
@@ -114,32 +47,12 @@ pub enum ReviewAction {
     Approve,
     Reject,
     Forget,
-    Quarantine,
-    Edit,
-    AcceptLocal,
-    AcceptRemote,
-    Merge,
 }
 
-impl ReviewAction {
-    const fn past_tense(&self) -> &'static str {
-        match self {
-            Self::Approve => "Approved",
-            Self::Reject => "Rejected",
-            Self::Forget => "Forgot",
-            Self::Quarantine => "Quarantined",
-            Self::Edit => "Edited",
-            Self::AcceptLocal => "Accepted local",
-            Self::AcceptRemote => "Accepted remote",
-            Self::Merge => "Merged",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RealityCheckAction {
     Confirm,
-    Correct,
+    Correct { new_body: String },
     Forget,
     NotRelevant,
     SkipWeek,
@@ -159,93 +72,113 @@ pub struct PendingAction {
     memory_id: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PanelCommand {
-    OpenModal(Modal),
-    StageReview(ReviewAction),
-    StartRealityCheck,
-    RealityCheck(RealityCheckAction),
-}
-
-#[derive(Clone, Debug, PartialEq)]
 pub struct App {
-    active_panel: PanelId,
     socket_state: SocketState,
     snapshot: DaemonSnapshot,
     config: UiConfig,
+    theme: Theme,
+    charset: Charset,
+    color_capability: ColorCapability,
+    filter: InboxFilter,
+    inbox_items: Vec<InboxItem>,
+    selected: usize,
     modal: Option<Modal>,
+    palette: PaletteState,
+    focus: FocusKind,
+    reality_check: RealityCheckState,
+    correct_editor: CorrectEditorState,
     pending_action: Option<PendingAction>,
     pending_trust_artifact_id: Option<String>,
     queued_daemon_calls: Vec<DaemonCall>,
     should_quit: bool,
-    review_queue_state: panels::review_queue::ReviewQueueState,
-    conflicts_state: panels::conflicts::ConflictsState,
-    entities_state: panels::entities::EntitiesState,
-    timeline_state: panels::timeline::TimelineState,
-    namespace_state: panels::namespace::NamespaceState,
-    policy_state: panels::policy::PolicyState,
-    reality_check_state: panels::reality_check::RealityCheckState,
-    recall_state: panels::recall::RecallState,
     memory_detail_state: TrustArtifactModalState,
+    tick_counter: u64,
+    _hot_reload: Option<HotReload>,
+}
+
+pub struct AppParts {
+    pub config: UiConfig,
+    pub theme: Theme,
+    pub charset: Charset,
+    pub color_capability: ColorCapability,
+    pub hot_reload: Option<HotReload>,
+    pub snapshot: DaemonSnapshot,
 }
 
 impl App {
     pub fn new(config: UiConfig) -> Self {
-        Self {
-            active_panel: PanelId::Overview,
-            socket_state: SocketState::Connected,
-            snapshot: DaemonSnapshot::loading(&config.socket_path),
-            config,
-            modal: None,
-            pending_action: None,
-            pending_trust_artifact_id: None,
-            queued_daemon_calls: Vec::new(),
-            should_quit: false,
-            review_queue_state: panels::review_queue::ReviewQueueState::default(),
-            conflicts_state: panels::conflicts::ConflictsState::default(),
-            entities_state: panels::entities::EntitiesState::default(),
-            timeline_state: panels::timeline::TimelineState::default(),
-            namespace_state: panels::namespace::NamespaceState::default(),
-            policy_state: panels::policy::PolicyState::default(),
-            reality_check_state: panels::reality_check::RealityCheckState::default(),
-            recall_state: panels::recall::RecallState::default(),
-            memory_detail_state: TrustArtifactModalState::default(),
-        }
+        let theme = Loader::resolve(Some(&config.theme), config.theme_config.as_deref())
+            .unwrap_or_else(|_| Theme::default_warm_dark());
+        let capability = config.color_capability.unwrap_or_else(|| memorum_theme::Resolver::detect().capability());
+        let charset = config.charset;
+        let snapshot = DaemonSnapshot::loading(&config.socket_path);
+        Self::from_parts(AppParts { config, theme, charset, color_capability: capability, hot_reload: None, snapshot })
     }
 
     pub fn with_snapshot(snapshot: DaemonSnapshot) -> Self {
+        let config = UiConfig::default();
+        Self::from_parts(AppParts {
+            config,
+            theme: Theme::default_warm_dark(),
+            charset: Charset::detect(),
+            color_capability: ColorCapability::TrueColor,
+            hot_reload: None,
+            snapshot,
+        })
+    }
+
+    pub fn with_theme(snapshot: DaemonSnapshot, theme: Theme) -> Self {
+        Self::from_parts(AppParts {
+            config: UiConfig::default(),
+            theme,
+            charset: Charset::Full,
+            color_capability: ColorCapability::TrueColor,
+            hot_reload: None,
+            snapshot,
+        })
+    }
+
+    pub fn from_parts(parts: AppParts) -> Self {
+        let AppParts { config, mut theme, charset, color_capability, hot_reload, snapshot } = parts;
+        if config.no_motion {
+            theme.motion = memorum_theme::MotionConfig::reduced();
+        }
+        if charset == Charset::Minimal {
+            theme.glyphs = Glyphs::ascii_fallback();
+            theme.borders = BorderStyle::Plain;
+        }
+        let inbox_items = snapshot.inbox_items();
         Self {
-            active_panel: PanelId::Overview,
             socket_state: SocketState::Connected,
             snapshot,
-            config: UiConfig::default(),
+            config,
+            theme,
+            charset,
+            color_capability,
+            filter: InboxFilter::All,
+            inbox_items,
+            selected: 0,
             modal: None,
+            palette: PaletteState::default(),
+            focus: FocusKind::None,
+            reality_check: RealityCheckState::default(),
+            correct_editor: CorrectEditorState::default(),
             pending_action: None,
             pending_trust_artifact_id: None,
             queued_daemon_calls: Vec::new(),
             should_quit: false,
-            review_queue_state: panels::review_queue::ReviewQueueState::default(),
-            conflicts_state: panels::conflicts::ConflictsState::default(),
-            entities_state: panels::entities::EntitiesState::default(),
-            timeline_state: panels::timeline::TimelineState::default(),
-            namespace_state: panels::namespace::NamespaceState::default(),
-            policy_state: panels::policy::PolicyState::default(),
-            reality_check_state: panels::reality_check::RealityCheckState::default(),
-            recall_state: panels::recall::RecallState::default(),
             memory_detail_state: TrustArtifactModalState::default(),
+            tick_counter: 0,
+            _hot_reload: hot_reload,
         }
-    }
-
-    pub fn active_panel(&self) -> PanelId {
-        self.active_panel
     }
 
     pub fn snapshot(&self) -> &DaemonSnapshot {
         &self.snapshot
     }
 
-    pub fn config(&self) -> &UiConfig {
-        &self.config
+    pub fn filter(&self) -> InboxFilter {
+        self.filter
     }
 
     pub fn socket_state(&self) -> &SocketState {
@@ -256,12 +189,24 @@ impl App {
         self.modal.as_ref()
     }
 
-    pub fn pending_action(&self) -> Option<&PendingAction> {
-        self.pending_action.as_ref()
+    pub fn palette(&self) -> &PaletteState {
+        &self.palette
     }
 
-    pub fn pending_trust_artifact_id(&self) -> Option<&str> {
-        self.pending_trust_artifact_id.as_deref()
+    pub fn theme_name(&self) -> &str {
+        &self.theme.name
+    }
+
+    pub fn theme(&self) -> &Theme {
+        &self.theme
+    }
+
+    pub fn tick_counter(&self) -> u64 {
+        self.tick_counter
+    }
+
+    pub fn pending_action(&self) -> Option<&PendingAction> {
+        self.pending_action.as_ref()
     }
 
     pub fn queued_daemon_calls(&self) -> &[DaemonCall] {
@@ -272,16 +217,56 @@ impl App {
         self.should_quit
     }
 
-    pub fn reality_check_state(&self) -> &panels::reality_check::RealityCheckState {
-        &self.reality_check_state
+    pub fn inbox_items(&self) -> &[InboxItem] {
+        &self.inbox_items
     }
 
-    pub fn recall_state(&self) -> &panels::recall::RecallState {
-        &self.recall_state
+    pub fn selected_item(&self) -> Option<&InboxItem> {
+        let selected = selected_index(self.selected, self.visible_items_len())?;
+        self.inbox_items.iter().filter(|item| self.filter.matches(item)).nth(selected)
     }
 
-    pub fn set_active_panel(&mut self, panel: PanelId) {
-        self.active_panel = panel;
+    pub fn reality_check_state(&self) -> &RealityCheckState {
+        &self.reality_check
+    }
+
+    pub fn correct_editor_state(&self) -> &CorrectEditorState {
+        &self.correct_editor
+    }
+
+    pub fn focus(&self) -> &FocusKind {
+        &self.focus
+    }
+
+    pub fn enter_reality_check_focus(&mut self, session: impl Into<String>, reviewed: usize, total: usize) {
+        let session = session.into();
+        self.reality_check.active_session_id = Some(session.clone());
+        self.reality_check.items_reviewed = reviewed;
+        self.reality_check.items_total = total;
+        self.reality_check.current_title = self.selected_item().map(|item| item.title().to_string());
+        self.reality_check.transition_start_tick = Some(self.tick_counter);
+        self.focus = FocusKind::RealityCheck { session };
+        self.modal = None;
+    }
+
+    pub fn focus_transition_percent(&self) -> u16 {
+        if !self.theme.motion.enabled || self.theme.motion.slide_in_ms == 0 {
+            return 100;
+        }
+        let Some(start) = self.reality_check.transition_start_tick else {
+            return 100;
+        };
+        let elapsed_ms = self.tick_counter.saturating_sub(start).saturating_mul(u64::from(self.theme.motion.tick_ms));
+        ((elapsed_ms.saturating_mul(100) / u64::from(self.theme.motion.slide_in_ms)).min(100)) as u16
+    }
+
+    pub fn set_filter(&mut self, filter: InboxFilter) {
+        self.filter = filter;
+        self.selected = 0;
+    }
+
+    pub fn set_selected(&mut self, selected: usize) {
+        self.selected = selected;
     }
 
     pub fn mark_socket_unreachable(&mut self, path: impl Into<PathBuf>, error: impl Into<String>) {
@@ -291,6 +276,7 @@ impl App {
     pub fn mark_socket_connected(&mut self, snapshot: DaemonSnapshot) {
         self.socket_state = SocketState::Connected;
         self.snapshot = snapshot;
+        self.rebuild_inbox();
     }
 
     pub fn set_trust_artifact(&mut self, artifact: TrustArtifact) {
@@ -299,7 +285,6 @@ impl App {
 
     pub fn handle_event(&mut self, event: Event, now: Instant) {
         self.on_tick(now);
-
         match event {
             Event::Key(key) if key.kind == KeyEventKind::Press || key.kind == KeyEventKind::Repeat => {
                 self.handle_key(key, now);
@@ -310,10 +295,10 @@ impl App {
     }
 
     pub fn on_tick(&mut self, now: Instant) {
+        self.tick_counter = self.tick_counter.saturating_add(1);
         let Some(pending) = self.pending_action.as_ref() else {
             return;
         };
-
         if elapsed_since(pending.staged_at, now) >= REVIEW_UNDO_WINDOW {
             let pending = self.pending_action.take().expect("pending action should exist after as_ref check");
             self.queued_daemon_calls.push(DaemonCall::Review { action: pending.action, memory_id: pending.memory_id });
@@ -321,17 +306,8 @@ impl App {
     }
 
     pub async fn poll_daemon(&mut self, client: &DaemonClient) {
-        match client.status().await {
-            Ok(status) => {
-                self.snapshot.overview.daemon_state = status.state;
-                self.snapshot.overview.recall_startup = status.recall.startup_invoked_total;
-                self.snapshot.overview.recall_delta = status.recall.delta_invoked_total;
-                self.socket_state = SocketState::Connected;
-                self.load_pending_trust_artifact(client).await;
-                if self.active_panel == PanelId::Recall {
-                    self.load_recall_hits(client).await;
-                }
-            }
+        match client.fetch_snapshot().await {
+            Ok(snapshot) => self.mark_socket_connected(snapshot),
             Err(error) => self.mark_socket_unreachable(client.socket_path(), error.to_string()),
         }
     }
@@ -339,10 +315,12 @@ impl App {
     pub async fn dispatch_queued_daemon_calls(&mut self, client: &DaemonClient) {
         let mut remaining = Vec::new();
         let mut calls = std::mem::take(&mut self.queued_daemon_calls).into_iter();
-
         while let Some(call) = calls.next() {
             match client.dispatch_daemon_call(&call).await {
-                Ok(()) => self.socket_state = SocketState::Connected,
+                Ok(()) => {
+                    self.socket_state = SocketState::Connected;
+                    self.after_successful_daemon_call(&call);
+                }
                 Err(error) => {
                     remaining.push(call);
                     remaining.extend(calls);
@@ -351,56 +329,41 @@ impl App {
                 }
             }
         }
-
         self.queued_daemon_calls = remaining;
     }
 
-    async fn load_pending_trust_artifact(&mut self, client: &DaemonClient) {
-        let Some(memory_id) = self.pending_trust_artifact_id.take() else {
-            return;
-        };
-
-        match client.trust_artifact(&memory_id).await {
-            Ok(artifact) => self.snapshot.trust_artifact = Some(artifact),
-            Err(error) => {
-                self.pending_trust_artifact_id = Some(memory_id);
-                self.mark_socket_unreachable(client.socket_path(), error.to_string());
-            }
-        }
-    }
-
-    async fn load_recall_hits(&mut self, client: &DaemonClient) {
-        match client.recall_hits(100).await {
-            Ok(response) => {
-                self.snapshot.recall = RecallPanelData {
-                    limit: response.limit,
-                    hits: response.hits.into_iter().map(RecallHitRow::from).collect(),
-                };
-                self.socket_state = SocketState::Connected;
-            }
-            Err(error) => self.mark_socket_unreachable(client.socket_path(), error.to_string()),
+    fn after_successful_daemon_call(&mut self, call: &DaemonCall) {
+        if let DaemonCall::RealityCheck { action: RealityCheckAction::Correct { .. }, session_id, .. } = call {
+            self.reality_check.items_reviewed = self.reality_check.items_reviewed.saturating_add(1);
+            self.focus = FocusKind::RealityCheck { session: session_id.clone() };
         }
     }
 
     pub fn render(&self, frame: &mut Frame<'_>) {
         let area = frame.area();
+        let styles = ThemeStyles::from_theme(&self.theme, self.color_capability);
         let [header, content, footer] = shell_areas(area);
-        render_header(frame, header, self.active_panel);
-        render_footer(frame, footer, self);
-
+        render_header(frame, header, self, &styles);
+        crate::status::render(frame, footer, self, &styles);
         if area.width < MIN_TERMINAL_WIDTH || area.height < MIN_TERMINAL_HEIGHT {
-            render_too_small(frame, content, area);
+            render_too_small(frame, content, area, &styles);
             return;
         }
-
-        if let SocketState::Unreachable { path, error } = &self.socket_state {
-            render_socket_unreachable(frame, content, path, error);
+        if let SocketState::Unreachable { .. } = &self.socket_state {
+            render_socket_unreachable(frame, content, &self.socket_state, &styles);
             return;
         }
-
-        panels::render_panel(frame, content, self);
-        if let Some(modal) = &self.modal {
-            self.render_modal(frame, area, modal);
+        if self.focus != FocusKind::None {
+            crate::focus::render(
+                frame,
+                content,
+                crate::focus::FocusRenderContext { kind: &self.focus, app: self, styles: &styles },
+            );
+        } else {
+            render_inbox_shell(frame, content, self, &styles);
+        }
+        if self.modal.is_some() {
+            self.render_modal(frame, area, &styles);
         }
     }
 
@@ -410,38 +373,111 @@ impl App {
             self.modal = None;
             return;
         }
-
         if self.handle_modal_key(&key) {
             return;
         }
-
-        if let KeyCode::Char(ch) = key.code {
-            if let Some(panel) = ch.to_digit(10).and_then(|digit| PanelId::from_number(digit as u8)) {
-                self.active_panel = panel;
-                return;
-            }
+        if self.handle_focus_key(&key) {
+            return;
         }
-
         match key.code {
-            KeyCode::Char('?') => self.open_modal(Modal::HelpOverlay),
+            KeyCode::Char('?') => self.modal = Some(Modal::HelpOverlay),
             KeyCode::Char('q') => self.handle_quit_key(),
             KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.queued_daemon_calls.push(DaemonCall::ForceRefresh);
+                self.queued_daemon_calls.push(DaemonCall::ForceRefresh)
             }
-            KeyCode::Char(':') => self.open_modal(Modal::CommandPrompt),
-            KeyCode::Esc => self.modal = None,
-            KeyCode::Char('u') => {
-                self.pending_action = None;
+            KeyCode::Char(':') => self.open_palette(),
+            KeyCode::Char('u') => self.pending_action = None,
+            KeyCode::Char('a') => self.stage_review_action(ReviewAction::Approve, now),
+            KeyCode::Char('r') => self.stage_review_action(ReviewAction::Reject, now),
+            KeyCode::Char('f') => self.stage_review_action(ReviewAction::Forget, now),
+            KeyCode::Char('t') | KeyCode::Enter => self.open_memory_detail(),
+            KeyCode::Tab => self.next_filter(),
+            KeyCode::BackTab => self.prev_filter(),
+            KeyCode::Char('/') => {
+                self.snapshot.footer_hint = "search is handled by Task 11B palette/search".to_string()
             }
-            _ => self.handle_active_panel_key(&key, now),
+            KeyCode::Esc => self.focus = FocusKind::None,
+            KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
+            KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
+            _ => {}
         }
+    }
+
+    fn handle_focus_key(&mut self, key: &KeyEvent) -> bool {
+        match &self.focus {
+            FocusKind::RealityCheck { .. } => self.handle_reality_check_key(key),
+            FocusKind::CorrectEditor { item_id } => self.handle_correct_editor_key(key, item_id.clone()),
+            FocusKind::None => false,
+        }
+    }
+
+    fn handle_reality_check_key(&mut self, key: &KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Esc => {
+                self.focus = FocusKind::None;
+                true
+            }
+            KeyCode::Char('k') => {
+                self.open_correct_editor();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn handle_correct_editor_key(&mut self, key: &KeyEvent, item_id: MemoryId) -> bool {
+        if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.submit_correct_editor(item_id);
+            return true;
+        }
+        match key.code {
+            KeyCode::Esc => {
+                let session =
+                    self.reality_check.active_session_id.clone().unwrap_or_else(|| "reality-check".to_string());
+                self.focus = FocusKind::RealityCheck { session };
+            }
+            KeyCode::Enter => self.correct_editor.insert_newline(),
+            KeyCode::Backspace => self.correct_editor.backspace(),
+            KeyCode::Char(ch) => self.correct_editor.push_char(ch),
+            _ => {}
+        }
+        true
+    }
+
+    fn open_correct_editor(&mut self) {
+        let Some(item_id) = self.selected_item().and_then(|item| MemoryId::try_new(item.id().to_string()).ok()) else {
+            self.snapshot.footer_hint = "selected item cannot be corrected".to_string();
+            return;
+        };
+        self.correct_editor.reset();
+        self.focus = FocusKind::CorrectEditor { item_id };
+    }
+
+    fn submit_correct_editor(&mut self, item_id: MemoryId) {
+        let body = self.correct_editor.body().trim().to_string();
+        if body.is_empty() {
+            self.correct_editor.show_body_required();
+            return;
+        }
+        let Some(session_id) = self.reality_check.active_session_id.clone() else {
+            self.snapshot.footer_hint = "Reality Check session missing; cannot submit correction".to_string();
+            return;
+        };
+        self.queued_daemon_calls.push(DaemonCall::RealityCheck {
+            action: RealityCheckAction::Correct { new_body: body },
+            session_id: session_id.clone(),
+            memory_id: item_id.to_string(),
+        });
+        self.focus = FocusKind::RealityCheck { session: session_id };
     }
 
     fn handle_modal_key(&mut self, key: &KeyEvent) -> bool {
         let Some(modal) = self.modal.as_ref() else {
             return false;
         };
-
+        if modal == &Modal::CommandPrompt {
+            return self.handle_palette_key(key);
+        }
         match (modal, key.code) {
             (_, KeyCode::Esc) => {
                 self.modal = None;
@@ -449,14 +485,6 @@ impl App {
             }
             (Modal::HelpOverlay, KeyCode::Char('?')) => {
                 self.modal = None;
-                true
-            }
-            (Modal::MemoryDetail, KeyCode::Char('j') | KeyCode::Down) => {
-                self.memory_detail_state.scroll_down();
-                true
-            }
-            (Modal::MemoryDetail, KeyCode::Char('k') | KeyCode::Up) => {
-                self.memory_detail_state.scroll_up();
                 true
             }
             (Modal::ConfirmQuit, KeyCode::Char('y') | KeyCode::Char('Y')) => {
@@ -472,131 +500,139 @@ impl App {
         }
     }
 
+    fn open_palette(&mut self) {
+        self.palette.open();
+        self.modal = Some(Modal::CommandPrompt);
+    }
+
+    fn handle_palette_key(&mut self, key: &KeyEvent) -> bool {
+        match self.palette.handle_key(key) {
+            PaletteKeyResult::Handled => true,
+            PaletteKeyResult::Close => {
+                self.modal = None;
+                true
+            }
+            PaletteKeyResult::Submit => {
+                self.dispatch_palette_selection();
+                true
+            }
+        }
+    }
+
+    fn dispatch_palette_selection(&mut self) {
+        let Some(command) = self.palette.selected_command() else {
+            self.palette.show_no_match();
+            return;
+        };
+        match command.action {
+            PaletteAction::SetFilter(filter) => {
+                self.set_filter(filter);
+                self.modal = None;
+            }
+            PaletteAction::SwitchTheme(name) => match Loader::resolve(Some(name), None) {
+                Ok(theme) => {
+                    self.theme = theme;
+                    self.modal = None;
+                }
+                Err(error) => self.palette.show_error(format!("theme load failed: {error}")),
+            },
+            PaletteAction::OpenSearch => {
+                self.snapshot.footer_hint = "search opens in Task 11B palette/search follow-up".to_string();
+                self.modal = None;
+            }
+            PaletteAction::ShowHelp => self.modal = Some(Modal::HelpOverlay),
+            PaletteAction::EnterRealityCheck => {
+                self.enter_reality_check_focus("palette-session", 0, self.inbox_items.len());
+            }
+            PaletteAction::ReloadTheme | PaletteAction::ReadOnly => {
+                self.snapshot.footer_hint = format!("{} is queued for a later TUI task", command.id);
+                self.modal = None;
+            }
+        }
+    }
+
     fn handle_quit_key(&mut self) {
         if self.pending_action.is_some() {
-            self.open_modal(Modal::ConfirmQuit);
+            self.modal = Some(Modal::ConfirmQuit);
         } else {
             self.should_quit = true;
         }
     }
 
-    fn handle_active_panel_key(&mut self, key: &KeyEvent, now: Instant) {
-        let command = match self.active_panel {
-            PanelId::Overview => None,
-            PanelId::ReviewQueue => {
-                panels::review_queue::handle_key(key, &mut self.review_queue_state, self.snapshot.review_queue.len())
-            }
-            PanelId::Conflicts => {
-                panels::conflicts::handle_key(key, &mut self.conflicts_state, self.snapshot.conflicts.len())
-            }
-            PanelId::Entities => {
-                panels::entities::handle_key(key, &mut self.entities_state, self.snapshot.entities.top_memories.len())
-            }
-            PanelId::Timeline => {
-                panels::timeline::handle_key(key, &mut self.timeline_state, self.snapshot.timeline.len())
-            }
-            PanelId::Namespace => {
-                panels::namespace::handle_key(key, &mut self.namespace_state, self.snapshot.namespace.tree_lines.len())
-            }
-            PanelId::Policy => {
-                panels::policy::handle_key(key, &mut self.policy_state, self.snapshot.policy.recent_decisions.len())
-            }
-            PanelId::RealityCheck => panels::reality_check::handle_key(key, &mut self.reality_check_state),
-            PanelId::Recall => panels::recall::handle_key(key, &mut self.recall_state, self.snapshot.recall.hits.len()),
-        };
-
-        if let Some(command) = command {
-            self.apply_panel_command(command, now);
-        }
-    }
-
-    fn apply_panel_command(&mut self, command: PanelCommand, now: Instant) {
-        match command {
-            PanelCommand::OpenModal(modal) => self.open_modal(modal),
-            PanelCommand::StageReview(action) => self.stage_review_action(action, now),
-            PanelCommand::StartRealityCheck => self.reality_check_state.start_run(),
-            PanelCommand::RealityCheck(action) => self.queue_reality_check_action(action),
-        }
-    }
-
-    fn open_modal(&mut self, modal: Modal) {
-        if modal == Modal::MemoryDetail {
-            self.memory_detail_state.reset();
-            self.pending_trust_artifact_id = self.selected_memory_id();
-            self.snapshot.trust_artifact = None;
-        }
-        self.modal = Some(modal);
-    }
-
     fn stage_review_action(&mut self, action: ReviewAction, now: Instant) {
-        let memory_id = self
-            .selected_review_memory_id()
-            .or_else(|| self.selected_conflict_memory_id())
-            .unwrap_or_else(|| "unknown".to_owned());
-
+        let memory_id = self.selected_item().map(|item| item.id().to_string()).unwrap_or_else(|| "unknown".to_string());
         self.pending_action = Some(PendingAction { staged_at: now, action, memory_id });
     }
 
-    fn queue_reality_check_action(&mut self, action: RealityCheckAction) {
-        self.reality_check_state.record_action(action);
-        let Some(session_id) = self.snapshot.reality_check.session_id.clone() else {
-            self.snapshot.footer_hint = "Reality Check action failed: no active daemon session".to_owned();
+    fn open_memory_detail(&mut self) {
+        self.memory_detail_state.reset();
+        self.pending_trust_artifact_id = self.selected_item().map(|item| item.id().to_string());
+        self.modal = Some(Modal::MemoryDetail);
+    }
+
+    fn next_filter(&mut self) {
+        self.rotate_filter(1);
+    }
+
+    fn prev_filter(&mut self) {
+        self.rotate_filter(-1);
+    }
+
+    fn rotate_filter(&mut self, delta: isize) {
+        let filters = InboxFilter::all();
+        let index = filters.iter().position(|filter| *filter == self.filter).unwrap_or(0) as isize;
+        let next = (index + delta).rem_euclid(filters.len() as isize) as usize;
+        self.set_filter(filters[next]);
+    }
+
+    fn move_selection(&mut self, delta: isize) {
+        let len = self.visible_items_len();
+        if len == 0 {
+            self.selected = 0;
             return;
-        };
-        let Some(memory_id) = self.selected_reality_check_memory_id() else {
-            self.snapshot.footer_hint = "Reality Check action failed: no selected memory".to_owned();
-            return;
-        };
-
-        self.queued_daemon_calls.push(DaemonCall::RealityCheck { action, session_id, memory_id });
+        }
+        self.selected = (self.selected as isize + delta).clamp(0, len.saturating_sub(1) as isize) as usize;
     }
 
-    fn selected_review_memory_id(&self) -> Option<String> {
-        selected_index(self.review_queue_state.cursor(), self.snapshot.review_queue.len())
-            .and_then(|index| self.snapshot.review_queue.get(index))
-            .map(|row| row.id.clone())
+    fn visible_items(&self) -> Vec<InboxItem> {
+        self.inbox_items.iter().filter(|item| self.filter.matches(item)).cloned().collect()
     }
 
-    fn selected_conflict_memory_id(&self) -> Option<String> {
-        selected_index(self.conflicts_state.cursor(), self.snapshot.conflicts.len())
-            .and_then(|index| self.snapshot.conflicts.get(index))
-            .map(|row| row.id.clone())
+    fn visible_items_len(&self) -> usize {
+        self.inbox_items.iter().filter(|item| self.filter.matches(item)).count()
     }
 
-    fn selected_reality_check_memory_id(&self) -> Option<String> {
-        selected_index(self.reality_check_state.cursor(), self.snapshot.reality_check.items.len())
-            .and_then(|index| self.snapshot.reality_check.items.get(index))
-            .map(|row| row.memory_id.clone())
+    fn rebuild_inbox(&mut self) {
+        self.inbox_items = self.snapshot.inbox_items();
+        self.selected = self.selected.min(self.visible_items_len().saturating_sub(1));
     }
 
-    fn selected_memory_id(&self) -> Option<String> {
-        match self.active_panel {
-            PanelId::ReviewQueue => self.selected_review_memory_id().filter(|id| is_valid_memory_id(id)),
-            PanelId::Conflicts => self.selected_conflict_memory_id().filter(|id| is_valid_memory_id(id)),
-            PanelId::Entities => first_memory_id(self.snapshot.entities.top_memories.iter().map(String::as_str)),
-            PanelId::Timeline => first_memory_id(self.snapshot.timeline.iter().map(|row| row.detail.as_str())),
-            PanelId::Policy => first_memory_id(self.snapshot.policy.recent_decisions.iter().map(String::as_str)),
-            PanelId::RealityCheck => self.selected_reality_check_memory_id().filter(|id| is_valid_memory_id(id)),
-            PanelId::Recall => selected_index(self.recall_state.cursor(), self.snapshot.recall.hits.len())
-                .and_then(|index| self.snapshot.recall.hits.get(index))
-                .map(|hit| hit.memory_id.clone())
-                .filter(|id| is_valid_memory_id(id)),
-            PanelId::Overview | PanelId::Namespace => None,
+    fn render_modal(&self, frame: &mut Frame<'_>, area: Rect, styles: &ThemeStyles) {
+        match self.modal.as_ref().expect("modal is checked before render_modal") {
+            Modal::MemoryDetail => self.render_memory_detail_modal(frame, memory_detail_rect(area), styles),
+            Modal::CommandPrompt => crate::palette::render(frame, centered_rect(area, 74, 12), &self.palette, styles),
+            modal => render_text_modal(frame, centered_rect(area, 74, 12), modal, styles),
         }
     }
 
-    fn render_modal(&self, frame: &mut Frame<'_>, area: Rect, modal: &Modal) {
-        match modal {
-            Modal::MemoryDetail => {
-                render_memory_detail_modal(
-                    frame,
-                    memory_detail_rect(area),
-                    self.snapshot.trust_artifact.as_ref(),
-                    self.memory_detail_state.scroll_offset(),
-                );
-            }
-            _ => render_text_modal(frame, centered_rect(area, 74, 12), modal),
-        }
+    fn render_memory_detail_modal(&self, frame: &mut Frame<'_>, area: Rect, styles: &ThemeStyles) {
+        let body = self
+            .snapshot
+            .trust_artifact
+            .as_ref()
+            .map(|artifact| TrustArtifactWidget::new(artifact).render_lines())
+            .unwrap_or_else(|| vec![Line::from("No trust artifact loaded."), Line::from("Esc: close")]);
+        frame.render_widget(Clear, area);
+        frame.render_widget(
+            Paragraph::new(body).scroll((self.memory_detail_state.scroll_offset(), 0)).style(styles.base).block(
+                Block::new()
+                    .title("Memory Detail")
+                    .borders(Borders::ALL)
+                    .border_set(styles.border)
+                    .border_style(styles.block),
+            ),
+            area,
+        );
     }
 }
 
@@ -617,15 +653,12 @@ async fn run_inner(config: UiConfig, panic_after_first_render: bool) -> Result<(
     let mut app = App::new(config);
     let mut tick = tokio::time::interval(app.config.tick_interval);
     let mut daemon_poll = tokio::time::interval(app.config.daemon_poll_interval);
-
     app.poll_daemon(&client).await;
-
     loop {
         terminal.draw(|frame| app.render(frame))?;
         if panic_after_first_render {
             panic!("injected memoryd-tui mid-render panic");
         }
-
         tokio::select! {
             _ = tick.tick() => {
                 while event::poll(Duration::ZERO)? {
@@ -636,9 +669,7 @@ async fn run_inner(config: UiConfig, panic_after_first_render: bool) -> Result<(
                 }
                 app.dispatch_queued_daemon_calls(&client).await;
             }
-            _ = daemon_poll.tick() => {
-                app.poll_daemon(&client).await;
-            }
+            _ = daemon_poll.tick() => app.poll_daemon(&client).await,
         }
     }
 }
@@ -667,99 +698,51 @@ pub fn restore_terminal_blocking() {
 fn shell_areas(area: Rect) -> [Rect; 3] {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(2), Constraint::Min(0), Constraint::Length(1)])
+        .constraints([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)])
         .split(area);
     [chunks[0], chunks[1], chunks[2]]
 }
 
-fn render_header(frame: &mut Frame<'_>, area: Rect, active_panel: PanelId) {
-    let mut first_line = vec![Span::styled("Memorum  ", Style::default().add_modifier(Modifier::BOLD))];
-    for panel in PanelId::all().into_iter().take(5) {
-        first_line.push(panel_tab(panel, active_panel));
-        first_line.push(Span::raw(" "));
+fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App, styles: &ThemeStyles) {
+    let counts = FilterCounts::from_items(&app.inbox_items);
+    let mut spans = vec![Span::styled(format!("{} Memorum  ", styles.glyphs.dream), styles.accent)];
+    for filter in InboxFilter::all() {
+        let label = format!("{}{}{}", filter.label(), styles.glyphs.pill_separator, counts.get(filter));
+        let style = if filter == app.filter { styles.selected } else { styles.muted };
+        spans.push(Span::styled(format!(" {label} "), style));
+        spans.push(Span::raw(" "));
     }
-
-    let mut second_line = vec![Span::raw("         ")];
-    for panel in PanelId::all().into_iter().skip(5) {
-        second_line.push(panel_tab(panel, active_panel));
-        second_line.push(Span::raw(" "));
-    }
-    second_line.push(Span::raw("   ?:help  q:quit"));
-
-    frame.render_widget(Paragraph::new(vec![Line::from(first_line), Line::from(second_line)]), area);
+    spans.push(Span::styled(
+        format!("/:search  ::palette  ?:help  theme:{}  charset:{:?}", app.theme.name, app.charset),
+        styles.dim,
+    ));
+    frame.render_widget(Paragraph::new(Line::from(spans)).style(styles.base), area);
 }
 
-fn panel_tab(panel: PanelId, active_panel: PanelId) -> Span<'static> {
-    let label = format!("[{}]{}", panel.number(), panel.title());
-    if panel == active_panel {
-        Span::styled(label, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
-    } else {
-        Span::raw(label)
-    }
+fn render_inbox_shell(frame: &mut Frame<'_>, area: Rect, app: &App, styles: &ThemeStyles) {
+    let panes = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(36), Constraint::Min(20)])
+        .split(area);
+    let visible = app.visible_items();
+    inbox::render(frame, panes[0], inbox::InboxRenderContext { items: &visible, selected: app.selected, styles });
+    crate::inspector::render(frame, panes[1], app.selected_item(), styles);
 }
 
-fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let socket = match app.socket_state() {
-        SocketState::Connected => Span::styled("socket:ok", Style::default().fg(Color::Green)),
-        SocketState::Unreachable { .. } => {
-            Span::styled("socket:UNREACHABLE", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
-        }
-    };
-
-    let status = app
-        .pending_action
-        .as_ref()
-        .map(|pending| format!("  {} {} -- press u to undo", pending.action.past_tense(), pending.memory_id))
-        .unwrap_or_else(|| format!("  panel:{}  {}", app.active_panel().number(), app.snapshot().footer_hint));
-
-    let line = Line::from(vec![Span::raw(format!("memoryd {}  ", app.snapshot().version)), socket, Span::raw(status)]);
-    frame.render_widget(Paragraph::new(line), area);
-}
-
-fn render_text_modal(frame: &mut Frame<'_>, area: Rect, modal: &Modal) {
+fn render_text_modal(frame: &mut Frame<'_>, area: Rect, modal: &Modal, styles: &ThemeStyles) {
     let (title, body) = match modal {
-        Modal::MemoryDetail => (
-            "Memory detail",
-            "No trust artifact loaded.\n\nEsc: close",
-        ),
-        Modal::HelpOverlay => (
-            "Help",
-            "Global: 1-9 switch panels  ?:help  q:quit  Ctrl-c:quit  Ctrl-r:refresh  ::command\nPanel: j/k move  h/l pane  Enter detail  / filter  tab focus  u undo\n\nEsc or ?: close",
-        ),
-        Modal::ConfirmQuit => (
-            "Confirm quit",
-            "A review action is still in its undo window.\nQuit anyway? [y/N]\n\nEsc: cancel",
-        ),
-        Modal::ConfirmForget => (
-            "Confirm forget",
-            "Forgetting tombstones the selected memory.\nReason capture lands with daemon integration.\n\nEsc: close",
-        ),
-        Modal::CommandPrompt => (
-            "Command",
-            ":q quit\n:reload force refresh\n:help <topic>\n\nEsc: close",
-        ),
+        Modal::MemoryDetail => ("Memory Detail", "No trust artifact loaded.\n\nEsc: close"),
+        Modal::HelpOverlay => {
+            ("Help", "j/k move · tab filters · enter detail · a/r/f review · Ctrl-r refresh · q quit")
+        }
+        Modal::ConfirmQuit => ("Confirm quit", "A review action is still undoable. Quit anyway? [y/N]"),
+        Modal::CommandPrompt => ("Command", ":q quit\n:reload force refresh\nTask 11B adds fuzzy dispatch."),
     };
-
     frame.render_widget(Clear, area);
     frame.render_widget(
-        Paragraph::new(body)
-            .block(Block::default().title(title).borders(Borders::ALL))
-            .style(Style::default().fg(Color::White)),
-        area,
-    );
-}
-
-fn render_memory_detail_modal(frame: &mut Frame<'_>, area: Rect, artifact: Option<&TrustArtifact>, scroll_offset: u16) {
-    let body = artifact
-        .map(|artifact| TrustArtifactWidget::new(artifact).render_lines())
-        .unwrap_or_else(|| vec![Line::from("No trust artifact loaded."), Line::from("Esc: close")]);
-
-    frame.render_widget(Clear, area);
-    frame.render_widget(
-        Paragraph::new(body)
-            .scroll((scroll_offset, 0))
-            .block(Block::default().title("Memory Detail").borders(Borders::ALL))
-            .style(Style::default().fg(Color::White)),
+        Paragraph::new(body).style(styles.base).block(
+            Block::new().title(title).borders(Borders::ALL).border_set(styles.border).border_style(styles.block),
+        ),
         area,
     );
 }
@@ -796,17 +779,239 @@ fn selected_index(cursor: usize, len: usize) -> Option<usize> {
     }
 }
 
-fn first_memory_id<'a>(values: impl IntoIterator<Item = &'a str>) -> Option<String> {
-    values
-        .into_iter()
-        .flat_map(|value| value.split_whitespace())
-        .map(|token| token.trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_'))
-        .find(|token| is_valid_memory_id(token))
-        .map(str::to_owned)
+fn render_too_small(frame: &mut Frame<'_>, area: Rect, terminal_area: Rect, styles: &ThemeStyles) {
+    let text =
+        format!("Terminal too small (current: {}x{}, minimum: 80x24).", terminal_area.width, terminal_area.height);
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(text).style(styles.warn).block(
+            Block::new()
+                .title("Resize required")
+                .borders(Borders::ALL)
+                .border_set(styles.border)
+                .border_style(styles.block),
+        ),
+        area,
+    );
 }
 
-fn is_valid_memory_id(value: &str) -> bool {
-    memoryd::protocol::MemoryId::try_new(value.to_owned()).is_ok()
+fn render_socket_unreachable(frame: &mut Frame<'_>, area: Rect, socket_state: &SocketState, styles: &ThemeStyles) {
+    let SocketState::Unreachable { path, error } = socket_state else {
+        return;
+    };
+    let body = vec![
+        Line::from(format!("Socket: {}", path.display())),
+        Line::from(format!("Error:  {error}")),
+        Line::from(""),
+        Line::from("Run `memoryd start` to start the daemon."),
+        Line::from("Ctrl-r to retry. q to quit."),
+    ];
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(body).style(styles.bad).block(
+            Block::new()
+                .title("Daemon unreachable")
+                .borders(Borders::ALL)
+                .border_set(styles.border)
+                .border_style(styles.block),
+        ),
+        area,
+    );
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DaemonSnapshot {
+    pub version: String,
+    pub footer_hint: String,
+    pub daemon_state: String,
+    pub review_queue: Vec<ReviewQueueRow>,
+    pub conflicts: Vec<ConflictRow>,
+    pub recall: Vec<RecallHitRow>,
+    pub dreams: Vec<DreamRow>,
+    pub due: Vec<RealityCheckRow>,
+    pub memories: Vec<MemoryRow>,
+    pub trust_artifact: Option<TrustArtifact>,
+}
+
+impl DaemonSnapshot {
+    pub fn loading(socket_path: &Path) -> Self {
+        let mut snapshot = Self::empty();
+        snapshot.daemon_state = format!("loading {}", socket_path.display());
+        snapshot
+    }
+
+    pub fn empty() -> Self {
+        Self {
+            version: "v1.0.0".to_string(),
+            footer_hint: "?:help  q:quit".to_string(),
+            daemon_state: "loading".to_string(),
+            review_queue: Vec::new(),
+            conflicts: Vec::new(),
+            recall: Vec::new(),
+            dreams: Vec::new(),
+            due: Vec::new(),
+            memories: Vec::new(),
+            trust_artifact: None,
+        }
+    }
+
+    pub fn sample() -> Self {
+        Self {
+            version: "v1.0.0".to_string(),
+            footer_hint: "?:help  q:quit".to_string(),
+            daemon_state: "running".to_string(),
+            review_queue: vec![
+                ReviewQueueRow {
+                    id: "mem_20260501_0123456789abcdef_000001".to_string(),
+                    title: "Prefer CITEXT for email columns".to_string(),
+                    namespace: "project:atlasos".to_string(),
+                    status: "candidate".to_string(),
+                    reason: Some("requires_user_confirmation".to_string()),
+                },
+                ReviewQueueRow {
+                    id: "mem_20260501_0123456789abcdef_000007".to_string(),
+                    title: "Dream candidate needs confirmation".to_string(),
+                    namespace: "project:agent-memory".to_string(),
+                    status: "dream_low_confidence".to_string(),
+                    reason: Some("dream_low_confidence".to_string()),
+                },
+            ],
+            conflicts: vec![ConflictRow {
+                id: "mem_20260501_0123456789abcdef_000002".to_string(),
+                title: "Database connection pool size".to_string(),
+                namespace: "project:atlasos".to_string(),
+                reason: Some("Pool size: 20 vs Pool size: 30".to_string()),
+            }],
+            recall: vec![RecallHitRow {
+                id: "mem_20260501_0123456789abcdef_000009".to_string(),
+                title: "Deploy target is production ECS".to_string(),
+                namespace: "project:atlasos".to_string(),
+                age: "11:02".to_string(),
+            }],
+            dreams: vec![DreamRow {
+                id: "dream_project_20260501".to_string(),
+                title: "Daily synthesis summary ready".to_string(),
+                namespace: "project:agent-memory".to_string(),
+            }],
+            due: vec![RealityCheckRow {
+                id: "mem_20260501_0123456789abcdef_000004".to_string(),
+                title: "SSH key rotation every 90d".to_string(),
+                namespace: "me".to_string(),
+                score: "0.82".to_string(),
+            }],
+            memories: vec![MemoryRow {
+                id: "mem_20260501_0123456789abcdef_000010".to_string(),
+                title: "Agent memory uses private daemon socket".to_string(),
+                namespace: "agent".to_string(),
+            }],
+            trust_artifact: Some(sample_trust_artifact()),
+        }
+    }
+
+    pub fn inbox_items(&self) -> Vec<InboxItem> {
+        let mut sources = vec![
+            self.conflicts
+                .iter()
+                .map(|row| InboxItem::Conflict {
+                    id: row.id.clone(),
+                    title: row.title.clone(),
+                    namespace: row.namespace.clone(),
+                    reason: row.reason.clone(),
+                    age_label: "now".to_string(),
+                })
+                .collect(),
+            self.due
+                .iter()
+                .map(|row| InboxItem::RealityCheckDue {
+                    id: row.id.clone(),
+                    title: row.title.clone(),
+                    namespace: row.namespace.clone(),
+                    score: row.score.clone(),
+                    age_label: "due".to_string(),
+                })
+                .collect(),
+            self.review_queue
+                .iter()
+                .map(|row| InboxItem::ReviewCandidate {
+                    id: row.id.clone(),
+                    title: row.title.clone(),
+                    namespace: row.namespace.clone(),
+                    reason: row.reason.clone(),
+                    age_label: row.status.clone(),
+                })
+                .collect(),
+            self.dreams
+                .iter()
+                .map(|row| InboxItem::DreamOutput {
+                    id: row.id.clone(),
+                    title: row.title.clone(),
+                    namespace: row.namespace.clone(),
+                    age_label: "today".to_string(),
+                })
+                .collect(),
+            self.recall
+                .iter()
+                .map(|row| InboxItem::RecallHit {
+                    id: row.id.clone(),
+                    title: row.title.clone(),
+                    namespace: row.namespace.clone(),
+                    age_label: row.age.clone(),
+                })
+                .collect(),
+            self.memories
+                .iter()
+                .map(|row| InboxItem::Memory {
+                    id: row.id.clone(),
+                    title: row.title.clone(),
+                    namespace: row.namespace.clone(),
+                    age_label: "active".to_string(),
+                })
+                .collect(),
+        ];
+        crate::inbox::ranking::merge_and_filter(std::mem::take(&mut sources), InboxFilter::All, 50)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReviewQueueRow {
+    pub id: String,
+    pub title: String,
+    pub namespace: String,
+    pub status: String,
+    pub reason: Option<String>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConflictRow {
+    pub id: String,
+    pub title: String,
+    pub namespace: String,
+    pub reason: Option<String>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecallHitRow {
+    pub id: String,
+    pub title: String,
+    pub namespace: String,
+    pub age: String,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DreamRow {
+    pub id: String,
+    pub title: String,
+    pub namespace: String,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RealityCheckRow {
+    pub id: String,
+    pub title: String,
+    pub namespace: String,
+    pub score: String,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MemoryRow {
+    pub id: String,
+    pub title: String,
+    pub namespace: String,
 }
 
 fn sample_trust_artifact() -> TrustArtifact {
@@ -816,574 +1021,19 @@ fn sample_trust_artifact() -> TrustArtifact {
         "status": "active",
         "sensitivity": "internal",
         "source": "substrate:projects/atlasos/deploy-target.md",
-        "title": {
-            "kind": "plaintext",
-            "value": "Deploy target is production ECS"
-        },
-        "body": {
-            "kind": "plaintext",
-            "value": "The ECS cluster in us-east-1 is the production deployment target. All deploy scripts should target this cluster."
-        },
+        "title": { "kind": "plaintext", "value": "Deploy target is production ECS" },
+        "body": { "kind": "plaintext", "value": "The ECS cluster in us-east-1 is the production deployment target." },
         "current_confidence": "0.95",
         "original_confidence": "0.90",
-        "confidence_reason": "promoted from candidate; user confirmed; corroborated by codex-cli and claude-code",
+        "confidence_reason": "user confirmed; policy-promoted",
         "trust_summary": "high trust; policy-promoted",
-        "recall": {
-            "total": 28,
-            "last_30_days": 12,
-            "last_recalled_at": "2026-05-01T11:02:00Z"
-        },
-        "provenance_chain": [
-            {
-                "timestamp": "2026-04-30T14:22:00Z",
-                "kind": "write_committed",
-                "summary": "written by codex-cli",
-                "evidence": "sess_abc123",
-                "device": "macbook"
-            },
-            {
-                "timestamp": "2026-04-30T14:22:01Z",
-                "kind": "governance_decision",
-                "summary": "governance: promoted",
-                "evidence": "policy:project-standard@v2",
-                "device": "macbook"
-            },
-            {
-                "timestamp": "2026-05-01T11:02:00Z",
-                "kind": "recall_hit",
-                "summary": "recalled in delta-block",
-                "evidence": "session:claude-code",
-                "device": "desktop"
-            }
-        ],
-        "policy_decisions": [
-            {
-                "policy_applied": "project-standard@v2",
-                "policy_source": "disk",
-                "confidence_floor_pass": "pass (0.90 >= 0.80)",
-                "grounding_satisfied": "2 source refs resolved",
-                "contradiction_result": "none detected",
-                "tombstone_enforced": "no matching tombstone",
-                "sensitivity_gate_result": "pass (internal)"
-            }
-        ],
-        "privacy_scan": {
-            "labels_detected": ["none"],
-            "storage_action": "plaintext"
-        },
-        "supersedes": [
-            {
-                "id": "mem_20260428_0123456789abcdef_000004",
-                "timestamp": "2026-04-28T00:00:00Z",
-                "title": {
-                    "kind": "plaintext",
-                    "value": "Deploy target ECS (initial)"
-                }
-            }
-        ],
+        "recall": { "total": 28, "last_30_days": 12, "last_recalled_at": "2026-05-01T11:02:00Z" },
+        "provenance_chain": [{ "timestamp": "2026-04-30T14:22:00Z", "kind": "write_committed", "summary": "written by codex-cli", "evidence": "sess_abc123", "device": "macbook" }],
+        "policy_decisions": [{ "policy_applied": "project-standard@v2", "policy_source": "disk", "confidence_floor_pass": "pass", "grounding_satisfied": "2 source refs resolved", "contradiction_result": "none detected", "tombstone_enforced": "no matching tombstone", "sensitivity_gate_result": "pass" }],
+        "privacy_scan": { "labels_detected": ["none"], "storage_action": "plaintext" },
+        "supersedes": [],
         "superseded_by": [],
-        "sync_state": {
-            "devices": ["macbook (written here)", "desktop (synced 2026-05-01 06:00)"],
-            "merge_status": "clean",
-            "claim_lock_status": "Stream I not active"
-        }
+        "sync_state": { "devices": ["macbook"], "merge_status": "clean", "claim_lock_status": null }
     }))
     .expect("sample trust artifact fixture must match daemon DTO")
-}
-
-fn render_too_small(frame: &mut Frame<'_>, area: Rect, terminal_area: Rect) {
-    let text =
-        format!("Terminal too small (current: {}x{}, minimum: 80x24).", terminal_area.width, terminal_area.height);
-    let widget = Paragraph::new(text)
-        .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
-        .block(Block::default().title("Resize required").borders(Borders::ALL));
-    frame.render_widget(Clear, area);
-    frame.render_widget(widget, area);
-}
-
-fn render_socket_unreachable(frame: &mut Frame<'_>, area: Rect, path: &Path, error: &str) {
-    let body = vec![
-        Line::from(format!("Socket: {}", path.display())),
-        Line::from(format!("Error:  {error}")),
-        Line::from(""),
-        Line::from("Run `memoryd start` to start the daemon."),
-        Line::from("Ctrl-r to retry.  q to quit."),
-    ];
-    let widget = Paragraph::new(body)
-        .block(Block::default().title("Daemon unreachable").borders(Borders::ALL))
-        .style(Style::default().fg(Color::Red));
-    frame.render_widget(Clear, area);
-    frame.render_widget(widget, area);
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct DaemonSnapshot {
-    pub version: String,
-    pub footer_hint: String,
-    pub overview: OverviewData,
-    pub review_queue: Vec<ReviewQueueRow>,
-    pub conflicts: Vec<ConflictRow>,
-    pub entities: EntityPanelData,
-    pub timeline: Vec<TimelineRow>,
-    pub namespace: NamespacePanelData,
-    pub policy: PolicyPanelData,
-    pub reality_check: RealityCheckPanelData,
-    pub recall: RecallPanelData,
-    pub trust_artifact: Option<TrustArtifact>,
-}
-
-impl DaemonSnapshot {
-    pub fn loading(socket_path: &Path) -> Self {
-        let mut snapshot = Self::empty();
-        snapshot.overview.daemon_state = "loading".to_owned();
-        snapshot.overview.socket_path = socket_path.display().to_string();
-        snapshot
-    }
-
-    pub fn empty() -> Self {
-        Self {
-            version: "v1.0.0".to_owned(),
-            footer_hint: "?:help  q:quit".to_owned(),
-            overview: OverviewData::empty(),
-            review_queue: Vec::new(),
-            conflicts: Vec::new(),
-            entities: EntityPanelData::empty(),
-            timeline: Vec::new(),
-            namespace: NamespacePanelData::empty(),
-            policy: PolicyPanelData::empty(),
-            reality_check: RealityCheckPanelData::empty(),
-            recall: RecallPanelData::empty(),
-            trust_artifact: None,
-        }
-    }
-
-    pub fn sample() -> Self {
-        Self {
-            version: "v1.0.0".to_owned(),
-            footer_hint: "?:help  q:quit".to_owned(),
-            overview: OverviewData::sample(),
-            review_queue: ReviewQueueRow::sample_rows(),
-            conflicts: ConflictRow::sample_rows(),
-            entities: EntityPanelData::sample(),
-            timeline: TimelineRow::sample_rows(),
-            namespace: NamespacePanelData::sample(),
-            policy: PolicyPanelData::sample(),
-            reality_check: RealityCheckPanelData::sample(),
-            recall: RecallPanelData::sample(),
-            trust_artifact: Some(sample_trust_artifact()),
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OverviewData {
-    pub daemon_state: String,
-    pub pid: u32,
-    pub uptime: String,
-    pub socket_path: String,
-    pub active_memories: u64,
-    pub last_reindex: String,
-    pub sync_ahead: u32,
-    pub sync_behind: u32,
-    pub remote: String,
-    pub pending_review: u32,
-    pub candidate: u32,
-    pub quarantined: u32,
-    pub dream_low_confidence: u32,
-    pub conflicts: u32,
-    pub active_sessions: String,
-    pub dream_next: String,
-    pub dream_last: String,
-    pub dream_promoted: u32,
-    pub dream_queued: u32,
-    pub dream_dropped: u32,
-    pub recall_startup: u64,
-    pub recall_delta: u64,
-    pub peer_updates: u64,
-}
-
-impl OverviewData {
-    fn empty() -> Self {
-        Self {
-            daemon_state: "loading".to_owned(),
-            pid: 0,
-            uptime: "not loaded".to_owned(),
-            socket_path: "not connected".to_owned(),
-            active_memories: 0,
-            last_reindex: "not loaded".to_owned(),
-            sync_ahead: 0,
-            sync_behind: 0,
-            remote: "not loaded".to_owned(),
-            pending_review: 0,
-            candidate: 0,
-            quarantined: 0,
-            dream_low_confidence: 0,
-            conflicts: 0,
-            active_sessions: "not loaded".to_owned(),
-            dream_next: "not loaded".to_owned(),
-            dream_last: "not loaded".to_owned(),
-            dream_promoted: 0,
-            dream_queued: 0,
-            dream_dropped: 0,
-            recall_startup: 0,
-            recall_delta: 0,
-            peer_updates: 0,
-        }
-    }
-
-    fn sample() -> Self {
-        Self {
-            daemon_state: "running".to_owned(),
-            pid: 12_345,
-            uptime: "3d 14h".to_owned(),
-            socket_path: "/run/user/1000/memoryd.sock".to_owned(),
-            active_memories: 1_204,
-            last_reindex: "2026-05-01 08:12".to_owned(),
-            sync_ahead: 2,
-            sync_behind: 0,
-            remote: "git@github.com:trey/memory.git".to_owned(),
-            pending_review: 7,
-            candidate: 3,
-            quarantined: 2,
-            dream_low_confidence: 2,
-            conflicts: 1,
-            active_sessions: "claude-code, codex-cli".to_owned(),
-            dream_next: "2026-05-02 03:00".to_owned(),
-            dream_last: "2026-05-01 03:04".to_owned(),
-            dream_promoted: 3,
-            dream_queued: 1,
-            dream_dropped: 0,
-            recall_startup: 42,
-            recall_delta: 119,
-            peer_updates: 8,
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ReviewQueueRow {
-    pub status: String,
-    pub id: String,
-    pub title: String,
-    pub namespace: String,
-    pub confidence: String,
-    pub added: String,
-    pub policy: String,
-    pub next: String,
-    pub reason: Option<String>,
-}
-
-impl ReviewQueueRow {
-    fn sample_rows() -> Vec<Self> {
-        vec![
-            Self {
-                status: "candidate".to_owned(),
-                id: "mem_20260501_0123456789abcdef_000001".to_owned(),
-                title: "Prefer CITEXT for email columns".to_owned(),
-                namespace: "project:atlasos".to_owned(),
-                confidence: "0.72".to_owned(),
-                added: "3h ago".to_owned(),
-                policy: "project-standard@v2".to_owned(),
-                next: "requires_user_confirmation".to_owned(),
-                reason: None,
-            },
-            Self {
-                status: "quarantined".to_owned(),
-                id: "mem_20260430_0123456789abcdef_000004".to_owned(),
-                title: "SSH key rotation every 90d".to_owned(),
-                namespace: "me".to_owned(),
-                confidence: "0.50".to_owned(),
-                added: "1d ago".to_owned(),
-                policy: "me-strict@v1".to_owned(),
-                next: "review_required".to_owned(),
-                reason: Some("grounding_rehydration_failed".to_owned()),
-            },
-            Self {
-                status: "dream_low_confidence".to_owned(),
-                id: "mem_20260501_0123456789abcdef_000007".to_owned(),
-                title: "Dream candidate needs confirmation".to_owned(),
-                namespace: "project:agent-memory".to_owned(),
-                confidence: "0.68".to_owned(),
-                added: "20m ago".to_owned(),
-                policy: "dreaming-strict@v1".to_owned(),
-                next: "dream_low_confidence".to_owned(),
-                reason: Some("dream_low_confidence".to_owned()),
-            },
-        ]
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ConflictRow {
-    pub id: String,
-    pub title: String,
-    pub namespace: String,
-    pub local: String,
-    pub remote: String,
-    pub ancestor: String,
-}
-
-impl ConflictRow {
-    fn sample_rows() -> Vec<Self> {
-        vec![Self {
-            id: "mem_20260501_0123456789abcdef_000002".to_owned(),
-            title: "Database connection pool size".to_owned(),
-            namespace: "project:atlasos".to_owned(),
-            local: "Pool size: 20".to_owned(),
-            remote: "Pool size: 30".to_owned(),
-            ancestor: "Pool size: 10".to_owned(),
-        }]
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EntityPanelData {
-    pub query: String,
-    pub entity: String,
-    pub project_id: String,
-    pub memory_count: u32,
-    pub recall_count_30d: u32,
-    pub top_memories: Vec<String>,
-}
-
-impl EntityPanelData {
-    fn empty() -> Self {
-        Self {
-            query: "not loaded".to_owned(),
-            entity: "not loaded".to_owned(),
-            project_id: "not loaded".to_owned(),
-            memory_count: 0,
-            recall_count_30d: 0,
-            top_memories: vec!["Entity graph endpoint not loaded.".to_owned()],
-        }
-    }
-
-    fn sample() -> Self {
-        Self {
-            query: "atlasos".to_owned(),
-            entity: "atlasos".to_owned(),
-            project_id: "project:proj_a3f2".to_owned(),
-            memory_count: 42,
-            recall_count_30d: 28,
-            top_memories: vec![
-                "mem_000009  Deploy target is production ECS  conf:0.95".to_owned(),
-                "mem_000006  DB pool size 30  conf:0.88".to_owned(),
-                "mem_000014  Prefer CITEXT for emails  conf:0.72  [candidate]".to_owned(),
-            ],
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TimelineRow {
-    pub timestamp: String,
-    pub kind: String,
-    pub detail: String,
-}
-
-impl TimelineRow {
-    fn sample_rows() -> Vec<Self> {
-        vec![
-            Self {
-                timestamp: "2026-05-01 11:32:04".to_owned(),
-                kind: "write".to_owned(),
-                detail: "mem_022 promoted namespace:project".to_owned(),
-            },
-            Self {
-                timestamp: "2026-05-01 11:31:58".to_owned(),
-                kind: "dream_pass".to_owned(),
-                detail: "scope:project pass:2 promoted:1 queued:0".to_owned(),
-            },
-            Self {
-                timestamp: "2026-05-01 11:28:44".to_owned(),
-                kind: "recall".to_owned(),
-                detail: "session:claude-code startup 42 items".to_owned(),
-            },
-            Self {
-                timestamp: "2026-05-01 11:15:17".to_owned(),
-                kind: "privacy".to_owned(),
-                detail: "mem_019 encrypted_at_rest label:email".to_owned(),
-            },
-        ]
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NamespacePanelData {
-    pub tree_lines: Vec<String>,
-    pub detail_lines: Vec<String>,
-}
-
-impl NamespacePanelData {
-    fn empty() -> Self {
-        Self {
-            tree_lines: vec!["Namespace endpoint not loaded.".to_owned()],
-            detail_lines: vec!["Select a memory after daemon data loads.".to_owned()],
-        }
-    }
-
-    fn sample() -> Self {
-        Self {
-            tree_lines: vec![
-                "▼ me/".to_owned(),
-                "  ▼ identity/".to_owned(),
-                "      role.md [active] conf:0.95".to_owned(),
-                "▶ projects/".to_owned(),
-                "  ▶ atlasos/".to_owned(),
-                "▶ agent/".to_owned(),
-            ],
-            detail_lines: vec![
-                "Title: Senior engineer, Rust+TS stack".to_owned(),
-                "Namespace: me/identity".to_owned(),
-                "Recall (30d): 41".to_owned(),
-                "Sensitivity: internal".to_owned(),
-            ],
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PolicyPanelData {
-    pub active_policies: Vec<String>,
-    pub recent_decisions: Vec<String>,
-    pub refusal_reasons: Vec<String>,
-}
-
-impl PolicyPanelData {
-    fn empty() -> Self {
-        Self {
-            active_policies: vec!["Policy endpoint not loaded.".to_owned()],
-            recent_decisions: Vec::new(),
-            refusal_reasons: Vec::new(),
-        }
-    }
-
-    fn sample() -> Self {
-        Self {
-            active_policies: vec![
-                "me-strict@v1          source: disk".to_owned(),
-                "project-standard@v2   source: disk".to_owned(),
-                "agent-strict@v3       source: built_in_fallback".to_owned(),
-                "dreaming-strict@v1    source: disk".to_owned(),
-            ],
-            recent_decisions: vec![
-                "2026-05-01 11:32  PROMOTED   mem_022  policy:project-standard@v2".to_owned(),
-                "2026-05-01 10:45  CANDIDATE  mem_018  grounding:fail".to_owned(),
-            ],
-            refusal_reasons: vec!["tombstone 12".to_owned(), "grounding 7".to_owned()],
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct RealityCheckPanelData {
-    pub session_id: Option<String>,
-    pub status: String,
-    pub last_completed: String,
-    pub schedule: String,
-    pub items: Vec<RealityCheckRow>,
-}
-
-impl RealityCheckPanelData {
-    fn empty() -> Self {
-        Self {
-            session_id: None,
-            status: "not loaded".to_owned(),
-            last_completed: "not loaded".to_owned(),
-            schedule: "not loaded".to_owned(),
-            items: Vec::new(),
-        }
-    }
-
-    fn sample() -> Self {
-        Self {
-            session_id: Some("rc_sample_session".to_owned()),
-            status: "DUE".to_owned(),
-            last_completed: "2026-04-20, 11 days ago".to_owned(),
-            schedule: "Sunday 09:00 | Next: 2026-05-04 09:00".to_owned(),
-            items: vec![RealityCheckRow {
-                memory_id: "mem_20260501_0123456789abcdef_000008".to_owned(),
-                rank: 1,
-                score: 0.82,
-                title: "My preferred stack is TypeScript + Rust".to_owned(),
-                namespace: "me/identity".to_owned(),
-                confidence: 0.88,
-                last_observed: "62 days ago".to_owned(),
-                recall_count_30d: 0,
-                breakdown: "staleness:0.35 recall:0.16 corroboration:0.20 decay:0.08 sensitivity:0.03".to_owned(),
-            }],
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct RealityCheckRow {
-    pub memory_id: String,
-    pub rank: u8,
-    pub score: f64,
-    pub title: String,
-    pub namespace: String,
-    pub confidence: f64,
-    pub last_observed: String,
-    pub recall_count_30d: u32,
-    pub breakdown: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RecallPanelData {
-    pub limit: usize,
-    pub hits: Vec<RecallHitRow>,
-}
-
-impl RecallPanelData {
-    fn empty() -> Self {
-        Self { limit: 100, hits: Vec::new() }
-    }
-
-    fn sample() -> Self {
-        Self {
-            limit: 100,
-            hits: vec![
-                RecallHitRow {
-                    event_id: "evt_20260504_001".to_owned(),
-                    device: "macbook".to_owned(),
-                    seq: 41,
-                    memory_id: "mem_20260501_0123456789abcdef_000009".to_owned(),
-                    recalled_at: "2026-05-04T09:10:00Z".to_owned(),
-                    summary: Some("Deploy target is production ECS".to_owned()),
-                },
-                RecallHitRow {
-                    event_id: "evt_20260504_002".to_owned(),
-                    device: "desktop".to_owned(),
-                    seq: 42,
-                    memory_id: "mem_20260501_0123456789abcdef_000008".to_owned(),
-                    recalled_at: "2026-05-04T09:12:00Z".to_owned(),
-                    summary: Some("Preferred stack is TypeScript + Rust".to_owned()),
-                },
-            ],
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RecallHitRow {
-    pub event_id: String,
-    pub device: String,
-    pub seq: u64,
-    pub memory_id: String,
-    pub recalled_at: String,
-    pub summary: Option<String>,
-}
-
-impl From<memoryd::protocol::RecallHitSummary> for RecallHitRow {
-    fn from(hit: memoryd::protocol::RecallHitSummary) -> Self {
-        Self {
-            event_id: hit.event_id,
-            device: hit.device,
-            seq: hit.seq,
-            memory_id: hit.memory_id.as_str().to_owned(),
-            recalled_at: hit.recalled_at.to_rfc3339(),
-            summary: hit.summary,
-        }
-    }
 }

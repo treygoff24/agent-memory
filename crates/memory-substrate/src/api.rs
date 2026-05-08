@@ -32,7 +32,7 @@ use crate::runtime::reconcile::{
     replay_pending_repairs, write_startup_marker, PendingEncryptedIndexOp, PendingEventOp, PendingIndexKind,
     PendingIndexOp,
 };
-use crate::tree::{bootstrap_repo_layout, validate_tree, TreeValidationMode};
+use crate::tree::{has_substrate_marker, validate_tree, TreeValidationMode};
 use crate::watcher::{watch_root_with_suppression, SuppressionLedger, WatchSubscription};
 
 /// Stream A substrate handle.
@@ -91,7 +91,11 @@ impl Substrate {
                 std::fs::remove_file(local_device)?;
             }
         }
-        git::adopt_clone(&roots.repo, &roots.runtime).map_err(|err| OpenError::InvalidRoots(err.to_string()))?;
+        let merge_driver = options
+            .merge_driver_path
+            .ok_or_else(|| OpenError::InvalidRoots("adopt_clone requires explicit merge_driver_path".to_string()))?;
+        git::adopt_clone(&roots.repo, &roots.runtime, &merge_driver)
+            .map_err(|err| OpenError::InvalidRoots(err.to_string()))?;
         Self::open(roots).await
     }
 
@@ -1313,7 +1317,9 @@ impl Substrate {
     }
 
     async fn open_with_options(roots: Roots, force_unsafe_durability: bool) -> Result<Self, OpenError> {
-        bootstrap_repo_layout(&roots.repo)?;
+        if !has_substrate_marker(&roots.repo) {
+            return Err(OpenError::NotAMemorumSubstrate { path: roots.repo.clone() });
+        }
         std::fs::create_dir_all(&roots.runtime)?;
         let durability = probe_durability(&roots.repo, force_unsafe_durability);
         if matches!(durability, DurabilityTier::Refused) && !force_unsafe_durability {

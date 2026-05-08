@@ -63,6 +63,9 @@ pub struct InitOptions {
 pub struct AdoptOptions {
     /// Force regeneration of local device identity.
     pub force_new_device: bool,
+    /// Explicit merge driver binary path. Ambient PATH lookup is intentionally
+    /// refused for unattended clone adoption.
+    pub merge_driver_path: Option<PathBuf>,
 }
 
 /// Stream A doctor report.

@@ -1,12 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::SystemTime;
 
 use chrono::{DateTime, Duration, Utc};
-use memory_substrate::events::{decode_line, encode_event_line, read_events, rewrite_events, Event};
+use memory_substrate::events::{decode_line, encode_event_line, read_events, Event, MAX_LINE_BYTES};
 use memory_substrate::frontmatter::parse_document;
 use memory_substrate::markdown::read_memory_file;
 use memory_substrate::tree::relative_memory_paths;
@@ -408,7 +408,7 @@ fn compact_event_logs(
         }
         outcome.events_compacted += old.len();
         write_archived_events(repo, old, mutated_files, &mut outcome)?;
-        rewrite_events(&path, &live)?;
+        rewrite_live_events(&path, &live)?;
         mutated_files.insert(repo_relative(repo, &path)?);
     }
     Ok(outcome)
@@ -468,9 +468,103 @@ fn write_zstd_event_archive(path: &Path, events: &[Event]) -> Result<(), Cleanup
         text.extend_from_slice(line.as_bytes());
     }
     let compressed = zstd::stream::encode_all(text.as_slice(), 0)?;
-    let mut file = fs::File::create(path)?;
-    file.write_all(&compressed)?;
+    atomic_write(path, &compressed)?;
     Ok(())
+}
+
+fn rewrite_live_events(path: &Path, events: &[Event]) -> Result<(), CleanupError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut bytes = Vec::new();
+    for event in events {
+        let value = serde_json::to_value(event).map_err(|err| CleanupError::Serialization(err.to_string()))?;
+        let line = encode_event_line(&value).map_err(|err| CleanupError::Serialization(err.to_string()))?;
+        if line.len() > MAX_LINE_BYTES {
+            return Err(CleanupError::Serialization(format!(
+                "event line too long: {} bytes (max {MAX_LINE_BYTES})",
+                line.len()
+            )));
+        }
+        bytes.extend_from_slice(line.as_bytes());
+    }
+    atomic_write(path, &bytes)?;
+    Ok(())
+}
+
+fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), CleanupError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let temp = temp_path_for(path);
+    let _ = fs::remove_file(&temp);
+    {
+        let mut file = fs::File::create(&temp)?;
+        file.write_all(contents)?;
+        file.sync_all()?;
+    }
+    maybe_cleanup_failpoint(path, CleanupFailpoint::BeforeArchiveRename)?;
+    fs::rename(&temp, path)?;
+    fsync_parent(path)?;
+    maybe_cleanup_failpoint(path, CleanupFailpoint::AfterArchiveRename)?;
+    Ok(())
+}
+
+fn temp_path_for(path: &Path) -> PathBuf {
+    let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or("cleanup-output");
+    path.with_file_name(format!("{file_name}.tmp-{}", std::process::id()))
+}
+
+fn fsync_parent(path: &Path) -> Result<(), CleanupError> {
+    if let Some(parent) = path.parent() {
+        fs::File::open(parent)?.sync_all()?;
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum CleanupFailpoint {
+    BeforeArchiveRename,
+    AfterArchiveRename,
+}
+
+fn maybe_cleanup_failpoint(path: &Path, point: CleanupFailpoint) -> Result<(), CleanupError> {
+    if !is_event_archive_path(path) {
+        return Ok(());
+    }
+    let Some(repo) = repo_root_for_cleanup_path(path) else {
+        return Ok(());
+    };
+    let failpoint_path = repo.join(".memorum/cleanup-failpoint");
+    let Ok(value) = fs::read_to_string(failpoint_path) else {
+        return Ok(());
+    };
+    let expected = match point {
+        CleanupFailpoint::BeforeArchiveRename => "before_archive_rename",
+        CleanupFailpoint::AfterArchiveRename => "after_archive_rename",
+    };
+    if value.trim() == expected {
+        return Err(CleanupError::Serialization(format!("cleanup failpoint triggered: {expected}")));
+    }
+    Ok(())
+}
+
+fn is_event_archive_path(path: &Path) -> bool {
+    path.components()
+        .collect::<Vec<_>>()
+        .windows(2)
+        .any(|pair| pair[0].as_os_str() == "events" && pair[1].as_os_str() == "archive")
+}
+
+fn repo_root_for_cleanup_path(path: &Path) -> Option<PathBuf> {
+    let mut current = path.parent();
+    while let Some(dir) = current {
+        if dir.file_name().and_then(|name| name.to_str()) == Some("events") {
+            return dir.parent().map(Path::to_path_buf);
+        }
+        current = dir.parent();
+    }
+    None
 }
 
 fn is_stale_candidate(memory: &Memory, cutoff: DateTime<Utc>) -> bool {

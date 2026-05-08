@@ -11,19 +11,23 @@ use serde_json::json;
 
 pub mod audit;
 pub mod entity_graph;
+pub mod policy_editor;
 pub mod reality_check;
 pub mod recall_hits;
 pub mod review;
 pub mod roi;
 pub mod status;
+pub mod sync_dashboard;
 
 pub use audit::{audit, audit_temporal, audit_walk};
 pub use entity_graph::{entity_detail, entity_graph, EntityDetailResponse, EntityGraphResponse};
+pub use policy_editor::{policy_editor_get, policy_editor_post, PolicyEditorResponse};
 pub use reality_check::{reality_check, reality_check_history, reality_check_respond, RealityCheckHistoryResponse};
 pub use recall_hits::recall_hits;
 pub use review::{review_action, review_queue, ReviewActionRequest};
 pub use roi::{roi, RoiResponse};
 pub use status::{notifications_stream, status, StatusDashboardResponse};
+pub use sync_dashboard::{sync_dashboard, SyncDashboardResponse};
 
 pub const AUDIT_MEMORY_ID: &str = "mem_20260501_a1b2c3d4e5f60718_000010";
 pub const REVIEWABLE_MEMORY_ID: &str = "mem_20260501_a1b2c3d4e5f60718_000001";

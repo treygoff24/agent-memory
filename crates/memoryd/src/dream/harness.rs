@@ -32,6 +32,7 @@ pub const CODEX_ENV_ALLOWLIST: &[&str] = &["CODEX_HOME", "HOME", "OPENAI_API_KEY
 
 const STDOUT_CAPTURE_LIMIT_BYTES: usize = 16 * 1024 * 1024;
 const STDERR_TAIL_LIMIT_BYTES: usize = 64 * 1024;
+const AUTH_DIAGNOSTIC_TAIL_LIMIT_BYTES: usize = 4 * 1024;
 const DEFAULT_KILL_GRACE: Duration = Duration::from_secs(2);
 const AUTH_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -162,6 +163,7 @@ pub struct HardenedCommand {
     pub kill_grace: Duration,
     pub scratch_root: PathBuf,
     pub environment: MinimalEnvironment,
+    pub redact_stderr: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -418,6 +420,7 @@ async fn complete_external(
             kill_grace: DEFAULT_KILL_GRACE,
             scratch_root: default_scratch_root(),
             environment,
+            redact_stderr: true,
         },
         prompt,
     )
@@ -437,6 +440,7 @@ async fn auth_probe(plan: HarnessCommandPlan, path_env: Option<OsString>, env_al
             kill_grace: DEFAULT_KILL_GRACE,
             scratch_root: default_scratch_root(),
             environment: MinimalEnvironment::for_adapter(path_env, env_allowlist),
+            redact_stderr: false,
         },
         "",
     )
@@ -469,9 +473,10 @@ fn run_hardened_command_blocking(command: HardenedCommand, prompt: &str) -> Resu
     let scratch_dir = tempfile::Builder::new().prefix("run-").tempdir_in(&command.scratch_root)?;
     let expect_json = command.expect_json;
     let timeout = command.timeout;
-    let kill_grace = command.kill_grace;
+    let capture =
+        HardenedCaptureOptions { timeout, kill_grace: command.kill_grace, redact_stderr: command.redact_stderr };
     let (mut child, handles) = spawn_hardened_child(command, prompt, scratch_dir.path())?;
-    let output = capture_hardened_child(&mut child, handles, timeout, kill_grace)?;
+    let output = capture_hardened_child(&mut child, handles, capture)?;
 
     finalize_hardened_output(output, expect_json, timeout)
 }
@@ -480,6 +485,13 @@ struct SpawnedHardenedChild {
     stdout_reader: thread::JoinHandle<std::io::Result<Vec<u8>>>,
     stderr_reader: thread::JoinHandle<std::io::Result<Vec<u8>>>,
     stdin_writer: Option<thread::JoinHandle<std::io::Result<()>>>,
+}
+
+#[derive(Clone, Copy)]
+struct HardenedCaptureOptions {
+    timeout: Duration,
+    kill_grace: Duration,
+    redact_stderr: bool,
 }
 
 struct CapturedHardenedChild {
@@ -530,15 +542,18 @@ fn spawn_hardened_child(
 fn capture_hardened_child(
     child: &mut std::process::Child,
     handles: SpawnedHardenedChild,
-    timeout: Duration,
-    kill_grace: Duration,
+    options: HardenedCaptureOptions,
 ) -> Result<CapturedHardenedChild, HarnessCliError> {
-    let outcome = wait_with_timeout(child, timeout, kill_grace)?;
+    let outcome = wait_with_timeout(child, options.timeout, options.kill_grace)?;
     let stdin_write_result = join_stdin_writer(handles.stdin_writer);
     let stdout = join_reader(handles.stdout_reader)?;
     let stderr_tail = join_reader(handles.stderr_reader)?;
     let stdout = String::from_utf8_lossy(&stdout).into_owned();
-    let stderr_tail = redacted_capture_diagnostic("stderr", &stderr_tail);
+    let stderr_tail = if options.redact_stderr {
+        redacted_capture_diagnostic("stderr", &stderr_tail)
+    } else {
+        auth_diagnostic_stderr_tail(&stderr_tail)
+    };
     let status = outcome.status;
     Ok(CapturedHardenedChild {
         stdout,
@@ -709,6 +724,41 @@ fn redacted_capture_diagnostic(label: &str, bytes: &[u8]) -> String {
     } else {
         format!("[{label} redacted: {} bytes, sha256:{}]", bytes.len(), short_hash(bytes))
     }
+}
+
+fn auth_diagnostic_stderr_tail(bytes: &[u8]) -> String {
+    let tail_start = bytes.len().saturating_sub(AUTH_DIAGNOSTIC_TAIL_LIMIT_BYTES);
+    let tail = String::from_utf8_lossy(&bytes[tail_start..]);
+    redact_secret_tokens(&tail)
+}
+
+fn redact_secret_tokens(text: &str) -> String {
+    let mut redacted = text.to_owned();
+    for prefix in ["sk-ant-", "sk-proj-", "sk-live-", "sk-test-", "sk_"] {
+        redacted = redact_tokens_with_prefix(&redacted, prefix);
+    }
+    redacted
+}
+
+fn redact_tokens_with_prefix(text: &str, prefix: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(offset) = rest.find(prefix) {
+        output.push_str(&rest[..offset]);
+        output.push_str("[redacted-secret]");
+        let token = &rest[offset..];
+        let end = token
+            .char_indices()
+            .find_map(|(index, ch)| (!is_secret_token_char(ch)).then_some(index))
+            .unwrap_or(token.len());
+        rest = &token[end..];
+    }
+    output.push_str(rest);
+    output
+}
+
+fn is_secret_token_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_')
 }
 
 fn short_hash(bytes: &[u8]) -> String {

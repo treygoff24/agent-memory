@@ -1,0 +1,3 @@
+# Memorum logo — Ariadne final
+
+`memorum-logo.png` is the primary Memorum mark: a simplified hand-cut circular labyrinth in warm near-black with a dominant, favicon-legible `M`, crossed by one continuous asymmetric Ariadne thread entering upper-left and exiting lower-right. The locked palette is background `#FCFAF6`, primary ink `#312C26`, and thread accent `#B8743A`; this ties the brand mark to the Memorum dashboard accent token. The current PNG is the final raster deliverable for review, and the SVG re-trace should preserve the same palette, stroke proportions, simplified labyrinth density, empty M interior, and single unbroken thread path.

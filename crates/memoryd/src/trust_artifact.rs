@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, Duration, Utc};
+use memorum_coordination::ClaimLockRegistry;
 use memory_privacy::{
     DeterministicPrivacyClassifier, PrivacyClassifier, PrivacyLabel, PrivacyNamespace, PrivacyStorageAction,
 };
@@ -12,7 +13,6 @@ use serde_json::Value;
 
 const ENCRYPTED_REDACTION: &str = "[encrypted - use memoryd reveal <id> to decrypt]";
 const NO_POLICY_VALUE: &str = "not recorded";
-const STREAM_I_PLACEHOLDER: &str = "Stream I not active";
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
@@ -133,15 +133,21 @@ pub enum TrustArtifactError {
 pub struct TrustArtifactBuilder<'a> {
     substrate: &'a Substrate,
     now: DateTime<Utc>,
+    claim_locks: Option<&'a ClaimLockRegistry>,
 }
 
 impl<'a> TrustArtifactBuilder<'a> {
     pub fn new(substrate: &'a Substrate) -> Self {
-        Self { substrate, now: Utc::now() }
+        Self { substrate, now: Utc::now(), claim_locks: None }
     }
 
     pub fn with_now(mut self, now: DateTime<Utc>) -> Self {
         self.now = now;
+        self
+    }
+
+    pub fn with_claim_locks(mut self, claim_locks: &'a ClaimLockRegistry) -> Self {
+        self.claim_locks = Some(claim_locks);
         self
     }
 
@@ -220,11 +226,21 @@ impl<'a> TrustArtifactBuilder<'a> {
                         || Ok("unknown".to_owned()),
                         |path| memory_path_git_status(self.substrate, path.as_str()),
                     )?,
-                    claim_lock_status: Some(STREAM_I_PLACEHOLDER.to_owned()),
+                    claim_lock_status: self.claim_lock_status(id),
                 },
             },
             supersedes_ids,
             superseded_by_ids,
+        ))
+    }
+
+    fn claim_lock_status(&self, id: &MemoryId) -> Option<String> {
+        let lock = self.claim_locks?.get(id.as_str())?;
+        Some(format!(
+            "held by {}:{} until {}",
+            lock.holder_harness,
+            lock.holder_session_id,
+            lock.expires_at.to_rfc3339()
         ))
     }
 }

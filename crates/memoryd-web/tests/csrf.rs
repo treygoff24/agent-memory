@@ -93,6 +93,8 @@ async fn test_spec_api_get_routes_return_json() {
         "/api/audit/mem_20260501_a1b2c3d4e5f60718_000010/walk",
         "/api/audit/mem_20260501_a1b2c3d4e5f60718_000010/temporal",
         "/api/review",
+        "/api/policy-editor",
+        "/api/sync-dashboard",
     ];
 
     for route in get_routes {
@@ -126,6 +128,49 @@ async fn test_reality_check_post_with_correct_csrf_token_succeeds() {
 
     assert_eq!(response.status(), StatusCode::OK);
     assert_json(response, "/api/reality-check/respond").await;
+}
+
+#[tokio::test]
+async fn test_policy_editor_post_without_csrf_header_returns_403() {
+    let response = fixture_router()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/policy-editor")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"raw_yaml": "name: project-standard\n"}).to_string()))
+                .expect("request builds"),
+        )
+        .await
+        .expect("request succeeds");
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn test_policy_editor_post_with_correct_csrf_token_reaches_handler() {
+    let app = fixture_router();
+    let token = fetch_csrf_token(app.clone()).await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/policy-editor")
+                .header("x-memorum-csrf", token)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "raw_yaml": "name: project-standard\nversion: 2\nscope: project\nconfidence_floor: 0.7\nrequires_grounding: true\ntombstone_enforcement: review\ncontradiction_policy: supersede\n"
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("request succeeds");
+
+    assert_ne!(response.status(), StatusCode::FORBIDDEN);
+    assert_json(response, "/api/policy-editor").await;
 }
 
 fn post_review_action(csrf_token: Option<&str>, id: &str) -> Request<Body> {

@@ -141,7 +141,7 @@ pub async fn notifications_stream(State(state): State<WebState>) -> Response {
 }
 
 impl StatusDashboardResponse {
-    fn from_daemon(status: memoryd::protocol::StatusResponse) -> Self {
+    pub(crate) fn from_daemon(status: memoryd::protocol::StatusResponse) -> Self {
         let now = Utc::now();
         Self {
             daemon: DaemonStatus {

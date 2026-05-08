@@ -26,19 +26,9 @@ impl From<AdoptError> for std::io::Error {
     }
 }
 
-/// Adopt a clone: recreate local-only directories, configure the merge driver,
-/// and mint a device identity if one does not exist.
-///
-/// Per Q4 `adopt_clone` is the **sole** authority for minting `local-device.yaml`.
-/// `Substrate::open` fails with `OpenError::DeviceIdentityMissing` when absent.
-/// Deferred: expose `adopt_clone_with_driver` taking an explicit path (deferred).
-pub fn adopt_clone(repo: &Path, runtime: &Path) -> Result<(), GitError> {
-    let merge_driver_binary = resolve_merge_driver_binary();
-    adopt_clone_impl(repo, runtime, &merge_driver_binary, None, false).map_err(|err| GitError::CommandFailed {
-        program: "adopt_clone".to_string(),
-        args: Vec::new(),
-        stderr: err.to_string(),
-    })
+/// Adopt a clone with explicit merge driver path.
+pub fn adopt_clone(repo: &Path, runtime: &Path, merge_driver_binary: &Path) -> Result<(), AdoptError> {
+    adopt_clone_explicit(repo, runtime, merge_driver_binary, None, false)
 }
 
 /// Adopt a clone with explicit merge driver path and device control.
@@ -78,15 +68,6 @@ fn adopt_clone_impl(
     mint_device_identity(runtime, device_id, force_new_device)?;
 
     Ok(())
-}
-
-/// Resolve the merge driver binary path.
-///
-/// Deferred: replace with explicit caller-supplied path; `current_exe()` is a
-/// placeholder to keep existing `adopt_clone` call sites compiling.
-fn resolve_merge_driver_binary() -> std::path::PathBuf {
-    #[allow(clippy::disallowed_methods)]
-    std::env::current_exe().unwrap_or_else(|_| which::which("memory-merge-driver").unwrap_or_default())
 }
 
 /// Write `local-device.yaml` atomically under `runtime`.

@@ -263,9 +263,7 @@ where
 
 fn unique_socket_path(test_name: &str) -> PathBuf {
     let counter = SOCKET_COUNTER.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!(
-        "md-{}-{}-{counter}.sock",
-        std::process::id(),
-        &test_name.chars().take(8).collect::<String>()
-    ))
+    let dir = PathBuf::from(format!("/tmp/memd-mcpgov-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create short socket directory");
+    dir.join(format!("{}-{counter}.sock", &test_name.chars().take(8).collect::<String>()))
 }

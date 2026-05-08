@@ -4,7 +4,7 @@ This document lists the agent-facing MCP tools exported by `memoryd`. Admin and 
 
 ## Tool manifest
 
-The MCP manifest exposes nine tools:
+The MCP manifest exposes ten tools:
 
 1. `memory_search`
 2. `memory_get`
@@ -15,6 +15,29 @@ The MCP manifest exposes nine tools:
 7. `memory_startup`
 8. `memory_note`
 9. `memory_observe`
+10. `memory_capture_source`
+
+## `memory_capture_source`
+
+`memory_capture_source` captures a public HTTP(S) source as a local verified `webcap:` artifact before the agent writes a grounded memory.
+
+Input:
+
+```json
+{
+  "url": "https://example.com/report",
+  "excerpts": ["exact quote present on the page"],
+  "note": "optional operator context"
+}
+```
+
+Output includes `artifact_id`, one or more `source_refs`, the redacted `final_url`, capture timestamp, capture status, and warnings.
+
+Rules:
+
+- URL fetching is daemon-mediated only.
+- Local/private network targets, embedded credentials, unsafe schemes, oversized bodies, and unsupported content fail closed.
+- Sensitive query parameters and redirect `Location` values are redacted before URLs are persisted.
 
 ## `memory_note`
 

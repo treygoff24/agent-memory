@@ -1,11 +1,13 @@
 use std::io::IsTerminal;
 use std::path::PathBuf;
+use std::process::{Command as ProcessCommand, Stdio};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use memory_privacy::{
-    DeterministicPrivacyClassifier, FileKeyProvider, KeyProvider, PrivacyClassifier, PrivacyNamespace,
+    install_runtime_enforcement, DeterministicPrivacyClassifier, FileKeyProvider, KeyProvider, PrivacyClassifier,
+    PrivacyNamespace,
 };
 use memory_substrate::{InitOptions, Roots, Substrate};
 use tokio::signal::unix::{signal, SignalKind};
@@ -32,8 +34,31 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Serve(args) => {
             let roots = Roots::new(args.repo, args.runtime);
+            let loaded_config =
+                memory_substrate::config::load_config(&roots.repo, &roots.runtime, None).map_err(anyhow::Error::msg)?;
+            let enforcement = loaded_config.privacy_enforcement();
+            match install_runtime_enforcement(enforcement) {
+                Ok(()) => tracing::info!(
+                    classifier = enforcement.classifier,
+                    encryption = enforcement.encryption,
+                    masking = enforcement.masking,
+                    "privacy enforcement installed"
+                ),
+                Err(error) => tracing::warn!(%error, "privacy enforcement already installed; keeping first config"),
+            }
             let substrate = if args.init {
-                Substrate::init(roots, InitOptions { force_unsafe_durability: true, device_id: None }).await?
+                if args.force_unsafe_durability {
+                    tracing::warn!(
+                        operator = "memoryd serve --init",
+                        reason = "--force-unsafe-durability supplied",
+                        "unsafe best-effort durability enabled for substrate init"
+                    );
+                }
+                Substrate::init(
+                    roots,
+                    InitOptions { force_unsafe_durability: args.force_unsafe_durability, device_id: None },
+                )
+                .await?
             } else {
                 Substrate::open(roots).await?
             };
@@ -46,16 +71,29 @@ async fn main() -> anyhow::Result<()> {
             let (shutdown_tx, shutdown_rx) = watch::channel(false);
             tokio::spawn(install_termination_handler(shutdown_tx));
 
-            server::serve_substrate_with(args.socket, substrate, ServerOptions::default(), shutdown_rx).await?;
+            let socket = resolve_socket_with_runtime(&args.socket, &runtime_root);
+            server::serve_substrate_with(socket, substrate, ServerOptions::default(), shutdown_rx).await?;
         }
         Command::Mcp(args) => {
-            memoryd::mcp_stdio::serve_stdio(&args.socket).await?;
+            let socket = args.socket.clone().unwrap_or_else(|| memoryd::socket::resolve_socket_path(&args.runtime));
+            if args.auto_start
+                && !matches!(memoryd::socket::probe_live_socket(&socket), memoryd::socket::SocketProbe::Live)
+            {
+                auto_start_daemon(&args.repo, &args.runtime, &socket).await?;
+            }
+            memoryd::mcp_stdio::serve_stdio(&socket).await?;
         }
         Command::Status(args) => {
-            print_response(client::request(&args.socket, "cli-status", RequestPayload::Status).await?)?;
+            print_response(
+                client::request(resolve_socket_arg(&args.socket), "cli-status", RequestPayload::Status).await?,
+            )?;
         }
         Command::Doctor(args) => {
             let substrate = Substrate::open(Roots::new(args.repo, args.runtime)).await?;
+            if args.reindex {
+                let rebuilt = substrate.doctor_reindex_events_log()?;
+                eprintln!("doctor reindexed {rebuilt} canonical event log entries into SQLite");
+            }
             let response = memoryd::handlers::handle_request(
                 &substrate,
                 memoryd::protocol::RequestEnvelope::new("cli-doctor", RequestPayload::Doctor),
@@ -70,7 +108,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Search(args) => {
             print_response(
                 client::request(
-                    &args.socket,
+                    resolve_socket_arg(&args.socket),
                     "cli-search",
                     RequestPayload::Search {
                         query: args.query,
@@ -84,7 +122,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Get(args) => {
             print_response(
                 client::request(
-                    &args.socket,
+                    resolve_socket_arg(&args.socket),
                     "cli-get",
                     RequestPayload::Get { id: args.id, include_provenance: args.include_provenance },
                 )
@@ -93,13 +131,18 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::WriteNote(args) => {
             print_response(
-                client::request(&args.socket, "cli-write-note", RequestPayload::WriteNote { text: args.text }).await?,
+                client::request(
+                    resolve_socket_arg(&args.socket),
+                    "cli-write-note",
+                    RequestPayload::WriteNote { text: args.text },
+                )
+                .await?,
             )?;
         }
         Command::Write(args) => {
             print_response(
                 client::request(
-                    &args.socket,
+                    resolve_socket_arg(&args.socket),
                     "cli-write",
                     RequestPayload::WriteMemory {
                         body: args.body,
@@ -115,7 +158,7 @@ async fn main() -> anyhow::Result<()> {
             SourceCommand::Capture(capture) => {
                 print_response(
                     client::request(
-                        &capture.socket,
+                        resolve_socket_arg(&capture.socket),
                         "cli-source-capture",
                         RequestPayload::CaptureSource {
                             url: capture.url,
@@ -130,7 +173,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Supersede(args) => {
             print_response(
                 client::request(
-                    &args.socket,
+                    resolve_socket_arg(&args.socket),
                     "cli-supersede",
                     RequestPayload::Supersede {
                         old_id: args.old_id,
@@ -145,7 +188,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Forget(args) => {
             print_response(
                 client::request(
-                    &args.socket,
+                    resolve_socket_arg(&args.socket),
                     "cli-forget",
                     RequestPayload::Forget { id: args.id, reason: args.reason },
                 )
@@ -156,7 +199,7 @@ async fn main() -> anyhow::Result<()> {
             ReviewCommand::Queue(queue) => {
                 print_response(
                     client::request(
-                        &queue.socket,
+                        resolve_socket_arg(&queue.socket),
                         "cli-review-queue",
                         RequestPayload::ReviewQueue { limit: queue.limit },
                     )
@@ -166,7 +209,7 @@ async fn main() -> anyhow::Result<()> {
             ReviewCommand::Approve(approve) => {
                 print_response(
                     client::request(
-                        &approve.socket,
+                        resolve_socket_arg(&approve.socket),
                         "cli-review-approve",
                         RequestPayload::ReviewApprove { id: approve.id },
                     )
@@ -176,7 +219,7 @@ async fn main() -> anyhow::Result<()> {
             ReviewCommand::Reject(reject) => {
                 print_response(
                     client::request(
-                        &reject.socket,
+                        resolve_socket_arg(&reject.socket),
                         "cli-review-reject",
                         RequestPayload::ReviewReject { id: reject.id, reason: reject.reason },
                     )
@@ -266,12 +309,15 @@ async fn main() -> anyhow::Result<()> {
         },
         Command::Peer(args) => match args.command {
             PeerCommand::Status(args) => {
-                print_peer_status(client::request(&args.socket, "cli-peer-status", RequestPayload::PeerStatus).await);
+                print_peer_status(
+                    client::request(resolve_socket_arg(&args.socket), "cli-peer-status", RequestPayload::PeerStatus)
+                        .await,
+                );
             }
             PeerCommand::Activity(args) => {
                 print_peer_activity(
                     client::request(
-                        &args.socket,
+                        resolve_socket_arg(&args.socket),
                         "cli-peer-activity",
                         RequestPayload::PeerActivity {
                             session: args.session,
@@ -294,22 +340,26 @@ async fn main() -> anyhow::Result<()> {
         Command::Web(args) => match args.command {
             WebCommand::Enable(args) => {
                 let response = client::request(
-                    &args.socket,
+                    resolve_socket_arg(&args.socket),
                     "cli-web-enable",
                     RequestPayload::WebEnable {
                         port: args.port,
-                        socket_path: args.socket.to_string_lossy().into_owned(),
+                        socket_path: resolve_socket_arg(&args.socket).to_string_lossy().into_owned(),
                     },
                 )
                 .await;
                 print_web_response(response, WebOperation::Enable);
             }
             WebCommand::Disable(args) => {
-                let response = client::request(&args.socket, "cli-web-disable", RequestPayload::WebDisable).await;
+                let response =
+                    client::request(resolve_socket_arg(&args.socket), "cli-web-disable", RequestPayload::WebDisable)
+                        .await;
                 print_web_response(response, WebOperation::Disable);
             }
             WebCommand::Status(args) => {
-                let response = client::request(&args.socket, "cli-web-status", RequestPayload::WebStatus).await;
+                let response =
+                    client::request(resolve_socket_arg(&args.socket), "cli-web-status", RequestPayload::WebStatus)
+                        .await;
                 print_web_status(response, args.json);
             }
         },
@@ -327,12 +377,13 @@ async fn main() -> anyhow::Result<()> {
                         limit: args.top_n,
                     })
                 };
-                let response = client::request(&args.socket, "cli-reality-check-run", request).await;
+                let response =
+                    client::request(resolve_socket_arg(&args.socket), "cli-reality-check-run", request).await;
                 print_reality_check_run(response, args.json, args.tui);
             }
             RealityCheckCommand::Skip(args) => {
                 let response = client::request(
-                    &args.socket,
+                    resolve_socket_arg(&args.socket),
                     "cli-reality-check-skip",
                     RequestPayload::RealityCheck(memoryd::protocol::RealityCheckRequest::Skip),
                 )
@@ -348,7 +399,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                 };
                 let response = client::request(
-                    &args.socket,
+                    resolve_socket_arg(&args.socket),
                     "cli-reality-check-snooze",
                     RequestPayload::RealityCheck(memoryd::protocol::RealityCheckRequest::Snooze { until }),
                 )
@@ -452,6 +503,43 @@ async fn main() -> anyhow::Result<()> {
         },
     }
     Ok(())
+}
+
+fn resolve_socket_arg(socket: &Option<PathBuf>) -> PathBuf {
+    socket.clone().unwrap_or_else(|| memoryd::socket::resolve_socket_path(&memoryd::socket::default_runtime_root()))
+}
+
+fn resolve_socket_with_runtime(socket: &Option<PathBuf>, runtime: &std::path::Path) -> PathBuf {
+    socket.clone().unwrap_or_else(|| memoryd::socket::resolve_socket_path(runtime))
+}
+
+async fn auto_start_daemon(repo: &PathBuf, runtime: &PathBuf, socket: &PathBuf) -> anyhow::Result<()> {
+    let exe = std::env::current_exe()?;
+    let mut child = ProcessCommand::new(exe)
+        .arg("serve")
+        .arg("--repo")
+        .arg(repo)
+        .arg("--runtime")
+        .arg(runtime)
+        .arg("--socket")
+        .arg(socket)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        if matches!(memoryd::socket::probe_live_socket(socket), memoryd::socket::SocketProbe::Live) {
+            return Ok(());
+        }
+        if let Some(status) = child.try_wait()? {
+            anyhow::bail!("memoryd auto-start exited before readiness: {status}");
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    anyhow::bail!("memoryd auto-start did not become ready within 10s at {}", socket.display())
 }
 
 async fn run_manual_dream(args: memoryd::cli::DreamNowArgs) -> anyhow::Result<DreamRunReport> {
@@ -808,6 +896,8 @@ async fn execute_dream_run(invocation: DreamRunInvocation) -> anyhow::Result<Dre
             scope,
             run_id: invocation.run_id,
             run_date: invocation.run_date,
+            prompt_version: invocation.dreams.prompt_version,
+            notifications: None,
             pass_timeout: Duration::from_secs(u64::from(invocation.dreams.per_pass_timeout_seconds)),
             pass_2_max_candidates: invocation.dreams.pass_2_max_candidates as usize,
             pass_1_window_days: invocation.dreams.pass_1_window_days,
@@ -976,7 +1066,13 @@ fn print_peer_activity(response: anyhow::Result<memoryd::protocol::ResponseEnvel
 
 async fn run_peer_release_lock(args: memoryd::cli::PeerReleaseLockArgs) -> anyhow::Result<()> {
     if !args.yes {
-        let status = match client::request(&args.socket, "cli-peer-release-status", RequestPayload::PeerStatus).await {
+        let status = match client::request(
+            resolve_socket_arg(&args.socket),
+            "cli-peer-release-status",
+            RequestPayload::PeerStatus,
+        )
+        .await
+        {
             Ok(envelope) => envelope,
             Err(error) => {
                 eprintln!("peer_unreachable: {error:#}");
@@ -1002,7 +1098,7 @@ async fn run_peer_release_lock(args: memoryd::cli::PeerReleaseLockArgs) -> anyho
     }
 
     let response = match client::request(
-        &args.socket,
+        resolve_socket_arg(&args.socket),
         "cli-peer-release-lock",
         RequestPayload::PeerReleaseLock { memory_id: args.memory_id },
     )
@@ -1071,7 +1167,7 @@ fn recall_exit_code(code: &str) -> i32 {
 }
 
 fn recall_socket_path(args: &memoryd::cli::RecallSocketArgs) -> std::path::PathBuf {
-    args.socket.clone().unwrap_or_else(|| args.runtime.join("memoryd.sock"))
+    args.socket.clone().unwrap_or_else(|| memoryd::socket::resolve_socket_path(&args.runtime))
 }
 
 fn parse_meta(meta: Option<String>) -> anyhow::Result<serde_json::Value> {

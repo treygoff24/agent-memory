@@ -15,6 +15,7 @@ const CLAUDE_KEY_ENV: &str = "MEMORUM_EVAL_CLAUDE_KEY";
 const CODEX_KEY_ENV: &str = "MEMORUM_EVAL_CODEX_KEY";
 const SKIP_NO_AUTH: &str = "SKIP_NO_AUTH";
 const STREAM_I_DEPS_DISABLED: &str = "STREAM_I_DEPS_DISABLED";
+const MOCK_HARNESS_SEMANTIC_NOT_EXERCISED: &str = "MOCK_HARNESS_SEMANTIC_NOT_EXERCISED";
 const STREAM_D_ROTATION_CONTRACT_NOT_SHIPPED: &str = "STREAM_D_ROTATION_CONTRACT_NOT_SHIPPED";
 const SEMANTIC_PARTIAL_LEASE_REENTRANCY_NOT_SHIPPED: &str = "SEMANTIC_PARTIAL_LEASE_REENTRANCY_NOT_SHIPPED";
 /// Marker printed to stdout by a test that wants a clean skip rather than a pass.
@@ -721,6 +722,8 @@ fn run_mock_harness(entry: CatalogEntry, started: Instant) -> EvalTestResult {
 fn normalize_skip_reason(reason: &str) -> &'static str {
     if reason.contains("stream-i-deps feature disabled") {
         STREAM_I_DEPS_DISABLED
+    } else if reason.contains(MOCK_HARNESS_SEMANTIC_NOT_EXERCISED) {
+        MOCK_HARNESS_SEMANTIC_NOT_EXERCISED
     } else {
         "SKIP"
     }

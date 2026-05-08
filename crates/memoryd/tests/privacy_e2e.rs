@@ -308,6 +308,19 @@ async fn privacy_e2e_phone_contact_is_encrypted_findable_and_revealable() {
         .expect("events")
         .iter()
         .any(|event| matches!(&event.kind, EventKind::EncryptedContentRevealed { id: event_id, .. } if event_id.as_str() == id)));
+
+    let sensitive_reason = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "reveal-sensitive-reason",
+            RequestPayload::Reveal { id, reason: "send to reviewer@example.com".to_string() },
+        ),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::Reveal(reveal_with_sensitive_reason)) = sensitive_reason.result else {
+        panic!("expected reveal reason with contact context to be accepted, got {:?}", sensitive_reason.result);
+    };
+    assert!(reveal_with_sensitive_reason.body.contains(raw_phone));
 }
 
 #[tokio::test]
@@ -492,6 +505,46 @@ async fn privacy_e2e_encrypted_supersede_replacement_fails_closed_without_disk_e
         memory_substrate::MemoryStatus::Active
     );
     assert!(!repo_contains(temp.path(), raw), "refused encrypted supersession must not write replacement plaintext");
+}
+
+#[tokio::test]
+async fn privacy_e2e_encrypted_old_memory_supersede_fails_closed_without_not_found() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let substrate = init_substrate(&temp).await;
+    FileKeyProvider::runtime_default(&temp.path().join("runtime")).onboard_local_file().expect("privacy key");
+    let encrypted = governed_project_write(&substrate, "old-encrypted-supersede", "Contact ops@example.com.").await;
+    let old_id = encrypted.id.expect("encrypted old id");
+
+    let response = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "supersede-encrypted-old",
+            RequestPayload::Supersede {
+                old_id: old_id.clone(),
+                content: "Replacement content is safe plaintext.".to_string(),
+                reason: "user correction".to_string(),
+                meta: serde_json::json!({
+                    "namespace": "project",
+                    "type": "project",
+                    "summary": "safe replacement",
+                    "confidence": 0.95,
+                    "source_kind": "user",
+                    "explicit_user_context": true
+                }),
+            },
+        ),
+    )
+    .await;
+
+    let ResponseResult::Success(ResponsePayload::GovernanceSupersede(supersede)) = response.result else {
+        panic!("expected supersede response, got {:?}", response.result);
+    };
+    assert_eq!(supersede.status, GovernanceStatus::Refused);
+    assert_eq!(supersede.reason, Some(GovernanceRefusalReason::Privacy));
+    assert!(supersede.new_id.is_none());
+    let envelope = substrate.read_memory_envelope(&MemoryId::new(&old_id)).await.expect("encrypted old still readable");
+    assert!(matches!(envelope.content, MemoryContent::Ciphertext { .. }));
+    assert_eq!(envelope.metadata.frontmatter.status, memory_substrate::MemoryStatus::Active);
 }
 
 #[tokio::test]

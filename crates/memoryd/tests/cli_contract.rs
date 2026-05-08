@@ -314,7 +314,12 @@ fn test_memoryd_web_enable_delegates_to_daemon() {
 
     assert_eq!(
         web_request_payload(&web.command),
-        RequestPayload::WebEnable { port: 7137, socket_path: "/tmp/memoryd.sock".to_owned() }
+        RequestPayload::WebEnable {
+            port: 7137,
+            socket_path: memoryd::socket::resolve_socket_path(&memoryd::socket::default_runtime_root())
+                .to_string_lossy()
+                .into_owned()
+        }
     );
 }
 

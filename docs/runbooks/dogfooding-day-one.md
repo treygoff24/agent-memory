@@ -4,7 +4,7 @@
 
    ```bash
    ./scripts/check-dogfood.sh
-   scripts/install-memorum.sh --force-reinstall --repo ~/memorum --runtime ~/memorum/.memoryd --socket /tmp/memoryd.sock
+   scripts/install-memorum.sh --force-reinstall --repo ~/memorum --runtime ~/memorum/.memoryd
    ```
 
    The installer leaves the daemon detached from the install shell, writes a
@@ -16,14 +16,14 @@
    Verify it from any fresh shell:
 
    ```bash
-   memoryd status --socket /tmp/memoryd.sock
+   memoryd status
    kill -0 "$(cat ~/memorum/.memoryd/memoryd.pid)"
    ```
 
 2. Paste the printed MCP client snippet into your client config. The MCP command shape is:
 
    ```json
-   { "command": "memoryd", "args": ["mcp", "--socket", "/tmp/memoryd.sock"] }
+   { "command": "memoryd", "args": ["mcp", "--runtime", "~/memorum/.memoryd"] }
    ```
 
 3. Write the first memory:
@@ -92,8 +92,8 @@ broader and slower than the dogfood bar.
 - `dream_disabled`: dreaming is disabled in config or by the local sentinel under the runtime directory.
 - `dream_unavailable`: no supported harness CLI is installed and authenticated in the daemon environment.
 - `unknown harness CLI override`: the selected `--cli` is not a production harness.
-- Socket errors: verify daemon liveness with `memoryd status --socket /tmp/memoryd.sock` and `kill -0 "$(cat ~/memorum/.memoryd/memoryd.pid)"`.
+- Socket errors: verify daemon liveness with `memoryd status` and `kill -0 "$(cat ~/memorum/.memoryd/memoryd.pid)"`.
 - Stop the installer-started daemon with `kill "$(cat ~/memorum/.memoryd/memoryd.pid)"`.
-- Restart it with `scripts/install-memorum.sh --repo ~/memorum --runtime ~/memorum/.memoryd --socket /tmp/memoryd.sock`.
+- Restart it with `scripts/install-memorum.sh --repo ~/memorum --runtime ~/memorum/.memoryd`.
 - `memoryd status` only proves the daemon socket is reachable.
-- `memoryd doctor --repo ~/memorum --runtime ~/memorum/.memoryd --socket /tmp/memoryd.sock` is the health/auth check for this install. It exits 0 only when substrate checks are clean and at least one enabled harness CLI is authenticated. Missing one harness is a warning if another enabled harness works; no authenticated harnesses is unhealthy because dreams cannot run.
+- `memoryd doctor --repo ~/memorum --runtime ~/memorum/.memoryd` is the health/auth check for this install. Add `--reindex` if doctor reports event-log mirror lag. It exits 0 only when substrate checks are clean and at least one enabled harness CLI is authenticated. Missing one harness is a warning if another enabled harness works; no authenticated harnesses is unhealthy because dreams cannot run.

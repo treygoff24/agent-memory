@@ -8,9 +8,14 @@ use super::types::{
     ActiveMemory, DreamError, DreamPass, EvidenceCatalogEntry, HarnessSelection, MaskingContext, SubstrateFragment,
 };
 
+pub use memory_substrate::config::PromptVersion;
+
 const PASS_1_TEMPLATE: &str = include_str!("../../../../prompts/dream-pass-1-v1.md");
 const PASS_2_TEMPLATE: &str = include_str!("../../../../prompts/dream-pass-2-v1.md");
 const PASS_3_TEMPLATE: &str = include_str!("../../../../prompts/dream-pass-3-v1.md");
+const PASS_1_TEMPLATE_V2: &str = include_str!("../../../../prompts/dream-pass-1-v2.md");
+const PASS_2_TEMPLATE_V2: &str = include_str!("../../../../prompts/dream-pass-2-v2.md");
+const PASS_3_TEMPLATE_V2: &str = include_str!("../../../../prompts/dream-pass-3-v2.md");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DreamPromptInput {
@@ -25,11 +30,14 @@ pub struct DreamPromptInput {
     pub evidence_catalog: Vec<EvidenceCatalogEntry>,
 }
 
-pub fn render_prompt(pass: DreamPass, input: &DreamPromptInput) -> Result<String, DreamError> {
-    match pass {
-        DreamPass::Pass1 => render_from_template(PASS_1_TEMPLATE, &Pass1Payload::from(input)),
-        DreamPass::Pass2 => render_from_template(PASS_2_TEMPLATE, &Pass2Payload::from(input)),
-        DreamPass::Pass3 => render_from_template(PASS_3_TEMPLATE, &Pass3Payload::from(input)),
+pub fn render_prompt(pass: DreamPass, input: &DreamPromptInput, version: PromptVersion) -> Result<String, DreamError> {
+    match (pass, version) {
+        (DreamPass::Pass1, PromptVersion::V1) => render_from_template(PASS_1_TEMPLATE, &Pass1Payload::from(input)),
+        (DreamPass::Pass2, PromptVersion::V1) => render_from_template(PASS_2_TEMPLATE, &Pass2Payload::from(input)),
+        (DreamPass::Pass3, PromptVersion::V1) => render_from_template(PASS_3_TEMPLATE, &Pass3Payload::from(input)),
+        (DreamPass::Pass1, PromptVersion::V2) => render_from_template(PASS_1_TEMPLATE_V2, &Pass1Payload::from(input)),
+        (DreamPass::Pass2, PromptVersion::V2) => render_from_template(PASS_2_TEMPLATE_V2, &Pass2Payload::from(input)),
+        (DreamPass::Pass3, PromptVersion::V2) => render_from_template(PASS_3_TEMPLATE_V2, &Pass3Payload::from(input)),
     }
 }
 

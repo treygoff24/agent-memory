@@ -73,6 +73,23 @@ jobs:
             exit 1
           fi
 
+          PARTIAL=$(jq -r '.partial // false' "$RESULT_FILE")
+          HARNESS_MODE=$(jq -r '.harness_mode' "$RESULT_FILE")
+          if [ "$PARTIAL" = "true" ] && [ "$HARNESS_MODE" != "mock" ]; then
+            MISSING=$(jq -r '.missing_credentials // [] | join(", ")' "$RESULT_FILE")
+            echo "Non-mock eval run is partial — missing credentials: $MISSING"
+            exit 1
+          fi
+
+          if [ "$HARNESS_MODE" = "mock" ]; then
+            MOCK_PASSES=$(jq -r '[.tests[] | select(.status == "passed" and .mode == "real_harness" and (.number == 13 or .number == 15))] | length' "$RESULT_FILE")
+            if [ "$MOCK_PASSES" != "0" ]; then
+              echo "Mock harness reported semantic real-harness tests as passed; these must be skipped."
+              jq -r '.tests[] | select(.status == "passed" and .mode == "real_harness" and (.number == 13 or .number == 15)) | "  - #\(.number) \(.name)"' "$RESULT_FILE"
+              exit 1
+            fi
+          fi
+
       - name: Fail if RC run is partial
         if: startsWith(github.ref, 'refs/tags/v1.') && contains(github.ref, '-rc.')
         run: |

@@ -35,6 +35,20 @@ fn missing_key_fails_closed() {
     assert!(error.to_string().contains("privacy key unavailable"));
 }
 
+#[test]
+fn decrypt_rejects_unsupported_envelope_scheme_before_key_use() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let provider = FileKeyProvider::runtime_default(temp.path());
+    provider.onboard_local_file().expect("onboard key");
+    let encryptor = PrivacyEncryptor::new(provider);
+    let mut payload = encryptor.encrypt("private plaintext body").expect("encrypt");
+    payload.envelope["scheme"] = serde_json::json!("unsupported");
+
+    let error = encryptor.decrypt(&payload).expect_err("unsupported envelope is rejected");
+
+    assert!(error.to_string().contains("unsupported encryption envelope scheme"));
+}
+
 #[cfg(unix)]
 #[test]
 fn local_key_file_is_private() {

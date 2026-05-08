@@ -6,6 +6,7 @@ use std::{
 
 use crate::protocol::{CandidateWriteResult, PassOutcome, PassStatus};
 use memory_privacy::{safe_plaintext_fragment, DeterministicPrivacyClassifier, SafeFragmentDecision};
+use memory_substrate::config::PromptVersion;
 
 use super::{
     harness::HarnessCli,
@@ -18,14 +19,18 @@ pub struct Pass1Result {
     pub markdown: Option<String>,
 }
 
-pub async fn run_pass_1(
-    repo_root: &Path,
-    cli: &dyn HarnessCli,
-    input: &DreamPromptInput,
-    timeout: Duration,
-) -> Result<Pass1Result, DreamError> {
+pub struct Pass1RunContext<'a> {
+    pub repo_root: &'a Path,
+    pub cli: &'a dyn HarnessCli,
+    pub input: &'a DreamPromptInput,
+    pub prompt_version: PromptVersion,
+    pub timeout: Duration,
+}
+
+pub async fn run_pass_1(context: Pass1RunContext<'_>) -> Result<Pass1Result, DreamError> {
+    let Pass1RunContext { repo_root, cli, input, prompt_version, timeout } = context;
     let started_at = Instant::now();
-    let prompt = render_prompt(DreamPass::Pass1, input)?;
+    let prompt = render_prompt(DreamPass::Pass1, input, prompt_version)?;
     let output = cli
         .complete(&prompt, false, timeout)
         .await

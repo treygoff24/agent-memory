@@ -11,9 +11,18 @@ fn daemon_scaffold_starts_healthy_isolated_daemon_and_cleans_up_child() {
 
         assert!(scaffold.tree_dir().exists(), "temp tree should exist while scaffold is alive");
         assert!(!scaffold.socket_path().as_os_str().is_empty(), "socket path should be populated");
+        // Socket lives under a short /tmp/memd-eval-<pid>/ directory to stay
+        // under macOS's 104-char Unix-domain-socket name cap. The tree dir
+        // (which still uses the long memorum-eval-<id> tempfile name) is the
+        // primary uniqueness guarantee; the socket dir disambiguates per
+        // process.
         assert!(
-            scaffold.socket_path().to_string_lossy().contains("memorum-eval-"),
-            "socket path should include a unique memorum-eval ULID directory"
+            scaffold.socket_path().to_string_lossy().contains("memd-eval-"),
+            "socket path should be in the short /tmp/memd-eval-<pid>/ directory"
+        );
+        assert!(
+            scaffold.tree_dir().to_string_lossy().contains("memorum-eval-"),
+            "tree dir should be a unique memorum-eval ULID directory"
         );
 
         let report = scaffold.doctor().await;

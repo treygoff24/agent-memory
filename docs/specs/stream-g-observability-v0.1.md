@@ -36,7 +36,7 @@ v0.1 (post-shipping audit fixes, 2026-05-02): Stream G now includes a user-visib
 
 ### 1.2 Stream G does not own
 
-- Agent-facing MCP tools. The nine tools are frozen for v1.
+- Agent-facing MCP tools. The ten tools are frozen for v1.
 - Canonical memory mutation — no writes, supersedes, tombstones, or status changes issued directly from UI rendering code. All mutations route through daemon protocol (governance, privacy, event log).
 - Governance logic, policy evaluation, privacy classification, encryption — those remain Streams C, D.
 - Recall block assembly — that remains Stream E. The TUI and dashboard query the daemon's existing surfaces.
@@ -144,7 +144,7 @@ pub enum NotificationEvent {
 **Surfaces explicitly NOT touched by Stream G:**
 
 - No new columns on the `memories` table beyond the additive nullable `original_confidence REAL` listed in #4. (Earlier draft referenced a `source_count` column — dropped. Cross-source corroboration is derived from the `memory_supersession` join table added in #3 plus the existing `memories.source_harness` column.)
-- No changes to `MemoryFrontmatter`, `WriteOptions`, `ClassificationOutcome`, or any agent-facing MCP tool. The MCP surface stays at the nine tools frozen by system-v0.2 §14.1.
+- No changes to `MemoryFrontmatter`, `WriteOptions`, `ClassificationOutcome`, or any agent-facing MCP tool. The MCP surface stays at the ten tools frozen by system-v0.2 §14.1.
 - No changes to Stream C governance, Stream D privacy classification/encryption, or Stream F dream pipelines. Stream G reads their outputs (review queue, audit metadata, dream cleanup logs) but writes nothing through them.
 
 ---

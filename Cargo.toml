@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/memorum-coordination",
+    "crates/memorum-theme",
     "crates/memory-substrate",
     "crates/memory-merge-driver",
     "crates/memory-test-support",

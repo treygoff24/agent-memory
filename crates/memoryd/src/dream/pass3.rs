@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::protocol::{CandidateWriteResult, PassOutcome, PassStatus};
 use memory_privacy::{safe_plaintext_fragment, DeterministicPrivacyClassifier, SafeFragmentDecision};
+use memory_substrate::config::PromptVersion;
 
 use super::{
     harness::HarnessCli,
@@ -29,14 +30,15 @@ pub struct Pass3RunContext<'a> {
     pub cli: &'a dyn HarnessCli,
     pub masking: &'a DreamMaskingSession,
     pub input: &'a DreamPromptInput,
+    pub prompt_version: PromptVersion,
     pub timeout: Duration,
     pub counters: &'a DreamQuestionCounters,
 }
 
 pub async fn run_pass_3(context: Pass3RunContext<'_>) -> Result<PassOutcome, DreamError> {
-    let Pass3RunContext { repo_root, cli, masking, input, timeout, counters } = context;
+    let Pass3RunContext { repo_root, cli, masking, input, prompt_version, timeout, counters } = context;
     let started_at = Instant::now();
-    let prompt = render_prompt(DreamPass::Pass3, input)?;
+    let prompt = render_prompt(DreamPass::Pass3, input, prompt_version)?;
     let output = cli
         .complete(&prompt, false, timeout)
         .await

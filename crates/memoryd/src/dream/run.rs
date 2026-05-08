@@ -6,8 +6,12 @@ use std::{
 };
 
 use memory_privacy::PrivacySpan;
+use memory_substrate::config::PromptVersion;
+use tokio::sync::broadcast;
 
-use crate::protocol::{CandidateWriteResult, DreamRunReport, PassOutcome, PassStatus, PromptTransport};
+use crate::protocol::{
+    CandidateWriteResult, DreamRunReport, NotificationEvent, PassOutcome, PassStatus, PromptTransport,
+};
 
 #[cfg(any(test, feature = "dev-fixtures"))]
 use super::harness::EchoCli;
@@ -15,7 +19,7 @@ use super::{
     evidence::build_evidence_catalog,
     harness::{HarnessCli, HarnessFuture},
     masking::{DreamMaskingSession, MaskingDropObserver},
-    pass1::run_pass_1,
+    pass1::{run_pass_1, Pass1RunContext},
     pass2::{run_pass_2, Pass2RunContext},
     pass3::{run_pass_3, Pass3RunContext},
     prompts::{render_prompt, DreamPromptInput},
@@ -29,6 +33,8 @@ pub struct DreamRunOptions {
     pub scope: DreamScope,
     pub run_date: chrono::NaiveDate,
     pub run_id: String,
+    pub prompt_version: PromptVersion,
+    pub notifications: Option<broadcast::Sender<NotificationEvent>>,
     /// Populated by `select_harness` (or `with_harness`) before `DreamRunner::run`.
     /// `build_dream_run` constructs this with a placeholder; live runs always replace
     /// it before execution. See `orchestration::UnselectedHarness`.
@@ -206,21 +212,21 @@ where
     pub fn preview_pass_1_prompt(options: &DreamRunOptions) -> Result<String, DreamError> {
         let mut masking = DreamMaskingSession::new(&options.scope.as_str(), &options.run_id);
         let input = build_masked_prompt_input(options, &mut masking, None)?;
-        render_prompt(DreamPass::Pass1, &input)
+        render_prompt(DreamPass::Pass1, &input, options.prompt_version)
     }
 
     pub fn preview_pass_2_prompt(options: &DreamRunOptions, pass_1_markdown: &str) -> Result<String, DreamError> {
         let mut masking = DreamMaskingSession::new(&options.scope.as_str(), &options.run_id);
         let _ = build_masked_prompt_input(options, &mut masking, None)?;
         let input = build_masked_prompt_input(options, &mut masking, Some(pass_1_markdown.to_string()))?;
-        render_prompt(DreamPass::Pass2, &input)
+        render_prompt(DreamPass::Pass2, &input, options.prompt_version)
     }
 
     pub fn preview_pass_3_prompt(options: &DreamRunOptions, pass_1_markdown: &str) -> Result<String, DreamError> {
         let mut masking = DreamMaskingSession::new(&options.scope.as_str(), &options.run_id);
         let _ = build_masked_prompt_input(options, &mut masking, None)?;
         let input = build_masked_prompt_input(options, &mut masking, Some(pass_1_markdown.to_string()))?;
-        render_prompt(DreamPass::Pass3, &input)
+        render_prompt(DreamPass::Pass3, &input, options.prompt_version)
     }
 
     pub async fn run(self) -> Result<DreamRunReport, DreamError> {
@@ -231,12 +237,13 @@ where
             self.drop_observer.clone(),
         );
         let pass_1_input = build_masked_prompt_input(&self.options, &mut masking, None)?;
-        let pass_1 = run_pass_1(
-            &self.options.repo_root,
-            self.options.harness.as_ref(),
-            &pass_1_input,
-            self.options.pass_timeout,
-        )
+        let pass_1 = run_pass_1(Pass1RunContext {
+            repo_root: &self.options.repo_root,
+            cli: self.options.harness.as_ref(),
+            input: &pass_1_input,
+            prompt_version: self.options.prompt_version,
+            timeout: self.options.pass_timeout,
+        })
         .await?;
 
         let pass_2 = match &pass_1.markdown {
@@ -247,6 +254,7 @@ where
                     writer: &self.candidate_writer,
                     masking: &masking,
                     input: &pass_2_input,
+                    prompt_version: self.options.prompt_version,
                     timeout: self.options.pass_timeout,
                     candidate_cap: self.options.pass_2_max_candidates,
                 })
@@ -267,6 +275,7 @@ where
                     cli: self.options.harness.as_ref(),
                     masking: &masking,
                     input: &pass_3_input,
+                    prompt_version: self.options.prompt_version,
                     timeout: self.options.pass_timeout,
                     counters: &self.question_counters,
                 })
@@ -288,8 +297,26 @@ where
             pass_3,
             duration_ms: started_at.elapsed().as_millis() as u64,
         };
+        emit_dream_completion(&self.options, &report);
         drop(masking);
         Ok(report)
+    }
+}
+
+fn emit_dream_completion(options: &DreamRunOptions, report: &DreamRunReport) {
+    let Some(notifications) = &options.notifications else {
+        return;
+    };
+    let queued = report.pass_2.candidate_results.iter().filter(|result| result.accepted).count();
+    let dropped = report.pass_2.candidate_results.len().saturating_sub(queued);
+    let _ = notifications.send(NotificationEvent::DreamRunCompleted {
+        scope: report.scope.clone(),
+        promoted: 0,
+        queued,
+        dropped,
+    });
+    if report.pass_1.status == PassStatus::Success {
+        let _ = notifications.send(NotificationEvent::DailySynthesisSummaryReady { scope: report.scope.clone() });
     }
 }
 

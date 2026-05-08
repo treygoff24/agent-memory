@@ -306,5 +306,7 @@ fn startup_request() -> StartupRequest {
 
 fn unique_socket_path(test_name: &str) -> PathBuf {
     let nonce = SystemTime::now().duration_since(UNIX_EPOCH).expect("system clock is after epoch").as_nanos();
-    std::env::temp_dir().join(format!("memoryd-{test_name}-{nonce}.sock"))
+    let dir = PathBuf::from(format!("/tmp/memd-mcpfwd-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create short socket directory");
+    dir.join(format!("{test_name}-{nonce}.sock"))
 }

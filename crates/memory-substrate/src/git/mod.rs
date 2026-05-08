@@ -22,7 +22,7 @@ use std::path::Path;
 /// Fetch and merge the configured upstream.
 ///
 /// Compatibility wrapper that resolves the merge driver binary via `which`.
-/// Deferred: accept an explicit path from `Substrate::adopt_clone` / `Substrate::open`.
+/// Deferred: accept an explicit path from callers before merge.
 pub fn fetch_and_merge(repo: &Path) -> Result<(), GitError> {
     let driver = which::which("memory-merge-driver").unwrap_or_default();
     sync::fetch_and_merge(repo, &driver).map(|_| ())

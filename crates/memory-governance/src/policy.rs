@@ -168,7 +168,8 @@ impl PolicySet {
                 name: "me-strict",
                 version: 1,
                 scope: Scope::Me,
-                confidence_floor: 0.9,
+                // 2026-05-07: lowered for dogfood profile, see Task 2.
+                confidence_floor: 0.85,
                 requires_grounding: true,
                 tombstone_enforcement: TombstoneEnforcementMode::Refuse,
                 contradiction_policy: ContradictionPolicy::Quarantine,

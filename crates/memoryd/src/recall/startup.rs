@@ -63,16 +63,14 @@ pub async fn build_startup_response_with_coordination_config(
     let since_event_id = request.since_event_id.clone();
     let session_binding = validate_startup_request(request).await?;
 
-    if since_event_id.as_ref().is_some_and(|value| !value.trim().is_empty()) {
-        return Err(RecallError::not_implemented("event-based startup deltas are not implemented in Stream E v0.5"));
-    }
+    let updated_since = startup_updated_since_from_event(substrate, since_event_id.as_deref());
 
     let collection = collect_recall_candidates_from_index(
         substrate,
         RecallCollectionRequest {
             section: RecallSectionName::RecentMemory,
             namespace_prefixes: session_binding.namespaces_in_scope.clone(),
-            updated_since: None,
+            updated_since,
         },
     )
     .await
@@ -186,6 +184,26 @@ pub async fn build_startup_response_with_coordination_config(
         guidance: "Stream E passive recall assembled from read-only Stream A index projections.".to_owned(),
         dream_question_omissions: pending_attention_omissions,
     })
+}
+
+fn startup_updated_since_from_event(substrate: &Substrate, since_event_id: Option<&str>) -> Option<DateTime<Utc>> {
+    let since_event_id = since_event_id?.trim();
+    if since_event_id.is_empty() {
+        return None;
+    }
+    match substrate.events() {
+        Ok(events) => match events.into_iter().find(|event| event.id.as_str() == since_event_id) {
+            Some(event) => Some(event.at),
+            None => {
+                tracing::warn!(since_event_id, "startup since_event_id not found; falling back to full startup recall");
+                None
+            }
+        },
+        Err(error) => {
+            tracing::warn!(since_event_id, %error, "failed to read startup event log; falling back to full startup recall");
+            None
+        }
+    }
 }
 
 #[derive(Debug, Default)]

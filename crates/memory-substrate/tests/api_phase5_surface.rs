@@ -226,6 +226,7 @@ async fn open_fails_with_device_identity_missing_when_local_device_yaml_absent()
     // the steps `Substrate::init` runs except for `git::adopt_clone`.
     let merge_driver = std::env::current_exe().expect("current_exe"); // expect-justified: test
     memory_substrate::git::init_git_repo(&roots.repo, &merge_driver).expect("init git"); // expect-justified: test
+    memory_substrate::tree::bootstrap_repo_layout(&roots.repo).expect("bootstrap layout"); // expect-justified: test
     std::fs::create_dir_all(&roots.runtime).expect("create runtime"); // expect-justified: test
     std::fs::write(
         roots.repo.join("config.yaml"),

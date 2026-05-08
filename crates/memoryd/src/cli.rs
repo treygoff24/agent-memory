@@ -19,11 +19,11 @@ pub enum Command {
     /// Run the local daemon.
     Serve(ServeArgs),
     /// Run the stdio MCP server that forwards tool calls to the daemon.
-    Mcp(SocketArgs),
+    Mcp(McpArgs),
     /// Query daemon health.
     Status(SocketArgs),
     /// Check local substrate and daemon configuration.
-    Doctor(RootArgs),
+    Doctor(DoctorArgs),
     /// Search memory through the daemon.
     Search(SearchArgs),
     /// Read one memory by id through the daemon.
@@ -61,10 +61,26 @@ pub enum Command {
 }
 
 #[derive(Debug, Args)]
+pub struct McpArgs {
+    /// Unix socket path used to reach memoryd. Defaults to `<runtime>/memoryd.sock`.
+    #[arg(long)]
+    pub socket: Option<PathBuf>,
+    /// Canonical memory repository root used when auto-starting memoryd.
+    #[arg(long, default_value = ".")]
+    pub repo: PathBuf,
+    /// Local per-device runtime root used for socket resolution and auto-start.
+    #[arg(long, default_value = ".memoryd")]
+    pub runtime: PathBuf,
+    /// Auto-start memoryd when the resolved socket is absent.
+    #[arg(long, default_value_t = true, action = ArgAction::Set)]
+    pub auto_start: bool,
+}
+
+#[derive(Debug, Args)]
 pub struct SocketArgs {
     /// Unix socket path used to reach memoryd.
-    #[arg(long, default_value = "/tmp/memoryd.sock")]
-    pub socket: PathBuf,
+    #[arg(long)]
+    pub socket: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -73,8 +89,8 @@ pub struct UiArgs {
     #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=9))]
     pub panel: u8,
     /// Unix socket path used to reach memoryd.
-    #[arg(long, default_value = "/tmp/memoryd.sock")]
-    pub socket: PathBuf,
+    #[arg(long)]
+    pub socket: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -96,8 +112,8 @@ pub enum WebCommand {
 #[derive(Debug, Args)]
 pub struct WebEnableArgs {
     /// Unix socket path used to reach memoryd.
-    #[arg(long, default_value = "/tmp/memoryd.sock")]
-    pub socket: PathBuf,
+    #[arg(long)]
+    pub socket: Option<PathBuf>,
     /// Localhost port for the dashboard.
     #[arg(long, default_value_t = 7137, value_parser = clap::value_parser!(u16).range(1024..=65535))]
     pub port: u16,
@@ -106,8 +122,8 @@ pub struct WebEnableArgs {
 #[derive(Debug, Args)]
 pub struct WebStatusArgs {
     /// Unix socket path used to reach memoryd.
-    #[arg(long, default_value = "/tmp/memoryd.sock")]
-    pub socket: PathBuf,
+    #[arg(long)]
+    pub socket: Option<PathBuf>,
     /// Emit machine-readable JSON.
     #[arg(long)]
     pub json: bool,
@@ -132,8 +148,8 @@ pub enum RealityCheckCommand {
 #[derive(Debug, Args)]
 pub struct RealityCheckRunArgs {
     /// Unix socket path used to reach memoryd.
-    #[arg(long, default_value = "/tmp/memoryd.sock")]
-    pub socket: PathBuf,
+    #[arg(long)]
+    pub socket: Option<PathBuf>,
     /// Override the number of scored items returned for this run.
     #[arg(long)]
     pub top_n: Option<usize>,
@@ -151,8 +167,8 @@ pub struct RealityCheckRunArgs {
 #[derive(Debug, Args)]
 pub struct RealityCheckSnoozeArgs {
     /// Unix socket path used to reach memoryd.
-    #[arg(long, default_value = "/tmp/memoryd.sock")]
-    pub socket: PathBuf,
+    #[arg(long)]
+    pub socket: Option<PathBuf>,
     /// ISO date (YYYY-MM-DD) to snooze until.
     #[arg(long)]
     pub until: Option<String>,
@@ -161,8 +177,8 @@ pub struct RealityCheckSnoozeArgs {
 #[derive(Debug, Args)]
 pub struct ServeArgs {
     /// Unix socket path used to accept memoryd clients.
-    #[arg(long, default_value = "/tmp/memoryd.sock")]
-    pub socket: PathBuf,
+    #[arg(long)]
+    pub socket: Option<PathBuf>,
     /// Canonical memory repository root.
     #[arg(long, default_value = ".")]
     pub repo: PathBuf,
@@ -172,6 +188,9 @@ pub struct ServeArgs {
     /// Initialize the substrate if it has not been bootstrapped yet.
     #[arg(long)]
     pub init: bool,
+    /// Opt into best-effort durability during init. Intended for CI/tests only.
+    #[arg(long)]
+    pub force_unsafe_durability: bool,
 }
 
 #[derive(Debug, Args)]
@@ -185,10 +204,23 @@ pub struct RootArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct DoctorArgs {
+    /// Canonical memory repository root.
+    #[arg(long, default_value = ".")]
+    pub repo: PathBuf,
+    /// Local per-device runtime root.
+    #[arg(long, default_value = ".memoryd")]
+    pub runtime: PathBuf,
+    /// Rebuild the derived SQLite event-log mirror from canonical JSONL events before reporting health.
+    #[arg(long)]
+    pub reindex: bool,
+}
+
+#[derive(Debug, Args)]
 pub struct SearchArgs {
     /// Unix socket path used to reach memoryd.
-    #[arg(long, default_value = "/tmp/memoryd.sock")]
-    pub socket: PathBuf,
+    #[arg(long)]
+    pub socket: Option<PathBuf>,
     /// Query text.
     pub query: String,
     /// Maximum number of results to return.
@@ -202,8 +234,8 @@ pub struct SearchArgs {
 #[derive(Debug, Args)]
 pub struct GetArgs {
     /// Unix socket path used to reach memoryd.
-    #[arg(long, default_value = "/tmp/memoryd.sock")]
-    pub socket: PathBuf,
+    #[arg(long)]
+    pub socket: Option<PathBuf>,
     /// Memory id to read.
     pub id: String,
     /// Include provenance details when available.
@@ -214,8 +246,8 @@ pub struct GetArgs {
 #[derive(Debug, Args)]
 pub struct WriteNoteArgs {
     /// Unix socket path used to reach memoryd.
-    #[arg(long, default_value = "/tmp/memoryd.sock")]
-    pub socket: PathBuf,
+    #[arg(long)]
+    pub socket: Option<PathBuf>,
     /// Note text.
     pub text: String,
 }
@@ -223,8 +255,8 @@ pub struct WriteNoteArgs {
 #[derive(Debug, Args)]
 pub struct WriteMemoryArgs {
     /// Unix socket path used to reach memoryd.
-    #[arg(long, default_value = "/tmp/memoryd.sock")]
-    pub socket: PathBuf,
+    #[arg(long)]
+    pub socket: Option<PathBuf>,
     /// Optional memory title.
     #[arg(long)]
     pub title: Option<String>,
@@ -253,8 +285,8 @@ pub enum SourceCommand {
 #[derive(Debug, Args)]
 pub struct SourceCaptureArgs {
     /// Unix socket path used to reach memoryd.
-    #[arg(long, default_value = "/tmp/memoryd.sock")]
-    pub socket: PathBuf,
+    #[arg(long)]
+    pub socket: Option<PathBuf>,
     /// Public HTTP(S) URL to capture.
     #[arg(long)]
     pub url: String,
@@ -269,8 +301,8 @@ pub struct SourceCaptureArgs {
 #[derive(Debug, Args)]
 pub struct SupersedeArgs {
     /// Unix socket path used to reach memoryd.
-    #[arg(long, default_value = "/tmp/memoryd.sock")]
-    pub socket: PathBuf,
+    #[arg(long)]
+    pub socket: Option<PathBuf>,
     /// Existing memory id to supersede.
     pub old_id: String,
     /// Replacement markdown body.
@@ -286,8 +318,8 @@ pub struct SupersedeArgs {
 #[derive(Debug, Args)]
 pub struct ForgetArgs {
     /// Unix socket path used to reach memoryd.
-    #[arg(long, default_value = "/tmp/memoryd.sock")]
-    pub socket: PathBuf,
+    #[arg(long)]
+    pub socket: Option<PathBuf>,
     /// Memory id to tombstone.
     pub id: String,
     /// Tombstone reason.
@@ -314,8 +346,8 @@ pub enum ReviewCommand {
 #[derive(Debug, Args)]
 pub struct ReviewQueueArgs {
     /// Unix socket path used to reach memoryd.
-    #[arg(long, default_value = "/tmp/memoryd.sock")]
-    pub socket: PathBuf,
+    #[arg(long)]
+    pub socket: Option<PathBuf>,
     /// Maximum number of review items to return.
     #[arg(long)]
     pub limit: Option<usize>,
@@ -324,8 +356,8 @@ pub struct ReviewQueueArgs {
 #[derive(Debug, Args)]
 pub struct ReviewApproveArgs {
     /// Unix socket path used to reach memoryd.
-    #[arg(long, default_value = "/tmp/memoryd.sock")]
-    pub socket: PathBuf,
+    #[arg(long)]
+    pub socket: Option<PathBuf>,
     /// Memory id to approve.
     pub id: String,
 }
@@ -333,8 +365,8 @@ pub struct ReviewApproveArgs {
 #[derive(Debug, Args)]
 pub struct ReviewRejectArgs {
     /// Unix socket path used to reach memoryd.
-    #[arg(long, default_value = "/tmp/memoryd.sock")]
-    pub socket: PathBuf,
+    #[arg(long)]
+    pub socket: Option<PathBuf>,
     /// Reason for rejecting the memory.
     #[arg(long)]
     pub reason: String,
@@ -367,15 +399,15 @@ pub enum PeerCommand {
 #[derive(Debug, Args)]
 pub struct PeerStatusArgs {
     /// Unix socket path used to reach memoryd.
-    #[arg(long, default_value = "/tmp/memoryd.sock")]
-    pub socket: PathBuf,
+    #[arg(long)]
+    pub socket: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
 pub struct PeerActivityArgs {
     /// Unix socket path used to reach memoryd.
-    #[arg(long, default_value = "/tmp/memoryd.sock")]
-    pub socket: PathBuf,
+    #[arg(long)]
+    pub socket: Option<PathBuf>,
     /// Filter to deliveries from or to one session id.
     #[arg(long)]
     pub session: Option<String>,
@@ -393,8 +425,8 @@ pub struct PeerActivityArgs {
 #[derive(Debug, Args)]
 pub struct PeerReleaseLockArgs {
     /// Unix socket path used to reach memoryd.
-    #[arg(long, default_value = "/tmp/memoryd.sock")]
-    pub socket: PathBuf,
+    #[arg(long)]
+    pub socket: Option<PathBuf>,
     /// Memory id whose advisory claim lock should be released.
     pub memory_id: String,
     /// Skip the interactive y/N confirmation prompt.
@@ -706,12 +738,20 @@ pub fn validate_ui_stdin(stdin_is_tty: bool) -> Result<(), UiLaunchError> {
     }
 }
 
+fn resolved_ui_socket(args: &UiArgs) -> PathBuf {
+    args.socket.clone().unwrap_or_else(|| crate::socket::resolve_socket_path(&crate::socket::default_runtime_root()))
+}
+
+fn resolved_web_socket(socket: &Option<PathBuf>) -> PathBuf {
+    socket.clone().unwrap_or_else(|| crate::socket::resolve_socket_path(&crate::socket::default_runtime_root()))
+}
+
 pub fn ui_subprocess_args(args: &UiArgs) -> Vec<OsString> {
     vec![
         OsString::from("--panel"),
         OsString::from(args.panel.to_string()),
         OsString::from("--socket"),
-        args.socket.as_os_str().to_owned(),
+        resolved_ui_socket(args).as_os_str().to_owned(),
     ]
 }
 
@@ -731,9 +771,10 @@ pub fn resolve_memoryd_tui_binary(current_exe: &Path, path_env: Option<&OsStr>) 
 
 pub fn web_request_payload(command: &WebCommand) -> RequestPayload {
     match command {
-        WebCommand::Enable(args) => {
-            RequestPayload::WebEnable { port: args.port, socket_path: args.socket.to_string_lossy().into_owned() }
-        }
+        WebCommand::Enable(args) => RequestPayload::WebEnable {
+            port: args.port,
+            socket_path: resolved_web_socket(&args.socket).to_string_lossy().into_owned(),
+        },
         WebCommand::Disable(_) => RequestPayload::WebDisable,
         WebCommand::Status(_) => RequestPayload::WebStatus,
     }

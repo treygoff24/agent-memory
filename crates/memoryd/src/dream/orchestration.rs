@@ -12,15 +12,16 @@ use memory_privacy::{
     PrivacyStorageAction,
 };
 use memory_substrate::{
-    Author, AuthorKind, ClassificationOutcome, Entity, EventContext, Evidence, Frontmatter, Memory, MemoryStatus,
-    MemoryType, RecallIndexQuery, RepoPath, RetrievalPolicy, Scope, Sensitivity, Source, SourceKind, Substrate,
-    TrustLevel, WriteMode, WritePolicy, WriteRequest,
+    config::PromptVersion, Author, AuthorKind, ClassificationOutcome, Entity, EventContext, Evidence, Frontmatter,
+    Memory, MemoryStatus, MemoryType, RecallIndexQuery, RepoPath, RetrievalPolicy, Scope, Sensitivity, Source,
+    SourceKind, Substrate, TrustLevel, WriteMode, WritePolicy, WriteRequest,
 };
 use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use tokio::sync::broadcast;
 
-use crate::protocol::CandidateWriteResult;
+use crate::protocol::{CandidateWriteResult, NotificationEvent};
 
 #[cfg(not(any(test, feature = "dev-fixtures")))]
 use super::{error::HarnessCliError, harness::AuthProbeResult};
@@ -53,6 +54,8 @@ pub struct DreamRunBuildRequest {
     pub scope: DreamScope,
     pub run_id: String,
     pub run_date: NaiveDate,
+    pub prompt_version: PromptVersion,
+    pub notifications: Option<broadcast::Sender<NotificationEvent>>,
     pub pass_timeout: Duration,
     pub pass_2_max_candidates: usize,
     pub pass_1_window_days: u32,
@@ -80,6 +83,8 @@ pub async fn build_dream_run(
         scope: request.scope,
         run_date: request.run_date,
         run_id: request.run_id,
+        prompt_version: request.prompt_version,
+        notifications: request.notifications,
         harness: placeholder,
         pass_timeout: request.pass_timeout,
         pass_2_max_candidates: request.pass_2_max_candidates,
@@ -115,16 +120,24 @@ pub async fn select_harness(
                 "dream_unavailable: harness CLI `{name}` is not installed"
             )));
         }
-        match adapter.is_authenticated().await {
-            Ok(true) => return Ok(adapter),
-            Ok(false) => {
+        let probe = adapter.auth_probe().await;
+        match &probe {
+            super::harness::AuthProbeResult::Ok => return Ok(adapter),
+            super::harness::AuthProbeResult::CliMissing { .. } => {
                 return Err(DreamError::invalid_request(format!(
-                    "dream_unavailable: harness CLI `{name}` is not authenticated"
+                    "dream_unavailable: harness CLI `{name}` is not installed"
                 )));
             }
-            Err(error) => {
+            super::harness::AuthProbeResult::AuthFailed { .. } => {
                 return Err(DreamError::invalid_request(format!(
-                    "dream_unavailable: harness CLI `{name}` auth probe failed: {error}"
+                    "dream_unavailable: harness CLI `{name}` is not authenticated: {}",
+                    probe.operator_message(adapter.name())
+                )));
+            }
+            super::harness::AuthProbeResult::Timeout | super::harness::AuthProbeResult::Error { .. } => {
+                return Err(DreamError::invalid_request(format!(
+                    "dream_unavailable: harness CLI `{name}` auth probe failed: {}",
+                    probe.operator_message(adapter.name())
                 )));
             }
         }

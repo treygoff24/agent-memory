@@ -21,7 +21,12 @@ fn list_outputs_all_20_catalog_entries() {
 
 #[test]
 fn filtered_json_run_reports_spec_result_fields() {
-    let output = memorum_eval(["--filter", "t01", "--output", "json"]);
+    let fake_cargo = fake_passing_cargo();
+    let output = Command::new(env!("CARGO_BIN_EXE_memorum-eval"))
+        .args(["--filter", "t01", "--output", "json"])
+        .env("MEMORUM_EVAL_CARGO", &fake_cargo)
+        .output()
+        .expect("spawn memorum-eval");
 
     assert!(output.status.success(), "expected filtered run to exit 0: {}", diagnostic(&output));
 
@@ -55,33 +60,47 @@ fn mock_harness_runs_catalog_without_live_credentials_or_real_cargo_failures() {
     let report = json_stdout(output);
     assert_eq!(report["total"], 20);
     assert_eq!(report["failed"], 0);
-    assert_eq!(report["partial"], false, "fake cargo makes simulator dispatches pass: {report:#?}");
+    assert_eq!(
+        report["partial"], true,
+        "mock real-harness semantics are honest skips even when simulator dispatches pass: {report:#?}"
+    );
 
     let tests = report["tests"].as_array().expect("tests should be an array");
     let t13 = find_test(tests, 13);
     let t15 = find_test(tests, 15);
     let t20 = find_test(tests, 20);
-    assert_eq!(t13["status"], "passed", "mock mode should execute MockHarness test #13: {t13:#?}");
-    assert_eq!(t15["status"], "passed", "mock mode should execute MockHarness test #15: {t15:#?}");
+    assert_eq!(t13["status"], "skipped", "mock mode must not pass Test #13 without real semantics: {t13:#?}");
+    assert_eq!(
+        t13["skip_reason"], "MOCK_HARNESS_SEMANTIC_NOT_EXERCISED",
+        "mock semantic skip is reported honestly: {t13:#?}"
+    );
+    assert_eq!(t15["status"], "skipped", "mock mode must not pass Test #15 without real semantics: {t15:#?}");
+    assert_eq!(
+        t15["skip_reason"], "MOCK_HARNESS_SEMANTIC_NOT_EXERCISED",
+        "mock semantic skip is reported honestly: {t15:#?}"
+    );
     assert_eq!(t20["status"], "passed", "mock mode should dispatch simulator test #20: {t20:#?}");
 
     let skipped_real_harness_tests = skipped_real_harness_tests(tests);
 
     #[cfg(not(feature = "stream-i-deps"))]
     {
-        assert_eq!(skipped_real_harness_tests.len(), 1, "mock mode should skip #19 until Stream I deps land");
-        for test in skipped_real_harness_tests {
-            assert_eq!(test["status"], "skipped");
-            assert_eq!(test["skip_reason"], "STREAM_I_DEPS_DISABLED");
-            assert_eq!(test["failure_detail"], Value::Null);
-        }
+        assert_eq!(
+            skipped_real_harness_tests.len(),
+            3,
+            "mock mode should skip #13/#15 plus #19 until Stream I deps land"
+        );
+        let t19 = find_test(tests, 19);
+        assert_eq!(t19["status"], "skipped");
+        assert_eq!(t19["skip_reason"], "STREAM_I_DEPS_DISABLED");
+        assert_eq!(t19["failure_detail"], Value::Null);
     }
 
     #[cfg(feature = "stream-i-deps")]
     {
         assert!(
-            skipped_real_harness_tests.is_empty(),
-            "mock mode should execute #19 when Stream I deps are enabled: {skipped_real_harness_tests:#?}"
+            skipped_real_harness_tests.len() == 2,
+            "mock mode should skip #13/#15 and execute #19 when Stream I deps are enabled: {skipped_real_harness_tests:#?}"
         );
         let t19 = find_test(tests, 19);
         assert_eq!(t19["status"], "passed", "mock mode should execute MockHarness test #19: {t19:#?}");
@@ -171,14 +190,19 @@ fn t16_dispatches_instead_of_stale_stream_g_skip() {
 #[test]
 fn output_file_receives_same_json_report_as_stdout() {
     let output_path = std::env::temp_dir().join(format!("memorum-eval-output-{}.json", std::process::id()));
-    let output = memorum_eval([
-        "--filter",
-        "t01",
-        "--output",
-        "json",
-        "--output-file",
-        output_path.to_str().expect("temp path should be utf-8"),
-    ]);
+    let fake_cargo = fake_passing_cargo();
+    let output = Command::new(env!("CARGO_BIN_EXE_memorum-eval"))
+        .args([
+            "--filter",
+            "t01",
+            "--output",
+            "json",
+            "--output-file",
+            output_path.to_str().expect("temp path should be utf-8"),
+        ])
+        .env("MEMORUM_EVAL_CARGO", &fake_cargo)
+        .output()
+        .expect("spawn memorum-eval");
 
     assert!(output.status.success(), "expected output-file run to exit 0: {}", diagnostic(&output));
 
@@ -196,7 +220,7 @@ fn memorum_eval<const N: usize>(args: [&str; N]) -> std::process::Output {
 }
 
 fn fake_failing_cargo() -> std::path::PathBuf {
-    let path = std::env::temp_dir().join(format!("memorum-eval-fake-cargo-{}.sh", std::process::id()));
+    let path = std::env::temp_dir().join(format!("memorum-eval-fake-cargo-{}.sh", unique_suffix()));
     fs::write(&path, "#!/bin/sh\nprintf 'fake cargo failure for args: %s\\n' \"$*\" >&2\nexit 42\n")
         .expect("write fake cargo");
     let mut permissions = fs::metadata(&path).expect("fake cargo metadata").permissions();
@@ -206,7 +230,7 @@ fn fake_failing_cargo() -> std::path::PathBuf {
 }
 
 fn fake_passing_cargo() -> std::path::PathBuf {
-    let path = std::env::temp_dir().join(format!("memorum-eval-fake-pass-cargo-{}.sh", std::process::id()));
+    let path = std::env::temp_dir().join(format!("memorum-eval-fake-pass-cargo-{}.sh", unique_suffix()));
     fs::write(
         &path,
         "#!/bin/sh\nprintf 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\\n'\nprintf 'MEMORUM_EVAL_ASSERTIONS=1\\n'\nexit 0\n",
@@ -219,11 +243,17 @@ fn fake_passing_cargo() -> std::path::PathBuf {
 }
 
 fn fake_harness_path() -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("memorum-eval-fake-harnesses-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("memorum-eval-fake-harnesses-{}", unique_suffix()));
     fs::create_dir_all(&dir).expect("create fake harness dir");
     write_fake_harness(&dir, "claude");
     write_fake_harness(&dir, "codex");
     dir
+}
+
+fn unique_suffix() -> String {
+    let nanos =
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock after unix epoch").as_nanos();
+    format!("{}-{nanos}", std::process::id())
 }
 
 fn write_fake_harness(dir: &std::path::Path, name: &str) {

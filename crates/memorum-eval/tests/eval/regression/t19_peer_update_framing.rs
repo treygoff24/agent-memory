@@ -14,7 +14,7 @@
 #[cfg(not(feature = "stream-i-deps"))]
 #[test]
 fn t19_peer_update_framing_skips_until_stream_i_deps_are_enabled() {
-    println!("SKIP: stream-i-deps feature disabled");
+    println!("MEMORUM_EVAL_SKIP:STREAM_I_DEPS_DISABLED");
 }
 
 #[cfg(feature = "stream-i-deps")]

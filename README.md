@@ -26,21 +26,21 @@ cargo install --path crates/memoryd-web
 cargo install --path crates/memorum-eval
 ```
 
-For development without installing, use `cargo run -p memoryd -- ...`.
+For development without installing, use `cargo run --bin memoryd -- ...`.
 
 ## Quickstart
 
 ```bash
 mkdir -p ~/memorum
-memoryd serve --init --repo ~/memorum --runtime ~/memorum/.memoryd --socket /tmp/memoryd.sock
+memoryd serve --init --repo ~/memorum --runtime ~/memorum/.memoryd --socket ~/memorum/.memoryd/memoryd.sock
 ```
 
 In another shell:
 
 ```bash
-memoryd status --socket /tmp/memoryd.sock
+memoryd status --socket ~/memorum/.memoryd/memoryd.sock
 memoryd doctor --repo ~/memorum --runtime ~/memorum/.memoryd
-memoryd mcp --socket /tmp/memoryd.sock
+memoryd mcp --socket ~/memorum/.memoryd/memoryd.sock
 ```
 
 Wire an MCP client to launch the stdio bridge:
@@ -50,7 +50,7 @@ Wire an MCP client to launch the stdio bridge:
   "mcpServers": {
     "memorum": {
       "command": "memoryd",
-      "args": ["mcp", "--socket", "/tmp/memoryd.sock"]
+      "args": ["mcp", "--socket", "~/memorum/.memoryd/memoryd.sock"]
     }
   }
 }
@@ -61,9 +61,9 @@ Then ask the client to call `memory_write` with a grounded fact and `memory_sear
 ## Useful local commands
 
 ```bash
-memoryd recall startup-block --socket /tmp/memoryd.sock --cwd "$PWD" --session-id smoke --harness codex
-memoryd web enable --socket /tmp/memoryd.sock --port 7137
-memoryd ui --socket /tmp/memoryd.sock
+memoryd recall startup-block --socket ~/memorum/.memoryd/memoryd.sock --cwd "$PWD" --session-id smoke --harness codex
+memoryd web enable --socket ~/memorum/.memoryd/memoryd.sock --port 7137
+memoryd ui --socket ~/memorum/.memoryd/memoryd.sock
 memorum-eval --harness mock --output text
 ```
 

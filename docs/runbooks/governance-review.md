@@ -8,7 +8,7 @@ that become candidates or quarantines. It does not describe a Stream G UI.
 From the repository root:
 
 ```bash
-cargo run -p memoryd -- serve --repo . --runtime .memoryd --socket /tmp/memoryd.sock --init
+cargo run --bin memoryd -- serve --repo . --runtime .memoryd --socket .memoryd/memoryd.sock --init
 ```
 
 Omit `--init` after the substrate has already been initialized.
@@ -18,8 +18,8 @@ Omit `--init` after the substrate has already been initialized.
 Use `write` for structured governed memories:
 
 ```bash
-cargo run -p memoryd -- write \
-  --socket /tmp/memoryd.sock \
+cargo run --bin memoryd -- write \
+  --socket .memoryd/memoryd.sock \
   --title "Deployment target" \
   --tag deploy \
   --meta '{"namespace":"project","type":"decision","summary":"Deployment target is production","confidence":0.95,"source_kind":"user","explicit_user_context":true}' \
@@ -37,8 +37,8 @@ policy, `confidence: 0.5` triggers the `low_confidence` gate and writes a
 `candidate` item visible in the review queue:
 
 ```bash
-cargo run -p memoryd -- write \
-  --socket /tmp/memoryd.sock \
+cargo run --bin memoryd -- write \
+  --socket .memoryd/memoryd.sock \
   --meta '{"namespace":"agent","type":"claim","summary":"Needs confidence review","confidence":0.5,"source_kind":"user","explicit_user_context":true}' \
   'This claim is intentionally low confidence and needs review.'
 ```
@@ -51,7 +51,7 @@ part of the implemented metadata contract.
 ## List the review queue
 
 ```bash
-cargo run -p memoryd -- review queue --socket /tmp/memoryd.sock --limit 20
+cargo run --bin memoryd -- review queue --socket .memoryd/memoryd.sock --limit 20
 ```
 
 Response shape:
@@ -86,14 +86,14 @@ separate side database.
 Approve a queued memory:
 
 ```bash
-cargo run -p memoryd -- review approve --socket /tmp/memoryd.sock mem_20260429_0123456789abcdef_000003
+cargo run --bin memoryd -- review approve --socket .memoryd/memoryd.sock mem_20260429_0123456789abcdef_000003
 ```
 
 Reject a queued memory:
 
 ```bash
-cargo run -p memoryd -- review reject \
-  --socket /tmp/memoryd.sock \
+cargo run --bin memoryd -- review reject \
+  --socket .memoryd/memoryd.sock \
   --reason "insufficient evidence" \
   mem_20260429_0123456789abcdef_000003
 ```
@@ -123,8 +123,8 @@ Reject returns `review_reject` with the same fields and the post-decision status
 Supersede an existing memory:
 
 ```bash
-cargo run -p memoryd -- supersede \
-  --socket /tmp/memoryd.sock \
+cargo run --bin memoryd -- supersede \
+  --socket .memoryd/memoryd.sock \
   --reason "deployment target changed" \
   --meta '{"namespace":"project","type":"decision","summary":"Deployment target is production","confidence":0.95,"source_kind":"user","explicit_user_context":true}' \
   mem_20260429_0123456789abcdef_000001 \
@@ -134,8 +134,8 @@ cargo run -p memoryd -- supersede \
 Forget a memory:
 
 ```bash
-cargo run -p memoryd -- forget \
-  --socket /tmp/memoryd.sock \
+cargo run --bin memoryd -- forget \
+  --socket .memoryd/memoryd.sock \
   --reason "user requested removal" \
   mem_20260429_0123456789abcdef_000002
 ```

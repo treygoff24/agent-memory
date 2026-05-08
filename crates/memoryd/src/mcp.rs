@@ -141,6 +141,7 @@ pub struct CaptureSourceRequest {
 }
 
 pub fn manifest() -> Manifest {
+    debug_assert_eq!(ToolName::all().len(), 10, "MCP v1 manifest tool count changed without a spec bump");
     Manifest { tools: ToolName::all().iter().map(|name| descriptor(*name)).collect() }
 }
 
@@ -248,6 +249,11 @@ pub async fn forward_payload_to_daemon(
         | RequestPayload::WebDisable
         | RequestPayload::WebStatus
         | RequestPayload::RealityCheck(_)
+        | RequestPayload::InspectEntities { .. }
+        | RequestPayload::EventsLogPage { .. }
+        | RequestPayload::NamespaceTree { .. }
+        | RequestPayload::GovernancePolicyDump
+        | RequestPayload::ConflictsList { .. }
         | RequestPayload::PeerHeartbeat(_)
         | RequestPayload::PeerStatus
         | RequestPayload::PeerActivity { .. }
@@ -339,7 +345,7 @@ fn descriptor(name: ToolName) -> ToolDescriptor {
             "Read one memory by id with an optional provenance envelope.",
             object_schema(&[("id", "string"), ("include_provenance", "boolean")], &["id"]),
             object_schema(
-                &[("id", "string"), ("body", "string"), ("truncated", "boolean")],
+                &[("id", "string"), ("body", "string"), ("truncated", "boolean"), ("provenance", "object")],
                 &["id", "body", "truncated"],
             ),
         ),

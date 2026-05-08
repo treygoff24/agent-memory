@@ -11,7 +11,7 @@ async fn fresh_clone_adoption_regenerates_local_identity_event_log_and_merge_con
     bootstrap_repo_tree(&repo).expect("bootstrap repo");
     git(&repo, &["init"]).expect("git init");
 
-    let substrate = Substrate::adopt_clone(Roots::new(&repo, &runtime), AdoptOptions::default()).await.expect("adopt");
+    let substrate = Substrate::adopt_clone(Roots::new(&repo, &runtime), adopt_options()).await.expect("adopt");
 
     let local_device = std::fs::read_to_string(runtime.join("local-device.yaml")).expect("local device");
     assert!(local_device.contains("device:"));
@@ -47,7 +47,7 @@ async fn fresh_clone_with_adoption_can_perform_semantic_same_file_merge() {
     let runtime = temp.path().join("runtime");
     bootstrap_repo_tree(&repo).expect("bootstrap repo");
     git(&repo, &["init"]).expect("git init");
-    Substrate::adopt_clone(Roots::new(&repo, &runtime), AdoptOptions::default()).await.expect("adopt");
+    Substrate::adopt_clone(Roots::new(&repo, &runtime), adopt_options()).await.expect("adopt");
     let base = doc("base", 0.5, "base body");
     let ours = doc("ours summary", 0.5, "base body");
     let theirs = doc("base", 0.8, "base body");
@@ -80,7 +80,7 @@ async fn adoption_force_new_device_regenerates_local_identity_before_writes() {
     )
     .expect("copied local device");
 
-    Substrate::adopt_clone(Roots::new(&repo, &runtime), AdoptOptions { force_new_device: true })
+    Substrate::adopt_clone(Roots::new(&repo, &runtime), AdoptOptions { force_new_device: true, ..adopt_options() })
         .await
         .expect("adopt with forced identity repair");
     let local_device = std::fs::read_to_string(runtime.join("local-device.yaml")).expect("local device");
@@ -97,6 +97,10 @@ fn git(repo: &std::path::Path, args: &[&str]) -> Result<String, String> {
     } else {
         Err(String::from_utf8_lossy(&output.stderr).to_string())
     }
+}
+
+fn adopt_options() -> AdoptOptions {
+    AdoptOptions { force_new_device: false, merge_driver_path: Some(std::env::current_exe().expect("current_exe")) }
 }
 
 fn doc(summary: &str, confidence: f64, body: &str) -> String {

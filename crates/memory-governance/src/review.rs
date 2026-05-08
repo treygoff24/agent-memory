@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 
 const NEXT_ACTION_APPROVE: &str = "review_approve";
 const NEXT_ACTION_REJECT: &str = "review_reject";
+/// Dogfood threshold; make configurable after the post-dogfood policy pass.
+pub const REVIEW_QUEUE_DOGFOOD_THRESHOLD: usize = 25;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewQueue {
@@ -16,6 +18,10 @@ impl ReviewQueue {
         let items = envelopes.into_iter().filter_map(ReviewQueueItem::from_envelope).collect();
         Self { items }
     }
+}
+
+pub fn over_threshold(queue: &ReviewQueue) -> bool {
+    queue.items.len() >= REVIEW_QUEUE_DOGFOOD_THRESHOLD
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

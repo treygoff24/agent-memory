@@ -8,6 +8,23 @@ use url::Url;
 use crate::error::{SourceError, SourceResult};
 use crate::model::RedirectHop;
 
+const SENSITIVE_URL_KEYS: &[&str] = &[
+    "access_token",
+    "api_key",
+    "apikey",
+    "auth",
+    "authorization",
+    "code",
+    "key",
+    "otp",
+    "password",
+    "secret",
+    "session",
+    "signature",
+    "sig",
+    "token",
+];
+
 pub type ResolveFuture<'a> = Pin<Box<dyn Future<Output = SourceResult<Vec<SocketAddr>>> + Send + 'a>>;
 
 pub trait DnsResolver: Send + Sync {
@@ -100,6 +117,49 @@ pub fn pinned_reqwest_client(hop: &ValidatedHop) -> SourceResult<reqwest::Client
         .map_err(|err| SourceError::CaptureFailed(format!("build pinned HTTP client: {err}")))
 }
 
+pub fn redact_sensitive_url(url: &Url) -> Url {
+    let mut redacted = url.clone();
+    let retained_pairs = redacted
+        .query_pairs()
+        .filter(|(key, _value)| !is_sensitive_url_key(key.as_ref()))
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect::<Vec<_>>();
+    redacted.set_query(None);
+    if !retained_pairs.is_empty() {
+        let mut pairs = redacted.query_pairs_mut();
+        for (key, value) in retained_pairs {
+            pairs.append_pair(&key, &value);
+        }
+    }
+    if redacted.fragment().is_some_and(fragment_contains_sensitive_key) {
+        redacted.set_fragment(None);
+    }
+    redacted
+}
+
+pub fn redact_sensitive_location_header(raw: &str, base: &Url) -> String {
+    if let Ok(url) = Url::parse(raw) {
+        return redact_sensitive_url(&url).to_string();
+    }
+    let Ok(joined) = base.join(raw) else {
+        return raw.to_string();
+    };
+    let redacted = redact_sensitive_url(&joined);
+    if raw.starts_with('/') {
+        let mut relative = redacted.path().to_string();
+        if let Some(query) = redacted.query() {
+            relative.push('?');
+            relative.push_str(query);
+        }
+        if let Some(fragment) = redacted.fragment() {
+            relative.push('#');
+            relative.push_str(fragment);
+        }
+        return relative;
+    }
+    redacted.to_string()
+}
+
 async fn validate_url(url: Url, resolver: &dyn DnsResolver, policy: AddressPolicy) -> SourceResult<ValidatedHop> {
     match url.scheme() {
         "http" | "https" => {}
@@ -133,6 +193,18 @@ async fn validate_url(url: Url, resolver: &dyn DnsResolver, policy: AddressPolic
         }
     }
     Ok(ValidatedHop { url, addrs })
+}
+
+fn fragment_contains_sensitive_key(fragment: &str) -> bool {
+    fragment
+        .split(['&', ';'])
+        .map(|part| part.split_once('=').map_or(part, |(key, _value)| key))
+        .any(is_sensitive_url_key)
+}
+
+fn is_sensitive_url_key(key: &str) -> bool {
+    let key = key.trim().trim_start_matches('#').to_ascii_lowercase();
+    SENSITIVE_URL_KEYS.iter().any(|sensitive| key == *sensitive || key.ends_with(&format!("_{sensitive}")))
 }
 
 pub fn is_allowed_ip(ip: IpAddr, policy: AddressPolicy) -> bool {

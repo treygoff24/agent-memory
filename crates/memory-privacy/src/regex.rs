@@ -10,7 +10,7 @@ struct Rule {
 }
 
 #[allow(clippy::expect_used)]
-static RULES: Lazy<Vec<Rule>> = Lazy::new(|| {
+static SECRET_RULES: Lazy<Vec<Rule>> = Lazy::new(|| {
     vec![
         Rule {
             label: PrivacyLabel::Secret,
@@ -43,6 +43,12 @@ static RULES: Lazy<Vec<Rule>> = Lazy::new(|| {
             confidence: 0.99,
             regex: Regex::new(r"\b\d{3}-\d{2}-\d{4}\b").expect("ssn regex literal"),
         },
+    ]
+});
+
+#[allow(clippy::expect_used)]
+static LABEL_RULES: Lazy<Vec<Rule>> = Lazy::new(|| {
+    vec![
         Rule {
             label: PrivacyLabel::PrivateEmail,
             confidence: 0.95,
@@ -76,7 +82,7 @@ static RULES: Lazy<Vec<Rule>> = Lazy::new(|| {
 /// Deterministic regex privacy spans.
 pub fn regex_spans(text: &str) -> Vec<PrivacySpan> {
     let mut spans = Vec::new();
-    for rule in RULES.iter() {
+    for rule in SECRET_RULES.iter().chain(LABEL_RULES.iter()) {
         spans.extend(
             rule.regex
                 .find_iter(text)
@@ -84,6 +90,35 @@ pub fn regex_spans(text: &str) -> Vec<PrivacySpan> {
         );
     }
     spans.extend(credit_card_spans(text));
+    spans.sort_by_key(|span| (span.start, span.end));
+    spans
+}
+
+/// Regex spans that imply secret/refuse handling.
+pub fn secret_regex_spans(text: &str) -> Vec<PrivacySpan> {
+    let mut spans = Vec::new();
+    for rule in SECRET_RULES.iter() {
+        spans.extend(
+            rule.regex
+                .find_iter(text)
+                .map(|matched| PrivacySpan::new(rule.label, matched.start(), matched.end(), rule.confidence)),
+        );
+    }
+    spans.extend(credit_card_spans(text));
+    spans.sort_by_key(|span| (span.start, span.end));
+    spans
+}
+
+/// Regex spans used only by the full classifier.
+pub fn label_regex_spans(text: &str) -> Vec<PrivacySpan> {
+    let mut spans = Vec::new();
+    for rule in LABEL_RULES.iter() {
+        spans.extend(
+            rule.regex
+                .find_iter(text)
+                .map(|matched| PrivacySpan::new(rule.label, matched.start(), matched.end(), rule.confidence)),
+        );
+    }
     spans.sort_by_key(|span| (span.start, span.end));
     spans
 }

@@ -4,6 +4,7 @@ use std::{sync::Arc, time::Duration};
 
 use chrono::NaiveDate;
 use memory_privacy::{PrivacyLabel, PrivacySpan};
+use memory_substrate::config::PromptVersion;
 use memoryd::dream::{
     harness::EchoCli,
     run::{
@@ -38,6 +39,8 @@ fn base_options(repo_root: &std::path::Path) -> DreamRunOptions {
         scope: DreamScope::parse("project:proj_abc").expect("scope"),
         run_date: NaiveDate::from_ymd_opt(2026, 4, 30).expect("date"),
         run_id: "run_test_01".to_string(),
+        prompt_version: PromptVersion::V2,
+        notifications: None,
         harness: Arc::new(EchoCli::default()),
         pass_timeout: Duration::from_secs(1),
         pass_2_max_candidates: 8,

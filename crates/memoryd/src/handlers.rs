@@ -15,11 +15,13 @@ use memorum_coordination::{
     handle_peer_heartbeat as coordination_handle_peer_heartbeat, ClaimLockInfo, CoordinationConfig, PeerHeartbeatError,
     PeerHeartbeatOptions, PresenceConfig, PresenceRegistry,
 };
+use memory_governance::review::{over_threshold, REVIEW_QUEUE_DOGFOOD_THRESHOLD};
 use memory_governance::{
-    CandidateMemory, ContradictionTiebreaker, ExistingMemorySummary, FileSourceResolver, GovernanceEngine,
-    GovernanceProviders, GovernanceRefusalReason, GovernanceWriteDecision, GroundingVerifier, PolicySet, PolicySource,
-    ReviewMemoryEnvelope, ReviewQueue, SessionSpawnResolver, SimilaritySearch, Source as GovernanceSource,
-    SourceKind as GovernanceSourceKind, TiebreakOutcome, TombstoneIndex, TombstoneKind, TombstoneRule,
+    CandidateContext, CandidateMemory, ContradictionTiebreaker, ExistingMemorySummary, FileSourceResolver,
+    GovernanceEngine, GovernanceProviders, GovernanceRefusalReason, GovernanceWriteDecision, GroundingVerifier,
+    PolicySet, PolicySource, ReviewMemoryEnvelope, ReviewQueue, Scope as GovernanceScope, SessionSpawnResolver,
+    SimilaritySearch, Source as GovernanceSource, SourceKind as GovernanceSourceKind, TiebreakOutcome, TombstoneIndex,
+    TombstoneKind, TombstoneRule,
 };
 use memory_privacy::{
     safe_descriptor_projection, safe_plaintext_fragment, CallerSensitivity, DeterministicPrivacyClassifier,
@@ -29,25 +31,28 @@ use memory_privacy::{
 use memory_source::{capture_web_source, ArtifactStore, CaptureWebSourceRequest, SourceError};
 use memory_substrate::{
     events::EventKind, Author, AuthorKind, ChunkQuery, ClassificationOutcome, EncryptedSubstrateDescriptor,
-    EncryptedWriteRequest, EventContext, Frontmatter, IndexProjection, Memory, MemoryContent, MemoryId, MemoryStatus,
-    MemoryType, ObserveKind, PrivacySpanRecord, RepoPath, RetrievalPolicy, Scope, Sensitivity, Source, SourceKind,
-    Substrate, SubstrateFragmentAppendRequest, SubstrateFragmentEncryption, SubstrateFragmentPayload,
-    SupersedeRequest as SubstrateSupersedeRequest, TombstoneRequest, TrustLevel, WriteMode, WritePolicy,
-    WriteRequest as SubstrateWriteRequest,
+    EncryptedWriteRequest, EventContext, Frontmatter, IndexProjection, Memory, MemoryContent, MemoryId, MemoryQuery,
+    MemoryStatus, MemoryType, ObserveKind, PrivacySpanRecord, RecallIndexQuery, RepoPath, RetrievalPolicy, Scope,
+    Sensitivity, Source, SourceKind, Substrate, SubstrateFragmentAppendRequest, SubstrateFragmentEncryption,
+    SubstrateFragmentPayload, SupersedeRequest as SubstrateSupersedeRequest, TombstoneRequest, TrustLevel, WriteMode,
+    WritePolicy, WriteRequest as SubstrateWriteRequest,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{broadcast, Mutex};
 
 use crate::dream::rehydration;
 use crate::protocol::{
-    CaptureSourceResponse, ClaimLockWarning, DoctorFinding, DoctorResponse, GetResponse, GovernanceForgetResponse,
-    GovernanceStatus, GovernanceSupersedeResponse, GovernanceWriteResponse, InjectableEventKind, ObserveResponse,
-    ObserveTarget, PassiveNotificationStatus, PeerActivityResponse, PeerDeliveryAuditEntry, PeerReleaseLockResponse,
-    PeerReleaseLockStatus, PeerSessionStatus, PeerStatusResponse, RealityCheckAction, RealityCheckRequest,
-    RealityCheckResponse, RequestEnvelope, RequestPayload, RespondRefusalKind, ResponseEnvelope, ResponsePayload,
-    RevealResponse, ReviewDecisionResponse, ReviewQueueItemResponse, ReviewQueueResponse, SearchHit, SearchResponse,
-    StatusResponse, WebDashboardStatus, WriteNoteResponse, MAX_FRAME_BYTES, NOTIFICATION_CHANNEL_CAPACITY,
+    CaptureSourceResponse, ClaimLockWarning, ConflictSummary, ConflictsListResponse, DoctorFinding, DoctorResponse,
+    EntitySummary, EventLogEntry, EventsLogPageResponse, GetProvenance, GetResponse, GovernanceForgetResponse,
+    GovernancePolicySnapshot, GovernancePolicySummary, GovernanceStatus, GovernanceSupersedeResponse,
+    GovernanceWriteResponse, InjectableEventKind, InspectEntitiesResponse, NamespaceNode, NamespaceTreeResponse,
+    NotificationEvent, ObserveResponse, ObserveTarget, PassiveNotificationStatus, PeerActivityResponse,
+    PeerDeliveryAuditEntry, PeerReleaseLockResponse, PeerReleaseLockStatus, PeerSessionStatus, PeerStatusResponse,
+    RealityCheckAction, RealityCheckRequest, RealityCheckResponse, RequestEnvelope, RequestPayload, RespondRefusalKind,
+    ResponseEnvelope, ResponsePayload, RevealResponse, ReviewDecisionResponse, ReviewQueueItemResponse,
+    ReviewQueueResponse, SearchHit, SearchResponse, StatusResponse, WebDashboardStatus, WriteNoteResponse,
+    MAX_FRAME_BYTES, NOTIFICATION_CHANNEL_CAPACITY,
 };
 use crate::reality_check::{RcAdvanceRequest, RcRunRequest, RcSessionAdvance, RcSessionHandler};
 use crate::recall::{
@@ -75,8 +80,10 @@ const REVIEW_QUEUE_ACTION_MAX: usize = 96;
 const REVIEW_DECISION_SUMMARY_MAX: usize = 512;
 const REVIEW_RESPONSE_FRAME_BUDGET: usize = MAX_FRAME_BYTES - 1024;
 const DEFAULT_PROJECT_NAMESPACE: &str = "agent-memory";
+const REVEAL_REASON_MAX_CHARS: usize = 512;
 const REDACTED_FORGET_REASON: &str = "[redacted]";
 const FORGET_REASON_MAX_CHARS: usize = 160;
+const ENCRYPTED_SUPERSESSION_RUNBOOK: &str = "encrypted supersession requires reveal+rewrite cycle in current build; see docs/runbooks/encrypted-supersession.md";
 const DEFAULT_SUPERSEDE_SESSION_ID: &str = "synthetic-memory-supersede";
 const DEFAULT_SUPERSEDE_HARNESS: &str = "unknown";
 const PEER_DELIVERY_AUDIT_CAPACITY: usize = 200;
@@ -186,6 +193,10 @@ impl HandlerState {
     ) -> bool {
         crate::reality_check::RcScheduler::default().check_and_fire_if_due(reality_check, now, &self.notifications)
     }
+
+    fn emit_notification(&self, event: NotificationEvent) {
+        let _ = self.notifications.send(event);
+    }
 }
 
 impl DeltaPeerDeliveryRecorder for HandlerState {
@@ -232,7 +243,7 @@ struct PeerUpdateCooldownKey {
 
 trait WebDashboardLauncher: std::fmt::Debug + Send + Sync {
     fn ensure_port_available(&self, port: u16) -> Result<(), String>;
-    fn spawn(&self, socket_path: &str, port: u16) -> Result<Box<dyn WebDashboardChild>, String>;
+    fn spawn(&self, socket_path: &str, port: u16, repo: &Path) -> Result<Box<dyn WebDashboardChild>, String>;
     fn wait_until_ready(&self, port: u16, child: &mut dyn WebDashboardChild) -> Result<(), String>;
 }
 
@@ -250,13 +261,15 @@ impl WebDashboardLauncher for OsWebDashboardLauncher {
         ensure_web_dashboard_port_available(port)
     }
 
-    fn spawn(&self, socket_path: &str, port: u16) -> Result<Box<dyn WebDashboardChild>, String> {
+    fn spawn(&self, socket_path: &str, port: u16, repo: &Path) -> Result<Box<dyn WebDashboardChild>, String> {
         let binary = resolve_memoryd_web_binary()?;
         let child = Command::new(binary)
             .arg("--socket")
             .arg(socket_path)
             .arg("--port")
             .arg(port.to_string())
+            .arg("--repo")
+            .arg(repo)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -297,6 +310,13 @@ struct WebDashboardRuntime {
     launcher: Arc<dyn WebDashboardLauncher>,
 }
 
+#[derive(Clone, Copy)]
+struct WebDashboardLaunchConfig<'a> {
+    port: u16,
+    socket_path: &'a str,
+    repo: &'a Path,
+}
+
 impl Default for WebDashboardRuntime {
     fn default() -> Self {
         Self { port: None, enabled_at: None, child: None, launcher: Arc::new(OsWebDashboardLauncher) }
@@ -311,22 +331,23 @@ impl WebDashboardRuntime {
 
     fn enable(
         &mut self,
-        port: u16,
-        socket_path: &str,
+        launch: WebDashboardLaunchConfig<'_>,
         now: chrono::DateTime<chrono::Utc>,
     ) -> Result<WebDashboardStatus, HandlerError> {
-        if self.child.as_mut().is_some_and(|child| child.try_wait().ok().flatten().is_none()) && self.port == Some(port)
+        if self.child.as_mut().is_some_and(|child| child.try_wait().ok().flatten().is_none())
+            && self.port == Some(launch.port)
         {
             return Ok(self.status(now));
         }
         self.stop_child();
-        self.launcher.ensure_port_available(port).map_err(HandlerError::port_in_use)?;
-        let mut child = self.launcher.spawn(socket_path, port).map_err(HandlerError::web_unavailable)?;
-        if let Err(error) = self.launcher.wait_until_ready(port, child.as_mut()) {
+        self.launcher.ensure_port_available(launch.port).map_err(HandlerError::port_in_use)?;
+        let mut child =
+            self.launcher.spawn(launch.socket_path, launch.port, launch.repo).map_err(HandlerError::web_unavailable)?;
+        if let Err(error) = self.launcher.wait_until_ready(launch.port, child.as_mut()) {
             terminate_web_dashboard_child(child);
             return Err(HandlerError::web_unavailable(error));
         }
-        self.port = Some(port);
+        self.port = Some(launch.port);
         self.enabled_at = Some(now);
         self.child = Some(child);
         Ok(self.status(now))
@@ -491,7 +512,7 @@ async fn dispatch(
             search_response(substrate, &query, limit, include_body).await
         }
         RequestPayload::Get { id, include_provenance } => get_response(substrate, &id, include_provenance).await,
-        RequestPayload::TrustArtifact { id } => trust_artifact_response(substrate, &id).await,
+        RequestPayload::TrustArtifact { id } => trust_artifact_response(substrate, state, &id).await,
         RequestPayload::CaptureSource { url, excerpts, note } => {
             capture_source_response(substrate, url, excerpts, note).await
         }
@@ -510,7 +531,7 @@ async fn dispatch(
             .await
         }
         RequestPayload::Forget { id, reason } => governance_forget_response(substrate, id, reason).await,
-        RequestPayload::ReviewQueue { limit } => review_queue_response(substrate, limit).await,
+        RequestPayload::ReviewQueue { limit } => review_queue_response(substrate, state, limit).await,
         RequestPayload::ReviewApprove { id } => review_decision_response(substrate, &id, ReviewDecision::Approve).await,
         RequestPayload::ReviewReject { id, reason } => {
             review_decision_response(substrate, &id, ReviewDecision::Reject { reason }).await
@@ -533,13 +554,20 @@ async fn dispatch(
             .await
         }
         RequestPayload::DreamNow { scope, force, cli_override } => {
-            dream_now_response(substrate, scope, force, cli_override).await
+            dream_now_response(substrate, state, DreamNowRequest { scope, force, cli_override }).await
         }
         RequestPayload::DreamStatus {} => dream_status_response(substrate).await,
-        RequestPayload::WebEnable { port, socket_path } => web_enable_response(state, port, &socket_path),
+        RequestPayload::WebEnable { port, socket_path } => web_enable_response(substrate, state, port, &socket_path),
         RequestPayload::WebDisable => web_disable_response(state),
         RequestPayload::WebStatus => web_status_response(state),
         RequestPayload::RealityCheck(request) => reality_check_response(substrate, state, request).await,
+        RequestPayload::InspectEntities { limit, prefix } => inspect_entities_response(substrate, limit, prefix).await,
+        RequestPayload::EventsLogPage { since, limit, kind_filter } => {
+            events_log_page_response(substrate, since, limit, kind_filter)
+        }
+        RequestPayload::NamespaceTree { root, depth } => namespace_tree_response(substrate, root, depth).await,
+        RequestPayload::GovernancePolicyDump => governance_policy_dump_response(substrate),
+        RequestPayload::ConflictsList { limit } => conflicts_list_response(substrate, limit).await,
         RequestPayload::TestInjectEvent { kind, memory_id, ts, harness, session_id } => {
             test_inject_event_response(substrate, TestInjectEventRequest { kind, memory_id, ts, harness, session_id })
                 .await
@@ -557,12 +585,277 @@ async fn recall_hits_response(
         .map_err(HandlerError::substrate)
 }
 
-fn web_enable_response(state: &HandlerState, port: u16, socket_path: &str) -> Result<ResponsePayload, HandlerError> {
+async fn inspect_entities_response(
+    substrate: &Substrate,
+    limit: Option<usize>,
+    prefix: Option<String>,
+) -> Result<ResponsePayload, HandlerError> {
+    let rows = substrate
+        .query_recall_index_including_metadata_only(RecallIndexQuery::default())
+        .await
+        .map_err(HandlerError::substrate)?;
+    let prefix = prefix.map(|value| value.to_ascii_lowercase());
+    let mut by_id: BTreeMap<String, EntitySummary> = BTreeMap::new();
+    for row in rows {
+        for entity in row.entities {
+            if prefix.as_ref().is_some_and(|prefix| !entity_matches_prefix(&entity, prefix)) {
+                continue;
+            }
+            let entry = by_id.entry(entity.id.clone()).or_insert_with(|| EntitySummary {
+                entity_id: entity.id.clone(),
+                label: entity.label.clone(),
+                aliases: Vec::new(),
+                memory_count: 0,
+                recent_memory_ids: Vec::new(),
+            });
+            entry.memory_count += 1;
+            entry.recent_memory_ids.push(row.id.clone());
+            for alias in entity.aliases {
+                if !entry.aliases.contains(&alias) {
+                    entry.aliases.push(alias);
+                }
+            }
+        }
+    }
+    let mut entities = by_id.into_values().collect::<Vec<_>>();
+    entities.sort_by(|left, right| {
+        right.memory_count.cmp(&left.memory_count).then_with(|| left.entity_id.cmp(&right.entity_id))
+    });
+    entities.truncate(limit.unwrap_or(50).min(200));
+    Ok(ResponsePayload::InspectEntities(InspectEntitiesResponse { entities }))
+}
+
+fn entity_matches_prefix(entity: &memory_substrate::Entity, prefix: &str) -> bool {
+    entity.id.to_ascii_lowercase().starts_with(prefix)
+        || entity.label.to_ascii_lowercase().starts_with(prefix)
+        || entity.aliases.iter().any(|alias| alias.to_ascii_lowercase().starts_with(prefix))
+}
+
+fn events_log_page_response(
+    substrate: &Substrate,
+    since: Option<crate::protocol::EventId>,
+    limit: usize,
+    kind_filter: Option<Vec<EventKind>>,
+) -> Result<ResponsePayload, HandlerError> {
+    let filter_labels = kind_filter.map(|kinds| kinds.iter().map(event_kind_label).collect::<HashSet<_>>());
+    let mut entries = substrate
+        .events()
+        .map_err(HandlerError::substrate)?
+        .into_iter()
+        .filter(|event| since.as_ref().is_none_or(|cursor| event.id.as_str() > cursor.as_str()))
+        .filter(|event| filter_labels.as_ref().is_none_or(|labels| labels.contains(event_kind_label(&event.kind))))
+        .map(|event| EventLogEntry {
+            event_id: event.id,
+            ts: event.at,
+            device: event.device.to_string(),
+            seq: event.seq,
+            memory_id: memory_id_from_event_kind(&event.kind),
+            summary: event_kind_summary(&event.kind),
+            kind: event.kind,
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| right.ts.cmp(&left.ts).then_with(|| right.seq.cmp(&left.seq)));
+    entries.truncate(limit.min(200));
+    let next_since = entries.last().map(|entry| entry.event_id.clone());
+    Ok(ResponsePayload::EventsLogPage(EventsLogPageResponse { entries, next_since }))
+}
+
+async fn namespace_tree_response(
+    substrate: &Substrate,
+    root: Option<String>,
+    depth: Option<usize>,
+) -> Result<ResponsePayload, HandlerError> {
+    let root = root.unwrap_or_else(|| "all".to_string());
+    let include_children = depth.unwrap_or(1) > 0;
+    let rows = substrate
+        .query_recall_index_including_metadata_only(RecallIndexQuery::default())
+        .await
+        .map_err(HandlerError::substrate)?;
+    let mut counts = BTreeMap::<String, usize>::new();
+    for row in rows {
+        let namespace = namespace_for_row(&row);
+        if root != "all" && !namespace.starts_with(&root) {
+            continue;
+        }
+        *counts.entry(namespace).or_default() += 1;
+    }
+    let children = if include_children {
+        counts
+            .into_iter()
+            .map(|(path, memory_count)| NamespaceNode {
+                name: leaf_name(&path),
+                path,
+                memory_count,
+                children: Vec::new(),
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let memory_count = children.iter().map(|child: &NamespaceNode| child.memory_count).sum();
+    Ok(ResponsePayload::NamespaceTree(NamespaceTreeResponse {
+        root: NamespaceNode { name: leaf_name(&root), path: root, memory_count, children },
+    }))
+}
+
+fn governance_policy_dump_response(substrate: &Substrate) -> Result<ResponsePayload, HandlerError> {
+    let (policies, source) = load_policy_set(substrate.roots().repo.as_path())?;
+    let scopes = [GovernanceScope::Me, GovernanceScope::Project, GovernanceScope::Agent, GovernanceScope::Dreaming];
+    let mut summaries = Vec::new();
+    for scope in scopes {
+        let policy =
+            policies.policy_for_scope(scope).map_err(|error| HandlerError::invalid_request(error.to_string()))?;
+        let preview = policy.dry_run(&CandidateContext::new(scope).with_confidence(0.0).with_grounding(false));
+        summaries.push(GovernancePolicySummary {
+            scope: format!("{scope:?}").to_ascii_lowercase(),
+            selected_policy: preview.selected_policy,
+            policy_source: format!("{:?}", preview.policy_source).to_ascii_lowercase(),
+            confidence_floor: preview.confidence_floor,
+            review_gates: preview.triggered_review_gates,
+            requires_grounding: preview.requires_grounding,
+        });
+    }
+    Ok(ResponsePayload::GovernancePolicyDump(GovernancePolicySnapshot {
+        source: policy_source_string(source),
+        raw_yaml: first_policy_yaml(substrate.roots().repo.as_path()),
+        policies: summaries,
+    }))
+}
+
+async fn conflicts_list_response(substrate: &Substrate, limit: Option<usize>) -> Result<ResponsePayload, HandlerError> {
+    let rows = substrate
+        .query_memory(MemoryQuery {
+            id: None,
+            tag: None,
+            status: Some(MemoryStatus::Quarantined),
+            include_metadata_only: true,
+            namespace_prefix: None,
+            passive_recall_only: false,
+            updated_since: None,
+        })
+        .await
+        .map_err(HandlerError::substrate)?;
+    let mut conflicts = Vec::new();
+    for row in rows.into_iter().take(limit.unwrap_or(50).min(200)) {
+        let envelope = substrate.read_memory_envelope(&row.id).await.map_err(HandlerError::substrate)?;
+        conflicts.push(ConflictSummary {
+            id: row.id,
+            path: row.path.to_string(),
+            summary: bounded(&envelope.metadata.frontmatter.summary, REVIEW_QUEUE_SUMMARY_MAX),
+            reason: envelope.metadata.frontmatter.merge_diagnostics.map(|value| bounded(&value.to_string(), 240)),
+            updated_at: envelope.metadata.frontmatter.updated_at,
+        });
+    }
+    Ok(ResponsePayload::ConflictsList(ConflictsListResponse { conflicts }))
+}
+
+fn namespace_for_row(row: &memory_substrate::RecallIndexRow) -> String {
+    match row.scope {
+        Scope::User => "me".to_string(),
+        Scope::Agent => "agent".to_string(),
+        Scope::Subagent => "subagent".to_string(),
+        Scope::Project => format!("project:{}", row.canonical_namespace_id.as_deref().unwrap_or("unknown")),
+        Scope::Org => format!("org:{}", row.canonical_namespace_id.as_deref().unwrap_or("unknown")),
+    }
+}
+
+fn leaf_name(path: &str) -> String {
+    path.rsplit([':', '/']).next().filter(|name| !name.is_empty()).unwrap_or(path).to_string()
+}
+
+fn first_policy_yaml(repo: &Path) -> Option<String> {
+    let policy_dir = repo.join("policies");
+    let mut paths = std::fs::read_dir(policy_dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "yaml"))
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths.into_iter().next().and_then(|path| std::fs::read_to_string(path).ok())
+}
+
+fn memory_id_from_event_kind(kind: &EventKind) -> Option<MemoryId> {
+    match kind {
+        EventKind::WriteCommitted { id, .. }
+        | EventKind::EncryptedWriteCommitted { id, .. }
+        | EventKind::TombstoneCommitted { id }
+        | EventKind::RecallHit { id, .. }
+        | EventKind::RealityCheckConfirmed { id, .. }
+        | EventKind::RealityCheckForgotten { id, .. }
+        | EventKind::RealityCheckNotRelevant { id, .. } => Some(id.clone()),
+        EventKind::DuplicateIdRepaired { new_id, .. } => Some(new_id.clone()),
+        EventKind::ClaimLockContention { memory_id, .. } => Some(memory_id.clone()),
+        EventKind::EmbeddingModelChanged { .. }
+        | EventKind::StartupReconciliationCompleted { .. }
+        | EventKind::OperatorRepairRequired { .. }
+        | EventKind::GitPushFailed { .. }
+        | EventKind::WriteRefused { .. }
+        | EventKind::EncryptedContentRevealed { .. }
+        | EventKind::SubstrateFragmentWritten { .. } => None,
+    }
+}
+
+fn event_kind_summary(kind: &EventKind) -> String {
+    match kind {
+        EventKind::WriteCommitted { id, .. } => format!("memory write committed: {id}"),
+        EventKind::EncryptedWriteCommitted { id, .. } => format!("encrypted memory write committed: {id}"),
+        EventKind::TombstoneCommitted { id } => format!("memory tombstoned: {id}"),
+        EventKind::DuplicateIdRepaired { old_id, new_id } => format!("duplicate id repaired: {old_id} -> {new_id}"),
+        EventKind::EmbeddingModelChanged { chunks_requeued } => {
+            format!("embedding model changed; {chunks_requeued} chunks requeued")
+        }
+        EventKind::StartupReconciliationCompleted { reindexed, repaired_events } => {
+            format!("startup reconciliation completed; reindexed={reindexed}, repaired_events={repaired_events}")
+        }
+        EventKind::OperatorRepairRequired { reason }
+        | EventKind::GitPushFailed { reason }
+        | EventKind::EncryptedContentRevealed { reason, .. } => reason.clone(),
+        EventKind::WriteRefused { reason, .. } => format!("write refused: {reason}"),
+        EventKind::SubstrateFragmentWritten { id, path, .. } => format!("substrate fragment written: {id} at {path}"),
+        EventKind::RecallHit { id, .. } => format!("memory recalled: {id}"),
+        EventKind::RealityCheckConfirmed { id, .. } => format!("reality check confirmed: {id}"),
+        EventKind::RealityCheckForgotten { id, .. } => format!("reality check forgot: {id}"),
+        EventKind::RealityCheckNotRelevant { id, .. } => format!("reality check not relevant: {id}"),
+        EventKind::ClaimLockContention { memory_id, .. } => format!("claim-lock contention: {memory_id}"),
+    }
+}
+
+fn event_kind_label(kind: &EventKind) -> &'static str {
+    match kind {
+        EventKind::WriteCommitted { .. } => "write_committed",
+        EventKind::EncryptedWriteCommitted { .. } => "encrypted_write_committed",
+        EventKind::TombstoneCommitted { .. } => "tombstone_committed",
+        EventKind::DuplicateIdRepaired { .. } => "duplicate_id_repaired",
+        EventKind::EmbeddingModelChanged { .. } => "embedding_model_changed",
+        EventKind::StartupReconciliationCompleted { .. } => "startup_reconciliation_completed",
+        EventKind::OperatorRepairRequired { .. } => "operator_repair_required",
+        EventKind::GitPushFailed { .. } => "git_push_failed",
+        EventKind::WriteRefused { .. } => "write_refused",
+        EventKind::EncryptedContentRevealed { .. } => "encrypted_content_revealed",
+        EventKind::SubstrateFragmentWritten { .. } => "substrate_fragment_written",
+        EventKind::RecallHit { .. } => "recall_hit",
+        EventKind::RealityCheckConfirmed { .. } => "reality_check_confirmed",
+        EventKind::RealityCheckForgotten { .. } => "reality_check_forgotten",
+        EventKind::RealityCheckNotRelevant { .. } => "reality_check_not_relevant",
+        EventKind::ClaimLockContention { .. } => "claim_lock_contention",
+    }
+}
+
+fn web_enable_response(
+    substrate: &Substrate,
+    state: &HandlerState,
+    port: u16,
+    socket_path: &str,
+) -> Result<ResponsePayload, HandlerError> {
     if port < 1024 {
         return Err(HandlerError::invalid_request("web dashboard port must be in 1024..=65535"));
     }
     let mut dashboard = state.web_dashboard.lock().expect("web dashboard lock poisoned");
-    Ok(ResponsePayload::WebStatus(dashboard.enable(port, socket_path, chrono::Utc::now())?))
+    Ok(ResponsePayload::WebStatus(dashboard.enable(
+        WebDashboardLaunchConfig { port, socket_path, repo: substrate.roots().repo.as_path() },
+        chrono::Utc::now(),
+    )?))
 }
 
 fn web_disable_response(state: &HandlerState) -> Result<ResponsePayload, HandlerError> {
@@ -575,9 +868,14 @@ fn web_status_response(state: &HandlerState) -> Result<ResponsePayload, HandlerE
     Ok(ResponsePayload::WebStatus(dashboard.refresh_status(chrono::Utc::now())))
 }
 
-async fn trust_artifact_response(substrate: &Substrate, id: &str) -> Result<ResponsePayload, HandlerError> {
+async fn trust_artifact_response(
+    substrate: &Substrate,
+    state: &HandlerState,
+    id: &str,
+) -> Result<ResponsePayload, HandlerError> {
     let memory_id = MemoryId::try_new(id.to_owned()).map_err(|err| HandlerError::invalid_request(err.to_string()))?;
     let artifact = crate::trust_artifact::TrustArtifactBuilder::new(substrate)
+        .with_claim_locks(state.claim_locks())
         .build(&memory_id)
         .await
         .map_err(HandlerError::trust_artifact)?;
@@ -1290,12 +1588,18 @@ fn kind_label(kind: InjectableEventKind) -> &'static str {
     }
 }
 
-async fn dream_now_response(
-    substrate: &Substrate,
+struct DreamNowRequest {
     scope: String,
     force: bool,
     cli_override: Option<String>,
+}
+
+async fn dream_now_response(
+    substrate: &Substrate,
+    state: &HandlerState,
+    request: DreamNowRequest,
 ) -> Result<ResponsePayload, HandlerError> {
+    let DreamNowRequest { scope, force, cli_override } = request;
     let config = memory_substrate::config::load_config(&substrate.roots().repo, &substrate.roots().runtime, None)
         .map_err(HandlerError::invalid_request)?;
     if !config.synced.dreams.enabled
@@ -1324,6 +1628,8 @@ async fn dream_now_response(
                 scope: scope.clone(),
                 run_id: acquired.record.run_id,
                 run_date: now.date_naive(),
+                prompt_version: config.synced.dreams.prompt_version,
+                notifications: Some(state.notifications.clone()),
                 pass_timeout: std::time::Duration::from_secs(u64::from(config.synced.dreams.per_pass_timeout_seconds)),
                 pass_2_max_candidates: config.synced.dreams.pass_2_max_candidates as usize,
                 pass_1_window_days: config.synced.dreams.pass_1_window_days,
@@ -1512,16 +1818,27 @@ async fn search_response(
         .await
         .map_err(HandlerError::substrate)?;
     let total = chunks.len();
-    let hits = chunks
-        .into_iter()
-        .take(limit)
-        .map(|chunk| SearchHit {
+    let mut hits = Vec::new();
+    for chunk in chunks.into_iter().take(limit) {
+        let body = if include_body {
+            match MemoryId::try_new(chunk.memory_id.as_str().to_string()) {
+                Ok(id) => substrate.read_memory_envelope(&id).await.ok().and_then(|envelope| match envelope.content {
+                    MemoryContent::Plaintext(body) => Some(body),
+                    MemoryContent::Ciphertext { .. } | MemoryContent::MetadataOnly => None,
+                }),
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
+        hits.push(SearchHit {
             id: chunk.memory_id.as_str().to_string(),
             summary: bounded(&chunk.text, SEARCH_SNIPPET_MAX),
             snippet: bounded(&chunk.text, SEARCH_SNIPPET_MAX),
+            body,
             score: chunk.score,
-        })
-        .collect();
+        });
+    }
 
     let guidance = if include_body {
         "Search returns bounded matching chunks; call memory_get for the bounded record preview.".to_string()
@@ -1534,10 +1851,11 @@ async fn search_response(
 async fn get_response(
     substrate: &Substrate,
     id: &str,
-    _include_provenance: bool,
+    include_provenance: bool,
 ) -> Result<ResponsePayload, HandlerError> {
     let memory_id = MemoryId::try_new(id.to_string()).map_err(|err| HandlerError::invalid_request(err.to_string()))?;
     let envelope = substrate.read_memory_envelope(&memory_id).await.map_err(HandlerError::substrate)?;
+    let provenance = include_provenance.then(|| get_provenance(&envelope.metadata));
     let body = match envelope.content {
         MemoryContent::Plaintext(body) => body,
         MemoryContent::MetadataOnly => String::new(),
@@ -1549,8 +1867,33 @@ async fn get_response(
         summary: envelope.metadata.frontmatter.summary,
         body,
         truncated,
+        provenance,
         guidance: "Returned a bounded Stream A record preview.".to_string(),
     }))
+}
+
+fn get_provenance(memory: &Memory) -> GetProvenance {
+    GetProvenance {
+        path: memory.path.as_ref().map(|path| path.as_str().to_string()),
+        source_kind: serialized_enum_value(&memory.frontmatter.source.kind),
+        source_ref: memory.frontmatter.source.reference.clone(),
+        author_kind: serialized_enum_value(&memory.frontmatter.author.kind),
+        harness: memory.frontmatter.author.harness.clone().or_else(|| memory.frontmatter.source.harness.clone()),
+        session_id: memory
+            .frontmatter
+            .author
+            .session_id
+            .clone()
+            .or_else(|| memory.frontmatter.source.session_id.clone()),
+        evidence_refs: memory.frontmatter.evidence.iter().map(|evidence| evidence.reference.clone()).collect(),
+    }
+}
+
+fn serialized_enum_value<T: Serialize>(value: &T) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 async fn reveal_response(substrate: &Substrate, id: &str, reason: &str) -> Result<ResponsePayload, HandlerError> {
@@ -1558,20 +1901,28 @@ async fn reveal_response(substrate: &Substrate, id: &str, reason: &str) -> Resul
     if reason.is_empty() {
         return Err(HandlerError::invalid_request("reveal reason must not be empty"));
     }
-    if !is_safe_plaintext_for_indexing(reason) {
-        return Err(HandlerError::invalid_request("reveal reason must not contain sensitive material"));
+    if reason.chars().count() > REVEAL_REASON_MAX_CHARS {
+        return Err(HandlerError::invalid_request("reveal reason must be at most 512 characters"));
     }
     let memory_id = MemoryId::try_new(id.to_string()).map_err(|err| HandlerError::invalid_request(err.to_string()))?;
     let envelope = substrate.read_memory_envelope(&memory_id).await.map_err(HandlerError::substrate)?;
-    let MemoryContent::Ciphertext { bytes, .. } = envelope.content else {
+    let MemoryContent::Ciphertext { bytes, encryption } = envelope.content else {
         return Err(HandlerError::invalid_request("memory_reveal requires an encrypted memory"));
     };
     let encryptor = PrivacyEncryptor::new(FileKeyProvider::runtime_default(&substrate.roots().runtime));
     let body = encryptor
-        .decrypt(&EncryptedPayload { ciphertext: bytes, envelope: serde_json::Value::Null })
+        .decrypt(&EncryptedPayload {
+            ciphertext: bytes,
+            envelope: encryption.metadata.unwrap_or_else(|| {
+                serde_json::json!({
+                    "scheme": encryption.scheme,
+                    "recipient": encryption.recipient,
+                })
+            }),
+        })
         .map_err(HandlerError::privacy)?;
     substrate
-        .record_encrypted_content_revealed(memory_id, bounded(reason, 240))
+        .record_encrypted_content_revealed(memory_id, bounded(reason, REVEAL_REASON_MAX_CHARS))
         .map_err(|err| HandlerError::substrate(format!("record encrypted reveal audit event: {err}")))?;
     let (body, truncated) = bounded_with_truncation(&body, GET_BODY_MAX);
     Ok(ResponsePayload::Reveal(RevealResponse {
@@ -1879,7 +2230,13 @@ async fn governance_write_response(
     substrate: &Substrate,
     request: GovernanceWriteRequest,
 ) -> Result<ResponsePayload, HandlerError> {
-    let input = GovernanceWriteInput::parse(request.body, request.title, request.tags, request.meta)?;
+    let input = GovernanceWriteInput::parse(GovernanceWriteInputParts {
+        body: request.body,
+        title: request.title,
+        tags: request.tags,
+        meta: request.meta,
+        source: MetaSource::McpHumanWrite,
+    })?;
     let privacy = classify_input_privacy(&input)?;
     if let Some(response) = input.privacy_refusal(&privacy) {
         return Ok(ResponsePayload::GovernanceWrite(response));
@@ -1926,7 +2283,13 @@ async fn governance_supersede_response(
     let GovernanceSupersedeRequest { old_id, content, reason, meta } = request;
     let old_memory_id =
         MemoryId::try_new(old_id.clone()).map_err(|err| HandlerError::invalid_request(err.to_string()))?;
-    let input = GovernanceWriteInput::parse(content, None, Vec::new(), meta)?;
+    let input = GovernanceWriteInput::parse(GovernanceWriteInputParts {
+        body: content,
+        title: None,
+        tags: Vec::new(),
+        meta,
+        source: MetaSource::Default,
+    })?;
     let privacy = classify_input_privacy(&input)?;
     if let Some(refusal) = input.privacy_refusal(&privacy) {
         return Ok(ResponsePayload::GovernanceSupersede(GovernanceSupersedeResponse {
@@ -1978,7 +2341,7 @@ async fn governance_supersede_response(
         return Ok(ResponsePayload::GovernanceSupersede(supersede_privacy_refusal(
             old_id,
             None,
-            "encrypted memories cannot be superseded until Stream A exposes an encrypted supersession API",
+            ENCRYPTED_SUPERSESSION_RUNBOOK,
         )));
     };
     let active = vec![existing_summary_from_memory(old_envelope.metadata, old_body)];
@@ -2017,7 +2380,7 @@ async fn governance_supersede_response(
         return Ok(ResponsePayload::GovernanceSupersede(supersede_privacy_refusal(
             old_id,
             Some(policy_applied),
-            "encrypted supersession replacements require Stream A encrypted supersession atomicity",
+            ENCRYPTED_SUPERSESSION_RUNBOOK,
         )));
     }
     let claim_lock = match state {
@@ -2212,6 +2575,10 @@ async fn governance_forget_response(
     id: String,
     reason: String,
 ) -> Result<ResponsePayload, HandlerError> {
+    if reason.trim().is_empty() {
+        return Err(HandlerError::invalid_request("forget reason must not be empty"));
+    }
+    let reason = sanitize_forget_reason(&reason);
     let memory_id = MemoryId::try_new(id.clone()).map_err(|err| HandlerError::invalid_request(err.to_string()))?;
     let envelope = substrate.read_memory_envelope(&memory_id).await.map_err(HandlerError::substrate)?;
     let tombstone_claim = match &envelope.content {
@@ -2420,7 +2787,11 @@ fn attach_privacy_scan(memory: &mut Memory, privacy: &PrivacyDecision) {
     );
 }
 
-async fn review_queue_response(substrate: &Substrate, limit: Option<usize>) -> Result<ResponsePayload, HandlerError> {
+async fn review_queue_response(
+    substrate: &Substrate,
+    state: &HandlerState,
+    limit: Option<usize>,
+) -> Result<ResponsePayload, HandlerError> {
     let mut envelopes = Vec::new();
     for path in memory_substrate::tree::relative_memory_paths(substrate.roots().repo.as_path()) {
         let repo_path = RepoPath::new(path.to_string_lossy().replace('\\', "/"));
@@ -2429,6 +2800,12 @@ async fn review_queue_response(substrate: &Substrate, limit: Option<usize>) -> R
     }
 
     let mut queue = ReviewQueue::from_memory_envelopes(envelopes);
+    if over_threshold(&queue) {
+        state.emit_notification(NotificationEvent::ReviewQueueOverThreshold {
+            count: queue.items.len(),
+            threshold: REVIEW_QUEUE_DOGFOOD_THRESHOLD,
+        });
+    }
     queue.items.truncate(limit.unwrap_or(REVIEW_QUEUE_LIMIT_DEFAULT).min(REVIEW_QUEUE_LIMIT_MAX));
 
     let mut items = queue
@@ -2874,6 +3251,14 @@ struct GovernanceWriteInput {
     meta: GovernanceMeta,
 }
 
+struct GovernanceWriteInputParts {
+    body: String,
+    title: Option<String>,
+    tags: Vec<String>,
+    meta: Value,
+    source: MetaSource,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct GovernanceMeta {
@@ -2981,6 +3366,25 @@ impl Default for GovernanceMeta {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MetaSource {
+    Default,
+    McpHumanWrite,
+}
+
+impl GovernanceMeta {
+    fn empty_for(source: MetaSource) -> Self {
+        match source {
+            MetaSource::Default => Self::default(),
+            MetaSource::McpHumanWrite => Self::for_mcp_human_write(),
+        }
+    }
+
+    fn for_mcp_human_write() -> Self {
+        Self { explicit_user_context: true, confidence: 0.9, ..Self::default() }
+    }
+}
+
 fn default_supersede_session_id() -> String {
     DEFAULT_SUPERSEDE_SESSION_ID.to_owned()
 }
@@ -3010,17 +3414,30 @@ impl<'de> Deserialize<'de> for GovernanceNamespace {
     }
 }
 
+fn parse_governance_meta(meta: Value, source: MetaSource) -> Result<GovernanceMeta, HandlerError> {
+    if meta.is_null() {
+        return Ok(GovernanceMeta::empty_for(source));
+    }
+
+    let mut meta = meta;
+    if source == MetaSource::McpHumanWrite {
+        let Value::Object(fields) = &mut meta else {
+            return Err(HandlerError::invalid_request("governance meta must be an object or null"));
+        };
+        fields.entry("explicit_user_context".to_string()).or_insert(Value::Bool(true));
+        fields.entry("confidence".to_string()).or_insert(serde_json::json!(0.9));
+    }
+    serde_json::from_value(meta).map_err(|err| HandlerError::invalid_request(err.to_string()))
+}
+
 impl GovernanceWriteInput {
-    fn parse(body: String, title: Option<String>, tags: Vec<String>, meta: Value) -> Result<Self, HandlerError> {
+    fn parse(parts: GovernanceWriteInputParts) -> Result<Self, HandlerError> {
+        let GovernanceWriteInputParts { body, title, tags, meta, source } = parts;
         let body = body.trim().to_string();
         if body.is_empty() {
             return Err(HandlerError::invalid_request("memory body must not be empty"));
         }
-        let mut meta = if meta.is_null() {
-            GovernanceMeta::default()
-        } else {
-            serde_json::from_value(meta).map_err(|err| HandlerError::invalid_request(err.to_string()))?
-        };
+        let mut meta = parse_governance_meta(meta, source)?;
         meta.session_id = validated_claim_lock_identity_field("session_id", meta.session_id)?;
         meta.harness = validated_claim_lock_identity_field("harness", meta.harness)?;
         if !meta.confidence.is_finite() || !(0.0..=1.0).contains(&meta.confidence) {
@@ -3694,10 +4111,17 @@ mod tests {
             Ok(())
         }
 
-        fn spawn(&self, socket_path: &str, port: u16) -> Result<Box<dyn WebDashboardChild>, String> {
+        fn spawn(&self, socket_path: &str, port: u16, repo: &Path) -> Result<Box<dyn WebDashboardChild>, String> {
             self.launches.lock().expect("launches lock poisoned").push(LaunchRecord {
                 program: "memoryd-web".to_owned(),
-                args: vec!["--socket".to_owned(), socket_path.to_owned(), "--port".to_owned(), port.to_string()],
+                args: vec![
+                    "--socket".to_owned(),
+                    socket_path.to_owned(),
+                    "--port".to_owned(),
+                    port.to_string(),
+                    "--repo".to_owned(),
+                    repo.display().to_string(),
+                ],
             });
             let state = Arc::new(Mutex::new(FakeChildState {
                 running: matches!(self.readiness, FakeReadiness::Ready | FakeReadiness::Timeout),
@@ -3751,14 +4175,20 @@ mod tests {
         listener.local_addr().expect("test listener has local address").port()
     }
 
+    fn web_launch_config<'a>(port: u16, socket_path: &'a str, repo: &'a Path) -> WebDashboardLaunchConfig<'a> {
+        WebDashboardLaunchConfig { port, socket_path, repo }
+    }
+
     #[test]
     fn web_dashboard_enable_success_records_running_status_and_spawn_argv() {
         let launcher = Arc::new(FakeWebDashboardLauncher::ready());
         let mut runtime = WebDashboardRuntime::with_launcher(launcher.clone());
         let port = unused_localhost_port();
         let socket_path = "/tmp/memoryd-test.sock";
+        let repo = Path::new("/tmp/memoryd-test-repo");
 
-        let status = runtime.enable(port, socket_path, chrono::Utc::now()).expect("dashboard starts");
+        let status =
+            runtime.enable(web_launch_config(port, socket_path, repo), chrono::Utc::now()).expect("dashboard starts");
 
         assert!(status.running);
         assert_eq!(status.port, Some(port));
@@ -3767,7 +4197,14 @@ mod tests {
             launcher.launches(),
             vec![LaunchRecord {
                 program: "memoryd-web".to_owned(),
-                args: vec!["--socket".to_owned(), socket_path.to_owned(), "--port".to_owned(), port.to_string()],
+                args: vec![
+                    "--socket".to_owned(),
+                    socket_path.to_owned(),
+                    "--port".to_owned(),
+                    port.to_string(),
+                    "--repo".to_owned(),
+                    repo.display().to_string(),
+                ],
             }]
         );
     }
@@ -3778,7 +4215,14 @@ mod tests {
         let mut runtime = WebDashboardRuntime::with_launcher(launcher.clone());
 
         let error = runtime
-            .enable(unused_localhost_port(), "/tmp/memoryd-test.sock", chrono::Utc::now())
+            .enable(
+                web_launch_config(
+                    unused_localhost_port(),
+                    "/tmp/memoryd-test.sock",
+                    Path::new("/tmp/memoryd-test-repo"),
+                ),
+                chrono::Utc::now(),
+            )
             .expect_err("start fails");
 
         assert_eq!(error.code, "web_unavailable");
@@ -3795,7 +4239,14 @@ mod tests {
         let mut runtime = WebDashboardRuntime::with_launcher(launcher.clone());
 
         let error = runtime
-            .enable(unused_localhost_port(), "/tmp/memoryd-test.sock", chrono::Utc::now())
+            .enable(
+                web_launch_config(
+                    unused_localhost_port(),
+                    "/tmp/memoryd-test.sock",
+                    Path::new("/tmp/memoryd-test-repo"),
+                ),
+                chrono::Utc::now(),
+            )
             .expect_err("start fails");
 
         assert_eq!(error.code, "web_unavailable");
@@ -3811,9 +4262,14 @@ mod tests {
         let launcher = Arc::new(FakeWebDashboardLauncher::ready());
         let mut runtime = WebDashboardRuntime::with_launcher(launcher.clone());
         let port = unused_localhost_port();
+        let repo = Path::new("/tmp/memoryd-test-repo");
 
-        let first = runtime.enable(port, "/tmp/memoryd-test.sock", chrono::Utc::now()).expect("dashboard starts");
-        let second = runtime.enable(port, "/tmp/memoryd-test.sock", chrono::Utc::now()).expect("dashboard is reused");
+        let first = runtime
+            .enable(web_launch_config(port, "/tmp/memoryd-test.sock", repo), chrono::Utc::now())
+            .expect("dashboard starts");
+        let second = runtime
+            .enable(web_launch_config(port, "/tmp/memoryd-test.sock", repo), chrono::Utc::now())
+            .expect("dashboard is reused");
 
         assert!(first.running);
         assert!(second.running);
@@ -3828,7 +4284,12 @@ mod tests {
         let port = listener.local_addr().expect("test listener has local address").port();
         let mut runtime = WebDashboardRuntime::default();
 
-        let error = runtime.enable(port, "/tmp/memoryd-test.sock", chrono::Utc::now()).expect_err("port is rejected");
+        let error = runtime
+            .enable(
+                web_launch_config(port, "/tmp/memoryd-test.sock", Path::new("/tmp/memoryd-test-repo")),
+                chrono::Utc::now(),
+            )
+            .expect_err("port is rejected");
 
         assert_eq!(error.code, "port_in_use");
         assert!(error.message.contains("is unavailable before start"));
@@ -3842,5 +4303,13 @@ mod tests {
         assert!(!doctor_is_healthy(true, 2, 2), "substrate findings are unhealthy regardless of harnesses");
         assert!(!doctor_is_healthy(true, 0, 0), "substrate findings are unhealthy even with empty registry");
         assert!(doctor_is_healthy(false, 0, 0), "empty registry is trivially healthy when substrate is clean");
+    }
+
+    #[test]
+    fn forget_reason_sanitizer_bounds_and_redacts_sensitive_text() {
+        assert_eq!(sanitize_forget_reason("  stale memory  "), "stale memory");
+        assert_eq!(sanitize_forget_reason(""), REDACTED_FORGET_REASON);
+        assert_eq!(sanitize_forget_reason("SSN 123-45-6789"), REDACTED_FORGET_REASON);
+        assert_eq!(sanitize_forget_reason(&"a".repeat(FORGET_REASON_MAX_CHARS + 10)).len(), FORGET_REASON_MAX_CHARS);
     }
 }

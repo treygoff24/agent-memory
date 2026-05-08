@@ -7,12 +7,17 @@ Usage: scripts/install-memorum.sh [--repo PATH] [--runtime PATH] [--socket PATH]
 
 Builds/installs memoryd, initializes a local repo/runtime, starts the daemon,
 prints an MCP client snippet, and optionally installs the launchd scheduler.
+Default socket: <runtime>/memoryd.sock.
 USAGE
 }
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$script_dir/.." && pwd)"
+export PATH="$HOME/.cargo/bin:$PATH"
+
 repo="$HOME/memorum"
 runtime=""
-socket="/tmp/memoryd.sock"
+socket=""
 with_scheduler=0
 dry_run=0
 force_reinstall=0
@@ -58,9 +63,16 @@ done
 if [ -z "$runtime" ]; then
   runtime="$repo/.memoryd"
 fi
+if [ -z "$socket" ]; then
+  socket="$runtime/memoryd.sock"
+fi
 
 pid_file="$runtime/memoryd.pid"
 log_file="$runtime/memoryd.log"
+first_run=0
+if [ ! -f "$repo/.memorum/substrate" ]; then
+  first_run=1
+fi
 
 run() {
   if [ "$dry_run" -eq 1 ]; then
@@ -74,7 +86,12 @@ run() {
 }
 
 memoryd_expected_version() {
-  awk -F\" '/^version[[:space:]]*=/ { print $2; exit }' crates/memoryd/Cargo.toml
+  local manifest="$repo_root/crates/memoryd/Cargo.toml"
+  if [ ! -f "$manifest" ]; then
+    echo "memoryd Cargo.toml not found at $manifest" >&2
+    return 1
+  fi
+  awk -F\" '/^version[[:space:]]*=/ { print $2; exit }' "$manifest"
 }
 
 installed_memoryd_version() {
@@ -134,13 +151,32 @@ install_memoryd_if_needed() {
 
   if [ "$force_reinstall" -eq 0 ] && [ -n "$expected" ] && [ "$installed" = "$expected" ]; then
     echo "memoryd v$expected already installed; skipping cargo install"
-    return
   fi
 
+  local crates=(memoryd memoryd-tui memoryd-web memory-merge-driver)
+  local bins=(memoryd memoryd-tui memoryd-web memoryd-merge-driver)
+  for crate in "${crates[@]}"; do
+    if [ "$dry_run" -eq 0 ]; then
+      if [ "$crate" = "memoryd" ] && [ "$force_reinstall" -eq 0 ] && [ -n "$expected" ] && [ "$installed" = "$expected" ]; then
+        :
+      else
+        cargo install --path "$repo_root/crates/$crate" --locked
+      fi
+    else
+      echo "+ cargo install --path $repo_root/crates/$crate --locked"
+    fi
+  done
   if [ "$dry_run" -eq 0 ]; then
-    cargo install --path crates/memoryd --locked
+    for bin in "${bins[@]}"; do
+      if ! command -v "$bin" >/dev/null 2>&1; then
+        echo "install verification failed: $bin not found on PATH after install" >&2
+        exit 1
+      fi
+    done
   else
-    echo "+ cargo install --path crates/memoryd --locked"
+    for bin in "${bins[@]}"; do
+      echo "+ command -v $bin"
+    done
   fi
 }
 
@@ -184,6 +220,10 @@ stop_existing_daemon() {
       fi
       sleep 1
     done
+    if kill -0 "$existing_pid" >/dev/null 2>&1; then
+      echo "warning: PID $existing_pid ignored SIGTERM after 5s; sending SIGKILL" >&2
+      kill -KILL "$existing_pid" >/dev/null 2>&1 || true
+    fi
   fi
   if [ "$dry_run" -eq 1 ]; then
     echo "+ rm -f $pid_file"
@@ -204,7 +244,11 @@ if [ "$dry_run" -eq 0 ]; then
   daemon_pid=$!
   disown "$daemon_pid" >/dev/null 2>&1 || true
   ready=0
-  for _i in 1 2 3 4 5; do
+  readiness_seconds=10
+  if [ "$first_run" -eq 1 ]; then
+    readiness_seconds=30
+  fi
+  for _i in $(seq 1 "$readiness_seconds"); do
     if memoryd status --socket "$socket" >/dev/null 2>&1; then
       ready=1
       break
@@ -214,7 +258,7 @@ if [ "$dry_run" -eq 0 ]; then
   if [ "$ready" -ne 1 ]; then
     kill "$daemon_pid" >/dev/null 2>&1 || true
     rm -f "$pid_file"
-    echo "memoryd daemon did not become ready within 5s; see $log_file" >&2
+    echo "memoryd daemon did not become ready within ${readiness_seconds}s; see $log_file" >&2
     exit 1
   fi
   if ! kill -0 "$daemon_pid" >/dev/null 2>&1; then
@@ -234,6 +278,9 @@ else
 fi
 
 cat <<SNIPPET
+Claude MCP one-liner:
+claude mcp add memorum memoryd -- mcp --socket "$socket"
+
 MCP client snippet:
 {
   "mcpServers": {
@@ -250,7 +297,8 @@ if [ "$dry_run" -eq 0 ]; then
 memoryd is running (PID: $daemon_pid, log: $log_file).
 To stop:    kill \$(cat "$pid_file")
 To restart: bash scripts/install-memorum.sh --repo "$repo" --runtime "$runtime" --socket "$socket"
-To install as a launchd agent (auto-restart on login): rerun with --with-scheduler.
+To install daemon auto-restart on login: bash scripts/install-launchd.sh --repo "$repo" --runtime "$runtime" --daemon.
+To install the scheduled dream job: bash scripts/install-launchd.sh --repo "$repo" --runtime "$runtime" --dream-scheduler.
 LIFECYCLE
 else
   cat <<LIFECYCLE
@@ -259,7 +307,8 @@ PID file: $pid_file
 Log file: $log_file
 To stop:    kill \$(cat "$pid_file")
 To restart: bash scripts/install-memorum.sh --repo "$repo" --runtime "$runtime" --socket "$socket"
-To install as a launchd agent (auto-restart on login): rerun with --with-scheduler.
+To install daemon auto-restart on login: bash scripts/install-launchd.sh --repo "$repo" --runtime "$runtime" --daemon.
+To install the scheduled dream job: bash scripts/install-launchd.sh --repo "$repo" --runtime "$runtime" --dream-scheduler.
 LIFECYCLE
 fi
 

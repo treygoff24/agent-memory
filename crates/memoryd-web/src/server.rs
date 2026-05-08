@@ -19,19 +19,17 @@ use tokio::sync::Mutex;
 use crate::auth::{require_csrf, CsrfToken};
 use crate::config::WebConfig;
 use crate::routes::{
-    audit, audit_temporal, audit_walk, deferred_response, entity_detail, entity_graph, notifications_stream,
-    reality_check, reality_check_history, reality_check_respond, recall_hits, review_action, review_queue, roi, status,
-    DashboardData,
+    audit, audit_temporal, audit_walk, entity_detail, entity_graph, notifications_stream, policy_editor_get,
+    policy_editor_post, reality_check, reality_check_history, reality_check_respond, recall_hits, review_action,
+    review_queue, roi, status, sync_dashboard, DashboardData,
 };
 use serde_json::{json, Value};
 const INDEX_HTML: &str = "index.html";
-const APP_JS: &str = "app.js";
-const STYLE_CSS: &str = "style.css";
 const CSRF_PLACEHOLDER: &str = "__MEMORUM_CSRF_TOKEN__";
 const SHUTDOWN_DRAIN_LIMIT: Duration = Duration::from_secs(5);
 
 #[derive(RustEmbed)]
-#[folder = "static/"]
+#[folder = "frontend/dist/"]
 struct Assets;
 
 #[derive(Clone)]
@@ -40,6 +38,7 @@ pub struct WebState {
     review_actions: Arc<ReviewActionTracker>,
     dashboard_data: Option<Arc<DashboardData>>,
     daemon_socket: Option<Arc<PathBuf>>,
+    policy_dir: Option<Arc<PathBuf>>,
     recorded_review_actions: Arc<Mutex<Vec<ReviewActionRecord>>>,
     recorded_reality_check_actions: Arc<Mutex<Vec<RealityCheckActionRecord>>>,
 }
@@ -55,6 +54,7 @@ impl WebState {
             review_actions: Arc::new(ReviewActionTracker::default()),
             dashboard_data: None,
             daemon_socket: None,
+            policy_dir: None,
             recorded_review_actions: Arc::new(Mutex::new(Vec::new())),
             recorded_reality_check_actions: Arc::new(Mutex::new(Vec::new())),
         }
@@ -66,6 +66,7 @@ impl WebState {
             review_actions: Arc::new(ReviewActionTracker::default()),
             dashboard_data: None,
             daemon_socket: Some(Arc::new(socket_path.into())),
+            policy_dir: None,
             recorded_review_actions: Arc::new(Mutex::new(Vec::new())),
             recorded_reality_check_actions: Arc::new(Mutex::new(Vec::new())),
         }
@@ -81,9 +82,15 @@ impl WebState {
             review_actions: Arc::new(ReviewActionTracker::default()),
             dashboard_data: Some(Arc::new(dashboard_data)),
             daemon_socket: None,
+            policy_dir: None,
             recorded_review_actions: Arc::new(Mutex::new(Vec::new())),
             recorded_reality_check_actions: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    pub fn with_policy_dir(mut self, policy_dir: impl Into<PathBuf>) -> Self {
+        self.policy_dir = Some(Arc::new(policy_dir.into()));
+        self
     }
 
     pub fn csrf_token(&self) -> &CsrfToken {
@@ -96,6 +103,10 @@ impl WebState {
 
     pub fn daemon_socket(&self) -> Option<&FsPath> {
         self.daemon_socket.as_deref().map(PathBuf::as_path)
+    }
+
+    pub fn policy_dir(&self) -> Option<&FsPath> {
+        self.policy_dir.as_deref().map(PathBuf::as_path)
     }
 
     pub fn is_reviewable(&self, id: &str) -> bool {
@@ -174,12 +185,11 @@ pub fn router_with_state(state: WebState) -> Router {
     let protected_post_routes = Router::new()
         .route("/api/reality-check/respond", post(reality_check_respond))
         .route("/api/review/action", post(review_action))
+        .route("/api/policy-editor", post(policy_editor_post))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_csrf));
 
     Router::new()
         .route("/", get(index))
-        .route("/assets/app.js", get(app_js))
-        .route("/assets/style.css", get(style_css))
         .route("/assets/{*path}", get(asset))
         .route("/api/status", get(status))
         .route("/api/entity-graph", get(entity_graph))
@@ -193,8 +203,8 @@ pub fn router_with_state(state: WebState) -> Router {
         .route("/api/audit/{id}/temporal", get(audit_temporal))
         .route("/api/review", get(review_queue))
         .route("/api/notifications/stream", get(notifications_stream))
-        .route("/api/policy-editor", get(|| async { deferred_response("policy_editor") }))
-        .route("/api/sync-dashboard", get(|| async { deferred_response("sync_dashboard") }))
+        .route("/api/policy-editor", get(policy_editor_get))
+        .route("/api/sync-dashboard", get(sync_dashboard))
         .merge(protected_post_routes)
         .with_state(state)
 }
@@ -249,14 +259,6 @@ async fn index(State(state): State<WebState>) -> impl IntoResponse {
     }
 }
 
-async fn app_js() -> Response {
-    embedded_response(APP_JS, "application/javascript")
-}
-
-async fn style_css() -> Response {
-    embedded_response(STYLE_CSS, "text/css; charset=utf-8")
-}
-
 async fn asset(Path(path): Path<String>) -> Response {
     embedded_response(&path, content_type_for(&path))
 }
@@ -264,6 +266,10 @@ async fn asset(Path(path): Path<String>) -> Response {
 fn embedded_text(path: &str) -> Option<String> {
     let asset = Assets::get(path)?;
     String::from_utf8(asset.data.into_owned()).ok()
+}
+
+pub fn embedded_asset_names() -> Vec<String> {
+    Assets::iter().map(|path| path.into_owned()).collect()
 }
 
 fn embedded_response(path: &str, content_type: &str) -> Response {

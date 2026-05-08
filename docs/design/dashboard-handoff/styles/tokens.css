@@ -1,0 +1,181 @@
+/* Memorum design tokens — themes are CSS custom properties on <html>. */
+
+:root,
+:root[data-theme="warm-dark"] {
+    /* Surfaces */
+    --bg: oklch(0.16 0.006 70);
+    --surface: oklch(0.2 0.007 70);
+    --surface-2: oklch(0.24 0.008 70);
+    --border: oklch(0.3 0.01 70);
+    --border-soft: oklch(0.26 0.008 70);
+
+    /* Ink */
+    --fg: oklch(0.93 0.012 80);
+    --fg-2: oklch(0.72 0.014 75);
+    --fg-3: oklch(0.52 0.012 70);
+    --fg-4: oklch(0.4 0.01 70);
+
+    /* Accent */
+    --accent: oklch(0.8 0.13 72);
+    --accent-soft: oklch(0.32 0.04 72);
+
+    /* Semantic */
+    --ok: oklch(0.74 0.13 145);
+    --warn: oklch(0.82 0.14 80);
+    --bad: oklch(0.66 0.2 25);
+    --info: oklch(0.72 0.08 230);
+
+    --shadow-modal: 0 20px 60px -20px oklch(0 0 0 / 0.55), 0 2px 4px oklch(0 0 0 / 0.3);
+}
+
+:root[data-theme="warm-light"] {
+    --bg: oklch(0.985 0.004 80);
+    --surface: oklch(0.965 0.005 80);
+    --surface-2: oklch(0.93 0.007 80);
+    --border: oklch(0.82 0.01 80);
+    --border-soft: oklch(0.88 0.008 80);
+    --fg: oklch(0.2 0.012 70);
+    --fg-2: oklch(0.4 0.014 70);
+    --fg-3: oklch(0.55 0.012 70);
+    --fg-4: oklch(0.7 0.01 70);
+    --accent: oklch(0.62 0.15 60);
+    --accent-soft: oklch(0.92 0.05 72);
+    --ok: oklch(0.5 0.13 145);
+    --warn: oklch(0.62 0.15 70);
+    --bad: oklch(0.52 0.2 25);
+    --info: oklch(0.5 0.1 230);
+    --shadow-modal: 0 20px 60px -20px oklch(0 0 0 / 0.18), 0 2px 4px oklch(0 0 0 / 0.06);
+}
+
+:root[data-theme="high-contrast"] {
+    --bg: oklch(0.04 0 0);
+    --surface: oklch(0.1 0 0);
+    --surface-2: oklch(0.18 0 0);
+    --border: oklch(0.85 0 0);
+    --border-soft: oklch(0.55 0 0);
+    --fg: oklch(1 0 0);
+    --fg-2: oklch(0.92 0 0);
+    --fg-3: oklch(0.78 0 0);
+    --fg-4: oklch(0.6 0 0);
+    --accent: oklch(0.85 0.2 75);
+    --accent-soft: oklch(0.3 0.1 75);
+    --ok: oklch(0.82 0.22 145);
+    --warn: oklch(0.9 0.2 80);
+    --bad: oklch(0.72 0.24 25);
+    --info: oklch(0.78 0.16 230);
+    --shadow-modal: 0 20px 60px -20px oklch(0 0 0 / 0.7);
+}
+
+:root[data-theme="monochrome"] {
+    --bg: oklch(0.16 0 0);
+    --surface: oklch(0.2 0 0);
+    --surface-2: oklch(0.26 0 0);
+    --border: oklch(0.36 0 0);
+    --border-soft: oklch(0.28 0 0);
+    --fg: oklch(0.94 0 0);
+    --fg-2: oklch(0.72 0 0);
+    --fg-3: oklch(0.52 0 0);
+    --fg-4: oklch(0.4 0 0);
+    --accent: oklch(0.86 0 0);
+    --accent-soft: oklch(0.32 0 0);
+    --ok: oklch(0.78 0 0);
+    --warn: oklch(0.82 0 0);
+    --bad: oklch(0.62 0 0);
+    --info: oklch(0.74 0 0);
+    --shadow-modal: 0 20px 60px -20px oklch(0 0 0 / 0.55);
+}
+
+:root[data-theme="cool-dark"] {
+    --bg: oklch(0.16 0.008 240);
+    --surface: oklch(0.2 0.01 240);
+    --surface-2: oklch(0.24 0.012 240);
+    --border: oklch(0.3 0.014 240);
+    --border-soft: oklch(0.26 0.012 240);
+    --fg: oklch(0.93 0.012 240);
+    --fg-2: oklch(0.72 0.014 240);
+    --fg-3: oklch(0.52 0.012 240);
+    --fg-4: oklch(0.4 0.01 240);
+    --accent: oklch(0.78 0.13 230);
+    --accent-soft: oklch(0.32 0.05 230);
+    --ok: oklch(0.74 0.13 165);
+    --warn: oklch(0.8 0.14 90);
+    --bad: oklch(0.66 0.2 25);
+    --info: oklch(0.72 0.1 200);
+    --shadow-modal: 0 20px 60px -20px oklch(0 0 0 / 0.55);
+}
+
+:root[data-theme="cool-light"] {
+    --bg: oklch(0.985 0.005 240);
+    --surface: oklch(0.965 0.007 240);
+    --surface-2: oklch(0.93 0.01 240);
+    --border: oklch(0.82 0.012 240);
+    --border-soft: oklch(0.88 0.01 240);
+    --fg: oklch(0.2 0.014 240);
+    --fg-2: oklch(0.4 0.016 240);
+    --fg-3: oklch(0.55 0.014 240);
+    --fg-4: oklch(0.7 0.012 240);
+    --accent: oklch(0.55 0.16 230);
+    --accent-soft: oklch(0.92 0.05 230);
+    --ok: oklch(0.5 0.14 165);
+    --warn: oklch(0.6 0.15 90);
+    --bad: oklch(0.52 0.2 25);
+    --info: oklch(0.5 0.12 200);
+    --shadow-modal: 0 20px 60px -20px oklch(0 0 0 / 0.18);
+}
+
+/* Density */
+:root,
+:root[data-density="comfortable"] {
+    --row-y: 8px;
+    --row-x: 10px;
+    --section-gap: 12px;
+    --page-pad: 16px;
+}
+:root[data-density="compact"] {
+    --row-y: 4px;
+    --row-x: 8px;
+    --section-gap: 8px;
+    --page-pad: 12px;
+}
+
+/* Reduced motion */
+:root[data-reduced-motion="on"] *,
+:root[data-reduced-motion="on"] *::before,
+:root[data-reduced-motion="on"] *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+}
+
+/* Common */
+:root {
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-5: 24px;
+    --space-6: 32px;
+    --space-7: 48px;
+    --space-8: 64px;
+    --radius-xs: 3px;
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius-lg: 16px;
+
+    --text-xs: 11px;
+    --text-sm: 12.5px;
+    --text-base: 14px;
+    --text-md: 15px;
+    --text-lg: 17px;
+    --text-xl: 22px;
+    --text-2xl: 28px;
+
+    --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+    --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+    --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+    --dur-fast: 120ms;
+    --dur-medium: 220ms;
+    --dur-slow: 380ms;
+}

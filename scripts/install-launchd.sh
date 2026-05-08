@@ -5,7 +5,9 @@ usage() {
   cat <<'USAGE'
 Usage: scripts/install-launchd.sh --repo PATH --runtime PATH [--dry-run]
 
-Installs the Memorum scheduled dream launchd agent for the current macOS user.
+Installs Memorum launchd agents for the current macOS user.
+By default installs both the daemon auto-restart agent and scheduled dream job.
+Use --daemon or --dream-scheduler to install only one.
 Use --dry-run to print the rendered plist without writing or loading it.
 USAGE
 }
@@ -13,6 +15,8 @@ USAGE
 repo=""
 runtime=""
 dry_run=0
+install_daemon=0
+install_dream=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -26,6 +30,14 @@ while [ "$#" -gt 0 ]; do
       ;;
     --dry-run)
       dry_run=1
+      shift
+      ;;
+    --daemon)
+      install_daemon=1
+      shift
+      ;;
+    --dream-scheduler)
+      install_dream=1
       shift
       ;;
     -h|--help)
@@ -44,27 +56,54 @@ if [ -z "$repo" ] || [ -z "$runtime" ]; then
   usage >&2
   exit 2
 fi
+if [ "$install_daemon" -eq 0 ] && [ "$install_dream" -eq 0 ]; then
+  install_daemon=1
+  install_dream=1
+fi
 
 repo_path=$(cd "$repo" 2>/dev/null && pwd || printf '%s' "$repo")
 mkdir -p "$runtime"
 runtime_path=$(cd "$runtime" && pwd)
-template="$(dirname "$0")/templates/com.memorum.dream-scheduled.plist.template"
-label="com.memorum.dream-scheduled"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 launch_agents="$HOME/Library/LaunchAgents"
-target="$launch_agents/$label.plist"
 
-rendered=$(sed \
-  -e "s#{{REPO_PATH}}#$repo_path#g" \
-  -e "s#{{RUNTIME_PATH}}#$runtime_path#g" \
-  "$template")
+render_template() {
+  local template="$1"
+  sed \
+    -e "s#{{REPO_PATH}}#$repo_path#g" \
+    -e "s#{{RUNTIME_PATH}}#$runtime_path#g" \
+    -e "s#{{HOME}}#$HOME#g" \
+    "$template"
+}
 
 if [ "$dry_run" -eq 1 ]; then
-  printf '%s\n' "$rendered"
+  if [ "$install_daemon" -eq 1 ]; then
+    render_template "$script_dir/templates/com.memorum.daemon.plist.template"
+  fi
+  if [ "$install_daemon" -eq 1 ] && [ "$install_dream" -eq 1 ]; then
+    printf '\n'
+  fi
+  if [ "$install_dream" -eq 1 ]; then
+    render_template "$script_dir/templates/com.memorum.dream-scheduled.plist.template"
+  fi
   exit 0
 fi
 
 mkdir -p "$launch_agents"
-printf '%s\n' "$rendered" > "$target"
-launchctl unload "$target" >/dev/null 2>&1 || true
-launchctl load "$target"
-echo "installed and loaded $target"
+
+install_agent() {
+  local label="$1"
+  local template="$2"
+  local target="$launch_agents/$label.plist"
+  render_template "$template" >"$target"
+  launchctl bootout "gui/$(id -u)" "$target" >/dev/null 2>&1 || true
+  launchctl bootstrap "gui/$(id -u)" "$target"
+  echo "installed and bootstrapped $target"
+}
+
+if [ "$install_daemon" -eq 1 ]; then
+  install_agent "com.memorum.daemon" "$script_dir/templates/com.memorum.daemon.plist.template"
+fi
+if [ "$install_dream" -eq 1 ]; then
+  install_agent "com.memorum.dream-scheduled" "$script_dir/templates/com.memorum.dream-scheduled.plist.template"
+fi

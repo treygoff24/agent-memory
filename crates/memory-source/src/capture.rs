@@ -12,7 +12,8 @@ use crate::model::{
 };
 use crate::storage::{excerpts_jsonl, ArtifactStore, WebCaptureArtifact};
 use crate::url_safety::{
-    pinned_reqwest_client, validate_initial_url, validate_redirect_url, AddressPolicy, DefaultDnsResolver, DnsResolver,
+    pinned_reqwest_client, redact_sensitive_location_header, redact_sensitive_url, validate_initial_url,
+    validate_redirect_url, AddressPolicy, DefaultDnsResolver, DnsResolver,
 };
 
 const MAX_RAW_BYTES: usize = 2 * 1024 * 1024;
@@ -51,8 +52,8 @@ pub async fn capture_web_source_with_resolver(
         return Err(SourceError::ExcerptNotFound("at least one excerpt is required".to_string()));
     }
     let store = ArtifactStore::new(repo_root);
-    let original_url = request.url.clone();
     let mut hop = validate_initial_url(&request.url, resolver, policy).await?;
+    let original_url = redact_sensitive_url(&hop.url).to_string();
     let mut redirect_chain = Vec::new();
     let final_response;
     let raw_bytes;
@@ -83,9 +84,9 @@ pub async fn capture_web_source_with_resolver(
                 .ok_or_else(|| SourceError::CaptureFailed("redirect response is missing Location".to_string()))?
                 .to_string();
             redirect_chain.push(RedirectHop {
-                url: hop.url.to_string(),
+                url: redact_sensitive_url(&hop.url).to_string(),
                 status: status.as_u16(),
-                location: location.clone(),
+                location: redact_sensitive_location_header(&location, &hop.url),
             });
             hop = validate_redirect_url(&hop.url, &location, resolver, policy, &redirect_chain).await?;
             continue;
@@ -146,7 +147,7 @@ pub async fn capture_web_source_with_resolver(
         artifact_id: artifact_id.clone(),
         kind: "web_capture".to_string(),
         original_url,
-        final_url: hop.url.to_string(),
+        final_url: redact_sensitive_url(&hop.url).to_string(),
         redirect_chain,
         captured_at,
         capture_method: CaptureMethod::HttpStaticV1,

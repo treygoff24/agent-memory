@@ -10,7 +10,8 @@ use crate::recall::{DeltaRequest, DeltaResponse, RecallStatusCounters, StartupRe
 
 pub use memorum_coordination::{ClaimLockInfo, PeerHeartbeat, PeerHeartbeatAck};
 pub use memory_governance::GovernanceRefusalReason;
-pub use memory_substrate::{MemoryId, MemoryStatus, ObserveKind, Sensitivity};
+use memory_substrate::events::EventKind;
+pub use memory_substrate::{EventId, MemoryId, MemoryStatus, ObserveKind, Sensitivity};
 
 /// Maximum byte length of a single newline-delimited request or response frame.
 /// Defined here so both the server-side reader and client-side reader share the same limit.
@@ -141,6 +142,23 @@ pub enum RequestPayload {
     WebDisable,
     WebStatus,
     RealityCheck(RealityCheckRequest),
+    InspectEntities {
+        limit: Option<usize>,
+        prefix: Option<String>,
+    },
+    EventsLogPage {
+        since: Option<EventId>,
+        limit: usize,
+        kind_filter: Option<Vec<EventKind>>,
+    },
+    NamespaceTree {
+        root: Option<String>,
+        depth: Option<usize>,
+    },
+    GovernancePolicyDump,
+    ConflictsList {
+        limit: Option<usize>,
+    },
 
     /// Inject a synthetic event-log entry with a controlled timestamp.
     ///
@@ -275,7 +293,90 @@ pub enum ResponsePayload {
     DreamStatus(Box<DreamStatusReport>),
     WebStatus(WebDashboardStatus),
     RealityCheck(RealityCheckResponse),
+    InspectEntities(InspectEntitiesResponse),
+    EventsLogPage(EventsLogPageResponse),
+    NamespaceTree(NamespaceTreeResponse),
+    GovernancePolicyDump(GovernancePolicySnapshot),
+    ConflictsList(ConflictsListResponse),
     TestInjectEvent(TestInjectEventResponse),
+}
+
+/// Entity index summary for daemon-side TUI inspectors.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EntitySummary {
+    pub entity_id: String,
+    pub label: String,
+    pub aliases: Vec<String>,
+    pub memory_count: usize,
+    pub recent_memory_ids: Vec<MemoryId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InspectEntitiesResponse {
+    pub entities: Vec<EntitySummary>,
+}
+
+/// Bounded event-log row for timeline/inbox consumers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventLogEntry {
+    pub event_id: EventId,
+    pub ts: DateTime<Utc>,
+    pub device: String,
+    pub seq: u64,
+    pub kind: EventKind,
+    pub memory_id: Option<MemoryId>,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventsLogPageResponse {
+    pub entries: Vec<EventLogEntry>,
+    pub next_since: Option<EventId>,
+}
+
+/// Namespace tree node used by command-palette jumps and inspector relationship blocks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NamespaceNode {
+    pub name: String,
+    pub path: String,
+    pub memory_count: usize,
+    pub children: Vec<NamespaceNode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NamespaceTreeResponse {
+    pub root: NamespaceNode,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GovernancePolicySummary {
+    pub scope: String,
+    pub selected_policy: String,
+    pub policy_source: String,
+    pub confidence_floor: f32,
+    pub review_gates: Vec<String>,
+    pub requires_grounding: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GovernancePolicySnapshot {
+    pub source: String,
+    pub raw_yaml: Option<String>,
+    pub policies: Vec<GovernancePolicySummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConflictSummary {
+    pub id: MemoryId,
+    pub path: String,
+    pub summary: String,
+    pub reason: Option<String>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConflictsListResponse {
+    pub conflicts: Vec<ConflictSummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -749,6 +850,8 @@ pub struct SearchHit {
     pub id: String,
     pub summary: String,
     pub snippet: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
     pub score: f64,
 }
 
@@ -758,7 +861,20 @@ pub struct GetResponse {
     pub summary: String,
     pub body: String,
     pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<GetProvenance>,
     pub guidance: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetProvenance {
+    pub path: Option<String>,
+    pub source_kind: String,
+    pub source_ref: Option<String>,
+    pub author_kind: String,
+    pub harness: Option<String>,
+    pub session_id: Option<String>,
+    pub evidence_refs: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

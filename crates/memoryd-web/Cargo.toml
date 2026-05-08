@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 autobins = false
+build = "build.rs"
 
 [lib]
 path = "src/main.rs"
@@ -19,6 +20,7 @@ axum = "0.8"
 chrono.workspace = true
 hex.workspace = true
 memoryd = { path = "../memoryd" }
+memory-governance = { path = "../memory-governance" }
 rand.workspace = true
 rust-embed = "8.11"
 serde.workspace = true

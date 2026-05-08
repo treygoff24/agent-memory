@@ -27,6 +27,15 @@ fn mcp_manifest_declares_exact_agent_facing_tools_in_order() {
 }
 
 #[test]
+fn mcp_get_output_schema_advertises_optional_provenance() {
+    let manifest = manifest();
+    let get = manifest.tools.iter().find(|tool| tool.name == "memory_get").expect("get tool");
+
+    assert_eq!(get.output_schema["properties"]["provenance"]["type"], "object");
+    assert_eq!(get.input_schema["properties"]["include_provenance"]["type"], "boolean");
+}
+
+#[test]
 fn mcp_manifest_excludes_admin_tools_and_provides_descriptors() {
     let manifest = manifest();
 
@@ -71,7 +80,12 @@ fn mcp_manifest_excludes_admin_tools_and_provides_descriptors() {
 #[tokio::test]
 async fn mcp_forward_rejects_admin_web_payloads_before_socket_io() {
     for payload in [
-        RequestPayload::WebEnable { port: 7137, socket_path: "/tmp/memoryd.sock".to_owned() },
+        RequestPayload::WebEnable {
+            port: 7137,
+            socket_path: memoryd::socket::resolve_socket_path(&memoryd::socket::default_runtime_root())
+                .to_string_lossy()
+                .into_owned(),
+        },
         RequestPayload::WebDisable,
         RequestPayload::WebStatus,
     ] {

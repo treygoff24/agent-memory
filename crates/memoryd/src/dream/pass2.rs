@@ -6,6 +6,7 @@ use std::{
 use serde::Deserialize;
 
 use crate::protocol::{CandidateWriteResult, PassOutcome, PassStatus};
+use memory_substrate::config::PromptVersion;
 
 use super::{
     error::HarnessCliError,
@@ -21,6 +22,7 @@ pub struct Pass2RunContext<'a, W> {
     pub writer: &'a W,
     pub masking: &'a DreamMaskingSession,
     pub input: &'a DreamPromptInput,
+    pub prompt_version: PromptVersion,
     pub timeout: Duration,
     pub candidate_cap: usize,
 }
@@ -29,9 +31,9 @@ pub async fn run_pass_2<W>(context: Pass2RunContext<'_, W>) -> Result<PassOutcom
 where
     W: CandidateWriter,
 {
-    let Pass2RunContext { cli, writer, masking, input, timeout, candidate_cap } = context;
+    let Pass2RunContext { cli, writer, masking, input, prompt_version, timeout, candidate_cap } = context;
     let started_at = Instant::now();
-    let prompt = render_prompt(DreamPass::Pass2, input)?;
+    let prompt = render_prompt(DreamPass::Pass2, input, prompt_version)?;
     let proposals = match complete_and_parse_with_retry(cli, &prompt, timeout).await? {
         Pass2Parse::Candidates(candidates) => candidates,
         Pass2Parse::MalformedAfterRetry => {

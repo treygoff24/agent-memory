@@ -2,11 +2,12 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
 use memoryd::protocol::{
-    MemoryId, RealityCheckAction as ProtocolRealityCheckAction, RealityCheckRequest, RecallHitsResponse,
-    RequestPayload, ResponsePayload, StatusResponse,
+    ConflictsListResponse, EventsLogPageResponse, GovernancePolicySnapshot, InspectEntitiesResponse, MemoryId,
+    NamespaceTreeResponse, RealityCheckAction as ProtocolRealityCheckAction, RealityCheckRequest, RecallHitsResponse,
+    RequestPayload, ResponsePayload, ResponseResult, ReviewQueueResponse, StatusResponse,
 };
 
-use crate::app::{DaemonCall, RealityCheckAction, ReviewAction};
+use crate::app::{DaemonCall, DaemonSnapshot, RealityCheckAction, ReviewAction};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DaemonClient {
@@ -22,48 +23,141 @@ impl DaemonClient {
         &self.socket_path
     }
 
-    pub async fn status(&self) -> Result<StatusResponse> {
-        match self.request("memoryd-tui-status", RequestPayload::Status).await?.result {
-            memoryd::protocol::ResponseResult::Success(ResponsePayload::Status(status)) => Ok(status),
-            memoryd::protocol::ResponseResult::Success(other) => {
-                Err(anyhow!("daemon returned unexpected response: {other:?}"))
-            }
-            memoryd::protocol::ResponseResult::Error(error) => {
-                Err(anyhow!("daemon error {}: {}", error.code, error.message))
-            }
+    pub async fn fetch_snapshot(&self) -> Result<DaemonSnapshot> {
+        let status = self.status().await?;
+        let mut snapshot = DaemonSnapshot::empty();
+        snapshot.daemon_state = status.state;
+        snapshot.footer_hint = "daemon connected · tab filters · enter inspect".to_string();
+        if let Ok(review) = self.review_queue(50).await {
+            snapshot.review_queue = review
+                .items
+                .into_iter()
+                .map(|item| crate::app::ReviewQueueRow {
+                    id: item.id,
+                    title: item.summary,
+                    namespace: "review".to_string(),
+                    status: item.status,
+                    reason: item.reason,
+                })
+                .collect();
         }
+        if let Ok(conflicts) = self.conflicts(50).await {
+            snapshot.conflicts = conflicts
+                .conflicts
+                .into_iter()
+                .map(|item| crate::app::ConflictRow {
+                    id: item.id.to_string(),
+                    title: item.summary,
+                    namespace: "conflict".to_string(),
+                    reason: item.reason,
+                })
+                .collect();
+        }
+        if let Ok(recall) = self.recall_hits(50).await {
+            snapshot.recall = recall
+                .hits
+                .into_iter()
+                .map(|hit| crate::app::RecallHitRow {
+                    id: hit.memory_id.to_string(),
+                    title: hit.summary.unwrap_or_else(|| "recalled memory".to_string()),
+                    namespace: "recall".to_string(),
+                    age: hit.recalled_at.format("%H:%M").to_string(),
+                })
+                .collect();
+        }
+        Ok(snapshot)
     }
 
-    pub async fn trust_artifact(&self, id: &str) -> Result<memoryd::trust_artifact::TrustArtifact> {
-        match self
-            .request(format!("memoryd-tui-trust-artifact-{id}"), RequestPayload::TrustArtifact { id: id.to_owned() })
-            .await?
-            .result
-        {
-            memoryd::protocol::ResponseResult::Success(ResponsePayload::TrustArtifact(artifact)) => Ok(*artifact),
-            memoryd::protocol::ResponseResult::Success(other) => {
-                Err(anyhow!("daemon returned unexpected response: {other:?}"))
-            }
-            memoryd::protocol::ResponseResult::Error(error) => {
-                Err(anyhow!("daemon error {}: {}", error.code, error.message))
-            }
-        }
+    pub async fn status(&self) -> Result<StatusResponse> {
+        expect_response(self.request("memoryd-tui-status", RequestPayload::Status).await?, "status")
+    }
+
+    pub async fn review_queue(&self, limit: usize) -> Result<ReviewQueueResponse> {
+        expect_response(
+            self.request("memoryd-tui-review-queue", RequestPayload::ReviewQueue { limit: Some(limit) }).await?,
+            "review_queue",
+        )
+    }
+
+    pub async fn conflicts(&self, limit: usize) -> Result<ConflictsListResponse> {
+        expect_response(
+            self.request("memoryd-tui-conflicts", RequestPayload::ConflictsList { limit: Some(limit) }).await?,
+            "conflicts_list",
+        )
     }
 
     pub async fn recall_hits(&self, limit: usize) -> Result<RecallHitsResponse> {
-        match self
-            .request("memoryd-tui-recall-hits", RequestPayload::RecallHits { since: None, limit: Some(limit) })
-            .await?
-            .result
-        {
-            memoryd::protocol::ResponseResult::Success(ResponsePayload::RecallHits(response)) => Ok(response),
-            memoryd::protocol::ResponseResult::Success(other) => {
-                Err(anyhow!("daemon returned unexpected response: {other:?}"))
-            }
-            memoryd::protocol::ResponseResult::Error(error) => {
-                Err(anyhow!("daemon error {}: {}", error.code, error.message))
-            }
-        }
+        expect_response(
+            self.request("memoryd-tui-recall-hits", RequestPayload::RecallHits { since: None, limit: Some(limit) })
+                .await?,
+            "recall_hits",
+        )
+    }
+
+    pub async fn reality_check_session_progress(&self, session_id: &str) -> Result<crate::state::RealityCheckState> {
+        let response: memoryd::protocol::RealityCheckResponse = expect_response(
+            self.request(
+                format!("memoryd-tui-reality-check-progress-{session_id}"),
+                RequestPayload::RealityCheck(memoryd::protocol::RealityCheckRequest::List {
+                    namespace: None,
+                    limit: Some(50),
+                }),
+            )
+            .await?,
+            "reality_check",
+        )?;
+        let memoryd::protocol::RealityCheckResponse::Pending { session_id, items, .. } = response else {
+            return Ok(crate::state::RealityCheckState::default());
+        };
+        Ok(crate::state::RealityCheckState {
+            active_session_id: session_id,
+            items_total: items.len(),
+            items_reviewed: 0,
+            current_title: items.first().map(|item| item.title.clone()),
+            ..Default::default()
+        })
+    }
+
+    pub async fn inspect_entities(&self, limit: usize) -> Result<InspectEntitiesResponse> {
+        expect_response(
+            self.request("memoryd-tui-entities", RequestPayload::InspectEntities { limit: Some(limit), prefix: None })
+                .await?,
+            "inspect_entities",
+        )
+    }
+
+    pub async fn events_log_page(&self, limit: usize) -> Result<EventsLogPageResponse> {
+        expect_response(
+            self.request("memoryd-tui-events", RequestPayload::EventsLogPage { since: None, limit, kind_filter: None })
+                .await?,
+            "events_log_page",
+        )
+    }
+
+    pub async fn namespace_tree(&self) -> Result<NamespaceTreeResponse> {
+        expect_response(
+            self.request("memoryd-tui-namespace", RequestPayload::NamespaceTree { root: None, depth: Some(2) }).await?,
+            "namespace_tree",
+        )
+    }
+
+    pub async fn governance_policy_dump(&self) -> Result<GovernancePolicySnapshot> {
+        expect_response(
+            self.request("memoryd-tui-policy", RequestPayload::GovernancePolicyDump).await?,
+            "governance_policy_dump",
+        )
+    }
+
+    pub async fn trust_artifact(&self, id: &str) -> Result<memoryd::trust_artifact::TrustArtifact> {
+        expect_response::<Box<memoryd::trust_artifact::TrustArtifact>>(
+            self.request(
+                format!("memoryd-tui-trust-artifact-{id}"),
+                RequestPayload::TrustArtifact { id: id.to_owned() },
+            )
+            .await?,
+            "trust_artifact",
+        )
+        .map(|artifact| *artifact)
     }
 
     pub async fn dispatch_daemon_call(&self, call: &DaemonCall) -> Result<()> {
@@ -87,30 +181,11 @@ impl DaemonClient {
                 id: memory_id.to_owned(),
                 reason: "forgotten from memoryd-tui review queue".to_owned(),
             },
-            ReviewAction::Quarantine
-            | ReviewAction::Edit
-            | ReviewAction::AcceptLocal
-            | ReviewAction::AcceptRemote
-            | ReviewAction::Merge => {
-                return Err(anyhow!("review action {action:?} is not supported by the daemon protocol"));
-            }
         };
-
-        let result =
-            self.request(format!("memoryd-tui-review-{memory_id}-{}", review_action_label(action)), request).await?;
-        match (action, result.result) {
-            (ReviewAction::Approve, memoryd::protocol::ResponseResult::Success(ResponsePayload::ReviewApprove(_)))
-            | (ReviewAction::Reject, memoryd::protocol::ResponseResult::Success(ResponsePayload::ReviewReject(_)))
-            | (
-                ReviewAction::Forget,
-                memoryd::protocol::ResponseResult::Success(ResponsePayload::GovernanceForget(_)),
-            ) => Ok(()),
-            (_, memoryd::protocol::ResponseResult::Success(other)) => {
-                Err(anyhow!("daemon returned unexpected response for review action {action:?}: {other:?}"))
-            }
-            (_, memoryd::protocol::ResponseResult::Error(error)) => {
-                Err(anyhow!("daemon error {}: {}", error.code, error.message))
-            }
+        let response = self.request(format!("memoryd-tui-review-{memory_id}"), request).await?;
+        match response.result {
+            ResponseResult::Success(_) => Ok(()),
+            ResponseResult::Error(error) => Err(anyhow!("daemon error {}: {}", error.code, error.message)),
         }
     }
 
@@ -125,20 +200,32 @@ impl DaemonClient {
         let action = protocol_reality_check_action(action)?;
         let request = RequestPayload::RealityCheck(RealityCheckRequest::Respond {
             session_id: session_id.to_owned(),
-            memory_id: memory_id.clone(),
+            memory_id,
             action,
         });
-
-        let result =
-            self.request(format!("memoryd-tui-reality-check-{session_id}-{}", memory_id.as_str()), request).await?;
-        match result.result {
-            memoryd::protocol::ResponseResult::Success(ResponsePayload::RealityCheck(_)) => Ok(()),
-            memoryd::protocol::ResponseResult::Success(other) => {
+        let response = self.request(format!("memoryd-tui-reality-check-{session_id}"), request).await?;
+        match response.result {
+            ResponseResult::Success(ResponsePayload::RealityCheck(_)) => Ok(()),
+            ResponseResult::Success(other) => {
                 Err(anyhow!("daemon returned unexpected response for Reality Check action: {other:?}"))
             }
-            memoryd::protocol::ResponseResult::Error(error) => {
-                Err(anyhow!("daemon error {}: {}", error.code, error.message))
+            ResponseResult::Error(error) => Err(anyhow!("daemon error {}: {}", error.code, error.message)),
+        }
+    }
+
+    pub async fn correct(&self, session_id: &str, memory_id: MemoryId, new_body: String) -> Result<()> {
+        let request = RequestPayload::RealityCheck(RealityCheckRequest::Respond {
+            session_id: session_id.to_owned(),
+            memory_id,
+            action: ProtocolRealityCheckAction::Correct { new_body },
+        });
+        let response = self.request(format!("memoryd-tui-reality-check-correct-{session_id}"), request).await?;
+        match response.result {
+            ResponseResult::Success(ResponsePayload::RealityCheck(_)) => Ok(()),
+            ResponseResult::Success(other) => {
+                Err(anyhow!("daemon returned unexpected response for Reality Check correction: {other:?}"))
             }
+            ResponseResult::Error(error) => Err(anyhow!("daemon error {}: {}", error.code, error.message)),
         }
     }
 
@@ -153,16 +240,15 @@ impl DaemonClient {
     }
 }
 
-fn review_action_label(action: &ReviewAction) -> &'static str {
-    match action {
-        ReviewAction::Approve => "approve",
-        ReviewAction::Reject => "reject",
-        ReviewAction::Forget => "forget",
-        ReviewAction::Quarantine => "quarantine",
-        ReviewAction::Edit => "edit",
-        ReviewAction::AcceptLocal => "accept-local",
-        ReviewAction::AcceptRemote => "accept-remote",
-        ReviewAction::Merge => "merge",
+fn expect_response<T>(response: memoryd::protocol::ResponseEnvelope, expected: &str) -> Result<T>
+where
+    T: FromPayload,
+{
+    match response.result {
+        ResponseResult::Success(payload) => {
+            T::from_payload(payload).ok_or_else(|| anyhow!("daemon returned unexpected response for {expected}"))
+        }
+        ResponseResult::Error(error) => Err(anyhow!("daemon error {}: {}", error.code, error.message)),
     }
 }
 
@@ -174,8 +260,38 @@ fn protocol_reality_check_action(action: &RealityCheckAction) -> Result<Protocol
         }
         RealityCheckAction::NotRelevant => Ok(ProtocolRealityCheckAction::NotRelevant),
         RealityCheckAction::SkipWeek => Ok(ProtocolRealityCheckAction::SkipThisWeek),
-        RealityCheckAction::Correct => {
-            Err(anyhow!("Reality Check correct requires replacement text and is not supported by the TUI yet"))
+        RealityCheckAction::Correct { new_body } => {
+            Ok(ProtocolRealityCheckAction::Correct { new_body: new_body.clone() })
         }
     }
 }
+
+trait FromPayload {
+    fn from_payload(value: ResponsePayload) -> Option<Self>
+    where
+        Self: Sized;
+}
+
+macro_rules! impl_payload_from {
+    ($type:ty, $variant:path) => {
+        impl FromPayload for $type {
+            fn from_payload(value: ResponsePayload) -> Option<Self> {
+                match value {
+                    $variant(value) => Some(value),
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+
+impl_payload_from!(StatusResponse, ResponsePayload::Status);
+impl_payload_from!(ReviewQueueResponse, ResponsePayload::ReviewQueue);
+impl_payload_from!(ConflictsListResponse, ResponsePayload::ConflictsList);
+impl_payload_from!(RecallHitsResponse, ResponsePayload::RecallHits);
+impl_payload_from!(InspectEntitiesResponse, ResponsePayload::InspectEntities);
+impl_payload_from!(EventsLogPageResponse, ResponsePayload::EventsLogPage);
+impl_payload_from!(NamespaceTreeResponse, ResponsePayload::NamespaceTree);
+impl_payload_from!(GovernancePolicySnapshot, ResponsePayload::GovernancePolicyDump);
+impl_payload_from!(Box<memoryd::trust_artifact::TrustArtifact>, ResponsePayload::TrustArtifact);
+impl_payload_from!(memoryd::protocol::RealityCheckResponse, ResponsePayload::RealityCheck);
