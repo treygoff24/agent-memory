@@ -1958,9 +1958,25 @@ a:hover {
     top: 0;
     z-index: 1;
 }
+.pr-table-head .th {
+    font: inherit;
+    color: inherit;
+    text-transform: inherit;
+    letter-spacing: inherit;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    text-align: left;
+    padding: 0;
+}
+.pr-table-head .th:hover,
+.pr-table-head .th.active {
+    color: var(--accent);
+}
 .pr-row {
     cursor: pointer;
     border-bottom: 1px solid var(--border-soft);
+    text-align: left;
 }
 .pr-row:hover {
     background: var(--surface-2);
@@ -2166,6 +2182,7 @@ a:hover {
 .ent-row {
     cursor: pointer;
     border-bottom: 1px solid var(--border-soft);
+    text-align: left;
 }
 .ent-row:hover {
     background: var(--surface-2);
