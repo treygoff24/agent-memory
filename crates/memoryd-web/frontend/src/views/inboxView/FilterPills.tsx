@@ -1,5 +1,6 @@
-import { filterForKind, inboxFilters } from './adapter';
 import type { InboxFilterId, InboxViewItem } from './types';
+
+import { filterForKind, inboxFilters } from './adapter';
 
 interface FilterPillsProps {
     items: InboxViewItem[];

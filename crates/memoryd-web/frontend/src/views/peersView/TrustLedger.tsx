@@ -50,7 +50,9 @@ export function TrustLedger({ peers, selectedId, sort, onSort, onSelect }: Trust
                         type="button"
                     >
                         <span>{column.label}</span>
-                        {sort.key === column.key ? <span className="th-arrow mono">{sort.dir === 'asc' ? '↑' : '↓'}</span> : null}
+                        {sort.key === column.key ? (
+                            <span className="th-arrow mono">{sort.dir === 'asc' ? '↑' : '↓'}</span>
+                        ) : null}
                     </button>
                 ))}
             </div>

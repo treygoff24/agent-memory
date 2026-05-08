@@ -1,5 +1,6 @@
-import { PolicyCard, PolicyDecisionTraceCard, PrivacyScanCard, ProvenanceCard } from '../cards';
 import type { GovernanceDecisionItem, InspectorKindProps } from '../types';
+
+import { PolicyCard, PolicyDecisionTraceCard, PrivacyScanCard, ProvenanceCard } from '../cards';
 import { BodySection, InspectorHeader, InspectorShell } from './common';
 
 export function GovernanceDecisionInspector({ item, layout }: InspectorKindProps<GovernanceDecisionItem>) {

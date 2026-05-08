@@ -1,8 +1,9 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
-import { Inspector } from '../../src/inspector';
 import type { InspectorItem } from '../../src/inspector';
+
+import { Inspector } from '../../src/inspector';
 
 const base = {
     id: 'mem_20260508_a1b2c3d4e5f60718_000001',

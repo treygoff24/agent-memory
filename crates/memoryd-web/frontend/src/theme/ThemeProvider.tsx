@@ -37,9 +37,7 @@ function initialPreferences(): ThemePreferences {
             ]) ?? stored.theme,
         density: queryPreference('density', ['comfortable', 'compact']) ?? stored.density,
         reducedMotion: queryPreference('reducedMotion', ['os', 'on', 'off']) ?? stored.reducedMotion,
-        fontSize: Number.isFinite(queryFontSize)
-            ? Math.min(18, Math.max(12, queryFontSize))
-            : stored.fontSize,
+        fontSize: Number.isFinite(queryFontSize) ? Math.min(18, Math.max(12, queryFontSize)) : stored.fontSize,
     };
 }
 

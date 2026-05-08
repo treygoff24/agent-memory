@@ -1,6 +1,14 @@
 import type { DreamViewItem } from '../Dreams';
 
-export function DreamList({ items, selectedId, onSelect }: { items: DreamViewItem[]; selectedId: string; onSelect: (id: string) => void }) {
+export function DreamList({
+    items,
+    selectedId,
+    onSelect,
+}: {
+    items: DreamViewItem[];
+    selectedId: string;
+    onSelect: (id: string) => void;
+}) {
     return (
         <div className="list">
             {items.map((item) => (
@@ -10,7 +18,9 @@ export function DreamList({ items, selectedId, onSelect }: { items: DreamViewIte
                     onClick={() => onSelect(item.id)}
                     type="button"
                 >
-                    <span className={`glyph ${item.kind === 'dream-run' ? 'run' : 'dream'}`}>{item.kind === 'dream-run' ? '◈' : '◇'}</span>
+                    <span className={`glyph ${item.kind === 'dream-run' ? 'run' : 'dream'}`}>
+                        {item.kind === 'dream-run' ? '◈' : '◇'}
+                    </span>
                     <span className="li-main">
                         <span className="li-title">{item.title}</span>
                         <span className="li-sub">

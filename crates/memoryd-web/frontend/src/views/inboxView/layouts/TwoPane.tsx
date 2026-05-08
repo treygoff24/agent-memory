@@ -1,7 +1,8 @@
+import type { InboxLayoutProps } from '../types';
+
 import { Inspector } from '../../../inspector';
 import { InboxHeader } from '../InboxHeader';
 import { InboxList } from '../InboxList';
-import type { InboxLayoutProps } from '../types';
 
 export function TwoPaneLayout(props: InboxLayoutProps) {
     const selectedInspector = props.selected ? props.toInspectorItem(props.selected) : null;

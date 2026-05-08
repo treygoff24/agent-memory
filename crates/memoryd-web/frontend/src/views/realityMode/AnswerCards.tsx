@@ -12,7 +12,9 @@ export function AnswerCards({ encrypted, onAction, onCorrect }: AnswerCardsProps
             <button
                 className={`rc-action primary ${encrypted ? 'disabled' : ''}`}
                 onClick={() => !encrypted && onAction('confirm')}
-                title={encrypted ? 'Cannot confirm encrypted memories from this surface — reveal externally first.' : ''}
+                title={
+                    encrypted ? 'Cannot confirm encrypted memories from this surface — reveal externally first.' : ''
+                }
                 disabled={encrypted}
                 type="button"
             >

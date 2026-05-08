@@ -1,6 +1,14 @@
 import type { RealityCheckSession } from './types';
 
-export function FocusStrip({ session, complete = false, onExit }: { session: RealityCheckSession; complete?: boolean; onExit: () => void }) {
+export function FocusStrip({
+    session,
+    complete = false,
+    onExit,
+}: {
+    session: RealityCheckSession;
+    complete?: boolean;
+    onExit: () => void;
+}) {
     const progressCurrent = complete ? session.progress.total : session.progress.current;
     const progress = (progressCurrent / session.progress.total) * 100;
     return (

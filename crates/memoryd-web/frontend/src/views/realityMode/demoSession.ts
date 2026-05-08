@@ -30,10 +30,26 @@ export function demoRealityCheckSession(variant: RealityCheckVariant = 'default'
         current,
         items: [
             { id: current.id, title: current.title, status: variant === 'complete' ? 'done' : 'now' },
-            { id: 'mem_due_school', title: "Daughter's school name (verify)", status: variant === 'complete' ? 'done' : 'queued' },
-            { id: 'mem_recall_evt_28f1a4', title: 'Acme renewal date — Mar 14, 2026', status: variant === 'complete' ? 'done' : 'queued' },
-            { id: 'mem_conflict_editor', title: 'Editor preference disagreement', status: variant === 'complete' ? 'done' : 'queued' },
-            { id: 'mem_dream_rust', title: 'Pattern: prefers Rust over Go', status: variant === 'complete' ? 'done' : 'queued' },
+            {
+                id: 'mem_due_school',
+                title: "Daughter's school name (verify)",
+                status: variant === 'complete' ? 'done' : 'queued',
+            },
+            {
+                id: 'mem_recall_evt_28f1a4',
+                title: 'Acme renewal date — Mar 14, 2026',
+                status: variant === 'complete' ? 'done' : 'queued',
+            },
+            {
+                id: 'mem_conflict_editor',
+                title: 'Editor preference disagreement',
+                status: variant === 'complete' ? 'done' : 'queued',
+            },
+            {
+                id: 'mem_dream_rust',
+                title: 'Pattern: prefers Rust over Go',
+                status: variant === 'complete' ? 'done' : 'queued',
+            },
         ],
     };
 }

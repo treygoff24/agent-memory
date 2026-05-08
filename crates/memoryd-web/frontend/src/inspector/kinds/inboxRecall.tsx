@@ -1,5 +1,6 @@
-import { RecentMemoriesCard, SessionsCard } from '../cards';
 import type { InboxRecallItem, InspectorKindProps } from '../types';
+
+import { RecentMemoriesCard, SessionsCard } from '../cards';
 import { BodySection, InspectorHeader, InspectorShell } from './common';
 
 export function InboxRecallInspector({ item, layout }: InspectorKindProps<InboxRecallItem>) {

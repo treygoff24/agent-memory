@@ -1,8 +1,9 @@
 import Fuse from 'fuse.js';
 import { useEffect, useMemo, useState } from 'react';
 
-import { commands, type Command } from './commands';
 import type { ViewId } from '../views';
+
+import { commands, type Command } from './commands';
 export function CommandPalette({
     open,
     onClose,

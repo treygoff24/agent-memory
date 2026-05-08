@@ -1,5 +1,6 @@
-import { DisagreementCard, ProvenanceCard } from '../cards';
 import type { InboxConflictItem, InspectorKindProps } from '../types';
+
+import { DisagreementCard, ProvenanceCard } from '../cards';
 import { InspectorHeader, InspectorShell } from './common';
 
 export function InboxConflictInspector({ item, layout, onAction }: InspectorKindProps<InboxConflictItem>) {

@@ -1,5 +1,7 @@
 import { useEffect } from 'react';
 
+import type { InspectorAction, InspectorItem, InspectorLayout } from './types';
+
 import { DreamOutputInspector } from './kinds/dreamOutput';
 import { EntityDetailInspector } from './kinds/entityDetail';
 import { GovernanceDecisionInspector } from './kinds/governanceDecision';
@@ -10,7 +12,6 @@ import { InboxRecallInspector } from './kinds/inboxRecall';
 import { InboxReviewInspector } from './kinds/inboxReview';
 import { PeerDetailInspector } from './kinds/peerDetail';
 import { RecallEventInspector } from './kinds/recallEvent';
-import type { InspectorAction, InspectorItem, InspectorLayout } from './types';
 
 export interface InspectorProps {
     item: InspectorItem | null;

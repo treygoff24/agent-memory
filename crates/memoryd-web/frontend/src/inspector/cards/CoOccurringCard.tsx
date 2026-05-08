@@ -1,4 +1,5 @@
 import type { InspectorItem } from '../types';
+
 import { CardFrame } from './CardFrame';
 
 export function CoOccurringCard({ item }: { item: InspectorItem }) {

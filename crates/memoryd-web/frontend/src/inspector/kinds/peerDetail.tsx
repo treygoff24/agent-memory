@@ -1,5 +1,6 @@
-import { ClaimLocksCard, ConnectionCard, TrafficCard } from '../cards';
 import type { InspectorKindProps, PeerDetailItem } from '../types';
+
+import { ClaimLocksCard, ConnectionCard, TrafficCard } from '../cards';
 import { BodySection, InspectorHeader, InspectorShell } from './common';
 
 export function PeerDetailInspector({ item, layout }: InspectorKindProps<PeerDetailItem>) {

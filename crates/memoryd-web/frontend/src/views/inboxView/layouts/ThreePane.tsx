@@ -1,8 +1,9 @@
+import type { InboxLayoutProps } from '../types';
+
 import { Inspector } from '../../../inspector';
 import { inboxFilters } from '../adapter';
 import { InboxHeader } from '../InboxHeader';
 import { InboxList } from '../InboxList';
-import type { InboxLayoutProps } from '../types';
 
 export function ThreePaneLayout(props: InboxLayoutProps) {
     const selectedInspector = props.selected ? props.toInspectorItem(props.selected) : null;

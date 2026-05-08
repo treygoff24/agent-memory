@@ -11,16 +11,16 @@ Production assets are emitted to `frontend/dist/`. The Rust `memoryd-web` crate 
 
 ## Test-suite catalog
 
-| Command | Coverage |
-| --- | --- |
-| `pnpm run lint` | ESLint over source, tests, configs, and Playwright helpers. |
-| `pnpm run typecheck` | Strict TypeScript project check. |
-| `pnpm run test --run` | Vitest unit/component/MSW contract tests. |
-| `pnpm run test --run budgets` | Builds `dist/`, asserts gzip bundle budgets, and verifies CSP-strict HTML. |
-| `pnpm run test:e2e` | Playwright e2e, state matrix, and recall scroll perf smoke. |
-| `pnpm run test:visual --run` | Theme/layout visual-regression probes. These are assertion probes, not screenshot baselines. |
-| `pnpm run test:a11y` | Axe scan for every dashboard surface across all six themes. |
-| `pnpm run test:perf` | Recall heavy-ledger scroll performance smoke only. |
+| Command                                                          | Coverage                                                                                     |
+| ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `pnpm run lint`                                                  | ESLint over source, tests, configs, and Playwright helpers.                                  |
+| `pnpm run typecheck`                                             | Strict TypeScript project check.                                                             |
+| `pnpm run test --run`                                            | Vitest unit/component/MSW contract tests.                                                    |
+| `pnpm run test --run budgets`                                    | Builds `dist/`, asserts gzip bundle budgets, and verifies CSP-strict HTML.                   |
+| `pnpm run test:e2e`                                              | Playwright e2e, state matrix, and recall scroll perf smoke.                                  |
+| `pnpm run test:visual --run`                                     | Theme/layout visual-regression probes. These are assertion probes, not screenshot baselines. |
+| `pnpm run test:a11y`                                             | Axe scan for every dashboard surface across all six themes.                                  |
+| `pnpm run test:perf`                                             | Recall heavy-ledger scroll performance smoke only.                                           |
 | `cd ../../.. && cargo test -p memoryd-web --test frontend_smoke` | Rust embed smoke: CSRF rewrite, CSP, hashed assets, and gzip bundle budgets after embedding. |
 
 G2H/full frontend gate:

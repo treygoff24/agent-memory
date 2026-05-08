@@ -1,7 +1,8 @@
+import type { RealityCheckActionName, RealityCheckMemory, RealityCheckVariant } from './types';
+
 import { AnswerCards } from './AnswerCards';
 import { CorrectEditor } from './CorrectEditor';
 import { ScoreBreakdown } from './ScoreBreakdown';
-import type { RealityCheckActionName, RealityCheckMemory, RealityCheckVariant } from './types';
 
 interface QuestionStageProps {
     memory: RealityCheckMemory;
@@ -39,7 +40,9 @@ export function QuestionStage({ memory, mode, variant, onAction, onCorrectMode, 
                         <span className="enc-glyph">⌬</span>
                         <span>encrypted memory · score {memory.score.toFixed(2)}</span>
                     </div>
-                    <div className="enc-help">reveal externally to confirm/correct — body is sealed in this surface</div>
+                    <div className="enc-help">
+                        reveal externally to confirm/correct — body is sealed in this surface
+                    </div>
                 </div>
             ) : (
                 <div className="rc-think">

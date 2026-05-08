@@ -1,11 +1,22 @@
 import { useState } from 'react';
 
-export function CorrectEditor({ initialBody, onCancel, onSubmit }: { initialBody: string; onCancel: () => void; onSubmit: (body: string) => void }) {
+export function CorrectEditor({
+    initialBody,
+    onCancel,
+    onSubmit,
+}: {
+    initialBody: string;
+    onCancel: () => void;
+    onSubmit: (body: string) => void;
+}) {
     const [body, setBody] = useState(initialBody);
     return (
         <div className="rc-think">
             <div className="head">Correct memory</div>
-            <label htmlFor="corrected-memory-body" className="sr-only">
+            <label
+                htmlFor="corrected-memory-body"
+                className="sr-only"
+            >
                 Corrected memory body
             </label>
             <textarea

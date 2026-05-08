@@ -1,19 +1,12 @@
 import { expect, test } from '../support/playwright';
 
-const themes = [
-  'warm-dark',
-  'warm-light',
-  'cool-dark',
-  'cool-light',
-  'monochrome',
-  'high-contrast',
-];
+const themes = ['warm-dark', 'warm-light', 'cool-dark', 'cool-light', 'monochrome', 'high-contrast'];
 
 for (const theme of themes) {
-  test(`@visual governance queue ${theme}`, async ({ page }) => {
-    await page.goto(`/?view=governance&theme=${theme}`);
-    await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
-    await expect(page.getByTestId('governance-view-all')).toBeAttached();
-    await expect(page.getByRole('region', { name: 'Inspector' })).toContainText('governance');
-  });
+    test(`@visual governance queue ${theme}`, async ({ page }) => {
+        await page.goto(`/?view=governance&theme=${theme}`);
+        await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+        await expect(page.getByTestId('governance-view-all')).toBeAttached();
+        await expect(page.getByRole('region', { name: 'Inspector' })).toContainText('governance');
+    });
 }

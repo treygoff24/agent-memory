@@ -1,5 +1,6 @@
-import { PolicyCard, PrivacyScanCard, ProvenanceCard } from '../cards';
 import type { InboxReviewItem, InspectorKindProps } from '../types';
+
+import { PolicyCard, PrivacyScanCard, ProvenanceCard } from '../cards';
 import { BodySection, InspectorHeader, InspectorShell } from './common';
 
 export function InboxReviewInspector({ item, layout, onAction }: InspectorKindProps<InboxReviewItem>) {

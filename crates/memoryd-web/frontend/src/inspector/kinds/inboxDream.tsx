@@ -1,5 +1,6 @@
-import { DreamPassCard, EvidenceCard } from '../cards';
 import type { InboxDreamItem, InspectorKindProps } from '../types';
+
+import { DreamPassCard, EvidenceCard } from '../cards';
 import { BodySection, InspectorHeader, InspectorShell } from './common';
 
 export function InboxDreamInspector({ item, layout, onAction }: InspectorKindProps<InboxDreamItem>) {

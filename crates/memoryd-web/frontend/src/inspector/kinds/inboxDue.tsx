@@ -1,5 +1,6 @@
-import { PolicyCard, RecentMemoriesCard } from '../cards';
 import type { InboxDueItem, InspectorKindProps } from '../types';
+
+import { PolicyCard, RecentMemoriesCard } from '../cards';
 import { BodySection, InspectorHeader, InspectorShell } from './common';
 
 export function InboxDueInspector({ item, layout, onAction }: InspectorKindProps<InboxDueItem>) {

@@ -1,5 +1,6 @@
-import { EmptyState } from '../../ui';
 import type { InboxViewItem } from './types';
+
+import { EmptyState } from '../../ui';
 
 interface InboxListProps {
     items: InboxViewItem[];

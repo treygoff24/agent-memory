@@ -1,5 +1,6 @@
-import { FilterPills } from './FilterPills';
 import type { InboxFilterId, InboxViewItem } from './types';
+
+import { FilterPills } from './FilterPills';
 
 interface InboxHeaderProps {
     items: InboxViewItem[];
@@ -13,7 +14,10 @@ export function InboxHeader({ items, visibleCount, activeFilter, onFilterChange,
     return (
         <div className="view-header">
             <span className="view-title">Inbox</span>
-            <span className="view-subtitle">· {label ? `${label} · ` : ''}{visibleCount} items</span>
+            <span className="view-subtitle">
+                · {label ? `${label} · ` : ''}
+                {visibleCount} items
+            </span>
             <span className="spacer" />
             <FilterPills
                 items={items}

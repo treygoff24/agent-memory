@@ -1,5 +1,6 @@
-import { CoOccurringCard, EntityCard, RecentMemoriesCard } from '../cards';
 import type { EntityDetailItem, InspectorKindProps } from '../types';
+
+import { CoOccurringCard, EntityCard, RecentMemoriesCard } from '../cards';
 import { BodySection, InspectorHeader, InspectorShell } from './common';
 
 export function EntityDetailInspector({ item, layout }: InspectorKindProps<EntityDetailItem>) {

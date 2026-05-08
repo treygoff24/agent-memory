@@ -1,4 +1,5 @@
 import type { ViewId } from '../views';
+
 import { themes, type Theme } from '../theme';
 
 export interface Command {

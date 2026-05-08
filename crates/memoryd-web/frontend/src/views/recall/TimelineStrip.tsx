@@ -4,13 +4,25 @@ export interface TimelineBucket {
     count: number;
 }
 
-export function TimelineStrip({ buckets, mode, selected, onPick }: { buckets: TimelineBucket[]; mode: '24h' | '30d'; selected: number | null; onPick: (key: number) => void }) {
+export function TimelineStrip({
+    buckets,
+    mode,
+    selected,
+    onPick,
+}: {
+    buckets: TimelineBucket[];
+    mode: '24h' | '30d';
+    selected: number | null;
+    onPick: (key: number) => void;
+}) {
     const max = Math.max(1, ...buckets.map((bucket) => bucket.count));
     return (
         <div className="rl-strip">
             <div className="rl-strip-head">
                 <span className="section-label">{mode === '24h' ? '24-hour scrubber' : '30-day scrubber'}</span>
-                <span className="rl-strip-meta">peak {max}/{mode === '24h' ? 'hr' : 'day'}</span>
+                <span className="rl-strip-meta">
+                    peak {max}/{mode === '24h' ? 'hr' : 'day'}
+                </span>
             </div>
             <div
                 className="rl-strip-bars"

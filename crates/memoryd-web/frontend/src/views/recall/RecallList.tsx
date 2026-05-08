@@ -10,7 +10,17 @@ interface RecallListProps {
     heavy?: boolean;
 }
 
-function RecallRow({ event, selected, onSelect, style }: { event: RecallLedgerEvent; selected: boolean; onSelect: (id: string) => void; style?: CSSProperties }) {
+function RecallRow({
+    event,
+    selected,
+    onSelect,
+    style,
+}: {
+    event: RecallLedgerEvent;
+    selected: boolean;
+    onSelect: (id: string) => void;
+    style?: CSSProperties;
+}) {
     return (
         <button
             className={`rl-row ${selected ? 'selected' : ''}`}
@@ -80,13 +90,18 @@ export function RecallList({ events, selectedId, onSelect, heavy = false }: Reca
                             event={event}
                             selected={selectedId === event.id}
                             onSelect={onSelect}
-                            style={{ position: 'absolute', transform: `translateY(${virtualRow.start}px)`, width: '100%' }}
+                            style={{
+                                position: 'absolute',
+                                transform: `translateY(${virtualRow.start}px)`,
+                                width: '100%',
+                            }}
                         />
                     );
                 })}
             </div>
             <div className="rl-virt-hint">
-                <span className="mono">{events.length.toLocaleString()}</span> visible · scrolling backed by virtualization · older buckets summarized in scrubber
+                <span className="mono">{events.length.toLocaleString()}</span> visible · scrolling backed by
+                virtualization · older buckets summarized in scrubber
             </div>
         </div>
     );

@@ -1,5 +1,6 @@
-import { DreamPassCard, EvidenceSummaryCard } from '../cards';
 import type { DreamOutputItem, InspectorKindProps } from '../types';
+
+import { DreamPassCard, EvidenceSummaryCard } from '../cards';
 import { BodySection, InspectorHeader, InspectorShell } from './common';
 
 export function DreamOutputInspector({ item, layout }: InspectorKindProps<DreamOutputItem>) {
