@@ -2,7 +2,7 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
     test: {
-        include: ['tests/unit/**/*.test.ts', 'tests/unit/**/*.test.tsx', 'tests/inspector/**/*.test.tsx', 'tests/inbox/**/*.test.tsx'],
+        include: ['tests/unit/**/*.test.ts', 'tests/unit/**/*.test.tsx', 'tests/inspector/**/*.test.tsx', 'tests/inbox/**/*.test.tsx', 'tests/realityCheck/**/*.test.tsx'],
         environment: 'jsdom',
         setupFiles: ['./tests/setup.ts'],
         globals: true,
