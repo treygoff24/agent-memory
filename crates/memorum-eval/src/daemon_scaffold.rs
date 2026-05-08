@@ -277,14 +277,26 @@ fn memoryd_binary_path() -> PathBuf {
 }
 
 fn wait_for_socket(socket_path: &Path) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    wait_for_socket_for(socket_path, Duration::from_secs(5), Duration::from_millis(100))
+        .unwrap_or_else(|error| panic!("{error}"));
+}
+
+fn wait_for_socket_for(socket_path: &Path, timeout: Duration, poll_interval: Duration) -> Result<(), String> {
+    let deadline = std::time::Instant::now() + timeout;
+    let mut last_error = None;
     while std::time::Instant::now() < deadline {
-        if socket_path.exists() {
-            return;
+        match UnixStream::connect(socket_path) {
+            Ok(_) => return Ok(()),
+            Err(error) => last_error = Some(error),
         }
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(poll_interval);
     }
-    panic!("memoryd socket did not appear within 5s: {}", socket_path.display());
+    Err(format!(
+        "memoryd socket did not accept connections within {:?}: {}{}",
+        timeout,
+        socket_path.display(),
+        last_error.map(|error| format!(" ({error})")).unwrap_or_default()
+    ))
 }
 
 fn new_ulid_like_id() -> String {
@@ -304,4 +316,42 @@ fn encode_crockford(mut value: u128, width: usize) -> String {
         value >>= 5;
     }
     String::from_utf8(encoded).expect("crockford base32 alphabet is utf8")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::os::unix::net::UnixListener;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    use super::wait_for_socket_for;
+
+    #[test]
+    fn wait_for_socket_requires_accepting_listener_not_only_path_existence() {
+        let socket_path = temp_socket_path("regular-file");
+        fs::write(&socket_path, b"not a socket").expect("write placeholder");
+
+        let error = wait_for_socket_for(&socket_path, Duration::from_millis(20), Duration::from_millis(1))
+            .expect_err("regular file must not be treated as socket readiness");
+
+        assert!(error.contains("did not accept connections"), "{error}");
+        let _ = fs::remove_file(socket_path);
+    }
+
+    #[test]
+    fn wait_for_socket_returns_when_listener_accepts_connections() {
+        let socket_path = temp_socket_path("listener");
+        let listener = UnixListener::bind(&socket_path).expect("bind listener");
+
+        wait_for_socket_for(&socket_path, Duration::from_millis(20), Duration::from_millis(1))
+            .expect("listener is ready");
+
+        drop(listener);
+        let _ = fs::remove_file(socket_path);
+    }
+
+    fn temp_socket_path(label: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).expect("system clock before unix epoch").as_nanos();
+        std::env::temp_dir().join(format!("memorum-eval-{label}-{nanos}.sock"))
+    }
 }
