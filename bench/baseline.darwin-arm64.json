@@ -1,4 +1,10 @@
 {
+  "active_triple": {
+    "dimension": 32,
+    "model_ref": "stream-a-test",
+    "provider": "synthetic"
+  },
+  "corpus_sha256": "sha256:35962f9e33069efe60e5c50b56933e1b40689d29a75df91da515fef6bd2a86f7",
   "corpus_size": 10000,
   "corpus_variants": [
     "long_bodies",
@@ -12,40 +18,34 @@
   ],
   "metrics": {
     "cold_reindex": {
-      "p50_ms": 7725.518,
-      "p95_ms": 8035.473,
-      "p99_ms": 8035.473,
-      "noise_floor_ms": 9527.044
+      "p50_ms": 7292.838,
+      "p95_ms": 7791.395,
+      "p99_ms": 7791.395
     },
     "filtered_metadata_query": {
-      "p50_ms": 10.831,
-      "p95_ms": 11.246,
-      "p99_ms": 11.246,
-      "noise_floor_ms": 2.0
+      "p50_ms": 1.895,
+      "p95_ms": 23.307,
+      "p99_ms": 23.307
     },
     "fts_chunk_query": {
-      "p50_ms": 11.047,
-      "p95_ms": 11.736,
-      "p99_ms": 11.736,
-      "noise_floor_ms": 2.0
+      "p50_ms": 0.062,
+      "p95_ms": 0.115,
+      "p99_ms": 0.115
     },
     "query_by_id": {
-      "p50_ms": 0.022,
-      "p95_ms": 0.051,
-      "p99_ms": 0.051,
-      "noise_floor_ms": 2.0
+      "p50_ms": 0.018,
+      "p95_ms": 0.037,
+      "p99_ms": 0.037
     },
     "tree_validator": {
-      "p50_ms": 546.977,
-      "p95_ms": 566.611,
-      "p99_ms": 566.611,
-      "noise_floor_ms": 276.289
+      "p50_ms": 499.003,
+      "p95_ms": 529.687,
+      "p99_ms": 529.687
     },
     "vector_chunk_query": {
-      "p50_ms": 0.107,
-      "p95_ms": 0.16,
-      "p99_ms": 0.16,
-      "noise_floor_ms": 2.0
+      "p50_ms": 0.07,
+      "p95_ms": 5.952,
+      "p99_ms": 5.952
     }
   },
   "profile": "darwin-arm64",
@@ -53,6 +53,7 @@
   "schema": 1,
   "seed": "0xa175e1ea5e",
   "tier": "release",
-  "captured_at": "2026-04-27T23:40:00-05:00",
-  "captured_method": "characterization run: 4 release-tier iterations on darwin-arm64 after query.rs perf fixes"
+  "vector_dimension": 32,
+  "captured_at": "2026-05-08T12:30:00-05:00",
+  "captured_method": "characterization run on darwin-arm64. covers cumulative perf shape after Streams E (recall index columns), F (dreaming), G/H/I (events_log mirror + recall_index column additions, FTS5 sanitization), and the 2026-05-07 dogfood-readiness run. previous baseline captured 2026-04-27 predated 5 already-merged index commits and no longer reflected what shipped on main."
 }
