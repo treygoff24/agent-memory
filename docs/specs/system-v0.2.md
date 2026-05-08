@@ -451,6 +451,8 @@ Shipped per Stream D v0.1 (`crates/memory-privacy/`). Unchanged in v0.2:
 
 The v1 contract is ten MCP tools. No further tool addition or removal in v1.x. New tools require v2.0.0.
 
+**2026-05-07 amendment:** v1 MCP surface ratified at 10 tools (adds `memory_capture_source`, shipped 2026-05-06 in commit `ab66a34`). Surface frozen at 10 for v1.x. Daemon-protocol commands (`Status`, `Doctor`, `RealityCheck`, peer admin, etc.) are not part of the MCP surface and are exposed via the daemon socket only.
+
 | # | Tool | Stream | Purpose |
 |---|---|---|---|
 | 1 | `memory_search` | A/B | hybrid keyword + vector + recency search across in-scope namespaces |
