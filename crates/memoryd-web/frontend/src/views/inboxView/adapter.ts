@@ -1,6 +1,5 @@
-import type { InboxItem } from '../../data/fixtures';
 import type { InspectorItem } from '../../inspector';
-import type { InboxFilterId, InboxViewItem } from './types';
+import type { InboxFilterId, InboxItem, InboxKind, InboxViewItem } from './types';
 
 export const inboxFilters = [
     { id: 'all', label: 'all', key: '1' },
@@ -11,7 +10,7 @@ export const inboxFilters = [
     { id: 'due', label: 'due', key: '6' },
 ] as const;
 
-export const filterForKind: Record<InboxItem['kind'], InboxFilterId> = {
+export const filterForKind: Record<InboxKind, InboxFilterId> = {
     review: 'review',
     conflict: 'conflicts',
     recall: 'recall',
@@ -19,7 +18,7 @@ export const filterForKind: Record<InboxItem['kind'], InboxFilterId> = {
     due: 'due',
 };
 
-const glyphForKind: Record<InboxItem['kind'], string> = {
+const glyphForKind: Record<InboxKind, string> = {
     review: '●',
     conflict: '⚠',
     recall: '▸',

@@ -1,9 +1,20 @@
-import type { InboxItem } from '../../data/fixtures';
 import type { InspectorItem } from '../../inspector';
 
 export type InboxLayout = 'two-pane' | 'three-pane' | 'drawer' | 'modal';
 
 export type InboxFilterId = 'all' | 'review' | 'conflicts' | 'recall' | 'dreams' | 'due';
+
+export type InboxKind = 'review' | 'recall' | 'conflict' | 'dream' | 'due';
+
+export interface InboxItem {
+    id: string;
+    kind: InboxKind;
+    title: string;
+    namespace: string;
+    meta: string;
+    body: string;
+    confidence: number;
+}
 
 export interface InboxFilterDefinition {
     id: InboxFilterId;
