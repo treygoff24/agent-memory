@@ -1,15 +1,34 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Optional rustc caching. `brew install sccache` (or `cargo install sccache`).
-# Missing sccache is fine — we just don't set the wrapper.
-if command -v sccache >/dev/null 2>&1; then
+# Long Rust gates on macOS can wedge freshly built executables behind
+# syspolicyd/CSExattrCrypto when they use the repo target dir or sccache.
+# Use an isolated target dir by default and make the risky accelerators opt-in.
+cleanup_cargo_target_dir=0
+if [[ -z "${CARGO_TARGET_DIR:-}" ]]; then
+  CARGO_TARGET_DIR="$(mktemp -d -t memorum-check-target)"
+  export CARGO_TARGET_DIR
+  cleanup_cargo_target_dir=1
+fi
+
+cleanup() {
+  if [[ "$cleanup_cargo_target_dir" -eq 1 && "${MEMORUM_CHECK_KEEP_TARGET:-0}" != "1" ]]; then
+    rm -rf "$CARGO_TARGET_DIR"
+  fi
+}
+trap cleanup EXIT
+
+# Optional rustc caching. Disabled unless explicitly requested because it is
+# part of the known local macOS gate hang pattern.
+if [[ "${MEMORUM_CHECK_USE_SCCACHE:-0}" == "1" ]] && command -v sccache >/dev/null 2>&1; then
   export RUSTC_WRAPPER="sccache"
+else
+  unset RUSTC_WRAPPER
 fi
 
 # Optional faster test runner. `brew install cargo-nextest` (or `cargo install cargo-nextest`).
 # nextest skips doctests by design, so when we use it we run `cargo test --doc` separately.
-if command -v cargo-nextest >/dev/null 2>&1; then
+if [[ "${MEMORUM_CHECK_USE_NEXTEST:-0}" == "1" ]] && command -v cargo-nextest >/dev/null 2>&1; then
   USE_NEXTEST=1
 else
   USE_NEXTEST=0
