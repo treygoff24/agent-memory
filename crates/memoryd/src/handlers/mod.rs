@@ -43,16 +43,16 @@ use tokio::sync::{broadcast, Mutex};
 
 use crate::dream::rehydration;
 use crate::protocol::{
-    CaptureSourceResponse, ClaimLockWarning, ConflictSummary, ConflictsListResponse, DoctorFinding, DoctorResponse,
-    EntitySummary, EventLogEntry, EventsLogPageResponse, GetProvenance, GetResponse, GovernanceForgetResponse,
-    GovernancePolicySnapshot, GovernancePolicySummary, GovernanceStatus, GovernanceSupersedeResponse,
-    GovernanceWriteResponse, InjectableEventKind, InspectEntitiesResponse, NamespaceNode, NamespaceTreeResponse,
-    NotificationEvent, ObserveResponse, ObserveTarget, PassiveNotificationStatus, PeerActivityResponse,
-    PeerDeliveryAuditEntry, PeerReleaseLockResponse, PeerReleaseLockStatus, PeerSessionStatus, PeerStatusResponse,
-    RealityCheckAction, RealityCheckRequest, RealityCheckResponse, RequestEnvelope, RequestPayload, RespondRefusalKind,
-    ResponseEnvelope, ResponsePayload, RevealResponse, ReviewDecisionResponse, ReviewQueueItemResponse,
-    ReviewQueueResponse, SearchHit, SearchResponse, StatusResponse, WebDashboardStatus, WriteNoteResponse,
-    MAX_FRAME_BYTES, NOTIFICATION_CHANNEL_CAPACITY,
+    CaptureSourceResponse, ClaimLockWarning, ConflictSummary, ConflictsListResponse, EntitySummary, EventLogEntry,
+    EventsLogPageResponse, GetProvenance, GetResponse, GovernanceForgetResponse, GovernancePolicySnapshot,
+    GovernancePolicySummary, GovernanceStatus, GovernanceSupersedeResponse, GovernanceWriteResponse,
+    InjectableEventKind, InspectEntitiesResponse, NamespaceNode, NamespaceTreeResponse, NotificationEvent,
+    ObserveResponse, ObserveTarget, PassiveNotificationStatus, PeerActivityResponse, PeerDeliveryAuditEntry,
+    PeerReleaseLockResponse, PeerReleaseLockStatus, PeerSessionStatus, PeerStatusResponse, RealityCheckAction,
+    RealityCheckRequest, RealityCheckResponse, RequestEnvelope, RequestPayload, RespondRefusalKind, ResponseEnvelope,
+    ResponsePayload, RevealResponse, ReviewDecisionResponse, ReviewQueueItemResponse, ReviewQueueResponse, SearchHit,
+    SearchResponse, StatusResponse, WebDashboardStatus, WriteNoteResponse, MAX_FRAME_BYTES,
+    NOTIFICATION_CHANNEL_CAPACITY,
 };
 use crate::reality_check::{RcAdvanceRequest, RcRunRequest, RcSessionAdvance, RcSessionHandler};
 use crate::recall::{
@@ -60,6 +60,10 @@ use crate::recall::{
     DeltaCoordinationContext, DeltaPeerCooldownStore, DeltaPeerDelivery, DeltaPeerDeliveryRecorder, OmissionReason,
     RecallError, SessionBinding, SharedRecallCounters, StartupResponse,
 };
+
+mod doctor;
+
+use doctor::doctor_response;
 
 const SEARCH_LIMIT_DEFAULT: usize = 10;
 const SEARCH_LIMIT_MAX: usize = 20;
@@ -1741,64 +1745,6 @@ fn record_budget_exhaustions(state: &HandlerState, response: &StartupResponse) {
             state.recall.record_budget_exhausted(omission.section.as_str());
         }
     }
-}
-
-async fn doctor_response(substrate: &Substrate) -> DoctorResponse {
-    let report = substrate.doctor().await;
-    let mut findings = report
-        .warnings
-        .into_iter()
-        .map(|message| DoctorFinding { code: "warning".to_string(), message, repair: None })
-        .chain(report.repairs_required.into_iter().map(|message| DoctorFinding {
-            code: "repair_required".to_string(),
-            message,
-            repair: Some("Run substrate repair before relying on daemon recall.".to_string()),
-        }))
-        .collect::<Vec<_>>();
-    if let Ok(health) = substrate.events_log_mirror_health() {
-        let stale_count = health.lag.max(health.missing_count);
-        if stale_count > 0 {
-            let plural = if stale_count == 1 { "" } else { "s" };
-            findings.push(DoctorFinding {
-                code: "events_log_mirror_lag".to_string(),
-                message: format!(
-                    "{stale_count} event{plural} not mirrored to SQLite - drift scoring may be stale; run `memoryd doctor --reindex`"
-                ),
-                repair: Some("memoryd doctor --reindex".to_string()),
-            });
-        }
-    }
-    let has_substrate_findings = !findings.is_empty();
-    let registry = crate::dream::registry::HarnessCliRegistry::builtin_v0_2();
-    let mut enabled_harness_count = 0usize;
-    let mut authenticated_harness_count = 0usize;
-    for (name, adapter) in registry.adapters() {
-        enabled_harness_count += 1;
-        let probe = adapter.auth_probe().await;
-        if probe.is_ok() {
-            authenticated_harness_count += 1;
-        } else {
-            findings.push(DoctorFinding {
-                code: "harness_cli_warning".to_string(),
-                message: probe.operator_message(name),
-                repair: Some(format!("Install/authenticate `{name}` or remove it from dream CLI priority.")),
-            });
-        }
-    }
-    DoctorResponse {
-        healthy: doctor_is_healthy(has_substrate_findings, enabled_harness_count, authenticated_harness_count),
-        findings,
-        guidance: "Doctor reflects Stream A substrate validation, repair state, and Stream F harness availability."
-            .to_string(),
-    }
-}
-
-fn doctor_is_healthy(
-    has_substrate_findings: bool,
-    enabled_harness_count: usize,
-    authenticated_harness_count: usize,
-) -> bool {
-    !has_substrate_findings && (enabled_harness_count == 0 || authenticated_harness_count > 0)
 }
 
 async fn search_response(
@@ -4294,15 +4240,6 @@ mod tests {
         assert_eq!(error.code, "port_in_use");
         assert!(error.message.contains("is unavailable before start"));
         assert!(!runtime.status(chrono::Utc::now()).running);
-    }
-
-    #[test]
-    fn doctor_health_requires_clean_substrate_and_available_harness() {
-        assert!(doctor_is_healthy(false, 2, 1), "one authenticated enabled harness keeps doctor healthy");
-        assert!(!doctor_is_healthy(false, 2, 0), "zero authenticated enabled harnesses is unhealthy");
-        assert!(!doctor_is_healthy(true, 2, 2), "substrate findings are unhealthy regardless of harnesses");
-        assert!(!doctor_is_healthy(true, 0, 0), "substrate findings are unhealthy even with empty registry");
-        assert!(doctor_is_healthy(false, 0, 0), "empty registry is trivially healthy when substrate is clean");
     }
 
     #[test]
