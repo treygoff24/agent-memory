@@ -138,6 +138,83 @@ async fn test_daemon_backed_recall_hits_route_surfaces_live_recall_emission() {
 }
 
 #[tokio::test]
+async fn test_daemon_backed_reality_check_route_creates_session_and_confirms() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let repo = temp.path().join("repo");
+    let runtime = temp.path().join("runtime");
+    let socket = temp.path().join("memoryd.sock");
+    let substrate = Substrate::init(
+        Roots::new(&repo, &runtime),
+        InitOptions { force_unsafe_durability: true, device_id: Some("dev_webrc01".to_owned()) },
+    )
+    .await
+    .expect("substrate init");
+    let memory_id = MemoryId::new("mem_20260502_cccccccccccccccc_000001");
+    write_recall_hit_memory(&substrate, memory_id.clone()).await;
+
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let server = tokio::spawn(serve_substrate_with(
+        socket.clone(),
+        substrate,
+        ServerOptions { idle_frame_timeout: Duration::from_secs(5) },
+        shutdown_rx,
+    ));
+    wait_for_socket(&socket).await;
+
+    let app = router_with_state(WebState::daemon(&socket));
+    let response = app
+        .clone()
+        .oneshot(Request::builder().uri("/api/reality-check").body(Body::empty()).expect("request builds"))
+        .await
+        .expect("request succeeds");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    assert_eq!(body["kind"], "pending");
+    assert_eq!(body["session_id"], "rc_session_task14");
+    assert!(
+        body["items"].as_array().expect("items array").iter().any(|item| item["memory_id"] == memory_id.as_str()),
+        "daemon-backed Reality Check GET should create a real session for the live item: {body}"
+    );
+
+    let token = fetch_csrf_token(app.clone()).await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/reality-check/respond")
+                .header("x-memorum-csrf", token)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "session_id": "rc_session_task14",
+                        "memory_id": memory_id.as_str(),
+                        "action": "confirm"
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("request succeeds");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    assert_eq!(body["accepted"], true);
+    assert_eq!(body["session_id"], "rc_session_task14");
+    assert_eq!(body["memory_id"], memory_id.as_str());
+    assert!(body["completion"].is_object());
+
+    shutdown_tx.send(true).expect("shutdown signal lands");
+    timeout(Duration::from_secs(2), server)
+        .await
+        .expect("server stops before timeout")
+        .expect("server task joins")
+        .expect("server exits ok");
+    let _ = std::fs::remove_file(socket);
+}
+
+#[tokio::test]
 async fn test_get_entity_graph_returns_nodes_and_edges() {
     let response = get_json("/api/entity-graph?namespace=project:agent-memory&depth=2").await;
 
@@ -353,6 +430,20 @@ async fn test_notifications_stream_returns_sse_heartbeat_snapshot() {
     let body = response_body(response).await;
     assert!(body.contains("event: heartbeat"));
     assert!(body.contains("review_queue_over"));
+}
+
+#[tokio::test]
+async fn test_daemon_configured_notifications_stream_returns_empty_heartbeat() {
+    let missing_socket = tempfile::NamedTempFile::new().expect("missing socket placeholder is created");
+    let response = router_with_state(WebState::daemon(missing_socket.path()))
+        .oneshot(Request::builder().uri("/api/notifications/stream").body(Body::empty()).expect("request builds"))
+        .await
+        .expect("request succeeds");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_body(response).await;
+    assert!(body.contains("event: heartbeat"));
+    assert!(body.contains(r#""notifications":[]"#));
 }
 
 #[tokio::test]

@@ -79,7 +79,11 @@ pub async fn reality_check(State(state): State<WebState>) -> impl IntoResponse {
             return match memoryd::client::request(
                 socket_path,
                 "web-reality-check",
-                RequestPayload::RealityCheck(RealityCheckRequest::List { namespace: None, limit: None }),
+                RequestPayload::RealityCheck(RealityCheckRequest::Run {
+                    session_id: Some(REALITY_CHECK_SESSION_ID.to_owned()),
+                    namespace: None,
+                    limit: None,
+                }),
             )
             .await
             {
@@ -220,7 +224,12 @@ async fn daemon_reality_check_respond(
     .await
     {
         Ok(response) => match response.result {
-            ResponseResult::Success(ResponsePayload::RealityCheck(_)) => {
+            ResponseResult::Success(ResponsePayload::RealityCheck(RealityCheckResponse::RespondAccepted {
+                session_id,
+                memory_id,
+                completion,
+                ..
+            })) => {
                 state
                     .record_reality_check_action(RealityCheckActionRecord {
                         memory_id: payload.memory_id.clone(),
@@ -233,13 +242,31 @@ async fn daemon_reality_check_respond(
                     Json(RealityCheckActionResponse {
                         accepted: true,
                         session_id,
-                        memory_id: payload.memory_id,
+                        memory_id: memory_id.as_str().to_owned(),
                         action: payload.action,
-                        completion: RealityCheckCompletion::Progress { remaining: 0, deferred: 0 },
+                        completion,
                     }),
                 )
                     .into_response()
             }
+            ResponseResult::Success(ResponsePayload::RealityCheck(RealityCheckResponse::RespondRefused {
+                session_id,
+                memory_id,
+                reason,
+                kind,
+            })) => (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({
+                    "accepted": false,
+                    "error": "reality_check_refused",
+                    "session_id": session_id,
+                    "memory_id": memory_id.as_str(),
+                    "action": payload.action,
+                    "reason": reason,
+                    "kind": kind,
+                })),
+            )
+                .into_response(),
             ResponseResult::Error(error) => {
                 daemon_error("reality_check_respond", error.code, error.message).into_response()
             }

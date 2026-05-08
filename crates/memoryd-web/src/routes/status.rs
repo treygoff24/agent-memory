@@ -126,12 +126,16 @@ pub async fn status(State(state): State<WebState>) -> impl IntoResponse {
 }
 
 pub async fn notifications_stream(State(state): State<WebState>) -> Response {
-    let Some(data) = state.dashboard_data() else {
+    let notifications = if let Some(data) = state.dashboard_data() {
+        data.notifications.clone()
+    } else if state.daemon_socket().is_some() {
+        Vec::new()
+    } else {
         return backend_unavailable("notifications_stream").into_response();
     };
     let payload = json!({
         "kind": "heartbeat",
-        "notifications": data.notifications,
+        "notifications": notifications,
     });
     let body = format!("event: heartbeat\ndata: {payload}\n\n");
     let mut response = (StatusCode::OK, body).into_response();
