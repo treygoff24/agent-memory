@@ -43,7 +43,8 @@ export function TrustLedger({ peers, selectedId, sort, onSort, onSelect }: Trust
                 {columns.map((column) => (
                     <button
                         key={column.key}
-                        aria-sort={sort.key === column.key ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none'}
+                        aria-label={`Sort by ${column.label}${sort.key === column.key ? ` ${sort.dir}` : ''}`}
+                        aria-pressed={sort.key === column.key}
                         className={`th ${sort.key === column.key ? 'active' : ''}`}
                         onClick={() => onSort(column.key)}
                         type="button"

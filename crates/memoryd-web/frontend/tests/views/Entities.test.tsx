@@ -22,7 +22,7 @@ describe('entities view', () => {
       'confidence',
     ]) {
       expect(
-        screen.getByRole('button', { name: new RegExp(`^sort by ${heading}$`, 'i') }),
+        screen.getByRole('button', { name: new RegExp(`^sort by ${heading}(?: asc| desc)?$`, 'i') }),
       ).toBeInTheDocument();
     }
     expect(screen.getByRole('region', { name: 'Inspector' })).toHaveTextContent('entity');

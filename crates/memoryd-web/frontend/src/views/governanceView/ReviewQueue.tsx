@@ -23,14 +23,6 @@ export function ReviewQueue({ items, selectedId, checked, onSelect, onCheck }: R
                     className={`gov-row list-item ${selectedId === item.id ? 'selected' : ''}`}
                     data-testid="governance-row"
                     onClick={() => onSelect(item.id)}
-                    onKeyDown={(event) => {
-                        if (event.key === 'Enter' || event.key === ' ') {
-                            event.preventDefault();
-                            onSelect(item.id);
-                        }
-                    }}
-                    role="button"
-                    tabIndex={0}
                 >
                     <span
                         className="gov-check"

@@ -260,7 +260,8 @@ async fn index(State(state): State<WebState>) -> impl IntoResponse {
 }
 
 async fn asset(Path(path): Path<String>) -> Response {
-    embedded_response(&path, content_type_for(&path))
+    let embedded_path = format!("assets/{path}");
+    embedded_response(&embedded_path, content_type_for(&embedded_path))
 }
 
 fn embedded_text(path: &str) -> Option<String> {

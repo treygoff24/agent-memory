@@ -1,5 +1,4 @@
 import type { ViewId } from '../views';
-import { views } from '../views';
 import { themes, type Theme } from '../theme';
 
 export interface Command {
@@ -23,8 +22,19 @@ const navigationShortcuts: Record<ViewId, string> = {
     settings: 'gs',
 };
 
+const navigationTargets: Array<{ id: ViewId; label: string }> = [
+    { id: 'inbox', label: 'Inbox' },
+    { id: 'reality', label: 'Reality Check' },
+    { id: 'recall', label: 'Recall' },
+    { id: 'dreams', label: 'Dreams' },
+    { id: 'peers', label: 'Peers' },
+    { id: 'governance', label: 'Governance' },
+    { id: 'entities', label: 'Entities' },
+    { id: 'settings', label: 'Settings' },
+];
+
 export const commands: Command[] = [
-    ...views.map((view) => ({
+    ...navigationTargets.map((view) => ({
         id: `go-${view.id}`,
         label: view.id === 'settings' ? 'Open Settings' : `Go to ${view.label}`,
         category: 'Navigate' as const,
