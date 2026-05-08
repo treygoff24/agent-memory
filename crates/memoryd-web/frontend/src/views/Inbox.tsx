@@ -1,133 +1,134 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { inboxItems, type InboxItem } from '../data/fixtures';
-import { Inspector, type InspectorItem } from '../inspector';
-import { Badge, EmptyState } from '../ui';
+import { filterItems, inboxFilters, inspectorItemFromInbox, toInboxViewItem } from './inboxView/adapter';
+import type { InboxFilterId, InboxLayout, InboxViewItem } from './inboxView';
+import { DrawerLayout, ModalSheetLayout, ThreePaneLayout, TwoPaneLayout } from './inboxView/layouts';
 
-const filters = ['all', 'review', 'recall', 'conflict', 'dream', 'due'] as const;
-type InboxFilter = (typeof filters)[number];
+export { inboxFilters };
 
-function inspectorItemFromInbox(item: InboxItem): InspectorItem {
-    const base = {
-        id: item.id,
-        title: item.title,
-        namespace: item.namespace,
-        body: item.body,
-        confidence: item.confidence,
-        meta: item.meta,
-    };
-    switch (item.kind) {
-        case 'review':
-            return { ...base, kind: 'inbox-review' };
-        case 'recall':
-            return { ...base, kind: 'inbox-recall', memoryId: item.id, summary: item.title };
-        case 'conflict':
-            return {
-                ...base,
-                kind: 'inbox-conflict',
-                diff: {
-                    local: {
-                        device: 'local',
-                        body: item.body,
-                        written: item.meta,
-                        session: 'local',
-                    },
-                    remote: {
-                        device: 'remote',
-                        body: 'Remote side has a competing assertion for this memory.',
-                        written: item.meta,
-                        session: 'remote',
-                    },
-                },
-            };
-        case 'dream':
-            return {
-                ...base,
-                kind: 'inbox-dream',
-                evidence: [
-                    { id: 'mem_20260507_a1b2c3d4e5f60718_000011', title: item.title, score: item.confidence },
-                ],
-            };
-        case 'due':
-            return { ...base, kind: 'inbox-due' };
-    }
+interface InboxProps {
+    layout?: InboxLayout;
+    items?: InboxItem[];
 }
 
-export function Inbox() {
-    const [filter, setFilter] = useState<InboxFilter>('all');
-    const [selectedId, setSelectedId] = useState(inboxItems[0]?.id ?? '');
-    const visible = useMemo(
-        () => (filter === 'all' ? inboxItems : inboxItems.filter((item) => item.kind === filter)),
-        [filter],
-    );
+const layouts = ['two-pane', 'three-pane', 'drawer', 'modal'] as const;
+
+function layoutFromUrl(): InboxLayout {
+    const raw = new URLSearchParams(window.location.search).get('layout');
+    return layouts.find((candidate) => candidate === raw) ?? 'two-pane';
+}
+
+function isTextInputTarget(target: unknown): boolean {
+    if (!(target instanceof HTMLElement)) return false;
+    const tagName = target.tagName.toLowerCase();
+    return tagName === 'input' || tagName === 'textarea' || target.isContentEditable;
+}
+
+function clampIndex(index: number, length: number) {
+    if (length === 0) return 0;
+    return Math.max(0, Math.min(index, length - 1));
+}
+
+function nextFilterForKey(key: string): InboxFilterId | undefined {
+    return inboxFilters.find((filter) => filter.key === key)?.id;
+}
+
+export function Inbox({ layout, items: sourceItems = inboxItems }: InboxProps) {
+    const resolvedLayout = layout ?? layoutFromUrl();
+    const items = useMemo(() => sourceItems.map(toInboxViewItem), [sourceItems]);
+    const [activeFilter, setActiveFilter] = useState<InboxFilterId>('all');
+    const [selectedId, setSelectedId] = useState(items[0]?.id ?? '');
+    const [focusedId, setFocusedId] = useState(items[0]?.id ?? '');
+    const [drawerOpen, setDrawerOpen] = useState(true);
+    const [modalOpen, setModalOpen] = useState(resolvedLayout === 'modal');
+
+    const visible = useMemo(() => filterItems(items, activeFilter), [activeFilter, items]);
     const selected = visible.find((item) => item.id === selectedId) ?? visible[0];
-    return (
-        <>
-            <div className="view-header">
-                <span className="view-title">Inbox</span>
-                <span className="view-subtitle">· {visible.length} items</span>
-                <span className="spacer" />{' '}
-                <div className="pills">
-                    {filters.map((pill) => (
-                        <button
-                            key={pill}
-                            className={`pill ${filter === pill ? 'active' : ''}`}
-                            onClick={() => setFilter(pill)}
-                        >
-                            {pill}
-                            <span className="n">
-                                {pill === 'all'
-                                    ? inboxItems.length
-                                    : inboxItems.filter((item) => item.kind === pill).length}
-                            </span>
-                        </button>
-                    ))}
-                </div>
-            </div>
-            <div className="panes-2">
-                <section className="pane left">
-                    <div className="list">
-                        {visible.map((item) => (
-                            <button
-                                key={item.id}
-                                className={`list-item ${selected?.id === item.id ? 'selected' : ''}`}
-                                onClick={() => setSelectedId(item.id)}
-                            >
-                                <span className={`glyph ${item.kind}`}>◆</span>
-                                <span className="body">
-                                    <span className="title-line">{item.title}</span>
-                                    <span className="sub">
-                                        {item.namespace} · {item.meta}
-                                    </span>
-                                </span>
-                                <Badge
-                                    tone={item.kind === 'conflict' ? 'bad' : item.kind === 'dream' ? 'warn' : 'neutral'}
-                                >
-                                    {item.kind}
-                                </Badge>
-                            </button>
-                        ))}
-                    </div>
-                    {visible.length === 0 && (
-                        <EmptyState
-                            title="Inbox is clear"
-                            body="No matching review items."
-                        />
-                    )}
-                </section>
-                <section className="pane">
-                    <div className="pane-scroll">
-                        {selected ? (
-                            <Inspector item={inspectorItemFromInbox(selected)} />
-                        ) : (
-                            <EmptyState
-                                title="No item selected"
-                                body="Choose a memory to inspect."
-                            />
-                        )}
-                    </div>
-                </section>
-            </div>
-        </>
+
+    useEffect(() => {
+        const firstVisible = visible[0];
+        if (!firstVisible) {
+            setSelectedId('');
+            setFocusedId('');
+            return;
+        }
+        if (!visible.some((item) => item.id === selectedId)) setSelectedId(firstVisible.id);
+        if (!visible.some((item) => item.id === focusedId)) setFocusedId(firstVisible.id);
+    }, [focusedId, selectedId, visible]);
+
+    useEffect(() => {
+        if (resolvedLayout === 'drawer') setDrawerOpen(true);
+        if (resolvedLayout === 'modal') setModalOpen(true);
+    }, [resolvedLayout]);
+
+    const selectRow = useCallback(
+        (id: string) => {
+            setFocusedId(id);
+            setSelectedId(id);
+            if (resolvedLayout === 'drawer') setDrawerOpen(true);
+            if (resolvedLayout === 'modal') setModalOpen(true);
+        },
+        [resolvedLayout],
     );
+
+    const moveFocus = useCallback(
+        (direction: 1 | -1) => {
+            if (visible.length === 0) return;
+            const currentIndex = Math.max(0, visible.findIndex((item) => item.id === focusedId));
+            const next = visible[clampIndex(currentIndex + direction, visible.length)];
+            if (next) setFocusedId(next.id);
+        },
+        [focusedId, visible],
+    );
+
+    useEffect(() => {
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (isTextInputTarget(event.target) || isTextInputTarget(document.activeElement)) return;
+            const filter = nextFilterForKey(event.key);
+            if (filter) {
+                event.preventDefault();
+                setActiveFilter(filter);
+                return;
+            }
+            if (event.key === 'j' || event.key === 'ArrowDown') {
+                event.preventDefault();
+                moveFocus(1);
+                return;
+            }
+            if (event.key === 'k' || event.key === 'ArrowUp') {
+                event.preventDefault();
+                moveFocus(-1);
+                return;
+            }
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                if (focusedId) selectRow(focusedId);
+            }
+        };
+        window.addEventListener('keydown', onKeyDown);
+        return () => window.removeEventListener('keydown', onKeyDown);
+    }, [focusedId, moveFocus, selectRow]);
+
+    const layoutProps = {
+        items,
+        visible,
+        selected: selected as InboxViewItem | undefined,
+        selectedId: selected?.id ?? '',
+        focusedId,
+        activeFilter,
+        drawerOpen,
+        modalOpen,
+        onFilterChange: setActiveFilter,
+        onFocus: setFocusedId,
+        onSelect: selectRow,
+        onCloseDrawer: () => setDrawerOpen(false),
+        onCloseModal: () => setModalOpen(false),
+        toInspectorItem: inspectorItemFromInbox,
+    };
+
+    if (resolvedLayout === 'three-pane') return <ThreePaneLayout {...layoutProps} />;
+    if (resolvedLayout === 'drawer') return <DrawerLayout {...layoutProps} />;
+    if (resolvedLayout === 'modal') return <ModalSheetLayout {...layoutProps} />;
+    return <TwoPaneLayout {...layoutProps} />;
 }

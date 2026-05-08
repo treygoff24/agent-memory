@@ -2413,3 +2413,13 @@ a:hover {
 .badge.warn {
     color: var(--warn);
 }
+
+.panes-single {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+}
+
+.list-item.focused {
+    border-color: var(--border);
+}
