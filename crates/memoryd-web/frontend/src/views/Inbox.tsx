@@ -1,21 +1,58 @@
 import { useMemo, useState } from 'react';
 
 import { inboxItems, type InboxItem } from '../data/fixtures';
-import { Badge, Card, EmptyState } from '../ui';
+import { Inspector, type InspectorItem } from '../inspector';
+import { Badge, EmptyState } from '../ui';
 
 const filters = ['all', 'review', 'recall', 'conflict', 'dream', 'due'] as const;
 type InboxFilter = (typeof filters)[number];
-function ItemInspector({ item }: { item: InboxItem }) {
-    return (
-        <Card title="Inspector">
-            <h2>{item.title}</h2>
-            <p>{item.body}</p>
-            <p className="mono">
-                confidence {item.confidence.toFixed(2)} · {item.namespace}
-            </p>
-        </Card>
-    );
+
+function inspectorItemFromInbox(item: InboxItem): InspectorItem {
+    const base = {
+        id: item.id,
+        title: item.title,
+        namespace: item.namespace,
+        body: item.body,
+        confidence: item.confidence,
+        meta: item.meta,
+    };
+    switch (item.kind) {
+        case 'review':
+            return { ...base, kind: 'inbox-review' };
+        case 'recall':
+            return { ...base, kind: 'inbox-recall', memoryId: item.id, summary: item.title };
+        case 'conflict':
+            return {
+                ...base,
+                kind: 'inbox-conflict',
+                diff: {
+                    local: {
+                        device: 'local',
+                        body: item.body,
+                        written: item.meta,
+                        session: 'local',
+                    },
+                    remote: {
+                        device: 'remote',
+                        body: 'Remote side has a competing assertion for this memory.',
+                        written: item.meta,
+                        session: 'remote',
+                    },
+                },
+            };
+        case 'dream':
+            return {
+                ...base,
+                kind: 'inbox-dream',
+                evidence: [
+                    { id: 'mem_20260507_a1b2c3d4e5f60718_000011', title: item.title, score: item.confidence },
+                ],
+            };
+        case 'due':
+            return { ...base, kind: 'inbox-due' };
+    }
 }
+
 export function Inbox() {
     const [filter, setFilter] = useState<InboxFilter>('all');
     const [selectedId, setSelectedId] = useState(inboxItems[0]?.id ?? '');
@@ -81,7 +118,7 @@ export function Inbox() {
                 <section className="pane">
                     <div className="pane-scroll">
                         {selected ? (
-                            <ItemInspector item={selected} />
+                            <Inspector item={inspectorItemFromInbox(selected)} />
                         ) : (
                             <EmptyState
                                 title="No item selected"
