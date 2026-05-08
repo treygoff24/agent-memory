@@ -1203,6 +1203,11 @@ a:hover {
     font-size: 10.5px;
     color: var(--fg-3);
 }
+.palette-empty {
+    padding: 16px;
+    color: var(--fg-3);
+    font-size: var(--text-sm);
+}
 
 /* Notification dropdown */
 .notif {
@@ -2348,6 +2353,112 @@ a:hover {
     gap: 16px;
     padding: 16px;
     overflow: auto;
+}
+.settings-layout {
+    display: grid;
+    gap: 16px;
+    padding: 16px;
+    overflow: auto;
+}
+.settings-tabs {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    border-bottom: 1px solid var(--border-soft);
+}
+.settings-tab {
+    padding: 8px 12px;
+    color: var(--fg-3);
+    border: 1px solid transparent;
+    border-bottom: 0;
+    border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+}
+.settings-tab:hover {
+    color: var(--fg);
+    background: var(--surface);
+}
+.settings-tab.active {
+    color: var(--fg);
+    background: var(--surface);
+    border-color: var(--border-soft);
+    box-shadow: inset 0 2px 0 var(--accent);
+}
+.settings-panel {
+    min-height: 0;
+}
+.settings-card,
+.settings-dev-panel {
+    max-width: 920px;
+}
+.settings-form-grid {
+    display: grid;
+    gap: 12px;
+    margin-top: 12px;
+}
+.settings-field,
+.settings-check {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 12px;
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-sm);
+    background: var(--surface-2);
+    color: var(--fg-2);
+}
+.settings-field input[type="number"] {
+    width: 80px;
+    text-align: right;
+}
+.settings-check {
+    justify-content: flex-start;
+}
+.settings-range {
+    justify-content: flex-start;
+}
+.settings-range input[type="range"] {
+    flex: 1;
+}
+.theme-editor-preview {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 16px;
+    padding: 16px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+}
+.settings-table {
+    display: grid;
+    gap: 6px;
+    margin-top: 12px;
+}
+.settings-table-row {
+    display: grid;
+    grid-template-columns: minmax(90px, auto) 1fr;
+    gap: 16px;
+    align-items: center;
+    padding: 8px 10px;
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-sm);
+}
+.settings-about {
+    display: grid;
+    gap: 12px;
+    margin: 12px 0 0;
+}
+.settings-about div {
+    display: grid;
+    gap: 2px;
+}
+.settings-about dt {
+    color: var(--fg-3);
+    font-size: var(--text-sm);
+}
+.settings-about dd {
+    margin: 0;
 }
 .theme-grid {
     display: grid;

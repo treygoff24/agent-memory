@@ -1,70 +1,79 @@
-import { themes, useTheme } from '../theme';
+import { useMemo, useState } from 'react';
+
+import { useTheme } from '../theme';
+import { AboutTab } from './settings/AboutTab';
+import { AppearanceTab } from './settings/AppearanceTab';
+import { KeyboardTab } from './settings/KeyboardTab';
+import { NotificationsTab } from './settings/NotificationsTab';
+import { ThemeEditorTab } from './settings/ThemeEditorTab';
+
+const settingsTabs = [
+  { id: 'appearance', label: 'Appearance' },
+  { id: 'theme-editor', label: 'Theme editor' },
+  { id: 'keyboard', label: 'Keyboard' },
+  { id: 'notifications', label: 'Notifications' },
+  { id: 'about', label: 'About' },
+] as const;
+
+type SettingsTabId = (typeof settingsTabs)[number]['id'];
+
+function tabFromSearchParams(): SettingsTabId {
+  const value = new URLSearchParams(window.location.search).get('settingsTab');
+  return settingsTabs.some((tab) => tab.id === value) ? (value as SettingsTabId) : 'appearance';
+}
+
 export function Settings() {
-    const { preferences, setTheme, setDensity, setReducedMotion } = useTheme();
-    return (
-        <>
-            <div className="view-header">
-                <span className="view-title">Settings</span>
-                <span className="view-subtitle">· appearance · keyboard · notifications</span>
+  const { preferences, setTheme, setDensity, setReducedMotion, setFontSize } = useTheme();
+  const tweaksEnabled = new URLSearchParams(window.location.search).get('tweaks') === '1';
+  const [activeTab, setActiveTab] = useState<SettingsTabId>(() => tabFromSearchParams());
+  const panelId = useMemo(() => `settings-panel-${activeTab}`, [activeTab]);
+
+  return (
+    <>
+      <div className="view-header">
+        <span className="view-title">Settings</span>
+        <span className="view-subtitle">· appearance · keyboard · notifications</span>
+      </div>
+      <div className="settings-layout">
+        {tweaksEnabled && (
+          <section className="card settings-dev-panel" aria-label="Dev tweaks">
+            <div className="card-head">
+              <span>Dev tweaks</span>
             </div>
-            <div className="cards-grid">
-                <section className="card">
-                    <div className="card-head">
-                        <span>Appearance</span>
-                    </div>
-                    <div className="theme-grid">
-                        {themes.map((theme) => (
-                            <button
-                                key={theme}
-                                className={`theme-swatch ${preferences.theme === theme ? 'active' : ''}`}
-                                onClick={() => setTheme(theme)}
-                            >
-                                {theme}
-                            </button>
-                        ))}
-                    </div>
-                    <div className="action-bar">
-                        <button
-                            className="btn"
-                            onClick={() => setDensity('comfortable')}
-                        >
-                            comfortable
-                        </button>
-                        <button
-                            className="btn"
-                            onClick={() => setDensity('compact')}
-                        >
-                            compact
-                        </button>
-                        <button
-                            className="btn"
-                            onClick={() => setReducedMotion('os')}
-                        >
-                            motion: OS
-                        </button>
-                        <button
-                            className="btn"
-                            onClick={() => setReducedMotion('on')}
-                        >
-                            motion off
-                        </button>
-                    </div>
-                </section>
-                <section className="card">
-                    <div className="card-head">
-                        <span>Keyboard</span>
-                    </div>
-                    <p>
-                        <kbd>:</kbd> command palette · <kbd>?</kbd> help · <kbd>g</kbd> then view key to navigate
-                    </p>
-                </section>
-                <section className="card">
-                    <div className="card-head">
-                        <span>About</span>
-                    </div>
-                    <p>Memorum Dashboard · React/Vite build embedded into memoryd-web.</p>
-                </section>
-            </div>
-        </>
-    );
+            <p className="muted">Experimental dashboard controls are enabled by ?tweaks=1.</p>
+          </section>
+        )}
+        <div className="settings-tabs" role="tablist" aria-label="Settings sections">
+          {settingsTabs.map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              role="tab"
+              aria-selected={activeTab === tab.id}
+              aria-controls={activeTab === tab.id ? panelId : undefined}
+              className={`settings-tab ${activeTab === tab.id ? 'active' : ''}`}
+              onClick={() => setActiveTab(tab.id)}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+        <div id={panelId} role="tabpanel" className="settings-panel">
+          {activeTab === 'appearance' && (
+            <AppearanceTab
+              preferences={preferences}
+              setTheme={setTheme}
+              setDensity={setDensity}
+              setReducedMotion={setReducedMotion}
+              setFontSize={setFontSize}
+            />
+          )}
+          {activeTab === 'theme-editor' && <ThemeEditorTab />}
+          {activeTab === 'keyboard' && <KeyboardTab />}
+          {activeTab === 'notifications' && <NotificationsTab />}
+          {activeTab === 'about' && <AboutTab />}
+        </div>
+      </div>
+    </>
+  );
 }

@@ -8,6 +8,7 @@ interface ThemeContextValue {
     setTheme(theme: Theme): void;
     setDensity(density: Density): void;
     setReducedMotion(reducedMotion: ReducedMotion): void;
+    setFontSize(fontSize: number): void;
 }
 
 const ThemeContext = createContext<ThemeContextValue | null>(null);
@@ -23,6 +24,7 @@ function queryPreference<K extends keyof ThemePreferences>(
 
 function initialPreferences(): ThemePreferences {
     const stored = loadPreferences();
+    const queryFontSize = Number(new URLSearchParams(window.location.search).get('fontSize'));
     return {
         theme:
             queryPreference('theme', [
@@ -35,6 +37,9 @@ function initialPreferences(): ThemePreferences {
             ]) ?? stored.theme,
         density: queryPreference('density', ['comfortable', 'compact']) ?? stored.density,
         reducedMotion: queryPreference('reducedMotion', ['os', 'on', 'off']) ?? stored.reducedMotion,
+        fontSize: Number.isFinite(queryFontSize)
+            ? Math.min(18, Math.max(12, queryFontSize))
+            : stored.fontSize,
     };
 }
 
@@ -49,6 +54,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         root.dataset.theme = preferences.theme;
         root.dataset.density = preferences.density;
         root.dataset.reducedMotion = resolveReducedMotion(preferences.reducedMotion) ? 'on' : 'off';
+        root.style.setProperty('--text-base', `${preferences.fontSize}px`);
         savePreferences(preferences);
     }, [preferences]);
 
@@ -69,6 +75,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
             setTheme: (theme) => setPreferences((current) => ({ ...current, theme })),
             setDensity: (density) => setPreferences((current) => ({ ...current, density })),
             setReducedMotion: (reducedMotion) => setPreferences((current) => ({ ...current, reducedMotion })),
+            setFontSize: (fontSize) =>
+                setPreferences((current) => ({
+                    ...current,
+                    fontSize: Math.min(18, Math.max(12, fontSize)),
+                })),
         }),
         [preferences],
     );

@@ -15,6 +15,13 @@ function readToken<T extends string>(key: string, allowed: readonly T[], fallbac
     return allowed.includes(value as T) ? (value as T) : fallback;
 }
 
+function readNumber(key: string, fallback: number, min: number, max: number): number {
+    if (typeof localStorage.getItem !== 'function') return fallback;
+    const value = Number(localStorage.getItem(key));
+    if (!Number.isFinite(value)) return fallback;
+    return Math.min(max, Math.max(min, value));
+}
+
 export function loadPreferences(): ThemePreferences {
     return {
         theme: readToken<Theme>('memorum.theme', themes, defaultThemePreferences.theme),
@@ -24,6 +31,7 @@ export function loadPreferences(): ThemePreferences {
             reducedMotionModes,
             defaultThemePreferences.reducedMotion,
         ),
+        fontSize: readNumber('memorum.fontSize', defaultThemePreferences.fontSize, 12, 18),
     };
 }
 
@@ -32,6 +40,7 @@ export function savePreferences(preferences: ThemePreferences): void {
     localStorage.setItem('memorum.theme', preferences.theme);
     localStorage.setItem('memorum.density', preferences.density);
     localStorage.setItem('memorum.reducedMotion', preferences.reducedMotion);
+    localStorage.setItem('memorum.fontSize', String(preferences.fontSize));
 }
 
 export function resolveReducedMotion(setting: ReducedMotion): boolean {

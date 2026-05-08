@@ -8,9 +8,11 @@ export interface ThemePreferences {
     theme: Theme;
     density: Density;
     reducedMotion: ReducedMotion;
+    fontSize: number;
 }
 export const defaultThemePreferences: ThemePreferences = {
     theme: 'warm-dark',
     density: 'comfortable',
     reducedMotion: 'os',
+    fontSize: 14,
 };

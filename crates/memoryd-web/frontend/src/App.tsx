@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { createDashboardQueryClient, startNotificationsStream, useNotifications } from './api';
 import { HelpOverlay } from './help/HelpOverlay';
+import { navigationCommands } from './keyboard/Keymap';
 import { useKeymap } from './keyboard/useKeymap';
 import { CommandPalette, type Command } from './palette';
 import { Shell } from './shell';
@@ -12,10 +13,14 @@ import { viewFor, type ViewId } from './views';
 
 const queryClient = createDashboardQueryClient();
 
+function initialDashboardView(): ViewId {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('tweaks') === '1') return 'settings';
+  return viewFor((params.get('view') as ViewId | null) ?? 'inbox').id;
+}
+
 function DashboardApp() {
-  const initialView =
-    (new URLSearchParams(window.location.search).get('view') as ViewId | null) ?? 'inbox';
-  const [view, setView] = useState<ViewId>(() => viewFor(initialView).id);
+  const [view, setView] = useState<ViewId>(() => initialDashboardView());
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [bellOpen, setBellOpen] = useState(false);
@@ -29,8 +34,12 @@ function DashboardApp() {
   const runCommand = useCallback(
     (command: Command) => {
       if (command.view) setView(command.view);
-      if (command.id === 'theme-warm-dark') setTheme('warm-dark');
+      if (command.theme) setTheme(command.theme);
       if (command.id === 'help') setHelpOpen(true);
+      if (command.id === 'close-modals') {
+        setHelpOpen(false);
+        setBellOpen(false);
+      }
       setPaletteOpen(false);
     },
     [setTheme],
@@ -40,6 +49,8 @@ function DashboardApp() {
     useCallback((key: string) => {
       if (key === ':') setPaletteOpen(true);
       if (key === '?') setHelpOpen(true);
+      const navigationCommand = navigationCommands.find((command) => command.key === key);
+      if (navigationCommand?.view) setView(navigationCommand.view);
       if (key === 'Escape') {
         setPaletteOpen(false);
         setHelpOpen(false);
@@ -80,7 +91,12 @@ function DashboardApp() {
           )}
         </div>
       )}
-      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} onRun={runCommand} />
+      <CommandPalette
+        open={paletteOpen}
+        activeView={view}
+        onClose={() => setPaletteOpen(false)}
+        onRun={runCommand}
+      />
       <HelpOverlay open={helpOpen} onClose={() => setHelpOpen(false)} />
       {toast && (
         <div className="toast-stack">
