@@ -409,15 +409,11 @@ fn is_valid_path_segment(seg: &str) -> bool {
         return true;
     }
     // Date-prefixed slug: `YYYY-MM-DD-<slug>`.
-    if let Some(rest) = seg.strip_prefix(|c: char| c.is_ascii_digit()) {
-        // Full check: must start with valid date then `-` then slug.
-        if seg.len() > 10 && ISO_DATE_REGEX.is_match(&seg[..10]) && seg.as_bytes().get(10) == Some(&b'-') {
-            let slug_part = &seg[11..];
-            if !slug_part.is_empty() && SLUG_REGEX.is_match(slug_part) {
-                return true;
-            }
+    if seg.len() > 11 && ISO_DATE_REGEX.is_match(&seg[..10]) && seg.as_bytes().get(10) == Some(&b'-') {
+        let slug_part = &seg[11..];
+        if SLUG_REGEX.is_match(slug_part) {
+            return true;
         }
-        let _ = rest;
     }
     false
 }

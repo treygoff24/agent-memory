@@ -81,14 +81,7 @@ static LABEL_RULES: Lazy<Vec<Rule>> = Lazy::new(|| {
 
 /// Deterministic regex privacy spans.
 pub fn regex_spans(text: &str) -> Vec<PrivacySpan> {
-    let mut spans = Vec::new();
-    for rule in SECRET_RULES.iter().chain(LABEL_RULES.iter()) {
-        spans.extend(
-            rule.regex
-                .find_iter(text)
-                .map(|matched| PrivacySpan::new(rule.label, matched.start(), matched.end(), rule.confidence)),
-        );
-    }
+    let mut spans = rule_spans(SECRET_RULES.iter().chain(LABEL_RULES.iter()), text);
     spans.extend(credit_card_spans(text));
     spans.sort_by_key(|span| (span.start, span.end));
     spans
@@ -96,14 +89,7 @@ pub fn regex_spans(text: &str) -> Vec<PrivacySpan> {
 
 /// Regex spans that imply secret/refuse handling.
 pub fn secret_regex_spans(text: &str) -> Vec<PrivacySpan> {
-    let mut spans = Vec::new();
-    for rule in SECRET_RULES.iter() {
-        spans.extend(
-            rule.regex
-                .find_iter(text)
-                .map(|matched| PrivacySpan::new(rule.label, matched.start(), matched.end(), rule.confidence)),
-        );
-    }
+    let mut spans = rule_spans(SECRET_RULES.iter(), text);
     spans.extend(credit_card_spans(text));
     spans.sort_by_key(|span| (span.start, span.end));
     spans
@@ -111,16 +97,19 @@ pub fn secret_regex_spans(text: &str) -> Vec<PrivacySpan> {
 
 /// Regex spans used only by the full classifier.
 pub fn label_regex_spans(text: &str) -> Vec<PrivacySpan> {
-    let mut spans = Vec::new();
-    for rule in LABEL_RULES.iter() {
-        spans.extend(
-            rule.regex
-                .find_iter(text)
-                .map(|matched| PrivacySpan::new(rule.label, matched.start(), matched.end(), rule.confidence)),
-        );
-    }
+    let mut spans = rule_spans(LABEL_RULES.iter(), text);
     spans.sort_by_key(|span| (span.start, span.end));
     spans
+}
+
+fn rule_spans<'a>(rules: impl Iterator<Item = &'a Rule>, text: &str) -> Vec<PrivacySpan> {
+    rules
+        .flat_map(|rule| {
+            rule.regex
+                .find_iter(text)
+                .map(|matched| PrivacySpan::new(rule.label, matched.start(), matched.end(), rule.confidence))
+        })
+        .collect()
 }
 
 #[allow(clippy::expect_used)]
@@ -130,24 +119,24 @@ static CARD_CANDIDATE: Lazy<Regex> =
 fn credit_card_spans(text: &str) -> Vec<PrivacySpan> {
     CARD_CANDIDATE
         .find_iter(text)
-        .filter_map(|matched| {
-            let digits = matched.as_str().chars().filter(|ch| ch.is_ascii_digit()).collect::<String>();
-            luhn_valid(&digits).then(|| PrivacySpan::new(PrivacyLabel::Secret, matched.start(), matched.end(), 0.99))
-        })
+        .filter(|matched| luhn_valid_candidate(matched.as_str()))
+        .map(|matched| PrivacySpan::new(PrivacyLabel::Secret, matched.start(), matched.end(), 0.99))
         .collect()
 }
 
-fn luhn_valid(digits: &str) -> bool {
-    if !(13..=19).contains(&digits.len()) {
-        return false;
-    }
+fn luhn_valid_candidate(candidate: &str) -> bool {
     let mut sum = 0_u32;
     let mut double = false;
-    for digit in digits.bytes().rev() {
-        if !digit.is_ascii_digit() {
+    let mut digits = 0_usize;
+    for byte in candidate.bytes().rev() {
+        if !byte.is_ascii_digit() {
+            if matches!(byte, b' ' | b'-') {
+                continue;
+            }
             return false;
         }
-        let mut value = u32::from(digit - b'0');
+        digits += 1;
+        let mut value = u32::from(byte - b'0');
         if double {
             value *= 2;
             if value > 9 {
@@ -157,5 +146,5 @@ fn luhn_valid(digits: &str) -> bool {
         sum += value;
         double = !double;
     }
-    sum % 10 == 0
+    (13..=19).contains(&digits) && sum % 10 == 0
 }

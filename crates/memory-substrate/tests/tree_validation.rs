@@ -71,6 +71,30 @@ fn case_only_path_collision_fixture_fails_validation() {
 }
 
 #[test]
+fn date_prefixed_slug_memory_path_validates() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    bootstrap_repo_tree(temp.path()).expect("tree");
+    std::fs::create_dir_all(temp.path().join("agent/patterns")).expect("dirs");
+    std::fs::write(temp.path().join("agent/patterns/2026-04-24-launch-note.md"), doc("dated path"))
+        .expect("write dated path");
+
+    validate_tree(temp.path(), TreeValidationMode::FullySynced).expect("date-prefixed slug path validates");
+}
+
+#[test]
+fn date_prefixed_slug_memory_path_rejects_bad_slug() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    bootstrap_repo_tree(temp.path()).expect("tree");
+    std::fs::create_dir_all(temp.path().join("agent/patterns")).expect("dirs");
+    std::fs::write(temp.path().join("agent/patterns/2026-04-24-Launch.md"), doc("bad dated path"))
+        .expect("write bad dated path");
+
+    let err = validate_tree(temp.path(), TreeValidationMode::FullySynced).expect_err("bad date-prefixed slug");
+
+    assert!(err.to_string().contains("does not match slug or date rules"), "{err}");
+}
+
+#[test]
 fn supersession_cycle_fails_cross_file_validation() {
     let temp = tempfile::tempdir().expect("tempdir");
     bootstrap_repo_tree(temp.path()).expect("tree");

@@ -24,6 +24,7 @@ const SENSITIVE_URL_KEYS: &[&str] = &[
     "sig",
     "token",
 ];
+const MAX_REDIRECT_HOPS: usize = 5;
 
 pub type ResolveFuture<'a> = Pin<Box<dyn Future<Output = SourceResult<Vec<SocketAddr>>> + Send + 'a>>;
 
@@ -98,8 +99,8 @@ pub async fn validate_redirect_url(
     policy: AddressPolicy,
     redirect_chain: &[RedirectHop],
 ) -> SourceResult<ValidatedHop> {
-    if redirect_chain.len() >= 5 {
-        return Err(SourceError::url_safety("redirect chain exceeded 5 hops"));
+    if redirect_chain.len() > MAX_REDIRECT_HOPS {
+        return Err(SourceError::url_safety(format!("redirect chain exceeded {MAX_REDIRECT_HOPS} hops")));
     }
     let url = current.join(location).map_err(|err| SourceError::url_safety(format!("invalid redirect URL: {err}")))?;
     validate_url(url, resolver, policy).await
@@ -145,19 +146,30 @@ pub fn redact_sensitive_location_header(raw: &str, base: &Url) -> String {
         return raw.to_string();
     };
     let redacted = redact_sensitive_url(&joined);
-    if raw.starts_with('/') {
-        let mut relative = redacted.path().to_string();
-        if let Some(query) = redacted.query() {
-            relative.push('?');
-            relative.push_str(query);
-        }
-        if let Some(fragment) = redacted.fragment() {
-            relative.push('#');
-            relative.push_str(fragment);
-        }
-        return relative;
+    if raw.starts_with('/') && !raw.starts_with("//") {
+        return location_with_suffix(redacted.path(), redacted.query(), redacted.fragment());
+    }
+    if !raw.starts_with("//") {
+        return location_with_suffix(relative_location_path(raw), redacted.query(), redacted.fragment());
     }
     redacted.to_string()
+}
+
+fn location_with_suffix(path: &str, query: Option<&str>, fragment: Option<&str>) -> String {
+    let mut location = path.to_string();
+    if let Some(query) = query {
+        location.push('?');
+        location.push_str(query);
+    }
+    if let Some(fragment) = fragment {
+        location.push('#');
+        location.push_str(fragment);
+    }
+    location
+}
+
+fn relative_location_path(raw: &str) -> &str {
+    raw.find(['?', '#']).map_or(raw, |suffix_start| &raw[..suffix_start])
 }
 
 async fn validate_url(url: Url, resolver: &dyn DnsResolver, policy: AddressPolicy) -> SourceResult<ValidatedHop> {

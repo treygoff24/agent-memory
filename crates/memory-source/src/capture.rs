@@ -53,6 +53,7 @@ pub async fn capture_web_source_with_resolver(
     }
     let store = ArtifactStore::new(repo_root);
     let mut hop = validate_initial_url(&request.url, resolver, policy).await?;
+    let request_snapshot = CaptureRequestSnapshot::default();
     let original_url = redact_sensitive_url(&hop.url).to_string();
     let mut redirect_chain = Vec::new();
     let final_response;
@@ -61,8 +62,8 @@ pub async fn capture_web_source_with_resolver(
         let client = pinned_reqwest_client(&hop)?;
         let response = client
             .get(hop.url.clone())
-            .header(USER_AGENT, CaptureRequestSnapshot::default().user_agent)
-            .header(ACCEPT, CaptureRequestSnapshot::default().accept)
+            .header(USER_AGENT, request_snapshot.user_agent.as_str())
+            .header(ACCEPT, request_snapshot.accept.as_str())
             .send()
             .await
             .map_err(|err| SourceError::CaptureFailed(format!("HTTP request failed: {err}")))?;
@@ -151,7 +152,7 @@ pub async fn capture_web_source_with_resolver(
         redirect_chain,
         captured_at,
         capture_method: CaptureMethod::HttpStaticV1,
-        request: CaptureRequestSnapshot::default(),
+        request: request_snapshot,
         response,
         raw_sha256: Some(sha256_prefixed(&raw_bytes)),
         raw_zstd_sha256,

@@ -1,6 +1,10 @@
 use std::net::SocketAddr;
 
-use memory_source::url_safety::{validate_initial_url, AddressPolicy, StaticDnsResolver};
+use memory_source::url_safety::{
+    redact_sensitive_location_header, validate_initial_url, validate_redirect_url, AddressPolicy, StaticDnsResolver,
+};
+use memory_source::RedirectHop;
+use url::Url;
 
 #[tokio::test]
 async fn rejects_unsafe_schemes_hosts_credentials_and_addresses() {
@@ -33,4 +37,46 @@ async fn allows_public_when_all_resolved_addresses_are_public() {
     assert!(validate_initial_url("https://example.com/path", &resolver, AddressPolicy::PublicOnly).await.is_ok());
     let mixed = StaticDnsResolver::new(vec!["93.184.216.34:443".parse().unwrap(), "10.0.0.1:443".parse().unwrap()]);
     assert!(validate_initial_url("https://example.com/path", &mixed, AddressPolicy::PublicOnly).await.is_err());
+}
+
+#[tokio::test]
+async fn redirect_validation_allows_exactly_five_hops() {
+    let resolver = StaticDnsResolver::new(vec!["93.184.216.34:443".parse().unwrap()]);
+    let current = Url::parse("https://example.com/four").unwrap();
+    let five_hop_chain = redirect_chain(5);
+
+    validate_redirect_url(&current, "/final", &resolver, AddressPolicy::PublicOnly, &five_hop_chain)
+        .await
+        .expect("the fifth redirect hop is within the documented limit");
+
+    let err = validate_redirect_url(&current, "/too-far", &resolver, AddressPolicy::PublicOnly, &redirect_chain(6))
+        .await
+        .expect_err("the sixth redirect hop exceeds the documented limit");
+
+    assert!(err.to_string().contains("redirect chain exceeded 5 hops"), "{err}");
+}
+
+#[test]
+fn redacts_sensitive_relative_location_without_forcing_absolute_url() {
+    let base = Url::parse("https://example.com/start/page").unwrap();
+
+    assert_eq!(redact_sensitive_location_header("next?token=secret&keep=yes#session=secret", &base), "next?keep=yes");
+    assert_eq!(
+        redact_sensitive_location_header("../final?api_key=secret&keep=yes#section", &base),
+        "../final?keep=yes#section"
+    );
+    assert_eq!(
+        redact_sensitive_location_header("//cdn.example.com/final?token=secret&keep=yes", &base),
+        "https://cdn.example.com/final?keep=yes"
+    );
+}
+
+fn redirect_chain(len: usize) -> Vec<RedirectHop> {
+    (0..len)
+        .map(|index| RedirectHop {
+            url: format!("https://example.com/{index}"),
+            status: 302,
+            location: format!("/{index}"),
+        })
+        .collect()
 }

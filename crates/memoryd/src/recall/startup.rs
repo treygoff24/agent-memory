@@ -233,8 +233,14 @@ async fn startup_peer_updates(
         .partition(|row| row.source_device.as_deref().is_none_or(|device_id| device_id == local_device_id));
 
     let now = Utc::now();
-    let same_device =
-        same_device_updates(substrate, session_binding, &same_device_rows, now, config, &startup_context).await;
+    let evaluation = PeerUpdateEvaluation {
+        substrate,
+        session_binding,
+        now,
+        base_config: config,
+        startup_context: &startup_context,
+    };
+    let same_device = same_device_updates(&evaluation, &same_device_rows).await;
 
     // I-R5: share the cool-down set across both passes. Peer-write ids surfaced
     // in the same-device pass must not be surfaced again in the cross-device
@@ -243,16 +249,7 @@ async fn startup_peer_updates(
     // startup_context clone used by the cross-device pass with them, so the
     // relevance gate's cool-down check suppresses duplicates.
     let same_device_surfaced = surfaced_peer_update_references(same_device.as_ref());
-    let cross_device = cross_device_updates(
-        substrate,
-        session_binding,
-        &cross_device_rows,
-        now,
-        config,
-        &startup_context,
-        same_device_surfaced,
-    )
-    .await;
+    let cross_device = cross_device_updates(&evaluation, &cross_device_rows, same_device_surfaced).await;
 
     Ok(StartupPeerUpdates { same_device, cross_device })
 }
@@ -308,33 +305,31 @@ fn row_is_in_startup_scope(row: &RecallIndexRow, session_binding: &SessionBindin
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn same_device_updates(
-    substrate: &Substrate,
-    session_binding: &SessionBinding,
-    rows: &[RecallIndexRow],
+struct PeerUpdateEvaluation<'a> {
+    substrate: &'a Substrate,
+    session_binding: &'a SessionBinding,
     now: DateTime<Utc>,
-    base_config: &CoordinationConfig,
-    startup_context: &SessionContext,
+    base_config: &'a CoordinationConfig,
+    startup_context: &'a SessionContext,
+}
+
+async fn same_device_updates(
+    evaluation: &PeerUpdateEvaluation<'_>,
+    rows: &[RecallIndexRow],
 ) -> Option<CoordinationInsertion> {
-    let mut config = base_config.clone();
+    let mut config = evaluation.base_config.clone();
     config.relevance_gate.per_turn_cap = STARTUP_PEER_UPDATE_CAP;
-    let recency_cutoff = recency_cutoff(now, config.relevance_gate.recency_window_seconds);
+    let recency_cutoff = recency_cutoff(evaluation.now, config.relevance_gate.recency_window_seconds);
     let rows = rows.iter().filter(|row| row.indexed_at >= recency_cutoff).cloned().collect::<Vec<_>>();
-    let mut session = startup_context.clone();
-    let candidates = peer_write_candidates(substrate, session_binding, &rows).await;
-    let insertion = RelevanceGate::new(config).evaluate(&mut session, &candidates, now);
+    let mut session = evaluation.startup_context.clone();
+    let candidates = peer_write_candidates(evaluation.substrate, evaluation.session_binding, &rows).await;
+    let insertion = RelevanceGate::new(config).evaluate(&mut session, &candidates, evaluation.now);
     non_empty_insertion(insertion)
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn cross_device_updates(
-    substrate: &Substrate,
-    session_binding: &SessionBinding,
+    evaluation: &PeerUpdateEvaluation<'_>,
     rows: &[RecallIndexRow],
-    now: DateTime<Utc>,
-    base_config: &CoordinationConfig,
-    startup_context: &SessionContext,
     // I-R5: peer-write ids already surfaced in the same-device pass. These are
     // pre-seeded into the session clone's `surfaced_peer_writes` set so the
     // relevance gate's cool-down check suppresses any id that already appeared
@@ -345,20 +340,20 @@ async fn cross_device_updates(
         return None;
     }
 
-    let mut config = base_config.clone();
+    let mut config = evaluation.base_config.clone();
     config.relevance_gate.threshold = config.relevance_gate.cross_device_startup_threshold;
     config.relevance_gate.recency_window_seconds = config.relevance_gate.cross_device_startup_window_seconds;
     config.relevance_gate.per_turn_cap = STARTUP_PEER_UPDATE_CAP;
 
-    let recency_cutoff = recency_cutoff(now, config.relevance_gate.recency_window_seconds);
+    let recency_cutoff = recency_cutoff(evaluation.now, config.relevance_gate.recency_window_seconds);
     let rows = rows.iter().filter(|row| row.indexed_at >= recency_cutoff).cloned().collect::<Vec<_>>();
-    let mut session = startup_context.clone();
+    let mut session = evaluation.startup_context.clone();
     // Seed the cool-down set with ids surfaced in the same-device pass.
     for id in already_surfaced {
         session.record_surfaced_peer_write(id);
     }
-    let candidates = peer_write_candidates(substrate, session_binding, &rows).await;
-    let insertion = RelevanceGate::new(config).evaluate(&mut session, &candidates, now);
+    let candidates = peer_write_candidates(evaluation.substrate, evaluation.session_binding, &rows).await;
+    let insertion = RelevanceGate::new(config).evaluate(&mut session, &candidates, evaluation.now);
     let mut peer_updates = insertion.peer_updates;
     if peer_updates.is_empty() {
         return None;
