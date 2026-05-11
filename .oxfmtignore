@@ -1,2 +1,4 @@
 docs/reviews/stream-c-*.md
 docs/reference/*.md
+target/
+**/target/
