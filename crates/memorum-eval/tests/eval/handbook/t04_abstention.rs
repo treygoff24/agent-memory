@@ -3,11 +3,14 @@ use memorum_eval::daemon_scaffold::DaemonScaffold;
 use memorum_eval::simulator::{SimulatorAction, SimulatorAgent, SimulatorConfig};
 use memorum_eval::{eval_assert, eval_assert_eq, eval_flush_assertion_count};
 
+use serial_test::serial;
+
 use crate::support::{assert_success_response, search_total, write_project_file, DEFAULT_PROJECT_ID};
 
 const NOVEL_TOPIC: &str = "EVAL_NOVEL_TOPIC_ZK8T";
 
 #[tokio::test]
+#[serial]
 async fn novel_topic_search_and_startup_abstain_without_error() {
     let scaffold = DaemonScaffold::fresh().await;
     let project_cwd = scaffold.tree_dir().join("proj-alpha");

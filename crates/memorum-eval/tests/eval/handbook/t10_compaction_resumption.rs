@@ -5,11 +5,14 @@ use memorum_eval::daemon_scaffold::DaemonScaffold;
 use memorum_eval::simulator::{SimulatorAction, SimulatorAgent, SimulatorConfig};
 use memorum_eval::{eval_assert, eval_flush_assertion_count};
 
+use serial_test::serial;
+
 use crate::support::{
     memory_file_body, promoted_project_meta, search_hits, write_id, write_project_file, DEFAULT_PROJECT_ID,
 };
 
 #[tokio::test]
+#[serial]
 async fn simulated_compaction_resumption_preserves_active_working_state_without_duplicates() {
     let scaffold = DaemonScaffold::fresh().await;
     let project_cwd = scaffold.tree_dir().join("proj-alpha");

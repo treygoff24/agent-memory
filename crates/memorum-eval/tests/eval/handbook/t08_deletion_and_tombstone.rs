@@ -6,6 +6,8 @@ use memorum_eval::simulator::{SimulatorAction, SimulatorAgent, SimulatorConfig};
 use memorum_eval::{eval_assert, eval_assert_eq, eval_flush_assertion_count};
 use serde_json::Value;
 
+use serial_test::serial;
+
 use crate::support::{
     governed_meta_json, memory_file_body, payload, promoted_meta, search_total, write_id, write_project_file,
     GovernedMetaJson, DEFAULT_PROJECT_ID,
@@ -14,6 +16,7 @@ use crate::support::{
 const FORGOTTEN_BODY: &str = "The fallback queue uses Redis 6. Entity ent_fallback_queue.";
 
 #[tokio::test]
+#[serial]
 async fn forgotten_agent_memory_is_tombstoned_hidden_and_blocks_reinsertion() {
     let scaffold = DaemonScaffold::fresh().await;
     let project_cwd = scaffold.tree_dir().join("proj-alpha");

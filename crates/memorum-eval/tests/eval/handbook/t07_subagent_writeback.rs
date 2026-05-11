@@ -3,12 +3,15 @@ use memorum_eval::simulator::{SimulatorAction, SimulatorAgent, SimulatorConfig};
 use memorum_eval::{eval_assert, eval_assert_eq, eval_flush_assertion_count};
 use serde_json::Value;
 
+use serial_test::serial;
+
 use crate::support::{governed_meta_json, payload, write_project_file, GovernedMetaJson, DEFAULT_PROJECT_ID};
 
 const DISCOVERY: &str =
     "The auth service requires PKCE for public clients. Discovered during OAuth flow investigation.";
 
 #[tokio::test]
+#[serial]
 async fn subagent_writeback_requires_a_spawn_registry_before_parent_recall() {
     let scaffold = DaemonScaffold::fresh().await;
     let project_cwd = scaffold.tree_dir().join("proj-alpha");

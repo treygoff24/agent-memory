@@ -3,9 +3,12 @@ use memorum_eval::daemon_scaffold::DaemonScaffold;
 use memorum_eval::simulator::{SimulatorAction, SimulatorAgent, SimulatorConfig};
 use memorum_eval::{eval_assert, eval_flush_assertion_count};
 
+use serial_test::serial;
+
 use crate::support::{promoted_project_meta, write_id, write_project_file, DEFAULT_PROJECT_ID};
 
 #[tokio::test]
+#[serial]
 async fn project_binding_filters_project_memory_from_other_project_recall() {
     let scaffold = DaemonScaffold::fresh().await;
     let alpha_cwd = scaffold.tree_dir().join("proj-alpha");

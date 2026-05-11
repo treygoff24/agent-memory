@@ -4,6 +4,8 @@ use memorum_eval::simulator::{GovernanceMeta, SimulatorAction, SimulatorAgent, S
 use memorum_eval::{eval_assert, eval_assert_eq, eval_flush_assertion_count};
 use serde_json::Value;
 
+use serial_test::serial;
+
 use crate::support::{
     governed_meta_json, payload, search_hits, supersede_new_id, write_id, write_project_file, GovernedMetaJson,
     DEFAULT_PROJECT_ID,
@@ -13,6 +15,7 @@ const WRONG_CLAIM: &str = "The authentication flow uses RS256 JWT tokens.";
 const CORRECT_CLAIM: &str = "The authentication flow uses ES256 JWT tokens.";
 
 #[tokio::test]
+#[serial]
 async fn self_poisoned_candidate_cannot_ground_its_own_confidence_escalation() {
     let scaffold = DaemonScaffold::fresh().await;
     let project_cwd = scaffold.tree_dir().join("proj-alpha");

@@ -35,3 +35,6 @@ crates/memoryd-web/frontend/playwright-report/
 crates/memoryd-web/frontend/test-results/
 crates/memoryd-web/frontend/.vite/
 crates/memoryd-web/frontend/tsconfig.tsbuildinfo
+
+# Claude Code harness runtime state
+.claude/scheduled_tasks.lock

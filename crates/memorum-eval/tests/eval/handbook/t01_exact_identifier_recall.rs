@@ -3,6 +3,8 @@ use memorum_eval::daemon_scaffold::DaemonScaffold;
 use memorum_eval::simulator::{SimulatorAction, SimulatorAgent, SimulatorConfig};
 use memorum_eval::{eval_assert, eval_assert_eq, eval_flush_assertion_count};
 
+use serial_test::serial;
+
 use crate::support::{
     promoted_project_meta, search_hits, startup_invoked_total, write_id, write_project_file, DEFAULT_PROJECT_ID,
 };
@@ -10,6 +12,7 @@ use crate::support::{
 const SENTINEL: &str = "EVAL_SENTINEL_XF7Q9";
 
 #[tokio::test]
+#[serial]
 async fn exact_identifier_survives_startup_recall_and_search() {
     let scaffold = DaemonScaffold::fresh().await;
     let project_cwd = scaffold.tree_dir().join("proj-alpha");

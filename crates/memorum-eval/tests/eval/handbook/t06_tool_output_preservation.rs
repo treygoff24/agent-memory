@@ -3,6 +3,8 @@ use memorum_eval::daemon_scaffold::DaemonScaffold;
 use memorum_eval::simulator::{SimulatorAction, SimulatorAgent, SimulatorConfig};
 use memorum_eval::{eval_assert, eval_assert_eq, eval_flush_assertion_count};
 
+use serial_test::serial;
+
 use crate::support::{
     memory_file_body, promoted_project_meta, search_hits, write_id, write_project_file, DEFAULT_PROJECT_ID,
 };
@@ -10,6 +12,7 @@ use crate::support::{
 const ARTIFACT_HANDLE: &str = "artifact://session_abc/migration-dry-run-2026-05-01.log";
 
 #[tokio::test]
+#[serial]
 async fn artifact_memory_preserves_tool_output_handle_through_recall_search_and_get() {
     let scaffold = DaemonScaffold::fresh().await;
     let project_cwd = scaffold.tree_dir().join("proj-alpha");

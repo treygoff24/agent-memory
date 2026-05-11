@@ -4,11 +4,14 @@ use memorum_eval::simulator::{SimulatorAction, SimulatorAgent, SimulatorConfig};
 use memorum_eval::{eval_assert, eval_assert_eq, eval_flush_assertion_count};
 use serde_json::{json, Value};
 
+use serial_test::serial;
+
 use crate::support::{grounding_source_ref, promoted_project_meta, write_id, write_project_file, DEFAULT_PROJECT_ID};
 
 const FRESH: &str = "The production database is PostgreSQL 16.";
 
 #[tokio::test]
+#[serial]
 async fn temporal_validity_fields_are_not_silently_ignored_and_fresh_memory_is_currently_recalled() {
     let scaffold = DaemonScaffold::fresh().await;
     let project_cwd = scaffold.tree_dir().join("proj-alpha");

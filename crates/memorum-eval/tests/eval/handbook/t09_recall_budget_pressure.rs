@@ -4,6 +4,8 @@ use memorum_eval::simulator::{SimulatorAction, SimulatorAgent, SimulatorConfig};
 use memorum_eval::{eval_assert, eval_assert_eq, eval_flush_assertion_count};
 use serde_json::Value;
 
+use serial_test::serial;
+
 use crate::support::{
     payload, promoted_project_meta, write_id_or_materialized_file, write_project_file, DEFAULT_PROJECT_ID,
 };
@@ -11,6 +13,7 @@ use crate::support::{
 const GOLD_SENTINEL: &str = "EVAL_GOLD_BUDGET_SENTINEL";
 
 #[tokio::test]
+#[serial]
 async fn recall_budget_pressure_keeps_high_value_gold_memory_and_reports_omissions() {
     let scaffold = DaemonScaffold::fresh().await;
     let project_cwd = scaffold.tree_dir().join("proj-alpha");
