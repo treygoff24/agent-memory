@@ -4,7 +4,9 @@ use memorum_eval::simulator::{SimulatorAction, SimulatorAgent, SimulatorConfig};
 use memorum_eval::{eval_assert, eval_assert_eq, eval_flush_assertion_count};
 use serde_json::Value;
 
-use crate::support::{payload, promoted_project_meta, write_id, write_project_file, DEFAULT_PROJECT_ID};
+use crate::support::{
+    payload, promoted_project_meta, write_id_or_materialized_file, write_project_file, DEFAULT_PROJECT_ID,
+};
 
 const GOLD_SENTINEL: &str = "EVAL_GOLD_BUDGET_SENTINEL";
 
@@ -45,7 +47,7 @@ async fn recall_budget_pressure_keeps_high_value_gold_memory_and_reports_omissio
             }),
         }])
         .await;
-    let gold_id = write_id(&gold);
+    let gold_id = write_id_or_materialized_file(&gold, scaffold.tree_dir(), GOLD_SENTINEL);
 
     let observations = agent
         .run_script([

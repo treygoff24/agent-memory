@@ -26,11 +26,14 @@ mod t12_temporal_validity;
 mod support {
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     use memorum_eval::simulator::SimulatorObservations;
     use serde_json::{json, Value};
 
     pub const DEFAULT_PROJECT_ID: &str = "agent-memory";
+    const FILE_MATERIALIZATION_TIMEOUT: Duration = Duration::from_secs(5);
+    const FILE_MATERIALIZATION_POLL: Duration = Duration::from_millis(25);
 
     pub fn promoted_project_meta(label: &str, memory_type: &str) -> String {
         promoted_meta("project", label, memory_type)
@@ -104,6 +107,18 @@ mod support {
         write_id_from_json(json)
     }
 
+    pub fn write_id_or_materialized_file(
+        observations: &SimulatorObservations,
+        tree_dir: &Path,
+        body_marker: &str,
+    ) -> String {
+        if let Some(json) = observations.last_write_json.as_deref().filter(|json| !json.trim().is_empty()) {
+            return write_id_from_json(json);
+        }
+
+        memory_id_for_body_marker(tree_dir, body_marker)
+    }
+
     pub fn write_id_from_json(json: &str) -> String {
         payload(json, "governance_write")
             .get("id")
@@ -138,13 +153,36 @@ mod support {
 
     pub fn memory_file_body(tree_dir: &Path, memory_id: &str) -> String {
         let id_field = format!("id: {memory_id}");
-        let path = find_file_containing(tree_dir, &id_field)
-            .or_else(|| find_file_containing(tree_dir, memory_id))
+        let path = find_file_containing_eventually(tree_dir, &id_field)
+            .or_else(|| find_file_containing_eventually(tree_dir, memory_id))
             .unwrap_or_else(|| panic!("could not find canonical memory file containing id {memory_id}"));
         fs::read_to_string(&path).unwrap_or_else(|err| panic!("read memory file {}: {err}", path.display()))
     }
 
-    pub fn find_file_containing(root: &Path, needle: &str) -> Option<PathBuf> {
+    fn memory_id_for_body_marker(tree_dir: &Path, body_marker: &str) -> String {
+        let path = find_file_containing_eventually(tree_dir, body_marker)
+            .unwrap_or_else(|| panic!("could not find canonical memory file containing marker {body_marker}"));
+        let body = fs::read_to_string(&path).unwrap_or_else(|err| panic!("read memory file {}: {err}", path.display()));
+        memory_id_from_canonical_body(&body)
+            .unwrap_or_else(|| panic!("memory file {} missing frontmatter id", path.display()))
+    }
+
+    fn find_file_containing_eventually(root: &Path, needle: &str) -> Option<PathBuf> {
+        let deadline = Instant::now() + FILE_MATERIALIZATION_TIMEOUT;
+        loop {
+            if let Some(path) = find_file_containing(root, needle) {
+                return Some(path);
+            }
+
+            if Instant::now() >= deadline {
+                return None;
+            }
+
+            std::thread::sleep(FILE_MATERIALIZATION_POLL);
+        }
+    }
+
+    fn find_file_containing(root: &Path, needle: &str) -> Option<PathBuf> {
         let entries = fs::read_dir(root).ok()?;
         for entry in entries.flatten() {
             let path = entry.path();
@@ -161,6 +199,13 @@ mod support {
         None
     }
 
+    fn memory_id_from_canonical_body(body: &str) -> Option<String> {
+        body.lines().find_map(|line| {
+            let value = line.strip_prefix("id:")?.trim().trim_matches('"');
+            value.starts_with("mem_").then(|| value.to_owned())
+        })
+    }
+
     pub fn parse_json(json: &str) -> Value {
         serde_json::from_str(json).unwrap_or_else(|err| panic!("invalid JSON response: {err}\n{json}"))
     }
@@ -175,5 +220,78 @@ mod support {
 
     fn pretty(value: &Value) -> String {
         serde_json::to_string_pretty(value).expect("value pretty prints")
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn memory_file_body_waits_for_late_canonical_file_materialization() {
+            let root = temp_root("late-file");
+            let memory_id = "mem_20260511_a1b2c3d4e5f60718_000001";
+            let file = root.join("agent").join("patterns").join(format!("{memory_id}.md"));
+            let writer = {
+                let file = file.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(75));
+                    fs::create_dir_all(file.parent().expect("late file has parent")).expect("create late file parent");
+                    fs::write(&file, format!("---\nid: {memory_id}\n---\nlate body\n")).expect("write late file");
+                })
+            };
+
+            let body = memory_file_body(&root, memory_id);
+
+            writer.join().expect("late file writer joins");
+            assert!(body.contains("late body"));
+            let _ = fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn memory_file_body_prefers_frontmatter_id_over_reference_to_same_id() {
+            let root = temp_root("frontmatter-priority");
+            let memory_id = "mem_20260511_a1b2c3d4e5f60718_000003";
+            let old_file = root.join("agent").join("patterns").join("old.md");
+            let new_file = root.join("agent").join("patterns").join(format!("{memory_id}.md"));
+            fs::create_dir_all(old_file.parent().expect("memory files have parent")).expect("create memory parent");
+            fs::write(
+                &old_file,
+                format!(
+                    "---\nid: mem_20260511_a1b2c3d4e5f60718_000004\nsuperseded_by:\n  - {memory_id}\n---\nold body\n"
+                ),
+            )
+            .expect("write old file");
+            fs::write(&new_file, format!("---\nid: {memory_id}\n---\nnew body\n")).expect("write new file");
+
+            let body = memory_file_body(&root, memory_id);
+
+            assert!(body.contains("new body"), "{body}");
+            let _ = fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn write_id_falls_back_to_materialized_file_when_daemon_response_is_empty() {
+            let root = temp_root("empty-response");
+            let memory_id = "mem_20260511_a1b2c3d4e5f60718_000002";
+            let marker = "EVAL_GOLD_BUDGET_SENTINEL";
+            let file = root.join("agent").join("patterns").join(format!("{memory_id}.md"));
+            fs::create_dir_all(file.parent().expect("memory file has parent")).expect("create memory parent");
+            fs::write(&file, format!("---\nid: {memory_id}\n---\n{marker}\n")).expect("write memory file");
+            let observations =
+                SimulatorObservations { last_write_json: Some(String::new()), ..SimulatorObservations::default() };
+
+            let observed = write_id_or_materialized_file(&observations, &root, marker);
+
+            assert_eq!(observed, memory_id);
+            let _ = fs::remove_dir_all(root);
+        }
+
+        fn temp_root(label: &str) -> PathBuf {
+            let nanos = SystemTime::now().duration_since(UNIX_EPOCH).expect("system clock after unix epoch").as_nanos();
+            let root = std::env::temp_dir().join(format!("memorum-handbook-{label}-{nanos}"));
+            let _ = fs::remove_dir_all(&root);
+            fs::create_dir_all(&root).expect("create temp root");
+            root
+        }
     }
 }
