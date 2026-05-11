@@ -144,3 +144,34 @@ Per the gap-fix plan operational contract: "Only mark the goal complete if relea
 - Implementation work is committed; working tree carries this artifact plus `.oxfmtignore` defensive additions (`target/`, `**/target/`) and a reformatted `handoff.md`.
 - Per-task worktrees `task-G1`, `task-G2A`–`task-G2H`, `task-G3`, `task-G4` are still on disk under `~/Code/agent-memory-wt/` and should be cleaned up once Trey confirms.
 - `handoff.md` at repo root remains intentionally untracked per its own instructions; can be deleted or committed at Trey's discretion.
+
+---
+
+## Waiver retired — 2026-05-11 (later same day)
+
+The Phase-2 waiver above is **retired** as of branch head `2a9a9ad`. A full release-gate rerun on 2026-05-11 confirmed that `73853bd`'s polling helper alone was necessary but not sufficient: a 10s polling window still couldn't outrun the APFS fsync-visibility lag created by ~15 concurrent `DaemonScaffold` daemons during `cargo test --workspace`. T02 `superseded_fact` failed at the same materialization assertion the original waiver flagged.
+
+Resolution landed in `2a9a9ad test(eval): serialize handbook integration tests to retire 5/11 waiver`. Per recommended-follow-up #2 above, the 12 handbook tests now serialize through `serial_test::serial` (added as `serial_test = 3.4` workspace dev-dep) — each handbook test takes a process-local mutex inside the handbook test binary, while other workspace test crates keep their normal parallelism. The `73853bd` polling helper remains in place as defense against the residual single-daemon materialization lag.
+
+**Full release gate green at `2a9a9ad`** (run with `CARGO_BUILD_JOBS=4 bash scripts/check.sh` to keep the machine usable under the heavy compile):
+
+| Phase                               | Result |
+| ----------------------------------- | ------ |
+| `cargo fmt --all -- --check`        | green  |
+| `pnpm exec oxfmt --check`           | green  |
+| `pnpm exec oxlint`                  | green  |
+| `check-baseline-discipline.sh`      | green  |
+| `specgate validate`                 | green  |
+| `specgate check`                    | green  |
+| `specgate doctor ownership`         | green  |
+| `cargo test --workspace`            | green (454 test crates, 0 failures, 12/12 handbook debug + 12/12 handbook release) |
+| `cargo test --workspace --release`  | green  |
+| `cargo doc --workspace`             | green  |
+| `scripts/rust-boundary-check.sh`    | green  |
+| `scripts/two-clone-convergence.sh`  | green  |
+| `scripts/durability-probe-gate.sh`  | green  |
+| `scripts/bench-gate.sh` (smoke)     | green  |
+| `scripts/bench-gate.sh` (release)   | green  |
+| `scripts/bench-regression-check.sh` | green  |
+
+`bench/baseline.darwin-arm64.json` was not touched — baselines remain explicit-human-commit-only per spec §17.6/§18.9.
