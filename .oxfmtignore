@@ -1,4 +1,5 @@
 docs/reviews/stream-c-*.md
+docs/reviews/2026-05-08-gap-fix-verification.md
 docs/reference/*.md
 target/
 **/target/
