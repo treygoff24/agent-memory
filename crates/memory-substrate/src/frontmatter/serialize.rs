@@ -122,6 +122,12 @@ fn plain_yaml_string(value: &str) -> bool {
     if value.contains(": ") || value.ends_with(':') || value.starts_with("- ") {
         return false;
     }
+    // YAML plain scalars are stripped of leading/trailing whitespace at parse
+    // time, so emitting `summary:   hello` round-trips as `hello`. Force quoting
+    // to preserve the original value byte-for-byte.
+    if value.starts_with(' ') || value.ends_with(' ') {
+        return false;
+    }
     value.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/' | ':' | '@' | ' '))
 }
 
@@ -179,6 +185,9 @@ mod tests {
             "TODO followup: revisit handbook",
             "foo:",
             "- listed thing",
+            " leading space",
+            "trailing space ",
+            "  both sides  ",
         ] {
             assert!(!plain_yaml_string(value), "{value:?} must not be a plain scalar");
             let yaml = scalar_to_yaml(&Value::String(value.to_string()));

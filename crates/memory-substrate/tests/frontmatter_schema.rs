@@ -227,8 +227,10 @@ fn summary_with_colon_space_round_trips_through_serialize_and_parse() {
     let trapped_summary = "Useful: memoryd doctor --reindex rebuilds the SQLite events_log mirror from JSONL";
     let trailing_colon = "Followup TBD:";
     let leading_dash = "- listed item";
+    let leading_space = " leading whitespace";
+    let trailing_space = "trailing whitespace ";
 
-    for summary in [trapped_summary, trailing_colon, leading_dash] {
+    for summary in [trapped_summary, trailing_colon, leading_dash, leading_space, trailing_space] {
         let text = minimal_doc().replace("summary: A useful pattern", &format!("summary: {summary:?}"));
         let parsed = parse_document(&text, None).unwrap_or_else(|err| panic!("parse {summary:?}: {err:?}"));
         assert_eq!(parsed.memory.frontmatter.summary, summary);

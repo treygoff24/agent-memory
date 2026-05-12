@@ -18,9 +18,6 @@
 # - Built-in policies require_grounding for all four scopes (me/project/agent/
 #   dreaming) with floors 0.85/0.70/0.82/0.95. Every governed write below
 #   passes a real on-disk grounding file via source_ref=file:<path>#<anchor>.
-# - `memoryd write-note` text is serialized to a YAML summary field with a
-#   known quoting bug for embedded ": " sequences; this script keeps note text
-#   colon-free as a workaround.
 
 set -euo pipefail
 
