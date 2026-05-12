@@ -87,7 +87,6 @@ const DEFAULT_PROJECT_NAMESPACE: &str = "agent-memory";
 const REVEAL_REASON_MAX_CHARS: usize = 512;
 const REDACTED_FORGET_REASON: &str = "[redacted]";
 const FORGET_REASON_MAX_CHARS: usize = 160;
-const ENCRYPTED_SUPERSESSION_RUNBOOK: &str = "encrypted supersession requires reveal+rewrite cycle in current build; see docs/runbooks/encrypted-supersession.md";
 const DEFAULT_SUPERSEDE_SESSION_ID: &str = "synthetic-memory-supersede";
 const DEFAULT_SUPERSEDE_HARNESS: &str = "unknown";
 const PEER_DELIVERY_AUDIT_CAPACITY: usize = 200;
@@ -2283,38 +2282,67 @@ async fn governance_supersede_response(
         }
     };
     let old_envelope = substrate.read_memory_envelope(&old_memory_id).await.map_err(HandlerError::substrate)?;
-    let MemoryContent::Plaintext(old_body) = old_envelope.content else {
-        return Ok(ResponsePayload::GovernanceSupersede(supersede_privacy_refusal(
-            old_id,
-            None,
-            ENCRYPTED_SUPERSESSION_RUNBOOK,
-        )));
+
+    // The contradiction detector compares the new candidate against the old body. For
+    // encrypted-old memories we can't read the body without an explicit reveal, so we
+    // skip body-based contradiction and let the explicit supersede call carry intent:
+    // the user has named `old_id`, so we trust the target and only verify the new
+    // content passes grounding + policy on its own.
+    let old_plaintext_body = match &old_envelope.content {
+        MemoryContent::Plaintext(body) => Some(body.clone()),
+        MemoryContent::Ciphertext { .. } | MemoryContent::MetadataOnly => None,
     };
-    let active = vec![existing_summary_from_memory(old_envelope.metadata, old_body)];
+    let old_is_encrypted = old_plaintext_body.is_none();
+
+    let (active, tiebreak_mode, allow_top_k) = match &old_plaintext_body {
+        Some(body) => (
+            vec![existing_summary_from_memory(old_envelope.metadata.clone(), body.clone())],
+            TiebreakMode::Contradiction { existing_id: old_id.clone() },
+            true,
+        ),
+        None => (Vec::new(), TiebreakMode::Unclear, false),
+    };
     let engine = governance_engine(GovernanceEngineInput {
         policies,
         active,
         tombstones,
-        tiebreak_mode: TiebreakMode::Contradiction { existing_id: old_id.clone() },
-        allow_top_k: true,
+        tiebreak_mode,
+        allow_top_k,
         repo_root: substrate.roots().repo.clone(),
     });
     let decision = engine.evaluate_write(&candidate);
-    let GovernanceWriteDecision::Supersession { existing_id, policy_applied, .. } = decision else {
-        return Ok(ResponsePayload::GovernanceSupersede(supersede_refusal(old_id, decision, policy_source)));
+
+    let policy_applied = match (old_is_encrypted, decision) {
+        (false, GovernanceWriteDecision::Supersession { existing_id, policy_applied, .. }) => {
+            if existing_id != old_id {
+                return Ok(ResponsePayload::GovernanceSupersede(GovernanceSupersedeResponse {
+                    status: GovernanceStatus::Refused,
+                    new_id: None,
+                    old_id: Some(old_id),
+                    reason: Some(GovernanceRefusalReason::Contradiction),
+                    chain: None,
+                    policy_applied: Some(policy_applied),
+                    policy_source: Some(policy_source_string(policy_source)),
+                    warning: None,
+                }));
+            }
+            policy_applied
+        }
+        (false, other) => {
+            return Ok(ResponsePayload::GovernanceSupersede(supersede_refusal(old_id, other, policy_source)));
+        }
+        // Encrypted-old path: `active = []` means contradiction detection can't fire,
+        // so engine.evaluate_write returns Promoted or Candidate when the candidate
+        // passes grounding + policy. Either is "the new content is acceptable; proceed
+        // with the explicit supersede". Refusals (missing grounding, secret material,
+        // tombstone match) still surface.
+        (true, GovernanceWriteDecision::Promoted { policy_applied, .. })
+        | (true, GovernanceWriteDecision::Candidate { policy_applied, .. })
+        | (true, GovernanceWriteDecision::Supersession { policy_applied, .. }) => policy_applied,
+        (true, other) => {
+            return Ok(ResponsePayload::GovernanceSupersede(supersede_refusal(old_id, other, policy_source)));
+        }
     };
-    if existing_id != old_id {
-        return Ok(ResponsePayload::GovernanceSupersede(GovernanceSupersedeResponse {
-            status: GovernanceStatus::Refused,
-            new_id: None,
-            old_id: Some(old_id),
-            reason: Some(GovernanceRefusalReason::Contradiction),
-            chain: None,
-            policy_applied: Some(policy_applied),
-            policy_source: Some(policy_source_string(policy_source)),
-            warning: None,
-        }));
-    }
 
     let mut replacement = input.to_memory(
         new_id.clone(),
@@ -2322,27 +2350,45 @@ async fn governance_supersede_response(
         &privacy,
     );
     replacement.frontmatter.supersedes.push(old_memory_id.clone());
-    if privacy.storage_action.requires_encryption() {
-        return Ok(ResponsePayload::GovernanceSupersede(supersede_privacy_refusal(
-            old_id,
-            Some(policy_applied),
-            ENCRYPTED_SUPERSESSION_RUNBOOK,
-        )));
-    }
+
     let claim_lock = match state {
         Some(state) => acquire_claim_lock_for_supersede(substrate, state, &old_memory_id, &input.meta),
         None => SupersedeClaimLock::inactive(),
     };
-    substrate
-        .supersede_memory(SubstrateSupersedeRequest {
-            old_id: old_memory_id.clone(),
+
+    // Write the replacement + mark the old superseded. Stream A's `supersede_memory`
+    // is plaintext-only (`read_memory_with_hash` skips encrypted/ paths and
+    // `write_memory` refuses RequiresEncryption classifications), so for the three
+    // mixed cases we route the writes ourselves and call the existing `write_privacy_memory`
+    // and `update_encrypted_memory_metadata` primitives — same building blocks the
+    // governance write + forget paths already use for encrypted records.
+    let new_is_encrypted = privacy.storage_action.requires_encryption();
+    if !old_is_encrypted && !new_is_encrypted {
+        substrate
+            .supersede_memory(SubstrateSupersedeRequest {
+                old_id: old_memory_id.clone(),
+                replacement,
+                reason: reason.clone(),
+                classification: privacy.tier.classification(),
+                allow_best_effort_durability: true,
+            })
+            .await
+            .map_err(HandlerError::substrate)?;
+    } else {
+        write_privacy_memory(
+            substrate,
             replacement,
-            reason,
-            classification: privacy.tier.classification(),
-            allow_best_effort_durability: true,
-        })
-        .await
-        .map_err(HandlerError::substrate)?;
+            &privacy,
+            EventContext { actor: Some("memoryd-supersede".to_string()), reason: Some(reason.clone()) },
+        )
+        .await?;
+        mark_old_superseded(
+            substrate,
+            MarkOldSuperseded { old_id: &old_memory_id, new_id: &new_id, old_is_encrypted, reason: &reason },
+        )
+        .await?;
+    }
+
     let warning = claim_lock.release_after_success();
 
     Ok(ResponsePayload::GovernanceSupersede(GovernanceSupersedeResponse {
@@ -2355,6 +2401,69 @@ async fn governance_supersede_response(
         policy_source: Some(policy_source_string(policy_source)),
         warning,
     }))
+}
+
+struct MarkOldSuperseded<'a> {
+    old_id: &'a MemoryId,
+    new_id: &'a MemoryId,
+    old_is_encrypted: bool,
+    reason: &'a str,
+}
+
+/// Mark the old memory as `Superseded` and append `new_id` to its `superseded_by`
+/// chain. Used by the mixed-encryption supersede paths, where Stream A's atomic
+/// `supersede_memory` can't drive the two-write pair because either the old read
+/// or the new write would land under `encrypted/`. Routes through the appropriate
+/// Stream A primitive based on whether the old record is encrypted on disk.
+async fn mark_old_superseded(
+    substrate: &Substrate,
+    MarkOldSuperseded { old_id, new_id, old_is_encrypted, reason }: MarkOldSuperseded<'_>,
+) -> Result<(), HandlerError> {
+    let new_id_for_chain = new_id.clone();
+    if old_is_encrypted {
+        substrate
+            .update_encrypted_memory_metadata(old_id, |old| {
+                old.frontmatter.status = MemoryStatus::Superseded;
+                old.frontmatter.updated_at = chrono::Utc::now();
+                if !old.frontmatter.superseded_by.contains(&new_id_for_chain) {
+                    old.frontmatter.superseded_by.push(new_id_for_chain);
+                }
+            })
+            .await
+            .map_err(|err| HandlerError::substrate(format!("update encrypted metadata: {err:?}")))?;
+        return Ok(());
+    }
+    // Plaintext old + encrypted new: rewrite the plaintext old in place. We pass
+    // `expected_base_hash: None` here — Stream A's public surface doesn't expose
+    // the read-hash, and the supersede call is daemon-mediated and synchronous,
+    // so the TOCTOU window is tight. The same trade-off applies to the equivalent
+    // path in `governance_forget_response` and `review_decision_response`.
+    let mut old_memory = substrate
+        .read_memory(old_id)
+        .await
+        .map_err(|err| HandlerError::substrate(format!("read old memory for supersede: {err:?}")))?;
+    old_memory.frontmatter.status = MemoryStatus::Superseded;
+    old_memory.frontmatter.updated_at = chrono::Utc::now();
+    if !old_memory.frontmatter.superseded_by.contains(&new_id_for_chain) {
+        old_memory.frontmatter.superseded_by.push(new_id_for_chain);
+    }
+    substrate
+        .write_memory(SubstrateWriteRequest {
+            operation_id: None,
+            memory: old_memory,
+            expected_base_hash: None,
+            write_mode: WriteMode::ReplaceExisting,
+            index_projection: None,
+            event_context: EventContext {
+                actor: Some("memoryd-supersede".to_string()),
+                reason: Some(reason.to_string()),
+            },
+            allow_best_effort_durability: true,
+            classification: ClassificationOutcome::Trusted,
+        })
+        .await
+        .map_err(|err| HandlerError::substrate(format!("mark old superseded: {err:?}")))?;
+    Ok(())
 }
 
 fn acquire_claim_lock_for_supersede<'a>(
@@ -2985,23 +3094,6 @@ fn supersede_refusal(
         chain: None,
         policy_applied,
         policy_source: Some(policy_source_string(policy_source)),
-        warning: None,
-    }
-}
-
-fn supersede_privacy_refusal(
-    old_id: String,
-    policy_applied: Option<String>,
-    policy_source: impl Into<String>,
-) -> GovernanceSupersedeResponse {
-    GovernanceSupersedeResponse {
-        status: GovernanceStatus::Refused,
-        new_id: None,
-        old_id: Some(old_id),
-        reason: Some(GovernanceRefusalReason::Privacy),
-        chain: None,
-        policy_applied,
-        policy_source: Some(policy_source.into()),
         warning: None,
     }
 }

@@ -465,10 +465,17 @@ async fn privacy_e2e_encrypted_memory_can_be_forgotten_without_plaintext_leak() 
     assert!(!repo_contains(temp.path(), raw), "forgetting encrypted memory must not leak raw plaintext");
 }
 
+/// Plaintext old + encrypted replacement. Stream A's atomic `supersede_memory`
+/// can't drive this pair (it routes the replacement through plaintext `write_memory`,
+/// which refuses `RequiresEncryption`). The daemon now splits the write: the
+/// replacement lands as ciphertext under `encrypted/`, the old plaintext is
+/// rewritten in place with `status: superseded` and `superseded_by: [new_id]`,
+/// and the raw PII canary never appears anywhere on disk.
 #[tokio::test]
-async fn privacy_e2e_encrypted_supersede_replacement_fails_closed_without_disk_effects() {
+async fn privacy_e2e_supersede_can_promote_plaintext_old_to_encrypted_replacement() {
     let temp = tempfile::tempdir().expect("tempdir");
     let substrate = init_substrate(&temp).await;
+    FileKeyProvider::runtime_default(&temp.path().join("runtime")).onboard_local_file().expect("privacy key");
     let old = governed_project_write(&substrate, "old-supersede", "The deployment target is staging.").await;
     let old_id = old.id.expect("old id");
     let raw = "ops@example.com";
@@ -497,18 +504,28 @@ async fn privacy_e2e_encrypted_supersede_replacement_fails_closed_without_disk_e
     let ResponseResult::Success(ResponsePayload::GovernanceSupersede(supersede)) = response.result else {
         panic!("expected supersede response, got {:?}", response.result);
     };
-    assert_eq!(supersede.status, GovernanceStatus::Refused);
-    assert_eq!(supersede.reason, Some(GovernanceRefusalReason::Privacy));
-    assert!(supersede.new_id.is_none());
-    assert_eq!(
-        substrate.read_memory(&MemoryId::new(&old_id)).await.expect("old memory").frontmatter.status,
-        memory_substrate::MemoryStatus::Active
-    );
-    assert!(!repo_contains(temp.path(), raw), "refused encrypted supersession must not write replacement plaintext");
+    assert_eq!(supersede.status, GovernanceStatus::Promoted);
+    let new_id = supersede.new_id.expect("new id");
+
+    // The replacement lands as ciphertext; the raw PII canary never hits plaintext on disk.
+    let new_envelope = substrate.read_memory_envelope(&MemoryId::new(&new_id)).await.expect("new envelope");
+    assert!(matches!(new_envelope.content, MemoryContent::Ciphertext { .. }));
+    assert!(new_envelope.metadata.path.as_ref().expect("path").as_str().starts_with("encrypted/"));
+    assert!(!repo_contains(temp.path(), raw), "encrypted replacement must not leak raw PII");
+
+    // The plaintext old is now Superseded and points at the new id.
+    let old_after = substrate.read_memory(&MemoryId::new(&old_id)).await.expect("old memory");
+    assert_eq!(old_after.frontmatter.status, memory_substrate::MemoryStatus::Superseded);
+    assert!(old_after.frontmatter.superseded_by.iter().any(|id| id.as_str() == new_id));
 }
 
+/// Encrypted old + plaintext replacement. The substrate can't read the encrypted
+/// body to run body-based contradiction detection, but the supersede call carries
+/// an explicit `old_id`, so the daemon trusts that intent and runs only grounding +
+/// policy on the new candidate. The old envelope's frontmatter is mutated in place
+/// via `update_encrypted_memory_metadata`; its body ciphertext is preserved.
 #[tokio::test]
-async fn privacy_e2e_encrypted_old_memory_supersede_fails_closed_without_not_found() {
+async fn privacy_e2e_supersede_can_replace_encrypted_old_with_plaintext_replacement() {
     let temp = tempfile::tempdir().expect("tempdir");
     let substrate = init_substrate(&temp).await;
     FileKeyProvider::runtime_default(&temp.path().join("runtime")).onboard_local_file().expect("privacy key");
@@ -539,12 +556,21 @@ async fn privacy_e2e_encrypted_old_memory_supersede_fails_closed_without_not_fou
     let ResponseResult::Success(ResponsePayload::GovernanceSupersede(supersede)) = response.result else {
         panic!("expected supersede response, got {:?}", response.result);
     };
-    assert_eq!(supersede.status, GovernanceStatus::Refused);
-    assert_eq!(supersede.reason, Some(GovernanceRefusalReason::Privacy));
-    assert!(supersede.new_id.is_none());
-    let envelope = substrate.read_memory_envelope(&MemoryId::new(&old_id)).await.expect("encrypted old still readable");
-    assert!(matches!(envelope.content, MemoryContent::Ciphertext { .. }));
-    assert_eq!(envelope.metadata.frontmatter.status, memory_substrate::MemoryStatus::Active);
+    assert_eq!(supersede.status, GovernanceStatus::Promoted);
+    let new_id = supersede.new_id.expect("new id");
+
+    // The plaintext replacement is readable as plaintext and lists the encrypted old in its supersedes chain.
+    let new_envelope = substrate.read_memory_envelope(&MemoryId::new(&new_id)).await.expect("new envelope");
+    assert!(matches!(new_envelope.content, MemoryContent::Plaintext(_)));
+    assert!(new_envelope.metadata.frontmatter.supersedes.iter().any(|id| id.as_str() == old_id));
+
+    // The encrypted old retains its ciphertext body but now reports Superseded status
+    // with the new id appended to `superseded_by`.
+    let old_envelope =
+        substrate.read_memory_envelope(&MemoryId::new(&old_id)).await.expect("encrypted old still readable");
+    assert!(matches!(old_envelope.content, MemoryContent::Ciphertext { .. }));
+    assert_eq!(old_envelope.metadata.frontmatter.status, memory_substrate::MemoryStatus::Superseded);
+    assert!(old_envelope.metadata.frontmatter.superseded_by.iter().any(|id| id.as_str() == new_id));
 }
 
 #[tokio::test]

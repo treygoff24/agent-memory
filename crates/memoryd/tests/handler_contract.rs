@@ -270,7 +270,7 @@ async fn supersede_null_meta_keeps_strict_programmatic_defaults() {
 }
 
 #[tokio::test]
-async fn supersede_plaintext_memory_succeeds_and_encrypted_memory_reports_reveal_rewrite_runbook() {
+async fn supersede_succeeds_for_plaintext_and_encrypted_memories_alike() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
     let substrate = init_substrate(roots).await;
@@ -375,15 +375,25 @@ async fn supersede_plaintext_memory_succeeds_and_encrypted_memory_reports_reveal
         ),
     )
     .await;
-    let ResponseResult::Success(ResponsePayload::GovernanceSupersede(encrypted_refusal)) = encrypted_supersede.result
+    // Regression: encrypted-to-encrypted supersession used to refuse with a runbook
+    // pointer. The fix routes the new ciphertext through `write_encrypted` and
+    // mutates the old envelope's metadata via `update_encrypted_memory_metadata`,
+    // so the user can correct an encrypted memory without losing the chain.
+    let ResponseResult::Success(ResponsePayload::GovernanceSupersede(encrypted_supersede_ok)) =
+        encrypted_supersede.result
     else {
-        panic!("expected encrypted supersede refusal response, got {:?}", encrypted_supersede.result);
+        panic!("expected encrypted supersede success response, got {:?}", encrypted_supersede.result);
     };
-    assert_eq!(encrypted_refusal.status, GovernanceStatus::Refused);
-    assert_eq!(encrypted_refusal.reason, Some(GovernanceRefusalReason::Privacy));
-    let policy_source = encrypted_refusal.policy_source.expect("runbook pointer");
-    assert!(policy_source.contains("reveal+rewrite cycle"), "{policy_source}");
-    assert!(policy_source.contains("docs/runbooks/encrypted-supersession.md"), "{policy_source}");
+    assert_eq!(encrypted_supersede_ok.status, GovernanceStatus::Promoted);
+    let new_encrypted_id = encrypted_supersede_ok.new_id.expect("encrypted replacement id");
+    let new_envelope = substrate.read_memory_envelope(&MemoryId::new(&new_encrypted_id)).await.expect("new envelope");
+    assert!(matches!(new_envelope.content, MemoryContent::Ciphertext { .. }));
+    let old_envelope_after = substrate
+        .read_memory_envelope(&MemoryId::new(encrypted_supersede_ok.old_id.as_deref().expect("old id echoed")))
+        .await
+        .expect("old envelope still readable");
+    assert_eq!(old_envelope_after.metadata.frontmatter.status, memory_substrate::MemoryStatus::Superseded);
+    assert!(old_envelope_after.metadata.frontmatter.superseded_by.iter().any(|id| id.as_str() == new_encrypted_id));
 }
 
 #[tokio::test]
