@@ -1,14 +1,29 @@
 # agent-memory Codex Instructions
 
+## Current project frame
+
+- This repo is Memorum (`agent-memory`): a local-first, daemon-backed shared memory layer for agent harnesses.
+- Treat `README.md`, `docs/specs/system-v0.2.md`, `docs/getting-started.md`, `docs/mcp-wiring.md`, and any user-named current plan/spec as the best orientation points.
+- Older stream-specific plans/specs are historical unless the user explicitly names one as the active contract for the current task.
+- Do not resurrect Stream A/F/G/H/I execution assumptions just because those docs still exist in the tree.
+
 ## Project skills
 
-- Use the project-local `rust-engineer` skill for all Rust/Cargo work in this repository.
-- Every implementation, review, QA, security, performance, and docs subagent spawned for Stream A must be told: `Mandatory skills: clean-code, tdd, rust-engineer`.
-- If a subagent has a narrower specialty, keep `rust-engineer` in addition to that specialty; do not replace it with the specialty.
-- Follow vertical TDD for implementation: one failing behavior test, minimal implementation, green test, refactor while green.
+- Use the project-local `rust-engineer` skill for Rust/Cargo work in this repository.
+- For implementation, review, QA, security, or performance work that touches Rust, daemon behavior, MCP protocol surfaces, storage, recall, privacy, governance, or eval behavior, use or instruct subagents to use: `Mandatory skills: clean-code, tdd, rust-engineer`.
+- If a subagent has a narrower specialty, keep `rust-engineer` in addition to that specialty when Rust or repo implementation is in scope.
+- Prefer vertical TDD for behavior changes: one failing behavior test, minimal implementation, green test, then refactor while green.
 
-## Stream A execution
+## Repo workflow
 
-- Treat `docs/plans/2026-04-26-stream-a-core-substrate-implementation-plan-v0.3.md` and `docs/specs/stream-a-core-substrate-v1.1.md` as the active implementation contract unless superseded by a newer local plan/spec.
 - Do not overwrite uncommitted spec or plan files unless Trey explicitly asks.
+- Preserve dirty worktrees. Inspect before editing and keep unrelated user changes out of commits/patches.
+- For docs, launch materials, and non-code artifacts, ground claims in live repo docs rather than stale rollout memory.
 - For Rust gates, prefer: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and targeted `cargo test` before broader gates.
+
+## Durable product facts
+
+- The canonical MCP bridge shape is `memoryd mcp --socket <PATH>`.
+- `memoryd serve` is the local daemon entrypoint; clients connect through MCP rather than writing memory files directly.
+- Canonical memory is Markdown plus YAML frontmatter in a user-owned repo. SQLite, FTS, embeddings, and event-log mirrors are derived or rebuildable unless the current docs say otherwise.
+- Memorum is local-first and harness-agnostic. Do not imply a hosted cloud backend, multi-user SaaS, or replacement for Claude/Codex/Cursor.
