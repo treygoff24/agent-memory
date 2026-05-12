@@ -216,6 +216,34 @@ fn rejects_quarantined_without_merge_diagnostics() {
     assert!(matches!(err, ValidationError::BadShape(field) if field == "_merge_diagnostics"));
 }
 
+/// Regression: write-note text containing ": " (the YAML mapping indicator)
+/// must round-trip through `serialize_document` and back. Before the fix in
+/// `serialize.rs::plain_yaml_string`, the serializer emitted such summaries
+/// unquoted, producing `summary: Useful: memoryd doctor ...` which the
+/// substrate's reindex phase then rejected as "mapping values are not allowed
+/// in this context", forcing the daemon into operator-repair-required state.
+#[test]
+fn summary_with_colon_space_round_trips_through_serialize_and_parse() {
+    let trapped_summary = "Useful: memoryd doctor --reindex rebuilds the SQLite events_log mirror from JSONL";
+    let trailing_colon = "Followup TBD:";
+    let leading_dash = "- listed item";
+
+    for summary in [trapped_summary, trailing_colon, leading_dash] {
+        let text = minimal_doc().replace("summary: A useful pattern", &format!("summary: {summary:?}"));
+        let parsed = parse_document(&text, None).unwrap_or_else(|err| panic!("parse {summary:?}: {err:?}"));
+        assert_eq!(parsed.memory.frontmatter.summary, summary);
+
+        let serialized = serialize_document(&parsed.memory).expect("serialize");
+        assert!(
+            !serialized.contains(&format!("summary: {summary}\n")),
+            "summary {summary:?} must be quoted in serialized output:\n{serialized}"
+        );
+        // Re-parse to confirm the round-trip preserved the value.
+        let reparsed = parse_document(&serialized, None).expect("reparse");
+        assert_eq!(reparsed.memory.frontmatter.summary, summary);
+    }
+}
+
 #[test]
 fn rejects_supersedes_and_superseded_by_overlap() {
     let id = "mem_20260424_a1b2c3d4e5f60718_000099";

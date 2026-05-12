@@ -112,6 +112,16 @@ fn plain_yaml_string(value: &str) -> bool {
     if looks_like_yaml_numeric(value) {
         return false;
     }
+    // YAML plain-scalar terminators. The allow-set below admits ':', which is
+    // safe when adjacent to another plain character (e.g. `mem_...:abc` or the
+    // colons inside an RFC 3339 timestamp), but YAML treats ": " (colon followed
+    // by whitespace) as the start of a nested mapping value and a trailing ":"
+    // as the end of a key with a null value. A leading "- " starts a block
+    // sequence. Any of those would round-trip as a different shape, so force
+    // double-quoted output for them.
+    if value.contains(": ") || value.ends_with(':') || value.starts_with("- ") {
+        return false;
+    }
     value.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/' | ':' | '@' | ' '))
 }
 
@@ -149,5 +159,58 @@ fn sorted_value(key: &str, value: Value) -> Value {
             Value::Array(values)
         }
         (_, value) => value,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{plain_yaml_string, scalar_to_yaml};
+    use serde_json::Value;
+
+    /// Strings the writer must wrap in double quotes because YAML would otherwise
+    /// reparse them as a different shape (nested mapping / null key / sequence).
+    /// The repro case for the write-note bug is `"Useful: memoryd doctor ..."`,
+    /// which previously round-tripped as `summary: Useful: memoryd doctor ...`
+    /// and made the substrate refuse to start on reindex.
+    #[test]
+    fn quotes_strings_that_look_like_yaml_indicators() {
+        for value in [
+            "Useful: memoryd doctor --reindex rebuilds the SQLite events_log mirror from JSONL",
+            "TODO followup: revisit handbook",
+            "foo:",
+            "- listed thing",
+        ] {
+            assert!(!plain_yaml_string(value), "{value:?} must not be a plain scalar");
+            let yaml = scalar_to_yaml(&Value::String(value.to_string()));
+            assert!(yaml.starts_with('"') && yaml.ends_with('"'), "{value:?} should be quoted, got {yaml}");
+        }
+    }
+
+    /// Existing valid plain scalars must keep emitting unquoted so we don't
+    /// churn every memory file on the first save after upgrade.
+    #[test]
+    fn leaves_safe_plain_strings_unquoted() {
+        for value in [
+            "Cargo lockfile workflow",
+            "mem_20260512_3cb85ebb22bf3577_000001",
+            "2026-05-12T15:18:51.945136Z",
+            "file:/Users/treygoff/.memorum-dev/grounding/lockfile-policy.md",
+            "agent_primary",
+            "stream-a-test",
+        ] {
+            assert!(plain_yaml_string(value), "{value:?} should remain a plain scalar");
+            let yaml = scalar_to_yaml(&Value::String(value.to_string()));
+            assert_eq!(yaml, value);
+        }
+    }
+
+    /// YAML reserved literals and numeric look-alikes must still be quoted.
+    /// Sanity check that the new ": " / trailing-":" / leading-"- " gate
+    /// did not accidentally let those through.
+    #[test]
+    fn still_quotes_yaml_reserved_and_numeric_lookalikes() {
+        for value in ["yes", "no", "true", "False", "null", "Off", "42", "3.14", "0xff", "1e9"] {
+            assert!(!plain_yaml_string(value), "{value:?} must not be a plain scalar");
+        }
     }
 }
