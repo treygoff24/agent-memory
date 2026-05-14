@@ -4,6 +4,9 @@ set -euo pipefail
 # Long Rust gates on macOS can wedge freshly built executables behind
 # syspolicyd/CSExattrCrypto when they use the repo target dir or sccache.
 # Use an isolated target dir by default and make the risky accelerators opt-in.
+export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-${MEMORUM_CHECK_JOBS:-4}}"
+echo "using CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS"
+
 cleanup_cargo_target_dir=0
 if [[ -z "${CARGO_TARGET_DIR:-}" ]]; then
   CARGO_TARGET_DIR="$(mktemp -d -t memorum-check-target)"
@@ -80,6 +83,7 @@ else
   echo "warning: pnpm/package.json unavailable; skipping JS format/lint checks" >&2
 fi
 run_parallel baseline         ./scripts/check-baseline-discipline.sh
+run_parallel docs-commands    ./scripts/docs-command-validity.sh
 if command -v specgate >/dev/null 2>&1; then
   run_parallel specgate-validate  specgate validate
   run_parallel specgate-check     specgate check --output-mode deterministic
@@ -88,6 +92,14 @@ else
   echo "warning: specgate not installed; skipping specgate gates" >&2
 fi
 wait_parallel
+
+# --- Phase 1b: dashboard frontend full gate --------------------------------
+
+if [[ "${MEMORUM_CHECK_FRONTEND:-1}" == "1" && -f crates/memoryd-web/frontend/package.json ]]; then
+  (cd crates/memoryd-web/frontend && pnpm run check:full)
+else
+  echo "warning: dashboard frontend full gate skipped; report why if frontend was in scope" >&2
+fi
 
 # --- Phase 2: cargo-heavy work, serial (shared target dir) -----------------
 

@@ -6,6 +6,11 @@ interface AnswerCardsProps {
     onCorrect: () => void;
 }
 
+// Brief §View 2 mandates four answer cards: Confirm / Correct / Forget / Skip.
+// The daemon also supports `not_relevant` (permanent dismissal, distinct from
+// `skip_this_week`'s "defer to next cycle"). The 'n' keyboard shortcut in
+// RealityCheck.tsx keeps that action reachable for power users; the visible
+// stack stays at the brief-mandated four.
 export function AnswerCards({ encrypted, onAction, onCorrect }: AnswerCardsProps) {
     return (
         <div className="rc-actions">
@@ -32,7 +37,7 @@ export function AnswerCards({ encrypted, onAction, onCorrect }: AnswerCardsProps
                 <span className="desc">opens text input</span>
             </button>
             <button
-                className="rc-action"
+                className="rc-action danger"
                 onClick={() => onAction('forget')}
                 type="button"
             >
@@ -42,20 +47,11 @@ export function AnswerCards({ encrypted, onAction, onCorrect }: AnswerCardsProps
             </button>
             <button
                 className="rc-action"
-                onClick={() => onAction('not_relevant')}
-                type="button"
-            >
-                <span className="key">n</span>
-                <span>Not relevant</span>
-                <span className="desc">remove from future checks</span>
-            </button>
-            <button
-                className="rc-action"
                 onClick={() => onAction('skip_this_week')}
                 type="button"
             >
                 <span className="key">s</span>
-                <span>Skip this week</span>
+                <span>Skip — ask later</span>
                 <span className="desc">defer until next cycle</span>
             </button>
         </div>

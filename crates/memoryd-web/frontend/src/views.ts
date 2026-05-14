@@ -1,3 +1,4 @@
+import { Audit } from './views/Audit';
 import { Dreams } from './views/Dreams';
 import { Entities } from './views/Entities';
 import { Governance } from './views/Governance';
@@ -16,6 +17,7 @@ export const views = [
     { id: 'governance', label: 'Governance', component: Governance },
     { id: 'entities', label: 'Entities', component: Entities },
     { id: 'settings', label: 'Settings', component: Settings },
+    { id: 'audit', label: 'Trust Artifact', component: Audit },
 ] as const;
 export type ViewId = (typeof views)[number]['id'];
 export function viewFor(id: ViewId) {

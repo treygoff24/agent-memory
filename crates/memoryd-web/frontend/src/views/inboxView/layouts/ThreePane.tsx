@@ -8,7 +8,10 @@ import { InboxList } from '../InboxList';
 export function ThreePaneLayout(props: InboxLayoutProps) {
     const selectedInspector = props.selected ? props.toInspectorItem(props.selected) : null;
     return (
-        <div data-testid="inbox-layout-three-pane">
+        <div
+            className="view"
+            data-testid="inbox-layout-three-pane"
+        >
             <InboxHeader
                 items={props.items}
                 visibleCount={props.visible.length}
@@ -61,6 +64,7 @@ export function ThreePaneLayout(props: InboxLayoutProps) {
                         <Inspector
                             item={selectedInspector}
                             layout="narrow"
+                            onAction={props.onAction}
                         />
                     </div>
                 </section>

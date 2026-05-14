@@ -19,7 +19,13 @@
 - Do not overwrite uncommitted spec or plan files unless Trey explicitly asks.
 - Preserve dirty worktrees. Inspect before editing and keep unrelated user changes out of commits/patches.
 - For docs, launch materials, and non-code artifacts, ground claims in live repo docs rather than stale rollout memory.
-- For Rust gates, prefer: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and targeted `cargo test` before broader gates.
+- Use the tiered gate policy; do not run full gates repeatedly during normal implementation.
+  - Inner loop: run targeted tests/checks plus `pnpm run check:fast` from the repo root, or `pnpm run check:fast` from `crates/memoryd-web/frontend` for dashboard-only work.
+  - Before claiming a task, plan step, or milestone complete: run `pnpm run check:local` unless the work is explicitly narrow and you report the narrower substitute.
+  - Final/pre-merge/CI or high-confidence validation only: run `pnpm run check:full` (alias for `bash scripts/check.sh`) and any extra surface-specific full gates.
+  - For frontend routing, visual, a11y, perf, or e2e-covered flows, add the relevant targeted Playwright/Vitest command; use gentle variants such as `pnpm run test:gentle` and `pnpm run test:e2e:gentle` while iterating.
+  - If a gate fails, fix the issue and rerun the narrow failing gate first rather than rerunning every gate.
+  - Always report which gates ran and which expensive gates were intentionally skipped, with the reason. Multiple agents may be active, so keep local gates capped and avoid unnecessary CPU saturation.
 
 ## Durable product facts
 

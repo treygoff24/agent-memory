@@ -69,15 +69,15 @@ memorum-eval --harness mock --output text
 
 ## Quality gates
 
-Focused Rust checks:
+Tiered local gates:
 
 ```bash
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace
+pnpm run check:fast   # cheap inner-loop checks; Rust fmt, shell syntax, cargo metadata, docs/spec discipline
+pnpm run check:local  # local confidence before claiming a task/milestone complete
+pnpm run check:full   # full release validation; expensive, final/pre-merge/CI-equivalent only
 ```
 
-`bash scripts/check.sh` is the canonical full local checkpoint gate; it also runs docs/lint/specgate checks when the local tools are installed.
+Use targeted `cargo test -p ...` or dashboard `pnpm run test:gentle` / `pnpm run test:e2e:gentle` while iterating. If a check fails, fix and rerun the narrow failing command first. `bash scripts/check.sh` remains the full release gate behind `pnpm run check:full` and also runs docs/lint/specgate checks when the local tools are installed.
 
 ## Docs map
 

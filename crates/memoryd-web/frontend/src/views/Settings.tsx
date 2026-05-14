@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 
+import { hashParams } from '../router';
 import { useTheme } from '../theme';
 import { AboutTab } from './settings/AboutTab';
 import { AppearanceTab } from './settings/AppearanceTab';
@@ -17,19 +18,22 @@ const settingsTabs = [
 
 type SettingsTabId = (typeof settingsTabs)[number]['id'];
 
-function tabFromSearchParams(): SettingsTabId {
-    const value = new URLSearchParams(window.location.search).get('settingsTab');
+function tabFromHash(): SettingsTabId {
+    const value = hashParams(window.location.hash).get('settingsTab');
     return settingsTabs.some((tab) => tab.id === value) ? (value as SettingsTabId) : 'appearance';
 }
 
 export function Settings() {
     const { preferences, setTheme, setDensity, setReducedMotion, setFontSize } = useTheme();
-    const tweaksEnabled = new URLSearchParams(window.location.search).get('tweaks') === '1';
-    const [activeTab, setActiveTab] = useState<SettingsTabId>(() => tabFromSearchParams());
+    const tweaksEnabled = hashParams(window.location.hash).get('tweaks') === '1';
+    const [activeTab, setActiveTab] = useState<SettingsTabId>(() => tabFromHash());
     const panelId = useMemo(() => `settings-panel-${activeTab}`, [activeTab]);
 
     return (
-        <>
+        <div
+            className="view"
+            data-testid="settings-view"
+        >
             <div className="view-header">
                 <span className="view-title">Settings</span>
                 <span className="view-subtitle">· appearance · keyboard · notifications</span>
@@ -85,6 +89,6 @@ export function Settings() {
                     {activeTab === 'about' && <AboutTab />}
                 </div>
             </div>
-        </>
+        </div>
     );
 }

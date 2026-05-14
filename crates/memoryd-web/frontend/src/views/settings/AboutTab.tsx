@@ -1,4 +1,11 @@
+import { useStatusQuery } from '../../api';
+
 export function AboutTab() {
+    const status = useStatusQuery();
+
+    const daemonVersion = status.data?.daemon.version ?? '—';
+    const socketPath = status.data?.socket ?? '—';
+
     return (
         <section
             className="card settings-card"
@@ -10,11 +17,19 @@ export function AboutTab() {
             <dl className="settings-about">
                 <div>
                     <dt>Product</dt>
-                    <dd>Memorum Dashboard embedded in memoryd-web</dd>
+                    <dd>Memorum</dd>
                 </div>
                 <div>
-                    <dt>Frontend stack</dt>
-                    <dd>React, Vite, TanStack Query, Playwright</dd>
+                    <dt>Dashboard</dt>
+                    <dd>memoryd-web · React + Vite + TanStack Query</dd>
+                </div>
+                <div>
+                    <dt>Daemon version</dt>
+                    <dd className="mono">{daemonVersion}</dd>
+                </div>
+                <div>
+                    <dt>Daemon socket</dt>
+                    <dd className="mono">{socketPath}</dd>
                 </div>
                 <div>
                     <dt>Docs</dt>

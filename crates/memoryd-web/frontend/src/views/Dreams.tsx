@@ -1,11 +1,14 @@
 import { useMemo, useState } from 'react';
 
-import { useReviewQueueQuery, type ReviewQueueItem } from '../api';
+import { useReviewQueueQuery, useStatusQuery, type ReviewQueueItem } from '../api';
 import { Inspector, type InspectorItem } from '../inspector';
+import { hashParams } from '../router';
+import { EmptyState } from '../ui';
 import { DreamList } from './dreams/DreamList';
 import { QueryErrorBanner, QueryLoadingBanner } from './QueryFeedback';
 
 export type DreamStatus = 'all' | 'proposed' | 'queued' | 'accepted' | 'completed' | 'dismissed' | 'running';
+export type DreamTab = 'journal' | 'questions' | 'cleanup';
 
 export interface DreamViewItem {
     id: string;
@@ -22,8 +25,21 @@ export interface DreamViewItem {
 
 const statuses: DreamStatus[] = ['all', 'proposed', 'queued', 'accepted', 'completed', 'dismissed', 'running'];
 
-function stateFromUrl(): DreamStatus {
-    const raw = new URLSearchParams(window.location.search).get('dreamState') as DreamStatus | null;
+// Brief §View 4 mandates Journal / Questions / Cleanup tabs. Status pills
+// nest under the active tab as within-tab filters.
+const tabs: Array<{ id: DreamTab; label: string; kinds: ReadonlyArray<DreamViewItem['kind']> }> = [
+    { id: 'journal', label: 'Journal', kinds: ['pattern', 'dream-run'] },
+    { id: 'questions', label: 'Questions', kinds: ['question'] },
+    { id: 'cleanup', label: 'Cleanup', kinds: ['cleanup'] },
+];
+
+function tabFromUrl(): DreamTab {
+    const raw = hashParams(window.location.hash).get('dreamTab');
+    return tabs.find((tab) => tab.id === raw)?.id ?? 'journal';
+}
+
+function statusFromUrl(): DreamStatus {
+    const raw = hashParams(window.location.hash).get('dreamState') as DreamStatus | null;
     return raw && statuses.includes(raw) ? raw : 'all';
 }
 
@@ -99,27 +115,67 @@ function inspectorItemFromDream(item: DreamViewItem | undefined): InspectorItem 
     };
 }
 
+function formatDreamHeader(
+    items: DreamViewItem[],
+    lastRunAt: string | undefined,
+    nextScheduled: string | undefined,
+): string {
+    const promoted = items.filter((item) => item.status === 'accepted').length;
+    const queued = items.filter((item) => item.status === 'queued').length;
+    const dropped = items.filter((item) => item.status === 'dismissed').length;
+    const parts = [
+        `Last dream: ${lastRunAt ?? '—'}`,
+        'scope: all',
+        `promoted ${promoted} / queued ${queued} / dropped ${dropped}`,
+    ];
+    if (nextScheduled) parts.push(`next scheduled ${nextScheduled}`);
+    return parts.join(' · ');
+}
+
 export function Dreams() {
     const query = useReviewQueueQuery({ status: 'dream', limit: 100 });
-    const initialFilter = stateFromUrl();
-    const [filter, setFilter] = useState<DreamStatus>(initialFilter);
+    const status = useStatusQuery();
+    const [activeTab, setActiveTab] = useState<DreamTab>(() => tabFromUrl());
+    const [statusFilter, setStatusFilter] = useState<DreamStatus>(() => statusFromUrl());
     const items = useMemo(() => query.data?.items.filter(isDreamItem).map(toDreamViewItem) ?? [], [query.data]);
+
+    const tab = tabs.find((candidate) => candidate.id === activeTab) ?? tabs[0]!;
+    const tabItems = useMemo(() => items.filter((item) => tab.kinds.includes(item.kind)), [items, tab]);
     const visible = useMemo(
-        () => (filter === 'all' ? items : items.filter((item) => item.status === filter)),
-        [filter, items],
+        () => (statusFilter === 'all' ? tabItems : tabItems.filter((item) => item.status === statusFilter)),
+        [statusFilter, tabItems],
     );
     const [selectedId, setSelectedId] = useState(visible[0]?.id ?? '');
     const selected = visible.find((item) => item.id === selectedId) ?? visible[0];
-    const counts = statuses.reduce<Record<DreamStatus, number>>(
-        (acc, status) => {
-            acc[status] = status === 'all' ? items.length : items.filter((item) => item.status === status).length;
+
+    const tabCounts = useMemo(
+        () =>
+            tabs.reduce<Record<DreamTab, number>>(
+                (acc, candidate) => {
+                    acc[candidate.id] = items.filter((item) => candidate.kinds.includes(item.kind)).length;
+                    return acc;
+                },
+                { journal: 0, questions: 0, cleanup: 0 },
+            ),
+        [items],
+    );
+
+    const statusCounts = statuses.reduce<Record<DreamStatus, number>>(
+        (acc, key) => {
+            acc[key] = key === 'all' ? tabItems.length : tabItems.filter((item) => item.status === key).length;
             return acc;
         },
         { all: 0, proposed: 0, queued: 0, accepted: 0, completed: 0, dismissed: 0, running: 0 },
     );
 
+    const lastRunAt = status.data?.dreaming.last_run.at;
+    const nextScheduled = status.data?.dreaming.next_run;
+
     return (
-        <div data-testid={`dreams-view-${filter}`}>
+        <div
+            className="view"
+            data-testid={`dreams-view-${activeTab}-${statusFilter}`}
+        >
             {query.isLoading ? <QueryLoadingBanner label="Dreams" /> : null}
             <QueryErrorBanner
                 error={query.error}
@@ -127,45 +183,77 @@ export function Dreams() {
             />
             <div className="view-header">
                 <span className="view-title">Dreams</span>
-                <span className="view-subtitle">· {items.length} · last run 03:04 today</span>
-                <span className="spacer" />
-                <div
-                    className="filter-pills"
-                    role="tablist"
-                    aria-label="Dream status filters"
-                >
-                    {statuses.map((status, index) => (
-                        <button
-                            key={status}
-                            className={`pill ${filter === status ? 'active' : ''}`}
-                            onClick={() => {
-                                setFilter(status);
-                                const next = status === 'all' ? items[0] : items.find((item) => item.status === status);
-                                setSelectedId(next?.id ?? '');
-                            }}
-                            role="tab"
-                            aria-selected={filter === status}
-                            type="button"
-                        >
-                            <span>{status}</span>
-                            <span className="count">{counts[status]}</span>
-                            <span className="kbd-hint">{index + 1}</span>
-                        </button>
-                    ))}
-                </div>
+                <span className="view-subtitle">· {formatDreamHeader(items, lastRunAt, nextScheduled)}</span>
+            </div>
+            <div
+                className="dream-tabs"
+                role="tablist"
+                aria-label="Dream sub-tabs"
+            >
+                {tabs.map((candidate) => (
+                    <button
+                        key={candidate.id}
+                        className={`dream-tab ${activeTab === candidate.id ? 'active' : ''}`}
+                        role="tab"
+                        aria-selected={activeTab === candidate.id}
+                        type="button"
+                        onClick={() => {
+                            setActiveTab(candidate.id);
+                            setStatusFilter('all');
+                            setSelectedId('');
+                        }}
+                    >
+                        <span>{candidate.label}</span>
+                        <span className="count">{tabCounts[candidate.id]}</span>
+                    </button>
+                ))}
+            </div>
+            <div
+                className="filter-pills dream-status-filters"
+                role="tablist"
+                aria-label="Dream status filters"
+            >
+                {statuses.map((key, index) => (
+                    <button
+                        key={key}
+                        className={`pill ${statusFilter === key ? 'active' : ''}`}
+                        onClick={() => {
+                            setStatusFilter(key);
+                            const next = key === 'all' ? tabItems[0] : tabItems.find((item) => item.status === key);
+                            setSelectedId(next?.id ?? '');
+                        }}
+                        role="tab"
+                        aria-selected={statusFilter === key}
+                        type="button"
+                    >
+                        <span>{key}</span>
+                        <span className="count">{statusCounts[key]}</span>
+                        <span className="kbd-hint">{index + 1}</span>
+                    </button>
+                ))}
             </div>
             <div className="panes-2">
                 <div className="pane left">
                     <div className="pane-scroll">
-                        <DreamList
-                            items={visible}
-                            selectedId={selected?.id ?? ''}
-                            onSelect={setSelectedId}
-                        />
+                        {visible.length === 0 ? (
+                            <EmptyState
+                                title="No dream output yet."
+                                body="No dream output for this scope yet. Dreams run nightly at 03:00 by default."
+                            />
+                        ) : (
+                            <DreamList
+                                items={visible}
+                                selectedId={selected?.id ?? ''}
+                                onSelect={setSelectedId}
+                            />
+                        )}
                     </div>
                 </div>
                 <div className="pane">
-                    <div className="pane-scroll">
+                    <div
+                        className="pane-scroll"
+                        tabIndex={0}
+                    >
                         <Inspector
                             item={inspectorItemFromDream(selected)}
                             layout="narrow"

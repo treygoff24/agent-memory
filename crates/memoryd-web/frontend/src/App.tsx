@@ -3,9 +3,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { createDashboardQueryClient, startNotificationsStream, useNotifications } from './api';
 import { HelpOverlay } from './help/HelpOverlay';
-import { navigationCommands } from './keyboard/Keymap';
 import { useKeymap } from './keyboard/useKeymap';
-import { CommandPalette, type Command } from './palette';
+import { commands, CommandPalette, type Command } from './palette';
+import { hashFor, useRoute, type Route } from './router';
 import { Shell } from './shell';
 import { ThemeProvider, useTheme } from './theme';
 import { Toast } from './ui';
@@ -13,14 +13,18 @@ import { viewFor, type ViewId } from './views';
 
 const queryClient = createDashboardQueryClient();
 
-function initialDashboardView(): ViewId {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('tweaks') === '1') return 'settings';
-    return viewFor((params.get('view') as ViewId | null) ?? 'inbox').id;
+// Map every Route kind to a top-level ViewId for the existing `views.ts`
+// component registry. Audit + entities/:id both reuse the same renderer; the
+// view itself reads the route via `useRoute()` to render the right detail.
+function routeToView(route: Route): ViewId {
+    if (route.kind === 'audit') return 'audit';
+    if (route.kind === 'entities') return 'entities';
+    return route.kind;
 }
 
 function DashboardApp() {
-    const [view, setView] = useState<ViewId>(() => initialDashboardView());
+    const { route, navigate } = useRoute();
+    const view = routeToView(route);
     const [paletteOpen, setPaletteOpen] = useState(false);
     const [helpOpen, setHelpOpen] = useState(false);
     const [bellOpen, setBellOpen] = useState(false);
@@ -31,9 +35,20 @@ function DashboardApp() {
 
     useEffect(() => startNotificationsStream(), []);
 
+    const navigateTo = useCallback(
+        (id: ViewId) => {
+            // ViewId → Route conversion: only the non-parameterized views are
+            // reachable from the sidebar; audit + entities/:id arrive via
+            // memory-id / entity-id links.
+            if (id === 'audit') return;
+            navigate({ kind: id } as Route);
+        },
+        [navigate],
+    );
+
     const runCommand = useCallback(
         (command: Command) => {
-            if (command.view) setView(command.view);
+            if (command.view) navigateTo(command.view);
             if (command.theme) setTheme(command.theme);
             if (command.id === 'help') setHelpOpen(true);
             if (command.id === 'close-modals') {
@@ -42,21 +57,30 @@ function DashboardApp() {
             }
             setPaletteOpen(false);
         },
-        [setTheme],
+        [navigateTo, setTheme],
     );
 
     useKeymap(
-        useCallback((key: string) => {
-            if (key === ':') setPaletteOpen(true);
-            if (key === '?') setHelpOpen(true);
-            const navigationCommand = navigationCommands.find((command) => command.key === key);
-            if (navigationCommand?.view) setView(navigationCommand.view);
-            if (key === 'Escape') {
-                setPaletteOpen(false);
-                setHelpOpen(false);
-                setBellOpen(false);
-            }
-        }, []),
+        useCallback(
+            (key: string) => {
+                if (key === ':') setPaletteOpen(true);
+                if (key === '?') setHelpOpen(true);
+                if (key === 'Escape') {
+                    setPaletteOpen(false);
+                    setHelpOpen(false);
+                    setBellOpen(false);
+                }
+                // `g <letter>` chord: useKeymap fires this composite key after
+                // the 1s window. We look up the matching nav command (gi/gr/gd
+                // ...) and route to it. Anything not in the command catalog is
+                // a no-op so misfired chords stay quiet.
+                if (key.length === 2 && key.startsWith('g')) {
+                    const cmd = commands.find((c) => c.shortcut === key);
+                    if (cmd?.view) navigateTo(cmd.view);
+                }
+            },
+            [navigateTo],
+        ),
     );
 
     const notificationRows = notifications.notifications;
@@ -68,7 +92,8 @@ function DashboardApp() {
     return (
         <Shell
             active={view}
-            onNav={setView}
+            fullbleed={view === 'reality'}
+            onNav={navigateTo}
             onPalette={() => setPaletteOpen(true)}
             onBell={() => {
                 setBellOpen((open) => !open);
@@ -126,3 +151,5 @@ export function App() {
         </QueryClientProvider>
     );
 }
+
+export { hashFor };

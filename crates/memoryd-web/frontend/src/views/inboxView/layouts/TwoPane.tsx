@@ -7,7 +7,10 @@ import { InboxList } from '../InboxList';
 export function TwoPaneLayout(props: InboxLayoutProps) {
     const selectedInspector = props.selected ? props.toInspectorItem(props.selected) : null;
     return (
-        <div data-testid="inbox-layout-two-pane">
+        <div
+            className="view"
+            data-testid="inbox-layout-two-pane"
+        >
             <InboxHeader
                 items={props.items}
                 visibleCount={props.visible.length}
@@ -31,6 +34,7 @@ export function TwoPaneLayout(props: InboxLayoutProps) {
                         <Inspector
                             item={selectedInspector}
                             layout="wide"
+                            onAction={props.onAction}
                         />
                     </div>
                 </section>

@@ -196,6 +196,44 @@ export interface RecallHitsResponse {
     hits: RecallHitSummary[];
 }
 
+export interface ProvenanceEvent {
+    timestamp: string;
+    kind: string;
+    summary: string;
+    evidence: string;
+    device: string;
+}
+
+export interface PolicyDecisionEntry {
+    policy_applied: string;
+    policy_source: string;
+    confidence_floor_pass: string;
+    grounding_satisfied: string;
+    contradiction_result: string;
+    tombstone_enforced: string;
+    sensitivity_gate_result: string;
+}
+
+export interface PrivacyScanResult {
+    labels_detected: string[];
+    storage_action: string;
+}
+
+export type SupersessionDirection = 'supersedes' | 'superseded_by';
+
+export interface SupersessionHistoryEntry {
+    direction: SupersessionDirection;
+    memory_id: string;
+    at?: string | null;
+    title: string;
+}
+
+export interface SyncStateResult {
+    devices: string[];
+    merge_status: string;
+    claim_lock_status?: string | null;
+}
+
 export interface AuditMemoryResponse {
     memory_id: string;
     title: string;
@@ -207,11 +245,11 @@ export interface AuditMemoryResponse {
     recall_count_total: number;
     recall_count_30d: number;
     last_recalled?: string | null;
-    provenance_chain: unknown[];
-    policy_decisions: unknown[];
-    privacy_scan: unknown;
-    supersession_history: unknown[];
-    sync_state: unknown;
+    provenance_chain: ProvenanceEvent[];
+    policy_decisions: PolicyDecisionEntry[];
+    privacy_scan: PrivacyScanResult;
+    supersession_history: SupersessionHistoryEntry[];
+    sync_state: SyncStateResult;
 }
 
 export interface ProvenanceWalkResponse {

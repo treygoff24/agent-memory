@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 
 import { useReviewActionMutation, useReviewQueueQuery, type ReviewQueueItem } from '../api';
 import { Inspector, type InspectorItem } from '../inspector';
+import { EmptyState, Modal, Toast } from '../ui';
 import { ReviewQueue } from './governanceView';
 import { QueryErrorBanner, QueryLoadingBanner } from './QueryFeedback';
 
@@ -127,7 +128,7 @@ function inspectorItemFromGovernance(item: GovernanceViewItem | undefined): Insp
         id: item.id,
         title: item.title,
         namespace: item.namespace,
-        body: `${item.reason} Policy decision trace: ${item.trace.map((step) => `${step.rule}=${step.outcome}`).join(' → ')}.`,
+        body: item.reason,
         sensitivity: item.sensitivity,
         encrypted: item.encrypted,
         meta: item.meta,
@@ -148,8 +149,21 @@ function inspectorItemFromGovernance(item: GovernanceViewItem | undefined): Insp
             title: `${step.rule}: ${step.outcome}`,
             score: Math.max(0.1, 1 - step.ms / 10),
         })),
+        policyTrace: item.trace.map((step, index) => ({
+            step: index + 1,
+            rule: step.rule,
+            action: step.action,
+            outcome: step.outcome,
+            ms: step.ms,
+        })),
         summary: item.decision,
     };
+}
+
+interface EditModalState {
+    id: string;
+    original: string;
+    draft: string;
 }
 
 export function Governance() {
@@ -162,6 +176,9 @@ export function Governance() {
     const [filter, setFilter] = useState<GovernanceFilter>('all');
     const [selectedId, setSelectedId] = useState(items[0]?.id ?? '');
     const [checked, setChecked] = useState<Set<string>>(() => new Set());
+    const [editModal, setEditModal] = useState<EditModalState | null>(null);
+    const [toast, setToast] = useState<{ title: string; body: string } | null>(null);
+
     const visible = useMemo(
         () => (filter === 'all' ? items : items.filter((item) => item.severity === filter || item.decision === filter)),
         [filter, items],
@@ -209,8 +226,44 @@ export function Governance() {
         setChecked(new Set());
     }
 
+    function openEditModal(item: GovernanceViewItem) {
+        setEditModal({ id: item.id, original: item.reason, draft: item.reason });
+    }
+
+    function commitEdit() {
+        if (!editModal) return;
+        reviewAction.mutate(
+            { id: editModal.id, action: 'edit', reason: editModal.draft },
+            {
+                onSuccess: () => {
+                    setEditModal(null);
+                },
+                onError: (error) => {
+                    const status = (error as { status?: number }).status;
+                    if (status === 409) {
+                        setToast({
+                            title: 'Edit conflict',
+                            body: 'This item changed elsewhere. Refresh to see latest.',
+                        });
+                    } else if (status === 403) {
+                        setToast({
+                            title: 'Not allowed',
+                            body: 'You do not have permission to edit this item.',
+                        });
+                    } else {
+                        setToast({ title: 'Edit failed', body: 'The edit could not be saved. Please try again.' });
+                    }
+                    setEditModal(null);
+                },
+            },
+        );
+    }
+
     return (
-        <div data-testid={`governance-view-${filter}`}>
+        <div
+            className="view"
+            data-testid={`governance-view-${filter}`}
+        >
             {query.isLoading ? <QueryLoadingBanner label="Governance" /> : null}
             <QueryErrorBanner
                 error={query.error ?? reviewAction.error}
@@ -279,17 +332,31 @@ export function Governance() {
             <div className="panes-2">
                 <div className="pane left">
                     <div className="pane-scroll">
-                        <ReviewQueue
-                            items={visible}
-                            selectedId={selected?.id ?? ''}
-                            checked={checked}
-                            onSelect={setSelectedId}
-                            onCheck={toggleChecked}
-                        />
+                        {visible.length === 0 && !query.isLoading ? (
+                            <EmptyState
+                                title="Governance queue is clear."
+                                body="Nothing pending review."
+                            />
+                        ) : (
+                            <ReviewQueue
+                                items={visible}
+                                selectedId={selected?.id ?? ''}
+                                checked={checked}
+                                onSelect={setSelectedId}
+                                onCheck={toggleChecked}
+                                onEdit={openEditModal}
+                            />
+                        )}
                     </div>
                 </div>
                 <div className="pane">
-                    <div className="pane-scroll">
+                    {/* Inspector content is read-only at this density; mark the scroll
+                        region keyboard-focusable so axe scrollable-region-focusable
+                        clears (Safari keyboard accessibility, WCAG 2.1.1). */}
+                    <div
+                        className="pane-scroll"
+                        tabIndex={0}
+                    >
                         <Inspector
                             item={inspectorItemFromGovernance(selected)}
                             layout="narrow"
@@ -297,6 +364,57 @@ export function Governance() {
                     </div>
                 </div>
             </div>
+
+            {editModal ? (
+                <Modal
+                    title="Edit body"
+                    onClose={() => setEditModal(null)}
+                >
+                    <div className="modal-diff">
+                        <div className="modal-diff-col">
+                            <div className="modal-diff-label">Current</div>
+                            <div className="modal-diff-body">{editModal.original}</div>
+                        </div>
+                        <div className="modal-diff-col">
+                            <div className="modal-diff-label">Edited</div>
+                            <textarea
+                                aria-label="Edit body"
+                                className="modal-diff-textarea"
+                                value={editModal.draft}
+                                onChange={(event) => setEditModal({ ...editModal, draft: event.target.value })}
+                                rows={8}
+                            />
+                        </div>
+                    </div>
+                    <div className="modal-actions">
+                        <button
+                            className="btn"
+                            onClick={() => setEditModal(null)}
+                            type="button"
+                        >
+                            Cancel
+                        </button>
+                        <button
+                            className="btn primary"
+                            disabled={editModal.draft === editModal.original || reviewAction.isPending}
+                            onClick={commitEdit}
+                            type="button"
+                        >
+                            Commit
+                        </button>
+                    </div>
+                </Modal>
+            ) : null}
+
+            {toast ? (
+                <div className="toast-stack">
+                    <Toast
+                        title={toast.title}
+                        body={toast.body}
+                        onDismiss={() => setToast(null)}
+                    />
+                </div>
+            ) : null}
         </div>
     );
 }

@@ -5,15 +5,18 @@ import { RealityCheck } from '../../src/views/RealityCheck';
 import { renderWithProviders } from '../support/render';
 
 describe('RealityCheck focus mode', () => {
-    it('dispatches all RealityCheckRequest::Respond action variants', async () => {
+    it('dispatches the four brief-mandated answer-card actions plus the keyboard-only not_relevant action', async () => {
         const onRespond = vi.fn();
         renderWithProviders(<RealityCheck onRespond={onRespond} />);
 
+        // Brief §View 2 mandates four answer cards: Confirm / Correct / Forget /
+        // Skip. The 'not_relevant' daemon action stays reachable as the 'n'
+        // keyboard shortcut for power users — the visible stack matches the brief.
         await screen.findByRole('button', { name: /Confirm/i });
         fireEvent.click(screen.getByRole('button', { name: /Confirm/i }));
         fireEvent.click(screen.getByRole('button', { name: /Forget/i }));
-        fireEvent.click(screen.getByRole('button', { name: /Not relevant/i }));
-        fireEvent.click(screen.getByRole('button', { name: /Skip this week/i }));
+        fireEvent.keyDown(window, { key: 'n' });
+        fireEvent.click(screen.getByRole('button', { name: /Skip/i }));
 
         await waitFor(() => expect(onRespond).toHaveBeenCalledTimes(4));
         expect(onRespond.mock.calls.map(([payload]) => payload.action)).toEqual([

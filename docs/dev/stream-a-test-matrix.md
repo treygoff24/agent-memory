@@ -1,5 +1,7 @@
 # Stream A test matrix
 
+> This matrix lists CI/full-validation components. During local implementation use the tiered commands: `pnpm run check:fast` for inner-loop checks, `pnpm run check:local` before claiming milestones, and `pnpm run check:full` / CI for final validation. Do not run every row after each small task.
+
 | Gate               | Command                                                                                                  | Status                                   |
 | ------------------ | -------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
 | Rust fmt           | `cargo fmt --all -- --check`                                                                             | CI                                       |

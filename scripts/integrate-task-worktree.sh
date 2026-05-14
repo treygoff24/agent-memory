@@ -11,14 +11,16 @@ branch="$(git -C "../agent-memory-wt/task-${task_id}" branch --show-current)"
 git -C "../agent-memory-wt/task-${task_id}" rebase main
 task_worktree="../agent-memory-wt/task-${task_id}"
 case "$gate" in
-  narrow) (cd "$task_worktree" && cargo test --workspace) ;;
-  checkpoint|full) (cd "$task_worktree" && bash scripts/check.sh) ;;
+  narrow|fast) (cd "$task_worktree" && pnpm run check:fast) ;;
+  checkpoint|local) (cd "$task_worktree" && pnpm run check:local) ;;
+  full) (cd "$task_worktree" && pnpm run check:full) ;;
   *) echo "unknown gate: $gate" >&2; exit 1 ;;
 esac
 git merge --ff-only "$branch"
 case "$gate" in
-  narrow) cargo test --workspace ;;
-  checkpoint|full) bash scripts/check.sh ;;
+  narrow|fast) pnpm run check:fast ;;
+  checkpoint|local) pnpm run check:local ;;
+  full) pnpm run check:full ;;
 esac
 git worktree remove "../agent-memory-wt/task-${task_id}"
 git branch -d "$branch"

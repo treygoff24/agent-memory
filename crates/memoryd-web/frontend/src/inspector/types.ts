@@ -95,7 +95,18 @@ export type InboxDreamItem = InspectorBase & { kind: 'inbox-dream' };
 export type RecallEventItem = InspectorBase & { kind: 'recall-event' };
 export type DreamOutputItem = InspectorBase & { kind: 'dream-output' };
 export type PeerDetailItem = InspectorBase & { kind: 'peer-detail' };
-export type GovernanceDecisionItem = InspectorBase & { kind: 'governance-decision' };
+export interface GovernancePolicyTraceStep {
+    step: number;
+    rule: string;
+    action: 'allow' | 'match' | 'deny' | 'quarantine';
+    outcome: string;
+    ms: number;
+}
+
+export type GovernanceDecisionItem = InspectorBase & {
+    kind: 'governance-decision';
+    policyTrace?: GovernancePolicyTraceStep[];
+};
 export type EntityDetailItem = InspectorBase & { kind: 'entity-detail' };
 
 export type InspectorItem =

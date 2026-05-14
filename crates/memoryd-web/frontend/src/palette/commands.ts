@@ -2,6 +2,10 @@ import type { ViewId } from '../views';
 
 import { themes, type Theme } from '../theme';
 
+// Audit is reachable only via memory-id links (#/audit/:memory_id), not from
+// the palette or sidebar. Every other view is navigable.
+type NavViewId = Exclude<ViewId, 'audit'>;
+
 export interface Command {
     id: string;
     label: string;
@@ -12,7 +16,7 @@ export interface Command {
     scope?: ViewId;
 }
 
-const navigationShortcuts: Record<ViewId, string> = {
+const navigationShortcuts: Record<NavViewId, string> = {
     inbox: 'gi',
     reality: 'gr',
     recall: 'gl',
@@ -23,7 +27,7 @@ const navigationShortcuts: Record<ViewId, string> = {
     settings: 'gs',
 };
 
-const navigationTargets: Array<{ id: ViewId; label: string }> = [
+const navigationTargets: Array<{ id: NavViewId; label: string }> = [
     { id: 'inbox', label: 'Inbox' },
     { id: 'reality', label: 'Reality Check' },
     { id: 'recall', label: 'Recall' },

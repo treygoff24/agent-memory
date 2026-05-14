@@ -5,7 +5,10 @@
     "format": "cargo fmt --all && oxfmt --ignore-path .oxfmtignore .",
     "format:check": "cargo fmt --all -- --check && oxfmt --check --ignore-path .oxfmtignore .",
     "lint": "cargo clippy --workspace --all-targets --all-features -- -D warnings && oxlint .",
-    "check": "bash scripts/check.sh"
+    "check:fast": "bash scripts/check-fast.sh",
+    "check:local": "bash scripts/check-local.sh",
+    "check:full": "bash scripts/check.sh",
+    "check": "pnpm run check:full"
   },
   "devDependencies": {
     "oxfmt": "latest",

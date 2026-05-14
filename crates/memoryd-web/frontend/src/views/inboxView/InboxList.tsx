@@ -12,10 +12,14 @@ interface InboxListProps {
 
 export function InboxList({ items, selectedId, focusedId, onFocus, onSelect }: InboxListProps) {
     if (items.length === 0) {
+        // Brief §View 1 verbatim. "Last activity" is data-dependent and we don't
+        // have a daemon endpoint that surfaces it directly today, so the second
+        // sentence stays as the brief specified and acquires real time in
+        // Phase 2 once the inbox tracks its own last-activity timestamp.
         return (
             <EmptyState
-                title="Inbox is clear"
-                body="No matching review items."
+                title="Inbox is clear."
+                body="All review items processed."
             />
         );
     }

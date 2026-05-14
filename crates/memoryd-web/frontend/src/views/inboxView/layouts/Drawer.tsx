@@ -7,7 +7,10 @@ import { InboxList } from '../InboxList';
 export function DrawerLayout(props: InboxLayoutProps) {
     const selectedInspector = props.selected ? props.toInspectorItem(props.selected) : null;
     return (
-        <div data-testid="inbox-layout-drawer">
+        <div
+            className="view"
+            data-testid="inbox-layout-drawer"
+        >
             <InboxHeader
                 items={props.items}
                 visibleCount={props.visible.length}
@@ -49,6 +52,7 @@ export function DrawerLayout(props: InboxLayoutProps) {
                         <Inspector
                             item={selectedInspector}
                             layout="narrow"
+                            onAction={props.onAction}
                         />
                     </div>
                 </aside>

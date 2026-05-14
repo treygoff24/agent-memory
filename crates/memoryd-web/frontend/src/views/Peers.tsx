@@ -1,8 +1,11 @@
 import { useMemo, useState } from 'react';
 
+import { useHashParam } from '../router';
+
 import { useSyncDashboardQuery, type ClaimLockInfo, type PeerSessionStatus } from '../api';
 import { Inspector, type InspectorItem } from '../inspector';
-import { TrustLedger } from './peersView';
+import { EmptyState } from '../ui';
+import { CoordStrip, PeerCard, TrustLedger } from './peersView';
 import { QueryErrorBanner, QueryLoadingBanner } from './QueryFeedback';
 
 export type PeerTrust = 'trusted' | 'limited' | 'revoked';
@@ -166,7 +169,12 @@ function inspectorItemFromPeer(peer: PeerViewItem | undefined): InspectorItem | 
 }
 
 export function Peers() {
+    // Route-local layout selector lives in the hash query (`#/peers?layout=table`).
+    // Subscribes to hashchange so the toggle anchor flips the layout immediately.
+    const layoutParam = useHashParam('layout');
+    const layout: 'cards' | 'table' = layoutParam === 'table' ? 'table' : 'cards';
     const query = useSyncDashboardQuery();
+    const coordLevel = query.data?.peer_presence.coordination_level ?? 2;
     const items = useMemo(
         () =>
             query.data?.peer_presence.active_sessions.map((session, index) =>
@@ -187,12 +195,17 @@ export function Peers() {
     }
 
     return (
-        <div data-testid="peers-view">
+        <div
+            className="view"
+            data-testid="peers-view"
+        >
             {query.isLoading ? <QueryLoadingBanner label="Peers" /> : null}
             <QueryErrorBanner
                 error={query.error}
                 label="Peers"
             />
+
+            {/* View header */}
             <div className="view-header">
                 <span className="view-title">Peers</span>
                 <span className="view-subtitle">
@@ -200,6 +213,23 @@ export function Peers() {
                     {items.filter((peer) => peer.trust === 'trusted').length} trusted
                 </span>
                 <span className="spacer" />
+                {layout === 'cards' ? (
+                    <a
+                        aria-label="Switch to table layout"
+                        className="btn"
+                        href="#/peers?layout=table"
+                    >
+                        table
+                    </a>
+                ) : (
+                    <a
+                        aria-label="Switch to card layout"
+                        className="btn primary"
+                        href="#/peers"
+                    >
+                        cards
+                    </a>
+                )}
                 <button
                     className="btn primary"
                     type="button"
@@ -207,25 +237,74 @@ export function Peers() {
                     + pair new device
                 </button>
             </div>
-            <div className="panes-2">
-                <div className="pane left">
-                    <TrustLedger
-                        peers={sorted}
-                        selectedId={selected?.id ?? ''}
-                        sort={sort}
-                        onSort={updateSort}
-                        onSelect={setSelectedId}
-                    />
-                </div>
-                <div className="pane">
-                    <div className="pane-scroll">
-                        <Inspector
-                            item={inspectorItemFromPeer(selected)}
-                            layout="narrow"
+
+            {/* Coordination level strip */}
+            <CoordStrip level={coordLevel} />
+
+            {/* Main content */}
+            {layout === 'table' ? (
+                /* ---- dense table fallback ---- */
+                <div className="panes-2">
+                    <div className="pane left">
+                        <TrustLedger
+                            peers={sorted}
+                            selectedId={selected?.id ?? ''}
+                            sort={sort}
+                            onSort={updateSort}
+                            onSelect={setSelectedId}
                         />
                     </div>
+                    <div className="pane">
+                        <div
+                            className="pane-scroll"
+                            tabIndex={0}
+                        >
+                            <Inspector
+                                item={inspectorItemFromPeer(selected)}
+                                layout="narrow"
+                            />
+                        </div>
+                    </div>
                 </div>
-            </div>
+            ) : items.length === 0 && !query.isLoading ? (
+                /* ---- empty state ---- */
+                <EmptyState
+                    body="Add a peer device by cloning your Memorum git remote on another machine and running `memoryd init --adopt`."
+                    title="No peers yet."
+                />
+            ) : (
+                /* ---- card-per-peer + inspector ---- */
+                <div className="panes-2">
+                    <div className="pane left">
+                        <div
+                            className="pane-scroll"
+                            tabIndex={0}
+                        >
+                            <div className="peer-cards">
+                                {sorted.map((peer) => (
+                                    <PeerCard
+                                        key={peer.id}
+                                        peer={peer}
+                                        selected={selected?.id === peer.id}
+                                        onSelect={setSelectedId}
+                                    />
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+                    <div className="pane">
+                        <div
+                            className="pane-scroll"
+                            tabIndex={0}
+                        >
+                            <Inspector
+                                item={inspectorItemFromPeer(selected)}
+                                layout="narrow"
+                            />
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

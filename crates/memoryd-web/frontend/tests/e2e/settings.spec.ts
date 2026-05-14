@@ -11,7 +11,10 @@ test('settings tabs expose theme editor and notification controls', async ({ pag
 });
 
 test('settings tweaks mode opens the dev tweaks panel', async ({ page }) => {
-    await page.goto('/?tweaks=1');
+    // The `tweaks` selector is route-local (Settings-only), so it lives in the
+    // hash query — `#/settings?tweaks=1`. Tests should use the canonical URL
+    // shape rather than relying on the legacy `?view=…` redirect path.
+    await page.goto('/#/settings?tweaks=1');
 
     await expect(page.getByRole('main').getByText('Settings', { exact: true })).toBeVisible();
     await expect(page.getByRole('region', { name: 'Dev tweaks' })).toContainText('Experimental dashboard controls');

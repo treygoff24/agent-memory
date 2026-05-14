@@ -2,6 +2,8 @@ import { useMemo, useState } from 'react';
 
 import { useRecallHitsQuery, type RecallHitSummary } from '../api';
 import { Inspector, type InspectorItem } from '../inspector';
+import { hashParams } from '../router';
+import { EmptyState } from '../ui';
 import { QueryErrorBanner, QueryLoadingBanner } from './QueryFeedback';
 import { RecallList } from './recall/RecallList';
 import { TimelineStrip, type TimelineBucket } from './recall/TimelineStrip';
@@ -14,6 +16,10 @@ export interface RecallLedgerEvent {
     device: string;
     agent: string;
     memory: string;
+    /** The raw memory_id from the recall hit — used for encrypted summary display. */
+    memory_id: string;
+    /** True when the original recall hit had a null summary (encrypted memory). */
+    isEncrypted: boolean;
     namespace: string;
     score: number;
     latencyMs: number;
@@ -31,12 +37,16 @@ interface RawRecallEvent {
     device: string;
     agent: string;
     memory: string;
+    /** The canonical memory_id for this event — kept separately from the display text. */
+    memory_id?: string;
+    /** Whether the original hit had a null summary (encrypted memory). */
+    isEncrypted?: boolean;
     namespace: string;
     score: number;
 }
 
 function stateFromUrl(): string {
-    return new URLSearchParams(window.location.search).get('recallState') ?? 'default';
+    return hashParams(window.location.hash).get('recallState') ?? 'default';
 }
 
 function normalizeAgent(agent: string): string {
@@ -73,6 +83,8 @@ export function toRecallLedgerEvent(event: RawRecallEvent, index: number): Recal
         device: event.device,
         agent: normalizeAgent(event.agent),
         memory: event.memory,
+        memory_id: event.memory_id ?? event.id,
+        isEncrypted: event.isEncrypted ?? false,
         namespace: event.namespace,
         score: event.score,
         latencyMs: 18 + (index % 31),
@@ -81,6 +93,7 @@ export function toRecallLedgerEvent(event: RawRecallEvent, index: number): Recal
 }
 
 function fromRecallHit(hit: RecallHitSummary, index: number): RecallLedgerEvent {
+    const encrypted = hit.summary == null;
     const summary = hit.summary ?? hit.memory_id;
     return toRecallLedgerEvent(
         {
@@ -89,6 +102,8 @@ function fromRecallHit(hit: RecallHitSummary, index: number): RecallLedgerEvent 
             device: hit.device,
             agent: agentFromDevice(hit.device),
             memory: summary,
+            memory_id: hit.memory_id,
+            isEncrypted: encrypted,
             namespace: namespaceFromSummary(summary),
             score: 0.5 + (index % 50) / 100,
         },
@@ -165,6 +180,7 @@ export function Recall({ events, heavy }: RecallProps) {
     const [search, setSearch] = useState('');
     const [selectedBucket, setSelectedBucket] = useState<number | null>(null);
     const [selectedId, setSelectedId] = useState(sourceEvents[0]?.id ?? '');
+    const bucketMode = heavyMode ? '30d' : '24h';
 
     const visible = useMemo(
         () =>
@@ -178,16 +194,24 @@ export function Recall({ events, heavy }: RecallProps) {
                         .includes(search.toLowerCase())
                 )
                     return false;
+                if (selectedBucket !== null) {
+                    const d = new Date(event.isoTime);
+                    const bucketKey =
+                        bucketMode === '24h' ? d.getUTCHours() : d.getUTCDate() % 30;
+                    if (bucketKey !== selectedBucket) return false;
+                }
                 return true;
             }),
-        [agent, device, search, sourceEvents],
+        [agent, device, search, sourceEvents, selectedBucket, bucketMode],
     );
     const selected = visible.find((event) => event.id === selectedId) ?? visible[0];
-    const bucketMode = heavyMode ? '30d' : '24h';
     const buckets = bucketMode === '30d' ? makeDayBuckets(sourceEvents) : makeHourBuckets(sourceEvents);
 
     return (
-        <div data-testid={`recall-ledger-${urlState}`}>
+        <div
+            className="view"
+            data-testid={`recall-ledger-${urlState}`}
+        >
             {!events && query.isLoading ? <QueryLoadingBanner label="Recall ledger" /> : null}
             <QueryErrorBanner
                 error={query.error}
@@ -253,15 +277,25 @@ export function Recall({ events, heavy }: RecallProps) {
                         <span>lat</span>
                         <span>score</span>
                     </div>
-                    <RecallList
-                        events={visible}
-                        selectedId={selected?.id ?? ''}
-                        onSelect={setSelectedId}
-                        heavy={heavyMode}
-                    />
+                    {visible.length === 0 && !query.isLoading ? (
+                        <EmptyState
+                            title="No recall events yet."
+                            body="Recall events appear here once an agent retrieves a memory."
+                        />
+                    ) : (
+                        <RecallList
+                            events={visible}
+                            selectedId={selected?.id ?? ''}
+                            onSelect={setSelectedId}
+                            heavy={heavyMode}
+                        />
+                    )}
                 </div>
                 <div className="pane">
-                    <div className="pane-scroll">
+                    <div
+                        className="pane-scroll"
+                        tabIndex={0}
+                    >
                         <Inspector
                             item={inspectorItemFromRecall(selected)}
                             layout="narrow"

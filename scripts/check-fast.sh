@@ -15,55 +15,63 @@ phase() {
   echo "==> $*"
 }
 
-if command -v sccache >/dev/null 2>&1; then
+export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-${MEMORUM_CHECK_JOBS:-2}}"
+echo "using CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS"
+
+if [[ "${MEMORUM_CHECK_USE_SCCACHE:-0}" == "1" ]] && command -v sccache >/dev/null 2>&1; then
   export RUSTC_WRAPPER="${RUSTC_WRAPPER:-sccache}"
   echo "using RUSTC_WRAPPER=$RUSTC_WRAPPER"
 else
-  echo "warning: sccache not installed; Rust compilation will not use sccache" >&2
-fi
-
-if command -v cargo-nextest >/dev/null 2>&1; then
-  echo "cargo-nextest detected; dogfood gates stay on targeted cargo test commands"
-else
-  echo "warning: cargo-nextest not installed; not needed for check-fast" >&2
+  unset RUSTC_WRAPPER
 fi
 
 phase "rustfmt"
 cargo fmt --all -- --check
 
 phase "shell syntax"
-# Paths are repo-relative; this script (and the others under scripts/) assume CWD is
-# the repo root, matching how check.sh and check-dogfood.sh are invoked.
-bash -n scripts/check.sh scripts/check-fast.sh scripts/check-dogfood.sh scripts/install-memorum.sh
+# Paths are repo-relative; this script (and the others under scripts/) assume
+# CWD is the repo root.
+while IFS= read -r script; do
+  bash -n "$script"
+done < <(find scripts -maxdepth 1 -type f -name '*.sh' | sort)
 
-phase "targeted dogfood clippy"
-cargo clippy -p memoryd -p memoryd-tui -p memorum-eval -p memorum-coordination --all-targets -- -D warnings
+phase "cargo metadata"
+cargo metadata --locked --format-version=1 --no-deps >/dev/null
 
-phase "live-harness test compile"
-cargo check -p memorum-eval --features live-harness --tests --locked
-
-if command -v pnpm >/dev/null 2>&1 && [ -f package.json ]; then
-  phase "oxfmt"
-  pnpm exec oxfmt --check --ignore-path .oxfmtignore .
-
-  phase "oxlint"
-  pnpm exec oxlint .
+if [[ "${MEMORUM_CHECK_FAST_COMPILE:-0}" == "1" ]]; then
+  phase "optional rust compile check"
+  # Exclude memoryd-web from the fast Rust compile path because its build.rs
+  # shells out to the dashboard frontend production build. Also avoid
+  # --all-targets here: test/example/bench target compilation belongs in
+  # check:local, not the inner-loop gate.
+  cargo check --workspace --exclude memoryd-web --locked
 else
-  echo "warning: pnpm/package.json unavailable; skipping JS format/lint checks" >&2
+  echo "skipping Rust compile in check-fast; run targeted cargo check/test or check:local before claiming completion"
+fi
+
+if [[ "${MEMORUM_CHECK_FAST_FORMAT:-0}" == "1" ]]; then
+  if command -v pnpm >/dev/null 2>&1 && [ -f package.json ]; then
+    phase "oxfmt"
+    pnpm exec oxfmt --check --ignore-path .oxfmtignore .
+
+    phase "oxlint"
+    pnpm exec oxlint .
+  else
+    echo "warning: pnpm/package.json unavailable; skipping JS format/lint checks" >&2
+  fi
+else
+  echo "skipping whole-repo oxfmt/oxlint in check-fast; check:local/check:full run them"
 fi
 
 if command -v specgate >/dev/null 2>&1; then
   phase "specgate validate"
   specgate validate
-
-  phase "specgate check"
-  specgate check --output-mode deterministic
-
-  phase "specgate doctor"
-  specgate doctor ownership --project-root . --format json
 else
-  echo "warning: specgate not installed; skipping specgate gates" >&2
+  echo "warning: specgate not installed; skipping specgate validate" >&2
 fi
+
+phase "docs command validity"
+./scripts/docs-command-validity.sh
 
 phase "baseline discipline"
 ./scripts/check-baseline-discipline.sh

@@ -14,11 +14,18 @@
     "format:check": "prettier --check .",
     "typecheck": "tsc -b --pretty false",
     "test": "node scripts/run-vitest.mjs",
+    "test:unit": "node scripts/run-vitest.mjs run --exclude 'tests/budgets/**'",
+    "test:gentle": "node scripts/run-vitest.mjs run --exclude 'tests/budgets/**' --minWorkers=1 --maxWorkers=2",
+    "test:budgets": "node scripts/run-vitest.mjs run tests/budgets --minWorkers=1 --maxWorkers=1",
     "test:visual": "node scripts/run-playwright.mjs visual",
     "test:e2e": "node scripts/run-playwright.mjs e2e",
+    "test:e2e:gentle": "node scripts/run-playwright.mjs e2e --workers=1 --reporter=line",
     "test:a11y": "node scripts/run-playwright.mjs a11y",
     "test:perf": "node scripts/run-playwright.mjs perf",
-    "check:all": "pnpm run lint && pnpm run typecheck && pnpm run test --run && pnpm exec playwright install chromium && pnpm run test:e2e -- --reporter=list"
+    "check:fast": "pnpm run typecheck && pnpm run test:gentle",
+    "check:local": "pnpm run lint && pnpm run typecheck && pnpm run test:gentle",
+    "check:full": "pnpm run lint && pnpm run typecheck && pnpm run test:unit && pnpm run test:budgets && pnpm exec playwright install chromium && pnpm run test:visual && pnpm run test:a11y && pnpm run test:perf && pnpm run test:e2e -- --reporter=list",
+    "check:all": "pnpm run check:full"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.62.7",
@@ -45,6 +52,7 @@
     "jsdom": "^25.0.1",
     "msw": "^2.6.4",
     "prettier": "^3.3.3",
+    "rollup-plugin-visualizer": "^7.0.1",
     "typescript": "^5.6.3",
     "vite": "^5.4.11",
     "vitest": "^2.1.5"

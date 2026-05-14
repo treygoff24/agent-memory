@@ -6,6 +6,16 @@ Implementation home for the agent-memory system. Stream A is the Rust substrate 
 
 **Streams A-I are shipped.** Stream G's canonical benchmark baseline is `bench/stream-g-observability-results.darwin-arm64.json`; Stream H's eval harness now reports real assertion counts and runtime skip markers instead of fabricated pass/skip rows; Stream I's production-like benchmark baseline is `bench/stream-i-cross-session-results.darwin-arm64.json`. Stream H real-harness flows still require authenticated Claude/Codex CLI validation before claiming live LLM success for the auth-gated live LLM paths.
 
+## Gate policy (as of 2026-05-14)
+
+Use the tiered local gates instead of treating the full release gate as the default after every small task:
+
+- **Fast inner loop:** `pnpm run check:fast` at the repo root. For dashboard-only work, also or instead run `pnpm run check:fast` from `crates/memoryd-web/frontend`. Use targeted `cargo test -p ...`, `pnpm run test:gentle`, or `pnpm run test:e2e:gentle` while iterating.
+- **Local confidence:** `pnpm run check:local` before claiming a task, plan step, or milestone complete. It runs the fast gate, full Rust clippy/tests/docs, convergence smoke, and the dashboard local gate while capping local parallelism.
+- **Full validation:** `pnpm run check:full` / `bash scripts/check.sh` only for final verification, pre-merge/release, CI-equivalent confidence, or changes that directly require the full stack. It now includes the dashboard full gate plus release Rust tests/benches/durability.
+
+If a gate fails, fix the issue and rerun the narrow failing gate first. Report exactly which gates ran and which expensive gates were skipped, with reasons. Multiple agents may be active in different worktrees, so avoid cooking the machine with repeated full gates.
+
 **Dogfood-readiness gap-fix is closed out** as of 2026-05-11 on branch `dogfood/codex-readiness-2026-05-07` (current head `2a9a9ad`, 26 commits ahead of `main`). The gap-fix plan at `docs/plans/2026-05-08-dogfood-readiness-codex-gap-fix.md` (six tasks G1–G6, with G2 fanned across G2A–G2H) was executed correctly using the worktree-per-task discipline this time — G1 split `handlers.rs` into a module dir, G2A–G2H ported the frontend off fixtures, G3 ratified the §14.1 ten-tool MCP amendment, G4 added `ReconcileReport.blocking_conflicts: Vec<String>` as the only authorized Stream A surface touch. Post-G5 patches added daemon-backed Reality Check session creation, SSE heartbeat for notifications, and a `noise_floor_ms` tolerance for sub-millisecond `query_by_id` jitter on `bench/baseline.darwin-arm64.json`. The closeout record is at `docs/reviews/2026-05-08-gap-fix-verification.md`. The full release gate is now green at `2a9a9ad`: the 5/11 Phase-2 waiver was retired after a second hardening pass — `73853bd` added 5s polling around `memory_file_body` plus a T09 fallback for empty daemon write responses, and `2a9a9ad` added `#[serial]` (via `serial_test = 3.4`) to the 12 handbook integration tests so they serialize through a process-local mutex rather than fighting over APFS fsync visibility while ~15 concurrent `DaemonScaffold` daemons run. Run with `CARGO_BUILD_JOBS=4 bash scripts/check.sh` to keep the machine usable under the heavy compile.
 
 Stream A: Codex landed the full substrate in `d227dce` on `main` — all 13 tasks from the v0.3 plan integrated in a single commit (~41k LOC, 183 files). `docs/reviews/stream-a-final-review.md` records release-certification with no blocking findings after remediation; full release gate green.
@@ -133,7 +143,7 @@ When reviewing the plan, treat all of the above as idiomatic for the target runt
 
 - `main` is the only long-lived branch, fast-forward only.
 - Each task runs in its own git worktree at `../agent-memory-wt/task-<NN>/` on a `stream-a/task-<NN>-<slug>` branch.
-- Workers run only their per-task narrow gate; **`scripts/check.sh` runs only on the integrated trunk after `integrate-task-worktree.sh` fast-forwards `main`**, never inside a task worktree (stub modules from unstarted tasks would fail workspace tests for the wrong reason).
+- Workers run only targeted checks or `pnpm run check:fast`; **`pnpm run check:local` is the normal integration/milestone gate and `scripts/check.sh` / `pnpm run check:full` runs only for final/pre-merge validation**, not inside every task worktree (stub modules from unstarted tasks can fail workspace tests for the wrong reason).
 - `Cargo.lock` and `pnpm-lock.yaml` are orchestrator-merged. Workers update `Cargo.toml` only.
 - Don't touch Codex's in-flight worktrees or branches without checking with Trey.
 
@@ -168,7 +178,7 @@ These are spec-mandated, not preferences:
 - **`modules/stream-a-*.spec.yml`** — specgate module manifests.
 - **`docs/specs/stream-e-passive-recall-v0.{1,2,3,4,5}.md`** — Stream E spec history. v0.5 is the live contract; the others are kept on disk per the versioning convention. Each version's "Revision goal" block at the top documents what changed and why. **`docs/plans/2026-04-30-stream-e-passive-recall.md`** — Stream E implementation plan, shipped from plan revision v0.4 (see the file's Plan Revision History block). For current behavior, use the v0.5 spec plus `docs/api/stream-e-passive-recall-api.md`.
 
-The full release gate is `bash scripts/check.sh` (with `BENCH_PROFILE=darwin-arm64` on Trey's machine).
+Gate taxonomy: `pnpm run check:fast` for inner-loop validation, `pnpm run check:local` for local confidence before claiming a milestone, and `pnpm run check:full` / `bash scripts/check.sh` for full release validation (with `BENCH_PROFILE=darwin-arm64` on Trey's machine when needed).
 
 ## Running review or sanity-check work
 
@@ -181,7 +191,7 @@ Standard recipe when Trey asks "review this" or "is this ready":
 
 ## What NOT to do
 
-- Don't run `cargo test --workspace` inside Codex's task worktrees — see "Repository state strategy."
+- Don't run `cargo test --workspace` or `pnpm run check:full` inside Codex's task worktrees by default — see "Repository state strategy." Use targeted checks or `pnpm run check:fast`; escalate to `check:local`/`check:full` only at the right boundary.
 - Don't run `git pull` on `/Users/treygoff/Code/agentlinters` — the SHA is pinned at `91446bb` and assets are copied from there.
 - Don't overwrite `bench/baseline.*.json` programmatically — they require explicit human commits.
 - Don't bump spec or plan versions without Trey's explicit ask.

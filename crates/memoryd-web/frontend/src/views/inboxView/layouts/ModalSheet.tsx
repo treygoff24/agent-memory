@@ -7,7 +7,10 @@ import { InboxList } from '../InboxList';
 export function ModalSheetLayout(props: InboxLayoutProps) {
     const selectedInspector = props.selected ? props.toInspectorItem(props.selected) : null;
     return (
-        <div data-testid="inbox-layout-modal">
+        <div
+            className="view"
+            data-testid="inbox-layout-modal"
+        >
             <InboxHeader
                 items={props.items}
                 visibleCount={props.visible.length}
@@ -53,6 +56,7 @@ export function ModalSheetLayout(props: InboxLayoutProps) {
                         <Inspector
                             item={selectedInspector}
                             layout="narrow"
+                            onAction={props.onAction}
                         />
                     </div>
                 </div>

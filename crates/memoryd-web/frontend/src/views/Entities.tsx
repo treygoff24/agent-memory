@@ -169,7 +169,10 @@ export function Entities() {
     }
 
     return (
-        <div data-testid={`entities-view-${filter}`}>
+        <div
+            className="view"
+            data-testid={`entities-view-${filter}`}
+        >
             {query.isLoading ? <QueryLoadingBanner label="Entities" /> : null}
             <QueryErrorBanner
                 error={query.error}
@@ -221,7 +224,10 @@ export function Entities() {
                     />
                 </div>
                 <div className="pane">
-                    <div className="pane-scroll">
+                    <div
+                        className="pane-scroll"
+                        tabIndex={0}
+                    >
                         <Inspector
                             item={inspectorItemFromEntity(selected)}
                             layout="narrow"

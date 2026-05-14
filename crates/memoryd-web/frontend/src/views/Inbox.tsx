@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import type { InboxFilterId, InboxItem, InboxKind, InboxLayout, InboxViewItem } from './inboxView';
 
-import { useReviewQueueQuery, type ReviewQueueItem } from '../api';
+import { useReviewActionMutation, useReviewQueueQuery, type ReviewQueueItem } from '../api';
+import type { InspectorAction, InspectorItem } from '../inspector';
+import { hashParams } from '../router';
 import { filterItems, inboxFilters, inspectorItemFromInbox, toInboxViewItem } from './inboxView/adapter';
 import { DrawerLayout, ModalSheetLayout, ThreePaneLayout, TwoPaneLayout } from './inboxView/layouts';
 import { QueryErrorBanner, QueryLoadingBanner } from './QueryFeedback';
@@ -17,7 +19,7 @@ interface InboxProps {
 const layouts = ['two-pane', 'three-pane', 'drawer', 'modal'] as const;
 
 function layoutFromUrl(): InboxLayout {
-    const raw = new URLSearchParams(window.location.search).get('layout');
+    const raw = hashParams(window.location.hash).get('layout');
     return layouts.find((candidate) => candidate === raw) ?? 'two-pane';
 }
 
@@ -64,6 +66,7 @@ function toInboxItem(item: ReviewQueueItem, index: number): InboxItem {
 
 export function Inbox({ layout, items: providedItems }: InboxProps) {
     const query = useReviewQueueQuery({ limit: 50 });
+    const reviewAction = useReviewActionMutation();
     const resolvedLayout = layout ?? layoutFromUrl();
     const sourceItems = useMemo(
         () => providedItems ?? query.data?.items.map(toInboxItem) ?? [],
@@ -75,6 +78,21 @@ export function Inbox({ layout, items: providedItems }: InboxProps) {
     const [focusedId, setFocusedId] = useState(items[0]?.id ?? '');
     const [drawerOpen, setDrawerOpen] = useState(true);
     const [modalOpen, setModalOpen] = useState(resolvedLayout === 'modal');
+
+    const handleAction = useCallback(
+        (action: InspectorAction, item: InspectorItem) => {
+            if (action !== 'approve' && action !== 'reject' && action !== 'edit' && action !== 'forget') return;
+            if (action === 'edit') {
+                // Edit-with-diff lives in the Governance view (full diff + draft
+                // textarea against the canonical body). The inbox surface keeps
+                // the keyboard affordance reserved for future inline editing but
+                // intentionally no-ops today — a blocking OS modal would be slop.
+                return;
+            }
+            reviewAction.mutate({ id: item.id, action });
+        },
+        [reviewAction],
+    );
 
     const visible = useMemo(() => filterItems(items, activeFilter), [activeFilter, items]);
     const selected = visible.find((item) => item.id === selectedId) ?? visible[0];
@@ -160,6 +178,7 @@ export function Inbox({ layout, items: providedItems }: InboxProps) {
         onSelect: selectRow,
         onCloseDrawer: () => setDrawerOpen(false),
         onCloseModal: () => setModalOpen(false),
+        onAction: handleAction,
         toInspectorItem: inspectorItemFromInbox,
     };
 
@@ -180,6 +199,10 @@ export function Inbox({ layout, items: providedItems }: InboxProps) {
             <QueryErrorBanner
                 error={query.error}
                 label="Inbox"
+            />
+            <QueryErrorBanner
+                error={reviewAction.error}
+                label="Review action"
             />
             {layoutNode}
         </>

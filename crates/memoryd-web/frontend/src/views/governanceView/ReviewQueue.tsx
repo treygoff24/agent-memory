@@ -6,6 +6,7 @@ interface ReviewQueueProps {
     checked: Set<string>;
     onSelect: (id: string) => void;
     onCheck: (id: string) => void;
+    onEdit: (item: GovernanceViewItem) => void;
 }
 
 function severityTone(severity: GovernanceViewItem['severity']): string {
@@ -14,7 +15,7 @@ function severityTone(severity: GovernanceViewItem['severity']): string {
     return 'ok';
 }
 
-export function ReviewQueue({ items, selectedId, checked, onSelect, onCheck }: ReviewQueueProps) {
+export function ReviewQueue({ items, selectedId, checked, onSelect, onCheck, onEdit }: ReviewQueueProps) {
     return (
         <div className="list">
             {items.map((item) => (
@@ -50,6 +51,17 @@ export function ReviewQueue({ items, selectedId, checked, onSelect, onCheck }: R
                         </span>
                     </span>
                     <span className={`badge ${severityTone(item.severity)}`}>{item.decision}</span>
+                    <button
+                        aria-label={`Edit ${item.title}`}
+                        className="btn-link"
+                        onClick={(event) => {
+                            event.stopPropagation();
+                            onEdit(item);
+                        }}
+                        type="button"
+                    >
+                        edit
+                    </button>
                     <span className="li-meta">{item.meta}</span>
                 </div>
             ))}

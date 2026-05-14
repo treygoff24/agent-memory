@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { useRealityCheckQuery, useRealityCheckRespondMutation, type RealityCheckApiItem } from '../api';
+import { hashParams } from '../router';
+import { EmptyState } from '../ui';
 import { QueryErrorBanner, QueryLoadingBanner } from './QueryFeedback';
 import {
     CompletionCard,
@@ -25,7 +27,7 @@ interface RealityCheckProps {
 const variants = ['default', 'encrypted', 'refused', 'score-open', 'complete'] as const;
 
 function variantFromUrl(): RealityCheckVariant {
-    const raw = new URLSearchParams(window.location.search).get('variant');
+    const raw = hashParams(window.location.hash).get('variant');
     return variants.find((candidate) => candidate === raw) ?? 'default';
 }
 
@@ -161,24 +163,38 @@ export function RealityCheck({ variant, session, onExit = () => undefined, onRes
     }, [complete, mode, resolvedVariant, submitRespond]);
 
     if (!resolvedSession) {
+        const hasData = query.data && !query.isLoading;
+        const lastCompleted = query.data?.last_completed_at;
+        // Brief §View 2 verbatim title; body uses the daemon's `last_completed_at`
+        // when available. "Next due" isn't currently exposed by the daemon — we
+        // show what we have without inventing the missing field.
+        const emptyBody = lastCompleted
+            ? `Last completed: ${shortWritten(lastCompleted)}.`
+            : 'Last completed: never. Run Memorum agents to populate the queue.';
         return (
             <div
+                className="view"
                 data-testid={`reality-check-${resolvedVariant}`}
-                style={{ display: 'flex', flexDirection: 'column', height: '100%' }}
             >
                 {query.isLoading ? <QueryLoadingBanner label="Reality Check" /> : null}
                 <QueryErrorBanner
                     error={query.error}
                     label="Reality Check"
                 />
+                {hasData ? (
+                    <EmptyState
+                        title="No items due."
+                        body={emptyBody}
+                    />
+                ) : null}
             </div>
         );
     }
 
     return (
         <div
+            className="view"
             data-testid={`reality-check-${resolvedVariant}`}
-            style={{ display: 'flex', flexDirection: 'column', height: '100%' }}
         >
             <QueryErrorBanner
                 error={query.error ?? respondMutation.error}
