@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Glyphs {
+    #[serde(default = "default_brand")]
+    pub brand: String,
     #[serde(default = "default_review")]
     pub review: String,
     #[serde(default = "default_recall")]
@@ -30,11 +32,12 @@ pub struct Glyphs {
 impl Glyphs {
     pub fn ascii_fallback() -> Self {
         Self {
+            brand: "*".to_string(),
             review: "*".to_string(),
-            recall: "~".to_string(),
+            recall: ">".to_string(),
             conflict: "!".to_string(),
-            dream: "?".to_string(),
-            due: ">".to_string(),
+            dream: "<>".to_string(),
+            due: "#".to_string(),
             memory: "o".to_string(),
             cursor: ">".to_string(),
             progress_filled: "#".to_string(),
@@ -48,11 +51,12 @@ impl Glyphs {
 impl Default for Glyphs {
     fn default() -> Self {
         Self {
+            brand: "◆".to_string(),
             review: "●".to_string(),
-            recall: "◇".to_string(),
+            recall: "▸".to_string(),
             conflict: "⚠".to_string(),
-            dream: "◌".to_string(),
-            due: "▸".to_string(),
+            dream: "◇".to_string(),
+            due: "▣".to_string(),
             memory: "○".to_string(),
             cursor: "▸".to_string(),
             progress_filled: "█".to_string(),
@@ -63,6 +67,9 @@ impl Default for Glyphs {
     }
 }
 
+fn default_brand() -> String {
+    Glyphs::default().brand
+}
 fn default_review() -> String {
     Glyphs::default().review
 }

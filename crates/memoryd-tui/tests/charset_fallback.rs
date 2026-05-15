@@ -20,5 +20,5 @@ fn minimal_charset_renders_ascii_shell() {
 
     assert!(frame.is_ascii(), "minimal charset should be ASCII-only:\n{frame}");
     assert!(frame.contains('|'), "ASCII divider should render between panes for minimal charset:\n{frame}");
-    assert!(frame.contains("theme:default-warm-dark"));
+    assert!(frame.contains("Memorum"), "brand wordmark should still render under minimal charset:\n{frame}");
 }

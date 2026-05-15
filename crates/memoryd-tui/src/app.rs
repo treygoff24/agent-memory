@@ -10,6 +10,7 @@ use memorum_theme::{BorderStyle, Charset, ColorCapability, Glyphs, HotReload, Lo
 use memoryd::protocol::MemoryId;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::{Frame, Terminal};
@@ -77,7 +78,6 @@ pub struct App {
     snapshot: DaemonSnapshot,
     config: UiConfig,
     theme: Theme,
-    charset: Charset,
     color_capability: ColorCapability,
     filter: InboxFilter,
     inbox_items: Vec<InboxItem>,
@@ -153,7 +153,6 @@ impl App {
             snapshot,
             config,
             theme,
-            charset,
             color_capability,
             filter: InboxFilter::All,
             inbox_items,
@@ -705,18 +704,48 @@ fn shell_areas(area: Rect) -> [Rect; 3] {
 
 fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App, styles: &ThemeStyles) {
     let counts = FilterCounts::from_items(&app.inbox_items);
-    let mut spans = vec![Span::styled(format!("{} Memorum  ", styles.glyphs.dream), styles.accent)];
+
+    let brand_glyph_width = app.theme.glyphs.brand.chars().count() as u16;
+    let brand_zone_width = brand_glyph_width.saturating_add(11);
+    let hints_zone_width = 38u16;
+
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(brand_zone_width),
+            Constraint::Min(0),
+            Constraint::Length(hints_zone_width),
+        ])
+        .split(area);
+
+    let brand = Line::from(vec![
+        Span::raw(" "),
+        Span::styled(app.theme.glyphs.brand.clone(), styles.accent),
+        Span::raw(" "),
+        Span::styled("Memorum", styles.base.add_modifier(Modifier::BOLD)),
+    ]);
+    frame.render_widget(Paragraph::new(brand).style(styles.base), chunks[0]);
+
+    let mut pill_spans: Vec<Span<'_>> = Vec::with_capacity(InboxFilter::all().len() * 2);
     for filter in InboxFilter::all() {
-        let label = format!("{}{}{}", filter.label(), styles.glyphs.pill_separator, counts.get(filter));
+        let count = counts.get(filter);
+        let label = format!(" {}{}{} ", filter.label(), styles.glyphs.pill_separator, count);
         let style = if filter == app.filter { styles.selected } else { styles.muted };
-        spans.push(Span::styled(format!(" {label} "), style));
-        spans.push(Span::raw(" "));
+        pill_spans.push(Span::styled(label, style));
+        pill_spans.push(Span::raw(" "));
     }
-    spans.push(Span::styled(
-        format!("/:search  ::palette  ?:help  theme:{}  charset:{:?}", app.theme.name, app.charset),
-        styles.dim,
-    ));
-    frame.render_widget(Paragraph::new(Line::from(spans)).style(styles.base), area);
+    frame.render_widget(Paragraph::new(Line::from(pill_spans)).style(styles.base), chunks[1]);
+
+    let hints = Line::from(vec![
+        Span::raw(" "),
+        Span::styled("[/]", styles.accent),
+        Span::styled(" search   ", styles.muted),
+        Span::styled("[:]", styles.accent),
+        Span::styled(" palette   ", styles.muted),
+        Span::styled("[?]", styles.accent),
+        Span::styled(" help ", styles.muted),
+    ]);
+    frame.render_widget(Paragraph::new(hints).style(styles.base), chunks[2]);
 }
 
 fn render_inbox_shell(frame: &mut Frame<'_>, area: Rect, app: &App, styles: &ThemeStyles) {

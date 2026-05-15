@@ -16,6 +16,7 @@ fn all_presets_render_inbox_kinds_with_theme_glyphs() {
         let frame = render(App::with_theme(DaemonSnapshot::sample(), theme.clone()));
 
         for glyph in [
+            &theme.glyphs.brand,
             &theme.glyphs.review,
             &theme.glyphs.conflict,
             &theme.glyphs.recall,
@@ -25,7 +26,6 @@ fn all_presets_render_inbox_kinds_with_theme_glyphs() {
         ] {
             assert!(frame.contains(glyph), "preset {name} missing glyph {glyph:?}:\n{frame}");
         }
-        assert!(frame.contains("theme:"), "preset {name} should render theme label");
     }
 }
 
