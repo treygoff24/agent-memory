@@ -24,6 +24,7 @@ pub struct ThemeStyles {
     pub selected: Style,
     pub selection_gutter: Style,
     pub block: Style,
+    pub block_soft: Style,
 }
 
 impl ThemeStyles {
@@ -53,6 +54,7 @@ impl ThemeStyles {
                 .fg(to_ratatui(resolved.colors.selection_gutter))
                 .add_modifier(Modifier::BOLD),
             block: Style::new().fg(to_ratatui(resolved.colors.border)),
+            block_soft: Style::new().fg(to_ratatui(resolved.colors.border_soft)),
         }
     }
 }

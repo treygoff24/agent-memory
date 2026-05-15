@@ -76,7 +76,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, context: InboxRenderContext<'_>
             Block::new()
                 .borders(Borders::RIGHT)
                 .border_set(context.styles.border)
-                .border_style(context.styles.block)
+                .border_style(context.styles.block_soft)
                 .padding(Padding::new(1, 1, 0, 0)),
         ),
         area,
