@@ -19,6 +19,6 @@ fn minimal_charset_renders_ascii_shell() {
     let frame = terminal.backend().to_string();
 
     assert!(frame.is_ascii(), "minimal charset should be ASCII-only:\n{frame}");
-    assert!(frame.contains("+Inbox"), "plain border should render for minimal charset:\n{frame}");
+    assert!(frame.contains('|'), "ASCII divider should render between panes for minimal charset:\n{frame}");
     assert!(frame.contains("theme:default-warm-dark"));
 }

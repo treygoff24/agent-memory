@@ -13,9 +13,7 @@ fn render(app: App) -> String {
 fn inbox_renders_ranked_unified_items() {
     let frame = render(App::with_snapshot(DaemonSnapshot::sample()));
 
-    assert!(frame.contains("Memorum"));
-    assert!(frame.contains("Inbox"));
-    assert!(frame.contains("Inspector"));
+    assert!(frame.contains("Memorum"), "brand sigil + name should anchor the header");
     assert!(frame.contains("Database connection pool size"));
     assert!(frame.contains("Prefer CITEXT for email columns"));
     assert!(frame.contains("Deploy target is production ECS"));

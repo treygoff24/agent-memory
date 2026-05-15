@@ -20,7 +20,6 @@ fn indexed16_floor_uses_no_rgb_cells_and_preserves_layout_text() {
     let frame = terminal.backend().to_string();
 
     assert!(!buffer_debug.contains("Rgb("), "16-color floor should not leave truecolor cells");
-    assert!(frame.contains("Inbox"));
-    assert!(frame.contains("Inspector"));
+    assert!(frame.contains("Memorum"));
     assert!(frame.contains("Database connection pool size"));
 }

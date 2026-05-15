@@ -30,7 +30,7 @@ fn test_resize_above_minimum_resumes() {
     assert!(small.contains("Terminal too small"));
 
     let normal = render(&mut app, 80, 24);
-    assert!(normal.contains("Inbox"));
+    assert!(normal.contains("Memorum"));
     assert!(normal.contains("Prefer CITEXT"));
     assert!(!normal.contains("Terminal too small"));
 }

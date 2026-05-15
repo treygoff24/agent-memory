@@ -4,7 +4,7 @@ pub mod ranking;
 
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem};
+use ratatui::widgets::{Block, Borders, List, ListItem, Padding};
 use ratatui::Frame;
 
 pub use filter::{FilterCounts, InboxFilter};
@@ -59,10 +59,10 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, context: InboxRenderContext<'_>
     frame.render_widget(
         List::new(rows).block(
             Block::new()
-                .title("Inbox")
-                .borders(Borders::ALL)
+                .borders(Borders::RIGHT)
                 .border_set(context.styles.border)
-                .border_style(context.styles.block),
+                .border_style(context.styles.block)
+                .padding(Padding::new(1, 1, 0, 0)),
         ),
         area,
     );
