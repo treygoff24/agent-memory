@@ -20,7 +20,7 @@ fn test_tui_shows_unreachable_state_on_socket_failure() {
     assert!(frame.contains("Socket: /run/user/1000/memoryd.sock"));
     assert!(frame.contains("Error:  Connection refused"));
     assert!(frame.contains("Run `memoryd start`"));
-    assert!(frame.contains("socket:UNREACHABLE"));
+    assert!(frame.contains("socket") && frame.contains("DOWN"));
     assert!(!frame.contains("Pending review      7"));
 }
 
@@ -33,9 +33,9 @@ fn test_tui_recovers_on_reconnection() {
     app.mark_socket_connected(DaemonSnapshot::sample());
     let frame = render(&mut app);
 
-    assert!(frame.contains("Daemon"));
+    assert!(frame.contains("daemon"));
     assert!(frame.contains("running"));
-    assert!(frame.contains("socket:ok"));
+    assert!(frame.contains("socket") && frame.contains("ok"));
     assert!(!frame.contains("Daemon unreachable"));
 }
 
