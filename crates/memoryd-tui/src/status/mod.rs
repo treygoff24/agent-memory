@@ -63,9 +63,7 @@ fn hint_line<'a>(app: &'a App, styles: &'a ThemeStyles) -> Line<'a> {
             ("?", "help"),
         ][..],
         FocusKind::RealityCheck { .. } => &[("k", "correct"), ("esc", "back")][..],
-        FocusKind::CorrectEditor { .. } => {
-            &[("ctrl-s", "submit"), ("esc", "back"), ("enter", "newline")][..]
-        }
+        FocusKind::CorrectEditor { .. } => &[("ctrl-s", "submit"), ("esc", "back"), ("enter", "newline")][..],
     };
     let mut spans: Vec<Span<'a>> = Vec::with_capacity(hints.len() * 4);
     spans.push(Span::raw(" "));

@@ -19,7 +19,10 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, item: Option<&InboxItem>, style
         Some(InboxItem::Memory { id, title, namespace, .. }) => memory_view(id, title, namespace, styles),
         None => vec![Line::from("Select an inbox item to inspect it.")],
     };
-    frame.render_widget(Paragraph::new(body).style(styles.base).block(Block::new().padding(Padding::new(2, 1, 0, 0))), area);
+    frame.render_widget(
+        Paragraph::new(body).style(styles.base).block(Block::new().padding(Padding::new(2, 1, 0, 0))),
+        area,
+    );
 }
 
 fn review_view<'a>(item: &'a InboxItem, styles: &ThemeStyles) -> Vec<Line<'a>> {

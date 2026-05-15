@@ -317,8 +317,7 @@ impl App {
 
     fn commit_pending_action(&mut self) {
         if let Some(pending) = self.pending_action.take() {
-            self.queued_daemon_calls
-                .push(DaemonCall::Review { action: pending.action, memory_id: pending.memory_id });
+            self.queued_daemon_calls.push(DaemonCall::Review { action: pending.action, memory_id: pending.memory_id });
         }
     }
 
@@ -742,11 +741,7 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App, styles: &ThemeSty
 
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(brand_zone_width),
-            Constraint::Min(0),
-            Constraint::Length(hints_zone_width),
-        ])
+        .constraints([Constraint::Length(brand_zone_width), Constraint::Min(0), Constraint::Length(hints_zone_width)])
         .split(area);
 
     let brand = Line::from(vec![
