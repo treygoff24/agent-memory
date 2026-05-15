@@ -3,7 +3,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use crate::app::{App, SocketState};
+use crate::app::{App, ReviewAction, SocketState};
 use crate::state::FocusKind;
 use crate::theme_glue::ThemeStyles;
 
@@ -33,6 +33,21 @@ fn vitals_line<'a>(app: &'a App, styles: &'a ThemeStyles) -> Line<'a> {
 }
 
 fn hint_line<'a>(app: &'a App, styles: &'a ThemeStyles) -> Line<'a> {
+    if let Some(pending) = app.pending_action() {
+        let verb = match pending.action() {
+            ReviewAction::Approve => "approved",
+            ReviewAction::Reject => "rejected",
+            ReviewAction::Forget => "forgotten",
+        };
+        return Line::from(vec![
+            Span::raw(" "),
+            Span::styled(verb, styles.ok),
+            Span::raw("   "),
+            Span::styled("u", styles.accent),
+            Span::raw(" "),
+            Span::styled("undo", styles.muted),
+        ]);
+    }
     let footer_hint = app.snapshot().footer_hint.as_str();
     if !footer_hint.is_empty() {
         return Line::from(vec![Span::raw(" "), Span::styled(footer_hint.to_string(), styles.warn)]);

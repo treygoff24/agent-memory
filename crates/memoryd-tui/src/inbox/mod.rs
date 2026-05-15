@@ -16,6 +16,7 @@ use crate::theme_glue::ThemeStyles;
 pub struct InboxRenderContext<'a> {
     pub items: &'a [InboxItem],
     pub selected: usize,
+    pub pending_target: Option<&'a str>,
     pub styles: &'a ThemeStyles,
 }
 
@@ -29,13 +30,16 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, context: InboxRenderContext<'_>
             .enumerate()
             .map(|(index, item)| {
                 let is_selected = index == context.selected;
+                let is_pending = context.pending_target == Some(item.id());
                 let gutter = if is_selected {
                     Span::styled(context.styles.glyphs.selection_gutter.clone(), context.styles.selection_gutter)
                 } else {
                     Span::raw(" ")
                 };
                 let kind_glyph = kind_glyph(item.kind(), context.styles);
-                let title_style = if is_selected {
+                let title_style = if is_pending {
+                    context.styles.muted.add_modifier(Modifier::CROSSED_OUT)
+                } else if is_selected {
                     context.styles.base.add_modifier(Modifier::BOLD)
                 } else {
                     context.styles.base

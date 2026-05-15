@@ -27,7 +27,6 @@ use crate::widgets::trust_artifact::{TrustArtifact, TrustArtifactModalState, Tru
 
 pub const MIN_TERMINAL_WIDTH: u16 = 80;
 pub const MIN_TERMINAL_HEIGHT: u16 = 24;
-pub const REVIEW_UNDO_WINDOW: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SocketState {
@@ -71,6 +70,15 @@ pub struct PendingAction {
     staged_at: Instant,
     action: ReviewAction,
     memory_id: String,
+}
+
+impl PendingAction {
+    pub fn action(&self) -> &ReviewAction {
+        &self.action
+    }
+    pub fn memory_id(&self) -> &str {
+        &self.memory_id
+    }
 }
 
 pub struct App {
@@ -298,9 +306,19 @@ impl App {
         let Some(pending) = self.pending_action.as_ref() else {
             return;
         };
-        if elapsed_since(pending.staged_at, now) >= REVIEW_UNDO_WINDOW {
-            let pending = self.pending_action.take().expect("pending action should exist after as_ref check");
-            self.queued_daemon_calls.push(DaemonCall::Review { action: pending.action, memory_id: pending.memory_id });
+        if elapsed_since(pending.staged_at, now) >= self.review_undo_window() {
+            self.commit_pending_action();
+        }
+    }
+
+    fn review_undo_window(&self) -> Duration {
+        Duration::from_millis(u64::from(self.theme.motion.undo_window_ms))
+    }
+
+    fn commit_pending_action(&mut self) {
+        if let Some(pending) = self.pending_action.take() {
+            self.queued_daemon_calls
+                .push(DaemonCall::Review { action: pending.action, memory_id: pending.memory_id });
         }
     }
 
@@ -559,8 +577,21 @@ impl App {
     }
 
     fn stage_review_action(&mut self, action: ReviewAction, now: Instant) {
-        let memory_id = self.selected_item().map(|item| item.id().to_string()).unwrap_or_else(|| "unknown".to_string());
+        self.commit_pending_action();
+        let Some(memory_id) = self.selected_item().map(|item| item.id().to_string()) else {
+            return;
+        };
         self.pending_action = Some(PendingAction { staged_at: now, action, memory_id });
+        self.advance_selection_one();
+    }
+
+    fn advance_selection_one(&mut self) {
+        let len = self.visible_items_len();
+        if len == 0 {
+            self.selected = 0;
+            return;
+        }
+        self.selected = (self.selected + 1).min(len.saturating_sub(1));
     }
 
     fn open_memory_detail(&mut self) {
@@ -754,7 +785,12 @@ fn render_inbox_shell(frame: &mut Frame<'_>, area: Rect, app: &App, styles: &The
         .constraints([Constraint::Percentage(36), Constraint::Min(20)])
         .split(area);
     let visible = app.visible_items();
-    inbox::render(frame, panes[0], inbox::InboxRenderContext { items: &visible, selected: app.selected, styles });
+    let pending_target = app.pending_action().map(|p| p.memory_id());
+    inbox::render(
+        frame,
+        panes[0],
+        inbox::InboxRenderContext { items: &visible, selected: app.selected, pending_target, styles },
+    );
     crate::inspector::render(frame, panes[1], app.selected_item(), styles);
 }
 
