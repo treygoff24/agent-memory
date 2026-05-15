@@ -166,7 +166,82 @@ What's deferred until next dogfood pass / next assessment:
 
 - Inspector header status badges (delta #6).
 - Per-preset border tone calibration for the non-warm-dark themes.
-- Row-cursor vs CSS-focus styling. The design's row focus is
-  `bg: surface` + a 1-cell accent left column (box-shadow inset);
-  the TUI currently uses a `▸` glyph in column 0. Functional but
-  not the design's affordance.
+
+### TUI delta #5 (partial): shared divider drops to border_soft
+`6eb7efc` — Inbox `Borders::RIGHT` border_style switched from
+`styles.block` (resolved.colors.border) to `styles.block_soft`
+(resolved.colors.border_soft). Matches the design study exactly
+(`docs/design/claude-design-brief/04-tui-reference.html`:
+`.inbox { border-right: 1px solid var(--border-soft); }`). Net effect:
+the shared vertical rule reads as structural rather than declarative
+— quieter, lets row content register first.
+
+**What's deliberately deferred from the full gitui pattern.** The
+TUI design steals page (#5) recommended accent-tinting the divider
+toward whichever pane has keyboard focus. Implementing that requires
+a pane-focus state machine (inbox-focused vs inspector-focused) that
+this codebase doesn't have today: every keypress in `FocusKind::None`
+goes to the inbox; the inspector is read-only with no inspector-mode
+actions to focus into. Shipping a focus-aware accent without a
+pane-focus state would be cosmetic-without-substance — the divider
+would always render in the inbox-focused tone because that's the
+only state. When the inspector grows operable surface (e.g.,
+scrollable trust artifacts, follow-link affordances, multi-page
+diagnostic views), pane-focus becomes load-bearing and the gitui
+overpaint pattern earns its keep. Tracked as a follow-up.
+
+### TUI delta #8: advance-on-action with undo toast
+`b7bb83f` — `stage_review_action` now (1) auto-commits any existing
+pending action (chains commits when operator rapid-fires a/r/f), (2)
+stages the new action on the cursor-item, (3) advances the cursor by
+one. The undo-window duration is sourced from
+`theme.motion.undo_window_ms` (3000ms across all six presets) instead
+of the prior hardcoded 1s `REVIEW_UNDO_WINDOW` const, which has been
+removed. The just-actioned row renders with `muted +
+Modifier::CROSSED_OUT` (via new `InboxRenderContext.pending_target`),
+so the operator can see what they acted on after the cursor has
+already moved. The status hint bar gains a pending-action branch
+above the focus slate: ` <verb>   u undo` (ASCII text, charset-
+neutral). Two new `PendingAction` accessors (`action()`, `memory_id()`)
+let render code read pending state without exposing private fields.
+New `keymap_actions::review_action_advances_cursor_and_chains_commits`
+test asserts cursor advance, auto-chain on second press, and clean
+`u`-cancel. Existing `review_action_waits_for_undo_window` bumped
+1001ms → 3001ms to match the theme value. Lifted from
+`~/.claude-personal/jobs/6b7be5ee/tui-design-steals.html` (steals card #8).
+
+### TUI delta #4: focus-aware bottom hint bar with three zones
+`0f6f096` — Replaced the cram-it-all-on-one-line status row
+(`memoryd VER  Daemon:STATE  socket:ok  filter:NAME  HINT`) with three
+`Layout::Horizontal` zones: left vitals (`daemon·STATE  socket·STATE`),
+middle hint bar (action key+label pairs, focus-aware against
+`app.focus()`), and right focus label (`INBOX` / `REALITY CHECK` /
+`EDITOR`). Inbox slate is `a approve · r reject · f forget · enter
+inspect · tab filter · : palette · ? help`; reality-check and
+correct-editor slates show only their actually-wired keys (no vaporware
+y/f/s entries that handle_reality_check_key doesn't process). The
+existing `footer_hint` field is preserved as a transient toast slot —
+when non-empty it overrides the focus slate in `warn` style. Dropped
+version + filter name from the bar (redundant with palette/about and
+the highlighted header pill respectively). Vitals use theme
+`pill_separator` so ASCII fallback renders `daemon|running socket|ok`
+cleanly. Two `socket_unreachable.rs` literal-string assertions split
+into charset-agnostic substring checks. Lifted from
+`~/.claude-personal/jobs/6b7be5ee/tui-design-steals.html` (steals card #4).
+
+### TUI delta #13: glow left-gutter mark replaces full-row highlight
+`75d814f` — Inbox row selection no longer fills the row background with
+`surface_2` + bold. Instead, a single accent-colored `▌` renders at
+column 0, spanning both the title and meta lines of the selected row;
+the title keeps its bold weight; meta stays muted. Matches the design
+study's `box-shadow: inset 2px 0 0 var(--accent)` intent (the deferred
+"row-cursor vs CSS-focus styling" line from delta #3-5's carry-overs
+list — closed by this commit, so removed). Added a new
+`Glyphs::selection_gutter` token (default `▌`, ASCII `|`) and a
+`ThemeStyles::selection_gutter` style (accent fg + BOLD) sourced from
+the already-existing `selection_gutter` color token in all six
+presets. `ThemeStyles::selected` is unchanged — still correct for
+filter pills and command-palette rows where a discrete chip-style
+bg highlight reads as "chip selected" rather than "row washed out."
+Lifted from `~/.claude-personal/jobs/6b7be5ee/tui-design-steals.html`
+(TUI design steals card #13).
