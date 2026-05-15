@@ -23,7 +23,10 @@ export interface InboxFilterDefinition {
 }
 
 export interface InboxViewItem extends InboxItem {
-    glyph: string;
+    /** Glyph kind drives a Phosphor icon in InboxList per brief §3.1.
+     *  Kept as a kind tag (not a Unicode string) so list rendering can pick
+     *  the right `<Icon weight="..." color="..." />` from `src/ui/icons.ts`. */
+    glyphKind: 'review' | 'conflict' | 'recall' | 'dream' | 'due';
     sub: string[];
 }
 
@@ -43,4 +46,5 @@ export interface InboxLayoutProps {
     onCloseModal: () => void;
     onAction: (action: InspectorAction, item: InspectorItem) => void;
     toInspectorItem: (item: InboxViewItem) => InspectorItem;
+    onRunAnyway?: (() => void) | undefined;
 }

@@ -1,4 +1,5 @@
 import type { SupersessionHistoryEntry } from '../../api';
+
 import { hashFor } from '../../router';
 
 interface Props {
@@ -20,7 +21,10 @@ export function SupersessionHistory({ history }: Props) {
             className="audit-section audit-supersession"
             aria-labelledby="audit-supersession-heading"
         >
-            <h3 id="audit-supersession-heading" className="audit-section-heading">
+            <h3
+                id="audit-supersession-heading"
+                className="audit-section-heading"
+            >
                 Supersession history
             </h3>
             <div className="audit-supersession-cols">

@@ -31,7 +31,10 @@ export function RecallSection({ audit }: Props) {
             className="audit-section audit-recall"
             aria-labelledby="audit-recall-heading"
         >
-            <h3 id="audit-recall-heading" className="audit-section-heading">
+            <h3
+                id="audit-recall-heading"
+                className="audit-section-heading"
+            >
                 Recall
             </h3>
             <dl className="audit-stat-grid">

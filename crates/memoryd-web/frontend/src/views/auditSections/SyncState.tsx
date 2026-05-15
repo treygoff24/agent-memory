@@ -16,7 +16,10 @@ export function SyncState({ state }: Props) {
             className="audit-section audit-sync-state"
             aria-labelledby="audit-sync-state-heading"
         >
-            <h3 id="audit-sync-state-heading" className="audit-section-heading">
+            <h3
+                id="audit-sync-state-heading"
+                className="audit-section-heading"
+            >
                 Sync state
             </h3>
             <dl className="audit-stat-grid">

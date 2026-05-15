@@ -1,5 +1,7 @@
 import { useEffect } from 'react';
 
+import { Circle } from '../ui/icons';
+
 import type { InspectorAction, InspectorItem, InspectorLayout } from './types';
 
 import { DreamOutputInspector } from './kinds/dreamOutput';
@@ -53,7 +55,16 @@ export function Inspector({ item, layout = 'wide', onAction }: InspectorProps) {
                 role="region"
                 aria-label="Inspector"
             >
-                <span className="ico">○</span>
+                <span
+                    className="ico"
+                    aria-hidden="true"
+                >
+                    <Circle
+                        size={24}
+                        weight="regular"
+                        color="var(--fg-3)"
+                    />
+                </span>
                 <h3>Nothing selected</h3>
                 <p>Pick a row to inspect it. Use ↑↓ to navigate, enter to focus.</p>
             </div>

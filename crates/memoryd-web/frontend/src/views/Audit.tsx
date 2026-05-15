@@ -66,7 +66,10 @@ export function Audit() {
             />
 
             {query.data ? (
-                <div className="pane-scroll audit-scroll" tabIndex={0}>
+                <div
+                    className="pane-scroll audit-scroll"
+                    tabIndex={0}
+                >
                     <HeaderSection audit={query.data} />
                     <BodySection audit={query.data} />
                     <ConfidenceSection audit={query.data} />

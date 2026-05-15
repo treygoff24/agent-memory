@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 
-import { hashFor, hashParams, parseHash } from './parse';
 import type { Route } from './types';
+
+import { hashFor, hashParams, parseHash } from './parse';
 
 /**
  * Hash-router hook. Subscribes to `hashchange`, returns the current Route plus

@@ -21,12 +21,15 @@ export function BodySection({ audit }: Props) {
                 className="audit-section audit-body audit-body-encrypted"
                 aria-labelledby="audit-body-heading"
             >
-                <h3 id="audit-body-heading" className="audit-section-heading">
+                <h3
+                    id="audit-body-heading"
+                    className="audit-section-heading"
+                >
                     Body
                 </h3>
                 <p className="muted">
-                    Body is stored encrypted at rest. The web dashboard never reveals plaintext for encrypted
-                    memories — that path is intentionally CLI-only.
+                    Body is stored encrypted at rest. The web dashboard never reveals plaintext for encrypted memories —
+                    that path is intentionally CLI-only.
                 </p>
                 <p className="mono">memoryd memory reveal {audit.memory_id} --reason &quot;&lt;why&gt;&quot;</p>
             </section>
@@ -38,7 +41,10 @@ export function BodySection({ audit }: Props) {
             className="audit-section audit-body"
             aria-labelledby="audit-body-heading"
         >
-            <h3 id="audit-body-heading" className="audit-section-heading">
+            <h3
+                id="audit-body-heading"
+                className="audit-section-heading"
+            >
                 Body
             </h3>
             <pre className="audit-body-text">{audit.body || '(empty body)'}</pre>

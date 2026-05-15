@@ -18,18 +18,11 @@ export const filterForKind: Record<InboxKind, InboxFilterId> = {
     due: 'due',
 };
 
-const glyphForKind: Record<InboxKind, string> = {
-    review: '●',
-    conflict: '⚠',
-    recall: '▸',
-    dream: '◇',
-    due: '▣',
-};
-
 export function toInboxViewItem(item: InboxItem): InboxViewItem {
+    // InboxKind maps 1:1 onto the GlyphKind tag the icon module exposes.
     return {
         ...item,
-        glyph: glyphForKind[item.kind],
+        glyphKind: item.kind,
         sub: [item.meta],
     };
 }

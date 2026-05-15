@@ -14,6 +14,8 @@ export function FocusStrip({
     return (
         <div className="rc-strip">
             <span className="brand">
+                {/* Brand sigil stays Unicode per plan §5 invariant 6 — the brand
+                   sigil string is the only Unicode-as-icon exception. */}
                 <span className="sigil">◆</span>
                 <span className="word">memorum</span>
             </span>

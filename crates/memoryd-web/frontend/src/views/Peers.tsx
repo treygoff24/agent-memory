@@ -1,9 +1,8 @@
 import { useMemo, useState } from 'react';
 
-import { useHashParam } from '../router';
-
 import { useSyncDashboardQuery, type ClaimLockInfo, type PeerSessionStatus } from '../api';
 import { Inspector, type InspectorItem } from '../inspector';
+import { useHashParam } from '../router';
 import { EmptyState } from '../ui';
 import { CoordStrip, PeerCard, TrustLedger } from './peersView';
 import { QueryErrorBanner, QueryLoadingBanner } from './QueryFeedback';

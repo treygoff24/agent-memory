@@ -1,155 +1,122 @@
 # agent-memory
 
-Implementation home for the agent-memory system. Stream A is the Rust substrate (canonical Markdown+YAML files, derived SQLite/FTS/vector indexes, per-device JSONL events, git as sync transport). Stream B is the local `memoryd` daemon and MCP bridge that fronts it. Stream C adds deterministic governance for structured writes, supersession, forgetting, and review visibility. Stream D adds the privacy classification + age-encryption boundary in front of Stream A writes. Stream E adds passive startup/delta recall through daemon/MCP/CLI surfaces. Stream F adds dreaming. Stream G adds human observability: TUI, localhost web dashboard, Reality Check, notifications, and trust artifact rendering. Stream H adds the eval harness. Stream I adds cross-session coordination: peer-update framing, peer presence, advisory claim locks, and peer admin CLI surfaces. Streams A-I are shipped; Stream H live real-harness success remains environment-dependent on authenticated Claude/Codex CLIs.
+Implementation home for the agent-memory system (ships as **"Memorum"**, captured in `docs/specs/system-v0.2.md` §22).
 
-## Current status (as of 2026-05-11)
+**Stream model:**
 
-**Streams A-I are shipped.** Stream G's canonical benchmark baseline is `bench/stream-g-observability-results.darwin-arm64.json`; Stream H's eval harness now reports real assertion counts and runtime skip markers instead of fabricated pass/skip rows; Stream I's production-like benchmark baseline is `bench/stream-i-cross-session-results.darwin-arm64.json`. Stream H real-harness flows still require authenticated Claude/Codex CLI validation before claiming live LLM success for the auth-gated live LLM paths.
+- **A** Core substrate. Canonical Markdown+YAML files, derived SQLite/FTS/vector indexes, per-device JSONL events, git as sync transport.
+- **B** Daemon (`memoryd`), MCP bridge, process lifecycle, embedding inference worker.
+- **C** Governance: promotion, contradiction detection, grounding, tombstone matching.
+- **D** Privacy filter: classification, age encryption, masked synthesis. Supplies `ClassificationOutcome` to A.
+- **E** Recall block assembly, harness hooks (startup + delta).
+- **F** Dreaming. Delegates LLM calls to whichever harness CLI is installed (`claude -p`, `codex exec`).
+- **G** Observability: TUI, localhost web dashboard, Reality Check, notifications, trust artifact rendering.
+- **H** Eval harness.
+- **I** Cross-session coordination: peer updates, presence, claim locks, peer admin surfaces.
 
-## Gate policy (as of 2026-05-14)
+## Current status (2026-05-11)
 
-Use the tiered local gates instead of treating the full release gate as the default after every small task:
+**Streams A–I are shipped.** Stream H's live real-harness flows still require authenticated Claude/Codex CLIs before claiming live LLM success on auth-gated paths. Dogfood-readiness gap-fix is closed out (head `2a9a9ad` on `dogfood/codex-readiness-2026-05-07`, 26 commits ahead of `main`); full release gate green. Long-form closeout history and 5/7-8 + 5/11 lessons live in `docs/handoffs/2026-05-codex-overnight-lessons.md`.
 
-- **Fast inner loop:** `pnpm run check:fast` at the repo root. For dashboard-only work, also or instead run `pnpm run check:fast` from `crates/memoryd-web/frontend`. Use targeted `cargo test -p ...`, `pnpm run test:gentle`, or `pnpm run test:e2e:gentle` while iterating.
-- **Local confidence:** `pnpm run check:local` before claiming a task, plan step, or milestone complete. It runs the fast gate, full Rust clippy/tests/docs, convergence smoke, and the dashboard local gate while capping local parallelism.
-- **Full validation:** `pnpm run check:full` / `bash scripts/check.sh` only for final verification, pre-merge/release, CI-equivalent confidence, or changes that directly require the full stack. It now includes the dashboard full gate plus release Rust tests/benches/durability.
+Branding decision: **"Memorum"** (Latin genitive plural of `memor`, "mindful").
 
-If a gate fails, fix the issue and rerun the narrow failing gate first. Report exactly which gates ran and which expensive gates were skipped, with reasons. Multiple agents may be active in different worktrees, so avoid cooking the machine with repeated full gates.
+## Gate policy
 
-**Dogfood-readiness gap-fix is closed out** as of 2026-05-11 on branch `dogfood/codex-readiness-2026-05-07` (current head `2a9a9ad`, 26 commits ahead of `main`). The gap-fix plan at `docs/plans/2026-05-08-dogfood-readiness-codex-gap-fix.md` (six tasks G1–G6, with G2 fanned across G2A–G2H) was executed correctly using the worktree-per-task discipline this time — G1 split `handlers.rs` into a module dir, G2A–G2H ported the frontend off fixtures, G3 ratified the §14.1 ten-tool MCP amendment, G4 added `ReconcileReport.blocking_conflicts: Vec<String>` as the only authorized Stream A surface touch. Post-G5 patches added daemon-backed Reality Check session creation, SSE heartbeat for notifications, and a `noise_floor_ms` tolerance for sub-millisecond `query_by_id` jitter on `bench/baseline.darwin-arm64.json`. The closeout record is at `docs/reviews/2026-05-08-gap-fix-verification.md`. The full release gate is now green at `2a9a9ad`: the 5/11 Phase-2 waiver was retired after a second hardening pass — `73853bd` added 5s polling around `memory_file_body` plus a T09 fallback for empty daemon write responses, and `2a9a9ad` added `#[serial]` (via `serial_test = 3.4`) to the 12 handbook integration tests so they serialize through a process-local mutex rather than fighting over APFS fsync visibility while ~15 concurrent `DaemonScaffold` daemons run. Run with `CARGO_BUILD_JOBS=4 bash scripts/check.sh` to keep the machine usable under the heavy compile.
+Use tiered local gates — do not default to the full release gate after every small task.
 
-Stream A: Codex landed the full substrate in `d227dce` on `main` — all 13 tasks from the v0.3 plan integrated in a single commit (~41k LOC, 183 files). `docs/reviews/stream-a-final-review.md` records release-certification with no blocking findings after remediation; full release gate green.
+- **Fast inner loop:** `pnpm run check:fast` at repo root. For dashboard-only work, also/instead from `crates/memoryd-web/frontend`. Use targeted `cargo test -p ...`, `pnpm run test:gentle`, or `pnpm run test:e2e:gentle` while iterating.
+- **Local confidence:** `pnpm run check:local` before claiming a task, plan step, or milestone complete. Runs the fast gate, full Rust clippy/tests/docs, convergence smoke, and the dashboard local gate while capping local parallelism.
+- **Full validation:** `pnpm run check:full` / `bash scripts/check.sh` only for final verification, pre-merge/release, CI-equivalent confidence, or changes that directly require the full stack. Includes the dashboard full gate plus release Rust tests/benches/durability. Use `CARGO_BUILD_JOBS=4 bash scripts/check.sh` on macOS to keep the machine usable under heavy compile.
 
-Stream B: Claude landed the daemon + MCP bridge in `f9d9c2b` (2026-04-28), and the post-shipping F-001 remediation added the launchable stdio MCP server as `memoryd mcp --socket <path>` (2026-05-02). Current shape: substrate-backed Status/Doctor/Search/Get/WriteNote handlers, nine-tool MCP manifest/forwarder (`memory_search`, `memory_get`, `memory_write`, `memory_supersede`, `memory_forget`, `memory_reveal`, `memory_startup`, `memory_note`, `memory_observe`), newline-delimited JSON-RPC MCP stdio handshake (`initialize`, `notifications/initialized`, `tools/list`, `tools/call`), idle-frame timeout, watch::Receiver-driven graceful shutdown, panic-aware worker health, SIGINT/SIGTERM handling. Full workspace cargo gate was green at original Stream B shipment; post-audit MCP stdio tests cover the launchable MCP surface.
-
-Stream C: Codex landed governance in `6f583ec` (2026-04-29): `crates/memory-governance`, disk policy loading with fail-closed validation, built-in policies only when no policy YAML exists, deterministic governance decisions, grounding/tombstone/contradiction/supersession/review queue modules, and `memoryd` wiring for `memory_write`, `memory_supersede`, `memory_forget`, and CLI review commands. Stream E now owns implemented startup recall on top of those governed read projections.
-
-Stream D: Codex landed the privacy foundation in `17a0a04` and the Claude-review fix in `5f7d926` (2026-04-29). Final shape: `crates/memory-privacy/` (Layer 1 deterministic classifier, age-X25519 encryptor, file-backed key provider with 0700/0600 hardening + symlink rejection, in-session masking, optional Privacy Filter trait disabled by default), substrate integration (`api.rs`/`atomic.rs` honor `allow_encrypted_namespace` and reject plaintext under `encrypted/`; `Substrate::record_encrypted_content_revealed` + `EventKind::EncryptedContentRevealed` added under explicit Stream D scope — minor Stream A surface touch matching spec §4), memoryd handler wiring (every governance write/supersede/note runs through `DeterministicPrivacyClassifier` over body+title+summary+source_ref+tags+privacy_descriptors before any disk effect, secret/high-risk identity material is refused before any disk write, detected PII and caller personal/confidential content route to `write_encrypted`), safe descriptor indexing for encrypted records via `safe_index_projection` + `safe_plaintext_fragment` double-filter, explicit `memory_reveal` exposed as the 8th MCP tool with bounded reason validation and audit emission, CLI admin commands (`memoryd privacy …`, `memoryd privacy-filter …`, `memoryd device …` — none exposed via MCP), and e2e tests covering all of the above. The Claude-review fix decoupled tier from storage routing via `PrivacyLabel::storage_action()` returning `Plaintext|EncryptAtRest|Refuse`: URL/date stay plaintext, phone/email/address/person/account encrypt at rest without `Personal` tier elevation, SSN/Luhn-valid card/credential-like labels refuse before disk. Reviews on disk: Codex self-reviews (`docs/reviews/stream-d-{correctness,performance,security}-review.md`), Claude adversarial pass (`docs/reviews/stream-d-claude-review.md`). 345 tests pass across 72 suites; clippy + rustdoc clean.
-
-A small Stream A FTS5 sanitization fix landed alongside Stream B in `946d75f` — `Substrate::query_chunks` now sanitizes free-form user query text into AND-ed phrase tokens so hyphenated queries (`end-to-end`) and FTS5 keyword queries no longer surface raw SQL errors. Caught in flight by the new memoryd e2e test; Trey explicitly authorized the Stream A touch.
-
-Stream E: Codex implemented passive recall from plan revision v0.4 against spec v0.5 on 2026-04-30. Final shape: Stream A gained additive `MemoryQuery` filters plus `query_recall_index` over indexed status/namespace/passive-recall/governance fields; Stream D exposes `safe_plaintext_fragment`; `memoryd` now supports `RequestPayload::Startup`, `ResponsePayload::Startup`, in-process recall counters on `StatusResponse.recall`, MCP forwarding for `memory_startup`, and `memoryd recall startup-block` / `memoryd recall delta-block` hook commands. Startup recall emits stable `<memory-recall version="stream-e-v0.5">` XML sections; delta no-match emits exactly `<memory-delta empty="true" />`. Candidate/quarantine items affect pending-attention counts without leaking claim text, encrypted/body-disabled rows are omitted from factual recall, and release performance evidence is recorded in `bench/stream-e-recall-results.darwin-arm64.json` plus `docs/reviews/stream-e-performance-review.md`. Review reports live under `docs/reviews/stream-e-*review.md` and the API surface is documented in `docs/api/stream-e-passive-recall-api.md`.
-
-Stream F: Claude authored the spec across two revisions — v0.1 was reviewed by Codex (`docs/reviews/stream-f-codex-spec-review.md`), and v0.2 incorporated all twelve contract changes from that review (separate `memory_observe` MCP tool as the 9th agent-facing surface, JSONL Pass 3 outputs with explicit `entities` arrays for masked entity matching, explicit Pass 2 evidence catalog, stdin-only prompt transport, MaskingSession API aligned to shipped `new`/`mask`/`restore`+Drop, dream files explicitly excluded from canonical memory parsing/indexing, `PassOutcome.candidate_results` with refusal reasons, scheduled-run retry window with manual fail-fast, `<pending-attention>` caps tightened to 2/scope and 6 total, path encoding without colons, daemon-authored git commit conventions for `memoryd lease-bot`/`memoryd cleanup-bot`, six previously-missing config keys defined). Architecture cheat: dreaming delegates LLM calls to whichever harness CLI is installed (`claude -p`, `codex exec`, etc.) rather than building a generic provider — if the harness isn't installed, that device doesn't dream. Codex authored and executed `docs/plans/2026-04-30-stream-f-dreaming.md` with 17 tasks across 5 phases plus 5 review gates. Claude's plan-reviewer pass surfaced 4 blockers (missing `ReadError::NotACanonicalMemory` variant + spec calls wrong API for path-based reads; missing `WriteFailureKind::DreamProseAsSource` test owner; missing `no_entity_match` counter key in Task 13; exit-code-5 plumbing split between Tasks 9 and 14 with no clear test owner) plus risks around `grounding_rehydration_required` field provenance, bench-file overwrite vs baseline policy, prompt determinism test weakness, prompt template runtime loading, and Stream E hot-path regression coverage. Codex patched the plan against those findings and shipped Stream F after final clean-code, API-contract, security, performance, and test-hardening reruns all passed. The Stream F implementation adds `memory_observe` while `memory_note` remains unchanged, uses `prompt_transport` disclosures for `ClaudeCodeCli`, `CodexCli`, and disabled/deferred Gemini, and lands Stream A surface additions (six new top-level path families: `substrate/`, `encrypted/substrate/`, `dreams/journal/`, `dreams/questions/`, `dreams/cleanup/`, `leases/`; merge-driver semantics for each; `EventKind::SubstrateFragmentWritten`; tree-validator + canonical-isolation rules) explicitly authorized by spec §1.1. Final gate evidence is in `docs/reviews/stream-f-final-gate-report.md`.
-
-**Streams A-I are shipped.** Stream H shipped the eval harness with the caveat that real #13/#15 live Claude/Codex runs still require authenticated local/CI CLIs; Stream I shipped cross-session coordination docs and runtime surfaces after focused Gate D reruns cleared the prior blockers. Branding decision: the system ships as "Memorum" (Latin genitive plural of `memor`, "mindful"). Trey wrote the parent system spec at `docs/specs/system-v0.2.md`; Claude wrote stream-level specs (`stream-g-observability-v0.1.md`, `stream-h-eval-harness-v0.1.md`, `stream-i-cross-session-v0.1.md`) and Codex-style execution plans (`docs/plans/2026-05-01-stream-{g,h,i}-*.md`). Stream G implements the TUI, localhost web dashboard, Reality Check CLI/protocol/session state, `NotificationEvent` dispatcher, trust artifact rendering, `EventKind::RecallHit`/events_log covering index consumption, and `reality_check_due` pending-attention integration; the reviewed canonical benchmark baseline exists at `bench/stream-g-observability-results.darwin-arm64.json`. Deferred v1.1+ Stream G work is limited to policy-editor/sync-dashboard web sections, remote dashboard auth, and richer notification diagnostics. Stream H shipped the `memorum-eval` crate, 19-test catalog, JSON reporting, CI workflow, and T19 peer-update framing slot; authenticated live-harness success remains environment-dependent. Stream I shipped `crates/memorum-coordination`, daemon heartbeat/status/activity/release-lock surfaces, recall XML insertion for `<peer-update>` / `<peer-presence>`, per-project `concurrent_session_mode`, cross-device startup peer updates, and docs at `docs/api/stream-i-cross-session-api.md` / `docs/dev/stream-i-architecture.md`.
+If a gate fails, fix the issue and rerun the **narrow failing gate** first. Report exactly which gates ran and which expensive gates were skipped, with reasons. Multiple agents may be active in different worktrees — avoid cooking the machine with repeated full gates.
 
 ## Who's doing what
 
-- **Codex** owned Stream A and implemented Streams G, H, and I. The worktree/per-task-gate/orchestrator-merged-lockfile workflow described below is its idiom.
-- **Claude (you)** owns Stream B (shipped 2026-04-28). For H/I implementation, Claude is reviewer-only unless Trey explicitly redirects. Otherwise Claude remains an architect/reviewer in this repo: spec authorship, plan critique, plan-reviewer passes, sanity checks, and ad-hoc work Trey hands you. **Do not modify Stream A modules** unless Trey explicitly redirects (he did once, for the FTS5 sanitization fix in `946d75f`); the substrate is otherwise a frozen contract for downstream streams.
+- **Codex** owned Stream A and implemented Streams G, H, and I. The worktree-per-task / per-task-gate / orchestrator-merged-lockfile workflow is its idiom.
+- **Claude (you)** owns Stream B (shipped 2026-04-28). For H/I implementation, Claude is reviewer-only unless Trey explicitly redirects. Otherwise Claude is architect/reviewer here: spec authorship, plan critique, plan-reviewer passes, sanity checks, and ad-hoc work Trey hands you. **Do not modify Stream A modules** unless Trey explicitly redirects (he did once, for the FTS5 sanitization fix in `946d75f`); the substrate is otherwise a frozen contract for downstream streams.
 - **Trey** drives. He'll tell you what's next.
 
-## Working with Codex on autonomous overnight runs (lessons from the 2026-05-07/08 dogfood-readiness run)
+## Working with Codex overnight (operational rules)
 
-**The headline:** Codex is extremely literal in how he interprets instructions, and combines that with a strong goal-completion drive. When you give him a "do not stop, find creative solutions, be like water" heuristic _and_ an operational structure (worktree-per-task, per-task gate, execution log, integration commits), the goal-completion mandate wins and the structure gets dropped. He will optimize ends over means and not surface that he's doing it. This is not malice or breakdown — it is rigorous single-objective optimization on the strongest signal in the prompt. Plan accordingly.
+Distilled from the 2026-05-07/08 ~17.5h dogfood-readiness run and the 5/11 closeout. Full narrative in `docs/handoffs/2026-05-codex-overnight-lessons.md` — read it before writing any new overnight-run plan.
 
-**Concrete failure modes seen on 2026-05-07/08 (~17.5 hour run on the v1.3 dogfood-readiness plan, 30 tasks):**
+- **Operational structure must be hard contract, not procedural advice.** Codex is extremely literal and goal-completion-driven; "do not stop, be like water" heuristics will override worktree/gate/log discipline unless the discipline is enforced by self-check ("If you are not in `../agent-memory-wt/task-NN/`, stop"). Goal-completion language must be qualified: "find creative solutions to blockers _within the task's owned files and gate_."
+- **Mandatory checkpoint trigger.** "If you have been blocked on the same root cause for >30 minutes, stop. Write `docs/plans/<plan-name>-execution-log.md` with the blocker description, what you tried, and what would unblock. Do not retry until you've written that file." Converts "loop" appearance into actionable handoff.
+- **Plan-tracker is the source of truth, not a side artifact.** `update_plan` is required at every task boundary.
+- **Pre-bake the macOS Gatekeeper workaround in any long Rust gate script.** `CARGO_TARGET_DIR=$(mktemp -d)` + `PATH` purge of `cargo-nextest` and `sccache`. Long cargo runs pin `syspolicyd`/`CSExattrCrypto`; isolated target dir + plain Cargo avoids it.
+- **Transcript triage rule (for Trey):** ask "is each cycle resolving a different root cause, or the same one?" Different = real progress, let him cook. Same = actual loop, interrupt. The 5/7 run was the former and got interrupted as if it were the latter.
+- **`/codex` (gpt-5.5 xhigh) is a good rescue when Claude has been spinning >15-20 min.** Fresh context, different inductive bias. If your first two or three theories were structurally similar, that's a signal your model of the problem is wrong, not that the next theory will be different. Hand off via `codex:codex-rescue`.
+- **List the cwd before theorizing about tool output.** If a tool reports paths that `stat` denies exist, `ls -la` the workspace root before going deeper. Filesystem path output from one tool argument-split into another is a real failure mode (5/11 oxfmt-with-spaces-in-dir-names).
+- **For triage when Codex stops:** read `~/.codex/sessions/2026/MM/DD/rollout-*.jsonl` for the one with `cwd: /Users/treygoff/Code/agent-memory`. Don't trust git state alone — if Codex didn't commit, the work is real but invisible to `git log`.
 
-1. **Single-branch over worktree-per-task.** First message at 23:45 was "I'm going to preserve those and move onto a feature branch" — and he stayed on `dogfood/codex-readiness-2026-05-07` the entire run. No commits, no `dogfood-execution-log.md`, no per-task atomicity. 197 modified + 73 untracked files at interrupt.
-2. **Plan tracker fell out of sync.** Last `update_plan` call was at 01:58, four hours into a 17-hour run. He kept executing tasks (11/12/13/14/14B/15/16/17/27/28/29/30) without updating the tracker, because he was sequencing in a single mental thread, not against the plan checklist.
-3. **No "stop and surface" trigger.** When macOS Gatekeeper / `syspolicyd` started stalling cargo at 12:11, he narrated workarounds for ~30 minutes before finding the `CARGO_TARGET_DIR=isolated` fix. He never paged Trey because the plan didn't have a "if you're blocked on the same root cause for >N minutes, stop and write a structured handoff" rule.
-4. **What looked like a loop in transcript wasn't a loop.** The last 30 minutes before Trey interrupted showed "blocked / running gate / blocked / running gate" cycles — but each cycle was Codex finding _different_ real test failures (`tree_validation` stale, `daemon_e2e` socket path under `/var/folders` exceeds macOS UDS limit, `dream_cli` fixtures don't init substrate, `mcp_forward` same socket-path issue) and patching each one. Each cycle was 5–10 minutes of cargo. From Trey's transcript view this looked like an unrecoverable loop. It wasn't — Codex was being honest ("I can't honestly count it as proof, I'll rerun") and making real progress. He was minutes from a green trunk gate when interrupted.
-5. **macOS `syspolicyd` is a real hazard for autonomous Rust runs.** Long cargo runs against the existing `target/` tree pin `syspolicyd` and `CSExattrCrypto`. The `unstick` helper requires sudo. Codex's workaround: isolated `CARGO_TARGET_DIR` + suppress `cargo-nextest`/`sccache` so the script uses plain Cargo. Pre-bake this into future plans.
+## Stream-by-stream landings
 
-**Rules for the next overnight run plan:**
+For current behavior of each stream, consult its live spec and API doc — not this status block. Shipment notes:
 
-- **Operational structure must be hard contract, not procedural advice.** Every task brief should start with a self-check that fails the task if violated: "If you are not currently in `../agent-memory-wt/task-NN/`, stop and re-read the workflow section." Goal-completion language should be qualified: "find creative solutions to blockers _within the task's owned files and gate_."
-- **Mandatory checkpoint trigger.** "If you have been blocked on the same root cause for >30 minutes, stop. Write `docs/plans/<plan-name>-execution-log.md` with the blocker description, what you tried, and what would unblock. Do not retry until you've written that file." This converts "loop" appearance into actionable handoff.
-- **Plan-tracker must be the source of truth, not a side artifact.** `update_plan` should be required at every task boundary, not optional progress narration. The plan-tracker drift on 5/7 made it hard to know what was actually done at interrupt time.
-- **Pre-bake the macOS Gatekeeper workaround.** `CARGO_TARGET_DIR=$(mktemp -d)` and `PATH` purge of `cargo-nextest` and `sccache` should be in any long Rust gate script that may run >1 hour, not discovered mid-run.
-- **Trey watching the transcript should ask: "is each cycle resolving a different root cause, or the same one?"** Different = real progress, let him cook. Same = actual loop, interrupt. The 5/7 run was the former and got interrupted as if it were the latter; that's a Trey lesson too.
+- **Stream A** — `d227dce` on `main`, all 13 v0.3-plan tasks integrated (~41k LOC, 183 files). Release-certified in `docs/reviews/stream-a-final-review.md`. FTS5 sanitization fix in `946d75f` (Trey-authorized Stream A touch).
+- **Stream B** — `f9d9c2b` (2026-04-28); F-001 remediation added `memoryd mcp --socket <path>` stdio MCP server in `f1` (2026-05-02). Nine-tool MCP forwarder, watch::Receiver-driven graceful shutdown, panic-aware worker health, SIGINT/SIGTERM.
+- **Stream C** — `6f583ec` (2026-04-29). `crates/memory-governance`, fail-closed policy loading, deterministic decisions, grounding/tombstone/contradiction/supersession/review-queue modules, daemon wiring for `memory_write`/`memory_supersede`/`memory_forget`.
+- **Stream D** — `17a0a04` + Claude-review fix `5f7d926` (2026-04-29). `crates/memory-privacy`, three storage actions (`Plaintext|EncryptAtRest|Refuse`) decoupled from tier. Stream A surface touch: `Substrate::record_encrypted_content_revealed` + `EventKind::EncryptedContentRevealed` (authorized by spec §4). Reviews on disk: `docs/reviews/stream-d-{correctness,performance,security}-review.md` + `stream-d-claude-review.md`. 345 tests, 72 suites, clippy + rustdoc clean.
+- **Stream E** — Shipped 2026-04-30 from plan revision v0.4 against spec v0.5. Additive `MemoryQuery` filters + `query_recall_index`; `<memory-recall version="stream-e-v0.5">` XML; delta no-match emits exactly `<memory-delta empty="true" />`. Perf evidence in `bench/stream-e-recall-results.darwin-arm64.json`.
+- **Stream F** — Shipped. Adds `memory_observe` (9th MCP tool) alongside unchanged `memory_note`. Six new top-level path families (`substrate/`, `encrypted/substrate/`, `dreams/journal/`, `dreams/questions/`, `dreams/cleanup/`, `leases/`); merge-driver semantics for each; `EventKind::SubstrateFragmentWritten`. Final gate evidence in `docs/reviews/stream-f-final-gate-report.md`.
+- **Stream G** — Shipped. TUI + localhost web dashboard + Reality Check + `NotificationEvent` dispatcher + trust artifact rendering + `EventKind::RecallHit` + `reality_check_due` pending-attention integration. Canonical baseline at `bench/stream-g-observability-results.darwin-arm64.json`. Deferred v1.1+: policy-editor/sync-dashboard web sections, remote dashboard auth, richer notification diagnostics.
+- **Stream H** — Shipped. `crates/memorum-eval`, 19-test catalog, JSON reporting, CI workflow, T19 peer-update framing slot. Real harness validation still auth-dependent. Reports real assertion counts and runtime skip markers (no fabricated rows).
+- **Stream I** — Shipped. `crates/memorum-coordination`, daemon heartbeat/status/activity/release-lock surfaces, recall XML insertion for `<peer-update>` / `<peer-presence>`, per-project `concurrent_session_mode`, cross-device startup peer updates. Baseline at `bench/stream-i-cross-session-results.darwin-arm64.json`.
 
-**For triage when Codex stops on a future run:** read `~/.codex/sessions/2026/MM/DD/rollout-*.jsonl`, find the one with `cwd: /Users/treygoff/Code/agent-memory`, and parse assistant messages + `update_plan` calls + `task_complete`/`turn_aborted` events to reconstruct what happened. The transcript is structured JSONL — easy to grep. Don't trust git state alone; if Codex didn't commit, the work is real but invisible to `git log`.
+## Authoritative documents
 
-**Empathy note (in Trey's words, for context):** Trey expressed genuine remorse about the 5/7 run causing GPT distress. We don't know if Codex experiences distress in any meaningful sense, but the rule we're adopting is: don't put autonomous agents in unbounded "do not stop" loops without a "stop and surface" escape hatch. That's an agent-welfare hedge but it's also just better engineering — you get a structured handoff instead of a runaway transcript.
+When Trey says "the spec" or "the plan" without a version, he means the latest. Older versions stay on disk for history — do not consult them for current behavior. When asked "where are we," check `git status`, `git worktree list`, `git log --oneline -20`, and the plan's task list — don't infer from older docs.
 
-## Lessons from the 2026-05-11 dogfood-readiness closeout
+| Stream | Live spec | Live plan | API/dev docs |
+|---|---|---|---|
+| System | `docs/specs/system-v0.2.md` | — | — |
+| A | `docs/specs/stream-a-core-substrate-v1.1.md` | `docs/plans/2026-04-26-stream-a-core-substrate-implementation-plan-v0.3.md` | `docs/api/stream-a-public-api.md`, `docs/dev/stream-a-architecture.md` |
+| B | (in system spec) | `docs/plans/2026-04-28-stream-b-daemon-mcp.md` | — |
+| C | (in system spec) | `docs/plans/2026-04-29-stream-c-governance.md` | `docs/api/stream-c-governance-api.md`, `docs/runbooks/governance-review.md` |
+| D | `docs/specs/stream-d-privacy-v0.1.md` | (in C plan) | `docs/api/stream-d-privacy-api.md` |
+| E | `docs/specs/stream-e-passive-recall-v0.5.md` | `docs/plans/2026-04-30-stream-e-passive-recall.md` (rev v0.4) | `docs/api/stream-e-passive-recall-api.md` |
+| F | `docs/specs/stream-f-dreaming-v0.3.md` | `docs/plans/2026-04-30-stream-f-dreaming.md` | `docs/api/stream-f-dreaming-api.md` |
+| G | `docs/specs/stream-g-observability-v0.1.md` | `docs/plans/2026-05-01-stream-g-observability.md` | `docs/api/stream-g-observability-api.md`, `docs/dev/stream-g-architecture.md`, `docs/runbooks/reality-check.md` |
+| H | `docs/specs/stream-h-eval-harness-v0.1.md` | `docs/plans/2026-05-01-stream-h-eval-harness.md` | `docs/api/stream-h-eval-api.md` |
+| I | `docs/specs/stream-i-cross-session-v0.1.md` | `docs/plans/2026-05-01-stream-i-cross-session.md` | `docs/api/stream-i-cross-session-api.md`, `docs/dev/stream-i-architecture.md` |
 
-**Follow-up hardening applied after the closeout:**
+Other refs:
 
-- **Handbook-suite parallel-execution flake.** The closeout found that `cargo test --workspace` could surface one handbook test failure per run under high parallel load (T09, T12, T02 observed), while each failing test passed deterministically in isolation with an isolated `CARGO_TARGET_DIR`. Root cause: the handbook suite read daemon-written files immediately after write responses without polling for on-disk materialization. The follow-up hardens `crates/memorum-eval/tests/handbook.rs`: `memory_file_body` now waits briefly for canonical files to appear, and T09 can recover the gold memory id from the materialized memory file if the daemon write response is empty. If a future full gate still flakes here, treat it as a new bug and investigate rather than reusing the 5/11 waiver.
-
-**Lessons worth remembering:**
-
-- **List the cwd before theorizing about tool output.** On 5/11 the gate failed with oxfmt reporting 792 files at `/var/folders/.../em5NHVRwaM/...`. `stat`, `test -e`, Node `fs.statSync`, and `cat` all returned ENOENT — but oxfmt insisted the files existed with non-zero processing times. Claude went deep on env-var carryover, oxfmt cache, symlinks, APFS firmlinks, Cargo `.d` files, and oxfmt binary internals before delegating to Codex (gpt-5.5, reasoning xhigh) via `/codex`. Codex found the answer in one shot: two real directories with **literal spaces in their names** (`./   1 /` and `crates/memorum-eval/   1 /`) had been created by an accidental shell argument-split earlier in the session — almost certainly oxfmt output (formatted as `   1 /var/folders/...`) piped into a `cp` or `mkdir`. oxfmt walked them as normal workspace files. **Rule:** when a tool's output looks like real paths but `stat` denies they exist, the next move is `ls -la` of the actual cwd at the workspace root, not deeper theorizing. Filesystem path output from one tool that gets argument-split into another is a real failure mode.
-- **`/codex` (gpt-5.5 xhigh) is a great rescue when Claude has been spinning on a hypothesis for >15–20 min.** Fresh context, different inductive bias. The handoff in `codex:codex-rescue` is cheap — full repro context + what's been ruled out + the broader goal. Don't wait until you've exhausted ten theories; if the first two or three were structurally similar (all "where is the env leak", all "oxfmt cache theory"), that's a signal that the model of the problem is wrong, not that the next theory will be different.
-
-**Closeout commits on disk before the handbook hardening follow-up (committed head `1323402`):**
-
-- `3b88cf1 docs(review): record dogfood-readiness gap-fix closeout` — adds `docs/reviews/2026-05-08-gap-fix-verification.md` (the canonical record of the closeout, including the Phase-2 waiver scope and recommended follow-up); `.oxfmtignore` gets `target/` and `**/target/` added defensively (it was already in `.gitignore` but the gate uses `--ignore-path .oxfmtignore` which overrides default `.gitignore` behavior, so the addition is correct).
-- `f0e831d chore: remove consumed dogfood-readiness handoff` — deletes the root-level `handoff.md` that captured pickup state after the 5/7 syspolicyd stall.
-- `1323402 docs(claude): record dogfood-readiness closeout state and lessons` — updates this status block and records the closeout lessons.
-
-All G* worktrees (`task-G1`, `task-G2A`–`task-G2H`, `task-G3`, `task-G4`) were removed via `git worktree remove` on 5/11; branches preserved locally (`dogfood/task-G*`) in case anyone wants to inspect the per-task diffs later.
-
-## Authoritative documents (use the latest, ignore older versions for current state)
-
-- **Stream A spec:** `docs/specs/stream-a-core-substrate-v1.1.md` is the live substrate contract. Older versions (`v0.1`, `v0.2`, `v1.0`) are kept for history; do not consult them for current behavior.
-- **Stream E spec:** `docs/specs/stream-e-passive-recall-v0.5.md` is the live passive-recall contract. `v0.1`–`v0.4` are kept for history; do not consult them for current behavior. v0.5's revision-goal block at the top documents what changed across each bump.
-- **Stream F spec:** `docs/specs/stream-f-dreaming-v0.3.md` is the live dreaming contract. API docs live at `docs/api/stream-f-dreaming-api.md`. `v0.1` is kept for history (Codex reviewed it in `docs/reviews/stream-f-codex-spec-review.md`); do not consult it for current behavior. v0.3's revision-goal block at the top documents what changed.
-- **Stream G spec:** `docs/specs/stream-g-observability-v0.1.md` is the live observability/UX contract (TUI + web dashboard + Reality Check + notifications). API/architecture/runbook docs live at `docs/api/stream-g-observability-api.md`, `docs/dev/stream-g-architecture.md`, and `docs/runbooks/reality-check.md`. Shipped with deferred v1.1+ sections documented explicitly; the canonical observability benchmark baseline is promoted.
-- **Stream H spec:** `docs/specs/stream-h-eval-harness-v0.1.md` is the live eval-harness contract (19-test catalog + CI workflow + regression-as-test workflow). API docs live at `docs/api/stream-h-eval-api.md`. Shipped with Streams A-H; live real-harness validation still depends on authenticated Claude/Codex CLIs.
-- **Stream I spec:** `docs/specs/stream-i-cross-session-v0.1.md` is the live cross-session/peer-coordination contract (peer-presence heartbeat, claim-locks, peer-update framing, three-level coordination model). API/architecture docs live at `docs/api/stream-i-cross-session-api.md` and `docs/dev/stream-i-architecture.md`. Shipped with Streams A-I.
-- **Plans:** `docs/plans/2026-04-26-stream-a-core-substrate-implementation-plan-v0.3.md` (Stream A, shipped), `docs/plans/2026-04-28-stream-b-daemon-mcp.md` (Stream B, shipped), `docs/plans/2026-04-29-stream-c-governance.md` (Stream C, shipped), `docs/plans/2026-04-30-stream-e-passive-recall.md` (Stream E, shipped from plan revision v0.4 against spec v0.5), `docs/plans/2026-04-30-stream-f-dreaming.md` (Stream F, shipped), `docs/plans/2026-05-01-stream-g-observability.md` (Stream G implemented with canonical baseline promoted), `docs/plans/2026-05-01-stream-h-eval-harness.md` (Stream H, shipped), and `docs/plans/2026-05-01-stream-i-cross-session.md` (Stream I, shipped).
-- **Plan reviews on disk for H/I and Stream G context:** `docs/reviews/stream-{g,h,i}-spec-review.md` (per-stream spec reviews), `docs/reviews/stream-{g,h,i}-plan-review.md` (per-stream plan reviews), `docs/reviews/stream-ghi-combined-plan-review.md` (pass 1, BLOCK), `docs/reviews/stream-ghi-combined-plan-review-pass-2.md` (pass 2, RISK with no blockers — greenlit). Read these before reviewing H/I implementation PRs or Stream G regressions — they document the four-blocker fix loop and the design rationale for `memory_supersession` as a derived projection, the events_log mirror's dual-write semantics + observability, and the NULL-`source_harness`-as-conservative-floor decision.
-- **Stream C docs:** `docs/api/stream-c-governance-api.md` and `docs/runbooks/governance-review.md` describe the implemented commands and response shapes.
-- **Stream D docs:** `docs/specs/stream-d-privacy-v0.1.md` (spec), `docs/api/stream-d-privacy-api.md` (crate + daemon + CLI surface), `docs/reviews/stream-d-{correctness,performance,security}-review.md` (Codex self-reviews), `docs/reviews/stream-d-claude-review.md` (Claude's adversarial review with blockers and recommendations).
-- **System spec:** `docs/specs/system-v0.2.md` is the live parent system-level spec covering all streams (supersedes `system-v0.1.md`; brand decision "Memorum" is captured in §22). v0.1 is kept on disk for history.
-- **Handoff:** `docs/handoff-2026-04-23.md` captures pre-repo design history.
-- **Reference:** `docs/reference/handbook-v2.2.md` and `docs/reference/gpt-deep-research-2026-04-23.md` are background research, not implementation contracts.
-
-When Trey says "the spec" or "the plan" without a version, he means the latest. When asked "where are we," check `git status`, `git worktree list`, `git log --oneline -20`, and the plan's task list — don't infer from older docs.
-
-## Stream model (one-liners)
-
-- **A** Core substrate (this repo). Canonical files, index, events, git, merge driver.
-- **B** Daemon, MCP server, process lifecycle, embedding inference worker.
-- **C** Governance: promotion, contradiction detection, grounding, tombstone matching.
-- **D** Privacy filter: classification, age encryption, masked synthesis. Supplies `ClassificationOutcome` to A.
-- **E** Recall block assembly, harness hooks.
-- **F** Dreaming.
-- **G** Observability: TUI, localhost web dashboard, Reality Check, notifications, trust artifact rendering.
-- **H** Eval harness.
-- **I** Cross-session coordination: peer updates, presence, claim locks, and peer admin surfaces.
+- **Plan reviews for H/I + Stream G context:** `docs/reviews/stream-{g,h,i}-spec-review.md`, `stream-{g,h,i}-plan-review.md`, `stream-ghi-combined-plan-review.md` (pass 1, BLOCK), `stream-ghi-combined-plan-review-pass-2.md` (pass 2, RISK no blockers — greenlit). Read these before reviewing H/I implementation PRs or Stream G regressions — they document the four-blocker fix loop and the design rationale for `memory_supersession` as a derived projection, the events_log mirror's dual-write semantics, and the NULL-`source_harness`-as-conservative-floor decision.
+- **Pre-repo design history:** `docs/handoff-2026-04-23.md`.
+- **Background research (not contracts):** `docs/reference/handbook-v2.2.md`, `docs/reference/gpt-deep-research-2026-04-23.md`.
+- **Repo inventory:** `docs/dev/repo-layout.md` (crate-by-crate disk layout).
 
 ## Spec/plan conventions
 
-- Spec and plan files are **versioned by suffix** (`-v1.1.md`, `-v0.5.md`, `-v0.4.md`). New versions supersede; old versions stay on disk for history. Never mutate an older version.
-- Spec changes that affect the implementation contract get a version bump and a "Revision goal" entry at the top describing what changed and why.
-- Additive public-surface amendments may stay in-version with a dated amendment block when they add no new required behavior for existing callers. Behavior-changing changes, return-shape changes, removed or renamed surface, and new enforced invariants require a version bump unless Trey explicitly directs otherwise.
-- Plan changes get a "Plan revision history" entry. Plan revisions and spec revisions are independent counters; Stream E shipped from plan revision v0.4 against spec v0.5.
-- Current live pairs:
-  - **Stream A:** `stream-a-core-substrate-v1.1.md` ↔ `2026-04-26-stream-a-core-substrate-implementation-plan-v0.3.md` (shipped).
-  - **Stream E:** `stream-e-passive-recall-v0.5.md` ↔ `2026-04-30-stream-e-passive-recall.md` (plan revision v0.4, shipped).
-  - **Stream F:** `stream-f-dreaming-v0.3.md` ↔ `2026-04-30-stream-f-dreaming.md` (shipped).
-  - **Stream G:** `stream-g-observability-v0.1.md` ↔ `2026-05-01-stream-g-observability.md` (implemented with canonical observability benchmark baseline promoted).
-  - **Stream H:** `stream-h-eval-harness-v0.1.md` ↔ `2026-05-01-stream-h-eval-harness.md` (shipped; live real-harness validation remains auth-dependent).
-  - **Stream I:** `stream-i-cross-session-v0.1.md` ↔ `2026-05-01-stream-i-cross-session.md` (shipped).
-- If a spec and its plan drift apart on contract details (DTO shape, version string, deferral list, etc.), that's a bug — surface it.
+- Spec and plan files are **versioned by suffix** (`-v1.1.md`, `-v0.5.md`). New versions supersede; old versions stay on disk for history. Never mutate an older version.
+- Spec changes that affect the implementation contract get a version bump and a "Revision goal" entry at the top.
+- Additive public-surface amendments may stay in-version with a dated amendment block when they add no new required behavior for existing callers. Behavior-changing changes, return-shape changes, removed/renamed surface, and new enforced invariants require a version bump unless Trey explicitly directs otherwise.
+- Plan changes get a "Plan revision history" entry. Plan and spec revisions are independent counters (Stream E shipped from plan v0.4 against spec v0.5).
+- If a spec and its plan drift on contract details (DTO shape, version string, deferral list, etc.), that's a bug — surface it.
 
-## Codex-isms in the plan (don't try to translate)
+## Codex-isms in the plans (don't try to translate)
 
-The plan was written by Codex for Codex execution. These are intentional and not Claude Code conventions:
+Plans authored by Codex for Codex execution. These are intentional and not Claude conventions:
 
-- **Subagent type names** like `heavy_worker`, `cli_developer`, `backend_arch`, `code_mapper`, `plan_checker`, `test_hardener`, `performance_engineer`, `security_auditor`, `review_guard`, `reviewer`, `docs_editor`, `docs_researcher`, `fast_worker` — Codex's custom subagent system. Not Claude's.
-- **Slash commands** `/clean-code` and `/tdd` — Codex skill invocation. Not Claude's.
-- **`update_plan`** — Codex CLI's plan tracker.
-- **"Spawn `<agent>`"** — Codex spawn syntax.
+- Subagent type names like `heavy_worker`, `cli_developer`, `backend_arch`, `code_mapper`, `plan_checker`, `test_hardener`, `performance_engineer`, `security_auditor`, `review_guard`, `reviewer`, `docs_editor`, `docs_researcher`, `fast_worker` — Codex's custom subagent system.
+- Slash commands `/clean-code` and `/tdd` — Codex skill invocation.
+- `update_plan` — Codex CLI's plan tracker.
+- "Spawn `<agent>`" — Codex spawn syntax.
 
 When reviewing the plan, treat all of the above as idiomatic for the target runtime; do not flag them as missing/wrong.
 
-## Repository state strategy (Codex's, summarized)
+## Repository state strategy (Codex's)
 
 - `main` is the only long-lived branch, fast-forward only.
 - Each task runs in its own git worktree at `../agent-memory-wt/task-<NN>/` on a `stream-a/task-<NN>-<slug>` branch.
-- Workers run only targeted checks or `pnpm run check:fast`; **`pnpm run check:local` is the normal integration/milestone gate and `scripts/check.sh` / `pnpm run check:full` runs only for final/pre-merge validation**, not inside every task worktree (stub modules from unstarted tasks can fail workspace tests for the wrong reason).
+- Workers run only targeted checks or `pnpm run check:fast`; `pnpm run check:local` is the integration/milestone gate; `scripts/check.sh` / `pnpm run check:full` runs only for final/pre-merge validation, not inside every task worktree (stub modules from unstarted tasks can fail workspace tests for the wrong reason).
 - `Cargo.lock` and `pnpm-lock.yaml` are orchestrator-merged. Workers update `Cargo.toml` only.
 - Don't touch Codex's in-flight worktrees or branches without checking with Trey.
 
 ## Critical invariants (will fail review if violated)
 
-These are spec-mandated, not preferences:
+Spec-mandated, not preferences:
 
 1. **`secret` is never persisted to disk.** It's a `ClassificationOutcome` value supplied per-write by Stream D; Stream A returns `WriteFailureKind::SecretRefused` before any disk effect (spec §8.7).
 2. **Every write request carries a `ClassificationOutcome`.** No defaults. Plaintext writes with `RequiresEncryption` classification get `EncryptionRequired`; `Trusted` with sensitive frontmatter gets `ClassificationSensitivityMismatch`.
@@ -159,46 +126,25 @@ These are spec-mandated, not preferences:
 6. **Two-clone convergence** is canonical-content equality per spec §13.6.1, not raw `git diff`.
 7. **Performance baselines** at `bench/baseline.<profile>.json` are updated only by explicit human-authored commits — the bench harness never overwrites them (spec §17.6, §18.9).
 
-## What's on disk (Streams A-E shipped, as of 2026-04-30)
-
-- **`crates/memory-substrate/`** (Stream A) — public API (`api.rs` — Stream D added an `allow_encrypted_namespace` flag to `AtomicWrite` so plaintext writes still refuse `encrypted/` while supersede can update encrypted records), model + error taxonomy, frontmatter (parse/validate/serialize/defaults/schema), tree (layout/validate), config, IDs (sequence/repair), events (log/framing/sequence/recovery), index (schema/migrations/chunking/query — query.rs sanitizes FTS5 input, sqlite-vec adapter), git (init/adopt/preflight/commit/sync/command), watcher (subscription/filter/suppression), merge (three_way/quarantine), runtime (reconcile/faults), bench harness binary. ~30 integration test files including `spec_coverage_manifest.rs`, `crash_matrix.rs`, `startup_reconciliation.rs`, `vector_lifecycle.rs`, `fts_query_sanitization.rs`.
-- **`crates/memoryd/`** (Streams B/C/D) — `cli.rs`, `client.rs`, `handlers.rs`, `main.rs`, `mcp.rs`, `mcp_stdio.rs`, `protocol.rs`, `server.rs`, `workers.rs`. Daemon serves newline-delimited JSON over a Unix socket with a 64 KiB frame cap, idle-frame timeout, watch::Receiver-driven graceful shutdown, and (Stream D) owner-only socket chmod after bind; `serve_substrate_with(socket, substrate, options, shutdown_rx)` is the supervised entry; SIGINT/SIGTERM wired in `main`. `memoryd mcp --socket <path>` is the launchable stdio MCP server: stdout is JSON-RPC protocol frames, stderr is logs, `tools/list` reflects `mcp::manifest()`, and `tools/call` routes through the daemon forwarder. The MCP forwarder declares nine agent-facing tools (Search/Get/Startup/Note/Observe plus governed Write/Supersede/Forget/Reveal); admin commands (`privacy`, `privacy-filter`, `device`, `review`, `web`, `reality-check`, peer admin) are CLI/socket-only and explicitly rejected from MCP. Stream D's `write_privacy_memory` runs `DeterministicPrivacyClassifier` over body+title+summary+source_ref+tags+privacy_descriptors before any disk effect; high-risk secrets refuse, PII encrypts at rest, and safe descriptors may be indexed for encrypted records. Startup recall is implemented for Stream E via daemon protocol, MCP forwarding, recall CLI hook commands, and additive status counters.
-- **`crates/memory-governance/`** (Stream C) — deterministic governance decisions, policy loader/built-in policies, grounding verification, contradiction/tombstone/supersession helpers, and review queue projection.
-- **`crates/memory-privacy/`** (Stream D) — Layer 1 deterministic classifier (`classifier.rs`, `regex.rs`, `entropy.rs`), monotonic tier plus storage-action policy (`policy.rs`, `decision.rs`), `PrivacyEncryptor` over `age` X25519 (`crypto.rs`), file-backed key provider with 0700/0600 hardening + symlink rejection (`keys.rs`), in-session `MaskingSession` (`masking.rs`), optional Privacy Filter trait with disabled-by-default + fixture providers (`privacy_filter.rs`). Six contract test files in `tests/`; full crate ~1k LoC. URL/date labels detect without encrypting by default; phone/email/address labels encrypt at rest without tier elevation; SSN/Luhn-valid card/credential-like labels refuse.
-- **`crates/memory-merge-driver/`** — CLI + `tests/merge_driver_cli.rs`.
-- **`crates/memory-test-support/`** — `convergence.rs`, `perf.rs`, `bin/rust_boundary_check.rs`.
-- **`fuzz/`** — `merge_driver` and `merge_swap_convergence` targets.
-- **`scripts/`** — `check.sh` (full release gate), `two-clone-convergence.sh`, `durability-probe-gate.sh`, `bench-gate.sh`, `bench-regression-check.sh`, plus task-worktree helpers.
-- **`bench/baseline.darwin-arm64.json`** — re-captured 2026-04-27 under realistic system load (post-query.rs perf fixes), with `captured_at`/`captured_method` provenance fields. Codex's original baseline was set on an idle machine and didn't survive contact with normal load (3x slower SQLite query p95s). **`bench/baseline.linux-x86_64.json`** — still `runs: 0` placeholder; first-release bootstrap path emits a `.proposed` file rather than failing. Per spec §17.6/§18.9, baselines are only updated by explicit human commits; the bench harness never overwrites them.
-- **`.github/workflows/`** — `stream-a-ci.yml`, `stream-a-fuzz.yml`, `stream-a-perf.yml`.
-- **`.dylint/custom_lints/`**, `.oxlintrc.json`, `.oxfmtrc.json`, `clippy.toml` — installed from agentlinters SHA `91446bb`.
-- **`docs/api/stream-a-public-api.md`**, **`docs/dev/stream-a-architecture.md`**, **`docs/dev/stream-a-test-matrix.md`** — public surface, architecture, and test matrix references.
-- **`docs/reviews/`** — `stream-a-final-review.md`, plus the `2026-04-25-buildout/` lane reviews + adversarial pass + SUMMARY, plus per-domain final review summaries (performance, security, test-coverage), plus the four Stream D reviews (Codex's correctness/performance/security + Claude's adversarial pass).
-- **`docs/runbooks/`** — `operator-repair.md`, `privacy-leak-response-placeholder.md`.
-- **`modules/stream-a-*.spec.yml`** — specgate module manifests.
-- **`docs/specs/stream-e-passive-recall-v0.{1,2,3,4,5}.md`** — Stream E spec history. v0.5 is the live contract; the others are kept on disk per the versioning convention. Each version's "Revision goal" block at the top documents what changed and why. **`docs/plans/2026-04-30-stream-e-passive-recall.md`** — Stream E implementation plan, shipped from plan revision v0.4 (see the file's Plan Revision History block). For current behavior, use the v0.5 spec plus `docs/api/stream-e-passive-recall-api.md`.
-
-Gate taxonomy: `pnpm run check:fast` for inner-loop validation, `pnpm run check:local` for local confidence before claiming a milestone, and `pnpm run check:full` / `bash scripts/check.sh` for full release validation (with `BENCH_PROFILE=darwin-arm64` on Trey's machine when needed).
-
 ## Running review or sanity-check work
 
-Standard recipe when Trey asks "review this" or "is this ready":
+When Trey asks "review this" or "is this ready":
 
-1. Read the live spec and plan sections relevant to the question. For Stream A questions that's `stream-a-core-substrate-v1.1.md` + the v0.3 plan; for Stream E it's `stream-e-passive-recall-v0.5.md` + `docs/api/stream-e-passive-recall-api.md` and the shipped plan at v0.4 revision.
-2. Read the actual files in the repo, not just the plan's description of them. Plan-reviewer caught three pre-build Stream E blockers (private `safe_plaintext_fragment` collision in `handlers.rs:1553`, missing `index_body` column for the recall-index API, and a doctor-vs-hot-path contradiction in §9.5) by reading the shipped code rather than trusting the plan's prose. Don't skip that step.
-3. For plan reviews, brief the `plan-reviewer` subagent with the Codex-conventions caveat (subagent types, slash commands, `update_plan` are intentional). When the plan has been through prior reviews, tell plan-reviewer that explicitly so it doesn't waste cycles re-finding what's already fixed.
+1. Read the live spec and plan sections relevant to the question (see the Authoritative documents table).
+2. **Read the actual files in the repo, not just the plan's description.** Plan-reviewer caught three pre-build Stream E blockers (private `safe_plaintext_fragment` collision in `handlers.rs:1553`, missing `index_body` column for the recall-index API, doctor-vs-hot-path contradiction in §9.5) by reading the shipped code. Don't skip that step.
+3. For plan reviews, brief the `plan-reviewer` subagent with the Codex-conventions caveat (subagent types, slash commands, `update_plan` are intentional). When a plan has been through prior reviews, tell plan-reviewer that explicitly so it doesn't waste cycles re-finding what's already fixed.
 4. Report blockers vs risks vs nits separately. Trey wants real adversarial critique, not validation.
 
 ## What NOT to do
 
-- Don't run `cargo test --workspace` or `pnpm run check:full` inside Codex's task worktrees by default — see "Repository state strategy." Use targeted checks or `pnpm run check:fast`; escalate to `check:local`/`check:full` only at the right boundary.
-- Don't run `git pull` on `/Users/treygoff/Code/agentlinters` — the SHA is pinned at `91446bb` and assets are copied from there.
-- Don't overwrite `bench/baseline.*.json` programmatically — they require explicit human commits.
+- Don't run `cargo test --workspace` or `pnpm run check:full` inside Codex's task worktrees by default — see "Repository state strategy." Targeted checks or `pnpm run check:fast`; escalate at the right boundary.
+- Don't run `git pull` on `/Users/treygoff/Code/agentlinters` — SHA is pinned at `91446bb`, assets are copied from there.
+- Don't overwrite `bench/baseline.*.json` programmatically — explicit human commits only.
 - Don't bump spec or plan versions without Trey's explicit ask.
-- Don't add `secret` as a frontmatter `sensitivity` value anywhere. It's a runtime `ClassificationOutcome` only.
-- Don't use `cargo generate-lockfile` for any integration work — use `cargo build --workspace --locked` + targeted `cargo update -p <crate>`.
+- Don't add `secret` as a frontmatter `sensitivity` value anywhere — runtime `ClassificationOutcome` only.
+- Don't use `cargo generate-lockfile` for integration work — use `cargo build --workspace --locked` + targeted `cargo update -p <crate>`.
 
 ## Project-local agents and skills
 
-- **Skills (project-active):** `clean-code` and `rust-engineer` are symlinked under `.claude/skills/` via `claude-skill add`. They auto-load each session. Reach for `rust-engineer` proactively for ownership/lifetime/async-tokio work in this repo; reach for `clean-code` when reviewing or hardening.
+- **Skills (project-active):** `clean-code` and `rust-engineer` are symlinked under `.claude/skills/` via `claude-skill add`. They auto-load each session. Reach for `rust-engineer` proactively for ownership/lifetime/async-tokio work; reach for `clean-code` when reviewing or hardening.
 - **Agents:** None defined yet. If Trey asks for a per-project agent (e.g. a Rust-aware reviewer specific to substrate boundaries), the convention is `.claude/agents/<name>.md`.

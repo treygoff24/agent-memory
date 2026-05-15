@@ -40,7 +40,7 @@ describe('Inbox view', () => {
         expect(screen.getAllByText(/merge conflict/i).length).toBeGreaterThan(0);
     });
 
-    it('supports two-pane, three-pane, drawer, and modal layouts', async () => {
+    it('supports two-pane, three-pane, drawer, and modal layouts through the URL escape hatch', async () => {
         const { rerender } = renderWithProviders(<Inbox layout="two-pane" />);
         await screen.findAllByText('Project uses pnpm, never npm');
         expect(screen.getByTestId('inbox-layout-two-pane')).toBeInTheDocument();

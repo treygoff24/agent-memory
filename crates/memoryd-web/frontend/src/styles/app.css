@@ -2795,14 +2795,14 @@ a:hover {
     color: var(--warn);
 }
 
+.list-item.focused {
+    border-color: var(--border);
+}
+
 .panes-single {
     display: flex;
     flex: 1;
     min-height: 0;
-}
-
-.list-item.focused {
-    border-color: var(--border);
 }
 
 .dream-run-row {
@@ -3104,4 +3104,199 @@ a:hover {
     letter-spacing: 0.06em;
     text-transform: uppercase;
     margin-bottom: 8px;
+}
+
+/* Entity Graph (View 8). Static SVG force-directed layout with left-rail
+   controls. The graph itself ticks deterministically once at mount via a
+   seeded RNG (see EntityGraph.tsx), so layout reads as a console-style
+   settled diagram rather than an animating playground. */
+.graph-pane {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+}
+.graph-rail {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px 16px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border-soft);
+}
+.graph-ctrl {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.graph-ctrl-label {
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--fg-3);
+}
+.graph-ctrl-select {
+    background: var(--bg);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px 6px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+}
+.graph-container {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+}
+.graph-limit {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    right: 10px;
+    z-index: 4;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 10px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--fg-2);
+    font-family: var(--font-mono);
+    font-size: 11px;
+}
+.graph-table-fallback {
+    flex: none;
+}
+.graph-svg {
+    width: 100%;
+    height: 100%;
+    display: block;
+}
+.graph-edge {
+    stroke: var(--fg-3);
+    stroke-width: 1;
+    pointer-events: none;
+}
+.graph-node-group:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+.graph-node-group:focus-visible .graph-node-circle {
+    stroke: var(--accent);
+    stroke-width: 3;
+}
+.graph-node-circle {
+    stroke: var(--bg);
+    stroke-width: 1.5;
+}
+.graph-node-label {
+    fill: var(--fg-2);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    pointer-events: none;
+    user-select: none;
+}
+.graph-tooltip {
+    position: absolute;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 6px 8px;
+    box-shadow: 0 4px 12px -6px oklch(0 0 0 / 0.3);
+    pointer-events: none;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-width: 240px;
+    z-index: 5;
+}
+.graph-tooltip-name {
+    color: var(--fg);
+    font-weight: 500;
+}
+.graph-tooltip-meta {
+    color: var(--fg-2);
+}
+.graph-tooltip-ns {
+    color: var(--fg-3);
+    font-size: 10px;
+}
+.graph-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 32px;
+    color: var(--fg-3);
+}
+
+/* Entities view: graph/table mode toggle in the view header. */
+.mode-toggle {
+    display: flex;
+    gap: 4px;
+    margin-right: 8px;
+}
+
+/* EmptyState extensions: optional meta line + actions row.
+   Used by Inbox empty state to surface "Next due" + "Run anyway". */
+.empty-meta {
+    color: var(--fg-3);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    margin-top: 4px;
+}
+.empty-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+    justify-content: center;
+}
+
+/* Skip-to-main-content link — visually hidden until focused via Tab.
+   First keyboard-tab landing on any page reaches this; activating it
+   focuses the `<main>` region. */
+.skip-link {
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 100;
+    padding: 8px 12px;
+    background: var(--accent);
+    color: var(--bg);
+    font-size: 12px;
+    text-decoration: none;
+    transform: translateY(-100%);
+    transition: transform var(--dur-medium) var(--ease-out);
+}
+.skip-link:focus-visible {
+    transform: translateY(0);
+    outline-offset: 0;
+}
+
+/* Keyboard chord indicator — surfaces "g …" in the footer while the
+   `g <letter>` chord is armed so the user sees the system listening. */
+.chord-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--accent);
+    font-size: 11px;
+}
+
+/* Memory-id-as-link (cross-cutting invariant 8). Any rendered memory_id is
+   wrapped in a hash anchor so trust artifacts are reachable from anywhere.
+   Subtle dotted underline keeps the dashboard feeling textual. */
+.memory-id-link {
+    color: inherit;
+    text-decoration: none;
+    border-bottom: 1px dotted var(--fg-3);
+}
+.memory-id-link:hover,
+.memory-id-link:focus-visible {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
 }

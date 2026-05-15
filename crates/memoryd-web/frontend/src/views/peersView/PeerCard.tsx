@@ -1,5 +1,6 @@
-import { StatusDot } from '../../ui';
 import type { PeerViewItem } from '../Peers';
+
+import { StatusDot } from '../../ui';
 
 function trustTone(trust: PeerViewItem['trust']): 'ok' | 'warn' | 'bad' {
     if (trust === 'revoked') return 'bad';

@@ -8,6 +8,10 @@ use std::collections::BTreeSet;
 use crate::routes::status::daemon_error;
 use crate::server::{backend_unavailable, WebState};
 
+const ENTITY_GRAPH_INSPECT_LIMIT: usize = 200;
+const ENTITY_DETAIL_INSPECT_LIMIT: usize = 50;
+const ENTITY_GRAPH_EDGE_LIMIT: usize = 240;
+
 #[derive(Clone, Debug, Serialize)]
 pub struct EntityGraphResponse {
     pub nodes: Vec<EntityNode>,
@@ -133,7 +137,7 @@ impl EntityDetailResponse {
 pub async fn entity_graph(State(state): State<WebState>) -> impl IntoResponse {
     let Some(data) = state.dashboard_data() else {
         if let Some(socket_path) = state.daemon_socket() {
-            return match inspect_entities(socket_path, None).await {
+            return match inspect_entities(socket_path, None, ENTITY_GRAPH_INSPECT_LIMIT).await {
                 Ok(entities) => Json(graph_from_entities(&entities)).into_response(),
                 Err(error) => error.into_response(),
             };
@@ -146,7 +150,7 @@ pub async fn entity_graph(State(state): State<WebState>) -> impl IntoResponse {
 pub async fn entity_detail(State(state): State<WebState>, Path(entity_id): Path<String>) -> impl IntoResponse {
     let Some(data) = state.dashboard_data() else {
         if let Some(socket_path) = state.daemon_socket() {
-            return match inspect_entities(socket_path, Some(entity_id.clone())).await {
+            return match inspect_entities(socket_path, Some(entity_id.clone()), ENTITY_DETAIL_INSPECT_LIMIT).await {
                 Ok(entities) => Json(detail_from_entities(&entity_id, &entities)).into_response(),
                 Err(error) => error.into_response(),
             };
@@ -161,11 +165,12 @@ pub async fn entity_detail(State(state): State<WebState>, Path(entity_id): Path<
 async fn inspect_entities(
     socket_path: &std::path::Path,
     prefix: Option<String>,
+    limit: usize,
 ) -> Result<Vec<EntitySummary>, axum::response::Response> {
     match memoryd::client::request(
         socket_path,
         "web-entity-graph",
-        RequestPayload::InspectEntities { limit: None, prefix },
+        RequestPayload::InspectEntities { limit: Some(limit), prefix },
     )
     .await
     {
@@ -181,7 +186,17 @@ async fn inspect_entities(
 }
 
 fn graph_from_entities(entities: &[EntitySummary]) -> EntityGraphResponse {
-    EntityGraphResponse { nodes: entities.iter().map(node_from_entity).collect(), edges: co_mention_edges(entities) }
+    let mut edges = co_mention_edges(entities);
+    edges.sort_by(|left, right| {
+        right
+            .weight
+            .partial_cmp(&left.weight)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.source.cmp(&right.source))
+            .then_with(|| left.target.cmp(&right.target))
+    });
+    edges.truncate(ENTITY_GRAPH_EDGE_LIMIT);
+    EntityGraphResponse { nodes: entities.iter().map(node_from_entity).collect(), edges }
 }
 
 fn node_from_entity(entity: &EntitySummary) -> EntityNode {

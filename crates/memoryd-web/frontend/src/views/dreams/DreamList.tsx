@@ -1,5 +1,7 @@
 import type { DreamViewItem } from '../Dreams';
 
+import { Diamond } from '../../ui/icons';
+
 export function DreamList({
     items,
     selectedId,
@@ -18,8 +20,15 @@ export function DreamList({
                     onClick={() => onSelect(item.id)}
                     type="button"
                 >
-                    <span className={`glyph ${item.kind === 'dream-run' ? 'run' : 'dream'}`}>
-                        {item.kind === 'dream-run' ? '◈' : '◇'}
+                    <span
+                        className={`glyph ${item.kind === 'dream-run' ? 'run' : 'dream'}`}
+                        aria-hidden="true"
+                    >
+                        <Diamond
+                            size={14}
+                            weight={item.kind === 'dream-run' ? 'fill' : 'regular'}
+                            color="var(--warn)"
+                        />
                     </span>
                     <span className="li-main">
                         <span className="li-title">{item.title}</span>

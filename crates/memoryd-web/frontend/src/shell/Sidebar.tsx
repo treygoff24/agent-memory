@@ -1,8 +1,10 @@
 import { useMemo } from 'react';
 
+import type { ViewId } from '../views';
+
 import { useRealityCheckQuery, useStatusQuery } from '../api';
 import { hashFor } from '../router';
-import type { ViewId } from '../views';
+import { navIcons, type NavIconKind } from '../ui/icons';
 
 type NavViewId = Exclude<ViewId, 'audit'>;
 
@@ -42,6 +44,7 @@ export function Sidebar({ active, onNav }: { active: ViewId; onNav(id: ViewId): 
             {navItems.map((item) => {
                 const count = counts[item.id];
                 const href = hashFor({ kind: item.id } as { kind: NavViewId });
+                const NavIcon = navIcons[item.id as NavIconKind];
                 return (
                     <a
                         key={item.id}
@@ -56,7 +59,15 @@ export function Sidebar({ active, onNav }: { active: ViewId; onNav(id: ViewId): 
                             onNav(item.id);
                         }}
                     >
-                        <span className="ico">◆</span>
+                        <span
+                            className="ico"
+                            aria-hidden="true"
+                        >
+                            <NavIcon
+                                size={16}
+                                weight="regular"
+                            />
+                        </span>
                         <span className="label">{item.label}</span>
                         {typeof count === 'number' && count > 0 ? <span className="count">{count}</span> : null}
                         <span

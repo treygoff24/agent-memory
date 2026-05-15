@@ -155,23 +155,23 @@ Resolution landed in `2a9a9ad test(eval): serialize handbook integration tests t
 
 **Full release gate green at `2a9a9ad`** (run with `CARGO_BUILD_JOBS=4 bash scripts/check.sh` to keep the machine usable under the heavy compile):
 
-| Phase                               | Result |
-| ----------------------------------- | ------ |
-| `cargo fmt --all -- --check`        | green  |
-| `pnpm exec oxfmt --check`           | green  |
-| `pnpm exec oxlint`                  | green  |
-| `check-baseline-discipline.sh`      | green  |
-| `specgate validate`                 | green  |
-| `specgate check`                    | green  |
-| `specgate doctor ownership`         | green  |
+| Phase                               | Result                                                                             |
+| ----------------------------------- | ---------------------------------------------------------------------------------- |
+| `cargo fmt --all -- --check`        | green                                                                              |
+| `pnpm exec oxfmt --check`           | green                                                                              |
+| `pnpm exec oxlint`                  | green                                                                              |
+| `check-baseline-discipline.sh`      | green                                                                              |
+| `specgate validate`                 | green                                                                              |
+| `specgate check`                    | green                                                                              |
+| `specgate doctor ownership`         | green                                                                              |
 | `cargo test --workspace`            | green (454 test crates, 0 failures, 12/12 handbook debug + 12/12 handbook release) |
-| `cargo test --workspace --release`  | green  |
-| `cargo doc --workspace`             | green  |
-| `scripts/rust-boundary-check.sh`    | green  |
-| `scripts/two-clone-convergence.sh`  | green  |
-| `scripts/durability-probe-gate.sh`  | green  |
-| `scripts/bench-gate.sh` (smoke)     | green  |
-| `scripts/bench-gate.sh` (release)   | green  |
-| `scripts/bench-regression-check.sh` | green  |
+| `cargo test --workspace --release`  | green                                                                              |
+| `cargo doc --workspace`             | green                                                                              |
+| `scripts/rust-boundary-check.sh`    | green                                                                              |
+| `scripts/two-clone-convergence.sh`  | green                                                                              |
+| `scripts/durability-probe-gate.sh`  | green                                                                              |
+| `scripts/bench-gate.sh` (smoke)     | green                                                                              |
+| `scripts/bench-gate.sh` (release)   | green                                                                              |
+| `scripts/bench-regression-check.sh` | green                                                                              |
 
 `bench/baseline.darwin-arm64.json` was not touched — baselines remain explicit-human-commit-only per spec §17.6/§18.9.

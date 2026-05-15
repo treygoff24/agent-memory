@@ -62,4 +62,60 @@ describe('inspector composition', () => {
         fireEvent.keyDown(screen.getByLabelText('typing target'), { key: 'a' });
         expect(onAction).toHaveBeenCalledTimes(4);
     });
+
+    it('links recall events to the canonical memory id instead of the event id', () => {
+        render(
+            <Inspector
+                item={{
+                    ...base,
+                    kind: 'recall-event',
+                    id: 'evt_recall_123',
+                    memoryId: 'mem_20260508_a1b2c3d4e5f60718_000222',
+                }}
+            />,
+        );
+
+        expect(screen.getByText((_, element) => element?.textContent === 'id evt_recall_123')).not.toHaveAttribute(
+            'href',
+        );
+        expect(screen.getByRole('link', { name: 'mem_20260508_a1b2c3d4e5f60718_000222' })).toHaveAttribute(
+            'href',
+            '#/audit/mem_20260508_a1b2c3d4e5f60718_000222',
+        );
+    });
+
+    it('only links evidence rows that are canonical memory ids', () => {
+        const { rerender } = render(
+            <Inspector
+                item={{
+                    ...base,
+                    kind: 'inbox-dream',
+                    evidence: [{ id: 'dream_run_1_evidence_a', title: 'Synthetic dream evidence', score: 0.8 }],
+                }}
+            />,
+        );
+
+        expect(screen.queryByRole('link', { name: 'dream_run_1_evidence_a' })).not.toBeInTheDocument();
+        expect(screen.getByText('dream_run_1_evidence_a')).toBeInTheDocument();
+
+        rerender(
+            <Inspector
+                item={{
+                    ...base,
+                    kind: 'inbox-dream',
+                    evidence: [
+                        {
+                            id: 'mem_20260508_a1b2c3d4e5f60718_000333',
+                            title: 'Canonical memory evidence',
+                            score: 0.9,
+                        },
+                    ],
+                }}
+            />,
+        );
+        expect(screen.getByRole('link', { name: 'mem_20260508_a1b2c3d4e5f60718_000333' })).toHaveAttribute(
+            'href',
+            '#/audit/mem_20260508_a1b2c3d4e5f60718_000333',
+        );
+    });
 });

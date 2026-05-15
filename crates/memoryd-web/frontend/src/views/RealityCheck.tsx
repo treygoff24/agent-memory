@@ -163,7 +163,11 @@ export function RealityCheck({ variant, session, onExit = () => undefined, onRes
     }, [complete, mode, resolvedVariant, submitRespond]);
 
     if (!resolvedSession) {
-        const hasData = query.data && !query.isLoading;
+        // Use `!!query.data` rather than `query.data && !query.isLoading` so the
+        // empty state stays rendered during background refetches. React Query's
+        // stale-while-revalidate keeps `data` available while `isLoading` flips
+        // true; pairing those two flags suppresses the empty state mid-refresh.
+        const hasData = !!query.data;
         const lastCompleted = query.data?.last_completed_at;
         // Brief §View 2 verbatim title; body uses the daemon's `last_completed_at`
         // when available. "Next due" isn't currently exposed by the daemon — we

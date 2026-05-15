@@ -2,12 +2,14 @@ import { useMemo, useState } from 'react';
 
 import { useEntityGraphQuery, type EntityNode } from '../api';
 import { Inspector, type InspectorItem } from '../inspector';
-import { EntityTable } from './entitiesView';
+import { useHashParam, useRoute } from '../router';
+import { EntityGraph, EntityTable, type ColorBy, type Density } from './entitiesView';
 import { QueryErrorBanner, QueryLoadingBanner } from './QueryFeedback';
 
 export type EntityKind = 'person' | 'org' | 'project' | 'place' | 'tool' | 'language';
 export type EntityFilter = 'all' | EntityKind;
 export type EntitySortKey = 'name' | 'kind' | 'mentions' | 'namespaces' | 'lastSeen' | 'firstSeen' | 'confidence';
+export type EntityMode = 'graph' | 'table';
 
 export interface EntityViewItem {
     id: string;
@@ -41,8 +43,8 @@ function normalizeKind(node: EntityNode): EntityKind {
 
 function confidenceForNode(node: EntityNode, index: number): number {
     if (node.memory_count >= 40) return 0.96;
-    if (node.memory_count >= 30) return 0.88;
-    if (node.memory_count >= 15) return 0.91;
+    if (node.memory_count >= 30) return 0.92;
+    if (node.memory_count >= 15) return 0.88;
     return Math.max(0.68, 0.84 - index * 0.02);
 }
 
@@ -126,11 +128,32 @@ function inspectorItemFromEntity(entity: EntityViewItem | undefined): InspectorI
 
 export function Entities() {
     const query = useEntityGraphQuery();
-    const items = useMemo(() => query.data?.nodes.map(toEntityViewItem) ?? [], [query.data]);
+    const { route } = useRoute();
+    const modeParam = useHashParam('mode');
+    const mode: EntityMode = modeParam === 'table' ? 'table' : 'graph';
+
+    // useMemo so empty-fallback `[]` arrays keep stable references across renders
+    // — downstream useMemos in this file include `apiNodes` / `apiEdges` in their
+    // dep arrays and would otherwise recompute on every render.
+    const apiNodes = useMemo(() => query.data?.nodes ?? [], [query.data]);
+    const apiEdges = useMemo(() => query.data?.edges ?? [], [query.data]);
+    const items = useMemo(() => apiNodes.map(toEntityViewItem), [apiNodes]);
+
     const [filter, setFilter] = useState<EntityFilter>('all');
     const [search, setSearch] = useState('');
     const [sort, setSort] = useState<SortState>({ key: 'mentions', dir: 'desc' });
-    const filtered = useMemo(() => {
+    const [namespaceFilter, setNamespaceFilter] = useState<string>('all');
+    const [colorBy, setColorBy] = useState<ColorBy>('kind');
+    const [density, setDensity] = useState<Density>('sparse');
+    const [focusId, setFocusId] = useState<string>('');
+
+    const namespaces = useMemo(() => {
+        const seen = new Set<string>();
+        for (const n of apiNodes) if (n.namespace) seen.add(n.namespace);
+        return ['all', ...Array.from(seen).sort()];
+    }, [apiNodes]);
+
+    const filteredViewItems = useMemo(() => {
         const queryText = search.toLowerCase();
         return sortEntities(
             items.filter((item) => {
@@ -145,8 +168,33 @@ export function Entities() {
             sort,
         );
     }, [filter, items, search, sort]);
-    const [selectedId, setSelectedId] = useState(items[0]?.id ?? '');
-    const selected = filtered.find((item) => item.id === selectedId) ?? filtered[0];
+
+    // Apply kind+namespace filters to the raw graph nodes for the graph view.
+    const graphNodes = useMemo(
+        () =>
+            apiNodes
+                .filter((node) => {
+                    if (filter !== 'all' && normalizeKind(node) !== filter) return false;
+                    if (namespaceFilter !== 'all' && node.namespace !== namespaceFilter) return false;
+                    return true;
+                })
+                .map((node) => ({
+                    ...node,
+                    // Daemon-backed entity summaries currently report the raw
+                    // kind as "entity"; normalize before graph coloring so
+                    // "color-by kind" stays useful outside MSW fixtures.
+                    kind: normalizeKind(node),
+                })),
+        [apiNodes, filter, namespaceFilter],
+    );
+
+    // Route-driven selection: clicking a graph node navigates to
+    // `#/entities/:id`, which becomes the inspector's selection in both modes.
+    // Falls back to the first visible item when no entity is in the route.
+    const routeEntityId = route.kind === 'entities' ? route.entityId : undefined;
+    const tableSelected = filteredViewItems.find((item) => item.id === routeEntityId) ?? filteredViewItems[0];
+    const inspectorEntity = tableSelected;
+
     const counts = filters.reduce<Record<EntityFilter, number>>(
         (acc, kind) => {
             acc[kind] = kind === 'all' ? items.length : items.filter((item) => item.kind === kind).length;
@@ -155,17 +203,33 @@ export function Entities() {
         { all: 0, person: 0, org: 0, project: 0, place: 0, tool: 0, language: 0 },
     );
 
-    function updateFilter(next: EntityFilter) {
-        setFilter(next);
-        const nextSelected = next === 'all' ? items[0] : items.find((item) => item.kind === next);
-        setSelectedId(nextSelected?.id ?? '');
-    }
-
     function updateSort(key: EntitySortKey) {
         setSort((current) => ({
             key,
             dir: current.key === key && current.dir === 'desc' ? 'asc' : 'desc',
         }));
+    }
+
+    // Deep-link to an entity without losing the hash query suffix (e.g.
+    // `?mode=table`). Used by both the EntityGraph node click and the
+    // EntityTable row click — same behavior, single source of truth.
+    function selectEntity(id: string) {
+        const hashStr = window.location.hash;
+        const idx = hashStr.indexOf('?');
+        const tail = idx === -1 ? '' : hashStr.slice(idx);
+        window.location.hash = `#/entities/${encodeURIComponent(id)}${tail}`;
+    }
+
+    function setMode(next: EntityMode) {
+        // Preserve route + other hash params; only mode flips.
+        const hashStr = window.location.hash;
+        const idx = hashStr.indexOf('?');
+        const pathPart = idx === -1 ? hashStr || '#/entities' : hashStr.slice(0, idx) || '#/entities';
+        const params = new URLSearchParams(idx === -1 ? '' : hashStr.slice(idx + 1));
+        if (next === 'table') params.set('mode', 'table');
+        else params.delete('mode');
+        const tail = params.toString();
+        window.location.hash = tail ? `${pathPart}?${tail}` : pathPart;
     }
 
     return (
@@ -186,6 +250,30 @@ export function Entities() {
                 </span>
                 <span className="spacer" />
                 <div
+                    className="mode-toggle"
+                    role="tablist"
+                    aria-label="Entities display mode"
+                >
+                    <button
+                        type="button"
+                        role="tab"
+                        aria-selected={mode === 'graph'}
+                        className={`pill ${mode === 'graph' ? 'active' : ''}`}
+                        onClick={() => setMode('graph')}
+                    >
+                        graph
+                    </button>
+                    <button
+                        type="button"
+                        role="tab"
+                        aria-selected={mode === 'table'}
+                        className={`pill ${mode === 'table' ? 'active' : ''}`}
+                        onClick={() => setMode('table')}
+                    >
+                        table
+                    </button>
+                </div>
+                <div
                     className="filter-pills"
                     role="tablist"
                     aria-label="Entity kind filters"
@@ -194,7 +282,7 @@ export function Entities() {
                         <button
                             key={kind}
                             className={`pill ${filter === kind ? 'active' : ''}`}
-                            onClick={() => updateFilter(kind)}
+                            onClick={() => setFilter(kind)}
                             role="tab"
                             aria-selected={filter === kind}
                             type="button"
@@ -205,23 +293,99 @@ export function Entities() {
                         </button>
                     ))}
                 </div>
-                <input
-                    aria-label="Entity search"
-                    className="ent-search"
-                    onChange={(event) => setSearch(event.target.value)}
-                    placeholder="filter by name…"
-                    value={search}
-                />
+                {mode === 'table' ? (
+                    <input
+                        aria-label="Entity search"
+                        className="ent-search"
+                        onChange={(event) => setSearch(event.target.value)}
+                        placeholder="filter by name…"
+                        value={search}
+                    />
+                ) : null}
             </div>
             <div className="panes-2">
                 <div className="pane left">
-                    <EntityTable
-                        entities={filtered}
-                        selectedId={selected?.id ?? ''}
-                        sort={sort}
-                        onSort={updateSort}
-                        onSelect={setSelectedId}
-                    />
+                    {mode === 'graph' ? (
+                        <div className="graph-pane">
+                            <div className="graph-rail">
+                                <label className="graph-ctrl">
+                                    <span className="graph-ctrl-label">namespace</span>
+                                    <select
+                                        className="graph-ctrl-select"
+                                        value={namespaceFilter}
+                                        onChange={(e) => setNamespaceFilter(e.target.value)}
+                                    >
+                                        {namespaces.map((ns) => (
+                                            <option
+                                                key={ns}
+                                                value={ns}
+                                            >
+                                                {ns}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </label>
+                                <label className="graph-ctrl">
+                                    <span className="graph-ctrl-label">focus</span>
+                                    <select
+                                        className="graph-ctrl-select"
+                                        value={focusId}
+                                        onChange={(e) => setFocusId(e.target.value)}
+                                    >
+                                        <option value="">(none)</option>
+                                        {apiNodes.map((node) => (
+                                            <option
+                                                key={node.id}
+                                                value={node.id}
+                                            >
+                                                {node.label}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </label>
+                                <label className="graph-ctrl">
+                                    <span className="graph-ctrl-label">color-by</span>
+                                    <select
+                                        className="graph-ctrl-select"
+                                        value={colorBy}
+                                        onChange={(e) => setColorBy(e.target.value as ColorBy)}
+                                    >
+                                        <option value="kind">kind</option>
+                                        <option value="namespace">namespace</option>
+                                        <option value="confidence">confidence</option>
+                                    </select>
+                                </label>
+                                <label className="graph-ctrl">
+                                    <span className="graph-ctrl-label">density</span>
+                                    <select
+                                        className="graph-ctrl-select"
+                                        value={density}
+                                        onChange={(e) => setDensity(e.target.value as Density)}
+                                    >
+                                        <option value="sparse">sparse</option>
+                                        <option value="dense">dense</option>
+                                    </select>
+                                </label>
+                            </div>
+                            <EntityGraph
+                                nodes={graphNodes}
+                                edges={apiEdges}
+                                colorBy={colorBy}
+                                density={density}
+                                focusId={focusId || null}
+                                onSelect={selectEntity}
+                                onRequestTableMode={() => setMode('table')}
+                            />
+                        </div>
+                    ) : (
+                        <EntityTable
+                            entities={filteredViewItems}
+                            selectedId={tableSelected?.id ?? ''}
+                            sort={sort}
+                            onSort={updateSort}
+                            onSelect={selectEntity}
+                        />
+                    )}
                 </div>
                 <div className="pane">
                     <div
@@ -229,7 +393,7 @@ export function Entities() {
                         tabIndex={0}
                     >
                         <Inspector
-                            item={inspectorItemFromEntity(selected)}
+                            item={inspectorItemFromEntity(inspectorEntity)}
                             layout="narrow"
                         />
                     </div>

@@ -25,7 +25,10 @@ export function PolicyDecisions({ decisions }: Props) {
             className="audit-section audit-policy-decisions"
             aria-labelledby="audit-policy-decisions-heading"
         >
-            <h3 id="audit-policy-decisions-heading" className="audit-section-heading">
+            <h3
+                id="audit-policy-decisions-heading"
+                className="audit-section-heading"
+            >
                 Policy decisions
             </h3>
             {decisions.length === 0 ? (

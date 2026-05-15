@@ -64,6 +64,7 @@ const ROUTE_LOCAL_PARAMS = new Set([
     'dreamState',
     'settingsTab',
     'tweaks',
+    'mode',
 ]);
 
 function applyLegacyViewRedirect(): void {

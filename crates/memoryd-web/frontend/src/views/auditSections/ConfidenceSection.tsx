@@ -16,7 +16,10 @@ export function ConfidenceSection({ audit }: Props) {
             className="audit-section audit-confidence"
             aria-labelledby="audit-confidence-heading"
         >
-            <h3 id="audit-confidence-heading" className="audit-section-heading">
+            <h3
+                id="audit-confidence-heading"
+                className="audit-section-heading"
+            >
                 Confidence
             </h3>
             <div className="audit-confidence-row">

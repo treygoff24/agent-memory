@@ -1,4 +1,4 @@
-import { screen } from '@testing-library/react';
+import { screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
 import { Recall, makeHeavyRecallEvents } from '../../src/views/Recall';
@@ -10,8 +10,10 @@ describe('recall ledger', () => {
         await screen.findAllByText('Project uses pnpm, never npm');
         expect(screen.getByText('Recall ledger')).toBeInTheDocument();
         expect(screen.getByRole('group', { name: 'Timeline' })).toBeInTheDocument();
+        const ledgerHead = document.querySelector('.rl-table-head');
+        expect(ledgerHead).not.toBeNull();
         for (const heading of ['time', 'seq', 'device', 'agent', 'memory', 'namespace', 'lat', 'score']) {
-            expect(screen.getByText(heading)).toBeInTheDocument();
+            expect(within(ledgerHead as HTMLElement).getByText(heading)).toBeInTheDocument();
         }
         expect(screen.getByLabelText('Agent filter')).toBeInTheDocument();
         expect(screen.getByLabelText('Device filter')).toBeInTheDocument();

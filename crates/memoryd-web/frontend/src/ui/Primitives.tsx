@@ -1,5 +1,7 @@
 import type { ReactNode } from 'react';
 
+import { Circle } from './icons';
+
 export function Badge({
     children,
     tone = 'neutral',
@@ -19,12 +21,33 @@ export function Card({ title, children }: { title: string; children: ReactNode }
         </section>
     );
 }
-export function EmptyState({ title, body }: { title: string; body: string }) {
+export function EmptyState({
+    title,
+    body,
+    meta,
+    actions,
+}: {
+    title: string;
+    body: string;
+    meta?: ReactNode;
+    actions?: ReactNode;
+}) {
     return (
         <div className="empty">
-            <span className="ico">○</span>
+            <span
+                className="ico"
+                aria-hidden="true"
+            >
+                <Circle
+                    size={24}
+                    weight="regular"
+                    color="var(--fg-3)"
+                />
+            </span>
             <h3>{title}</h3>
             <p>{body}</p>
+            {meta ? <p className="empty-meta">{meta}</p> : null}
+            {actions ? <div className="empty-actions">{actions}</div> : null}
         </div>
     );
 }

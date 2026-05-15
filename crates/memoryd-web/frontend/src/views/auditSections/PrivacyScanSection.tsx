@@ -17,7 +17,10 @@ export function PrivacyScanSection({ scan }: Props) {
             className="audit-section audit-privacy-scan"
             aria-labelledby="audit-privacy-scan-heading"
         >
-            <h3 id="audit-privacy-scan-heading" className="audit-section-heading">
+            <h3
+                id="audit-privacy-scan-heading"
+                className="audit-section-heading"
+            >
                 Privacy scan
             </h3>
             <dl className="audit-stat-grid">

@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
+import type { InspectorAction, InspectorItem } from '../inspector';
 import type { InboxFilterId, InboxItem, InboxKind, InboxLayout, InboxViewItem } from './inboxView';
 
 import { useReviewActionMutation, useReviewQueueQuery, type ReviewQueueItem } from '../api';
-import type { InspectorAction, InspectorItem } from '../inspector';
 import { hashParams } from '../router';
 import { filterItems, inboxFilters, inspectorItemFromInbox, toInboxViewItem } from './inboxView/adapter';
 import { DrawerLayout, ModalSheetLayout, ThreePaneLayout, TwoPaneLayout } from './inboxView/layouts';
@@ -180,6 +180,10 @@ export function Inbox({ layout, items: providedItems }: InboxProps) {
         onCloseModal: () => setModalOpen(false),
         onAction: handleAction,
         toInspectorItem: inspectorItemFromInbox,
+        // "Run anyway" in the empty state forces a refetch through React Query
+        // when the queue is nominally empty. Real "next due" surfacing lives
+        // with daemon endpoint work — see TODO(stream-g) in InboxList.
+        onRunAnyway: providedItems ? undefined : () => void query.refetch(),
     };
 
     const layoutNode =

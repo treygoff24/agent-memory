@@ -21,14 +21,14 @@ For each of the 6 themes, `fg-3` and `fg-4` lightness were the dominant
 levers — these are the "muted text on surface" tokens that axe flagged
 repeatedly. Border tokens also moved to satisfy adjacent visual hierarchy.
 
-| Theme | `--fg-3` before | `--fg-3` after | `--fg-4` before | `--fg-4` after |
-| - | - | - | - | - |
-| `warm-dark` (default) | 0.52 | **0.74** | 0.40 | **0.62** |
-| `warm-light` | 0.55 | **0.42** | 0.70 | **0.50** |
-| `cool-dark` | 0.52 | **0.74** | 0.40 | **0.62** |
-| `cool-light` | 0.55 | **0.42** | 0.70 | **0.50** |
-| `monochrome` | 0.52 | **0.74** | 0.40 | **0.62** |
-| `high-contrast` | 0.78 | **0.85** | 0.60 | **0.72** |
+| Theme                 | `--fg-3` before | `--fg-3` after | `--fg-4` before | `--fg-4` after |
+| --------------------- | --------------- | -------------- | --------------- | -------------- |
+| `warm-dark` (default) | 0.52            | **0.74**       | 0.40            | **0.62**       |
+| `warm-light`          | 0.55            | **0.42**       | 0.70            | **0.50**       |
+| `cool-dark`           | 0.52            | **0.74**       | 0.40            | **0.62**       |
+| `cool-light`          | 0.55            | **0.42**       | 0.70            | **0.50**       |
+| `monochrome`          | 0.52            | **0.74**       | 0.40            | **0.62**       |
+| `high-contrast`       | 0.78            | **0.85**       | 0.60            | **0.72**       |
 
 `fg-2` also dropped/rose by ~0.05 in light/dark themes to clear `.btn`-on-surface
 contrast (the failure mode was the un-pressed density/motion toggles in Settings
@@ -61,7 +61,17 @@ warranted.
 
 The plan's original Phase 4.4 also called for a 6-themes × 9-views manual
 walkthrough (54 spot-checks). axe got us to mechanical WCAG AA compliance; the
-manual pass — looking for *aesthetic* issues per theme (does monochrome look
+manual pass — looking for _aesthetic_ issues per theme (does monochrome look
 right, does high-contrast feel jarring, does cool-light feel cold rather than
 clinical) — will happen during Phase 5 dogfood with Trey. This doc gets a
 "Phase 4 manual addendum" section appended after that.
+
+## Phase 4 mechanical re-check (2026-05-14)
+
+Re-ran `pnpm run test:a11y` after Phase 4 changes (Phosphor swap in 4.1,
+g-chord indicator in 4.2, skip-to-main-content + main `tabIndex` in 4.3):
+**48/48 pass**, zero axe-core violations across 6 themes × 8 surface views
+with `color-contrast: enabled`. No theme tokens needed adjustment — the
+icon swaps inherited the role-token colors (`var(--accent)`, `var(--info)`,
+`var(--warn)`, `var(--bad)`, `var(--fg-3)`) that already pass contrast.
+Manual 54-spot-check walkthrough still parked for Phase 5.

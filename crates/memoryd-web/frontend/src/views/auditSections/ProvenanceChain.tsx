@@ -16,7 +16,10 @@ export function ProvenanceChain({ events }: Props) {
             className="audit-section audit-provenance"
             aria-labelledby="audit-provenance-heading"
         >
-            <h3 id="audit-provenance-heading" className="audit-section-heading">
+            <h3
+                id="audit-provenance-heading"
+                className="audit-section-heading"
+            >
                 Provenance chain
             </h3>
             {events.length === 0 ? (

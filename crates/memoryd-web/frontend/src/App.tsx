@@ -60,7 +60,7 @@ function DashboardApp() {
         [navigateTo, setTheme],
     );
 
-    useKeymap(
+    const { chordPrefix } = useKeymap(
         useCallback(
             (key: string) => {
                 if (key === ':') setPaletteOpen(true);
@@ -93,6 +93,7 @@ function DashboardApp() {
         <Shell
             active={view}
             fullbleed={view === 'reality'}
+            chordPrefix={chordPrefix}
             onNav={navigateTo}
             onPalette={() => setPaletteOpen(true)}
             onBell={() => {

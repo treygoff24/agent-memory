@@ -56,6 +56,7 @@ export function ThreePaneLayout(props: InboxLayoutProps) {
                             focusedId={props.focusedId}
                             onFocus={props.onFocus}
                             onSelect={props.onSelect}
+                            onRunAnyway={props.onRunAnyway}
                         />
                     </div>
                 </section>

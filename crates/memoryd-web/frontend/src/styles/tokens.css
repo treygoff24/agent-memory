@@ -1,15 +1,15 @@
 /* Memorum design tokens — themes are CSS custom properties on <html>. */
 
 @font-face {
-    font-family: 'Inter Variable';
-    src: url('../assets/fonts/InterVariable.woff2') format('woff2-variations');
+    font-family: "Inter Variable";
+    src: url("../assets/fonts/InterVariable.woff2") format("woff2-variations");
     font-weight: 100 900;
     font-style: normal;
     font-display: swap;
 }
 @font-face {
-    font-family: 'JetBrains Mono Variable';
-    src: url('../assets/fonts/JetBrainsMono-Variable.woff2') format('woff2-variations');
+    font-family: "JetBrains Mono Variable";
+    src: url("../assets/fonts/JetBrainsMono-Variable.woff2") format("woff2-variations");
     font-weight: 100 800;
     font-style: normal;
     font-display: swap;
@@ -153,13 +153,26 @@
     --page-pad: 12px;
 }
 
-/* Reduced motion */
+/* Reduced motion — respects both the dashboard-level toggle (Settings →
+   Appearance) and the OS-level `prefers-reduced-motion: reduce`. The user
+   can override OS by explicitly setting `data-reduced-motion="off"` from
+   Settings; otherwise OS preference wins. */
 :root[data-reduced-motion="on"] *,
 :root[data-reduced-motion="on"] *::before,
 :root[data-reduced-motion="on"] *::after {
     animation-duration: 0.001ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    :root:not([data-reduced-motion="off"]) *,
+    :root:not([data-reduced-motion="off"]) *::before,
+    :root:not([data-reduced-motion="off"]) *::after {
+        animation-duration: 0.001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.001ms !important;
+    }
 }
 
 /* Common */

@@ -228,7 +228,10 @@ export function ThemeEditorTab() {
             </div>
 
             <div className="action-bar">
-                <label className="settings-field" style={{ flex: 1 }}>
+                <label
+                    className="settings-field"
+                    style={{ flex: 1 }}
+                >
                     <span className="sr-only">Custom theme name</span>
                     <input
                         ref={nameRef}

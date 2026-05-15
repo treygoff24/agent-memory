@@ -156,7 +156,7 @@ function inspectorItemFromRecall(event: RecallLedgerEvent | undefined): Inspecto
         title: 'Recall event',
         namespace: event.namespace,
         body: event.memory,
-        memoryId: event.id,
+        memoryId: event.memory_id,
         summary: event.memory,
         sessionId: event.session,
         recallCountTotal: event.seq,
@@ -196,8 +196,7 @@ export function Recall({ events, heavy }: RecallProps) {
                     return false;
                 if (selectedBucket !== null) {
                     const d = new Date(event.isoTime);
-                    const bucketKey =
-                        bucketMode === '24h' ? d.getUTCHours() : d.getUTCDate() % 30;
+                    const bucketKey = bucketMode === '24h' ? d.getUTCHours() : d.getUTCDate() % 30;
                     if (bucketKey !== selectedBucket) return false;
                 }
                 return true;
