@@ -44,4 +44,12 @@ record._
 
 ### 2026-05-14 — Phase 5 starts here
 
-(No fixups yet — log opens with dogfood.)
+### `memoryd ui` was forwarding a `--panel` flag the TUI never accepted
+`PENDING` — Dropped `--panel` from `memoryd ui`'s clap surface and from
+`ui_subprocess_args`. `memoryd-tui` has no multi-panel concept — `panel`
+literally doesn't appear in `crates/memoryd-tui/src/**` — so the documented
+flag was vestigial and broke every invocation of `memoryd ui` with
+`error: unexpected argument '--panel' found`. `cli_contract` tests now
+assert clap rejection of `--panel` + that `ui_subprocess_args` no longer
+forwards it to the subprocess. Surfaced first thing on Phase 5 entry while
+the TUI was being opened against the seeded dev substrate.

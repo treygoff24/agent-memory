@@ -85,9 +85,6 @@ pub struct SocketArgs {
 
 #[derive(Debug, Args)]
 pub struct UiArgs {
-    /// Start with panel N active.
-    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=9))]
-    pub panel: u8,
     /// Unix socket path used to reach memoryd.
     #[arg(long)]
     pub socket: Option<PathBuf>,
@@ -747,12 +744,7 @@ fn resolved_web_socket(socket: &Option<PathBuf>) -> PathBuf {
 }
 
 pub fn ui_subprocess_args(args: &UiArgs) -> Vec<OsString> {
-    vec![
-        OsString::from("--panel"),
-        OsString::from(args.panel.to_string()),
-        OsString::from("--socket"),
-        resolved_ui_socket(args).as_os_str().to_owned(),
-    ]
+    vec![OsString::from("--socket"), resolved_ui_socket(args).as_os_str().to_owned()]
 }
 
 pub fn resolve_memoryd_tui_binary(current_exe: &Path, path_env: Option<&OsStr>) -> Result<PathBuf, UiLaunchError> {

@@ -203,18 +203,25 @@ fn cli_contract_clap_parses_all_dream_subcommands_and_help_exposes_them() {
 }
 
 #[test]
-fn test_clap_parses_memoryd_ui_panel_flag() {
-    let cli = Cli::try_parse_from(["memoryd", "ui", "--panel", "3"]).expect("ui parses");
-
-    match cli.command {
-        CliCommand::Ui(args) => assert_eq!(args.panel, 3),
-        other => panic!("expected ui command, got {other:?}"),
-    }
+fn test_clap_rejects_panel_flag() {
+    assert!(
+        Cli::try_parse_from(["memoryd", "ui", "--panel", "3"]).is_err(),
+        "--panel was forwarded to memoryd-tui which does not accept it; the flag has been removed"
+    );
 }
 
 #[test]
-fn test_clap_rejects_panel_out_of_range() {
-    assert!(Cli::try_parse_from(["memoryd", "ui", "--panel", "10"]).is_err());
+fn test_ui_subprocess_args_does_not_forward_panel() {
+    use memoryd::cli::{ui_subprocess_args, UiArgs};
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+
+    let args = UiArgs { socket: Some(PathBuf::from("/tmp/memoryd.sock")) };
+    let forwarded = ui_subprocess_args(&args);
+    assert!(
+        !forwarded.iter().any(|arg| arg == &OsString::from("--panel")),
+        "ui_subprocess_args must not forward --panel; got {forwarded:?}"
+    );
 }
 
 #[test]
