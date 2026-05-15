@@ -19,6 +19,8 @@ pub struct Glyphs {
     pub memory: String,
     #[serde(default = "default_cursor")]
     pub cursor: String,
+    #[serde(default = "default_selection_gutter")]
+    pub selection_gutter: String,
     #[serde(default = "default_progress_filled")]
     pub progress_filled: String,
     #[serde(default = "default_progress_empty")]
@@ -40,6 +42,7 @@ impl Glyphs {
             due: "#".to_string(),
             memory: "o".to_string(),
             cursor: ">".to_string(),
+            selection_gutter: "|".to_string(),
             progress_filled: "#".to_string(),
             progress_empty: "-".to_string(),
             pill_separator: "|".to_string(),
@@ -59,6 +62,7 @@ impl Default for Glyphs {
             due: "▣".to_string(),
             memory: "○".to_string(),
             cursor: "▸".to_string(),
+            selection_gutter: "▌".to_string(),
             progress_filled: "█".to_string(),
             progress_empty: "░".to_string(),
             pill_separator: "·".to_string(),
@@ -90,6 +94,9 @@ fn default_memory() -> String {
 }
 fn default_cursor() -> String {
     Glyphs::default().cursor
+}
+fn default_selection_gutter() -> String {
+    Glyphs::default().selection_gutter
 }
 fn default_progress_filled() -> String {
     Glyphs::default().progress_filled

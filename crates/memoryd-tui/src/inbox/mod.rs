@@ -3,6 +3,7 @@ pub mod item;
 pub mod ranking;
 
 use ratatui::layout::Rect;
+use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Padding};
 use ratatui::Frame;
@@ -27,19 +28,29 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, context: InboxRenderContext<'_>
             .iter()
             .enumerate()
             .map(|(index, item)| {
-                let marker = if index == context.selected { context.styles.glyphs.cursor.as_str() } else { " " };
+                let is_selected = index == context.selected;
+                let gutter = if is_selected {
+                    Span::styled(context.styles.glyphs.selection_gutter.clone(), context.styles.selection_gutter)
+                } else {
+                    Span::raw(" ")
+                };
                 let kind_glyph = kind_glyph(item.kind(), context.styles);
-                let style = if index == context.selected { context.styles.selected } else { context.styles.base };
+                let title_style = if is_selected {
+                    context.styles.base.add_modifier(Modifier::BOLD)
+                } else {
+                    context.styles.base
+                };
                 ListItem::new(vec![
                     Line::from(vec![
-                        Span::raw(marker),
+                        gutter.clone(),
                         Span::raw(" "),
                         Span::styled(kind_glyph, context.styles.accent),
                         Span::raw(" "),
-                        Span::styled(item.title().to_string(), style),
+                        Span::styled(item.title().to_string(), title_style),
                     ]),
                     Line::from(vec![
-                        Span::raw("  "),
+                        gutter,
+                        Span::raw(" "),
                         Span::styled(
                             format!(
                                 "{} {} {} {} {}",
