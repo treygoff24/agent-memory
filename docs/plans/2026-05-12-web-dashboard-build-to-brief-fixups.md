@@ -168,7 +168,7 @@ What's deferred until next dogfood pass / next assessment:
 - Per-preset border tone calibration for the non-warm-dark themes.
 
 ### Inspector renders memory body for review candidates
-`COMMIT_PENDING` — The review-candidate inspector was rendering only
+`c9d16fc` — The review-candidate inspector was rendering only
 `id / title / scope / policy / actions` — no memory body — leaving the
 reviewer nothing to actually review. Wired the body through end-to-end:
 
