@@ -114,3 +114,59 @@ when it lands):
 
 A pass through #1 → #5 in order is roughly half a day and almost
 certainly closes the "I'm out" reaction; #6 is polish on top.
+
+### TUI delta #1: border subtlety calibrated to design intent
+`b08ae3b` — Dropped `default-warm-dark`'s `border` from
+`oklch(0.45 0.020 72)` → `oklch(0.30 0.010 70)` and `border_soft`
+from `oklch(0.32 0.014 72)` → `oklch(0.26 0.008 70)`, matching the
+design study (`docs/design/claude-design-brief/04-tui-reference.html`)
+exactly. Single-preset change, no tests pinned the old values, no
+behavior change. Known carry-over: the other five presets still ship
+the same `0.45 / 0.32` warm-amber border on palettes that aren't
+warm-amber — bulk-copied rather than tuned per-palette; tracked.
+
+### TUI delta #2: single shared border between inbox and inspector panes
+`34ca47f` — Inbox went from `Borders::ALL + .title("Inbox")` to
+`Borders::RIGHT + Padding::new(1,1,0,0)` (no title); Inspector went
+from `Borders::ALL + .title("Inspector")` to no Block, just
+`Padding::new(2,1,0,0)` for breathing room from the divider. Net:
+one shared vertical rule between panes instead of two, and no
+floating border-attached titles. Pane labels are now carried by the
+header pill row (inbox-side) and the inspector's contextual kind
+heading (inspector-side). Test sweep: replaced four `"Inbox"` /
+`"Inspector"` literal-string assertions across `inbox_render.rs`,
+`terminal_capability_floor.rs`, `resize.rs` with `"Memorum"` brand
+anchors; `charset_fallback.rs` swapped `"+Inbox"` for `'|'` (the
+Plain ASCII divider glyph, which is what the test was actually
+reaching for under "minimal charset renders ASCII shell").
+
+### TUI delta #3-5 + glyph alphabet: header zones + chip pills + kbd hints + correct glyphs
+`10c8438` — `render_header` rewritten into three `Layout::Horizontal`
+zones (brand left, pill bar middle as residual `Min(0)`, kbd hints
+right at fixed 38 cells). Brand is `◆ Memorum` (sigil in accent,
+wordmark in fg+BOLD). Active filter pills get `styles.selected`
+(fg + surface_2 bg + BOLD) for clearly-distinguished chip visuals;
+inactive pills get muted fg. Kbd hints render as `[/] search   [:]
+palette   [?] help` with the bracketed key in accent and the action
+label in muted — reads as a keystroke affordance, not prose. Dropped
+the trailing `theme:NAME charset:VAL` debug text from the header
+(belongs in settings, not in the perpetually-visible header). Also
+corrected the glyph alphabet against design §3.1: `recall` `◇` →
+`▸`, `due` `▸` → `▣`, `dream` `◌` → `◇`, and added a new `brand`
+glyph token (`◆`) since the prior `render_header` was using
+`glyphs.dream` (`◌`) as the brand sigil. The six preset TOMLs lost
+their bulk-copied (and wrong) `[glyphs]` blocks entirely — schema
+defaults are now the single source of truth, which both fixes
+existing presets and prevents the same bulk-copy bug from happening
+to a new preset. Dead `charset: Charset` field on `App` (only used
+inside `from_parts` for fallback glyph selection, never read after
+construction) removed.
+
+What's deferred until next dogfood pass / next assessment:
+
+- Inspector header status badges (delta #6).
+- Per-preset border tone calibration for the non-warm-dark themes.
+- Row-cursor vs CSS-focus styling. The design's row focus is
+  `bg: surface` + a 1-cell accent left column (box-shadow inset);
+  the TUI currently uses a `▸` glyph in column 0. Functional but
+  not the design's affordance.
