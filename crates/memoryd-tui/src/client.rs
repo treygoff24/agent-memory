@@ -27,7 +27,6 @@ impl DaemonClient {
         let status = self.status().await?;
         let mut snapshot = DaemonSnapshot::empty();
         snapshot.daemon_state = status.state;
-        snapshot.footer_hint = "daemon connected · tab filters · enter inspect".to_string();
         if let Ok(review) = self.review_queue(50).await {
             snapshot.review_queue = review
                 .items
@@ -38,6 +37,7 @@ impl DaemonClient {
                     namespace: "review".to_string(),
                     status: item.status,
                     reason: item.reason,
+                    body: item.body,
                 })
                 .collect();
         }

@@ -903,7 +903,7 @@ impl DaemonSnapshot {
     pub fn empty() -> Self {
         Self {
             version: "v1.0.0".to_string(),
-            footer_hint: "?:help  q:quit".to_string(),
+            footer_hint: String::new(),
             daemon_state: "loading".to_string(),
             review_queue: Vec::new(),
             conflicts: Vec::new(),
@@ -918,7 +918,7 @@ impl DaemonSnapshot {
     pub fn sample() -> Self {
         Self {
             version: "v1.0.0".to_string(),
-            footer_hint: "?:help  q:quit".to_string(),
+            footer_hint: String::new(),
             daemon_state: "running".to_string(),
             review_queue: vec![
                 ReviewQueueRow {
@@ -927,6 +927,7 @@ impl DaemonSnapshot {
                     namespace: "project:atlasos".to_string(),
                     status: "candidate".to_string(),
                     reason: Some("requires_user_confirmation".to_string()),
+                    body: "Use CITEXT for the users.email column so lookups don't have to LOWER() the input and the unique index works on case-insensitive equality without a function index.".to_string(),
                 },
                 ReviewQueueRow {
                     id: "mem_20260501_0123456789abcdef_000007".to_string(),
@@ -934,6 +935,7 @@ impl DaemonSnapshot {
                     namespace: "project:agent-memory".to_string(),
                     status: "dream_low_confidence".to_string(),
                     reason: Some("dream_low_confidence".to_string()),
+                    body: "Dream-generated candidate proposing a synthesis from recall patterns. Confidence 0.41 — under the 0.65 floor for auto-promotion. Awaiting human verdict.".to_string(),
                 },
             ],
             conflicts: vec![ConflictRow {
@@ -998,6 +1000,7 @@ impl DaemonSnapshot {
                     namespace: row.namespace.clone(),
                     reason: row.reason.clone(),
                     age_label: row.status.clone(),
+                    body: row.body.clone(),
                 })
                 .collect(),
             self.dreams
@@ -1039,6 +1042,7 @@ pub struct ReviewQueueRow {
     pub namespace: String,
     pub status: String,
     pub reason: Option<String>,
+    pub body: String,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConflictRow {

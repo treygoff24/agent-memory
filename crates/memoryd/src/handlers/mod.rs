@@ -80,6 +80,7 @@ const REVIEW_QUEUE_LIMIT_MAX: usize = 100;
 const REVIEW_QUEUE_SUMMARY_MAX: usize = 512;
 const REVIEW_QUEUE_POLICY_MAX: usize = 128;
 const REVIEW_QUEUE_REASON_MAX: usize = 512;
+const REVIEW_QUEUE_BODY_MAX: usize = 1024;
 const REVIEW_QUEUE_ACTION_MAX: usize = 96;
 const REVIEW_DECISION_SUMMARY_MAX: usize = 512;
 const REVIEW_RESPONSE_FRAME_BUDGET: usize = MAX_FRAME_BYTES - 1024;
@@ -2848,9 +2849,12 @@ async fn review_queue_response(
     limit: Option<usize>,
 ) -> Result<ResponsePayload, HandlerError> {
     let mut envelopes = Vec::new();
+    let mut bodies_by_id: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for path in memory_substrate::tree::relative_memory_paths(substrate.roots().repo.as_path()) {
         let repo_path = RepoPath::new(path.to_string_lossy().replace('\\', "/"));
         let envelope = substrate.read_path_envelope(&repo_path).await.map_err(HandlerError::substrate)?;
+        let id = envelope.metadata.frontmatter.id.as_str().to_string();
+        bodies_by_id.insert(id, body_text_for_review(&envelope.content));
         envelopes.push(review_envelope_from_memory(envelope.metadata));
     }
 
@@ -2867,6 +2871,7 @@ async fn review_queue_response(
         .items
         .into_iter()
         .map(|item| ReviewQueueItemResponse {
+            body: bodies_by_id.remove(&item.id).map(|body| bounded(&body, REVIEW_QUEUE_BODY_MAX)).unwrap_or_default(),
             id: item.id,
             summary: bounded(&item.summary, REVIEW_QUEUE_SUMMARY_MAX),
             status: item.status.as_str().to_string(),
@@ -2985,6 +2990,14 @@ async fn quarantine_for_grounding_rehydration(substrate: &Substrate, mut memory:
         .await
         .map_err(HandlerError::substrate)?;
     Ok(())
+}
+
+fn body_text_for_review(content: &MemoryContent) -> String {
+    match content {
+        MemoryContent::Plaintext(text) => text.clone(),
+        MemoryContent::Ciphertext { .. } => "[encrypted memory — use reveal flow to view body]".to_string(),
+        MemoryContent::MetadataOnly => "[metadata-only memory — body not stored]".to_string(),
+    }
 }
 
 fn review_envelope_from_memory(memory: Memory) -> ReviewMemoryEnvelope {

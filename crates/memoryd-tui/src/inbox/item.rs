@@ -2,12 +2,46 @@ use memoryd::protocol::{ConflictSummary, EventLogEntry, RecallHitSummary, Review
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InboxItem {
-    ReviewCandidate { id: String, title: String, namespace: String, reason: Option<String>, age_label: String },
-    Conflict { id: String, title: String, namespace: String, reason: Option<String>, age_label: String },
-    RecallHit { id: String, title: String, namespace: String, age_label: String },
-    RealityCheckDue { id: String, title: String, namespace: String, score: String, age_label: String },
-    DreamOutput { id: String, title: String, namespace: String, age_label: String },
-    Memory { id: String, title: String, namespace: String, age_label: String },
+    ReviewCandidate {
+        id: String,
+        title: String,
+        namespace: String,
+        reason: Option<String>,
+        age_label: String,
+        body: String,
+    },
+    Conflict {
+        id: String,
+        title: String,
+        namespace: String,
+        reason: Option<String>,
+        age_label: String,
+    },
+    RecallHit {
+        id: String,
+        title: String,
+        namespace: String,
+        age_label: String,
+    },
+    RealityCheckDue {
+        id: String,
+        title: String,
+        namespace: String,
+        score: String,
+        age_label: String,
+    },
+    DreamOutput {
+        id: String,
+        title: String,
+        namespace: String,
+        age_label: String,
+    },
+    Memory {
+        id: String,
+        title: String,
+        namespace: String,
+        age_label: String,
+    },
 }
 
 impl InboxItem {
@@ -85,6 +119,7 @@ impl From<ReviewQueueItemResponse> for InboxItem {
             namespace: "review".to_string(),
             reason: item.reason,
             age_label: item.status,
+            body: item.body,
         }
     }
 }

@@ -11,6 +11,7 @@ fn conflict_ranks_before_due_before_review() {
                 namespace: "n".into(),
                 reason: None,
                 age_label: "now".into(),
+                body: String::new(),
             },
             InboxItem::Conflict {
                 id: "c".into(),

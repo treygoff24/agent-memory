@@ -2,7 +2,7 @@ pub mod fields;
 
 use ratatui::layout::Rect;
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Padding, Paragraph};
+use ratatui::widgets::{Block, Padding, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::inbox::InboxItem;
@@ -20,23 +20,37 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, item: Option<&InboxItem>, style
         None => vec![Line::from("Select an inbox item to inspect it.")],
     };
     frame.render_widget(
-        Paragraph::new(body).style(styles.base).block(Block::new().padding(Padding::new(2, 1, 0, 0))),
+        Paragraph::new(body)
+            .style(styles.base)
+            .wrap(Wrap { trim: false })
+            .block(Block::new().padding(Padding::new(2, 1, 0, 0))),
         area,
     );
 }
 
 fn review_view<'a>(item: &'a InboxItem, styles: &ThemeStyles) -> Vec<Line<'a>> {
-    let InboxItem::ReviewCandidate { id, title, namespace, reason, .. } = item else {
+    let InboxItem::ReviewCandidate { id, title, namespace, reason, body, .. } = item else {
         return Vec::new();
     };
-    vec![
+    let mut lines = vec![
         Line::from("Review candidate"),
         kv("id", id, styles),
         kv("title", title, styles),
         kv("scope", namespace, styles),
         kv("policy", reason.as_deref().unwrap_or("requires_user_confirmation"), styles),
-        Line::from("Actions: a approve · r reject · f forget · enter detail"),
-    ]
+        Line::from(""),
+        Line::from("Body"),
+    ];
+    if body.is_empty() {
+        lines.push(Line::from("(empty — daemon shipped no body for this candidate)"));
+    } else {
+        for body_line in body.lines() {
+            lines.push(Line::from(body_line.to_string()));
+        }
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from("Actions: a approve · r reject · f forget · enter detail"));
+    lines
 }
 
 fn conflict_view<'a>(item: &'a InboxItem, styles: &ThemeStyles) -> Vec<Line<'a>> {

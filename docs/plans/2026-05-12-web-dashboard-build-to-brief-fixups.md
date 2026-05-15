@@ -167,6 +167,51 @@ What's deferred until next dogfood pass / next assessment:
 - Inspector header status badges (delta #6).
 - Per-preset border tone calibration for the non-warm-dark themes.
 
+### Inspector renders memory body for review candidates
+`COMMIT_PENDING` — The review-candidate inspector was rendering only
+`id / title / scope / policy / actions` — no memory body — leaving the
+reviewer nothing to actually review. Wired the body through end-to-end:
+
+- `protocol.rs`: added `body: String` field (`#[serde(default)]` for
+  forward compat with older daemons) to `ReviewQueueItemResponse`.
+- `handlers/mod.rs::review_queue_response`: while reading envelopes,
+  captures `envelope.content` into a `bodies_by_id` map; populates the
+  response `body` from that map, capped at new `REVIEW_QUEUE_BODY_MAX`
+  (1024 bytes). New `body_text_for_review` helper handles all three
+  `MemoryContent` variants: `Plaintext(text)` → text;
+  `Ciphertext { .. }` → `[encrypted memory — use reveal flow to view
+  body]`; `MetadataOnly` → `[metadata-only memory — body not stored]`.
+  The existing `REVIEW_RESPONSE_FRAME_BUDGET` trim loop still applies,
+  so over-budget responses drop items rather than corrupt — same
+  failure mode as before.
+- `app.rs::ReviewQueueRow`: new `body: String` field; both sample-data
+  rows seeded with realistic bodies.
+- `inbox/item.rs::InboxItem::ReviewCandidate`: new `body: String`
+  field; `From<ReviewQueueItemResponse>` captures it.
+- `client.rs`: also drops the stale
+  `footer_hint = "daemon connected · tab filters · enter inspect"`
+  clobber that was being applied on every snapshot fetch — that text
+  was overriding the focus-aware hint slate from delta #4. The bar now
+  shows the `a approve · r reject · f forget · ...` slate when idle,
+  pending-action toast during the undo window, and TUI-internal
+  transient messages (search-queued, etc.) when applicable.
+- `app.rs::DaemonSnapshot::{empty,sample}`: default `footer_hint` now
+  empty string instead of `"?:help q:quit"` (same reason — the focus
+  slate carries `?` and `:`).
+- `inspector/mod.rs::review_view`: emits `Body` section between
+  policy and actions; renders body lines, or
+  `(empty — daemon shipped no body for this candidate)` placeholder.
+  Inspector Paragraph now uses `.wrap(Wrap { trim: false })` so long
+  bodies wrap to the pane width.
+
+Tests:
+- `tests/inbox_ranking.rs`: ReviewCandidate construction site gets
+  `body: String::new()` (test doesn't care about body content).
+- `cargo test -p memoryd-tui --tests` 44 passed; `cargo test -p
+  memoryd` clean except a pre-existing privacy-key-env failure
+  (`test_correct_governance_refusal_does_not_advance_session`) that
+  predates this work.
+
 ### TUI delta #5 (partial): shared divider drops to border_soft
 `6eb7efc` — Inbox `Borders::RIGHT` border_style switched from
 `styles.block` (resolved.colors.border) to `styles.block_soft`

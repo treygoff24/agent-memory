@@ -955,6 +955,8 @@ pub struct ReviewQueueItemResponse {
     pub policy_applied: String,
     pub reason: Option<String>,
     pub next_actions: Vec<String>,
+    #[serde(default)]
+    pub body: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
