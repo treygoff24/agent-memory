@@ -45,7 +45,7 @@ record._
 ### 2026-05-14 — Phase 5 starts here
 
 ### `memoryd ui` was forwarding a `--panel` flag the TUI never accepted
-`PENDING` — Dropped `--panel` from `memoryd ui`'s clap surface and from
+`a5e2765` — Dropped `--panel` from `memoryd ui`'s clap surface and from
 `ui_subprocess_args`. `memoryd-tui` has no multi-panel concept — `panel`
 literally doesn't appear in `crates/memoryd-tui/src/**` — so the documented
 flag was vestigial and broke every invocation of `memoryd ui` with
