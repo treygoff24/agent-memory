@@ -48,11 +48,11 @@ use crate::protocol::{
     GovernancePolicySummary, GovernanceStatus, GovernanceSupersedeResponse, GovernanceWriteResponse,
     InjectableEventKind, InspectEntitiesResponse, NamespaceNode, NamespaceTreeResponse, NotificationEvent,
     ObserveResponse, ObserveTarget, PassiveNotificationStatus, PeerActivityResponse, PeerDeliveryAuditEntry,
-    PeerReleaseLockResponse, PeerReleaseLockStatus, PeerSessionStatus, PeerStatusResponse, RealityCheckAction,
-    RealityCheckRequest, RealityCheckResponse, RequestEnvelope, RequestPayload, RespondRefusalKind, ResponseEnvelope,
-    ResponsePayload, RevealResponse, ReviewDecisionResponse, ReviewQueueItemResponse, ReviewQueueResponse, SearchHit,
-    SearchResponse, StatusResponse, WebDashboardStatus, WriteNoteResponse, MAX_FRAME_BYTES,
-    NOTIFICATION_CHANNEL_CAPACITY,
+    PeerReleaseLockExpectedHolder, PeerReleaseLockResponse, PeerReleaseLockStatus, PeerSessionStatus,
+    PeerStatusResponse, RealityCheckAction, RealityCheckRequest, RealityCheckResponse, RequestEnvelope, RequestPayload,
+    RespondRefusalKind, ResponseEnvelope, ResponsePayload, RevealResponse, ReviewDecisionResponse,
+    ReviewQueueItemResponse, ReviewQueueResponse, SearchHit, SearchResponse, StatusResponse, WebDashboardStatus,
+    WriteNoteResponse, MAX_FRAME_BYTES, NOTIFICATION_CHANNEL_CAPACITY,
 };
 use crate::reality_check::{RcAdvanceRequest, RcRunRequest, RcSessionAdvance, RcSessionHandler};
 use crate::recall::{
@@ -547,9 +547,9 @@ async fn dispatch(
         RequestPayload::PeerActivity { session, since, limit, format: _ } => Ok(ResponsePayload::PeerActivity(
             peer_activity_response(state, session.as_deref(), since.as_deref(), limit)?,
         )),
-        RequestPayload::PeerReleaseLock { memory_id } => {
-            Ok(ResponsePayload::PeerReleaseLock(peer_release_lock_response(state, &memory_id)?))
-        }
+        RequestPayload::PeerReleaseLock { memory_id, expected_holder } => Ok(ResponsePayload::PeerReleaseLock(
+            peer_release_lock_response(state, &memory_id, expected_holder.as_ref())?,
+        )),
         RequestPayload::Observe { text, kind, entities, cwd, session_id, harness, harness_version } => {
             observe_response(
                 substrate,
@@ -1082,17 +1082,41 @@ fn peer_activity_response(
     Ok(PeerActivityResponse { entries, limit, total_recorded })
 }
 
-fn peer_release_lock_response(state: &HandlerState, memory_id: &str) -> Result<PeerReleaseLockResponse, HandlerError> {
+fn peer_release_lock_response(
+    state: &HandlerState,
+    memory_id: &str,
+    expected_holder: Option<&PeerReleaseLockExpectedHolder>,
+) -> Result<PeerReleaseLockResponse, HandlerError> {
     let memory_id = memory_id.trim();
     if memory_id.is_empty() {
         return Err(HandlerError::invalid_request("memory_id must not be empty"));
     }
 
-    let released = state
-        .claim_locks()
-        .get(memory_id)
-        .and_then(|lock| state.claim_locks().release(memory_id, &lock.holder_harness, &lock.holder_session_id));
-    let status = if released.is_some() { PeerReleaseLockStatus::Released } else { PeerReleaseLockStatus::NoLockFound };
+    let Some(lock) = state.claim_locks().get(memory_id) else {
+        return Ok(PeerReleaseLockResponse {
+            memory_id: memory_id.to_owned(),
+            status: PeerReleaseLockStatus::NoLockFound,
+            released: None,
+        });
+    };
+    if let Some(expected) = expected_holder {
+        if lock.holder_harness != expected.holder_harness || lock.holder_session_id != expected.holder_session_id {
+            return Ok(PeerReleaseLockResponse {
+                memory_id: memory_id.to_owned(),
+                status: PeerReleaseLockStatus::LockChanged,
+                released: None,
+            });
+        }
+    }
+
+    let released = state.claim_locks().release(memory_id, &lock.holder_harness, &lock.holder_session_id);
+    let status = if released.is_some() {
+        PeerReleaseLockStatus::Released
+    } else if expected_holder.is_some() && state.claim_locks().get(memory_id).is_some() {
+        PeerReleaseLockStatus::LockChanged
+    } else {
+        PeerReleaseLockStatus::NoLockFound
+    };
 
     Ok(PeerReleaseLockResponse { memory_id: memory_id.to_owned(), status, released })
 }
@@ -1312,7 +1336,7 @@ async fn correct_reality_check_item(
             RespondRefusalKind::InvalidAction,
         )));
     }
-    let old = substrate.read_memory(memory_id).await.map_err(HandlerError::substrate)?;
+    let old = substrate.read_memory_envelope(memory_id).await.map_err(HandlerError::substrate)?.metadata;
     let response = governance_supersede_response(
         substrate,
         None,
@@ -1868,7 +1892,7 @@ async fn reveal_response(substrate: &Substrate, id: &str, reason: &str) -> Resul
         })
         .map_err(HandlerError::privacy)?;
     substrate
-        .record_encrypted_content_revealed(memory_id, bounded(reason, REVEAL_REASON_MAX_CHARS))
+        .record_encrypted_content_revealed(memory_id, audit_reveal_reason(reason))
         .map_err(|err| HandlerError::substrate(format!("record encrypted reveal audit event: {err}")))?;
     let (body, truncated) = bounded_with_truncation(&body, GET_BODY_MAX);
     Ok(ResponsePayload::Reveal(RevealResponse {
@@ -3979,6 +4003,51 @@ fn collect_descriptor_strings(value: &Value, output: &mut Vec<String>) {
 
 fn bounded(text: &str, max_chars: usize) -> String {
     bounded_with_truncation(text, max_chars).0
+}
+
+fn audit_reveal_reason(reason: &str) -> String {
+    let bounded_reason = bounded(reason, REVEAL_REASON_MAX_CHARS);
+    let Ok(privacy) = classify_privacy(&bounded_reason, PrivacyNamespace::Project, None) else {
+        return "privacy-redacted reveal reason".to_owned();
+    };
+    redact_sensitive_privacy_spans(&bounded_reason, &privacy)
+}
+
+fn redact_sensitive_privacy_spans(text: &str, privacy: &PrivacyDecision) -> String {
+    let mut spans = privacy
+        .spans
+        .iter()
+        .filter(|span| {
+            let action = span.label.storage_action();
+            action.requires_encryption() || action.refuses_storage()
+        })
+        .collect::<Vec<_>>();
+    if spans.is_empty() {
+        return text.to_owned();
+    }
+
+    spans.sort_by_key(|span| (span.start, span.end));
+    let mut output = String::with_capacity(text.len());
+    let mut cursor = 0usize;
+    for span in spans {
+        let start = span.start.min(text.len());
+        let end = span.end.min(text.len());
+        if start < cursor {
+            continue;
+        }
+        if start > end || !text.is_char_boundary(start) || !text.is_char_boundary(end) {
+            return "privacy-redacted reveal reason".to_owned();
+        }
+        output.push_str(&text[cursor..start]);
+        output.push_str("[redacted]");
+        cursor = end;
+    }
+    output.push_str(&text[cursor..]);
+    if output.trim().is_empty() {
+        "privacy-redacted reveal reason".to_owned()
+    } else {
+        output
+    }
 }
 
 fn bounded_with_truncation(text: &str, max_chars: usize) -> (String, bool) {

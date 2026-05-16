@@ -5,7 +5,8 @@ use std::path::PathBuf;
 fn stream_h_eval_workflow_matches_ci_contract() {
     let workflow = read_workflow();
 
-    assert_contains(&workflow, "v[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+", "release-candidate tag pattern");
+    assert_rc_tag_examples_match_workflow_patterns(&workflow);
+    assert_not_contains(&workflow, "v[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+", "regex-like release-candidate tag pattern");
     assert_contains(&workflow, r#"cron: "0 3 * * *""#, "daily cron schedule");
     assert_contains(&workflow, "workflow_dispatch:", "manual dispatch trigger");
     assert_contains(&workflow, "harness_mode:", "manual harness_mode input");
@@ -55,6 +56,57 @@ fn read_workflow() -> String {
 
 fn workflow_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.github/workflows/stream-h-eval.yml")
+}
+
+fn assert_rc_tag_examples_match_workflow_patterns(workflow: &str) {
+    let tag_patterns = extract_push_tag_patterns(workflow);
+
+    for tag in ["v1.2.3-rc.4", "v12.0.345-rc.67"] {
+        assert!(tag_patterns.iter().any(|pattern| tag_glob_matches(pattern, tag)), "RC tag should trigger: {tag}");
+    }
+
+    for tag in ["v1.2.3", "v1.2.3-beta.4", "release/v1.2.3-rc.4", "1.2.3-rc.4"] {
+        assert!(
+            !tag_patterns.iter().any(|pattern| tag_glob_matches(pattern, tag)),
+            "non-RC tag should not trigger: {tag}"
+        );
+    }
+}
+
+fn extract_push_tag_patterns(workflow: &str) -> Vec<String> {
+    let tags_line = workflow
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("tags: ["))
+        .expect("workflow should configure push tag patterns");
+    let (_, rest) = tags_line.split_once('[').expect("tag patterns should use inline array syntax");
+    let (patterns, _) = rest.split_once(']').expect("tag patterns should close inline array syntax");
+    patterns.split(',').map(|pattern| pattern.trim().trim_matches('"').to_owned()).collect()
+}
+
+fn tag_glob_matches(pattern: &str, tag: &str) -> bool {
+    let pattern = pattern.as_bytes();
+    let tag = tag.as_bytes();
+    let mut matches = vec![vec![false; tag.len() + 1]; pattern.len() + 1];
+    matches[0][0] = true;
+
+    for pattern_index in 1..=pattern.len() {
+        if pattern[pattern_index - 1] == b'*' {
+            matches[pattern_index][0] = matches[pattern_index - 1][0];
+        }
+    }
+
+    for pattern_index in 1..=pattern.len() {
+        for tag_index in 1..=tag.len() {
+            matches[pattern_index][tag_index] = if pattern[pattern_index - 1] == b'*' {
+                matches[pattern_index - 1][tag_index] || matches[pattern_index][tag_index - 1]
+            } else {
+                pattern[pattern_index - 1] == tag[tag_index - 1] && matches[pattern_index - 1][tag_index - 1]
+            };
+        }
+    }
+
+    matches[pattern.len()][tag.len()]
 }
 
 fn assert_contains(workflow: &str, expected: &str, label: &str) {

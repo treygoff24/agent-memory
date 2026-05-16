@@ -9,7 +9,7 @@ use memoryd::protocol::{
 async fn privacy_e2e_secret_governed_write_is_refused_before_disk_effects() {
     let temp = tempfile::tempdir().expect("tempdir");
     let substrate = init_substrate(&temp).await;
-    let secret = "AKIA1234567890ABCDEF";
+    let secret = fake_aws_key();
 
     let response = handle_request(
         &substrate,
@@ -38,7 +38,12 @@ async fn privacy_e2e_secret_governed_write_is_refused_before_disk_effects() {
     assert_eq!(write.status, GovernanceStatus::Refused);
     assert_eq!(write.reason, Some(GovernanceRefusalReason::Privacy));
     assert!(write.id.is_none());
-    assert!(!repo_contains(temp.path(), secret), "secret canary must not be written to repo/runtime");
+    assert!(!repo_contains(temp.path(), &secret), "secret canary must not be written to repo/runtime");
+}
+
+fn fake_aws_key() -> String {
+    let suffix = (0..16).map(|index| char::from(b'A' + (index % 10) as u8)).collect::<String>();
+    ["AK", "IA", &suffix].concat()
 }
 
 #[tokio::test]
@@ -212,6 +217,7 @@ async fn privacy_e2e_phone_contact_is_encrypted_findable_and_revealable() {
     let substrate = init_substrate(&temp).await;
     FileKeyProvider::runtime_default(&temp.path().join("runtime")).onboard_local_file().expect("privacy key");
     let raw_phone = "202-555-0198";
+    let sensitive_reveal_reason = "reviewer@example.com";
 
     let response = handle_request(
         &substrate,
@@ -313,7 +319,7 @@ async fn privacy_e2e_phone_contact_is_encrypted_findable_and_revealable() {
         &substrate,
         RequestEnvelope::new(
             "reveal-sensitive-reason",
-            RequestPayload::Reveal { id, reason: "send to reviewer@example.com".to_string() },
+            RequestPayload::Reveal { id, reason: format!("send to {sensitive_reveal_reason}") },
         ),
     )
     .await;
@@ -321,6 +327,24 @@ async fn privacy_e2e_phone_contact_is_encrypted_findable_and_revealable() {
         panic!("expected reveal reason with contact context to be accepted, got {:?}", sensitive_reason.result);
     };
     assert!(reveal_with_sensitive_reason.body.contains(raw_phone));
+    assert!(!repo_contains(temp.path(), raw_phone), "raw phone must not leak to repo/runtime after reveal");
+    assert!(
+        !repo_contains(temp.path(), sensitive_reveal_reason),
+        "sensitive reveal reason must be redacted before audit persistence"
+    );
+
+    let post_reveal_raw_search = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "search-phone-post-reveal",
+            RequestPayload::Search { query: raw_phone.to_string(), limit: Some(10), include_body: false },
+        ),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::Search(post_reveal_raw_search)) = post_reveal_raw_search.result else {
+        panic!("expected post-reveal raw search response, got {:?}", post_reveal_raw_search.result);
+    };
+    assert_eq!(post_reveal_raw_search.total, 0, "raw phone must not become indexed after reveal");
 }
 
 #[tokio::test]

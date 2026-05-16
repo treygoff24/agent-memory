@@ -51,7 +51,7 @@ review_gates: []
 unexpected: nope
 "#;
 
-    assert!(serde_yaml::from_str::<Policy>(yaml).is_err());
+    assert!(yaml_serde::from_str::<Policy>(yaml).is_err());
 }
 
 #[test]
@@ -157,8 +157,8 @@ contradiction_policy: ask_around
 review_gates: []
 "#;
 
-    assert!(serde_yaml::from_str::<Policy>(missing).is_err());
-    assert!(serde_yaml::from_str::<Policy>(unknown).is_err());
+    assert!(yaml_serde::from_str::<Policy>(missing).is_err());
+    assert!(yaml_serde::from_str::<Policy>(unknown).is_err());
     assert_eq!(
         PolicySet::builtin().policy_for_scope(Scope::Project).expect("project policy").contradiction_policy(),
         ContradictionPolicy::Supersede
@@ -183,7 +183,7 @@ review_gates: []
 "#
     );
 
-    assert_eq!(serde_yaml::from_str::<Policy>(&yaml).is_ok(), should_parse);
+    assert_eq!(yaml_serde::from_str::<Policy>(&yaml).is_ok(), should_parse);
 }
 
 fn write_required_policy_set(path: &Path) {

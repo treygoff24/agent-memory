@@ -94,6 +94,16 @@ fn test_concurrent_first_acquire_reports_exactly_one_contention() {
         results.iter().filter(|result| matches!(result, ClaimLockAcquireResult::Contended(_))).count();
     assert_eq!(acquired_count, 1);
     assert_eq!(contended_count, 1);
+    let acquired = results
+        .iter()
+        .find_map(|result| match result {
+            ClaimLockAcquireResult::Acquired(lock) => Some(lock),
+            _ => None,
+        })
+        .expect("one acquire succeeds");
+    let active_lock = registry.get_at("mem_concurrent", base).expect("acquired lock remains active");
+    assert_eq!(active_lock.holder_session_id, acquired.holder_session_id);
+    assert_eq!(active_lock.holder_harness, acquired.holder_harness);
 }
 
 #[test]
@@ -144,6 +154,10 @@ fn test_renew_only_by_current_holder_before_expiry() {
     );
 
     assert_eq!(wrong_holder, ClaimLockRenewResult::NotHeld);
+    let active_lock = registry.get_at("mem_x", base + Duration::from_secs(2)).expect("original lock remains active");
+    assert_eq!(active_lock.holder_session_id, "sess_a");
+    assert_eq!(active_lock.holder_harness, "codex");
+    assert_eq!(active_lock.expires_at, timestamp(15, 23, 5));
     assert_eq!(expired_holder, ClaimLockRenewResult::NotHeld);
 }
 

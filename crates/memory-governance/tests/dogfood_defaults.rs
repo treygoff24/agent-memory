@@ -29,7 +29,9 @@ fn non_me_policy_floors_remain_unchanged() {
     let policies = PolicySet::builtin();
     let agent = policies.policy_for_scope(Scope::Agent).expect("agent policy");
     let project = policies.policy_for_scope(Scope::Project).expect("project policy");
+    let dreaming = policies.policy_for_scope(Scope::Dreaming).expect("dreaming policy");
 
     assert_eq!(agent.dry_run(&CandidateContext::new(Scope::Agent)).confidence_floor, 0.82);
     assert_eq!(project.dry_run(&CandidateContext::new(Scope::Project)).confidence_floor, 0.70);
+    assert_eq!(dreaming.dry_run(&CandidateContext::new(Scope::Dreaming)).confidence_floor, 0.95);
 }

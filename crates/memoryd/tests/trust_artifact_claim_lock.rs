@@ -1,5 +1,5 @@
-use chrono::TimeZone;
-use memorum_coordination::claim_lock::{ClaimLockAcquireRequest, ClaimLockRegistry};
+use chrono::{TimeZone, Utc};
+use memorum_coordination::claim_lock::{ClaimLockAcquireRequest, ClaimLockClock, ClaimLockRegistry};
 use memory_substrate::{
     Author, AuthorKind, ClassificationOutcome, EventContext, Frontmatter, InitOptions, Memory, MemoryId, MemoryStatus,
     MemoryType, RepoPath, RetrievalPolicy, Roots, Scope, Sensitivity, Source, SourceKind, Substrate, TrustLevel,
@@ -18,15 +18,31 @@ async fn trust_artifact_does_not_emit_stream_i_placeholder_claim_lock_status() {
 }
 
 #[tokio::test]
+async fn trust_artifact_does_not_emit_placeholder_when_claim_lock_registry_is_empty() {
+    let fixture = Fixture::new().await;
+    let registry = ClaimLockRegistry::new();
+
+    let artifact = TrustArtifactBuilder::new(&fixture.substrate)
+        .with_claim_locks(&registry)
+        .build(&fixture.memory_id)
+        .await
+        .expect("artifact");
+
+    assert_eq!(artifact.sync_state.claim_lock_status, None);
+}
+
+#[tokio::test]
 async fn trust_artifact_reports_active_claim_lock_holder_and_expiry() {
     let fixture = Fixture::new().await;
     let registry = ClaimLockRegistry::new();
-    registry.acquire(ClaimLockAcquireRequest::new(
-        fixture.memory_id.as_str(),
-        "sess_active_lock",
-        "codex",
-        Duration::from_secs(300),
-    ));
+    let clock = ClaimLockClock {
+        instant: std::time::Instant::now(),
+        utc: Utc.with_ymd_and_hms(2026, 5, 7, 13, 0, 0).single().expect("fixture lock time"),
+    };
+    let ttl = Duration::from_secs(300);
+    let expected_expires_at = (clock.utc + chrono::Duration::from_std(ttl).expect("fixture ttl")).to_rfc3339();
+    registry
+        .acquire_at(ClaimLockAcquireRequest::new(fixture.memory_id.as_str(), "sess_active_lock", "codex", ttl), clock);
 
     let artifact = TrustArtifactBuilder::new(&fixture.substrate)
         .with_claim_locks(&registry)
@@ -35,8 +51,7 @@ async fn trust_artifact_reports_active_claim_lock_holder_and_expiry() {
         .expect("artifact");
     let status = artifact.sync_state.claim_lock_status.expect("active claim lock status");
 
-    assert!(status.contains("codex:sess_active_lock"));
-    assert!(status.contains("until"));
+    assert_eq!(status, format!("held by codex:sess_active_lock until {expected_expires_at}"));
     assert!(!status.contains("Stream I not active"));
 }
 

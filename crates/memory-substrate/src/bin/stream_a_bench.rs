@@ -4,6 +4,7 @@
 //! Spec §17.6 / §18.9: baselines are immutable; this binary refuses to write
 //! to any path matching `baseline.<profile>.json`.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -26,12 +27,12 @@ async fn main() {
 
 async fn run() -> Result<(), String> {
     let args = parse_args()?;
-    guard_baseline_path(&args.output)?;
+    guard_output_path(&args.output)?;
 
     let fixture = Fixture::build(args.seed, args.corpus).await?;
     let corpus_hash = corpus_sha256(&fixture.roots.repo);
     let metrics = run_iterations(&fixture, args.runs, args.seed).await?;
-    write_report(&args, &metrics, &corpus_hash, &args.output)?;
+    write_report(&args, &metrics, &fixture.coverage(), &corpus_hash, &args.output)?;
     println!("bench gate wrote {}", args.output.display());
     Ok(())
 }
@@ -104,6 +105,19 @@ fn guard_baseline_path(output: &Path) -> Result<(), String> {
         ))
     } else {
         Ok(())
+    }
+}
+
+fn guard_output_path(output: &Path) -> Result<(), String> {
+    guard_baseline_path(output)?;
+    match std::fs::symlink_metadata(output) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(format!(
+            "refusing to write to symlink output '{}'; benchmark reports must not follow links",
+            output.display()
+        )),
+        Ok(_) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(format!("inspect {}: {err}", output.display())),
     }
 }
 
@@ -209,22 +223,26 @@ async fn run_iterations(fixture: &Fixture, runs: usize, seed: u64) -> Result<Met
     })
 }
 
-fn write_report(args: &BenchArgs, metrics: &Metrics, corpus_hash: &str, output: &Path) -> Result<(), String> {
+fn write_report(
+    args: &BenchArgs,
+    metrics: &Metrics,
+    coverage: &FixtureCoverage,
+    corpus_hash: &str,
+    output: &Path,
+) -> Result<(), String> {
     let report = json!({
         "schema": 1,
         "tier": args.tier,
         "profile": args.profile,
         "runs": args.runs,
-        "corpus_size": args.corpus,
+        "corpus_size": coverage.corpus_size,
         "seed": format!("0x{:x}", args.seed),
         // B-RT-4: corpus_sha256 + active_triple required by spec §17.6.
         "corpus_sha256": corpus_hash,
         "vector_dimension": 32,
+        "vectorized_chunks": coverage.vectorized_chunks,
         "active_triple": { "provider": "synthetic", "model_ref": "stream-a-test", "dimension": 32 },
-        "corpus_variants": [
-            "long_bodies", "large_bodies", "aliases", "entity_aliases", "regressions",
-            "prospective", "tombstones", "encrypted_metadata_only"
-        ],
+        "corpus_variants": coverage.corpus_variants,
         "metrics": {
             "cold_reindex": metric(metrics.cold_reindex.clone()),
             "query_by_id": metric(metrics.query_by_id.clone()),
@@ -235,18 +253,47 @@ fn write_report(args: &BenchArgs, metrics: &Metrics, corpus_hash: &str, output: 
         }
     });
 
-    if let Some(parent) = output.parent() {
+    write_report_file(output, &(serde_json::to_string_pretty(&report).map_err(|e| e.to_string())? + "\n"))
+}
+
+fn write_report_file(output: &Path, content: &str) -> Result<(), String> {
+    guard_output_path(output)?;
+    if let Some(parent) = non_empty_parent(output) {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    std::fs::write(output, serde_json::to_string_pretty(&report).map_err(|e| e.to_string())? + "\n")
-        .map_err(|e| e.to_string())
+
+    let directory = non_empty_parent(output).unwrap_or_else(|| Path::new("."));
+    let file_name = output.file_name().ok_or_else(|| format!("output path '{}' has no file name", output.display()))?;
+    let temp_path = directory.join(format!(".{}.{}.tmp", file_name.to_string_lossy(), std::process::id()));
+
+    let write_result = (|| -> Result<(), std::io::Error> {
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temp_path)?;
+        file.write_all(content.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temp_path, output)
+    })();
+
+    if let Err(err) = write_result {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(err.to_string());
+    }
+
+    Ok(())
+}
+
+fn non_empty_parent(path: &Path) -> Option<&Path> {
+    path.parent().filter(|parent| !parent.as_os_str().is_empty())
 }
 
 struct Fixture {
     roots: Roots,
     substrate: Substrate,
+    // Declared after substrate so Substrate drops before the TempDir cleanup.
+    _root: tempfile::TempDir,
     triple: EmbeddingTriple,
     corpus_size: usize,
+    vectorized_chunks: usize,
 }
 
 impl Fixture {
@@ -266,6 +313,7 @@ impl Fixture {
             dimension: 32,
         };
 
+        let mut vectorized_chunks = 0usize;
         for index in 0..corpus {
             let memory = sample_memory(index, seed);
             let chunk = chunk_memory(&memory).into_iter().next().ok_or("fixture memory has no chunk")?;
@@ -293,15 +341,30 @@ impl Fixture {
                     })
                     .await
                     .map_err(|e| e.to_string())?;
+                vectorized_chunks += 1;
             }
         }
 
-        // Keep `root` alive by leaking it (the `Fixture` owns the substrate which
-        // holds open file handles to the temp dir).
-        std::mem::forget(root);
-        Ok(Self { roots, substrate, triple, corpus_size: corpus })
+        Ok(Self { roots, substrate, _root: root, triple, corpus_size: corpus, vectorized_chunks })
+    }
+
+    fn coverage(&self) -> FixtureCoverage {
+        FixtureCoverage {
+            corpus_size: self.corpus_size,
+            vectorized_chunks: self.vectorized_chunks,
+            corpus_variants: ACTUAL_CORPUS_VARIANTS,
+        }
     }
 }
+
+struct FixtureCoverage {
+    corpus_size: usize,
+    vectorized_chunks: usize,
+    corpus_variants: &'static [&'static str],
+}
+
+const ACTUAL_CORPUS_VARIANTS: &[&str] =
+    &["active_plaintext_internal", "aliases", "tag_buckets", "variable_body_lengths"];
 
 fn sample_memory(index: usize, seed: u64) -> Memory {
     let now = chrono::DateTime::<chrono::Utc>::from(std::time::UNIX_EPOCH);
@@ -411,4 +474,94 @@ fn percentile(values: &[f64], quantile: f64) -> f64 {
     }
     let rank = ((values.len() - 1) as f64 * quantile).ceil() as usize;
     (values[rank] * 1000.0).round() / 1000.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_args(output: PathBuf) -> BenchArgs {
+        BenchArgs {
+            tier: "smoke".to_string(),
+            profile: "test".to_string(),
+            output,
+            runs: 1,
+            corpus: 40,
+            seed: memory_test_support::perf::SEED_SMOKE,
+        }
+    }
+
+    fn sample_metrics() -> Metrics {
+        Metrics {
+            cold_reindex: vec![1.0],
+            query_by_id: vec![1.0],
+            filtered_metadata_query: vec![1.0],
+            fts_chunk_query: vec![1.0],
+            vector_chunk_query: vec![1.0],
+            tree_validator: vec![1.0],
+        }
+    }
+
+    #[test]
+    fn write_report_records_actual_fixture_coverage() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let output = temp.path().join("report.json");
+        let coverage =
+            FixtureCoverage { corpus_size: 40, vectorized_chunks: 32, corpus_variants: ACTUAL_CORPUS_VARIANTS };
+
+        write_report(&sample_args(output.clone()), &sample_metrics(), &coverage, "hash", &output)
+            .expect("write report");
+
+        let report: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(output).expect("read report")).expect("parse report");
+        assert_eq!(report["corpus_size"], 40);
+        assert_eq!(report["vectorized_chunks"], 32);
+        assert_eq!(
+            report["corpus_variants"],
+            json!(["active_plaintext_internal", "aliases", "tag_buckets", "variable_body_lengths"])
+        );
+    }
+
+    #[test]
+    fn write_report_file_accepts_bare_output_filename() {
+        let _guard = current_dir_lock().lock().expect("current dir lock");
+        let original_dir = std::env::current_dir().expect("current dir");
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::env::set_current_dir(temp.path()).expect("switch to temp dir");
+
+        let result = write_report_file(Path::new("report.json"), "{}\n");
+        let written = std::fs::read_to_string("report.json");
+
+        std::env::set_current_dir(original_dir).expect("restore current dir");
+        result.expect("write bare report");
+        assert_eq!(written.expect("read bare report"), "{}\n");
+    }
+
+    #[test]
+    fn guard_output_path_rejects_baseline_filename() {
+        let err = guard_output_path(Path::new("bench/baseline.dev.json")).expect_err("baseline rejected");
+        assert!(err.contains("refusing to write to baseline path"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_report_file_rejects_symlink_output_without_touching_target() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target = temp.path().join("baseline.dev.json");
+        let link = temp.path().join("latest.json");
+        std::fs::write(&target, "baseline\n").expect("write target");
+        symlink(&target, &link).expect("symlink");
+
+        let err = write_report_file(&link, "new report\n").expect_err("symlink output rejected");
+
+        assert!(err.contains("refusing to write to symlink output"));
+        assert_eq!(std::fs::read_to_string(target).expect("read target"), "baseline\n");
+    }
+
+    fn current_dir_lock() -> &'static std::sync::Mutex<()> {
+        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| std::sync::Mutex::new(()))
+    }
 }

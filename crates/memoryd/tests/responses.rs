@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use memory_privacy::FileKeyProvider;
 use memory_substrate::{
     events::{read_events, EventKind},
     Author, AuthorKind, ClassificationOutcome, EncryptedWriteRequest, EventContext, Frontmatter, InitOptions, Memory,
@@ -235,10 +236,10 @@ async fn test_forget_reason_redacts_pii_and_secret_like_text_before_persistence(
         .await;
 
     assert!(matches!(response, RealityCheckResponse::RespondAccepted { .. }));
-    let repo_text = collect_repo_text(fixture._repo.path());
-    assert!(!repo_text.contains("312-555-0199"));
-    assert!(!repo_text.contains("trey@example.com"));
-    assert!(!repo_text.contains("sk-test-secret"));
+    let persisted_text = collect_persisted_text(&fixture);
+    assert!(!persisted_text.contains("312-555-0199"));
+    assert!(!persisted_text.contains("trey@example.com"));
+    assert!(!persisted_text.contains("sk-test-secret"));
     assert!(fixture.events().iter().any(|event| {
         matches!(&event.kind, EventKind::RealityCheckForgotten { id: event_id, reason, .. }
             if event_id == &id && reason == "[redacted]")
@@ -279,10 +280,18 @@ async fn test_concurrent_responses_are_serialized_for_same_session() {
 
     assert_eq!(accepted, 1, "exactly one response should mutate session state: {first:?} {second:?}");
     assert_eq!(refused, 1, "stale concurrent response should be refused: {first:?} {second:?}");
-    assert_eq!(
-        fixture.substrate.read_memory(&id).await.expect("memory after").frontmatter.status,
-        MemoryStatus::Tombstoned
-    );
+    let memory = fixture.substrate.read_memory(&id).await.expect("memory after");
+    match (&first, &second) {
+        (RealityCheckResponse::RespondAccepted { .. }, RealityCheckResponse::RespondRefused { .. }) => {
+            assert_eq!(memory.frontmatter.status, MemoryStatus::Tombstoned);
+        }
+        (RealityCheckResponse::RespondRefused { .. }, RealityCheckResponse::RespondAccepted { .. }) => {
+            assert_eq!(memory.frontmatter.status, MemoryStatus::Active);
+            assert!(!memory.frontmatter.retrieval_policy.passive_recall);
+            assert!(memory.frontmatter.tags.iter().any(|tag| tag == "reality_check_not_relevant"));
+        }
+        other => panic!("unexpected serialized response pair: {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -361,6 +370,55 @@ async fn test_not_relevant_updates_encrypted_metadata_without_tombstone() {
 }
 
 #[tokio::test]
+async fn test_forget_updates_encrypted_metadata_and_preserves_ciphertext() {
+    let fixture = Fixture::new().await;
+    let id = fixture.write_encrypted_memory("Encrypted forget item", Scope::User).await;
+    let before = fixture.substrate.read_memory_envelope(&id).await.expect("encrypted before");
+    let session_id = fixture.start_session().await;
+
+    let response = fixture
+        .reality_check(RealityCheckRequest::Respond {
+            session_id: session_id.clone(),
+            memory_id: id.clone(),
+            action: RealityCheckAction::Forget { reason: "obsolete encrypted note".to_owned() },
+        })
+        .await;
+
+    assert!(matches!(response, RealityCheckResponse::RespondAccepted { .. }));
+    let after = fixture.substrate.read_memory_envelope(&id).await.expect("encrypted after");
+    assert_ciphertext_preserved(&before.content, &after.content);
+    assert_eq!(after.metadata.frontmatter.status, MemoryStatus::Tombstoned);
+    assert!(!after.metadata.frontmatter.retrieval_policy.index_body);
+    assert!(!after.metadata.frontmatter.retrieval_policy.index_embeddings);
+    assert!(fixture.events().iter().any(|event| {
+        matches!(&event.kind, EventKind::RealityCheckForgotten { id: event_id, session_id: event_session, reason }
+            if event_id == &id && event_session == &session_id && reason == "obsolete encrypted note")
+    }));
+}
+
+#[tokio::test]
+async fn test_correct_supersedes_encrypted_memory_and_preserves_old_ciphertext() {
+    let fixture = Fixture::new().await;
+    let id = fixture.write_encrypted_memory("Encrypted correction item", Scope::Project).await;
+    let before = fixture.substrate.read_memory_envelope(&id).await.expect("encrypted before");
+    let session_id = fixture.start_session().await;
+
+    let response = fixture
+        .reality_check(RealityCheckRequest::Respond {
+            session_id,
+            memory_id: id.clone(),
+            action: RealityCheckAction::Correct { new_body: "The deployment target is production.".to_owned() },
+        })
+        .await;
+
+    assert!(matches!(response, RealityCheckResponse::RespondAccepted { .. }));
+    let after = fixture.substrate.read_memory_envelope(&id).await.expect("encrypted after");
+    assert_ciphertext_preserved(&before.content, &after.content);
+    assert_eq!(after.metadata.frontmatter.status, MemoryStatus::Superseded);
+    assert_eq!(after.metadata.frontmatter.superseded_by.len(), 1);
+}
+
+#[tokio::test]
 async fn test_correct_issues_supersession() {
     let fixture = Fixture::new().await;
     let id = fixture.write_memory("Deployment target", "The old deployment target is staging.", Scope::Project).await;
@@ -391,7 +449,8 @@ async fn test_correct_governance_refusal_does_not_advance_session() {
             session_id: session_id.clone(),
             memory_id: id.clone(),
             action: RealityCheckAction::Correct {
-                new_body: "The launch target is production and contact is ops@example.com.".to_owned(),
+                new_body: "The launch target is production and the launch token is sk_test_1234567890abcdef."
+                    .to_owned(),
             },
         })
         .await;
@@ -466,6 +525,7 @@ impl Fixture {
         )
         .await
         .expect("substrate init");
+        FileKeyProvider::runtime_default(runtime.path()).onboard_local_file().expect("privacy key");
         Self { _repo: repo, runtime, substrate }
     }
 
@@ -562,6 +622,12 @@ impl Fixture {
     fn events(&self) -> Vec<memory_substrate::events::Event> {
         read_events(&self._repo.path().join("events/dev_responses.jsonl")).expect("events read")
     }
+}
+
+fn collect_persisted_text(fixture: &Fixture) -> String {
+    let mut out = collect_repo_text(fixture._repo.path());
+    out.push_str(&collect_repo_text(fixture.runtime.path()));
+    out
 }
 
 fn collect_repo_text(path: &std::path::Path) -> String {

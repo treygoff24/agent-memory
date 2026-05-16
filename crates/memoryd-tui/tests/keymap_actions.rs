@@ -54,7 +54,9 @@ fn review_action_advances_cursor_and_chains_commits() {
         &[DaemonCall::Review { action: ReviewAction::Approve, memory_id: first_selected.clone() }],
         "pressing a second action mid-window auto-commits the first",
     );
-    assert!(app.pending_action().is_some(), "second action is now the pending one");
+    let pending = app.pending_action().expect("second action is now the pending one");
+    assert_eq!(pending.memory_id(), second_selected);
+    assert_eq!(pending.action(), &ReviewAction::Reject);
 
     app.handle_event(press('u'), start + Duration::from_millis(200));
     assert!(app.pending_action().is_none(), "u clears the pending action");
@@ -78,15 +80,15 @@ fn review_action_ignores_non_review_items_and_preserves_pending_undo() {
     app.set_selected(2);
     let review_id = app.selected_item().expect("review item").id().to_string();
     app.handle_event(press('a'), start + Duration::from_millis(100));
-    assert_eq!(app.pending_action().expect("review action staged").memory_id(), review_id);
+    let pending = app.pending_action().expect("review action staged");
+    assert_eq!(pending.memory_id(), review_id);
+    assert_eq!(pending.action(), &ReviewAction::Approve);
 
     app.set_selected(0);
     app.handle_event(press('r'), start + Duration::from_millis(200));
-    assert_eq!(
-        app.pending_action().expect("pending action remains undoable").memory_id(),
-        review_id,
-        "pressing an action key on a non-review row must not auto-commit the pending review action",
-    );
+    let pending = app.pending_action().expect("pending action remains undoable");
+    assert_eq!(pending.memory_id(), review_id);
+    assert_eq!(pending.action(), &ReviewAction::Approve);
     assert!(app.queued_daemon_calls().is_empty());
 }
 

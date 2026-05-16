@@ -179,6 +179,27 @@ async fn dream_candidate_with_inactive_memory_ref_quarantines_on_approve() {
 }
 
 #[tokio::test]
+async fn dream_candidate_with_acceptable_memory_ref_promotes_on_approve() {
+    for (status, trust, cited_suffix, candidate_suffix) in [
+        (MemoryStatus::Active, TrustLevel::Trusted, "110009", "110109"),
+        (MemoryStatus::Pinned, TrustLevel::Pinned, "110010", "110110"),
+    ] {
+        let (_temp, substrate) = initialized_substrate().await;
+        let cited_id = format!("mem_20260430_a1b2c3d4e5f60718_{cited_suffix}");
+        let cited = lifecycle_memory(&cited_id, status, trust);
+        write_memory(&substrate, cited).await;
+        let candidate_id = format!("mem_20260430_a1b2c3d4e5f60718_{candidate_suffix}");
+        let candidate =
+            dream_candidate(&candidate_id, [evidence_ref("ev_memory_valid", &cited_id, "cited memory body")]);
+        write_memory(&substrate, candidate.clone()).await;
+
+        approve(&substrate, candidate.frontmatter.id.as_str()).await;
+
+        assert_promoted(&substrate, candidate.frontmatter.id.as_str()).await;
+    }
+}
+
+#[tokio::test]
 async fn dream_candidate_with_valid_refs_promotes_on_approve() {
     let (_temp, substrate) = initialized_substrate().await;
     append_fragment(&substrate, "sub_01HZXJK7J7W0X4Q4KJ7A2R8V1D", "stable substrate observation", Utc::now()).await;

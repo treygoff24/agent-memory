@@ -51,32 +51,28 @@ async fn review_queue_returns_quarantined_memories_from_substrate() {
 
 #[tokio::test]
 async fn review_decision_rejects_active_memory_without_mutating_it() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
-    let substrate = init_substrate(roots).await;
-    let active = active_memory();
-    let id = active.frontmatter.id.as_str().to_string();
-    write_test_memory(&substrate, active.clone()).await;
+    for (decision, id) in
+        [("approve", "mem_20260429_a1b2c3d4e5f60718_800002"), ("reject", "mem_20260429_a1b2c3d4e5f60718_800003")]
+    {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+        let substrate = init_substrate(roots).await;
+        let active = active_memory_with_id(id);
+        write_test_memory(&substrate, active.clone()).await;
 
-    for request in [
-        RequestPayload::ReviewApprove { id: id.clone() },
-        RequestPayload::ReviewReject { id: id.clone(), reason: "not appropriate".to_string() },
-    ] {
+        let request = match decision {
+            "approve" => RequestPayload::ReviewApprove { id: id.to_string() },
+            "reject" => RequestPayload::ReviewReject { id: id.to_string(), reason: "not appropriate".to_string() },
+            _ => unreachable!("known review decision"),
+        };
         let response = handle_request(&substrate, RequestEnvelope::new("req-review-decision", request)).await;
         let ResponseResult::Error(error) = response.result else {
             panic!("expected invalid_request, got {:?}", response.result);
         };
         assert_eq!(error.code, "invalid_request");
 
-        let saved = substrate.read_memory(&MemoryId::new(&id)).await.expect("active memory remains readable");
-        assert_eq!(saved.frontmatter.status, MemoryStatus::Active);
-        assert_eq!(saved.frontmatter.trust_level, TrustLevel::Trusted);
-        assert_eq!(saved.frontmatter.requires_user_confirmation, active.frontmatter.requires_user_confirmation);
-        assert_eq!(
-            saved.frontmatter.write_policy.human_review_required,
-            active.frontmatter.write_policy.human_review_required
-        );
-        assert_eq!(saved.frontmatter.review_state, active.frontmatter.review_state);
+        let saved = substrate.read_memory(&MemoryId::new(id)).await.expect("active memory remains readable");
+        assert_eq!(saved, active, "{decision} must not mutate active memories");
     }
 }
 
@@ -112,6 +108,54 @@ async fn review_queue_response_is_frame_bounded_for_oversized_review_fields() {
     assert_eq!(queue.items.len(), 1);
     assert_eq!(queue.items[0].summary.len(), 280);
     assert!(queue.items[0].reason.as_deref().expect("reason").len() < MAX_FRAME_BYTES / 2);
+}
+
+#[tokio::test]
+async fn review_queue_response_drops_items_to_fit_aggregate_frame_budget() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let substrate = init_substrate(roots).await;
+    let total_items = 100usize;
+
+    for index in 0..total_items {
+        let id = format!("mem_20260429_a1b2c3d4e5f60718_{:06}", 810_000 + index);
+        let mut memory = review_memory_with_id(&id);
+        memory.frontmatter.summary = format!("{} {index:03}", "s".repeat(508));
+        memory.frontmatter.write_policy.policy_applied = "p".repeat(512);
+        memory.frontmatter.extras.insert("governance_reason".to_string(), serde_json::json!("r".repeat(512)));
+        memory.body = format!("{}tail-not-rendered-{index:03}", "b".repeat(1024));
+        write_test_memory(&substrate, memory).await;
+    }
+
+    let expected_prefix = memory_substrate::tree::relative_memory_paths(substrate.roots().repo.as_path())
+        .into_iter()
+        .map(|path| path.file_stem().expect("memory filename").to_string_lossy().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(expected_prefix.len(), total_items);
+
+    let response = handle_request(
+        &substrate,
+        RequestEnvelope::new("req-review-queue-aggregate-budget", RequestPayload::ReviewQueue { limit: Some(100) }),
+    )
+    .await;
+
+    let line = response.to_json_line().expect("response serializes");
+    assert!(
+        line.len() <= MAX_FRAME_BYTES,
+        "review queue response frame was {} bytes, expected <= {MAX_FRAME_BYTES}",
+        line.len()
+    );
+    let ResponseResult::Success(ResponsePayload::ReviewQueue(queue)) = response.result else {
+        panic!("expected review queue success");
+    };
+    assert!(!queue.items.is_empty());
+    assert!(
+        queue.items.len() < total_items,
+        "aggregate frame budget should drop excess review items, returned {}",
+        queue.items.len()
+    );
+    let returned_ids = queue.items.iter().map(|item| item.id.clone()).collect::<Vec<_>>();
+    assert_eq!(returned_ids.as_slice(), &expected_prefix[..returned_ids.len()]);
 }
 
 #[tokio::test]
@@ -189,9 +233,9 @@ async fn write_test_memory(substrate: &Substrate, memory: Memory) {
         .expect("write test memory");
 }
 
-fn active_memory() -> Memory {
+fn active_memory_with_id(id: &str) -> Memory {
     let mut memory = review_memory();
-    memory.frontmatter.id = MemoryId::new("mem_20260429_a1b2c3d4e5f60718_800002");
+    memory.frontmatter.id = MemoryId::new(id);
     memory.frontmatter.status = MemoryStatus::Active;
     memory.frontmatter.trust_level = TrustLevel::Trusted;
     memory.frontmatter.requires_user_confirmation = false;
@@ -204,7 +248,11 @@ fn active_memory() -> Memory {
 }
 
 fn review_memory() -> Memory {
-    let id = MemoryId::new("mem_20260429_a1b2c3d4e5f60718_800001");
+    review_memory_with_id("mem_20260429_a1b2c3d4e5f60718_800001")
+}
+
+fn review_memory_with_id(id: &str) -> Memory {
+    let id = MemoryId::new(id);
     let now = chrono::DateTime::parse_from_rfc3339("2026-04-29T12:00:00Z")
         .expect("fixed test date")
         .with_timezone(&chrono::Utc);

@@ -26,5 +26,14 @@ fn recall_filter_renders_recall_items_only() {
     let frame = render(app);
 
     assert!(frame.contains("Deploy target is production ECS"));
-    assert!(!frame.contains("Prefer CITEXT for email columns"));
+    for non_recall_title in [
+        "Prefer CITEXT for email columns",
+        "Dream candidate needs confirmation",
+        "Database connection pool size",
+        "Daily synthesis summary ready",
+        "SSH key rotation every 90d",
+        "Agent memory uses private daemon socket",
+    ] {
+        assert!(!frame.contains(non_recall_title), "recall filter should exclude {non_recall_title}");
+    }
 }

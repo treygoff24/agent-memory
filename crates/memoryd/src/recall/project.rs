@@ -57,7 +57,7 @@ fn parse_project_file(path: &Path) -> Result<ProjectBinding, RecallError> {
     let yaml = fs::read_to_string(path)
         .map_err(|error| RecallError::invalid_request(format!("failed to read {PROJECT_FILE}: {error}")))?;
     reject_malformed_project_yaml(&yaml)?;
-    let project: ProjectFile = serde_yaml::from_str(&yaml)
+    let project: ProjectFile = yaml_serde::from_str(&yaml)
         .map_err(|error| RecallError::invalid_request(format!("invalid {PROJECT_FILE}: {error}")))?;
     let canonical_id = validate_canonical_id(&project.canonical_id)?;
     let alias = project.alias.as_deref().map(validate_alias).transpose()?;

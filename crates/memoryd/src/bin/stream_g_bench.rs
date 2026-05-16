@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::hint::black_box;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -9,7 +10,8 @@ use chrono::{DateTime, Utc};
 use clap::Parser;
 use memory_substrate::index::{open_index, Index};
 use memory_substrate::{
-    InitOptions, MemoryId, MemoryStatus, RecallIndexRow, RepoPath, Roots, Scope, Sensitivity, SourceKind, Substrate,
+    InitOptions, MemoryId, MemoryStatus, MemoryType, RecallIndexRow, RepoPath, Roots, Scope, Sensitivity, SourceKind,
+    Substrate,
 };
 use memoryd::notifications::PassiveQueue;
 use memoryd::reality_check::{score_memories_at, ScoredMemory, ScoringConfig};
@@ -134,19 +136,7 @@ async fn main() -> anyhow::Result<()> {
 
     if args.assert {
         let baseline_path = args.baseline.as_ref().context("baseline is required in assert mode")?;
-        if baseline_requires_bootstrap(baseline_path)? {
-            enforce_budgets(&report)?;
-            let proposed_path = proposed_baseline_path(baseline_path);
-            write_report(&proposed_path, &report)?;
-            eprintln!("first run — wrote .proposed; commit as baseline once verified.");
-            println!("{}", serde_json::to_string_pretty(&report)?);
-            return Ok(());
-        }
-
-        let baseline = read_baseline(baseline_path)?;
-        validate_baseline_contract(&baseline, &report, baseline_path)?;
-        enforce_budgets(&baseline).context("baseline contains failing Stream G measurements")?;
-        enforce_budgets(&report)?;
+        validate_assert_baseline(baseline_path, &report)?;
     }
 
     if let Some(output_path) = args.output.as_ref() {
@@ -584,25 +574,42 @@ fn round3(value: f64) -> f64 {
 }
 
 fn enforce_budgets(report: &BenchReport) -> anyhow::Result<()> {
-    let failures = report
-        .measurements
-        .iter()
-        .filter(|measurement| !measurement.pass)
-        .map(|measurement| {
-            format!(
+    let mut failures = Vec::new();
+    for measurement in &report.measurements {
+        let computed_pass = computed_measurement_pass(measurement);
+        if measurement.pass != computed_pass {
+            failures.push(format!(
+                "{} pass flag is {}, but {:?}={}ms budget<= {}ms computes to {}",
+                measurement.name,
+                measurement.pass,
+                measurement.statistic,
+                measurement.measured_ms,
+                measurement.budget_ms,
+                computed_pass
+            ));
+        }
+        if !computed_pass {
+            failures.push(format!(
                 "{} {:?}={}ms budget<= {}ms samples={}",
                 measurement.name,
                 measurement.statistic,
                 measurement.measured_ms,
                 measurement.budget_ms,
                 measurement.sample_count
-            )
-        })
-        .collect::<Vec<_>>();
+            ));
+        }
+    }
+
     if failures.is_empty() {
         Ok(())
     } else {
         bail!("Stream G benchmark budget failures:\n{}", failures.join("\n"));
+    }
+}
+
+fn computed_measurement_pass(measurement: &BenchMeasurement) -> bool {
+    match measurement.budget_operator {
+        BudgetOperator::LessThanOrEqual => measurement.measured_ms <= measurement.budget_ms,
     }
 }
 
@@ -612,21 +619,45 @@ fn read_baseline(path: &Path) -> anyhow::Result<BenchReport> {
 }
 
 fn write_report(path: &Path, report: &BenchReport) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-    }
-    std::fs::write(path, format!("{}\n", serde_json::to_string_pretty(report)?))
-        .with_context(|| format!("write {}", path.display()))
+    write_report_file(path, &format!("{}\n", serde_json::to_string_pretty(report)?))
 }
 
-fn baseline_requires_bootstrap(path: &Path) -> anyhow::Result<bool> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(true),
-        Err(error) => return Err(error).with_context(|| format!("read baseline {}", path.display())),
-    };
-    let value = serde_json::from_str::<Value>(&text).with_context(|| format!("parse baseline {}", path.display()))?;
-    Ok(value.get("runs").and_then(Value::as_u64).is_some_and(|runs| runs == 0))
+fn write_report_file(path: &Path, content: &str) -> anyhow::Result<()> {
+    if let Some(parent) = non_empty_parent(path) {
+        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    let directory = non_empty_parent(path).unwrap_or_else(|| Path::new("."));
+    let file_name =
+        path.file_name().ok_or_else(|| anyhow::anyhow!("output path {} has no file name", path.display()))?;
+    let temp_path =
+        directory.join(format!(".{}.{}.{}.tmp", file_name.to_string_lossy(), std::process::id(), unique_suffix()));
+
+    let write_result = (|| -> anyhow::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+            .with_context(|| format!("create temp report {}", temp_path.display()))?;
+        file.write_all(content.as_bytes()).with_context(|| format!("write temp report {}", temp_path.display()))?;
+        file.sync_all().with_context(|| format!("sync temp report {}", temp_path.display()))?;
+        drop(file);
+        std::fs::rename(&temp_path, path).with_context(|| format!("replace report {}", path.display()))
+    })();
+
+    if let Err(error) = write_result {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(error);
+    }
+
+    Ok(())
+}
+
+fn non_empty_parent(path: &Path) -> Option<&Path> {
+    path.parent().filter(|parent| !parent.as_os_str().is_empty())
+}
+
+fn unique_suffix() -> u128 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |duration| duration.as_nanos())
 }
 
 fn proposed_baseline_path(path: &Path) -> PathBuf {
@@ -679,10 +710,25 @@ fn validate_baseline_contract(baseline: &BenchReport, current: &BenchReport, pat
     Ok(())
 }
 
-fn measurement_contract(measurements: &[BenchMeasurement]) -> Vec<(String, Statistic, f64)> {
+fn validate_assert_baseline(baseline_path: &Path, current: &BenchReport) -> anyhow::Result<()> {
+    let baseline = read_baseline(baseline_path)?;
+    validate_baseline_contract(&baseline, current, baseline_path)?;
+    enforce_budgets(&baseline).context("baseline contains failing Stream G measurements")?;
+    enforce_budgets(current)
+}
+
+fn measurement_contract(measurements: &[BenchMeasurement]) -> Vec<(String, Statistic, f64, BudgetOperator, usize)> {
     measurements
         .iter()
-        .map(|measurement| (measurement.name.clone(), measurement.statistic, measurement.budget_ms))
+        .map(|measurement| {
+            (
+                measurement.name.clone(),
+                measurement.statistic,
+                measurement.budget_ms,
+                measurement.budget_operator,
+                measurement.sample_count,
+            )
+        })
         .collect()
 }
 
@@ -829,6 +875,7 @@ fn recall_row(index: usize, now: DateTime<Utc>) -> RecallIndexRow {
         id: MemoryId::new(id.clone()),
         path: RepoPath::new(format!("me/{id}.md")),
         summary: format!("Stream G deterministic scoring fixture memory {index}"),
+        memory_type: MemoryType::Pattern,
         status: if index % 199 == 0 { MemoryStatus::Pinned } else { MemoryStatus::Active },
         scope,
         canonical_namespace_id: (scope == Scope::Project).then(|| "agent-memory".to_owned()),
@@ -1319,5 +1366,121 @@ mod tests {
             output_destination(args.output.as_deref().expect("output"), args.promote_canonical),
             PathBuf::from("bench/stream-g-observability-results.darwin-arm64.json")
         );
+    }
+
+    #[test]
+    fn assert_mode_missing_baseline_fails_without_writing_proposed_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let baseline = temp.path().join("missing.json");
+        let current = sample_report();
+
+        let err = validate_assert_baseline(&baseline, &current).expect_err("missing baseline must fail");
+
+        assert!(err.to_string().contains("read baseline"), "err: {err:#}");
+        assert!(!proposed_baseline_path(&baseline).exists());
+    }
+
+    #[test]
+    fn enforce_budgets_recomputes_pass_from_measurement_values() {
+        let mut report = sample_report();
+        report.measurements[0].measured_ms = report.measurements[0].budget_ms + 1.0;
+        report.measurements[0].pass = true;
+
+        let err = enforce_budgets(&report).expect_err("inconsistent pass flag must fail");
+
+        assert!(err.to_string().contains("pass flag"), "err: {err:#}");
+    }
+
+    #[test]
+    fn measurement_contract_includes_operator_and_sample_count() {
+        let current = sample_report();
+        let mut baseline = current.clone();
+        baseline.measurements[0].sample_count += 1;
+        assert_ne!(measurement_contract(&baseline.measurements), measurement_contract(&current.measurements));
+
+        let mut baseline = current.clone();
+        baseline.measurements[0].budget_operator = BudgetOperator::LessThanOrEqual;
+        baseline.measurements[0].sample_count += 1;
+        let err = validate_baseline_contract(&baseline, &current, Path::new("baseline.json"))
+            .expect_err("sample-count drift must fail");
+        assert!(err.to_string().contains("measurement contract"), "err: {err:#}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_report_file_failure_leaves_existing_file_unchanged() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let output = temp.path().join("stream-g-report.json");
+        std::fs::write(&output, "old report\n").expect("seed report");
+        let original_permissions = std::fs::metadata(temp.path()).expect("temp metadata").permissions();
+        let mut readonly_permissions = original_permissions.clone();
+        readonly_permissions.set_mode(0o555);
+        std::fs::set_permissions(temp.path(), readonly_permissions).expect("make temp dir read-only");
+        match write_probe_succeeds(temp.path()) {
+            Ok(true) => {
+                std::fs::set_permissions(temp.path(), original_permissions).expect("restore temp dir permissions");
+                eprintln!(
+                    "skipping write-failure assertion because this runner can still create files in a 0555 directory"
+                );
+                return;
+            }
+            Ok(false) => {}
+            Err(error) => {
+                std::fs::set_permissions(temp.path(), original_permissions).expect("restore temp dir permissions");
+                panic!("permission probe failed unexpectedly in {}: {error}", temp.path().display());
+            }
+        }
+
+        let result = write_report_file(&output, "new report\n");
+
+        std::fs::set_permissions(temp.path(), original_permissions).expect("restore temp dir permissions");
+        let err = result.expect_err("read-only directory must fail temp write");
+        assert!(format!("{err:#}").contains("create temp report"), "err: {err:#}");
+        assert_eq!(std::fs::read_to_string(output).expect("read report"), "old report\n");
+    }
+
+    #[cfg(unix)]
+    fn write_probe_succeeds(directory: &std::path::Path) -> std::io::Result<bool> {
+        let probe_path = directory.join(format!(".report-permission-probe-{}", std::process::id()));
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&probe_path) {
+            Ok(_) => {
+                let _ = std::fs::remove_file(probe_path);
+                Ok(true)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn sample_report() -> BenchReport {
+        BenchReport {
+            schema_version: 1,
+            fixture_version: FIXTURE_VERSION.to_owned(),
+            profile: "darwin-arm64".to_owned(),
+            runs: 1,
+            platform: PlatformReport { os: "test-os".to_owned(), arch: "test-arch".to_owned() },
+            fixture: FixtureReport {
+                run_date: RUN_DATE.to_owned(),
+                scoring_memory_count: SCORING_MEMORY_COUNT,
+                entity_graph_node_count: ENTITY_GRAPH_NODE_COUNT,
+                tui_panel_count: 8,
+                typeahead_debounce_ms: TUI_TYPEAHEAD_DEBOUNCE_MS,
+                passive_queue_sample_count: PASSIVE_QUEUE_SAMPLE_COUNT,
+                slack_dispatch_sample_count: SLACK_DISPATCH_SAMPLE_COUNT,
+            },
+            measurements: vec![BenchMeasurement {
+                name: "budgeted_measurement".to_owned(),
+                description: "test measurement".to_owned(),
+                statistic: Statistic::P95,
+                measured_ms: 1.0,
+                budget_ms: 5.0,
+                budget_operator: BudgetOperator::LessThanOrEqual,
+                sample_count: 3,
+                pass: true,
+                details: BTreeMap::new(),
+            }],
+        }
     }
 }

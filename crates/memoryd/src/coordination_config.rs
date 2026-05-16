@@ -17,7 +17,7 @@ pub fn load_coordination_config(repo: &Path) -> Result<CoordinationConfig, Strin
 
     let text = std::fs::read_to_string(&path).map_err(|error| format!("read {}: {error}", path.display()))?;
     let root: CoordinationConfigRoot =
-        serde_yaml::from_str(&text).map_err(|error| format!("parse {}: {error}", path.display()))?;
+        yaml_serde::from_str(&text).map_err(|error| format!("parse {}: {error}", path.display()))?;
     let config = root.coordination.unwrap_or_default();
     config.validate()?;
     Ok(config)

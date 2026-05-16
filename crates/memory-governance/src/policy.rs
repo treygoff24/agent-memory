@@ -18,7 +18,7 @@ pub enum PolicyError {
     ReadFile { path: String, source: std::io::Error },
     /// Policy YAML was invalid or violated the schema.
     #[error("invalid policy YAML in {path}: {source}")]
-    InvalidYaml { path: String, source: serde_yaml::Error },
+    InvalidYaml { path: String, source: yaml_serde::Error },
     /// No policy exists for a required scope.
     #[error("missing governance policy for scope {scope:?}")]
     MissingPolicyForScope { scope: Scope },
@@ -343,7 +343,7 @@ impl CandidateContext {
 
 fn read_policy_file(path: &Path) -> PolicyResult<Policy> {
     let yaml = fs::read_to_string(path).map_err(|source| PolicyError::ReadFile { path: display_path(path), source })?;
-    let mut policy = serde_yaml::from_str::<Policy>(&yaml)
+    let mut policy = yaml_serde::from_str::<Policy>(&yaml)
         .map_err(|source| PolicyError::InvalidYaml { path: display_path(path), source })?;
     policy.source = PolicySource::Disk;
     Ok(policy)

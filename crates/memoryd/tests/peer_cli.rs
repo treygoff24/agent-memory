@@ -10,7 +10,8 @@ use memoryd::handlers::{handle_request_with_state, HandlerState};
 use memoryd::mcp::{forward_payload_to_daemon, manifest, ToolName};
 use memoryd::protocol::{
     render_peer_activity_human, render_peer_status_human, PeerActivityFormat, PeerDeliveryAuditEntry,
-    PeerReleaseLockStatus, RequestEnvelope, RequestPayload, ResponsePayload, ResponseResult,
+    PeerReleaseLockExpectedHolder, PeerReleaseLockStatus, RequestEnvelope, RequestPayload, ResponsePayload,
+    ResponseResult,
 };
 use tempfile::TempDir;
 
@@ -99,6 +100,50 @@ async fn test_peer_release_lock_forced_succeeds() {
 }
 
 #[tokio::test]
+async fn test_peer_release_lock_expected_holder_rejects_changed_lock() {
+    let fixture = Fixture::new(2).await;
+    let memory_id = "mem_20260501_a1b2c3d4e5f60718_000100";
+    fixture.acquire_lock(memory_id, "codex", "sess_original");
+
+    let release = fixture
+        .release_lock_expected(
+            memory_id,
+            PeerReleaseLockExpectedHolder {
+                holder_harness: "claude-code".to_string(),
+                holder_session_id: "sess_other".to_string(),
+            },
+        )
+        .await;
+
+    assert_eq!(release.status, PeerReleaseLockStatus::LockChanged);
+    assert!(release.released.is_none());
+    let current = fixture.state.claim_locks().get(memory_id).expect("lock remains held");
+    assert_eq!(current.holder_harness, "codex");
+    assert_eq!(current.holder_session_id, "sess_original");
+}
+
+#[tokio::test]
+async fn test_peer_release_lock_expected_holder_releases_matching_lock() {
+    let fixture = Fixture::new(2).await;
+    let memory_id = "mem_20260501_a1b2c3d4e5f60718_000101";
+    fixture.acquire_lock(memory_id, "codex", "sess_lock");
+
+    let release = fixture
+        .release_lock_expected(
+            memory_id,
+            PeerReleaseLockExpectedHolder {
+                holder_harness: "codex".to_string(),
+                holder_session_id: "sess_lock".to_string(),
+            },
+        )
+        .await;
+
+    assert_eq!(release.status, PeerReleaseLockStatus::Released);
+    assert!(release.released.is_some());
+    assert!(fixture.state.claim_locks().get(memory_id).is_none());
+}
+
+#[tokio::test]
 async fn test_peer_commands_not_in_mcp() {
     for name in ["peer_status", "peer_activity", "peer_release_lock", "memory_peer_status"] {
         assert!(ToolName::try_from(name).is_err(), "{name} must not parse as an MCP tool");
@@ -165,15 +210,29 @@ impl Fixture {
     }
 
     async fn release_lock(&self, memory_id: &str) -> memoryd::protocol::PeerReleaseLockResponse {
-        let response = handle_request_with_state(
-            &self.substrate,
-            &self.state,
-            RequestEnvelope::new(
-                "peer-release-lock",
-                RequestPayload::PeerReleaseLock { memory_id: memory_id.to_string() },
-            ),
-        )
-        .await;
+        self.release_lock_payload(RequestPayload::PeerReleaseLock {
+            memory_id: memory_id.to_string(),
+            expected_holder: None,
+        })
+        .await
+    }
+
+    async fn release_lock_expected(
+        &self,
+        memory_id: &str,
+        expected_holder: PeerReleaseLockExpectedHolder,
+    ) -> memoryd::protocol::PeerReleaseLockResponse {
+        self.release_lock_payload(RequestPayload::PeerReleaseLock {
+            memory_id: memory_id.to_string(),
+            expected_holder: Some(expected_holder),
+        })
+        .await
+    }
+
+    async fn release_lock_payload(&self, payload: RequestPayload) -> memoryd::protocol::PeerReleaseLockResponse {
+        let response =
+            handle_request_with_state(&self.substrate, &self.state, RequestEnvelope::new("peer-release-lock", payload))
+                .await;
         let ResponseResult::Success(ResponsePayload::PeerReleaseLock(release)) = response.result else {
             panic!("expected peer release-lock, got {:?}", response.result);
         };

@@ -13,7 +13,9 @@ use memoryd::notifications::config::{
     NotificationTrigger, OsNotificationConfig,
 };
 use memoryd::notifications::dispatcher::NotificationDispatcher;
-use memoryd::notifications::external::{EmailDelivery, EmailMessage, ExternalDeliveryError, ExternalNotifier, Sleeper};
+use memoryd::notifications::external::{
+    EmailDelivery, EmailMessage, ExternalDeliveryError, ExternalNotifier, SlackPayload, Sleeper,
+};
 use memoryd::notifications::os::{OsNotification, OsNotificationSink, OsNotifier};
 use memoryd::notifications::passive::PassiveQueue;
 use memoryd::protocol::NotificationEvent;
@@ -85,7 +87,7 @@ async fn test_os_notification_fires_when_enabled_and_trigger_matches() {
 
 #[tokio::test]
 async fn test_slack_webhook_retried_on_failure() {
-    let server = SlackMockServer::start(HttpStatus::InternalServerError).await;
+    let server = SlackMockServer::start_internal_server_error().await;
     let sleeper = Arc::new(RecordingSleeper::default());
     let passive = PassiveQueue::new();
     let dispatcher = NotificationDispatcher::new(
@@ -105,7 +107,7 @@ async fn test_slack_webhook_retried_on_failure() {
 
 #[tokio::test]
 async fn test_slack_webhook_falls_back_to_passive_on_final_failure() {
-    let server = SlackMockServer::start(HttpStatus::InternalServerError).await;
+    let server = SlackMockServer::start_internal_server_error().await;
     let passive = PassiveQueue::new();
     let dispatcher = NotificationDispatcher::new(
         passive.clone(),
@@ -146,24 +148,30 @@ async fn test_external_failure_fallback_redacts_webhook_url() {
 
 #[tokio::test]
 async fn test_slack_payload_contains_no_memory_content() {
-    let server = SlackMockServer::start(HttpStatus::Ok).await;
+    let slack = Arc::new(RecordingSlackWebhook::default());
     let passive = PassiveQueue::new();
     let dispatcher = NotificationDispatcher::new(
         passive,
-        external_slack_config(server.url(), 1),
-        OsNotifier::disabled(),
-        ExternalNotifier::slack_for_tests(
-            Arc::new(memoryd::notifications::external::ReqwestSlackWebhook::new()),
-            Arc::new(RecordingSleeper::default()),
+        external_slack_config_for(
+            "https://slack.example.test/webhook".to_owned(),
+            1,
+            vec![NotificationTrigger::BlockingMergeConflict],
         ),
+        OsNotifier::disabled(),
+        ExternalNotifier::slack_for_tests(slack.clone(), Arc::new(RecordingSleeper::default())),
     );
 
-    dispatcher.dispatch_event(reality_check_due()).await;
+    dispatcher
+        .dispatch_event(NotificationEvent::BlockingMergeConflict {
+            path: "memories/project/Alice Example - body with sensitive memory content.md".to_owned(),
+        })
+        .await;
 
-    let bodies = server.bodies();
-    assert_eq!(bodies.len(), 1);
-    let payload = bodies.join("\n");
-    assert!(!payload.contains("Prefer CITEXT for email columns"));
+    let payloads = slack.payloads();
+    assert_eq!(payloads.len(), 1);
+    let payload = &payloads[0];
+    assert!(payload.contains("Sync is blocked by a merge conflict."));
+    assert!(payload.contains("Memorum Notification"));
     assert!(!payload.contains("Alice Example"));
     assert!(!payload.contains("body with sensitive memory content"));
 }
@@ -289,10 +297,18 @@ fn reality_check_due() -> NotificationEvent {
 }
 
 fn external_slack_config(webhook_url: String, retry_max: usize) -> NotificationConfig {
+    external_slack_config_for(webhook_url, retry_max, vec![NotificationTrigger::RealityCheckDue])
+}
+
+fn external_slack_config_for(
+    webhook_url: String,
+    retry_max: usize,
+    triggers: Vec<NotificationTrigger>,
+) -> NotificationConfig {
     NotificationConfig {
         external: ExternalNotificationConfig {
             channel: Some(ExternalChannelConfig::Slack { webhook_url }),
-            triggers: vec![NotificationTrigger::RealityCheckDue],
+            triggers,
             retry_max,
             retry_backoff_seconds: vec![30, 120, 600],
         },
@@ -366,6 +382,29 @@ impl OsNotificationSink for RecordingOsSink {
 }
 
 #[derive(Default)]
+struct RecordingSlackWebhook {
+    payloads: Mutex<Vec<String>>,
+}
+
+impl RecordingSlackWebhook {
+    fn payloads(&self) -> Vec<String> {
+        self.payloads.lock().expect("slack payloads lock").clone()
+    }
+}
+
+impl memoryd::notifications::external::SlackWebhook for RecordingSlackWebhook {
+    fn post(
+        &self,
+        _webhook_url: &str,
+        payload: SlackPayload,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ExternalDeliveryError>> + Send + '_>> {
+        let payload = serde_json::to_string(&payload).expect("slack payload serializes");
+        self.payloads.lock().expect("slack payloads lock").push(payload);
+        Box::pin(async { Ok(()) })
+    }
+}
+
+#[derive(Default)]
 struct RecordingSleeper {
     durations: Mutex<Vec<Duration>>,
 }
@@ -398,49 +437,38 @@ impl EmailDelivery for RecordingEmailDelivery {
     }
 }
 
-enum HttpStatus {
-    Ok,
-    InternalServerError,
-}
-
 struct SlackMockServer {
     url: String,
     requests: Arc<AtomicUsize>,
-    bodies: Arc<Mutex<Vec<String>>>,
 }
 
 impl SlackMockServer {
-    async fn start(status: HttpStatus) -> Self {
+    async fn start_internal_server_error() -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("slack mock binds");
         let address = listener.local_addr().expect("slack mock address");
         let requests = Arc::new(AtomicUsize::new(0));
-        let bodies = Arc::new(Mutex::new(Vec::new()));
         let server_requests = requests.clone();
-        let server_bodies = bodies.clone();
 
         tokio::spawn(async move {
             loop {
-                let Ok((mut stream, _)) = listener.accept().await else {
+                let Ok(Ok((mut stream, _))) = timeout(TokioDuration::from_secs(5), listener.accept()).await else {
                     break;
                 };
                 server_requests.fetch_add(1, Ordering::SeqCst);
                 let mut buffer = vec![0; 4096];
-                let bytes_read = stream.read(&mut buffer).await.expect("slack mock request reads");
-                server_bodies
-                    .lock()
-                    .expect("slack mock bodies lock")
-                    .push(String::from_utf8_lossy(&buffer[..bytes_read]).into_owned());
-                let response = match status {
-                    HttpStatus::Ok => "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
-                    HttpStatus::InternalServerError => {
-                        "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n"
-                    }
-                };
-                stream.write_all(response.as_bytes()).await.expect("slack mock response writes");
+                timeout(TokioDuration::from_secs(5), stream.read(&mut buffer))
+                    .await
+                    .expect("slack mock request reads before timeout")
+                    .expect("slack mock request reads");
+                let response = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n";
+                timeout(TokioDuration::from_secs(5), stream.write_all(response.as_bytes()))
+                    .await
+                    .expect("slack mock response writes before timeout")
+                    .expect("slack mock response writes");
             }
         });
 
-        Self { url: format!("http://{address}/slack"), requests, bodies }
+        Self { url: format!("http://{address}/slack"), requests }
     }
 
     fn url(&self) -> String {
@@ -449,9 +477,5 @@ impl SlackMockServer {
 
     fn requests(&self) -> usize {
         self.requests.load(Ordering::SeqCst)
-    }
-
-    fn bodies(&self) -> Vec<String> {
-        self.bodies.lock().expect("slack mock bodies lock").clone()
     }
 }

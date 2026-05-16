@@ -5,6 +5,11 @@ use memoryd::dream::scope::DreamScope;
 use memoryd::dream::types::{
     ActiveMemory, DreamPass, EvidenceCatalogEntry, HarnessSelection, MaskingContext, SubstrateFragment,
 };
+use serde_json::Value;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
+
+static CWD_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn dream_scope_encodes_journal_and_question_paths() {
@@ -103,8 +108,7 @@ fn dream_prompts_are_deterministic_embedded_and_pass_2_gets_evidence_catalog() {
     };
 
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let original_cwd = std::env::current_dir().expect("cwd before test");
-    std::env::set_current_dir(temp_dir.path()).expect("move cwd away from repo prompts directory");
+    let _cwd = CwdGuard::enter(temp_dir.path());
 
     let pass_1 = render_prompt(DreamPass::Pass1, &input, PromptVersion::V2).expect("render pass 1");
     let pass_1_again = render_prompt(DreamPass::Pass1, &input, PromptVersion::V2).expect("render pass 1 again");
@@ -113,15 +117,62 @@ fn dream_prompts_are_deterministic_embedded_and_pass_2_gets_evidence_catalog() {
     let pass_3 = render_prompt(DreamPass::Pass3, &input, PromptVersion::V2).expect("render pass 3");
     let pass_3_again = render_prompt(DreamPass::Pass3, &input, PromptVersion::V2).expect("render pass 3 again");
 
-    std::env::set_current_dir(original_cwd).expect("restore cwd after prompt test");
-
     assert_eq!(pass_1, pass_1_again);
     assert_eq!(pass_2, pass_2_again);
     assert_eq!(pass_3, pass_3_again);
 
-    assert!(!pass_1.contains("evidence_catalog"));
-    assert!(pass_2.contains("evidence_catalog"));
-    assert!(pass_2.contains("sub_01"));
-    assert!(pass_2.contains("mem_20260430_auth"));
-    assert!(!pass_3.contains("evidence_catalog"));
+    assert!(embedded_input_json(&pass_1).get("evidence_catalog").is_none());
+    let pass_2_input = embedded_input_json(&pass_2);
+    let catalog = pass_2_input
+        .get("evidence_catalog")
+        .and_then(Value::as_array)
+        .expect("pass 2 input must contain evidence_catalog array");
+    assert_eq!(catalog.len(), 2);
+    assert_eq!(catalog[0]["kind"].as_str(), Some("substrate_fragment"));
+    assert_eq!(catalog[0]["reference"].as_str(), Some("sub_01"));
+    assert_eq!(catalog[1]["kind"].as_str(), Some("memory"));
+    assert_eq!(catalog[1]["reference"].as_str(), Some("mem_20260430_auth"));
+    assert!(embedded_input_json(&pass_3).get("evidence_catalog").is_none());
+}
+
+#[test]
+fn cwd_guard_restores_process_directory_after_panic() {
+    let original = std::env::current_dir().expect("cwd before guard test");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+
+    let result = std::panic::catch_unwind(|| {
+        let _cwd = CwdGuard::enter(temp_dir.path());
+        assert_eq!(std::env::current_dir().expect("cwd inside guard"), temp_dir.path());
+        panic!("force unwind through cwd guard");
+    });
+
+    assert!(result.is_err());
+    assert_eq!(std::env::current_dir().expect("cwd after guard panic"), original);
+}
+
+fn embedded_input_json(prompt: &str) -> Value {
+    let start_marker = "```json\n";
+    let start = prompt.find(start_marker).expect("prompt has input json block") + start_marker.len();
+    let end = prompt[start..].find("\n```").expect("prompt input json block closes") + start;
+    serde_json::from_str(&prompt[start..end]).expect("prompt input block is valid json")
+}
+
+struct CwdGuard<'a> {
+    _guard: MutexGuard<'a, ()>,
+    original: PathBuf,
+}
+
+impl CwdGuard<'static> {
+    fn enter(target: &Path) -> Self {
+        let guard = CWD_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let original = std::env::current_dir().expect("cwd before guard");
+        std::env::set_current_dir(target).expect("enter guarded cwd");
+        Self { _guard: guard, original }
+    }
+}
+
+impl Drop for CwdGuard<'_> {
+    fn drop(&mut self) {
+        std::env::set_current_dir(&self.original).expect("restore guarded cwd");
+    }
 }

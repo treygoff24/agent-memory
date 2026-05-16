@@ -29,6 +29,15 @@ async fn rejects_unsafe_schemes_hosts_credentials_and_addresses() {
             "{addr}"
         );
     }
+    for addr in
+        ["[fd00::1]:443", "[fe80::1]:443", "[::]:443", "[ff02::1]:443", "[2001:db8::1]:443", "[::ffff:127.0.0.1]:443"]
+    {
+        let resolver = StaticDnsResolver::new(vec![addr.parse().unwrap()]);
+        assert!(
+            validate_initial_url("https://example.test", &resolver, AddressPolicy::PublicOnly).await.is_err(),
+            "{addr}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -54,6 +63,27 @@ async fn redirect_validation_allows_exactly_five_hops() {
         .expect_err("the sixth redirect hop exceeds the documented limit");
 
     assert!(err.to_string().contains("redirect chain exceeded 5 hops"), "{err}");
+}
+
+#[tokio::test]
+async fn redirect_validation_rejects_unsafe_targets_and_resolved_addresses() {
+    let public = StaticDnsResolver::new(vec!["93.184.216.34:443".parse().unwrap()]);
+    let private = StaticDnsResolver::new(vec!["10.0.0.1:443".parse().unwrap()]);
+    let current = Url::parse("https://example.com/start").unwrap();
+
+    for (location, resolver) in [
+        ("file:///tmp/a", &public),
+        ("http://user:pass@example.com", &public),
+        ("http://localhost/admin", &public),
+        ("http://127.0.0.1/admin", &public),
+        ("//169.254.169.254/latest/meta-data", &public),
+        ("https://example.test/admin", &private),
+    ] {
+        assert!(
+            validate_redirect_url(&current, location, resolver, AddressPolicy::PublicOnly, &[]).await.is_err(),
+            "{location}"
+        );
+    }
 }
 
 #[test]

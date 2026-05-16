@@ -1,70 +1,62 @@
-use std::future::Future;
-use std::pin::pin;
-use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+use std::time::Duration;
 
 use memorum_eval::daemon_scaffold::DaemonScaffold;
 use memorum_eval::simulator::{AssertionSpec, GovernanceMeta, SimulatorAction, SimulatorAgent, SimulatorConfig};
+use serde_json::Value;
+use tokio::time::timeout;
 
-#[test]
-fn simulator_agent_runs_startup_search_write_script_against_daemon() {
-    block_on(async {
-        let scaffold = DaemonScaffold::fresh().await;
-        let mut agent = SimulatorAgent::new(SimulatorConfig::new(scaffold.socket_path()));
+#[tokio::test]
+async fn simulator_agent_runs_startup_search_write_script_against_daemon() {
+    let scaffold = fresh_scaffold().await;
+    let mut agent = SimulatorAgent::new(SimulatorConfig::new(scaffold.socket_path()));
 
-        let observations = agent
-            .run_script([
-                SimulatorAction::Startup { since_event_id: None },
-                SimulatorAction::Search { query: "test".to_owned(), namespace: None },
-                SimulatorAction::Write {
-                    body: "hello eval world".to_owned(),
-                    title: None,
-                    meta: GovernanceMeta {
-                        confidence: 0.95,
-                        source_kind: "agent_primary".to_owned(),
-                        source_ref: Some("eval_test_1".to_owned()),
-                    },
+    let observations = agent
+        .run_script([
+            SimulatorAction::Startup { since_event_id: None },
+            SimulatorAction::Search { query: "test".to_owned(), namespace: None },
+            SimulatorAction::Write {
+                body: "hello eval world".to_owned(),
+                title: None,
+                meta: GovernanceMeta {
+                    confidence: 0.95,
+                    source_kind: "agent_primary".to_owned(),
+                    source_ref: Some("eval_test_1".to_owned()),
                 },
-                SimulatorAction::Assert { condition: AssertionSpec::LastWriteStatusIsNotRefused },
-            ])
-            .await;
+            },
+            SimulatorAction::Assert { condition: AssertionSpec::LastWriteStatusIsNotRefused },
+        ])
+        .await;
 
-        assert_ne!(
-            observations.last_write_outcome.as_deref(),
-            Some("refused"),
-            "write should not be refused: {observations:#?}"
-        );
-    });
+    let startup =
+        success_payload(observations.last_startup_json.as_deref().expect("startup response captured"), "startup");
+    assert!(startup["recall_block"].is_string(), "startup response must include recall_block: {startup:#}");
+    let search = success_payload(observations.last_search_json.as_deref().expect("search response captured"), "search");
+    assert!(search["total"].as_u64().is_some(), "search response must include total: {search:#}");
+
+    let write =
+        success_payload(observations.last_write_json.as_deref().expect("write response captured"), "governance_write");
+    assert!(
+        matches!(write["status"].as_str(), Some("promoted" | "candidate")),
+        "write status should be a successful substrate write: {write:#}"
+    );
+    assert!(write["id"].as_str().is_some(), "successful write should return an id: {write:#}");
+    assert_eq!(
+        observations.last_write_outcome.as_deref(),
+        write["status"].as_str(),
+        "extracted last_write_outcome should match parsed response"
+    );
 }
 
-fn block_on<T>(future: impl Future<Output = T>) -> T {
-    let waker = noop_waker();
-    let mut context = Context::from_waker(&waker);
-    let mut future = pin!(future);
-
-    loop {
-        match future.as_mut().poll(&mut context) {
-            Poll::Ready(output) => return output,
-            Poll::Pending => std::thread::yield_now(),
-        }
-    }
+fn success_payload(response_json: &str, payload_key: &str) -> Value {
+    let response: Value = serde_json::from_str(response_json).expect("response is valid JSON");
+    response
+        .get("result")
+        .and_then(|result| result.get("success"))
+        .and_then(|success| success.get(payload_key))
+        .cloned()
+        .unwrap_or_else(|| panic!("{payload_key} response was not successful: {response:#}"))
 }
 
-fn noop_waker() -> Waker {
-    unsafe fn clone(_: *const ()) -> RawWaker {
-        raw_waker()
-    }
-
-    unsafe fn wake(_: *const ()) {}
-    unsafe fn wake_by_ref(_: *const ()) {}
-    unsafe fn drop(_: *const ()) {}
-
-    fn raw_waker() -> RawWaker {
-        RawWaker::new(std::ptr::null(), &RawWakerVTable::new(clone, wake, wake_by_ref, drop))
-    }
-
-    // SAFETY: the no-op raw waker does not dereference its data pointer and its
-    // vtable functions are valid for the null data pointer for this synchronous
-    // test executor. The futures under test do blocking work and never rely on
-    // external wakeups.
-    unsafe { Waker::from_raw(raw_waker()) }
+async fn fresh_scaffold() -> DaemonScaffold {
+    timeout(Duration::from_secs(10), DaemonScaffold::fresh()).await.expect("fresh daemon scaffold should not hang")
 }

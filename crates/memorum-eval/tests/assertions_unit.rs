@@ -1,5 +1,4 @@
 use std::fs;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use memorum_eval::assertions::{
     assert_memory_in_recall, assert_no_memory_in_recall, assert_no_pii_on_disk, assert_xml_valid, parse_recall_block,
@@ -133,24 +132,16 @@ fn validates_well_formed_and_rejects_malformed_xml() {
 #[test]
 fn asserts_pii_string_is_not_written_anywhere_under_tree() {
     let pii = "+15550000001";
-    let tree_dir = unique_temp_tree();
-    fs::create_dir_all(tree_dir.join("nested")).expect("fixture directory should be created");
-    fs::write(tree_dir.join("safe.md"), "safe synthetic content").expect("safe file write");
+    let tree_dir = tempfile::tempdir().expect("fixture directory should be created");
+    fs::create_dir_all(tree_dir.path().join("nested")).expect("nested fixture directory should be created");
+    fs::write(tree_dir.path().join("safe.md"), "safe synthetic content").expect("safe file write");
 
-    assert_no_pii_on_disk(&tree_dir, pii).expect("tree without PII should pass");
+    assert_no_pii_on_disk(tree_dir.path(), pii).expect("tree without PII should pass");
 
-    fs::write(tree_dir.join("nested/leak.md"), format!("leaked {pii}")).expect("leaky file write");
-    let error = assert_no_pii_on_disk(&tree_dir, pii).expect_err("PII on disk should fail");
+    fs::write(tree_dir.path().join("nested/leak.md"), format!("leaked {pii}")).expect("leaky file write");
+    let error = assert_no_pii_on_disk(tree_dir.path(), pii).expect_err("PII on disk should fail");
     assert!(matches!(error, AssertionError::PiiFoundOnDisk { .. }));
     let message = error.to_string();
     assert!(message.contains("assert_no_pii_on_disk"));
     assert!(message.contains("leak.md"));
-
-    fs::remove_dir_all(&tree_dir).expect("fixture directory should be cleaned up");
-}
-
-fn unique_temp_tree() -> std::path::PathBuf {
-    let nanos =
-        SystemTime::now().duration_since(UNIX_EPOCH).expect("system time should be after Unix epoch").as_nanos();
-    std::env::temp_dir().join(format!("memorum-eval-assertions-{nanos}"))
 }

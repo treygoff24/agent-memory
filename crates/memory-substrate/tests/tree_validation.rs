@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use memory_substrate::tree::{bootstrap_repo_tree, validate_case_fold_paths, validate_tree, TreeValidationMode};
 use memory_substrate::{Roots, Substrate, ValidationWarning};
 
@@ -296,5 +298,13 @@ fn source_web_tree_is_bootstrapped_and_not_memory_markdown() {
     std::fs::write(artifact_dir.join("note.md"), "# not a memory").expect("source md");
     std::fs::write(artifact_dir.join("manifest.json"), "{}").expect("source json");
     let paths = memory_substrate::tree::relative_memory_paths(temp.path());
-    assert!(paths.iter().all(|path| !path.to_string_lossy().starts_with("sources/web/")));
+    assert!(paths.iter().all(|path| !is_sources_web_path(path)));
+    assert!(is_sources_web_path(Path::new("sources/web/2026/05/src_x/note.md")));
+    assert!(is_sources_web_path(Path::new(r"sources\web\2026\05\src_x\note.md")));
+    assert!(!is_sources_web_path(Path::new("agent/patterns/note.md")));
+}
+
+fn is_sources_web_path(path: &Path) -> bool {
+    let normalized = path.to_string_lossy().replace('\\', "/");
+    normalized == "sources/web" || normalized.starts_with("sources/web/")
 }

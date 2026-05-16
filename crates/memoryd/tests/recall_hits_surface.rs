@@ -20,10 +20,17 @@ async fn recall_hits_protocol_reads_recent_events_log_rows_with_memory_summary()
     let memory_id = MemoryId::new("mem_20260502_aaaaaaaaaaaaaaaa_000001");
     write_memory(&substrate, memory_id.clone()).await;
     let event_path = substrate.roots().repo.join("events/dev_recallhits01.jsonl");
-    append_event(&event_path, &recall_event("evt_old", 1, memory_id.clone(), "2026-05-01T00:00:00Z"))
-        .expect("old event");
-    append_event(&event_path, &recall_event("evt_new", 2, memory_id.clone(), "2026-05-02T00:00:00Z"))
-        .expect("new event");
+    append_event(
+        &event_path,
+        &recall_event("evt_old", 1, memory_id.clone(), "2026-05-01T00:00:00Z", "2026-05-01T00:05:00Z"),
+    )
+    .expect("old event");
+    let recalled_at = instant("2026-05-02T00:05:00Z");
+    append_event(
+        &event_path,
+        &recall_event("evt_new", 2, memory_id.clone(), "2026-05-02T00:00:00Z", "2026-05-02T00:05:00Z"),
+    )
+    .expect("new event");
     substrate.doctor_reindex_events_log().expect("reindex events_log mirror");
 
     let response = handle_request(
@@ -41,6 +48,7 @@ async fn recall_hits_protocol_reads_recent_events_log_rows_with_memory_summary()
     assert_eq!(response.hits.len(), 1);
     assert_eq!(response.hits[0].event_id, "evt_new");
     assert_eq!(response.hits[0].memory_id, memory_id);
+    assert_eq!(response.hits[0].recalled_at, recalled_at);
     assert_eq!(response.hits[0].summary.as_deref(), Some("Recall-hit surface fixture"));
 }
 
@@ -123,11 +131,11 @@ async fn write_memory(substrate: &Substrate, id: MemoryId) {
         .expect("write memory");
 }
 
-fn recall_event(event_id: &str, seq: u64, id: MemoryId, recalled_at: &str) -> Event {
+fn recall_event(event_id: &str, seq: u64, id: MemoryId, event_at: &str, recalled_at: &str) -> Event {
     Event {
         schema: EVENT_SCHEMA_VERSION,
         id: EventId::new(event_id),
-        at: instant(recalled_at),
+        at: instant(event_at),
         device: DeviceId::new("dev_recallhits01"),
         seq,
         operation_id: Some(OperationId::new(format!("op_{event_id}"))),

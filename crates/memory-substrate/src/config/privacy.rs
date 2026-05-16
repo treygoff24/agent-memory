@@ -35,7 +35,7 @@ impl PrivacyEnforcement {
 
     /// Parse from a YAML snippet.
     pub fn from_yaml(yaml: &str) -> Result<Self, String> {
-        let enforcement: Self = serde_yaml::from_str(yaml).map_err(|err| err.to_string())?;
+        let enforcement: Self = yaml_serde::from_str(yaml).map_err(|err| err.to_string())?;
         enforcement.validate()?;
         Ok(enforcement)
     }

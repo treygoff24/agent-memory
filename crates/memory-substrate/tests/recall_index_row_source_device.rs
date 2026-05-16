@@ -18,8 +18,12 @@ fn recall_index_row_hydrates_source_device_when_present_and_absent() {
     let mut rows = index.query_recall_index(&RecallIndexQuery::default()).expect("query recall index");
     rows.sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
 
-    assert_eq!(rows[0].source_device.as_deref(), Some("dev_a"));
-    assert_eq!(rows[1].source_device, None);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        (rows[0].id.as_str(), rows[0].source_device.as_deref()),
+        ("mem_20260501_a1b2c3d4e5f60718_000401", Some("dev_a"))
+    );
+    assert_eq!((rows[1].id.as_str(), rows[1].source_device.as_deref()), ("mem_20260501_a1b2c3d4e5f60718_000402", None));
 }
 
 fn sample_memory(id: &str, source_device: Option<&str>) -> Memory {

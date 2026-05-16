@@ -21,6 +21,28 @@ fn duplicate_claim_hash_returns_duplicate_without_tiebreaker() {
 }
 
 #[test]
+fn duplicate_claim_hash_requires_matching_namespace_and_entities() {
+    let candidate = candidate("candidate-namespace-entity", "Duplicate claims are scoped to namespace and entities.");
+    let mismatched_summaries = [
+        ExistingMemorySummary::new("mem_other_namespace", "project/other", candidate.claim(), 1.0)
+            .with_entity_ids(candidate.entity_ids().to_vec()),
+        ExistingMemorySummary::new("mem_other_entity", candidate.namespace(), candidate.claim(), 1.0)
+            .with_entity_ids(vec!["project:other".to_owned()]),
+    ];
+
+    for existing in mismatched_summaries {
+        let search = FakeSimilaritySearch::new().with_duplicate(existing);
+        let tiebreaker = RecordingTiebreaker::new(TiebreakOutcome::Unclear);
+        let detector = ContradictionDetector::new(search, tiebreaker).with_similarity_threshold(0.82);
+
+        let decision = detector.detect(&candidate);
+
+        assert_eq!(decision, ContradictionDecision::NoConflict);
+        assert_eq!(detector.tiebreaker().call_count(), 0);
+    }
+}
+
+#[test]
 fn above_threshold_candidate_invokes_tiebreaker_with_candidate_and_top_k_hits() {
     let candidate = candidate("candidate-2", "The governance crate owns deterministic write decisions.");
     let hit_a = ExistingMemorySummary::new(
@@ -31,9 +53,16 @@ fn above_threshold_candidate_invokes_tiebreaker_with_candidate_and_top_k_hits() 
     )
     .with_entity_ids(candidate.entity_ids().to_vec());
     let hit_b =
-        ExistingMemorySummary::new("mem_hit_b", candidate.namespace(), "Governance decisions are deterministic.", 0.86)
+        ExistingMemorySummary::new("mem_hit_b", candidate.namespace(), "Governance decisions are deterministic.", 0.20)
             .with_entity_ids(candidate.entity_ids().to_vec());
-    let search = FakeSimilaritySearch::new().with_hits(vec![hit_a, hit_b]);
+    let hit_c = ExistingMemorySummary::new(
+        "mem_hit_c",
+        candidate.namespace(),
+        "Deterministic governance has a high scoring third hit.",
+        0.89,
+    )
+    .with_entity_ids(candidate.entity_ids().to_vec());
+    let search = FakeSimilaritySearch::new().with_hits(vec![hit_a, hit_b, hit_c]);
     let tiebreaker = RecordingTiebreaker::new(TiebreakOutcome::Refinement { existing_id: "mem_hit_a".to_owned() });
     let detector = ContradictionDetector::new(search, tiebreaker).with_similarity_threshold(0.82).with_top_k_limit(2);
 

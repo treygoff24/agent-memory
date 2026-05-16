@@ -8,14 +8,16 @@ use memorum_coordination::{
     CoordinationConfig, CoordinationInsertion, PeerUpdateEntry, PeerWriteCandidate, RelevanceGate, SessionContext,
 };
 use memory_substrate::config::load_local_device_config;
-use memory_substrate::{MemoryStatus, RecallIndexQuery, RecallIndexRow, Scope, SourceKind, Substrate, SubstrateError};
+use memory_substrate::{
+    MemoryStatus, MemoryType, RecallIndexQuery, RecallIndexRow, Scope, SourceKind, Substrate, SubstrateError,
+};
 
 use crate::reality_check::RcScheduler;
 use crate::recall::budget::estimated_tokens;
 use crate::recall::candidates::{collect_recall_candidates_from_index, RecallCollectionRequest};
 use crate::recall::dream_questions::{select_pending_attention_questions, CAP_TOTAL};
 use crate::recall::error::RecallError;
-use crate::recall::rank::{select_ranked_candidates, RankingContext};
+use crate::recall::rank::{select_ranked_candidates, RankedRecallCandidate, RankingContext};
 use crate::recall::render::{
     emit_recall_hits, escape_xml_text, render_memory_entry, render_pending_attention_body,
     render_startup_frame_with_cross_device_updates, CrossDeviceStartupUpdates, RecallEntry, RenderedRecallSection,
@@ -93,21 +95,18 @@ pub async fn build_startup_response_with_coordination_config(
     };
 
     let recent_body = if include_recent {
-        selected
-            .selected
-            .iter()
-            .map(|candidate| {
-                render_memory_entry(&RecallEntry {
-                    id: candidate.id.clone(),
-                    summary: candidate.candidate.row.summary.clone(),
-                    snippet: None,
-                    updated: candidate.candidate.row.updated_at.to_rfc3339(),
-                    source_kind: candidate.candidate.row.source_kind.to_string(),
-                    confidence: format!("{:.2}", candidate.candidate.row.confidence),
-                })
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+        let mut rendered = Vec::new();
+        for candidate in &selected.selected {
+            rendered.push(render_memory_entry(&RecallEntry {
+                id: candidate.id.clone(),
+                summary: candidate.candidate.row.summary.clone(),
+                snippet: startup_snippet_for_candidate(substrate, candidate).await,
+                updated: candidate.candidate.row.updated_at.to_rfc3339(),
+                source_kind: candidate.candidate.row.source_kind.to_string(),
+                confidence: format!("{:.2}", candidate.candidate.row.confidence),
+            }));
+        }
+        rendered.join("\n")
     } else {
         String::new()
     };
@@ -204,6 +203,14 @@ fn startup_updated_since_from_event(substrate: &Substrate, since_event_id: Optio
             None
         }
     }
+}
+
+async fn startup_snippet_for_candidate(substrate: &Substrate, candidate: &RankedRecallCandidate) -> Option<String> {
+    if candidate.candidate.row.memory_type != MemoryType::Artifact {
+        return None;
+    }
+    let memory = substrate.read_path(&candidate.candidate.row.path).await.ok()?;
+    Some(memory.body)
 }
 
 #[derive(Debug, Default)]

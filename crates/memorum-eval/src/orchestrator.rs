@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::fmt;
-use std::process::Command;
-use std::sync::{Arc, Mutex};
+use std::process::{Child, Command, Output, Stdio};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use chrono::SecondsFormat;
@@ -179,6 +179,7 @@ impl EvalOrchestrator {
         let run_context = RunContext {
             harness_mode: config.harness_mode,
             timeout_seconds: config.timeout_seconds,
+            no_cleanup: config.no_cleanup,
             verbose: config.verbose,
             missing_credentials: missing_credentials.clone(),
         };
@@ -219,6 +220,7 @@ impl EvalOrchestrator {
 struct RunContext {
     harness_mode: HarnessMode,
     timeout_seconds: Option<u64>,
+    no_cleanup: bool,
     verbose: bool,
     missing_credentials: Vec<String>,
 }
@@ -411,6 +413,7 @@ pub fn report_to_json(report: &EvalReport) -> String {
             "  \"failed\": {},\n",
             "  \"skipped\": {},\n",
             "  \"partial\": {},\n",
+            "  \"timed_out\": {},\n",
             "  \"missing_credentials\": {},\n",
             "  \"tests\": [\n{}\n  ]\n",
             "}}\n"
@@ -424,6 +427,7 @@ pub fn report_to_json(report: &EvalReport) -> String {
         report.failed,
         report.skipped,
         report.partial,
+        report.timed_out,
         string_array_to_json(&report.missing_credentials),
         tests_json
     )
@@ -530,8 +534,8 @@ fn run_catalog_entry(entry: CatalogEntry, context: &RunContext) -> EvalTestResul
     }
 
     match dispatch_for_entry(entry, context) {
-        CatalogDispatch::CargoTest(dispatch) => run_cargo_test(entry, started, dispatch),
-        CatalogDispatch::MockHarness => run_mock_harness(entry, started),
+        CatalogDispatch::CargoTest(dispatch) => run_cargo_test(entry, started, dispatch, context),
+        CatalogDispatch::MockHarness => run_mock_harness(entry, started, context),
         CatalogDispatch::Skip(reason) => skipped_result(entry, started.elapsed(), reason),
     }
 }
@@ -654,34 +658,116 @@ fn cargo_dispatch(entry: CatalogEntry) -> CargoTestDispatch {
     }
 }
 
-fn run_cargo_test(entry: CatalogEntry, started: Instant, dispatch: CargoTestDispatch) -> EvalTestResult {
-    let cargo = std::env::var_os("MEMORUM_EVAL_CARGO").unwrap_or_else(|| "cargo".into());
-    let output = Command::new(cargo)
-        .args(["test", "-p", "memorum-eval", "--test", dispatch.target, dispatch.filter, "--", "--nocapture"])
-        .output();
+fn run_cargo_test(
+    entry: CatalogEntry,
+    started: Instant,
+    dispatch: CargoTestDispatch,
+    context: &RunContext,
+) -> EvalTestResult {
+    let output = run_cargo_command(dispatch, context.timeout_seconds, context.no_cleanup);
 
     match output {
-        Ok(output) if output.status.success() => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-
-            // Check if the test printed a skip marker even though cargo reported success.
-            // Tests that lack a required runtime dependency (e.g. T16 without Stream G)
-            // print `MEMORUM_EVAL_SKIP:<reason>` so the orchestrator records a real
-            // skipped result rather than a silent pass. (H-R4)
-            if let Some(reason) = extract_skip_marker(&stdout) {
-                return skipped_result(entry, started.elapsed(), reason);
-            }
-
-            // Parse the assertion count emitted by `eval_assert_count!` calls.
-            // Tests print `MEMORUM_EVAL_ASSERTIONS=<n>` to stdout; the orchestrator
-            // picks it up here so JSON output reflects real per-test granularity
-            // rather than a hardcoded 1. (H-B3)
-            let assertions = extract_assertion_count(&stdout).unwrap_or(1);
-            passed_result_with_count(entry, started.elapsed(), assertions)
+        Ok(CargoCommandOutcome::TimedOut) => failed_result(entry, started.elapsed(), "TIMEOUT"),
+        Ok(CargoCommandOutcome::Completed(output)) if output.status.success() => {
+            cargo_success_result(entry, started, output)
         }
-        Ok(output) => failed_result(entry, started.elapsed(), &cargo_failure_detail(&output)),
+        Ok(CargoCommandOutcome::Completed(output)) => {
+            failed_result(entry, started.elapsed(), &cargo_failure_detail(&output))
+        }
         Err(error) => failed_result(entry, started.elapsed(), &format!("failed to run cargo test: {error}")),
     }
+}
+
+enum CargoCommandOutcome {
+    Completed(Output),
+    TimedOut,
+}
+
+fn run_cargo_command(
+    dispatch: CargoTestDispatch,
+    timeout_seconds: Option<u64>,
+    no_cleanup: bool,
+) -> std::io::Result<CargoCommandOutcome> {
+    let cargo = std::env::var_os("MEMORUM_EVAL_CARGO").unwrap_or_else(|| "cargo".into());
+    let mut command = Command::new(cargo);
+    command.args(["test", "-p", "memorum-eval", "--test", dispatch.target, dispatch.filter, "--", "--nocapture"]);
+    if no_cleanup {
+        command.env(crate::daemon_scaffold::NO_CLEANUP_ENV, "1");
+    }
+    let Some(timeout_seconds) = timeout_seconds else {
+        return command.output().map(CargoCommandOutcome::Completed);
+    };
+
+    configure_timeout_command(&mut command);
+    let deadline = Instant::now() + Duration::from_secs(timeout_seconds);
+    let mut child = command.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    loop {
+        if child.try_wait()?.is_some() {
+            return child.wait_with_output().map(CargoCommandOutcome::Completed);
+        }
+        if Instant::now() >= deadline {
+            terminate_timed_out_child(&mut child);
+            return Ok(CargoCommandOutcome::TimedOut);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[cfg(unix)]
+fn configure_timeout_command(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+
+    command.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn configure_timeout_command(_command: &mut Command) {}
+
+fn terminate_timed_out_child(child: &mut Child) {
+    terminate_child_group(child);
+
+    let graceful_deadline = Instant::now() + Duration::from_millis(250);
+    while Instant::now() < graceful_deadline {
+        match child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+            Err(_) => return,
+        }
+    }
+
+    force_kill_child_group(child);
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[cfg(unix)]
+fn terminate_child_group(child: &Child) {
+    let group = format!("-{}", child.id());
+    let _ = Command::new("kill").args(["-TERM", &group]).status();
+}
+
+#[cfg(not(unix))]
+fn terminate_child_group(child: &mut Child) {
+    let _ = child.kill();
+}
+
+#[cfg(unix)]
+fn force_kill_child_group(child: &Child) {
+    let group = format!("-{}", child.id());
+    let _ = Command::new("kill").args(["-KILL", &group]).status();
+}
+
+#[cfg(not(unix))]
+fn force_kill_child_group(_child: &Child) {}
+
+fn cargo_success_result(entry: CatalogEntry, started: Instant, output: Output) -> EvalTestResult {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if let Some(reason) = extract_skip_marker(&stdout) {
+        return skipped_result(entry, started.elapsed(), reason);
+    }
+
+    let assertions = extract_assertion_count(&stdout).unwrap_or(1);
+    passed_result_with_count(entry, started.elapsed(), assertions)
 }
 
 /// Extract a skip reason from a `MEMORUM_EVAL_SKIP:<reason>` marker in cargo test stdout.
@@ -706,8 +792,42 @@ fn cargo_failure_detail(output: &std::process::Output) -> String {
     format!("cargo test failed with status {}\nstdout:\n{}\nstderr:\n{}", output.status, stdout.trim(), stderr.trim())
 }
 
-fn run_mock_harness(entry: CatalogEntry, started: Instant) -> EvalTestResult {
-    let scaffold = block_on(DaemonScaffold::fresh());
+fn run_mock_harness(entry: CatalogEntry, started: Instant, context: &RunContext) -> EvalTestResult {
+    run_with_optional_timeout(entry, started, context, run_mock_harness_inner)
+}
+
+fn run_with_optional_timeout<F>(
+    entry: CatalogEntry,
+    started: Instant,
+    context: &RunContext,
+    runner: F,
+) -> EvalTestResult
+where
+    F: FnOnce(CatalogEntry, Instant, RunContext) -> EvalTestResult + Send + 'static,
+{
+    let Some(timeout_seconds) = context.timeout_seconds else {
+        return runner(entry, started, context.clone());
+    };
+
+    let (sender, receiver) = mpsc::channel();
+    let context = context.clone();
+    std::thread::spawn(move || {
+        let _ = sender.send(runner(entry, started, context));
+    });
+
+    match receiver.recv_timeout(Duration::from_secs(timeout_seconds)) {
+        Ok(result) => result,
+        Err(mpsc::RecvTimeoutError::Timeout) => failed_result(entry, started.elapsed(), "TIMEOUT"),
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            failed_result(entry, started.elapsed(), "mock harness worker disconnected before reporting")
+        }
+    }
+}
+
+fn run_mock_harness_inner(entry: CatalogEntry, started: Instant, context: RunContext) -> EvalTestResult {
+    let scaffold = block_on(DaemonScaffold::fresh_with_config(crate::daemon_scaffold::DaemonScaffoldConfig {
+        no_cleanup: context.no_cleanup,
+    }));
     match MockHarness.run_test(entry.number, &scaffold) {
         Ok(TestOutcome::Passed { metadata, output }) => {
             outcome_passed_result(entry, started.elapsed(), metadata, output)
@@ -964,6 +1084,33 @@ fn timestamp_string() -> String {
 
 fn unix_millis() -> u128 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|duration| duration.as_millis()).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn optional_timeout_bounds_in_process_runner() {
+        let context = RunContext {
+            harness_mode: HarnessMode::Mock,
+            timeout_seconds: Some(1),
+            no_cleanup: false,
+            verbose: false,
+            missing_credentials: Vec::new(),
+        };
+        let entry = TEST_CATALOG[0];
+        let started = Instant::now();
+
+        let result = run_with_optional_timeout(entry, started, &context, |entry, started, _context| {
+            std::thread::sleep(Duration::from_secs(5));
+            passed_result_with_count(entry, started.elapsed(), 1)
+        });
+
+        assert_eq!(result.status, TestStatus::Failed);
+        assert_eq!(result.failure_detail.as_deref(), Some("TIMEOUT"));
+        assert!(started.elapsed() < Duration::from_secs(3), "timeout should not wait for the runner to finish");
+    }
 }
 
 impl fmt::Display for OrchestratorError {

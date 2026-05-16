@@ -9,9 +9,10 @@ async fn write_read_query_and_event_round_trip_through_public_api() {
             .await
             .expect("init");
     let memory = sample_memory("mem_20260424_a1b2c3d4e5f60718_000011");
+    let operation_id = OperationId::new("op_api_write_read_explicit");
     let outcome = substrate
         .write_memory(WriteRequest {
-            operation_id: None,
+            operation_id: Some(operation_id.clone()),
             memory: memory.clone(),
             expected_base_hash: None,
             write_mode: WriteMode::CreateNew,
@@ -23,6 +24,7 @@ async fn write_read_query_and_event_round_trip_through_public_api() {
         .await
         .expect("write");
     assert!(outcome.committed);
+    assert_eq!(outcome.operation_id, operation_id);
     let read = substrate.read_memory(&memory.frontmatter.id).await.expect("read");
     assert_eq!(read.body, memory.body);
     let hits = substrate
@@ -35,11 +37,17 @@ async fn write_read_query_and_event_round_trip_through_public_api() {
         .await
         .expect("query");
     assert_eq!(hits.len(), 1);
-    assert!(substrate
-        .events()
-        .expect("events")
+    let events = substrate.events().expect("events");
+    let committed_event = events
         .iter()
-        .any(|event| matches!(event.kind, memory_substrate::events::EventKind::WriteCommitted { .. })));
+        .find(|event| {
+            matches!(
+                &event.kind,
+                memory_substrate::events::EventKind::WriteCommitted { id, .. } if id == &memory.frontmatter.id
+            )
+        })
+        .expect("write committed event");
+    assert_eq!(committed_event.operation_id.as_ref(), Some(&operation_id));
 }
 
 #[tokio::test]
@@ -1118,6 +1126,7 @@ async fn encrypted_create_new_refuses_to_overwrite_existing_ciphertext() {
 
     let mut second = sample_memory("mem_20260424_a1b2c3d4e5f60718_000034");
     second.path = Some(RepoPath::new("agent/patterns/shared-encrypted.md"));
+    let second_id = second.frontmatter.id.clone();
     let err = substrate
         .write_encrypted(EncryptedWriteRequest {
             operation_id: None,
@@ -1131,6 +1140,22 @@ async fn encrypted_create_new_refuses_to_overwrite_existing_ciphertext() {
         .await
         .expect_err("existing ciphertext refused");
     assert_eq!(err.kind, memory_substrate::WriteFailureKind::AlreadyExists);
+    let rejected_hits = substrate
+        .query_memory(MemoryQuery {
+            id: Some(second_id.clone()),
+            tag: None,
+            include_metadata_only: true,
+            ..MemoryQuery::default()
+        })
+        .await
+        .expect("query rejected encrypted id");
+    assert!(rejected_hits.is_empty(), "rejected encrypted id must not leave index metadata");
+    assert!(!substrate.events().expect("events").iter().any(|event| {
+        matches!(
+            &event.kind,
+            memory_substrate::events::EventKind::EncryptedWriteCommitted { id, .. } if id == &second_id
+        )
+    }));
     let envelope = substrate.read_memory_envelope(&first_id).await.expect("envelope");
     match envelope.content {
         MemoryContent::Ciphertext { bytes, .. } => assert_eq!(bytes, b"first"),

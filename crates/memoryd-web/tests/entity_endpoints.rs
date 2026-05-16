@@ -86,7 +86,7 @@ impl TestDaemon {
         let server = tokio::spawn(serve_substrate_with(
             socket.clone(),
             substrate.clone(),
-            ServerOptions { idle_frame_timeout: Duration::from_secs(5) },
+            ServerOptions { idle_frame_timeout: Duration::from_secs(5), ..ServerOptions::default() },
             shutdown_rx,
         ));
         wait_for_socket(&socket).await;

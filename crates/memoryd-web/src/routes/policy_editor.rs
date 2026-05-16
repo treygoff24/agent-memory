@@ -165,14 +165,14 @@ fn validate_and_write_policy(
 }
 
 fn parse_single_policy(raw_yaml: &str) -> Result<(), String> {
-    serde_yaml::from_str::<Policy>(raw_yaml).map(|_| ()).map_err(|error| error.to_string())
+    yaml_serde::from_str::<Policy>(raw_yaml).map(|_| ()).map_err(|error| error.to_string())
 }
 
 fn target_file_name(payload: &PolicyEditorPostRequest) -> Result<String, String> {
     let file_name = match &payload.file_name {
         Some(file_name) => file_name.clone(),
         None => {
-            let policy: Policy = serde_yaml::from_str(&payload.raw_yaml).map_err(|error| error.to_string())?;
+            let policy: Policy = yaml_serde::from_str(&payload.raw_yaml).map_err(|error| error.to_string())?;
             format!("{}.yaml", policy.name())
         }
     };

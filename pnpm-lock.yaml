@@ -9,10 +9,10 @@ importers:
   .:
     devDependencies:
       oxfmt:
-        specifier: latest
+        specifier: 0.46.0
         version: 0.46.0
       oxlint:
-        specifier: latest
+        specifier: 1.61.0
         version: 1.61.0
 
 packages:

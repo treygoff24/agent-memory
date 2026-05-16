@@ -38,3 +38,6 @@ crates/memoryd-web/frontend/tsconfig.tsbuildinfo
 
 # Claude Code harness runtime state
 .claude/scheduled_tasks.lock
+
+# ClawPatch review state (per-run, re-initable; not durable repo content)
+.clawpatch/

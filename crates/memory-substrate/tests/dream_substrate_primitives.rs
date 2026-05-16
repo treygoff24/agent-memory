@@ -36,7 +36,9 @@ async fn append_encrypted_substrate_fragment_without_text_field() {
     assert_eq!(records[0]["id"], "sub_01HZXJK7J7W0X4Q4KJ7A2R8V1B");
     assert!(records[0].get("text").is_none(), "encrypted substrate must not persist plaintext");
     assert_eq!(records[0]["encryption"]["recipient"], "age1test");
+    assert_eq!(records[0]["encryption"]["ciphertext_b64"], "Y2lwaGVydGV4dA==");
     assert_eq!(records[0]["descriptor"]["summary_safe"], "safe auth descriptor");
+    assert_eq!(records[0]["descriptor"]["tag_safe"], serde_json::json!(["auth"]));
 }
 
 #[tokio::test]

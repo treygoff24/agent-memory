@@ -11,6 +11,6 @@ fn crate_reexports_public_modules_and_binary_name_resolves() {
     let _ = orchestrator::EvalOrchestrator;
     let _ = simulator::SimulatorAgent::new(simulator::SimulatorConfig::default());
     let _ = harness_runner::HarnessRunner::new(harness_runner::RealHarness::Codex);
-    let _ = daemon_scaffold::DaemonScaffoldConfig;
+    let _ = daemon_scaffold::DaemonScaffoldConfig::default();
     assertions::assert_xml_valid("<memory-recall></memory-recall>").expect("empty recall block should be valid XML");
 }

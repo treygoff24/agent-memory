@@ -40,6 +40,7 @@ pub struct Event {
     /// Event kind. Serialized as `"kind": "write_committed", "data": { ... }`
     /// per spec §12.1 (adjacently tagged so the payload lives in `data`, not
     /// flattened, avoiding field-name collisions with `id`).
+    #[serde(flatten)]
     pub kind: EventKind,
     /// CRC32C checksum (spec §12.1). Written by `framing::encode_event_line`.
     /// Callers set this to 0; the framing layer fills in the real value.

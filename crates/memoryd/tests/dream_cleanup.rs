@@ -232,17 +232,20 @@ async fn cleanup_commit_uses_bot_author_message_and_only_cleanup_staged_files() 
     let report = run_cleanup(&fixture.substrate, config("dev_cleanup")).await.expect("cleanup");
     let commit = git(&fixture.roots.repo, &["log", "-1", "--format=%an <%ae>%n%B"]).expect("git log");
     let names = git(&fixture.roots.repo, &["show", "--name-only", "--format=", "HEAD"]).expect("git show");
+    let committed_paths = sorted_lines(&names);
 
     assert!(!report.commit_deferred);
     assert!(commit.contains("memoryd cleanup-bot <noreply@memoryd.local>"));
     assert!(commit.contains("dream: cleanup dev_cleanup 2026-04-30"));
     assert!(commit.contains("fragments_archived=1"));
-    assert!(names.lines().all(|path| {
-        path.starts_with("substrate/")
-            || path.starts_with("dreams/cleanup/")
-            || path.starts_with("events/")
-            || path.starts_with("agent/")
-    }));
+    assert_eq!(
+        committed_paths,
+        vec![
+            "dreams/cleanup/dev_cleanup/2026-04-30.json".to_string(),
+            "substrate/archive/dev_cleanup/2026-03.jsonl".to_string(),
+            "substrate/dev_cleanup/2026-03-31.jsonl".to_string(),
+        ]
+    );
 }
 
 #[tokio::test]
@@ -250,6 +253,9 @@ async fn dirty_tree_writes_report_stages_cleanup_files_and_defers_commit() {
     let fixture = Fixture::new("dev_cleanup").await;
     append_fragment(&fixture.substrate, "sub_01HZXJK7J7W0X4Q4KJ7A2R8V1C", days_ago(30)).await;
     fs::write(fixture.repo_path("user-notes.txt"), "do not stage").expect("dirty file");
+    let user_memory = sample_memory("mem_20260401_a1b2c3d4e5f60718_000007", MemoryStatus::Active);
+    let user_memory_path = user_memory.path.as_ref().expect("user memory path").as_str().to_string();
+    write_memory_file(&fixture, &user_memory);
 
     let report = run_cleanup(&fixture.substrate, config("dev_cleanup")).await.expect("cleanup");
     let staged = git(&fixture.roots.repo, &["diff", "--cached", "--name-only"]).expect("staged");
@@ -264,6 +270,10 @@ async fn dirty_tree_writes_report_stages_cleanup_files_and_defers_commit() {
     assert!(!last_subject.contains("dream: cleanup"));
     assert!(staged.contains("dreams/cleanup/dev_cleanup/2026-04-30.json"));
     assert!(!staged.contains("user-notes.txt"));
+    assert!(
+        !staged.lines().any(|path| path == user_memory_path),
+        "user-authored memory under an allowed prefix must not be staged: {staged}"
+    );
 }
 
 #[tokio::test]
@@ -342,14 +352,30 @@ impl DualDeviceFixture {
     }
 
     fn archive_and_reports(&self) -> Vec<(String, String)> {
-        let mut files = ["substrate/archive/dev_a/2026-03.jsonl", "substrate/archive/dev_b/2026-03.jsonl"]
-            .into_iter()
-            .map(|path| (path.to_string(), fs::read_to_string(self.roots.repo.join(path)).unwrap_or_default()))
-            .collect::<Vec<_>>();
+        let mut files = [
+            ("substrate/archive/dev_a/2026-03.jsonl", "sub_01HZXJK7J7W0X4Q4KJ7A2R8V1D"),
+            ("substrate/archive/dev_b/2026-03.jsonl", "sub_01HZXJK7J7W0X4Q4KJ7A2R8V1E"),
+        ]
+        .into_iter()
+        .map(|(path, fragment_id)| {
+            let contents = read_required_file(&self.roots.repo, path);
+            let rows = read_jsonl(&self.roots.repo.join(path));
+            assert_eq!(rows.len(), 1, "{path} should contain one archived fragment");
+            assert_eq!(rows[0]["id"], fragment_id);
+            (path.to_string(), contents)
+        })
+        .collect::<Vec<_>>();
         files.extend(
-            ["dreams/cleanup/dev_a/2026-04-30.json", "dreams/cleanup/dev_b/2026-04-30.json"]
+            [("dreams/cleanup/dev_a/2026-04-30.json", "dev_a"), ("dreams/cleanup/dev_b/2026-04-30.json", "dev_b")]
                 .into_iter()
-                .map(|path| (path.to_string(), fs::read_to_string(self.roots.repo.join(path)).unwrap_or_default())),
+                .map(|(path, device_id)| {
+                    let contents = read_required_file(&self.roots.repo, path);
+                    let report: Value =
+                        serde_json::from_str(&contents).unwrap_or_else(|err| panic!("parse {path}: {err}"));
+                    assert_eq!(report["device_id"], device_id);
+                    assert_eq!(report["operations"]["fragments_archived"], 1);
+                    (path.to_string(), contents)
+                }),
         );
         files.sort_by(|left, right| left.0.cmp(&right.0));
         files
@@ -525,6 +551,16 @@ fn read_jsonl(path: &Path) -> Vec<Value> {
         .filter(|line| !line.trim().is_empty())
         .map(|line| serde_json::from_str(line).expect("jsonl object"))
         .collect()
+}
+
+fn read_required_file(repo: &Path, relative_path: &str) -> String {
+    fs::read_to_string(repo.join(relative_path)).unwrap_or_else(|err| panic!("read {relative_path}: {err}"))
+}
+
+fn sorted_lines(text: &str) -> Vec<String> {
+    let mut lines = text.lines().filter(|line| !line.trim().is_empty()).map(str::to_string).collect::<Vec<_>>();
+    lines.sort();
+    lines
 }
 
 fn git(repo: &Path, args: &[&str]) -> Result<String, String> {

@@ -62,6 +62,9 @@ fn hint_line<'a>(app: &'a App, styles: &'a ThemeStyles) -> Line<'a> {
             Span::styled("undo", styles.muted),
         ]);
     }
+    if let Some(error) = app.hot_reload_error() {
+        return Line::from(vec![Span::raw(" "), Span::styled(format!("theme reload failed: {error}"), styles.warn)]);
+    }
     let footer_hint = app.snapshot().footer_hint.as_str();
     if !footer_hint.is_empty() {
         return Line::from(vec![Span::raw(" "), Span::styled(footer_hint.to_string(), styles.warn)]);

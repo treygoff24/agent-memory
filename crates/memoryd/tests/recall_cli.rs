@@ -1,6 +1,6 @@
 use std::path::Path;
-use std::process::Command;
-use std::time::Duration;
+use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 use memory_substrate::{InitOptions, Roots, Substrate};
 use memoryd::client;
@@ -46,7 +46,7 @@ async fn recall_cli_startup_and_delta_print_only_xml_and_update_daemon_counters(
     .await;
     assert!(startup.status.success(), "startup stderr: {}", String::from_utf8_lossy(&startup.stderr));
     let startup_stdout = String::from_utf8(startup.stdout).expect("startup stdout utf8");
-    assert!(startup_stdout.starts_with("<memory-recall version=\"stream-e-v0.5\""));
+    assert_single_startup_xml_block(&startup_stdout);
     assert!(String::from_utf8_lossy(&startup.stderr).is_empty(), "success diagnostics stay off stderr");
 
     let delta = run_memoryd_async([
@@ -142,27 +142,72 @@ async fn recall_cli_maps_daemon_errors_to_exit_codes_1_3_4() {
             String::from_utf8_lossy(&output.stderr).contains(code),
             "{code} failure stderr must include daemon error code"
         );
-        server.await.expect("fake daemon joins").expect("fake daemon returns ok");
+        await_single_request_daemon(server).await;
     }
 }
 
-fn run_memoryd<const N: usize>(args: [&str; N]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_memoryd")).args(args).output().expect("memoryd command runs")
+fn run_memoryd<const N: usize>(args: [&str; N]) -> Output {
+    run_memoryd_with_timeout(args.map(str::to_owned))
 }
 
-async fn run_memoryd_async<const N: usize>(args: [&str; N]) -> std::process::Output {
+fn assert_single_startup_xml_block(stdout: &str) {
+    assert!(
+        stdout.starts_with("<memory-recall version=\"stream-e-v0.5\""),
+        "startup stdout must start with the memory-recall root tag: {stdout:?}"
+    );
+    assert!(
+        stdout.ends_with("</memory-recall>\n"),
+        "startup stdout must end immediately after the closing memory-recall tag: {stdout:?}"
+    );
+    assert_eq!(
+        stdout.matches("<memory-recall ").count(),
+        1,
+        "startup stdout should contain exactly one memory-recall opening tag: {stdout:?}"
+    );
+    assert_eq!(
+        stdout.matches("</memory-recall>").count(),
+        1,
+        "startup stdout should contain exactly one memory-recall closing tag and no trailing diagnostics: {stdout:?}"
+    );
+}
+
+async fn run_memoryd_async<const N: usize>(args: [&str; N]) -> Output {
     let args = args.map(str::to_owned);
-    tokio::task::spawn_blocking(move || {
-        Command::new(env!("CARGO_BIN_EXE_memoryd")).args(args).output().expect("memoryd command runs")
-    })
-    .await
-    .expect("memoryd blocking task joins")
+    tokio::task::spawn_blocking(move || run_memoryd_with_timeout(args)).await.expect("memoryd blocking task joins")
+}
+
+fn run_memoryd_with_timeout<const N: usize>(args: [String; N]) -> Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_memoryd"))
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn memoryd command");
+    let started = Instant::now();
+
+    loop {
+        if child.try_wait().expect("poll memoryd command status").is_some() {
+            return child.wait_with_output().expect("collect memoryd command output");
+        }
+
+        if started.elapsed() >= Duration::from_secs(5) {
+            let _ = child.kill();
+            let output = child.wait_with_output().expect("collect timed-out memoryd command output");
+            panic!(
+                "memoryd command timed out after 5s; stdout: {}; stderr: {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 fn spawn_daemon(socket: &Path, substrate: Substrate) -> (watch::Sender<bool>, JoinHandle<anyhow::Result<()>>) {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let socket = socket.to_path_buf();
-    let options = ServerOptions { idle_frame_timeout: Duration::from_secs(5) };
+    let options = ServerOptions { idle_frame_timeout: Duration::from_secs(5), ..ServerOptions::default() };
     let task = tokio::spawn(serve_substrate_with(socket, substrate, options, shutdown_rx));
     (shutdown_tx, task)
 }
@@ -172,15 +217,24 @@ async fn spawn_single_error_daemon(socket: &Path, code: &str) -> JoinHandle<anyh
     let listener = UnixListener::bind(socket).expect("bind fake daemon socket");
     let code = code.to_owned();
     tokio::spawn(async move {
-        let (stream, _) = listener.accept().await?;
+        let (stream, _) = timeout(Duration::from_secs(2), listener.accept()).await??;
         let mut reader = BufReader::new(stream);
         let mut line = String::new();
-        reader.read_line(&mut line).await?;
+        timeout(Duration::from_secs(2), reader.read_line(&mut line)).await??;
         let request = memoryd::protocol::RequestEnvelope::from_json_line(&line)?;
         let response = ResponseEnvelope::error(request.id, code.clone(), format!("{code} fixture"), false);
-        reader.get_mut().write_all(response.to_json_line()?.as_bytes()).await?;
+        let response_line = response.to_json_line()?;
+        timeout(Duration::from_secs(2), reader.get_mut().write_all(response_line.as_bytes())).await??;
         Ok(())
     })
+}
+
+async fn await_single_request_daemon(server: JoinHandle<anyhow::Result<()>>) {
+    timeout(Duration::from_secs(2), server)
+        .await
+        .expect("fake daemon stops before timeout")
+        .expect("fake daemon joins")
+        .expect("fake daemon returns ok");
 }
 
 async fn shutdown(shutdown_tx: watch::Sender<bool>, server: JoinHandle<anyhow::Result<()>>, socket: &Path) {

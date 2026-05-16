@@ -15,6 +15,7 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::{Frame, Terminal};
+use tokio::sync::watch;
 
 use crate::client::DaemonClient;
 use crate::config::UiConfig;
@@ -103,6 +104,8 @@ pub struct App {
     should_quit: bool,
     memory_detail_state: TrustArtifactModalState,
     tick_counter: u64,
+    charset: Charset,
+    theme_updates: Option<watch::Receiver<Theme>>,
     _hot_reload: Option<HotReload>,
 }
 
@@ -122,7 +125,15 @@ impl App {
         let capability = config.color_capability.unwrap_or_else(|| memorum_theme::Resolver::detect().capability());
         let charset = config.charset;
         let snapshot = DaemonSnapshot::loading(&config.socket_path);
-        Self::from_parts(AppParts { config, theme, charset, color_capability: capability, hot_reload: None, snapshot })
+        let hot_reload_state = config.theme_config.as_ref().map(|path| HotReload::start(path.clone(), theme.clone()));
+        let (hot_reload, theme_updates) = match hot_reload_state {
+            Some((hot_reload, theme_updates)) => (Some(hot_reload), Some(theme_updates)),
+            None => (None, None),
+        };
+        let mut app =
+            Self::from_parts(AppParts { config, theme, charset, color_capability: capability, hot_reload, snapshot });
+        app.theme_updates = theme_updates;
+        app
     }
 
     pub fn with_snapshot(snapshot: DaemonSnapshot) -> Self {
@@ -150,13 +161,7 @@ impl App {
 
     pub fn from_parts(parts: AppParts) -> Self {
         let AppParts { config, mut theme, charset, color_capability, hot_reload, snapshot } = parts;
-        if config.no_motion {
-            theme.motion = memorum_theme::MotionConfig::reduced();
-        }
-        if charset == Charset::Minimal {
-            theme.glyphs = Glyphs::ascii_fallback();
-            theme.borders = BorderStyle::Plain;
-        }
+        apply_theme_preferences(&mut theme, config.no_motion, charset);
         let inbox_items = snapshot.inbox_items();
         Self {
             socket_state: SocketState::Connected,
@@ -179,6 +184,8 @@ impl App {
             should_quit: false,
             memory_detail_state: TrustArtifactModalState::default(),
             tick_counter: 0,
+            charset,
+            theme_updates: None,
             _hot_reload: hot_reload,
         }
     }
@@ -209,6 +216,10 @@ impl App {
 
     pub fn theme(&self) -> &Theme {
         &self.theme
+    }
+
+    pub fn hot_reload_error(&self) -> Option<String> {
+        self._hot_reload.as_ref().and_then(HotReload::last_error)
     }
 
     pub fn tick_counter(&self) -> u64 {
@@ -307,11 +318,25 @@ impl App {
 
     pub fn on_tick(&mut self, now: Instant) {
         self.tick_counter = self.tick_counter.saturating_add(1);
+        self.apply_theme_updates();
         let Some(pending) = self.pending_action.as_ref() else {
             return;
         };
         if elapsed_since(pending.staged_at, now) >= self.review_undo_window() {
             self.commit_pending_action();
+        }
+    }
+
+    fn apply_theme_updates(&mut self) {
+        let mut latest_theme = None;
+        if let Some(theme_updates) = self.theme_updates.as_mut() {
+            while theme_updates.has_changed().unwrap_or(false) {
+                latest_theme = Some(theme_updates.borrow_and_update().clone());
+            }
+        }
+        if let Some(mut theme) = latest_theme {
+            apply_theme_preferences(&mut theme, self.config.no_motion, self.charset);
+            self.theme = theme;
         }
     }
 
@@ -863,6 +888,16 @@ fn selected_index(cursor: usize, len: usize) -> Option<usize> {
         None
     } else {
         Some(cursor.min(len - 1))
+    }
+}
+
+fn apply_theme_preferences(theme: &mut Theme, no_motion: bool, charset: Charset) {
+    if no_motion {
+        theme.motion = memorum_theme::MotionConfig::reduced();
+    }
+    if charset == Charset::Minimal {
+        theme.glyphs = Glyphs::ascii_fallback();
+        theme.borders = BorderStyle::Plain;
     }
 }
 

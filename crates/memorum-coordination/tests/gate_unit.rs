@@ -4,7 +4,8 @@ use memorum_coordination::{
     CoordinationConfig, CoordinationInsertion, PeerUpdateEntry, QueryEmbedding, RelevanceGate, SessionContext,
 };
 use memory_substrate::{
-    EmbeddingTriple, Entity, MemoryId, MemoryStatus, RecallIndexRow, RepoPath, Scope, Sensitivity, SourceKind,
+    EmbeddingTriple, Entity, MemoryId, MemoryStatus, MemoryType, RecallIndexRow, RepoPath, Scope, Sensitivity,
+    SourceKind,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -326,6 +327,7 @@ fn row<const N: usize>(id: &str, entity_ids: [&str; N], path: &str, times: Candi
         id: MemoryId::new(id),
         path: RepoPath::from_unchecked(path),
         summary: format!("summary for {id}"),
+        memory_type: MemoryType::Pattern,
         status: MemoryStatus::Active,
         scope: Scope::Project,
         canonical_namespace_id: Some("proj".to_string()),
@@ -391,24 +393,32 @@ fn cross_device_pass_suppresses_ids_already_surfaced_in_same_device_pass() {
     let now = fixture_now();
     let mut base_session = session_with_entities(["ent_shared"]);
     base_session.salient_paths = set(["project:proj/shared.md"]);
+    let mut pass1_session = base_session.clone();
+    let mut pass2_session = base_session.clone();
 
     // Pass 1 — same-device candidates.  One passes the gate.
     let same_device_candidate =
         candidate("mem_20260501_a1b2c3d4e5f60718_000500", ["ent_shared"], ["project:proj/shared.md"]);
 
-    let pass1_insertion = gate().evaluate(&mut base_session, &[same_device_candidate], now);
+    let pass1_insertion = gate().evaluate(&mut pass1_session, &[same_device_candidate], now);
     assert_eq!(
         peer_update_ids(&pass1_insertion.peer_updates),
         ["mem_20260501_a1b2c3d4e5f60718_000500"],
         "pass 1: same-device candidate must be surfaced"
     );
 
+    let mut unseeded_pass2_session = pass2_session.clone();
+    let unseeded_duplicate =
+        candidate("mem_20260501_a1b2c3d4e5f60718_000500", ["ent_shared"], ["project:proj/shared.md"]);
+    let unseeded_insertion = gate().evaluate(&mut unseeded_pass2_session, &[unseeded_duplicate], now);
+    assert_eq!(
+        peer_update_ids(&unseeded_insertion.peer_updates),
+        ["mem_20260501_a1b2c3d4e5f60718_000500"],
+        "fresh pass 2 session should not be pre-seeded by pass 1 mutation"
+    );
+
     // Simulate what startup.rs does: extract surfaced ids from pass 1's result
     // and seed a fresh session clone for pass 2.
-    let mut pass2_session = base_session.clone();
-    // NOTE: base_session already has the id recorded (gate mutates it), but we
-    // explicitly seed pass2_session to mirror the startup.rs fix where the
-    // caller must thread the surfaced set explicitly.
     for id in pass1_insertion.peer_updates.iter().map(|u| u.reference.clone()) {
         pass2_session.record_surfaced_peer_write(id);
     }

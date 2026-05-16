@@ -42,9 +42,9 @@ fn prompt_input() -> DreamPromptInput {
 
 #[test]
 fn dreams_config_prompt_version_defaults_to_v2_and_accepts_explicit_versions() {
-    let missing: DreamsConfig = serde_yaml::from_str("{}").expect("missing field defaults");
-    let v1: DreamsConfig = serde_yaml::from_str("prompt_version: V1\n").expect("explicit v1");
-    let v2: DreamsConfig = serde_yaml::from_str("prompt_version: V2\n").expect("explicit v2");
+    let missing: DreamsConfig = yaml_serde::from_str("{}").expect("missing field defaults");
+    let v1: DreamsConfig = yaml_serde::from_str("prompt_version: V1\n").expect("explicit v1");
+    let v2: DreamsConfig = yaml_serde::from_str("prompt_version: V2\n").expect("explicit v2");
 
     assert_eq!(missing.prompt_version, PromptVersion::V2);
     assert_eq!(v1.prompt_version, PromptVersion::V1);

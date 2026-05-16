@@ -1,108 +1,557 @@
 use chrono::{TimeZone, Utc};
 use memory_substrate::{EventId, MemoryId, MemoryStatus, Sensitivity};
 use memoryd::protocol::{
-    CandidateWriteResult, CaptureSourceResponse, ComponentScores, DreamRunReport, DreamStatusCounters,
-    DreamStatusReport, GetProvenance, GetResponse, GovernanceForgetResponse, GovernanceStatus,
-    GovernanceSupersedeResponse, GovernanceWriteResponse, HarnessCliStatus, LeaseRecord, ObserveKind, ObserveResponse,
-    ObserveTarget, PassOutcome, PassStatus, PromptTransport, RealityCheckAction, RealityCheckItem, RealityCheckRequest,
-    RealityCheckResponse, RecallHitSummary, RecallHitsResponse, RequestEnvelope, RequestPayload, ResponseEnvelope,
-    ResponsePayload, ResponseResult, RevealResponse, ScopeRunSummary, SearchHit, SearchResponse, WriteNoteResponse,
+    CandidateWriteResult, CaptureSourceResponse, ComponentScores, ConflictsListResponse, DoctorResponse,
+    DreamRunReport, DreamStatusCounters, DreamStatusReport, EventsLogPageResponse, GetProvenance, GetResponse,
+    GovernanceForgetResponse, GovernancePolicySnapshot, GovernanceStatus, GovernanceSupersedeResponse,
+    GovernanceWriteResponse, HarnessCliStatus, InjectableEventKind, InspectEntitiesResponse, LeaseRecord,
+    NamespaceNode, NamespaceTreeResponse, ObserveKind, ObserveResponse, ObserveTarget, PassOutcome, PassStatus,
+    PeerActivityFormat, PeerActivityResponse, PeerHeartbeat, PeerHeartbeatAck, PeerReleaseLockResponse,
+    PeerReleaseLockStatus, PeerStatusResponse, PromptTransport, RealityCheckAction, RealityCheckItem,
+    RealityCheckRequest, RealityCheckResponse, RecallHitSummary, RecallHitsResponse, RequestEnvelope, RequestPayload,
+    ResponseEnvelope, ResponsePayload, ResponseResult, RevealResponse, ReviewDecisionResponse, ReviewQueueResponse,
+    ScopeRunSummary, SearchHit, SearchResponse, StatusResponse, TestInjectEventResponse, WebDashboardStatus,
+    WriteNoteResponse,
 };
-use memoryd::recall::StartupRequest;
+use memoryd::recall::{
+    DeltaRequest, DeltaResponse, RecallExplanation, SessionBinding, StartupRequest, StartupResponse,
+};
 
 #[test]
 fn protocol_contract_round_trips_request_variants_as_snake_case_json() {
     let requests = [
-        RequestEnvelope::new("req-status", RequestPayload::Status),
-        RequestEnvelope::new("req-doctor", RequestPayload::Doctor),
-        RequestEnvelope::new(
-            "req-search",
-            RequestPayload::Search { query: "daemon socket protocol".to_owned(), limit: Some(5), include_body: false },
+        (RequestEnvelope::new("req-status", RequestPayload::Status), "status"),
+        (RequestEnvelope::new("req-doctor", RequestPayload::Doctor), "doctor"),
+        (
+            RequestEnvelope::new(
+                "req-search",
+                RequestPayload::Search {
+                    query: "daemon socket protocol".to_owned(),
+                    limit: Some(5),
+                    include_body: false,
+                },
+            ),
+            "search",
         ),
-        RequestEnvelope::new(
-            "req-get",
-            RequestPayload::Get { id: "mem_20260428_0123456789abcdef_000001".to_owned(), include_provenance: true },
+        (
+            RequestEnvelope::new(
+                "req-get",
+                RequestPayload::Get { id: "mem_20260428_0123456789abcdef_000001".to_owned(), include_provenance: true },
+            ),
+            "get",
         ),
-        RequestEnvelope::new(
-            "req-trust-artifact",
-            RequestPayload::TrustArtifact { id: "mem_20260428_0123456789abcdef_000001".to_owned() },
+        (
+            RequestEnvelope::new(
+                "req-trust-artifact",
+                RequestPayload::TrustArtifact { id: "mem_20260428_0123456789abcdef_000001".to_owned() },
+            ),
+            "trust_artifact",
         ),
-        RequestEnvelope::new(
-            "req-capture-source",
-            RequestPayload::CaptureSource {
-                url: "https://example.com/report".to_owned(),
-                excerpts: vec!["exact quote".to_owned()],
-                note: Some("operator note".to_owned()),
-            },
+        (
+            RequestEnvelope::new(
+                "req-capture-source",
+                RequestPayload::CaptureSource {
+                    url: "https://example.com/report".to_owned(),
+                    excerpts: vec!["exact quote".to_owned()],
+                    note: Some("operator note".to_owned()),
+                },
+            ),
+            "capture_source",
         ),
-        RequestEnvelope::new(
-            "req-recall-hits",
-            RequestPayload::RecallHits {
-                since: Some(Utc.with_ymd_and_hms(2026, 5, 2, 0, 0, 0).unwrap()),
-                limit: Some(5),
-            },
+        (
+            RequestEnvelope::new(
+                "req-recall-hits",
+                RequestPayload::RecallHits {
+                    since: Some(Utc.with_ymd_and_hms(2026, 5, 2, 0, 0, 0).unwrap()),
+                    limit: Some(5),
+                },
+            ),
+            "recall_hits",
         ),
-        RequestEnvelope::new(
-            "req-reveal",
-            RequestPayload::Reveal {
-                id: "mem_20260428_0123456789abcdef_000001".to_owned(),
-                reason: "user asked for encrypted contact".to_owned(),
-            },
+        (
+            RequestEnvelope::new(
+                "req-reveal",
+                RequestPayload::Reveal {
+                    id: "mem_20260428_0123456789abcdef_000001".to_owned(),
+                    reason: "user asked for encrypted contact".to_owned(),
+                },
+            ),
+            "reveal",
         ),
-        RequestEnvelope::new(
-            "req-write-note",
-            RequestPayload::WriteNote { text: "observed a useful pattern".to_owned() },
+        (
+            RequestEnvelope::new(
+                "req-write-note",
+                RequestPayload::WriteNote { text: "observed a useful pattern".to_owned() },
+            ),
+            "write_note",
         ),
-        RequestEnvelope::new(
-            "req-write-memory",
-            RequestPayload::WriteMemory {
-                body: "governed body".to_owned(),
-                title: Some("Governed body".to_owned()),
-                tags: vec!["governed".to_owned()],
-                meta: serde_json::json!({ "namespace": "project" }),
-            },
+        (
+            RequestEnvelope::new(
+                "req-write-memory",
+                RequestPayload::WriteMemory {
+                    body: "governed body".to_owned(),
+                    title: Some("Governed body".to_owned()),
+                    tags: vec!["governed".to_owned()],
+                    meta: serde_json::json!({ "namespace": "project" }),
+                },
+            ),
+            "write_memory",
         ),
-        RequestEnvelope::new(
-            "req-supersede",
-            RequestPayload::Supersede {
-                old_id: "mem_20260428_0123456789abcdef_000001".to_owned(),
-                content: "replacement body".to_owned(),
-                reason: "stale".to_owned(),
-                meta: serde_json::Value::Null,
-            },
+        (
+            RequestEnvelope::new(
+                "req-supersede",
+                RequestPayload::Supersede {
+                    old_id: "mem_20260428_0123456789abcdef_000001".to_owned(),
+                    content: "replacement body".to_owned(),
+                    reason: "stale".to_owned(),
+                    meta: serde_json::Value::Null,
+                },
+            ),
+            "supersede",
         ),
-        RequestEnvelope::new(
-            "req-forget",
-            RequestPayload::Forget {
-                id: "mem_20260428_0123456789abcdef_000001".to_owned(),
-                reason: "user requested removal".to_owned(),
-            },
+        (
+            RequestEnvelope::new(
+                "req-forget",
+                RequestPayload::Forget {
+                    id: "mem_20260428_0123456789abcdef_000001".to_owned(),
+                    reason: "user requested removal".to_owned(),
+                },
+            ),
+            "forget",
         ),
-        RequestEnvelope::new(
-            "req-startup",
-            RequestPayload::Startup(StartupRequest {
-                cwd: "/tmp/agent-memory".to_owned(),
-                session_id: "sess_protocol".to_owned(),
-                harness: "codex".to_owned(),
-                harness_version: Some("0.0.0".to_owned()),
-                include_recent: true,
-                since_event_id: None,
-                budget_tokens: Some(3_600),
-            }),
+        (
+            RequestEnvelope::new(
+                "req-startup",
+                RequestPayload::Startup(StartupRequest {
+                    cwd: "/tmp/agent-memory".to_owned(),
+                    session_id: "sess_protocol".to_owned(),
+                    harness: "codex".to_owned(),
+                    harness_version: Some("0.0.0".to_owned()),
+                    include_recent: true,
+                    since_event_id: None,
+                    budget_tokens: Some(3_600),
+                }),
+            ),
+            "startup",
         ),
     ];
 
-    for request in requests {
+    for (request, expected_key) in requests {
         let line = request.to_json_line().expect("request serializes");
         assert!(line.ends_with('\n'), "protocol frames are newline-delimited");
         assert!(!line[..line.len() - 1].contains('\n'), "one JSON value per line");
 
         let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
         assert!(value.get("request").is_some(), "request envelope contains request field");
+        match &value["request"] {
+            serde_json::Value::String(key) => assert_eq!(key, expected_key),
+            serde_json::Value::Object(map) => assert!(map.contains_key(expected_key), "request key mismatch: {map:?}"),
+            other => panic!("request payload must be string or object, got {other:?}"),
+        }
         assert!(!line.contains("WriteNote"), "variant names are snake_case");
 
         let decoded = RequestEnvelope::from_json_line(&line).expect("request deserializes");
         assert_eq!(decoded, request);
+    }
+}
+
+#[test]
+fn protocol_contract_all_request_payload_wire_keys_are_pinned() {
+    let ts = Utc.with_ymd_and_hms(2026, 5, 2, 0, 0, 0).unwrap();
+    let memory_id = MemoryId::new("mem_20260428_0123456789abcdef_000001");
+    let requests = vec![
+        (RequestPayload::Status, "status"),
+        (RequestPayload::Doctor, "doctor"),
+        (RequestPayload::Search { query: "stable".to_owned(), limit: Some(5), include_body: false }, "search"),
+        (RequestPayload::Get { id: memory_id.to_string(), include_provenance: true }, "get"),
+        (RequestPayload::TrustArtifact { id: memory_id.to_string() }, "trust_artifact"),
+        (
+            RequestPayload::CaptureSource {
+                url: "https://example.com/report".to_owned(),
+                excerpts: vec!["quote".to_owned()],
+                note: None,
+            },
+            "capture_source",
+        ),
+        (RequestPayload::RecallHits { since: Some(ts), limit: Some(5) }, "recall_hits"),
+        (RequestPayload::Reveal { id: memory_id.to_string(), reason: "explicit reveal".to_owned() }, "reveal"),
+        (RequestPayload::WriteNote { text: "note".to_owned() }, "write_note"),
+        (
+            RequestPayload::WriteMemory {
+                body: "body".to_owned(),
+                title: Some("Title".to_owned()),
+                tags: vec!["tag".to_owned()],
+                meta: serde_json::json!({"namespace":"project"}),
+            },
+            "write_memory",
+        ),
+        (
+            RequestPayload::Supersede {
+                old_id: memory_id.to_string(),
+                content: "replacement".to_owned(),
+                reason: "stale".to_owned(),
+                meta: serde_json::Value::Null,
+            },
+            "supersede",
+        ),
+        (RequestPayload::Forget { id: memory_id.to_string(), reason: "user requested removal".to_owned() }, "forget"),
+        (RequestPayload::ReviewQueue { limit: Some(5) }, "review_queue"),
+        (RequestPayload::ReviewApprove { id: memory_id.to_string() }, "review_approve"),
+        (
+            RequestPayload::ReviewReject { id: memory_id.to_string(), reason: "not grounded".to_owned() },
+            "review_reject",
+        ),
+        (
+            RequestPayload::Startup(StartupRequest {
+                cwd: "/tmp/agent-memory".to_owned(),
+                session_id: "sess_protocol".to_owned(),
+                harness: "codex".to_owned(),
+                harness_version: None,
+                include_recent: true,
+                since_event_id: None,
+                budget_tokens: Some(3_600),
+            }),
+            "startup",
+        ),
+        (
+            RequestPayload::Delta(DeltaRequest {
+                cwd: "/tmp/agent-memory".to_owned(),
+                session_id: "sess_protocol".to_owned(),
+                harness: "codex".to_owned(),
+                message: "new prompt".to_owned(),
+                budget_tokens: Some(400),
+            }),
+            "delta",
+        ),
+        (
+            RequestPayload::PeerHeartbeat(PeerHeartbeat {
+                session_id: "sess_protocol".to_owned(),
+                device_id: Some("dev_protocol".to_owned()),
+                harness: "codex".to_owned(),
+                project_binding: None,
+                namespace: "project".to_owned(),
+                salient_entities: vec!["ent_protocol".to_owned()],
+                salient_paths: vec!["project:agent-memory".to_owned()],
+                capabilities: vec!["recall".to_owned()],
+                started_at: Some(ts),
+                claim_locks_held: vec![memory_id.to_string()],
+            }),
+            "peer_heartbeat",
+        ),
+        (RequestPayload::PeerStatus, "peer_status"),
+        (
+            RequestPayload::PeerActivity {
+                session: Some("sess_protocol".to_owned()),
+                since: Some("evt_1".to_owned()),
+                limit: Some(10),
+                format: PeerActivityFormat::Json,
+            },
+            "peer_activity",
+        ),
+        (
+            RequestPayload::PeerReleaseLock { memory_id: memory_id.to_string(), expected_holder: None },
+            "peer_release_lock",
+        ),
+        (
+            RequestPayload::Observe {
+                text: "raw observation".to_owned(),
+                kind: ObserveKind::Observation,
+                entities: vec!["ent_protocol".to_owned()],
+                cwd: "/tmp/agent-memory".to_owned(),
+                session_id: "sess_protocol".to_owned(),
+                harness: "codex".to_owned(),
+                harness_version: None,
+            },
+            "observe",
+        ),
+        (
+            RequestPayload::DreamNow {
+                scope: "project:agent-memory".to_owned(),
+                force: true,
+                cli_override: Some("codex".to_owned()),
+            },
+            "dream_now",
+        ),
+        (RequestPayload::DreamStatus {}, "dream_status"),
+        (RequestPayload::WebEnable { port: 7137, socket_path: "/tmp/memoryd.sock".to_owned() }, "web_enable"),
+        (RequestPayload::WebDisable, "web_disable"),
+        (RequestPayload::WebStatus, "web_status"),
+        (
+            RequestPayload::RealityCheck(RealityCheckRequest::Respond {
+                session_id: "sess_protocol".to_owned(),
+                memory_id: memory_id.clone(),
+                action: RealityCheckAction::Confirm,
+            }),
+            "reality_check",
+        ),
+        (
+            RequestPayload::InspectEntities { limit: Some(10), prefix: Some("ent_protocol".to_owned()) },
+            "inspect_entities",
+        ),
+        (
+            RequestPayload::EventsLogPage { since: Some(EventId::new("evt_cursor")), limit: 25, kind_filter: None },
+            "events_log_page",
+        ),
+        (
+            RequestPayload::NamespaceTree { root: Some("project:agent-memory".to_owned()), depth: Some(2) },
+            "namespace_tree",
+        ),
+        (RequestPayload::GovernancePolicyDump, "governance_policy_dump"),
+        (RequestPayload::ConflictsList { limit: Some(5) }, "conflicts_list"),
+        (
+            RequestPayload::TestInjectEvent {
+                kind: InjectableEventKind::RecallHit,
+                memory_id,
+                ts,
+                harness: Some("codex".to_owned()),
+                session_id: Some("sess_protocol".to_owned()),
+            },
+            "test_inject_event",
+        ),
+    ];
+
+    for (payload, expected_key) in requests {
+        assert_eq!(payload_wire_key(&payload), expected_key);
+    }
+}
+
+#[test]
+fn protocol_contract_all_response_payload_wire_keys_are_pinned() {
+    let ts = Utc.with_ymd_and_hms(2026, 5, 2, 0, 0, 0).unwrap();
+    let memory_id = MemoryId::new("mem_20260428_0123456789abcdef_000001");
+    let responses = vec![
+        (
+            ResponsePayload::Status(StatusResponse {
+                state: "ready".to_owned(),
+                guidance: "ok".to_owned(),
+                recall: Default::default(),
+                dreams: Default::default(),
+                passive_notifications: Vec::new(),
+            }),
+            "status",
+        ),
+        (
+            ResponsePayload::Doctor(DoctorResponse { healthy: true, findings: Vec::new(), guidance: "ok".to_owned() }),
+            "doctor",
+        ),
+        (ResponsePayload::Search(SearchResponse { hits: Vec::new(), total: 0, guidance: "ok".to_owned() }), "search"),
+        (
+            ResponsePayload::Get(GetResponse {
+                id: memory_id.to_string(),
+                summary: "summary".to_owned(),
+                body: "body".to_owned(),
+                truncated: false,
+                provenance: None,
+                guidance: "ok".to_owned(),
+            }),
+            "get",
+        ),
+        (ResponsePayload::TrustArtifact(Box::new(sample_trust_artifact())), "trust_artifact"),
+        (
+            ResponsePayload::CaptureSource(CaptureSourceResponse {
+                artifact_id: "src_01J0Z7Y8Q9R0ABCDE123456789".to_owned(),
+                source_refs: Vec::new(),
+                final_url: "https://example.com/report".to_owned(),
+                captured_at: ts,
+                capture_status: "complete_text_only".to_owned(),
+                warnings: Vec::new(),
+            }),
+            "capture_source",
+        ),
+        (
+            ResponsePayload::RecallHits(RecallHitsResponse { since: Some(ts), limit: 1, hits: Vec::new() }),
+            "recall_hits",
+        ),
+        (
+            ResponsePayload::Reveal(RevealResponse {
+                id: memory_id.to_string(),
+                summary: "summary".to_owned(),
+                body: "body".to_owned(),
+                truncated: false,
+                guidance: "ok".to_owned(),
+            }),
+            "reveal",
+        ),
+        (
+            ResponsePayload::WriteNote(WriteNoteResponse { id: memory_id.to_string(), summary: "summary".to_owned() }),
+            "write_note",
+        ),
+        (
+            ResponsePayload::GovernanceWrite(GovernanceWriteResponse {
+                status: GovernanceStatus::Promoted,
+                id: Some(memory_id.to_string()),
+                namespace: Some("project".to_owned()),
+                reason: None,
+                next_actions: Vec::new(),
+                policy_applied: Some("project-standard@v2".to_owned()),
+                policy_source: Some("built_in_fallback".to_owned()),
+                existing_id: None,
+            }),
+            "governance_write",
+        ),
+        (
+            ResponsePayload::GovernanceSupersede(GovernanceSupersedeResponse {
+                status: GovernanceStatus::Promoted,
+                new_id: Some(memory_id.to_string()),
+                old_id: Some("mem_20260428_0123456789abcdef_000000".to_owned()),
+                reason: None,
+                chain: None,
+                policy_applied: Some("project-standard@v2".to_owned()),
+                policy_source: Some("built_in_fallback".to_owned()),
+                warning: None,
+            }),
+            "governance_supersede",
+        ),
+        (
+            ResponsePayload::GovernanceForget(GovernanceForgetResponse {
+                status: GovernanceStatus::Tombstoned,
+                id: memory_id.to_string(),
+                tombstone_ref: None,
+                reason: None,
+            }),
+            "governance_forget",
+        ),
+        (ResponsePayload::ReviewQueue(ReviewQueueResponse { items: Vec::new() }), "review_queue"),
+        (
+            ResponsePayload::ReviewApprove(ReviewDecisionResponse {
+                id: memory_id.to_string(),
+                status: "active".to_owned(),
+                summary: "approved".to_owned(),
+            }),
+            "review_approve",
+        ),
+        (
+            ResponsePayload::ReviewReject(ReviewDecisionResponse {
+                id: memory_id.to_string(),
+                status: "archived".to_owned(),
+                summary: "rejected".to_owned(),
+            }),
+            "review_reject",
+        ),
+        (
+            ResponsePayload::Startup(Box::new(StartupResponse {
+                session_binding: SessionBinding {
+                    session_id: "sess_protocol".to_owned(),
+                    harness: "codex".to_owned(),
+                    harness_version: None,
+                    cwd: "/tmp/agent-memory".to_owned(),
+                    project: None,
+                    namespaces_in_scope: Vec::new(),
+                },
+                recall_block: "<memory-recall />".to_owned(),
+                budget_used_tokens: 0,
+                recall_explanation: RecallExplanation {
+                    budget_tokens: 0,
+                    budget_used_tokens: 0,
+                    policy: "stream-e-v0.5".to_owned(),
+                    sections: Vec::new(),
+                    omitted: Vec::new(),
+                    omitted_truncated_count: 0,
+                },
+                guidance: "ok".to_owned(),
+                dream_question_omissions: Default::default(),
+            })),
+            "startup",
+        ),
+        (
+            ResponsePayload::Delta(DeltaResponse {
+                delta_block: "<memory-delta />".to_owned(),
+                budget_used_tokens: 0,
+                guidance: "ok".to_owned(),
+            }),
+            "delta",
+        ),
+        (
+            ResponsePayload::PeerHeartbeat(PeerHeartbeatAck {
+                session_id: "sess_protocol".to_owned(),
+                active_level: 3,
+                peer_session_count: 0,
+                active_peers: Vec::new(),
+                conflicting_claim_locks: Vec::new(),
+            }),
+            "peer_heartbeat",
+        ),
+        (
+            ResponsePayload::PeerStatus(PeerStatusResponse {
+                coordination_level: 3,
+                active_sessions: Vec::new(),
+                claim_locks: Vec::new(),
+                recent_deliveries: Vec::new(),
+            }),
+            "peer_status",
+        ),
+        (
+            ResponsePayload::PeerActivity(PeerActivityResponse { entries: Vec::new(), limit: 10, total_recorded: 0 }),
+            "peer_activity",
+        ),
+        (
+            ResponsePayload::PeerReleaseLock(PeerReleaseLockResponse {
+                memory_id: memory_id.to_string(),
+                status: PeerReleaseLockStatus::NoLockFound,
+                released: None,
+            }),
+            "peer_release_lock",
+        ),
+        (
+            ResponsePayload::Observe(ObserveResponse {
+                fragment_id: "sub_01HWPRZK1SPRAWM6EVQ6Y0XS8R".to_owned(),
+                target: ObserveTarget::PlaintextSubstrate,
+            }),
+            "observe",
+        ),
+        (ResponsePayload::DreamNow(Box::new(sample_dream_run_report())), "dream_now"),
+        (ResponsePayload::DreamStatus(Box::new(sample_dream_status_report())), "dream_status"),
+        (ResponsePayload::WebStatus(WebDashboardStatus::stopped()), "web_status"),
+        (
+            ResponsePayload::RealityCheck(RealityCheckResponse::Pending {
+                session_id: None,
+                items: Vec::new(),
+                total_scored: 0,
+                last_completed_at: None,
+            }),
+            "reality_check",
+        ),
+        (ResponsePayload::InspectEntities(InspectEntitiesResponse { entities: Vec::new() }), "inspect_entities"),
+        (
+            ResponsePayload::EventsLogPage(EventsLogPageResponse { entries: Vec::new(), next_since: None }),
+            "events_log_page",
+        ),
+        (
+            ResponsePayload::NamespaceTree(NamespaceTreeResponse {
+                root: NamespaceNode {
+                    name: "project".to_owned(),
+                    path: "project".to_owned(),
+                    memory_count: 0,
+                    children: Vec::new(),
+                },
+            }),
+            "namespace_tree",
+        ),
+        (
+            ResponsePayload::GovernancePolicyDump(GovernancePolicySnapshot {
+                source: "built_in_fallback".to_owned(),
+                raw_yaml: None,
+                policies: Vec::new(),
+            }),
+            "governance_policy_dump",
+        ),
+        (ResponsePayload::ConflictsList(ConflictsListResponse { conflicts: Vec::new() }), "conflicts_list"),
+        (
+            ResponsePayload::TestInjectEvent(TestInjectEventResponse {
+                event_id: "evt_test_inject".to_owned(),
+                injected_kind: InjectableEventKind::RecallHit,
+                memory_id,
+            }),
+            "test_inject_event",
+        ),
+    ];
+
+    for (payload, expected_key) in responses {
+        assert_eq!(payload_wire_key(&payload), expected_key);
+        let response = ResponseEnvelope::success("req-wire-key", payload);
+        let line = response.to_json_line().expect("response serializes");
+        let json: serde_json::Value = serde_json::from_str(&line).expect("valid response JSON");
+        assert!(json["result"]["success"].get(expected_key).is_some(), "response envelope key mismatch: {json:#}");
     }
 }
 
@@ -584,6 +1033,61 @@ fn protocol_contract_stream_f_dreaming_dtos_round_trip_as_snake_case_json() {
     assert_eq!(round_trip(&lease), lease);
 }
 
+fn payload_wire_key(value: &impl serde::Serialize) -> String {
+    match serde_json::to_value(value).expect("payload serializes") {
+        serde_json::Value::String(key) => key,
+        serde_json::Value::Object(map) if map.len() == 1 => map.keys().next().expect("single key").clone(),
+        other => panic!("payload must serialize as a unit string or single-key object, got {other:#}"),
+    }
+}
+
+fn sample_dream_run_report() -> DreamRunReport {
+    DreamRunReport {
+        scope: "project:agent-memory".to_owned(),
+        cli_used: Some("codex".to_owned()),
+        pass_1: sample_pass_outcome(PassStatus::Success),
+        pass_2: sample_pass_outcome(PassStatus::Success),
+        pass_2_refusal_counts_by_reason: std::collections::BTreeMap::new(),
+        pass_3: sample_pass_outcome(PassStatus::Skipped),
+        duration_ms: 123,
+    }
+}
+
+fn sample_dream_status_report() -> DreamStatusReport {
+    let now = Utc.with_ymd_and_hms(2026, 5, 2, 0, 0, 0).unwrap();
+    DreamStatusReport {
+        enabled: true,
+        last_runs: vec![ScopeRunSummary {
+            scope: "project:agent-memory".to_owned(),
+            last_run_at: Some(now),
+            last_run_outcome: Some(PassStatus::Success),
+            last_run_cli: Some("codex".to_owned()),
+            consecutive_missed_runs: 0,
+        }],
+        active_leases: vec![LeaseRecord {
+            device: "dev_protocol".to_owned(),
+            scope: "project:agent-memory".to_owned(),
+            acquired_at: now,
+            expires_at: now,
+            run_id: "dream_run_protocol".to_owned(),
+        }],
+        cli_inventory: vec![HarnessCliStatus {
+            name: "codex".to_owned(),
+            is_installed: true,
+            is_authenticated: Some(true),
+            prompt_transport: PromptTransport::Stdin,
+            last_probe_at: Some(now),
+            last_probe_error: None,
+        }],
+        counters: DreamStatusCounters::default(),
+        privacy_disclosure: "Dreaming sends masked prompts to configured local CLIs.".to_owned(),
+    }
+}
+
+fn sample_pass_outcome(status: PassStatus) -> PassOutcome {
+    PassOutcome { status, output_path: None, candidate_results: Vec::new(), error_code: None, duration_ms: 1 }
+}
+
 fn round_trip<T>(value: &T) -> T
 where
     T: serde::Serialize + serde::de::DeserializeOwned,
@@ -679,13 +1183,23 @@ fn protocol_contract_success_responses_are_bounded_and_guided() {
         }),
     );
 
-    for response in [search, get, reveal, write, governed_write, supersede, forget] {
+    for (response, expected_payload_key) in [
+        (search, "search"),
+        (get, "get"),
+        (reveal, "reveal"),
+        (write, "write_note"),
+        (governed_write, "governance_write"),
+        (supersede, "governance_supersede"),
+        (forget, "governance_forget"),
+    ] {
         let line = response.to_json_line().expect("response serializes");
         let decoded = ResponseEnvelope::from_json_line(&line).expect("response deserializes");
         assert_eq!(decoded, response);
 
         let json: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
-        assert_eq!(json["result"].as_object().expect("result object").len(), 1);
+        let success = json["result"]["success"].as_object().expect("success result object");
+        assert_eq!(success.len(), 1);
+        assert!(success.contains_key(expected_payload_key), "success payload key mismatch: {success:?}");
         assert!(
             line.contains("call memory_get for full body")
                 || line.contains("Note accepted")

@@ -8,7 +8,7 @@ license.workspace = true
 [dependencies]
 notify.workspace = true
 serde = { version = "1", features = ["derive"] }
-serde_yaml.workspace = true
+yaml_serde.workspace = true
 thiserror.workspace = true
 tokio = { version = "1", features = ["sync"] }
 toml = "0.8"

@@ -288,7 +288,7 @@ const SPEC_COVERAGE: &[SpecCoverageEntry] = &[
     SpecCoverageEntry::covered(
         "13.7 Acceptance signals",
         "f6639a42c6430ec8",
-        "git_adoption::fresh_clone_with_adoption_can_perform_semantic_same_file_merge",
+        "git_adoption::fresh_clone_with_adoption_invokes_configured_git_merge_driver",
     ),
     SpecCoverageEntry::covered(
         "13.7 Acceptance signals",

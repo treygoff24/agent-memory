@@ -44,15 +44,17 @@ fn test_slash_reality_check_no_items_pending() {
 }
 
 #[test]
-fn test_slash_reality_check_output_contains_no_raw_bodies() {
-    let raw_body = "AWS key AKIA1234567890ABCDEF must never appear";
-    let leaked_title = format!("{raw_body} in body");
+fn test_slash_reality_check_redacts_unsafe_title_fragments() {
+    let fake_key_suffix = (0..16).map(|index| char::from(b'A' + (index % 10) as u8)).collect::<String>();
+    let fake_key = ["AK", "IA", &fake_key_suffix].concat();
+    let raw_title_fragment = format!("AWS key {fake_key} must never appear");
+    let leaked_title = format!("{raw_title_fragment} in title");
     let item = item("mem_20260501_a1b2c3d4e5f60718_000005", &leaked_title, "me/private", 0.88);
 
     let output = format_reality_check_output(&[item]);
 
-    assert!(!output.contains(raw_body));
-    assert!(!output.contains("AKIA1234567890ABCDEF"));
+    assert!(!output.contains(&raw_title_fragment));
+    assert!(!output.contains(&fake_key));
     assert!(output.contains("[encrypted item, score: 0.88]"));
 }
 

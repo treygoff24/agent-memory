@@ -1,12 +1,16 @@
+use std::time::Duration as StdDuration;
+
 use chrono::{Duration, TimeZone, Utc};
 use memoryd::handlers::HandlerState;
 use memoryd::protocol::NotificationEvent;
 use memoryd::reality_check::RcScheduler;
 use memoryd::state::RealityCheckState;
+use tokio::sync::broadcast;
+use tokio::time::timeout;
 
 #[test]
 fn test_due_after_7_days() {
-    let now = instant("2026-05-01T12:00:00Z");
+    let now = instant("2026-05-03T09:00:00Z");
     let state = RealityCheckState { last_completed_at: Some(now - Duration::days(8)), snooze_until: None };
 
     assert!(RcScheduler::default().is_due(&state, now));
@@ -59,6 +63,15 @@ fn test_invalid_cron_falls_back_to_default() {
     assert_eq!(scheduler.schedule().expression(), "0 9 * * SUN");
 }
 
+#[test]
+fn test_valid_non_default_cron_controls_due_time() {
+    let scheduler = RcScheduler::new("30 14 * * SUN");
+    let state = RealityCheckState { last_completed_at: Some(instant("2026-04-25T14:29:00Z")), snooze_until: None };
+
+    assert!(!scheduler.is_due(&state, instant("2026-05-03T14:29:00Z")));
+    assert!(scheduler.is_due(&state, instant("2026-05-03T14:30:00Z")));
+}
+
 #[tokio::test]
 async fn test_notification_event_fired_when_due() {
     let now = instant("2026-05-01T12:00:00Z");
@@ -67,7 +80,7 @@ async fn test_notification_event_fired_when_due() {
 
     assert!(RcScheduler::default().check_and_fire_if_due(&state, now, &sender));
 
-    let event = receiver.recv().await.expect("due event sent");
+    let event = recv_notification(&mut receiver).await;
     assert_eq!(event, NotificationEvent::RealityCheckDue { due_at: now });
 }
 
@@ -91,8 +104,15 @@ async fn test_handler_state_fires_due_notification_through_shared_channel() {
 
     assert!(state.fire_reality_check_due_if_due(&reality_check, now));
 
-    let event = receiver.recv().await.expect("due event sent");
+    let event = recv_notification(&mut receiver).await;
     assert_eq!(event, NotificationEvent::RealityCheckDue { due_at: now });
+}
+
+async fn recv_notification(receiver: &mut broadcast::Receiver<NotificationEvent>) -> NotificationEvent {
+    timeout(StdDuration::from_secs(1), receiver.recv())
+        .await
+        .expect("due event sent before timeout")
+        .expect("due event sent")
 }
 
 fn instant(value: &str) -> chrono::DateTime<Utc> {

@@ -53,7 +53,7 @@ fn mock_orchestrator_reports_t13_t15_as_skipped() {
     let fake_cargo = fake_passing_cargo();
     let output = Command::new(env!("CARGO_BIN_EXE_memorum-eval"))
         .args(["--harness", "mock", "--output", "json"])
-        .env("MEMORUM_EVAL_CARGO", &fake_cargo)
+        .env("MEMORUM_EVAL_CARGO", fake_cargo.path())
         .output()
         .expect("spawn memorum-eval");
 
@@ -68,8 +68,20 @@ fn mock_orchestrator_reports_t13_t15_as_skipped() {
     }
 }
 
-fn fake_passing_cargo() -> std::path::PathBuf {
-    let path = std::env::temp_dir().join(format!("memorum-eval-honesty-cargo-{}.sh", std::process::id()));
+struct TempScript {
+    _dir: tempfile::TempDir,
+    path: std::path::PathBuf,
+}
+
+impl TempScript {
+    fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+fn fake_passing_cargo() -> TempScript {
+    let dir = tempfile::Builder::new().prefix("memorum-eval-honesty-cargo").tempdir().expect("fake cargo tempdir");
+    let path = dir.path().join("fake-cargo.sh");
     std::fs::write(
         &path,
         "#!/bin/sh\nprintf 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\\n'\nprintf 'MEMORUM_EVAL_ASSERTIONS=1\\n'\nexit 0\n",
@@ -79,7 +91,7 @@ fn fake_passing_cargo() -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
     permissions.set_mode(0o755);
     std::fs::set_permissions(&path, permissions).expect("fake cargo executable");
-    path
+    TempScript { _dir: dir, path }
 }
 
 fn diagnostic(output: &std::process::Output) -> String {

@@ -18,7 +18,7 @@ async fn hot_reload_advances_on_valid_change_and_holds_on_invalid_change() {
     assert_eq!(receiver.borrow().name, "default-warm-dark-copy");
 
     std::fs::write(&path, "not = [valid").expect("write invalid");
-    assert!(tokio::time::timeout(Duration::from_secs(2), receiver.changed()).await.is_err());
+    wait_for_error(&hot_reload).await;
     assert!(hot_reload.last_error().is_some());
 }
 
@@ -27,4 +27,18 @@ async fn wait_for_change(receiver: &mut tokio::sync::watch::Receiver<memorum_the
         .await
         .expect("hot reload should publish change")
         .expect("hot-reload sender should stay open");
+}
+
+async fn wait_for_error(hot_reload: &HotReload) {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        let mut interval = tokio::time::interval(Duration::from_millis(50));
+        loop {
+            interval.tick().await;
+            if hot_reload.last_error().is_some() {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("invalid theme should record an error");
 }

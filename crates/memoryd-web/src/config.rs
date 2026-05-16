@@ -35,7 +35,7 @@ impl WebConfig {
     pub fn from_config_yaml(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let contents = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-        let file: ConfigFile = serde_yaml::from_str(&contents).with_context(|| format!("parse {}", path.display()))?;
+        let file: ConfigFile = yaml_serde::from_str(&contents).with_context(|| format!("parse {}", path.display()))?;
         let config = file.web.map(WebSection::into_config).unwrap_or_default();
         config.validate_localhost()?;
         Ok(config)

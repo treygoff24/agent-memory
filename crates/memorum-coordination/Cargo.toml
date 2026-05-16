@@ -21,4 +21,5 @@ name = "peer_relevance_bench"
 path = "src/bin/peer_relevance_bench.rs"
 
 [dev-dependencies]
+tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

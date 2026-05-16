@@ -2,6 +2,8 @@ use memory_substrate::config::{load_config, load_local_device_config, load_synce
 use memory_substrate::tree::bootstrap_repo_tree;
 use memory_substrate::Roots;
 use once_cell::sync::Lazy;
+use std::ffi::OsString;
+use std::path::Path;
 use std::sync::Mutex;
 
 static ENV_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
@@ -22,6 +24,8 @@ fn fresh_clone_has_synced_config_but_no_local_device_until_adoption() {
 
 #[test]
 fn loading_config_never_copies_device_id_from_synced_repo_state() {
+    let _guard = ENV_LOCK.lock().expect("env lock");
+    let _env = StreamARootEnvGuard::clear();
     let temp = tempfile::tempdir().expect("tempdir");
     let repo = temp.path().join("repo");
     let runtime = temp.path().join("runtime");
@@ -55,13 +59,10 @@ fn env_overrides_are_visible_but_not_serialized_to_synced_config() {
     let before = std::fs::read_to_string(repo.join("config.yaml")).expect("before");
     let env_repo = temp.path().join("env-repo");
     let env_runtime = temp.path().join("env-runtime");
-    std::env::set_var("STREAM_A_MEMORY_ROOT", &env_repo);
-    std::env::set_var("STREAM_A_RUNTIME_ROOT", &env_runtime);
+    let _env = StreamARootEnvGuard::set(&env_repo, &env_runtime);
 
     let loaded = load_config(&repo, &runtime, None).expect("load config");
 
-    std::env::remove_var("STREAM_A_MEMORY_ROOT");
-    std::env::remove_var("STREAM_A_RUNTIME_ROOT");
     assert_eq!(loaded.roots, Roots::new(env_repo, env_runtime));
     assert_eq!(std::fs::read_to_string(repo.join("config.yaml")).expect("after"), before);
 }
@@ -69,6 +70,7 @@ fn env_overrides_are_visible_but_not_serialized_to_synced_config() {
 #[test]
 fn local_roots_win_over_synced_defaults_without_mutating_synced_config() {
     let _guard = ENV_LOCK.lock().expect("env lock");
+    let _env = StreamARootEnvGuard::clear();
     let temp = tempfile::tempdir().expect("tempdir");
     let repo = temp.path().join("repo");
     let runtime = temp.path().join("runtime");
@@ -104,6 +106,23 @@ paths:
     assert_eq!(local.device.id, "dev_local");
     assert_eq!(loaded.roots, Roots::new("/local/memory", "/local/runtime"));
     assert_eq!(std::fs::read_to_string(repo.join("config.yaml")).expect("synced unchanged"), synced_text);
+}
+
+#[test]
+fn stream_a_root_env_guard_restores_previous_values() {
+    let _guard = ENV_LOCK.lock().expect("env lock");
+    let _restore_original = StreamARootEnvGuard::capture();
+    std::env::set_var("STREAM_A_MEMORY_ROOT", "/sentinel/memory");
+    std::env::set_var("STREAM_A_RUNTIME_ROOT", "/sentinel/runtime");
+
+    {
+        let _scoped_clear = StreamARootEnvGuard::clear();
+        assert_eq!(std::env::var_os("STREAM_A_MEMORY_ROOT"), None);
+        assert_eq!(std::env::var_os("STREAM_A_RUNTIME_ROOT"), None);
+    }
+
+    assert_eq!(std::env::var_os("STREAM_A_MEMORY_ROOT"), Some(OsString::from("/sentinel/memory")));
+    assert_eq!(std::env::var_os("STREAM_A_RUNTIME_ROOT"), Some(OsString::from("/sentinel/runtime")));
 }
 
 #[test]
@@ -301,4 +320,47 @@ fn load_synced_config_from_text(text: &str) -> Result<memory_substrate::config::
     std::fs::create_dir_all(&repo).expect("repo");
     std::fs::write(repo.join("config.yaml"), text).expect("config");
     load_synced_config(&repo).map(|loaded| loaded.expect("config exists"))
+}
+
+struct StreamARootEnvGuard {
+    memory_root: Option<OsString>,
+    runtime_root: Option<OsString>,
+}
+
+impl StreamARootEnvGuard {
+    fn capture() -> Self {
+        Self {
+            memory_root: std::env::var_os("STREAM_A_MEMORY_ROOT"),
+            runtime_root: std::env::var_os("STREAM_A_RUNTIME_ROOT"),
+        }
+    }
+
+    fn clear() -> Self {
+        let previous = Self::capture();
+        std::env::remove_var("STREAM_A_MEMORY_ROOT");
+        std::env::remove_var("STREAM_A_RUNTIME_ROOT");
+        previous
+    }
+
+    fn set(memory_root: &Path, runtime_root: &Path) -> Self {
+        let previous = Self::capture();
+        std::env::set_var("STREAM_A_MEMORY_ROOT", memory_root);
+        std::env::set_var("STREAM_A_RUNTIME_ROOT", runtime_root);
+        previous
+    }
+
+    fn restore_var(name: &str, value: &Option<OsString>) {
+        if let Some(value) = value {
+            std::env::set_var(name, value);
+        } else {
+            std::env::remove_var(name);
+        }
+    }
+}
+
+impl Drop for StreamARootEnvGuard {
+    fn drop(&mut self) {
+        Self::restore_var("STREAM_A_MEMORY_ROOT", &self.memory_root);
+        Self::restore_var("STREAM_A_RUNTIME_ROOT", &self.runtime_root);
+    }
 }

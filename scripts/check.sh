@@ -115,6 +115,8 @@ else
   cargo test --workspace --release
 fi
 
+cargo test -p memoryd --features dev-fixtures --test dream_cli
+
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 
 # --- Phase 3: convergence / durability / bench (perf-sensitive, serial) ----

@@ -21,11 +21,7 @@ async fn server_smoke_serves_status_over_newline_delimited_json() {
     assert_owner_only_socket(&socket_path);
 
     let request = RequestEnvelope::new("req-status", RequestPayload::Status);
-    stream
-        .get_mut()
-        .write_all(request.to_json_line().expect("request serializes").as_bytes())
-        .await
-        .expect("request writes");
+    write_request(&mut stream, request.to_json_line().expect("request serializes").as_bytes(), "request").await;
 
     let mut line = String::new();
     timeout(Duration::from_secs(1), stream.read_line(&mut line))
@@ -60,7 +56,7 @@ async fn server_smoke_returns_error_for_malformed_json() {
     let mut stream = BufReader::new(stream);
 
     // Send a line that is not valid JSON.
-    stream.get_mut().write_all(b"not valid json at all\n").await.expect("malformed request writes");
+    write_request(&mut stream, b"not valid json at all\n", "malformed request").await;
 
     let mut line = String::new();
     timeout(Duration::from_secs(1), stream.read_line(&mut line))
@@ -79,11 +75,8 @@ async fn server_smoke_returns_error_for_malformed_json() {
 
     // Connection must still be usable after receiving the error.
     let request = RequestEnvelope::new("req-after-malformed", RequestPayload::Status);
-    stream
-        .get_mut()
-        .write_all(request.to_json_line().expect("request serializes").as_bytes())
-        .await
-        .expect("follow-up request writes");
+    write_request(&mut stream, request.to_json_line().expect("request serializes").as_bytes(), "follow-up request")
+        .await;
 
     let mut line = String::new();
     timeout(Duration::from_secs(1), stream.read_line(&mut line))
@@ -106,12 +99,8 @@ async fn server_smoke_echoes_id_from_malformed_json_when_present() {
     let stream = connect_with_retry(&socket_path).await;
     let mut stream = BufReader::new(stream);
 
-    // Valid JSON object with an id field but an unrecognized request payload.
-    stream
-        .get_mut()
-        .write_all(b"{\"id\":\"my-req-42\",\"request\":{\"not_a_real_variant\":{}}}\n")
-        .await
-        .expect("request with id writes");
+    // Syntactically malformed JSON with an extractable top-level id field.
+    write_request(&mut stream, b"{\"id\":\"my-req-42\",\"request\":\n", "request with id").await;
 
     let mut line = String::new();
     timeout(Duration::from_secs(1), stream.read_line(&mut line))
@@ -142,7 +131,7 @@ async fn server_smoke_refuses_oversized_lines_without_killing_server() {
     let mut stream = BufReader::new(stream);
 
     let oversized_line = format!("{}\n", "x".repeat(MAX_FRAME_BYTES + 1));
-    stream.get_mut().write_all(oversized_line.as_bytes()).await.expect("oversized request writes");
+    write_request(&mut stream, oversized_line.as_bytes(), "oversized request").await;
 
     let mut line = String::new();
     timeout(Duration::from_secs(1), stream.read_line(&mut line))
@@ -161,11 +150,8 @@ async fn server_smoke_refuses_oversized_lines_without_killing_server() {
 
     // Connection must still be usable after the oversized frame error.
     let request = RequestEnvelope::new("req-after-oversized", RequestPayload::Status);
-    stream
-        .get_mut()
-        .write_all(request.to_json_line().expect("request serializes").as_bytes())
-        .await
-        .expect("follow-up request writes");
+    write_request(&mut stream, request.to_json_line().expect("request serializes").as_bytes(), "follow-up request")
+        .await;
 
     let mut line = String::new();
     timeout(Duration::from_secs(1), stream.read_line(&mut line))
@@ -198,6 +184,13 @@ async fn connect_with_retry(socket_path: &PathBuf) -> UnixStream {
     }
 
     panic!("server did not bind socket at {}", socket_path.display());
+}
+
+async fn write_request(stream: &mut BufReader<UnixStream>, bytes: &[u8], context: &str) {
+    timeout(Duration::from_secs(1), stream.get_mut().write_all(bytes))
+        .await
+        .unwrap_or_else(|_| panic!("{context} writes before timeout"))
+        .unwrap_or_else(|err| panic!("{context} writes: {err}"));
 }
 
 fn unique_socket_path(test_name: &str) -> PathBuf {

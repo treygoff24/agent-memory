@@ -14,18 +14,25 @@ fn sync_writes_and_replaces_memory_supersession_edges() {
 
     let id_a = "mem_20260501_a1b2c3d4e5f60718_000101";
     let id_b = "mem_20260501_a1b2c3d4e5f60718_000102";
-    let current = "mem_20260501_a1b2c3d4e5f60718_000103";
+    let id_c = "mem_20260501_a1b2c3d4e5f60718_000103";
+    let current = "mem_20260501_a1b2c3d4e5f60718_000104";
     index.upsert_memory(&sample_memory(id_a, Vec::new()), false).expect("insert a");
     index.upsert_memory(&sample_memory(id_b, Vec::new()), false).expect("insert b");
+    index.upsert_memory(&sample_memory(id_c, Vec::new()), false).expect("insert c");
     index
         .upsert_memory(&sample_memory(current, vec![MemoryId::new(id_a)]), false)
         .expect("insert current superseding a");
     assert_eq!(supersedes_ids(index.connection(), current), vec![id_a.to_string()]);
 
     index
-        .upsert_memory(&sample_memory(current, vec![MemoryId::new(id_b)]), false)
-        .expect("replace current supersession edge");
-    assert_eq!(supersedes_ids(index.connection(), current), vec![id_b.to_string()]);
+        .upsert_memory(&sample_memory(current, vec![MemoryId::new(id_a), MemoryId::new(id_b)]), false)
+        .expect("replace current with two supersession edges");
+    assert_eq!(supersedes_ids(index.connection(), current), vec![id_a.to_string(), id_b.to_string()]);
+
+    index
+        .upsert_memory(&sample_memory(current, vec![MemoryId::new(id_b), MemoryId::new(id_c)]), false)
+        .expect("replace current supersession edge set");
+    assert_eq!(supersedes_ids(index.connection(), current), vec![id_b.to_string(), id_c.to_string()]);
 }
 
 #[test]

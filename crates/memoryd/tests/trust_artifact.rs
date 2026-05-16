@@ -63,6 +63,7 @@ async fn web_grounded_memory_shows_bounded_source_evidence_without_raw_body() {
     assert_eq!(evidence.quote.as_deref(), Some("bounded exact quote"));
     let json = serde_json::to_string(&artifact).expect("serialize artifact");
     assert!(!json.contains("full raw captured page body"));
+    assert!(!json.contains("UNBOUNDED_EXTRACTED_TEXT_SENTINEL"));
 }
 
 #[tokio::test]
@@ -186,6 +187,7 @@ async fn supersession_links_are_resolved_from_projection() {
 }
 
 struct Fixture {
+    _temp: tempfile::TempDir,
     roots: Roots,
     substrate: Substrate,
 }
@@ -200,8 +202,7 @@ impl Fixture {
         )
         .await
         .expect("init substrate");
-        std::mem::forget(temp);
-        Self { roots, substrate }
+        Self { _temp: temp, roots, substrate }
     }
 
     async fn write(&self, memory: Memory) {
@@ -415,7 +416,7 @@ fn sample_memory(id: &str, summary: &str, body: &str) -> Memory {
 
 fn write_web_artifact(fixture: &Fixture) -> String {
     let artifact_id = SourceArtifactId::try_new("src_01J0Z7Y8Q9R0ABCDE123456789").expect("artifact id");
-    let extracted_text = "bounded exact quote from the captured page".to_string();
+    let extracted_text = "bounded exact quote from the captured page. UNBOUNDED_EXTRACTED_TEXT_SENTINEL".to_string();
     let excerpts = vec![ExcerptRecord {
         excerpt_id: "quote_0001".to_string(),
         artifact_id: artifact_id.clone(),

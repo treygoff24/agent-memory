@@ -1,6 +1,8 @@
+use std::path::Path;
+
 use memory_source::{
     capture_web_source_with_resolver, extract::DEFAULT_EXTRACTED_TEXT_CAP, storage::ArtifactStore, AddressPolicy,
-    CaptureWebSourceRequest, StaticDnsResolver,
+    CaptureWebSourceRequest, RawStorage, StaticDnsResolver, WebCaptureManifest,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -34,6 +36,7 @@ async fn extracted_text_requiring_encryption_refuses_v0_1() {
     .await
     .unwrap_err();
     assert!(err.to_string().contains("encrypted_source_artifacts_unsupported"));
+    assert!(!temp.path().join("sources").exists());
 }
 
 #[tokio::test]
@@ -54,6 +57,7 @@ async fn unsafe_raw_html_omits_raw_but_safe_extraction_remains_groundable() {
     let artifact_id = memory_source::SourceArtifactId::try_new(response.artifact_id).unwrap();
     let artifact = store.verify_artifact_id(&artifact_id).unwrap();
     assert!(artifact.raw_bytes.is_none());
+    assert_privacy_omitted_raw(temp.path(), &artifact.manifest, "SSN 123-45-6789");
     assert_eq!(store.resolve_excerpt_ref(&response.source_refs[0]).unwrap().quote, "Safe exact quote.");
 }
 
@@ -79,6 +83,45 @@ async fn raw_privacy_check_scans_beyond_extraction_projection_cap() {
     let artifact_id = memory_source::SourceArtifactId::try_new(response.artifact_id).unwrap();
     let artifact = store.verify_artifact_id(&artifact_id).unwrap();
     assert!(artifact.raw_bytes.is_none());
+    assert_privacy_omitted_raw(temp.path(), &artifact.manifest, "trey@example.com");
+}
+
+fn assert_privacy_omitted_raw(repo_root: &Path, manifest: &WebCaptureManifest, forbidden_raw_text: &str) {
+    assert_eq!(manifest.raw_storage, RawStorage::OmittedPrivacy);
+    assert_raw_omitted_reason(manifest.raw_omitted_reason.as_deref());
+    let store = ArtifactStore::new(repo_root);
+    let artifact_path = store.find_artifact_path(&manifest.artifact_id).expect("artifact path");
+    let artifact_dir = repo_root.join(artifact_path.relative());
+    assert!(!artifact_dir.join("raw.bin.zst").exists(), "privacy-omitted raw capture must not write raw.bin.zst");
+
+    let manifest_from_disk: WebCaptureManifest =
+        serde_json::from_slice(&std::fs::read(artifact_dir.join("manifest.json")).expect("manifest file"))
+            .expect("manifest json");
+    assert_eq!(manifest_from_disk.raw_storage, RawStorage::OmittedPrivacy);
+    assert_raw_omitted_reason(manifest_from_disk.raw_omitted_reason.as_deref());
+    assert_persisted_files_do_not_contain(&artifact_dir, forbidden_raw_text);
+}
+
+fn assert_raw_omitted_reason(reason: Option<&str>) {
+    let reason = reason.expect("privacy-omitted raw capture records omission reason");
+    assert!(
+        reason.contains("privacy") || reason.contains("safe plaintext"),
+        "raw omission reason should explain the privacy/safe-plaintext policy, got {reason:?}"
+    );
+}
+
+fn assert_persisted_files_do_not_contain(path: &Path, forbidden: &str) {
+    for entry in std::fs::read_dir(path).expect("artifact dir") {
+        let entry = entry.expect("artifact entry");
+        let path = entry.path();
+        if path.is_dir() {
+            assert_persisted_files_do_not_contain(&path, forbidden);
+            continue;
+        }
+        let bytes = std::fs::read(&path).unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(!text.contains(forbidden), "{} should not persist raw text {forbidden:?}", path.display());
+    }
 }
 
 async fn spawn_once(content_type: &str, body: &str) -> (String, StaticDnsResolver) {

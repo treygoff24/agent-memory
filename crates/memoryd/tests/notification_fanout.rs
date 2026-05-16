@@ -21,7 +21,7 @@ use memoryd::reality_check::RcScheduler;
 use memoryd::server::{serve_substrate_with, ServerOptions};
 use memoryd::state::RealityCheckState;
 use tokio::net::UnixStream;
-use tokio::sync::watch;
+use tokio::sync::{broadcast, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
 
@@ -63,10 +63,10 @@ async fn reality_check_due_emits_overdue_before_due_when_window_is_exceeded() {
     assert!(RcScheduler::default().check_and_fire_if_due(&state, now, &sender));
 
     assert_eq!(
-        receiver.recv().await.expect("overdue event"),
+        recv_notification(&mut receiver, "overdue event").await,
         NotificationEvent::RealityCheckOverdue { last_completed_at: state.last_completed_at, weeks_skipped: 4 }
     );
-    assert_eq!(receiver.recv().await.expect("due event"), NotificationEvent::RealityCheckDue { due_at: now });
+    assert_eq!(recv_notification(&mut receiver, "due event").await, NotificationEvent::RealityCheckDue { due_at: now });
 }
 
 #[tokio::test]
@@ -233,7 +233,7 @@ fn sample_memory(id: &str) -> Memory {
 fn spawn_daemon(socket: &Path, substrate: Substrate) -> (watch::Sender<bool>, JoinHandle<anyhow::Result<()>>) {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let socket = socket.to_path_buf();
-    let options = ServerOptions { idle_frame_timeout: StdDuration::from_secs(5) };
+    let options = ServerOptions { idle_frame_timeout: StdDuration::from_secs(5), ..ServerOptions::default() };
     let task = tokio::spawn(serve_substrate_with(socket, substrate, options, shutdown_rx));
     (shutdown_tx, task)
 }
@@ -252,10 +252,21 @@ async fn wait_for_merge_conflict_passive_notification(socket: &Path) -> StatusRe
     }
 }
 
-async fn status(socket: &Path) -> StatusResponse {
-    let response = client::request(socket, "status-after-blocking-conflict", RequestPayload::Status)
+async fn recv_notification(receiver: &mut broadcast::Receiver<NotificationEvent>, label: &str) -> NotificationEvent {
+    timeout(StdDuration::from_secs(1), receiver.recv())
         .await
-        .expect("status request reaches daemon");
+        .unwrap_or_else(|_| panic!("timed out waiting for {label}"))
+        .unwrap_or_else(|err| panic!("notification channel closed before {label}: {err}"))
+}
+
+async fn status(socket: &Path) -> StatusResponse {
+    let response = timeout(
+        StdDuration::from_secs(2),
+        client::request(socket, "status-after-blocking-conflict", RequestPayload::Status),
+    )
+    .await
+    .expect("status request should complete before timeout")
+    .expect("status request reaches daemon");
     match response.result {
         ResponseResult::Success(ResponsePayload::Status(status)) => status,
         other => panic!("expected status response, got {other:?}"),

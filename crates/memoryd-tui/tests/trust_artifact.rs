@@ -1,6 +1,10 @@
 use memoryd::trust_artifact::{SafeContent, TrustArtifact};
 use memoryd_tui::widgets::trust_artifact::TrustArtifactWidget;
 
+const PLAINTEXT_TITLE: &str = "Deploy target is production ECS";
+const PLAINTEXT_BODY: &str = "The ECS cluster in us-east-1 is the production deployment target.";
+const SUPERSEDED_TITLE: &str = "Deploy target ECS (initial)";
+
 fn full_plaintext_artifact() -> TrustArtifact {
     serde_json::from_value(serde_json::json!({
         "id": "mem_20260501_0123456789abcdef_000009",
@@ -10,11 +14,11 @@ fn full_plaintext_artifact() -> TrustArtifact {
         "source": "substrate:projects/atlasos/deploy-target.md",
         "title": {
             "kind": "plaintext",
-            "value": "Deploy target is production ECS"
+            "value": PLAINTEXT_TITLE
         },
         "body": {
             "kind": "plaintext",
-            "value": "The ECS cluster in us-east-1 is the production deployment target."
+            "value": PLAINTEXT_BODY
         },
         "current_confidence": "0.95",
         "original_confidence": "0.90",
@@ -62,7 +66,7 @@ fn full_plaintext_artifact() -> TrustArtifact {
                 "timestamp": "2026-04-28T00:00:00Z",
                 "title": {
                     "kind": "plaintext",
-                    "value": "Deploy target ECS (initial)"
+                    "value": SUPERSEDED_TITLE
                 }
             }
         ],
@@ -103,6 +107,8 @@ fn test_all_sections_present_for_plaintext_memory() {
     }
 
     assert!(text.contains("source: substrate:projects/atlasos/deploy-target.md"));
+    assert!(text.contains(PLAINTEXT_TITLE), "plaintext title should render:\n{text}");
+    assert!(text.contains(PLAINTEXT_BODY), "plaintext body should render:\n{text}");
     assert!(text.contains("trust: high trust; policy-promoted"));
     assert!(text.contains("evidence: session:claude-code"));
     assert!(text.contains("Supersedes: mem_20260428_0123456789abcdef_000004"));
@@ -114,6 +120,8 @@ fn test_encrypted_memory_shows_content_redacted_without_leaking_private_text() {
     artifact.title = SafeContent::Encrypted;
     artifact.body = SafeContent::Encrypted;
     artifact.supersedes[0].title = SafeContent::Encrypted;
+    artifact.privacy_scan.labels_detected = vec!["not available without reveal".to_owned()];
+    artifact.privacy_scan.storage_action = "encrypted".to_owned();
 
     let text = rendered_text(&artifact);
 
@@ -122,9 +130,12 @@ fn test_encrypted_memory_shows_content_redacted_without_leaking_private_text() {
     assert!(text.contains("Policy Decisions"));
     assert!(text.contains("Privacy Scan"));
     assert!(text.contains("Sync State"));
-    assert!(!text.contains("Deploy target is production ECS"));
+    assert!(text.contains("Labels detected: not available without reveal"));
+    assert!(text.contains("Storage action: encrypted"));
+    assert!(!text.contains("Storage action: plaintext"));
+    assert!(!text.contains(PLAINTEXT_TITLE));
     assert!(!text.contains("The ECS cluster in us-east-1"));
-    assert!(!text.contains("Deploy target ECS (initial)"));
+    assert!(!text.contains(SUPERSEDED_TITLE));
 }
 
 #[test]

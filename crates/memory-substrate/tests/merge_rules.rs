@@ -59,23 +59,20 @@ fn sensitivity_downgrade_on_one_side_survives() {
 #[test]
 fn sensitivity_conflict_resolves_to_more_restrictive_with_diagnostics() {
     let base = doc_with_sensitivity("base summary", "base body", "internal");
-    let ours = doc_with_sensitivity("base summary", "base body", "personal");
-    let theirs = doc_with_sensitivity("base summary", "base body", "confidential");
-    let MergeResult::Clean(text) = merge(&base, &ours, &theirs) else {
-        panic!("expected clean merge");
-    };
-    let parsed = parse_document(&text, None).expect("parse");
-    assert!(matches!(parsed.memory.frontmatter.sensitivity, memory_substrate::Sensitivity::Personal));
-    assert!(!parsed.memory.frontmatter.retrieval_policy.index_body);
-    assert!(!parsed.memory.frontmatter.retrieval_policy.index_embeddings);
-
-    let diag = first_diagnostic(&parsed.memory.frontmatter.merge_diagnostics);
-    assert_eq!(diag["status"], Value::String("clean_with_warnings".to_string()));
-    let preserved = diag["preserved_sources"].as_array().expect("preserved_sources");
-    assert!(preserved.iter().any(|note| note["field"] == "sensitivity"));
-    let sensitivity_note = preserved.iter().find(|note| note["field"] == "sensitivity").expect("sensitivity note");
-    assert_eq!(sensitivity_note["losing_side"], "theirs");
-    assert_eq!(sensitivity_note["losing_value"], "confidential");
+    assert_sensitivity_conflict_resolves_to_personal(
+        &base,
+        &doc_with_sensitivity("base summary", "base body", "personal"),
+        &doc_with_sensitivity("base summary", "base body", "confidential"),
+        "theirs",
+        "confidential",
+    );
+    assert_sensitivity_conflict_resolves_to_personal(
+        &base,
+        &doc_with_sensitivity("base summary", "base body", "confidential"),
+        &doc_with_sensitivity("base summary", "base body", "personal"),
+        "ours",
+        "confidential",
+    );
 }
 
 #[test]
@@ -125,6 +122,8 @@ fn evidence_id_collision_emits_near_duplicate_diagnostic() {
     let near = diag["evidence_near_duplicates"].as_array().expect("array");
     assert_eq!(near.len(), 1);
     assert_eq!(near[0]["evidence_id"], "ev_001");
+    assert_eq!(near[0]["primary_quote"], "alpha quote");
+    assert_eq!(near[0]["near_duplicate_quote"], "alpha quote with extra words");
 }
 
 #[test]
@@ -299,8 +298,13 @@ fn secret_sensitivity_refuses() {
     let theirs = doc("theirs", "body");
     let err =
         merge_markdown(MergeInput { base: &base, ours: &secret_doc, theirs: &theirs, path: "agent/patterns/x.md" })
-            .expect_err("secret refused");
+            .expect_err("secret refused on ours");
     assert!(matches!(err, MergeError::SecretSensitivityRefused { side: MergeSide::Ours }));
+
+    let err =
+        merge_markdown(MergeInput { base: &base, ours: &theirs, theirs: &secret_doc, path: "agent/patterns/x.md" })
+            .expect_err("secret refused on theirs");
+    assert!(matches!(err, MergeError::SecretSensitivityRefused { side: MergeSide::Theirs }));
 }
 
 #[test]
@@ -407,6 +411,30 @@ fn first_diagnostic(slot: &Option<Value>) -> Value {
     let arr = slot.as_ref().expect("diagnostics present").as_array().expect("array");
     assert!(!arr.is_empty(), "diagnostics array non-empty");
     arr.last().expect("at least one diagnostic").clone()
+}
+
+fn assert_sensitivity_conflict_resolves_to_personal(
+    base: &str,
+    ours: &str,
+    theirs: &str,
+    expected_losing_side: &str,
+    expected_losing_value: &str,
+) {
+    let MergeResult::Clean(text) = merge(base, ours, theirs) else {
+        panic!("expected clean merge");
+    };
+    let parsed = parse_document(&text, None).expect("parse");
+    assert!(matches!(parsed.memory.frontmatter.sensitivity, memory_substrate::Sensitivity::Personal));
+    assert!(!parsed.memory.frontmatter.retrieval_policy.index_body);
+    assert!(!parsed.memory.frontmatter.retrieval_policy.index_embeddings);
+
+    let diag = first_diagnostic(&parsed.memory.frontmatter.merge_diagnostics);
+    assert_eq!(diag["status"], Value::String("clean_with_warnings".to_string()));
+    let preserved = diag["preserved_sources"].as_array().expect("preserved_sources");
+    assert!(preserved.iter().any(|note| note["field"] == "sensitivity"));
+    let sensitivity_note = preserved.iter().find(|note| note["field"] == "sensitivity").expect("sensitivity note");
+    assert_eq!(sensitivity_note["losing_side"], expected_losing_side);
+    assert_eq!(sensitivity_note["losing_value"], expected_losing_value);
 }
 
 fn doc(summary: &str, body: &str) -> String {

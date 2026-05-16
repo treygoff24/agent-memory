@@ -389,7 +389,7 @@ pub enum MergeError {
     /// Parse failed for a specific side of a three-way merge.
     ///
     /// The underlying YAML parser type is not stable across the workspace
-    /// (we use `yaml_serde` today, may swap to `serde_yaml` in Phase 4), so
+    /// (we use `yaml_serde` today), so
     /// the source is captured as a typed message rather than a typed error.
     /// The discriminant — [`MergeSide`] — is the load-bearing signal callers
     /// dispatch on.

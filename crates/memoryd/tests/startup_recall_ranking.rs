@@ -1,5 +1,7 @@
 use chrono::{DateTime, Utc};
-use memory_substrate::{Entity, MemoryId, MemoryStatus, RecallIndexRow, RepoPath, Scope, Sensitivity, SourceKind};
+use memory_substrate::{
+    Entity, MemoryId, MemoryStatus, MemoryType, RecallIndexRow, RepoPath, Scope, Sensitivity, SourceKind,
+};
 use memoryd::recall::{
     collect_recall_candidates, rank_recall_candidates, resolve_entity_matches, select_ranked_candidates,
     EntityMatchKind, OmissionReason, RankingContext, RecallCandidate, RecallSectionName,
@@ -196,13 +198,24 @@ fn entity_resolution_matches_exact_ids_and_separator_equivalent_aliases() {
     let alias = resolve_entity_matches(RecallSectionName::EntityRecall, candidates.clone(), &["agent_memory"]);
     let tag = resolve_entity_matches(RecallSectionName::EntityRecall, candidates, &["rust tools"]);
 
-    assert_eq!(exact_id.candidates[0].entity_match, EntityMatchKind::ExactId);
-    assert_eq!(alias.candidates[0].entity_match, EntityMatchKind::ExactLabelOrAlias);
-    assert_eq!(tag.candidates[0].entity_match, EntityMatchKind::Tag);
+    assert_single_entity_match(exact_id, "mem_20260430_0000000000000001_000001", EntityMatchKind::ExactId);
+    assert_single_entity_match(alias, "mem_20260430_0000000000000001_000001", EntityMatchKind::ExactLabelOrAlias);
+    assert_single_entity_match(tag, "mem_20260430_0000000000000001_000001", EntityMatchKind::Tag);
 }
 
 fn candidate(row: RecallIndexRow) -> RecallCandidate {
     RecallCandidate::from(row)
+}
+
+fn assert_single_entity_match(
+    resolved: memoryd::recall::EntityResolution,
+    expected_id: &str,
+    expected_kind: EntityMatchKind,
+) {
+    assert!(resolved.omitted.is_empty());
+    assert_eq!(resolved.candidates.len(), 1);
+    assert_eq!(resolved.candidates[0].id, expected_id);
+    assert_eq!(resolved.candidates[0].entity_match, expected_kind);
 }
 
 fn context() -> RankingContext {
@@ -221,6 +234,7 @@ fn row(id: &str, status: MemoryStatus) -> RecallIndexRow {
         id: MemoryId::new(id),
         path: RepoPath::new(format!("me/{id}.md")),
         summary: format!("summary for {id}"),
+        memory_type: MemoryType::Pattern,
         status,
         scope: Scope::User,
         canonical_namespace_id: None,

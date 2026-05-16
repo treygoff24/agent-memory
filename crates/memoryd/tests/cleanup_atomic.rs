@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -25,7 +24,7 @@ async fn archive_failpoint_before_rename_leaves_source_intact_and_archive_absent
 
     fixture.clear_failpoint();
     run_cleanup(&fixture.substrate, config()).await.expect("rerun cleanup");
-    assert_archive_contains_once(&fixture.archive_path(), "evt_old");
+    assert_archive_event_ids(&fixture.archive_path(), &["evt_old"]);
     assert_event_ids(&fixture.live_events(), &["evt_new"]);
 }
 
@@ -39,12 +38,12 @@ async fn archive_failpoint_after_rename_is_idempotently_pruned_on_rerun() {
     let error = run_cleanup(&fixture.substrate, config()).await.expect_err("failpoint should abort cleanup");
     assert!(error.to_string().contains("after_archive_rename"), "unexpected error: {error}");
 
-    assert_archive_contains_once(&fixture.archive_path(), "evt_old");
+    assert_archive_event_ids(&fixture.archive_path(), &["evt_old"]);
     assert_event_ids(&fixture.live_events(), &["evt_new", "evt_old"]);
 
     fixture.clear_failpoint();
     run_cleanup(&fixture.substrate, config()).await.expect("rerun cleanup");
-    assert_archive_contains_once(&fixture.archive_path(), "evt_old");
+    assert_archive_event_ids(&fixture.archive_path(), &["evt_old"]);
     assert_event_ids(&fixture.live_events(), &["evt_new"]);
 }
 
@@ -130,16 +129,18 @@ fn ymd(year: i32, month: u32, day: u32) -> DateTime<Utc> {
 }
 
 fn assert_event_ids(events: &[Event], expected: &[&str]) {
-    let expected = expected.iter().copied().collect::<BTreeSet<_>>();
-    let actual =
-        events.iter().map(|event| event.id.as_str()).filter(|id| expected.contains(id)).collect::<BTreeSet<_>>();
+    let actual = events.iter().map(|event| event.id.as_str()).collect::<Vec<_>>();
     assert_eq!(actual, expected);
 }
 
-fn assert_archive_contains_once(path: &Path, id: &str) {
+fn assert_archive_event_ids(path: &Path, expected: &[&str]) {
     let archive = fs::File::open(path).expect("archive exists");
     let text = String::from_utf8(zstd::stream::decode_all(archive).expect("decode zstd")).expect("utf8 archive");
-    assert_eq!(text.matches(&format!(r#""id":"{id}""#)).count(), 1, "archive text: {text}");
+    let events = text
+        .lines()
+        .map(|line| serde_json::from_str::<Event>(line).expect("archive event is JSON"))
+        .collect::<Vec<_>>();
+    assert_event_ids(&events, expected);
 }
 
 fn git(repo: &Path, args: &[&str]) -> Result<String, String> {

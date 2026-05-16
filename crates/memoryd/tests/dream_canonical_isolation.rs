@@ -4,6 +4,10 @@ use memory_substrate::{
     ReadError, RecallIndexQuery, RepoPath, RetrievalPolicy, Roots, Scope, Sensitivity, Source, SourceKind, Substrate,
     TrustLevel, ValidationError, WriteMode, WriteRequest,
 };
+use memoryd::handlers::handle_request;
+use memoryd::protocol::{RequestEnvelope, RequestPayload, ResponsePayload, ResponseResult};
+
+const NONCANONICAL_STREAM_F_SENTINEL: &str = "noncanonical-stream-f-sentinel";
 
 #[test]
 fn daemon_visible_tree_validation_accepts_stream_f_noncanonical_files() {
@@ -79,6 +83,20 @@ async fn daemon_visible_substrate_api_refuses_noncanonical_path_reads_and_query_
         .query_chunks(ChunkQuery { text: Some("stream-f-isolation".to_string()), triple: None, vector: None })
         .await
         .expect("chunk query");
+    let sentinel_recall_hits = substrate
+        .query_recall_index(RecallIndexQuery {
+            namespace_prefix: None,
+            statuses: vec![MemoryStatus::Active],
+            passive_recall_only: true,
+            updated_since: None,
+            match_terms: vec![NONCANONICAL_STREAM_F_SENTINEL.to_string()],
+        })
+        .await
+        .expect("sentinel recall query");
+    let sentinel_chunk_hits = substrate
+        .query_chunks(ChunkQuery { text: Some(NONCANONICAL_STREAM_F_SENTINEL.to_string()), triple: None, vector: None })
+        .await
+        .expect("sentinel chunk query");
 
     assert_eq!(memory_hits.len(), 1);
     assert_eq!(memory_hits[0].path, memory.path.clone().expect("canonical path"));
@@ -86,17 +104,59 @@ async fn daemon_visible_substrate_api_refuses_noncanonical_path_reads_and_query_
     assert_eq!(recall_hits[0].path, memory.path.clone().expect("canonical path"));
     assert_eq!(chunk_hits.len(), 1);
     assert_eq!(chunk_hits[0].memory_id, memory.frontmatter.id);
+    assert!(sentinel_recall_hits.is_empty(), "noncanonical plaintext leaked into recall index");
+    assert!(sentinel_chunk_hits.is_empty(), "noncanonical plaintext leaked into chunks");
+
+    let response = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "daemon-search",
+            RequestPayload::Search { query: "stream-f-isolation".to_string(), limit: Some(10), include_body: true },
+        ),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::Search(search)) = response.result else {
+        panic!("daemon search should succeed");
+    };
+    assert_eq!(search.total, 1);
+    assert_eq!(search.hits.len(), 1);
+    assert_eq!(search.hits[0].id, memory.frontmatter.id.to_string());
+    assert!(search.hits[0].body.as_deref().is_some_and(|body| body.contains("stream-f-isolation canonical body")));
+
+    let response = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "daemon-search-sentinel",
+            RequestPayload::Search {
+                query: NONCANONICAL_STREAM_F_SENTINEL.to_string(),
+                limit: Some(10),
+                include_body: true,
+            },
+        ),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::Search(search)) = response.result else {
+        panic!("daemon sentinel search should succeed");
+    };
+    assert_eq!(search.total, 0, "noncanonical plaintext leaked into daemon search");
+    assert!(search.hits.is_empty(), "noncanonical plaintext leaked into daemon search hits");
 }
 
 fn noncanonical_files() -> Vec<(&'static str, &'static str)> {
     vec![
-        ("dreams/journal/me/2026-04-30.md", "Masked journal body without frontmatter.\n"),
+        (
+            "dreams/journal/me/2026-04-30.md",
+            concat!("Masked journal body without frontmatter. ", "noncanonical-stream-f-sentinel", "\n"),
+        ),
         (
             "dreams/questions/project/proj_abc/2026-04-30.jsonl",
-            r#"{"entities":["ent_stream_f"],"question":"What assumption should we revisit?"}"#,
+            r#"{"entities":["ent_stream_f"],"question":"What noncanonical-stream-f-sentinel assumption should we revisit?"}"#,
         ),
         ("dreams/cleanup/dev_local/2026-04-30.json", r#"{"device_id":"dev_local","operations":[]}"#),
-        ("substrate/dev_local/2026-04-30.jsonl", r#"{"id":"sub_01","text":"plain substrate observation"}"#),
+        (
+            "substrate/dev_local/2026-04-30.jsonl",
+            r#"{"id":"sub_01","text":"plain substrate noncanonical-stream-f-sentinel observation"}"#,
+        ),
         (
             "encrypted/substrate/dev_local/2026-04-30.jsonl",
             r#"{"id":"sub_02","ciphertext":"age1...","descriptor":"encrypted fragment"}"#,

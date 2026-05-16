@@ -40,15 +40,15 @@ fn source_excerpts_unique_concat_and_conflict_quarantine() {
 
 #[test]
 fn divergent_extracted_text_quarantines_without_source_text() {
-    let result = merge(
-        "sources/web/2026/05/src_01J0Z7Y8Q9R0ABCDE123456789/extracted.txt",
-        "base text",
-        "ours sensitive long body",
-        "theirs sensitive long body",
-    );
+    let base = "base sensitive long body";
+    let ours = "ours sensitive long body";
+    let theirs = "theirs sensitive long body";
+    let result = merge("sources/web/2026/05/src_01J0Z7Y8Q9R0ABCDE123456789/extracted.txt", base, ours, theirs);
     let MergeResult::Quarantine(text) = result else { panic!("expected quarantine") };
     assert!(text.contains("source_artifact_merge_conflict"));
-    assert!(!text.contains("ours sensitive long body"));
+    for source_body in [base, ours, theirs] {
+        assert!(!text.contains(source_body), "quarantine text leaked source body: {source_body}");
+    }
 }
 
 #[test]
@@ -80,6 +80,7 @@ fn artifact_id() -> SourceArtifactId {
 
 fn artifact_fixture() -> WebCaptureArtifact {
     let artifact_id = artifact_id();
+    let captured_at = chrono::DateTime::parse_from_rfc3339("2026-05-01T12:00:00Z").unwrap().with_timezone(&Utc);
     let extracted_text = "quote one".to_string();
     let excerpts = vec![ExcerptRecord {
         excerpt_id: "quote_0001".to_string(),
@@ -88,7 +89,7 @@ fn artifact_fixture() -> WebCaptureArtifact {
         quote_sha256: sha256_prefixed("quote one".as_bytes()),
         locator: ExcerptLocator::ByteRange { start: 0, end: 9 },
         match_kind: ExcerptMatchKind::Exact,
-        created_at: Utc::now(),
+        created_at: captured_at,
     }];
     let raw = b"quote one".to_vec();
     let raw_zstd = zstd::encode_all(raw.as_slice(), 0).unwrap();
@@ -100,7 +101,7 @@ fn artifact_fixture() -> WebCaptureArtifact {
         original_url: "https://example.com".to_string(),
         final_url: "https://example.com".to_string(),
         redirect_chain: Vec::new(),
-        captured_at: Utc::now(),
+        captured_at,
         capture_method: CaptureMethod::HttpStaticV1,
         request: CaptureRequestSnapshot::default(),
         response: CaptureResponseSnapshot { http_status: 200, ..CaptureResponseSnapshot::default() },

@@ -1,5 +1,6 @@
 use std::time::{Duration, Instant};
 
+use memory_substrate::markdown::hash_bytes;
 use memory_substrate::watcher::{FileEvent, SuppressionLedger, WatchEventKind};
 use memory_substrate::*;
 
@@ -24,7 +25,7 @@ async fn watch_subscription_outlives_substrate_until_unsubscribe() {
     let mut observed = false;
     while Instant::now() < deadline {
         if let Ok(event) = subscription.recv_timeout(Duration::from_millis(250)) {
-            if event.path == changed || event.path.file_name() == changed.file_name() {
+            if same_file_path(&event.path, &changed) {
                 observed = true;
                 break;
             }
@@ -90,16 +91,26 @@ async fn substrate_write_suppresses_own_watcher_event_but_external_edit_is_deliv
     let quiet_until = Instant::now() + Duration::from_millis(700);
     while Instant::now() < quiet_until {
         if let Ok(event) = subscription.recv_timeout(Duration::from_millis(100)) {
-            assert_ne!(event.path, target, "programmatic write should be suppressed");
+            assert!(
+                !same_file_path(&event.path, &target),
+                "programmatic write should be suppressed before external edit: {event:?}"
+            );
         }
     }
 
-    std::fs::write(&target, "external edit with different hash").expect("external edit");
+    let external_body = b"external edit with different hash";
+    let external_hash = hash_bytes(external_body);
+    std::fs::write(&target, external_body).expect("external edit");
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut observed = false;
     while Instant::now() < deadline {
         if let Ok(event) = subscription.recv_timeout(Duration::from_millis(250)) {
-            if event.path == target || event.path.file_name() == target.file_name() {
+            if same_file_path(&event.path, &target) {
+                assert_eq!(
+                    event.content_hash.as_ref(),
+                    Some(&external_hash),
+                    "target event must carry the external edit hash, not a stale self-write event: {event:?}"
+                );
                 observed = true;
                 break;
             }
@@ -174,5 +185,12 @@ fn sample_memory(id: &str) -> Memory {
         },
         body: "watch body".to_string(),
         path: Some(RepoPath::new(format!("agent/patterns/{id}.md"))),
+    }
+}
+
+fn same_file_path(left: &std::path::Path, right: &std::path::Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
     }
 }

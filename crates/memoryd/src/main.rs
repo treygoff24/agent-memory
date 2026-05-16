@@ -6,10 +6,9 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use memory_privacy::{
-    install_runtime_enforcement, DeterministicPrivacyClassifier, FileKeyProvider, KeyProvider, PrivacyClassifier,
-    PrivacyNamespace,
+    DeterministicPrivacyClassifier, FileKeyProvider, KeyProvider, PrivacyClassifier, PrivacyNamespace,
 };
-use memory_substrate::{InitOptions, Roots, Substrate};
+use memory_substrate::{Roots, Substrate};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::watch;
 
@@ -20,9 +19,11 @@ use memoryd::cli::{
 use memoryd::client;
 use memoryd::protocol::{
     render_peer_activity_human, render_peer_status_human, DreamRunReport, PassStatus, PeerActivityFormat,
-    PeerReleaseLockStatus, RequestPayload, ResponsePayload, ResponseResult,
+    PeerReleaseLockExpectedHolder, PeerReleaseLockStatus, RequestPayload, ResponsePayload, ResponseResult,
 };
 use memoryd::recall::{DeltaRequest, StartupRequest};
+use memoryd::runtime_privacy::{install_privacy_runtime_from_roots, RuntimePrivacyInstallStatus};
+use memoryd::serve_runtime::{open_substrate_for_serve, serve_roots};
 use memoryd::server::{self, ServerOptions};
 
 #[allow(dead_code)]
@@ -33,35 +34,29 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Serve(args) => {
-            let roots = Roots::new(args.repo, args.runtime);
-            let loaded_config =
-                memory_substrate::config::load_config(&roots.repo, &roots.runtime, None).map_err(anyhow::Error::msg)?;
-            let enforcement = loaded_config.privacy_enforcement();
-            match install_runtime_enforcement(enforcement) {
-                Ok(()) => tracing::info!(
+            let roots = serve_roots(&args);
+            let privacy_install =
+                install_privacy_runtime_from_roots(&roots.repo, &roots.runtime).map_err(anyhow::Error::msg)?;
+            let enforcement = privacy_install.enforcement();
+            match privacy_install {
+                RuntimePrivacyInstallStatus::Installed(_) => tracing::info!(
                     classifier = enforcement.classifier,
                     encryption = enforcement.encryption,
                     masking = enforcement.masking,
                     "privacy enforcement installed"
                 ),
-                Err(error) => tracing::warn!(%error, "privacy enforcement already installed; keeping first config"),
-            }
-            let substrate = if args.init {
-                if args.force_unsafe_durability {
-                    tracing::warn!(
-                        operator = "memoryd serve --init",
-                        reason = "--force-unsafe-durability supplied",
-                        "unsafe best-effort durability enabled for substrate init"
-                    );
+                RuntimePrivacyInstallStatus::AlreadyInstalled(_) => {
+                    tracing::warn!("privacy enforcement already installed; keeping first config")
                 }
-                Substrate::init(
-                    roots,
-                    InitOptions { force_unsafe_durability: args.force_unsafe_durability, device_id: None },
-                )
-                .await?
-            } else {
-                Substrate::open(roots).await?
-            };
+            }
+            if args.init && args.force_unsafe_durability {
+                tracing::warn!(
+                    operator = "memoryd serve --init",
+                    reason = "--force-unsafe-durability supplied",
+                    "unsafe best-effort durability enabled for substrate init"
+                );
+            }
+            let substrate = open_substrate_for_serve(&args).await?;
             let runtime_root = substrate.roots().runtime.clone();
             let _daemon_state = state::DaemonState::load(&runtime_root);
             if let Err(error) = state::RcSessionStore::new(&runtime_root).load_if_recent(Utc::now()) {
@@ -100,10 +95,7 @@ async fn main() -> anyhow::Result<()> {
             )
             .await;
             let exit_code = doctor_cli_exit_code(&response);
-            print_response(response)?;
-            if exit_code != 0 {
-                std::process::exit(exit_code);
-            }
+            print_response_with_exit_code(response, exit_code)?;
         }
         Command::Search(args) => {
             print_response(
@@ -966,12 +958,28 @@ fn dream_report_failed(report: &DreamRunReport) -> bool {
 }
 
 fn print_response(response: memoryd::protocol::ResponseEnvelope) -> anyhow::Result<()> {
+    let exit_code = response_cli_exit_code(&response);
+    print_response_with_exit_code(response, exit_code)
+}
+
+fn print_response_with_exit_code(response: memoryd::protocol::ResponseEnvelope, exit_code: i32) -> anyhow::Result<()> {
     println!("{}", serde_json::to_string_pretty(&response)?);
+    if exit_code != 0 {
+        std::process::exit(exit_code);
+    }
     Ok(())
+}
+
+fn response_cli_exit_code(response: &memoryd::protocol::ResponseEnvelope) -> i32 {
+    match &response.result {
+        ResponseResult::Error(_) => 2,
+        ResponseResult::Success(_) => 0,
+    }
 }
 
 fn doctor_cli_exit_code(response: &memoryd::protocol::ResponseEnvelope) -> i32 {
     match &response.result {
+        ResponseResult::Error(_) => 2,
         ResponseResult::Success(ResponsePayload::Doctor(doctor)) if !doctor.healthy => 1,
         _ => 0,
     }
@@ -1065,6 +1073,7 @@ fn print_peer_activity(response: anyhow::Result<memoryd::protocol::ResponseEnvel
 }
 
 async fn run_peer_release_lock(args: memoryd::cli::PeerReleaseLockArgs) -> anyhow::Result<()> {
+    let mut expected_holder = None;
     if !args.yes {
         let status = match client::request(
             resolve_socket_arg(&args.socket),
@@ -1091,6 +1100,10 @@ async fn run_peer_release_lock(args: memoryd::cli::PeerReleaseLockArgs) -> anyho
             "Release claim lock on {} held by {}:{}? [y/N] ",
             lock.memory_id, lock.holder_harness, lock.holder_session_id
         );
+        expected_holder = Some(PeerReleaseLockExpectedHolder {
+            holder_harness: lock.holder_harness.clone(),
+            holder_session_id: lock.holder_session_id.clone(),
+        });
         if !confirmed_on_stdin()? {
             eprintln!("aborted");
             std::process::exit(1);
@@ -1100,7 +1113,7 @@ async fn run_peer_release_lock(args: memoryd::cli::PeerReleaseLockArgs) -> anyho
     let response = match client::request(
         resolve_socket_arg(&args.socket),
         "cli-peer-release-lock",
-        RequestPayload::PeerReleaseLock { memory_id: args.memory_id },
+        RequestPayload::PeerReleaseLock { memory_id: args.memory_id, expected_holder },
     )
     .await
     {
@@ -1119,6 +1132,13 @@ async fn run_peer_release_lock(args: memoryd::cli::PeerReleaseLockArgs) -> anyho
             }
             PeerReleaseLockStatus::NoLockFound => {
                 eprintln!("no_lock_found: no active claim lock for {}", release.memory_id);
+                std::process::exit(1);
+            }
+            PeerReleaseLockStatus::LockChanged => {
+                eprintln!(
+                    "lock_changed: claim lock for {} is now held by a different session; run release-lock again to inspect it",
+                    release.memory_id
+                );
                 std::process::exit(1);
             }
         },
@@ -1199,4 +1219,34 @@ async fn install_termination_handler(shutdown: watch::Sender<bool>) {
         _ = sigterm.recv() => {}
     }
     let _ = shutdown.send(true);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use memoryd::protocol::{ResponseEnvelope, StatusResponse};
+
+    #[test]
+    fn generic_cli_response_exit_code_is_nonzero_for_daemon_error() {
+        let response = ResponseEnvelope::error("req", "invalid_request", "bad request", false);
+
+        assert_eq!(response_cli_exit_code(&response), 2);
+        assert_eq!(doctor_cli_exit_code(&response), 2);
+    }
+
+    #[test]
+    fn generic_cli_response_exit_code_is_zero_for_success() {
+        let response = ResponseEnvelope::success(
+            "req",
+            ResponsePayload::Status(StatusResponse {
+                state: "ok".to_string(),
+                guidance: "ready".to_string(),
+                recall: Default::default(),
+                dreams: Default::default(),
+                passive_notifications: Vec::new(),
+            }),
+        );
+
+        assert_eq!(response_cli_exit_code(&response), 0);
+    }
 }

@@ -20,7 +20,7 @@ async fn recall_budget_pressure_keeps_high_value_gold_memory_and_reports_omissio
     write_project_file(&project_cwd, DEFAULT_PROJECT_ID, "Project Alpha");
     let mut agent = SimulatorAgent::new(SimulatorConfig::new(scaffold.socket_path()));
 
-    for index in 0..39 {
+    for index in 0..20 {
         let body = format!(
             "Budget pressure competitor {index:02} ent_budget_test. This deliberately long summary competes for recall budget and should be droppable under pressure. {}",
             "lower priority context ".repeat(8)
@@ -52,6 +52,24 @@ async fn recall_budget_pressure_keeps_high_value_gold_memory_and_reports_omissio
         .await;
     let gold_id = write_id_or_materialized_file(&gold, scaffold.tree_dir(), GOLD_SENTINEL);
 
+    let mut newer_competitor_ids = Vec::new();
+    for index in 20..39 {
+        let marker = format!("EVAL_NEWER_BUDGET_COMPETITOR_{index:02}");
+        let body = format!(
+            "Budget pressure competitor {index:02} {marker} ent_budget_test. This deliberately long summary competes for recall budget and should be droppable under pressure. {}",
+            "lower priority context ".repeat(8)
+        );
+        let observations = agent
+            .run_script([SimulatorAction::WriteWithMetaJson {
+                body,
+                title: Some(format!("Budget competitor {index:02} {}", "context ".repeat(12))),
+                meta_json: promoted_project_meta(&format!("t09-competitor-{index}"), "claim"),
+            }])
+            .await;
+        eval_assert_eq!(observations.last_write_outcome.as_deref(), Some("promoted"), "{observations:#?}");
+        newer_competitor_ids.push(write_id_or_materialized_file(&observations, scaffold.tree_dir(), &marker));
+    }
+
     let observations = agent
         .run_script([
             SimulatorAction::NewSession { cwd: Some(project_cwd), harness: Some("memorum-eval".to_owned()) },
@@ -72,6 +90,12 @@ async fn recall_budget_pressure_keeps_high_value_gold_memory_and_reports_omissio
     eval_assert!(
         omitted.iter().all(|item| item.get("id").and_then(Value::as_str) != Some(gold_id.as_str())),
         "gold memory must not be omitted: {omitted:#?}"
+    );
+    eval_assert!(
+        newer_competitor_ids.iter().any(|competitor_id| {
+            omitted.iter().any(|item| item.get("id").and_then(Value::as_str) == Some(competitor_id.as_str()))
+        }),
+        "budget pressure should omit at least one newer low-priority competitor; newer ids={newer_competitor_ids:?}, omitted={omitted:#?}"
     );
     let recent_section = explanation
         .get("sections")

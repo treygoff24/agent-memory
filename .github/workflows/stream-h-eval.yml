@@ -2,7 +2,7 @@ name: Stream H Eval Harness
 
 on:
   push:
-    tags: ["v[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+"]
+    tags: ["v*.*.*-rc.*"]
   schedule:
     - cron: "0 3 * * *"
   workflow_dispatch:

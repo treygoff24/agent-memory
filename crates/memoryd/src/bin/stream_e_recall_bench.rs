@@ -15,6 +15,7 @@ const SEED_SMOKE: u64 = 169_300_215;
 const SEED_RELEASE: u64 = 693_467_474_526;
 
 #[derive(Debug, Parser)]
+#[command(group(clap::ArgGroup::new("mode").args(["smoke", "release"]).multiple(false)))]
 struct Args {
     #[arg(long, default_value = "200,1000")]
     sizes: String,
@@ -41,10 +42,14 @@ struct BenchResult {
     candidate_quarantine_count: usize,
     selected_memory_count: usize,
     omitted_memory_count: usize,
-    cold_start_p95_ms: f64,
+    cold_start_ms: f64,
+    cold_start_samples: usize,
     startup_warm_p95_ms: f64,
+    startup_warm_samples: usize,
     delta_no_match_p95_ms: f64,
+    delta_no_match_samples: usize,
     delta_five_entity_match_p95_ms: f64,
+    delta_five_entity_match_samples: usize,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -103,7 +108,7 @@ async fn run_size(size: usize, warm_runs: usize) -> anyhow::Result<BenchResult> 
             .await?;
     }
 
-    let cold_start_p95_ms = timed_startup(&substrate, &repo).await?.as_secs_f64() * 1000.0;
+    let cold_start_ms = timed_startup(&substrate, &repo).await?.as_secs_f64() * 1000.0;
     let mut startup = Vec::new();
     let mut selected_memory_count = 0usize;
     let mut omitted_memory_count = 0usize;
@@ -126,10 +131,14 @@ async fn run_size(size: usize, warm_runs: usize) -> anyhow::Result<BenchResult> 
         candidate_quarantine_count: attention,
         selected_memory_count,
         omitted_memory_count,
-        cold_start_p95_ms,
+        cold_start_ms,
+        cold_start_samples: 1,
         startup_warm_p95_ms: p95(startup).as_secs_f64() * 1000.0,
+        startup_warm_samples: warm_runs,
         delta_no_match_p95_ms,
+        delta_no_match_samples: warm_runs,
         delta_five_entity_match_p95_ms,
+        delta_five_entity_match_samples: warm_runs,
     })
 }
 
@@ -292,8 +301,8 @@ fn enforce_thresholds(report: &BenchReport, release: bool) -> anyhow::Result<()>
         if result.startup_warm_p95_ms > startup_cap {
             anyhow::bail!("startup warm p95 exceeded cap for {} memories", result.memory_count);
         }
-        if result.cold_start_p95_ms > 600.0 {
-            anyhow::bail!("cold startup p95 exceeded cap for {} memories", result.memory_count);
+        if result.cold_start_ms > 600.0 {
+            anyhow::bail!("cold startup exceeded cap for {} memories", result.memory_count);
         }
         if result.delta_no_match_p95_ms > 60.0 {
             anyhow::bail!("delta no-match p95 exceeded cap for {} memories", result.memory_count);

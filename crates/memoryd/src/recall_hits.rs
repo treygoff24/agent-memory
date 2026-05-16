@@ -41,7 +41,9 @@ fn query_recent_recall_hits(
     let since_text = since.map(|value| value.to_rfc3339());
     let mut statement = connection
         .prepare_cached(
-            "SELECT e.event_id, e.device, e.seq, e.memory_id, e.ts, m.summary
+            "SELECT e.event_id, e.device, e.seq, e.memory_id,
+                    COALESCE(json_extract(e.payload_json, '$.data.recalled_at'), e.ts) AS recalled_at,
+                    m.summary
              FROM events_log e
              LEFT JOIN memories m ON m.id = e.memory_id
              WHERE e.kind = 'recall_hit'

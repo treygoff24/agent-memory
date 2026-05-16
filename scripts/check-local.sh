@@ -57,6 +57,9 @@ cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 phase "rust tests"
 cargo test --workspace --locked -- --test-threads="$MEMORUM_TEST_THREADS"
 
+phase "memoryd dream CLI dev-fixtures tests"
+cargo test -p memoryd --features dev-fixtures --test dream_cli --locked -- --test-threads="$MEMORUM_TEST_THREADS"
+
 phase "rust docs"
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
 

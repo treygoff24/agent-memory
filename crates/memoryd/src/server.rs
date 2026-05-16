@@ -32,11 +32,14 @@ pub struct ServerOptions {
     /// new bytes — before it is treated as a dead peer and closed. The clock
     /// resets on every successful read, so a slow-but-live peer is fine.
     pub idle_frame_timeout: Duration,
+    /// Optional supervisor/test hook notified after the accept loop accepts a
+    /// connection. Production leaves this unset.
+    pub accepted_connection_notify: Option<Arc<tokio::sync::Notify>>,
 }
 
 impl Default for ServerOptions {
     fn default() -> Self {
-        Self { idle_frame_timeout: Duration::from_secs(300) }
+        Self { idle_frame_timeout: Duration::from_secs(300), accepted_connection_notify: None }
     }
 }
 
@@ -168,6 +171,9 @@ async fn serve_with_dispatcher(
             _ = shutdown.changed() => return Ok(()),
             accept = listener.accept() => {
                 let (stream, _) = accept.context("accept daemon connection")?;
+                if let Some(notify) = &options.accepted_connection_notify {
+                    notify.notify_one();
+                }
                 let dispatch = dispatch.clone();
                 let options = options.clone();
                 let conn_shutdown = shutdown.clone();
@@ -336,7 +342,51 @@ fn extract_id_best_effort(bytes: &[u8]) -> String {
             return id.clone();
         }
     }
-    String::new()
+    extract_id_from_malformed_json(bytes).unwrap_or_default()
+}
+
+fn extract_id_from_malformed_json(bytes: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let marker = r#""id""#;
+    let marker_start = text.find(marker)?;
+    let rest = text[marker_start + marker.len()..].trim_start();
+    let raw = rest.strip_prefix(':')?.trim_start().strip_prefix('"')?;
+    parse_json_string_prefix(raw)
+}
+
+fn parse_json_string_prefix(raw: &str) -> Option<String> {
+    let mut value = String::new();
+    let mut chars = raw.chars();
+    while let Some(character) = chars.next() {
+        match character {
+            '"' => return Some(value),
+            '\\' => match chars.next()? {
+                '"' => value.push('"'),
+                '\\' => value.push('\\'),
+                '/' => value.push('/'),
+                'b' => value.push('\u{0008}'),
+                'f' => value.push('\u{000c}'),
+                'n' => value.push('\n'),
+                'r' => value.push('\r'),
+                't' => value.push('\t'),
+                'u' => {
+                    let codepoint = parse_json_codepoint(&mut chars)?;
+                    value.push(char::from_u32(codepoint)?);
+                }
+                _ => return None,
+            },
+            other => value.push(other),
+        }
+    }
+    None
+}
+
+fn parse_json_codepoint(chars: &mut impl Iterator<Item = char>) -> Option<u32> {
+    let mut codepoint = 0;
+    for _ in 0..4 {
+        codepoint = (codepoint << 4) + chars.next()?.to_digit(16)?;
+    }
+    Some(codepoint)
 }
 
 async fn handle_request(dispatch: &Dispatch, request: RequestEnvelope) -> ResponseEnvelope {

@@ -32,6 +32,25 @@ async fn test_get_policy_editor_returns_current_policy_yaml_not_deferred_stub() 
 }
 
 #[tokio::test]
+async fn test_get_policy_editor_returns_disk_policy_files_and_raw_yaml() {
+    let temp = tempfile::tempdir().expect("temp policy dir");
+    seed_policy_dir(temp.path());
+    let state = WebState::fixture().with_policy_dir(temp.path());
+    let body = get_json(router_with_state(state), "/api/policy-editor").await;
+
+    assert_eq!(body["source"], "disk");
+    assert_eq!(body["writable"], true);
+    assert_eq!(
+        body["files"],
+        json!(["agent-strict.yaml", "dreaming-strict.yaml", "me-strict.yaml", "project-standard.yaml"])
+    );
+    let raw_yaml = body["raw_yaml"].as_str().expect("raw yaml string");
+    assert!(raw_yaml.contains("# file: project-standard.yaml"));
+    assert!(raw_yaml.contains(PROJECT_POLICY));
+    assert_project_policy_summary(&body, json!(0.7));
+}
+
+#[tokio::test]
 async fn test_get_sync_dashboard_returns_sync_state_not_deferred_stub() {
     let body = get_json(fixture_router(), "/api/sync-dashboard").await;
 
@@ -52,6 +71,7 @@ async fn test_post_policy_editor_validates_yaml_and_atomically_writes_policy_fil
     let updated_project_policy = PROJECT_POLICY.replace("confidence_floor: 0.7", "confidence_floor: 0.72");
 
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -75,9 +95,15 @@ async fn test_post_policy_editor_validates_yaml_and_atomically_writes_policy_fil
     assert_eq!(body["accepted"], true);
     assert_eq!(body["file_name"], "project-standard.yaml");
     assert_eq!(body["policies"].as_array().expect("policies array").len(), 4);
+    assert_project_policy_summary(&body, json!(0.72));
     let written = std::fs::read_to_string(temp.path().join("project-standard.yaml")).expect("policy file written");
     assert!(written.contains("confidence_floor: 0.72"));
     assert!(!temp.path().join("project-standard.yaml.tmp").exists());
+
+    let get_body = get_json(app, "/api/policy-editor").await;
+    assert_eq!(get_body["source"], "disk");
+    assert!(get_body["raw_yaml"].as_str().expect("raw yaml string").contains("confidence_floor: 0.72"));
+    assert_project_policy_summary(&get_body, json!(0.72));
 }
 
 #[tokio::test]
@@ -152,6 +178,23 @@ fn csrf_token_from_html(html: &str) -> &str {
     let tail = &tag[start..];
     let end = tail.find('"').expect("csrf meta content closes");
     &tail[..end]
+}
+
+fn assert_project_policy_summary(body: &Value, confidence_floor: Value) {
+    let policy = policy_summary(body, "project");
+    assert_eq!(policy["selected_policy"], "project-standard@v2");
+    assert_eq!(policy["policy_source"], "disk");
+    assert_eq!(policy["confidence_floor"], confidence_floor);
+    assert_eq!(policy["requires_grounding"], true);
+}
+
+fn policy_summary<'a>(body: &'a Value, scope: &str) -> &'a Value {
+    body["policies"]
+        .as_array()
+        .expect("policies array")
+        .iter()
+        .find(|policy| policy["scope"] == scope)
+        .unwrap_or_else(|| panic!("policy summary for {scope} exists"))
 }
 
 fn seed_policy_dir(path: &std::path::Path) {

@@ -6,8 +6,12 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+pub const NO_CLEANUP_ENV: &str = "MEMORUM_EVAL_NO_CLEANUP";
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct DaemonScaffoldConfig;
+pub struct DaemonScaffoldConfig {
+    pub no_cleanup: bool,
+}
 
 #[derive(Debug)]
 pub struct DaemonScaffold {
@@ -37,20 +41,39 @@ pub struct DaemonChild {
 #[derive(Debug)]
 struct TempTree {
     path: PathBuf,
+    remove_on_drop: bool,
 }
 
 impl DaemonScaffold {
     pub async fn fresh() -> Self {
-        let tree_dir = TempTree::fresh();
+        Self::fresh_with_config(DaemonScaffoldConfig::from_env()).await
+    }
+
+    pub async fn fresh_with_config(config: DaemonScaffoldConfig) -> Self {
+        let tree_dir = TempTree::fresh(config.no_cleanup);
+        Self::start(tree_dir)
+    }
+
+    pub async fn fresh_with_seed(seed: impl FnOnce(&Path)) -> Self {
+        Self::fresh_with_config_and_seed(DaemonScaffoldConfig::from_env(), seed).await
+    }
+
+    pub async fn fresh_with_config_and_seed(config: DaemonScaffoldConfig, seed: impl FnOnce(&Path)) -> Self {
+        let tree_dir = TempTree::fresh(config.no_cleanup);
+        seed(tree_dir.path());
         Self::start(tree_dir)
     }
 
     pub async fn two_device() -> TwoDeviceScaffold {
-        let remote_dir = TempTree::fresh();
+        Self::two_device_with_config(DaemonScaffoldConfig::from_env()).await
+    }
+
+    pub async fn two_device_with_config(config: DaemonScaffoldConfig) -> TwoDeviceScaffold {
+        let remote_dir = TempTree::fresh(config.no_cleanup);
         git(None, ["init", "--bare", "--initial-branch", "main", remote_dir.path_str().as_str()]);
 
-        let device_a_tree = clone_device_tree(remote_dir.path(), "device-a");
-        let device_b_tree = clone_device_tree(remote_dir.path(), "device-b");
+        let device_a_tree = clone_device_tree(remote_dir.path(), "device-a", config.no_cleanup);
+        let device_b_tree = clone_device_tree(remote_dir.path(), "device-b", config.no_cleanup);
 
         let scaffold = TwoDeviceScaffold {
             device_a: Self::start(device_a_tree),
@@ -100,8 +123,18 @@ impl DaemonScaffold {
         &self.socket_path
     }
 
+    pub fn child_id_for_test(&self) -> Option<u32> {
+        self.child.as_ref().and_then(DaemonChild::id)
+    }
+
     pub fn into_child_for_test(mut self) -> DaemonChild {
         self.child.take().expect("daemon child is present")
+    }
+}
+
+impl DaemonScaffoldConfig {
+    fn from_env() -> Self {
+        Self { no_cleanup: std::env::var_os(NO_CLEANUP_ENV).is_some_and(|value| value != "0" && value != "false") }
     }
 }
 
@@ -145,10 +178,10 @@ impl Drop for DaemonChild {
 }
 
 impl TempTree {
-    fn fresh() -> Self {
+    fn fresh(no_cleanup: bool) -> Self {
         let path = std::env::temp_dir().join(format!("memorum-eval-{}", new_ulid_like_id()));
         fs::create_dir_all(&path).unwrap_or_else(|err| panic!("create temp tree {}: {err}", path.display()));
-        Self { path }
+        Self { path, remove_on_drop: !no_cleanup }
     }
 
     fn path(&self) -> &Path {
@@ -162,7 +195,11 @@ impl TempTree {
 
 impl Drop for TempTree {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
+        if self.remove_on_drop {
+            let _ = fs::remove_dir_all(&self.path);
+        } else {
+            eprintln!("memorum-eval preserved temp tree: {}", self.path.display());
+        }
     }
 }
 
@@ -197,8 +234,8 @@ fn spawn_memoryd(tree_dir: &Path, socket_path: &Path) -> Child {
         .expect("spawn memoryd serve")
 }
 
-fn clone_device_tree(remote_path: &Path, device_name: &str) -> TempTree {
-    let tree = TempTree::fresh();
+fn clone_device_tree(remote_path: &Path, device_name: &str, no_cleanup: bool) -> TempTree {
+    let tree = TempTree::fresh(no_cleanup);
     let remote = remote_path.to_string_lossy().into_owned();
     let destination = tree.path_str();
     git(None, ["clone", &remote, &destination]);
@@ -252,28 +289,34 @@ fn git_success<const N: usize>(current_dir: &Path, args: [&str; N]) -> bool {
 }
 
 fn memoryd_binary_path() -> PathBuf {
-    let target_dir = std::env::var_os("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target"));
-    let binary = target_dir.join("debug").join("memoryd");
-
-    // Return the cached binary if it already exists. Callers that need
-    // TestInjectEvent support (e.g. T16) should ensure the binary was built with
-    // `--features test-utils` before invoking the test; if the feature is absent the
-    // daemon returns `method_not_allowed` with a clear message. Building memoryd
-    // here when the binary is already present triggers recursive cargo lock
-    // contention when the scaffold is called from an orchestrator subprocess.
-    if binary.exists() {
-        return binary;
-    }
-
-    // First-time build: include test-utils so T16's TestInjectEvent surface works.
-    let status = Command::new("cargo")
-        .args(["build", "-p", "memoryd", "--features", "test-utils"])
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let status = Command::new(cargo)
+        .args(["build", "-p", "memoryd", "--bin", "memoryd", "--features", "test-utils"])
+        .current_dir(workspace_root())
+        .stdin(Stdio::null())
         .status()
         .expect("build memoryd binary");
-    assert!(status.success(), "cargo build -p memoryd --features test-utils failed");
+    assert!(status.success(), "cargo build -p memoryd --bin memoryd --features test-utils failed");
+
+    let binary = target_dir().join("debug").join(format!("memoryd{}", std::env::consts::EXE_SUFFIX));
+    assert!(
+        binary.is_file(),
+        "cargo build -p memoryd --bin memoryd --features test-utils succeeded but {} was not created",
+        binary.display()
+    );
     binary
+}
+
+fn target_dir() -> PathBuf {
+    match std::env::var_os("CARGO_TARGET_DIR").map(PathBuf::from) {
+        Some(path) if path.is_absolute() => path,
+        Some(path) => workspace_root().join(path),
+        None => workspace_root().join("target"),
+    }
+}
+
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
 fn wait_for_socket(socket_path: &Path) {

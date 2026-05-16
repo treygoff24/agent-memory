@@ -35,6 +35,36 @@ fn atomic_write_stages_temp_in_target_parent_without_cross_device_rename() {
 }
 
 #[test]
+fn atomic_write_temp_path_collision_proves_staging_in_target_parent() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let memory = sample_memory("mem_20260424_a1b2c3d4e5f60718_000780");
+    let path = memory.path.clone().expect("path");
+    let target = temp.path().join(path.as_path());
+    let parent = target.parent().expect("target parent");
+    std::fs::create_dir_all(parent).expect("create target parent");
+    let temp_path = parent.join(".mem_20260424_a1b2c3d4e5f60718_000780.md.op_atomic_collision.tmp");
+    std::fs::write(&temp_path, b"existing temp marker").expect("seed colliding temp path");
+
+    let failure = atomic_write(AtomicWrite {
+        repo: temp.path(),
+        memory: &memory,
+        expected_base_hash: None,
+        mode: WriteMode::CreateNew,
+        operation_id: &OperationId::new("op_atomic_collision"),
+        durability: DurabilityTier::BestEffort,
+        suppression: None,
+        allow_encrypted_namespace: false,
+    })
+    .expect_err("target-parent temp collision should fail before rename");
+
+    assert!(
+        matches!(failure.kind, WriteFailureKind::Io(message) if message.contains("File exists") || message.contains("file exists"))
+    );
+    assert!(!target.exists(), "rename must not happen after temp-path collision");
+    assert_eq!(std::fs::read(&temp_path).expect("collision marker remains"), b"existing temp marker");
+}
+
+#[test]
 fn atomic_write_refuses_plaintext_encrypted_namespace_before_disk_effects() {
     let temp = tempfile::tempdir().expect("tempdir");
     let mut memory = sample_memory("mem_20260424_a1b2c3d4e5f60718_000778");
@@ -54,6 +84,7 @@ fn atomic_write_refuses_plaintext_encrypted_namespace_before_disk_effects() {
 
     assert!(matches!(failure.kind, WriteFailureKind::Validation(message) if message.contains("encrypted namespace")));
     assert!(!temp.path().join("encrypted").exists());
+    assert_repo_empty(temp.path());
 }
 
 #[test]
@@ -79,6 +110,13 @@ fn atomic_write_refuses_unsafe_repo_path_before_disk_effects() {
 
     assert!(matches!(failure.kind, WriteFailureKind::Validation(message) if message.contains("invalid repo path")));
     assert!(!temp.path().join(".git").exists());
+    assert_repo_empty(temp.path());
+}
+
+fn assert_repo_empty(repo: &std::path::Path) {
+    let entries =
+        std::fs::read_dir(repo).expect("read repo entries").collect::<Result<Vec<_>, _>>().expect("repo entries");
+    assert!(entries.is_empty(), "validation failure should not leave repo entries: {entries:#?}");
 }
 
 fn sample_memory(id: &str) -> Memory {

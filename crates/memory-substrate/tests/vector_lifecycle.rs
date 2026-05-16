@@ -1,8 +1,9 @@
 use memory_substrate::*;
+use rusqlite::Connection;
 
 #[tokio::test]
 async fn update_embedding_rejects_wrong_dimension_and_stale_hash() {
-    let (_temp, substrate, memory) = seeded_substrate().await;
+    let (_temp, roots, substrate, memory) = seeded_substrate_with_roots().await;
     let triple = EmbeddingTriple { provider: "synthetic".to_string(), model_ref: "unit".to_string(), dimension: 3 };
     let chunk = first_index_chunk(&memory);
     let chunk_id = chunk.chunk_id.clone();
@@ -18,6 +19,7 @@ async fn update_embedding_rejects_wrong_dimension_and_stale_hash() {
         .await
         .expect_err("dimension mismatch");
     assert!(matches!(wrong_dimension, VectorError::DimensionMismatch { expected: 3, found: 2 }));
+    assert_rejected_embedding_left_no_state(&roots, &substrate, &triple, &chunk_id).await;
 
     let stale = substrate
         .update_embedding(EmbeddingUpdate {
@@ -29,6 +31,7 @@ async fn update_embedding_rejects_wrong_dimension_and_stale_hash() {
         .await
         .expect_err("stale hash");
     assert!(matches!(stale, VectorError::StaleChunk { .. }));
+    assert_rejected_embedding_left_no_state(&roots, &substrate, &triple, &chunk_id).await;
 }
 
 #[tokio::test]
@@ -141,7 +144,10 @@ async fn query_chunks_uses_sqlite_vec_nearest_neighbors() {
     close.body = "close vector chunk".to_string();
     let mut far = sample_memory("mem_20260424_a1b2c3d4e5f60718_000043");
     far.body = "far vector chunk".to_string();
-    for memory in [close.clone(), far.clone()] {
+    let mut disabled = sample_memory("mem_20260424_a1b2c3d4e5f60718_000047");
+    disabled.body = "nearest but passive recall disabled".to_string();
+    disabled.frontmatter.retrieval_policy.passive_recall = false;
+    for memory in [close.clone(), far.clone(), disabled.clone()] {
         substrate
             .write_memory(WriteRequest {
                 operation_id: None,
@@ -157,7 +163,9 @@ async fn query_chunks_uses_sqlite_vec_nearest_neighbors() {
             .expect("write");
     }
     let triple = EmbeddingTriple { provider: "synthetic".to_string(), model_ref: "unit".to_string(), dimension: 3 };
-    for (memory, vector) in [(&close, vec![0.9, 0.0, 0.0]), (&far, vec![0.0, 0.9, 0.0])] {
+    for (memory, vector) in
+        [(&close, vec![0.9, 0.0, 0.0]), (&far, vec![0.0, 0.9, 0.0]), (&disabled, vec![1.0, 0.0, 0.0])]
+    {
         let chunk = first_index_chunk(memory);
         substrate
             .update_embedding(EmbeddingUpdate {
@@ -176,6 +184,10 @@ async fn query_chunks_uses_sqlite_vec_nearest_neighbors() {
         .expect("vector query");
 
     assert_eq!(hits.len(), 2);
+    assert!(
+        hits.iter().all(|hit| hit.memory_id != disabled.frontmatter.id),
+        "vector query must not return passive_recall=false memories: {hits:?}"
+    );
     assert_eq!(hits[0].memory_id, close.frontmatter.id);
     assert!(hits[0].score <= hits[1].score);
 }
@@ -209,12 +221,19 @@ fn chunking_preserves_utf8_when_multibyte_character_crosses_byte_budget() {
 }
 
 async fn seeded_substrate() -> (tempfile::TempDir, Substrate, Memory) {
+    let (temp, _roots, substrate, memory) = seeded_substrate_with_roots().await;
+    (temp, substrate, memory)
+}
+
+async fn seeded_substrate_with_roots() -> (tempfile::TempDir, Roots, Substrate, Memory) {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
-    let substrate =
-        Substrate::init(roots, InitOptions { force_unsafe_durability: true, device_id: Some("dev_test".to_string()) })
-            .await
-            .expect("init");
+    let substrate = Substrate::init(
+        roots.clone(),
+        InitOptions { force_unsafe_durability: true, device_id: Some("dev_test".to_string()) },
+    )
+    .await
+    .expect("init");
     let memory = sample_memory("mem_20260424_a1b2c3d4e5f60718_000041");
     substrate
         .write_memory(WriteRequest {
@@ -229,7 +248,25 @@ async fn seeded_substrate() -> (tempfile::TempDir, Substrate, Memory) {
         })
         .await
         .expect("write");
-    (temp, substrate, memory)
+    (temp, roots, substrate, memory)
+}
+
+async fn assert_rejected_embedding_left_no_state(
+    roots: &Roots,
+    substrate: &Substrate,
+    triple: &EmbeddingTriple,
+    chunk_id: &str,
+) {
+    assert_eq!(substrate.vector_count(triple.clone()).await.expect("count"), 0);
+    let connection = Connection::open(roots.runtime.join("index.sqlite")).expect("open index");
+    let meta_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM chunk_embedding_meta WHERE chunk_id=?1 AND provider=?2 AND model_ref=?3 AND dimension=?4",
+            (chunk_id, triple.provider.as_str(), triple.model_ref.as_str(), i64::from(triple.dimension)),
+            |row| row.get(0),
+        )
+        .expect("count embedding metadata");
+    assert_eq!(meta_count, 0, "rejected update must not write chunk_embedding_meta");
 }
 
 fn sample_memory(id: &str) -> Memory {

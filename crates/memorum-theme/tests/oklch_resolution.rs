@@ -4,6 +4,8 @@ use memorum_theme::{ColorCapability, OklchColor, ResolvedColor, Resolver};
 fn parses_oklch_and_hex_and_rejects_malformed_values() {
     let color = OklchColor::parse_oklch("oklch(0.16 0.006 70 / 0.8)").expect("oklch parses");
     assert!((color.l - 0.16).abs() < f32::EPSILON);
+    assert!((color.c - 0.006).abs() < f32::EPSILON);
+    assert!((color.h - 70.0).abs() < f32::EPSILON);
     assert!(OklchColor::parse("#ff0000").is_ok());
     assert!(OklchColor::parse("oklch(nope)").is_err());
 }

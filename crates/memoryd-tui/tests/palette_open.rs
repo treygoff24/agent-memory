@@ -24,8 +24,13 @@ fn palette_accepts_text_and_moves_selection() {
     app.handle_event(key(KeyCode::Char(':')), now);
     app.handle_event(key(KeyCode::Char('t')), now);
     app.handle_event(key(KeyCode::Char('h')), now);
-    app.handle_event(key(KeyCode::Down), now);
 
     assert_eq!(app.palette().input(), "th");
-    assert!(app.palette().selected_label().is_some());
+    assert!(app.palette().candidates().len() > 1);
+    let initial_selection = app.palette().selected_label().expect("query has an initial selection");
+
+    app.handle_event(key(KeyCode::Down), now);
+
+    let moved_selection = app.palette().selected_label().expect("query still has a selection after moving down");
+    assert_ne!(moved_selection, initial_selection);
 }

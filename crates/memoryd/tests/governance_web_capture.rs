@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use chrono::Utc;
 use memory_source::hash::sha256_prefixed;
 use memory_source::storage::excerpts_jsonl;
@@ -5,6 +7,7 @@ use memory_source::{
     ArtifactStore, CaptureMethod, CaptureRequestSnapshot, CaptureResponseSnapshot, CaptureStatus, ExcerptLocator,
     ExcerptMatchKind, ExcerptRecord, RawStorage, SourceArtifactId, WebCaptureArtifact, WebCaptureManifest,
 };
+use memory_substrate::tree::relative_memory_paths;
 use memory_substrate::{InitOptions, MemoryId, Roots, Substrate};
 use memoryd::handlers::handle_request;
 use memoryd::protocol::{
@@ -30,18 +33,14 @@ async fn governed_write_accepts_verified_webcap_ref() {
 async fn governed_write_refuses_naked_or_corrupt_webcap_ref() {
     let temp = tempfile::tempdir().expect("tempdir");
     let substrate = init_substrate(&temp).await;
-    let naked = write_web_memory(&substrate, "write-naked-url", "https://example.com/report").await;
-    assert_eq!(naked.status, GovernanceStatus::Refused);
-    assert_eq!(naked.reason, Some(GovernanceRefusalReason::Grounding));
+    assert_grounding_refusal_without_memory_write(&substrate, "write-naked-url", "https://example.com/report").await;
 
     let source_ref = write_artifact(&substrate, CaptureStatus::Complete);
     let artifact_id =
         SourceArtifactId::try_new(source_ref.trim_start_matches("webcap:").split('#').next().unwrap()).unwrap();
     let artifact_path = ArtifactStore::new(substrate.roots().repo.clone()).find_artifact_path(&artifact_id).unwrap();
     std::fs::write(substrate.roots().repo.join(artifact_path.relative()).join("extracted.txt"), "tampered").unwrap();
-    let corrupt = write_web_memory(&substrate, "write-corrupt-webcap", &source_ref).await;
-    assert_eq!(corrupt.status, GovernanceStatus::Refused);
-    assert_eq!(corrupt.reason, Some(GovernanceRefusalReason::Grounding));
+    assert_grounding_refusal_without_memory_write(&substrate, "write-corrupt-webcap", &source_ref).await;
 }
 
 #[tokio::test]
@@ -50,16 +49,15 @@ async fn governed_write_refuses_missing_excerpt_or_partial_capture() {
     let substrate = init_substrate(&temp).await;
     let source_ref = write_artifact(&substrate, CaptureStatus::Complete);
     let no_quote = source_ref.split('#').next().unwrap().to_string();
-    let missing_excerpt = write_web_memory(&substrate, "write-missing-excerpt", &no_quote).await;
-    assert_eq!(missing_excerpt.status, GovernanceStatus::Refused);
-    assert_eq!(missing_excerpt.reason, Some(GovernanceRefusalReason::Grounding));
+    assert_grounding_refusal_without_memory_write(&substrate, "write-no-excerpt-fragment", &no_quote).await;
+
+    let missing_quote = format!("{}#quote_missing", source_ref.split('#').next().unwrap());
+    assert_grounding_refusal_without_memory_write(&substrate, "write-missing-excerpt", &missing_quote).await;
 
     let temp = tempfile::tempdir().expect("tempdir");
     let substrate = init_substrate(&temp).await;
     let partial_ref = write_partial_artifact(&substrate);
-    let partial = write_web_memory(&substrate, "write-partial-webcap", &partial_ref).await;
-    assert_eq!(partial.status, GovernanceStatus::Refused);
-    assert_eq!(partial.reason, Some(GovernanceRefusalReason::Grounding));
+    assert_grounding_refusal_without_memory_write(&substrate, "write-partial-webcap", &partial_ref).await;
 }
 
 async fn init_substrate(temp: &tempfile::TempDir) -> Substrate {
@@ -102,6 +100,22 @@ async fn write_web_memory(
         panic!("expected governance write response, got {:?}", response.result);
     };
     write
+}
+
+async fn assert_grounding_refusal_without_memory_write(substrate: &Substrate, request_id: &str, source_ref: &str) {
+    let before = relative_memory_paths_sorted(substrate);
+    let refused = write_web_memory(substrate, request_id, source_ref).await;
+
+    assert_eq!(refused.status, GovernanceStatus::Refused);
+    assert_eq!(refused.reason, Some(GovernanceRefusalReason::Grounding));
+    assert_eq!(refused.id, None);
+    assert_eq!(relative_memory_paths_sorted(substrate), before);
+}
+
+fn relative_memory_paths_sorted(substrate: &Substrate) -> Vec<PathBuf> {
+    let mut paths = relative_memory_paths(substrate.roots().repo.as_path());
+    paths.sort();
+    paths
 }
 
 fn write_artifact(substrate: &Substrate, status: CaptureStatus) -> String {

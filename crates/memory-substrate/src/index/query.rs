@@ -15,7 +15,7 @@ use crate::index::chunking::chunk_memory;
 use crate::markdown::hash_bytes;
 use crate::model::{
     ChunkResult, EmbeddingTriple, EmbeddingUpdate, Entity, EventsLogMirrorHealth, Memory, MemoryId, MemoryQuery,
-    MemoryStatus, QueryResult, RecallIndexQuery, RecallIndexRow, RepoPath, Scope, Sensitivity, SourceKind,
+    MemoryStatus, MemoryType, QueryResult, RecallIndexQuery, RecallIndexRow, RepoPath, Scope, Sensitivity, SourceKind,
 };
 
 /// Index handle.  Owns a single SQLite connection; all mutating methods take
@@ -230,7 +230,8 @@ impl Index {
 
     /// Query chunks through sqlite-vec nearest-neighbor search.
     ///
-    /// R-IX-1 defense-in-depth: filters out encrypted-memory chunks.
+    /// R-IX-1 defense-in-depth: filters out encrypted-memory chunks and rows
+    /// disabled for passive recall.
     pub fn query_vector_chunks(
         &self,
         triple: &EmbeddingTriple,
@@ -250,6 +251,7 @@ impl Index {
              WHERE embedding MATCH ?1
                AND k = ?2
                AND memories.metadata_only = 0
+               AND memories.passive_recall = 1
              ORDER BY {table}.distance"
         );
         let blob = crate::index::sqlite_vec::serialize_f32(vector);
@@ -322,8 +324,8 @@ impl Index {
         include_metadata_only: bool,
     ) -> SubstrateResult<Vec<RecallIndexRow>> {
         let mut sql = String::from(
-            "SELECT memories.id,memories.path,memories.summary,memories.status,memories.scope,
-                    memories.canonical_namespace_id,memories.updated_at,memories.indexed_at,memories.confidence,
+            "SELECT memories.id,memories.path,memories.summary,memories.status,memories.type,
+                    memories.scope,memories.canonical_namespace_id,memories.updated_at,memories.indexed_at,memories.confidence,
                     memories.source_kind,memories.source_device,memories.sensitivity,memories.passive_recall,memories.index_body,
                     memories.requires_user_confirmation,memories.review_state,
                     memories.human_review_required,memories.max_scope
@@ -1028,20 +1030,21 @@ fn row_to_recall_index_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RecallIn
         path: RepoPath::from_unchecked(row.get::<_, String>(1)?),
         summary: row.get(2)?,
         status: memory_status_from_str(row.get::<_, String>(3)?.as_str())?,
-        scope: scope_from_str(row.get::<_, String>(4)?.as_str())?,
-        canonical_namespace_id: row.get(5)?,
-        updated_at: parse_index_time(row.get::<_, String>(6)?.as_str())?,
-        indexed_at: parse_index_time(row.get::<_, String>(7)?.as_str())?,
-        confidence: row.get(8)?,
-        source_kind: source_kind_from_str(row.get::<_, String>(9)?.as_str())?,
-        source_device: row.get(10)?,
-        sensitivity: sensitivity_from_str(row.get::<_, String>(11)?.as_str())?,
-        passive_recall: row.get::<_, i64>(12)? != 0,
-        index_body: row.get::<_, i64>(13)? != 0,
-        requires_user_confirmation: row.get::<_, i64>(14)? != 0,
-        review_state: row.get(15)?,
-        human_review_required: row.get::<_, i64>(16)? != 0,
-        max_scope: scope_from_str(row.get::<_, String>(17)?.as_str())?,
+        memory_type: memory_type_from_str(row.get::<_, String>(4)?.as_str())?,
+        scope: scope_from_str(row.get::<_, String>(5)?.as_str())?,
+        canonical_namespace_id: row.get(6)?,
+        updated_at: parse_index_time(row.get::<_, String>(7)?.as_str())?,
+        indexed_at: parse_index_time(row.get::<_, String>(8)?.as_str())?,
+        confidence: row.get(9)?,
+        source_kind: source_kind_from_str(row.get::<_, String>(10)?.as_str())?,
+        source_device: row.get(11)?,
+        sensitivity: sensitivity_from_str(row.get::<_, String>(12)?.as_str())?,
+        passive_recall: row.get::<_, i64>(13)? != 0,
+        index_body: row.get::<_, i64>(14)? != 0,
+        requires_user_confirmation: row.get::<_, i64>(15)? != 0,
+        review_state: row.get(16)?,
+        human_review_required: row.get::<_, i64>(17)? != 0,
+        max_scope: scope_from_str(row.get::<_, String>(18)?.as_str())?,
         tags: Vec::new(),
         aliases: Vec::new(),
         entities: Vec::new(),
@@ -1201,6 +1204,29 @@ fn memory_type_str(t: &crate::model::MemoryType) -> &'static str {
         crate::model::MemoryType::Invariant => "invariant",
         crate::model::MemoryType::Decision => "decision",
         crate::model::MemoryType::OpenQuestion => "open-question",
+    }
+}
+
+fn memory_type_from_str(value: &str) -> rusqlite::Result<MemoryType> {
+    match value {
+        "project" => Ok(MemoryType::Project),
+        "person" => Ok(MemoryType::Person),
+        "procedure" => Ok(MemoryType::Procedure),
+        "episode" => Ok(MemoryType::Episode),
+        "claim" => Ok(MemoryType::Claim),
+        "artifact" => Ok(MemoryType::Artifact),
+        "prospective" => Ok(MemoryType::Prospective),
+        "pattern" => Ok(MemoryType::Pattern),
+        "playbook" => Ok(MemoryType::Playbook),
+        "postmortem" => Ok(MemoryType::Postmortem),
+        "anti-pattern" => Ok(MemoryType::AntiPattern),
+        "heuristic" => Ok(MemoryType::Heuristic),
+        "regression" => Ok(MemoryType::Regression),
+        "correction" => Ok(MemoryType::Correction),
+        "invariant" => Ok(MemoryType::Invariant),
+        "decision" => Ok(MemoryType::Decision),
+        "open-question" => Ok(MemoryType::OpenQuestion),
+        _ => Err(invalid_column_value("type", value)),
     }
 }
 

@@ -2092,6 +2092,7 @@ fn ensure_write_parent_contained(repo: &std::path::Path, path: &RepoPath) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::panic::AssertUnwindSafe;
 
     #[test]
     fn committed_lifecycle_failure_marks_stale_old_mutation_as_repair_required() {
@@ -2115,5 +2116,43 @@ mod tests {
         assert!(failure.outcome.committed);
         assert_eq!(failure.outcome.repair_required, Some(RepairRequired::FullStartupScan));
         assert_eq!(failure.outcome.operation_id, operation_id);
+    }
+
+    #[tokio::test]
+    async fn poisoned_index_mutex_maps_vector_apis_to_index_unavailable() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+        let substrate = Substrate::init(
+            roots,
+            InitOptions { force_unsafe_durability: true, device_id: Some("dev_poisonindex".to_string()) },
+        )
+        .await
+        .expect("init");
+        let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            let _guard = substrate.index.lock().expect("index lock before poison");
+            panic!("poison index mutex for B-API-10 regression");
+        }));
+        let triple = EmbeddingTriple {
+            provider: "synthetic".to_string(),
+            model_ref: "stream-a-test".to_string(),
+            dimension: 32,
+        };
+
+        let update = substrate
+            .update_embedding(EmbeddingUpdate {
+                chunk_id: "chunk_poisoned".to_string(),
+                expected_chunk_hash: Sha256::new("hash_poisoned"),
+                triple: triple.clone(),
+                vector: vec![0.0; 32],
+            })
+            .await
+            .expect_err("poisoned update_embedding fails");
+        assert!(matches!(update, VectorError::IndexUnavailable(_)));
+
+        let drop_report = substrate.drop_embedding_model_report(triple.clone()).await.expect_err("poisoned drop fails");
+        assert!(matches!(drop_report, VectorError::IndexUnavailable(_)));
+
+        let count = substrate.vector_count(triple).await.expect_err("poisoned count fails");
+        assert!(matches!(count, VectorError::IndexUnavailable(_)));
     }
 }

@@ -322,6 +322,27 @@ async fn memory_startup_since_event_id_missing_event_falls_back_to_full_startup(
     )
     .await
     .expect("substrate init");
+    let recall_id = "mem_20260501_a1b2c3d4e5f60718_000601";
+    let recall_summary = "missing cursor fallback should include full startup memory";
+    substrate
+        .write_memory(WriteRequest {
+            operation_id: None,
+            memory: peer_memory(&StartupPeerMemorySpec {
+                id: recall_id,
+                summary: recall_summary,
+                source_device: Some("dev_startup"),
+                harness: "codex",
+                session_id: "sess_fixture",
+            }),
+            expected_base_hash: None,
+            write_mode: WriteMode::CreateNew,
+            index_projection: None,
+            event_context: EventContext::default(),
+            allow_best_effort_durability: true,
+            classification: ClassificationOutcome::Trusted,
+        })
+        .await
+        .expect("seed recallable memory");
     let state = HandlerState::new();
     let mut request = startup_request(repo.to_string_lossy().as_ref());
     request.since_event_id = Some("evt_future".to_owned());
@@ -335,7 +356,16 @@ async fn memory_startup_since_event_id_missing_event_falls_back_to_full_startup(
 
     match response.result {
         ResponseResult::Success(ResponsePayload::Startup(startup)) => {
-            assert!(startup.recall_block.contains("<recall"));
+            assert!(
+                startup.recall_block.contains(&format!("<memory ref=\"{recall_id}\"")),
+                "unknown since_event_id should fall back to full startup recall and include seeded memory:\n{}",
+                startup.recall_block
+            );
+            assert!(
+                startup.recall_block.contains(recall_summary),
+                "seeded memory summary should render in recent-memory fallback:\n{}",
+                startup.recall_block
+            );
         }
         other => panic!("expected startup fallback success, got {other:?}"),
     }

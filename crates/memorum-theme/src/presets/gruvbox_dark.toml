@@ -3,6 +3,21 @@ name = "gruvbox-dark"
 borders = "rounded"
 density = "comfortable"
 
+[glyphs]
+brand = "◆"
+review = "●"
+recall = "▸"
+conflict = "⚠"
+dream = "◇"
+due = "▣"
+memory = "○"
+cursor = "▸"
+selection_gutter = "▌"
+progress_filled = "█"
+progress_empty = "░"
+pill_separator = "·"
+palette_prompt = "⌘"
+
 [colors]
 bg = "oklch(0.16 0.006 70)"
 surface = "oklch(0.20 0.010 70)"

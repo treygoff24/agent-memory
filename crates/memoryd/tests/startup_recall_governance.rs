@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use memory_substrate::{
-    Entity, MemoryId, MemoryStatus, RecallIndexQuery, RecallIndexRow, RepoPath, Scope, Sensitivity, SourceKind,
+    Entity, MemoryId, MemoryStatus, MemoryType, RecallIndexQuery, RecallIndexRow, RepoPath, Scope, Sensitivity,
+    SourceKind,
 };
 use memoryd::recall::{
     collect_recall_candidates, collect_recall_candidates_from_index, OmissionReason, RecallCollectionRequest,
@@ -81,6 +82,15 @@ fn pending_confirmation_human_review_and_review_state_suppress_facts_but_count_a
     assert_eq!(
         collected.facts.iter().map(|candidate| candidate.id.as_str()).collect::<Vec<_>>(),
         vec!["mem_20260430_0000000000000004_000004",]
+    );
+    assert_eq!(collected.omitted.len(), 3);
+    assert_eq!(
+        collected.omitted.iter().map(|omission| omission.id.as_deref()).collect::<Vec<_>>(),
+        vec![
+            Some("mem_20260430_0000000000000001_000001"),
+            Some("mem_20260430_0000000000000002_000002"),
+            Some("mem_20260430_0000000000000003_000003"),
+        ]
     );
     assert!(collected.omitted.iter().all(|omission| omission.reason == OmissionReason::ReviewPending));
 }
@@ -184,6 +194,7 @@ fn row(id: &str, status: MemoryStatus) -> RecallIndexRow {
         id: MemoryId::new(id),
         path: RepoPath::new(format!("me/{id}.md")),
         summary: format!("summary for {id}"),
+        memory_type: MemoryType::Pattern,
         status,
         scope: Scope::User,
         canonical_namespace_id: None,

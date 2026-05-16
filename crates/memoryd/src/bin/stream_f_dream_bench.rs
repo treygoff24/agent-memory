@@ -88,7 +88,7 @@ struct PlatformReport {
     arch: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct FixtureReport {
     run_date: String,
     pass_1_fragment_count: usize,
@@ -327,28 +327,40 @@ async fn measure_cleanup_full_pass() -> anyhow::Result<BenchMeasurement> {
 async fn measure_stream_e_dream_question_overhead() -> anyhow::Result<BenchMeasurement> {
     let without_questions = RecallFixture::new(false).await?;
     let with_questions = RecallFixture::new(true).await?;
-    let mut overheads = Vec::with_capacity(RECALL_OVERHEAD_SAMPLE_COUNT);
-    let mut with_question_p95_samples = Vec::with_capacity(RECALL_OVERHEAD_SAMPLE_COUNT);
-    let mut without_question_p95_samples = Vec::with_capacity(RECALL_OVERHEAD_SAMPLE_COUNT);
+    let mut with_question_samples = Vec::with_capacity(RECALL_OVERHEAD_SAMPLE_COUNT);
+    let mut without_question_samples = Vec::with_capacity(RECALL_OVERHEAD_SAMPLE_COUNT);
 
     for _ in 0..RECALL_OVERHEAD_SAMPLE_COUNT {
         let without = time_startup_recall(&without_questions.substrate, &without_questions.repo).await?;
         let with = time_startup_recall(&with_questions.substrate, &with_questions.repo).await?;
-        without_question_p95_samples.push(without);
-        with_question_p95_samples.push(with);
-        overheads.push(with.saturating_sub(without));
+        without_question_samples.push(without);
+        with_question_samples.push(with);
     }
 
-    let without_p95 = millis(p95(without_question_p95_samples));
-    let with_p95 = millis(p95(with_question_p95_samples));
-    let overhead_p95_ms = round3((with_p95 - without_p95).max(0.0));
+    Ok(stream_e_question_overhead_measurement(without_question_samples, with_question_samples))
+}
+
+fn stream_e_question_overhead_measurement(
+    without_question_samples: Vec<Duration>,
+    with_question_samples: Vec<Duration>,
+) -> BenchMeasurement {
+    let overheads = with_question_samples
+        .iter()
+        .zip(&without_question_samples)
+        .map(|(with, without)| with.saturating_sub(*without))
+        .collect::<Vec<_>>();
+    let without_p95 = millis(p95(without_question_samples));
+    let with_p95 = millis(p95(with_question_samples));
+    let distribution_p95_delta_ms = round3((with_p95 - without_p95).max(0.0));
+    let overhead_p95_ms = round3(millis(p95(overheads)));
     let mut details = BTreeMap::new();
     details.insert("base_memory_count".to_owned(), json!(RECALL_BASE_MEMORY_COUNT));
     details.insert("question_record_count".to_owned(), json!(RECALL_QUESTION_RECORD_COUNT));
     details.insert("startup_without_questions_p95_ms".to_owned(), json!(round3(without_p95)));
     details.insert("startup_with_questions_p95_ms".to_owned(), json!(round3(with_p95)));
-    details.insert("paired_overhead_samples_p95_ms".to_owned(), json!(round3(millis(p95(overheads)))));
-    Ok(BenchMeasurement {
+    details.insert("distribution_p95_delta_ms".to_owned(), json!(distribution_p95_delta_ms));
+    details.insert("paired_overhead_samples_p95_ms".to_owned(), json!(overhead_p95_ms));
+    BenchMeasurement {
         name: "stream_e_pending_attention_question_read_overhead".to_owned(),
         description: "Added Stream E startup p95 overhead from reading Pass-3 dream questions.".to_owned(),
         measured_p95_ms: overhead_p95_ms,
@@ -357,7 +369,7 @@ async fn measure_stream_e_dream_question_overhead() -> anyhow::Result<BenchMeasu
         sample_count: RECALL_OVERHEAD_SAMPLE_COUNT,
         pass: overhead_p95_ms <= RECALL_OVERHEAD_BUDGET_MS,
         details,
-    })
+    }
 }
 
 async fn time_startup_recall(substrate: &Substrate, repo: &Path) -> anyhow::Result<Duration> {
@@ -448,21 +460,41 @@ fn round3(value: f64) -> f64 {
 }
 
 fn enforce_budgets(report: &BenchReport) -> anyhow::Result<()> {
-    let failures = report
-        .measurements
-        .iter()
-        .filter(|measurement| !measurement.pass)
-        .map(|measurement| {
-            format!(
+    let mut failures = Vec::new();
+    for measurement in &report.measurements {
+        let computed_pass = computed_measurement_pass(measurement)?;
+        if measurement.pass != computed_pass {
+            failures.push(format!(
+                "{} pass flag is {}, but p95={}ms budget={:?} {:?} computes to {}",
+                measurement.name,
+                measurement.pass,
+                measurement.measured_p95_ms,
+                measurement.budget_ms,
+                measurement.budget_operator,
+                computed_pass
+            ));
+        }
+        if !computed_pass {
+            failures.push(format!(
                 "{} p95={}ms budget={:?} {:?}",
                 measurement.name, measurement.measured_p95_ms, measurement.budget_ms, measurement.budget_operator
-            )
-        })
-        .collect::<Vec<_>>();
+            ));
+        }
+    }
+
     if failures.is_empty() {
         Ok(())
     } else {
         anyhow::bail!("Stream F benchmark budget failures:\n{}", failures.join("\n"));
+    }
+}
+
+fn computed_measurement_pass(measurement: &BenchMeasurement) -> anyhow::Result<bool> {
+    match (measurement.budget_ms, measurement.budget_operator) {
+        (Some(budget_ms), Some(BudgetOperator::LessThan)) => Ok(measurement.measured_p95_ms < budget_ms),
+        (Some(budget_ms), Some(BudgetOperator::LessThanOrEqual)) => Ok(measurement.measured_p95_ms <= budget_ms),
+        (None, None) => Ok(true),
+        _ => anyhow::bail!("measurement {} has incomplete budget contract", measurement.name),
     }
 }
 
@@ -472,11 +504,44 @@ fn read_baseline(path: &Path) -> anyhow::Result<BenchReport> {
 }
 
 fn write_report(path: &Path, report: &BenchReport) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent() {
+    write_report_file(path, &format!("{}\n", serde_json::to_string_pretty(report)?))
+}
+
+fn write_report_file(path: &Path, content: &str) -> anyhow::Result<()> {
+    if let Some(parent) = non_empty_parent(path) {
         fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
-    fs::write(path, format!("{}\n", serde_json::to_string_pretty(report)?))
-        .with_context(|| format!("write {}", path.display()))
+    let directory = non_empty_parent(path).unwrap_or_else(|| Path::new("."));
+    let file_name = path.file_name().ok_or_else(|| anyhow!("output path {} has no file name", path.display()))?;
+    let temp_path =
+        directory.join(format!(".{}.{}.{}.tmp", file_name.to_string_lossy(), std::process::id(), unique_suffix()));
+
+    let write_result = (|| -> anyhow::Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+            .with_context(|| format!("create temp report {}", temp_path.display()))?;
+        file.write_all(content.as_bytes()).with_context(|| format!("write temp report {}", temp_path.display()))?;
+        file.sync_all().with_context(|| format!("sync temp report {}", temp_path.display()))?;
+        drop(file);
+        fs::rename(&temp_path, path).with_context(|| format!("replace report {}", path.display()))
+    })();
+
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(&temp_path);
+        return Err(error);
+    }
+
+    Ok(())
+}
+
+fn non_empty_parent(path: &Path) -> Option<&Path> {
+    path.parent().filter(|parent| !parent.as_os_str().is_empty())
+}
+
+fn unique_suffix() -> u128 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |duration| duration.as_nanos())
 }
 
 fn validate_baseline_contract(baseline: &BenchReport, current: &BenchReport, path: &Path) -> anyhow::Result<()> {
@@ -494,19 +559,27 @@ fn validate_baseline_contract(baseline: &BenchReport, current: &BenchReport, pat
     if baseline.profile != current.profile {
         anyhow::bail!("baseline {} profile mismatch: {} != {}", path.display(), baseline.profile, current.profile);
     }
-    if baseline.fixture.run_date != current.fixture.run_date
-        || baseline.fixture.pass_1_fragment_count != current.fixture.pass_1_fragment_count
-        || baseline.fixture.cleanup_canonical_memory_count != current.fixture.cleanup_canonical_memory_count
-        || baseline.fixture.cleanup_substrate_fragment_count != current.fixture.cleanup_substrate_fragment_count
-        || baseline.fixture.recall_question_record_count != current.fixture.recall_question_record_count
-    {
+    if baseline.fixture != current.fixture {
         anyhow::bail!("baseline {} fixture shape does not match current fixture", path.display());
     }
 
-    let baseline_names = baseline.measurements.iter().map(|measurement| &measurement.name).collect::<Vec<_>>();
-    let current_names = current.measurements.iter().map(|measurement| &measurement.name).collect::<Vec<_>>();
-    if baseline_names != current_names {
+    if baseline.measurements.len() != current.measurements.len() {
         anyhow::bail!("baseline {} measurement set does not match current fixture", path.display());
+    }
+    for (baseline_measurement, current_measurement) in baseline.measurements.iter().zip(&current.measurements) {
+        if baseline_measurement.name != current_measurement.name {
+            anyhow::bail!("baseline {} measurement set does not match current fixture", path.display());
+        }
+        if baseline_measurement.budget_ms != current_measurement.budget_ms
+            || baseline_measurement.budget_operator != current_measurement.budget_operator
+            || baseline_measurement.sample_count != current_measurement.sample_count
+        {
+            anyhow::bail!(
+                "baseline {} measurement contract for {} does not match current fixture",
+                path.display(),
+                baseline_measurement.name
+            );
+        }
     }
     Ok(())
 }
@@ -892,4 +965,145 @@ fn run_date() -> anyhow::Result<chrono::NaiveDate> {
 
 fn instant(value: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(value).expect("fixture timestamp parses").with_timezone(&Utc)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn baseline_contract_rejects_changed_fixture_shape() {
+        let current = sample_report();
+        let mut baseline = current.clone();
+        baseline.fixture.pass_1_active_memory_count += 1;
+        let err = validate_baseline_contract(&baseline, &current, Path::new("baseline.json"))
+            .expect_err("active-memory count drift must fail");
+        assert!(err.to_string().contains("fixture shape"), "err: {err:#}");
+
+        let mut baseline = current.clone();
+        baseline.fixture.cleanup_old_event_count += 1;
+        let err = validate_baseline_contract(&baseline, &current, Path::new("baseline.json"))
+            .expect_err("cleanup old-event count drift must fail");
+        assert!(err.to_string().contains("fixture shape"), "err: {err:#}");
+    }
+
+    #[test]
+    fn baseline_contract_rejects_changed_measurement_contract() {
+        let current = sample_report();
+        let mut baseline = current.clone();
+        baseline.measurements[0].sample_count += 1;
+        let err = validate_baseline_contract(&baseline, &current, Path::new("baseline.json"))
+            .expect_err("sample-count drift must fail");
+        assert!(err.to_string().contains("measurement contract"), "err: {err:#}");
+
+        let mut baseline = current.clone();
+        baseline.measurements[0].budget_ms = Some(999.0);
+        let err = validate_baseline_contract(&baseline, &current, Path::new("baseline.json"))
+            .expect_err("budget drift must fail");
+        assert!(err.to_string().contains("measurement contract"), "err: {err:#}");
+    }
+
+    #[test]
+    fn enforce_budgets_recomputes_pass_from_measurement_values() {
+        let mut report = sample_report();
+        report.measurements[0].measured_p95_ms = report.measurements[0].budget_ms.expect("budget") + 1.0;
+        report.measurements[0].pass = true;
+
+        let err = enforce_budgets(&report).expect_err("inconsistent pass flag must fail");
+
+        assert!(err.to_string().contains("pass flag"), "err: {err:#}");
+    }
+
+    #[test]
+    fn stream_e_question_overhead_uses_paired_overhead_p95() {
+        let without = repeated_duration(0, 19).into_iter().chain(repeated_duration(100, 2)).collect::<Vec<_>>();
+        let with = repeated_duration(6, 19).into_iter().chain(repeated_duration(100, 2)).collect::<Vec<_>>();
+
+        let measurement = stream_e_question_overhead_measurement(without, with);
+
+        assert_eq!(measurement.measured_p95_ms, 6.0);
+        assert!(!measurement.pass);
+        assert_eq!(measurement.details["distribution_p95_delta_ms"], json!(0.0));
+        assert_eq!(measurement.details["paired_overhead_samples_p95_ms"], json!(6.0));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_report_file_failure_leaves_existing_file_unchanged() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let output = temp.path().join("stream-f-report.json");
+        std::fs::write(&output, "old report\n").expect("seed report");
+        let original_permissions = std::fs::metadata(temp.path()).expect("temp metadata").permissions();
+        let mut readonly_permissions = original_permissions.clone();
+        readonly_permissions.set_mode(0o555);
+        std::fs::set_permissions(temp.path(), readonly_permissions).expect("make temp dir read-only");
+        match write_probe_succeeds(temp.path()) {
+            Ok(true) => {
+                std::fs::set_permissions(temp.path(), original_permissions).expect("restore temp dir permissions");
+                eprintln!(
+                    "skipping write-failure assertion because this runner can still create files in a 0555 directory"
+                );
+                return;
+            }
+            Ok(false) => {}
+            Err(error) => {
+                std::fs::set_permissions(temp.path(), original_permissions).expect("restore temp dir permissions");
+                panic!("permission probe failed unexpectedly in {}: {error}", temp.path().display());
+            }
+        }
+
+        let result = write_report_file(&output, "new report\n");
+
+        std::fs::set_permissions(temp.path(), original_permissions).expect("restore temp dir permissions");
+        let err = result.expect_err("read-only directory must fail temp write");
+        assert!(format!("{err:#}").contains("create temp report"), "err: {err:#}");
+        assert_eq!(std::fs::read_to_string(output).expect("read report"), "old report\n");
+    }
+
+    #[cfg(unix)]
+    fn write_probe_succeeds(directory: &std::path::Path) -> std::io::Result<bool> {
+        let probe_path = directory.join(format!(".report-permission-probe-{}", std::process::id()));
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&probe_path) {
+            Ok(_) => {
+                let _ = std::fs::remove_file(probe_path);
+                Ok(true)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn sample_report() -> BenchReport {
+        BenchReport {
+            schema_version: 1,
+            fixture_version: FIXTURE_VERSION.to_owned(),
+            profile: "darwin-arm64".to_owned(),
+            platform: PlatformReport { os: "test-os".to_owned(), arch: "test-arch".to_owned() },
+            fixture: FixtureReport {
+                run_date: RUN_DATE.to_owned(),
+                pass_1_fragment_count: PASS_1_FRAGMENT_COUNT,
+                pass_1_active_memory_count: PASS_1_ACTIVE_MEMORY_COUNT,
+                cleanup_canonical_memory_count: CLEANUP_CANONICAL_MEMORY_COUNT,
+                cleanup_substrate_fragment_count: CLEANUP_SUBSTRATE_FRAGMENT_COUNT,
+                cleanup_old_event_count: CLEANUP_OLD_EVENT_COUNT,
+                recall_question_record_count: RECALL_QUESTION_RECORD_COUNT,
+            },
+            measurements: vec![BenchMeasurement {
+                name: "budgeted_measurement".to_owned(),
+                description: "test measurement".to_owned(),
+                measured_p95_ms: 1.0,
+                budget_ms: Some(5.0),
+                budget_operator: Some(BudgetOperator::LessThanOrEqual),
+                sample_count: 3,
+                pass: true,
+                details: BTreeMap::new(),
+            }],
+        }
+    }
+
+    fn repeated_duration(ms: u64, count: usize) -> Vec<Duration> {
+        std::iter::repeat(Duration::from_millis(ms)).take(count).collect()
+    }
 }

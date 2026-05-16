@@ -7,6 +7,8 @@ use memory_substrate::{
 };
 use std::process::Command;
 
+const NONCANONICAL_STREAM_F_SENTINEL: &str = "noncanonical-stream-f-sentinel";
+
 #[test]
 fn validates_stream_f_noncanonical_tree_files_without_canonical_frontmatter() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -222,6 +224,20 @@ async fn stream_f_noncanonical_files_are_never_indexed_or_returned_by_queries() 
         .query_chunks(ChunkQuery { text: Some("stream-f-isolation".to_string()), triple: None, vector: None })
         .await
         .expect("chunk query");
+    let sentinel_recall_hits = substrate
+        .query_recall_index(RecallIndexQuery {
+            namespace_prefix: None,
+            statuses: vec![MemoryStatus::Active],
+            passive_recall_only: true,
+            updated_since: None,
+            match_terms: vec![NONCANONICAL_STREAM_F_SENTINEL.to_string()],
+        })
+        .await
+        .expect("sentinel recall query");
+    let sentinel_chunk_hits = substrate
+        .query_chunks(ChunkQuery { text: Some(NONCANONICAL_STREAM_F_SENTINEL.to_string()), triple: None, vector: None })
+        .await
+        .expect("sentinel chunk query");
 
     assert_eq!(indexed, 1);
     assert_eq!(memory_hits.len(), 1);
@@ -230,6 +246,8 @@ async fn stream_f_noncanonical_files_are_never_indexed_or_returned_by_queries() 
     assert_eq!(recall_hits[0].path, memory.path.clone().expect("canonical path"));
     assert_eq!(chunk_hits.len(), 1);
     assert_eq!(chunk_hits[0].memory_id, memory.frontmatter.id);
+    assert!(sentinel_recall_hits.is_empty(), "noncanonical plaintext leaked into recall index");
+    assert!(sentinel_chunk_hits.is_empty(), "noncanonical plaintext leaked into chunks");
 }
 
 #[tokio::test]
@@ -313,13 +331,19 @@ async fn supersede_memory_refuses_dream_artifacts_as_grounding_sources() {
 
 fn noncanonical_files() -> Vec<(&'static str, &'static str)> {
     vec![
-        ("dreams/journal/me/2026-04-30.md", "Masked journal body without frontmatter.\n"),
+        (
+            "dreams/journal/me/2026-04-30.md",
+            concat!("Masked journal body without frontmatter. ", "noncanonical-stream-f-sentinel", "\n"),
+        ),
         (
             "dreams/questions/project/proj_abc/2026-04-30.jsonl",
-            r#"{"entities":["ent_stream_f"],"question":"What assumption should we revisit?"}"#,
+            r#"{"entities":["ent_stream_f"],"question":"What noncanonical-stream-f-sentinel assumption should we revisit?"}"#,
         ),
         ("dreams/cleanup/dev_local/2026-04-30.json", r#"{"device_id":"dev_local","operations":[]}"#),
-        ("substrate/dev_local/2026-04-30.jsonl", r#"{"id":"sub_01","text":"plain substrate observation"}"#),
+        (
+            "substrate/dev_local/2026-04-30.jsonl",
+            r#"{"id":"sub_01","text":"plain substrate noncanonical-stream-f-sentinel observation"}"#,
+        ),
         (
             "encrypted/substrate/dev_local/2026-04-30.jsonl",
             r#"{"id":"sub_02","ciphertext":"age1...","descriptor":"encrypted fragment"}"#,

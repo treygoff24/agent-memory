@@ -7,7 +7,7 @@ fn conflict_ranks_before_due_before_review() {
         vec![vec![
             InboxItem::ReviewCandidate {
                 id: "r".into(),
-                title: "review".into(),
+                title: "m-review".into(),
                 namespace: "n".into(),
                 reason: None,
                 age_label: "now".into(),
@@ -16,14 +16,14 @@ fn conflict_ranks_before_due_before_review() {
             },
             InboxItem::Conflict {
                 id: "c".into(),
-                title: "conflict".into(),
+                title: "z-conflict".into(),
                 namespace: "n".into(),
                 reason: None,
                 age_label: "now".into(),
             },
             InboxItem::RealityCheckDue {
                 id: "d".into(),
-                title: "due".into(),
+                title: "a-due".into(),
                 namespace: "n".into(),
                 score: "0.8".into(),
                 age_label: "now".into(),
@@ -33,7 +33,6 @@ fn conflict_ranks_before_due_before_review() {
         10,
     );
 
-    assert_eq!(items[0].id(), "c");
-    assert_eq!(items[1].id(), "d");
-    assert_eq!(items[2].id(), "r");
+    let ordered_ids = items.iter().map(InboxItem::id).collect::<Vec<_>>();
+    assert_eq!(ordered_ids, vec!["c", "d", "r"]);
 }

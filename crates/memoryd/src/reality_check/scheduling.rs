@@ -1,4 +1,4 @@
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Datelike, Duration, Utc, Weekday};
 use tokio::sync::broadcast;
 
 use crate::protocol::NotificationEvent;
@@ -51,9 +51,10 @@ impl RcScheduler {
         if self.is_snoozed(state, now) {
             return false;
         }
-        state
-            .last_completed_at
-            .is_none_or(|last_completed_at| now.signed_duration_since(last_completed_at) >= WEEKLY_CADENCE)
+        let Some(last_completed_at) = state.last_completed_at else {
+            return true;
+        };
+        now >= self.schedule.first_due_at_or_after(last_completed_at + WEEKLY_CADENCE)
     }
 
     pub fn is_snoozed(&self, state: &RealityCheckState, now: DateTime<Utc>) -> bool {
@@ -83,6 +84,33 @@ impl RcScheduler {
         }
         let _ = notifications.send(NotificationEvent::RealityCheckDue { due_at: now });
         true
+    }
+}
+
+impl RcSchedule {
+    fn first_due_at_or_after(&self, earliest: DateTime<Utc>) -> DateTime<Utc> {
+        let (minute, hour) = self.weekly_time();
+        let days_until_sunday = (i64::from(Weekday::Sun.num_days_from_monday())
+            - i64::from(earliest.weekday().num_days_from_monday()))
+        .rem_euclid(7);
+        let candidate_date = earliest.date_naive() + Duration::days(days_until_sunday);
+        let candidate_naive = candidate_date
+            .and_hms_opt(u32::from(hour), u32::from(minute), 0)
+            .expect("validated schedule time fits in a day");
+        let candidate = DateTime::from_naive_utc_and_offset(candidate_naive, Utc);
+
+        if candidate < earliest {
+            candidate + WEEKLY_CADENCE
+        } else {
+            candidate
+        }
+    }
+
+    fn weekly_time(&self) -> (u8, u8) {
+        let mut fields = self.expression.split_whitespace();
+        let minute = fields.next().and_then(|value| value.parse().ok()).unwrap_or(0);
+        let hour = fields.next().and_then(|value| value.parse().ok()).unwrap_or(9);
+        (minute, hour)
     }
 }
 

@@ -8,7 +8,7 @@ use std::time::Duration;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 
 use crate::error::WatchError;
-use crate::model::RepoPath;
+use crate::model::{RepoPath, Sha256};
 use crate::watcher::filter::should_watch;
 use crate::watcher::SuppressionLedger;
 
@@ -19,6 +19,12 @@ pub struct FileEvent {
     pub path: PathBuf,
     /// Event kind.
     pub kind: WatchEventKind,
+    /// Hash of the file contents observed by the watcher callback.
+    ///
+    /// This is populated for concrete path-change events when the path can be
+    /// read as a file. It lets subscribers and tests distinguish a queued stale
+    /// event from an event observed after different bytes were written.
+    pub content_hash: Option<Sha256>,
 }
 
 /// Watch event kind.
@@ -35,7 +41,15 @@ pub enum WatchEventKind {
 impl FileEvent {
     /// Build a full-rescan marker event for deterministic overflow handling.
     pub fn rescan_required(root: impl Into<PathBuf>) -> Self {
-        Self { path: root.into(), kind: WatchEventKind::RescanRequired }
+        Self { path: root.into(), kind: WatchEventKind::RescanRequired, content_hash: None }
+    }
+
+    fn path_changed(path: PathBuf, content_hash: Option<Sha256>) -> Self {
+        Self { path, kind: WatchEventKind::PathChanged, content_hash }
+    }
+
+    fn watcher_error(path: PathBuf) -> Self {
+        Self { path, kind: WatchEventKind::WatcherError, content_hash: None }
     }
 }
 
@@ -78,7 +92,7 @@ pub fn watch_root_with_suppression(
 ) -> Result<WatchSubscription, WatchError> {
     let (sender, receiver) = channel();
     let root = root.to_path_buf();
-    let callback_root = root.clone();
+    let callback_root = root.canonicalize().unwrap_or_else(|_| root.clone());
 
     let overflow_sender = sender.clone();
     let error_sender = sender.clone();
@@ -97,18 +111,18 @@ pub fn watch_root_with_suppression(
                     if !should_watch(&path) {
                         continue;
                     }
-                    if should_suppress(&callback_root, &path, suppression.as_ref()) {
+                    let content_hash = observed_content_hash(&path);
+                    if should_suppress(&callback_root, &path, content_hash.as_ref(), suppression.as_ref()) {
                         continue;
                     }
-                    let _ = sender.send(FileEvent { path, kind: WatchEventKind::PathChanged });
+                    let _ = sender.send(FileEvent::path_changed(path, content_hash));
                 }
             }
             Err(err) => {
                 // Log the error and emit an event so subscribers know the
                 // watcher has degraded — never silently discard (B-RT-5).
                 tracing::warn!("watcher error: {err}");
-                let _ =
-                    error_sender.send(FileEvent { path: callback_root.clone(), kind: WatchEventKind::WatcherError });
+                let _ = error_sender.send(FileEvent::watcher_error(callback_root.clone()));
             }
         }
     })
@@ -118,7 +132,12 @@ pub fn watch_root_with_suppression(
     Ok(WatchSubscription { receiver, watcher: Some(watcher) })
 }
 
-fn should_suppress(root: &Path, path: &Path, suppression: Option<&Arc<Mutex<SuppressionLedger>>>) -> bool {
+fn should_suppress(
+    root: &Path,
+    path: &Path,
+    content_hash: Option<&Sha256>,
+    suppression: Option<&Arc<Mutex<SuppressionLedger>>>,
+) -> bool {
     let Some(suppression) = suppression else {
         return false;
     };
@@ -127,13 +146,17 @@ fn should_suppress(root: &Path, path: &Path, suppression: Option<&Arc<Mutex<Supp
     };
     let relative = relative.to_string_lossy().replace('\\', "/");
     let repo_path = RepoPath::new(relative);
-    let Ok(bytes) = std::fs::read(path) else {
+    let Some(hash) = content_hash else {
         return false;
     };
-    let hash = crate::markdown::hash_bytes(&bytes);
     // Propagate mutex poisoning rather than silently failing open (R-RT-5).
     let Ok(mut ledger) = suppression.lock() else {
         panic!("suppression ledger mutex not poisoned");
     };
-    ledger.should_suppress(&repo_path, &hash)
+    ledger.should_suppress(&repo_path, hash)
+}
+
+fn observed_content_hash(path: &Path) -> Option<Sha256> {
+    let bytes = std::fs::read(path).ok()?;
+    Some(crate::markdown::hash_bytes(&bytes))
 }

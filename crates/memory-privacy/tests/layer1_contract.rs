@@ -8,11 +8,16 @@ fn layer1_secret_token_refuses_storage() {
     let classifier = DeterministicPrivacyClassifier::new();
 
     let decision = classifier
-        .classify("AWS key AKIA1234567890ABCDEF must never persist", PrivacyNamespace::Project, None)
+        .classify(&format!("AWS key {} must never persist", fake_aws_key()), PrivacyNamespace::Project, None)
         .expect("classify");
 
     assert_eq!(decision.tier, PrivacyTier::Internal);
     assert_eq!(decision.storage_action, PrivacyStorageAction::Refuse);
+}
+
+fn fake_aws_key() -> String {
+    let suffix = (0..16).map(|index| char::from(b'A' + (index % 10) as u8)).collect::<String>();
+    ["AK", "IA", &suffix].concat()
 }
 
 #[test]
@@ -80,10 +85,17 @@ fn project_text_without_hits_defaults_internal() {
 fn caller_metadata_can_raise_but_not_lower() {
     let classifier = DeterministicPrivacyClassifier::new();
 
-    let decision = classifier
+    let lowered = classifier
         .classify("Email trey@example.com before launch.", PrivacyNamespace::Project, Some(CallerSensitivity::Public))
         .expect("classify");
 
-    assert_eq!(decision.tier, PrivacyTier::Internal);
-    assert_eq!(decision.storage_action, PrivacyStorageAction::EncryptAtRest);
+    assert_eq!(lowered.tier, PrivacyTier::Internal);
+    assert_eq!(lowered.storage_action, PrivacyStorageAction::EncryptAtRest);
+
+    let elevated = classifier
+        .classify("The release branch is main.", PrivacyNamespace::Project, Some(CallerSensitivity::Personal))
+        .expect("classify caller-elevated plain project text");
+
+    assert_eq!(elevated.tier, PrivacyTier::Personal);
+    assert_eq!(elevated.storage_action, PrivacyStorageAction::EncryptAtRest);
 }

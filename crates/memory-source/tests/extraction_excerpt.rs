@@ -1,15 +1,13 @@
 use chrono::Utc;
 use memory_source::excerpt::create_excerpt_records;
 use memory_source::extract::extract_text;
-use memory_source::SourceArtifactId;
+use memory_source::{ExcerptLocator, SourceArtifactId};
 
 #[test]
 fn html_extraction_removes_nonvisible_content_and_normalizes() {
     let html = br#"<html><head><style>.x{}</style><script>secret()</script></head><body><h1> Title </h1><template>hidden</template><p>Visible   text</p><noscript>no</noscript><span hidden>hide</span></body></html>"#;
     let extracted = extract_text(Some("text/html; charset=utf-8"), html).unwrap();
-    assert!(extracted.text.contains("Title Visible text"), "{}", extracted.text);
-    assert!(!extracted.text.contains("secret"));
-    assert!(!extracted.text.contains("hidden"));
+    assert_eq!(extracted.text, "Title Visible text");
 }
 
 #[test]
@@ -32,7 +30,8 @@ fn exact_excerpt_anchoring_records_byte_range() {
         create_excerpt_records(&artifact_id, "alpha exact quote omega", &["exact quote".to_string()], Utc::now())
             .unwrap();
     assert_eq!(records[0].excerpt_id, "quote_0001");
-    assert!(serde_json::to_string(&records[0].locator).unwrap().contains("byte_range"));
+    let ExcerptLocator::ByteRange { start, end } = records[0].locator;
+    assert_eq!("alpha exact quote omega".get(start..end), Some("exact quote"));
     assert!(create_excerpt_records(&artifact_id, "alpha", &["missing".to_string()], Utc::now()).is_err());
     assert!(
         create_excerpt_records(&artifact_id, "SSN 123-45-6789", &["SSN 123-45-6789".to_string()], Utc::now()).is_err()

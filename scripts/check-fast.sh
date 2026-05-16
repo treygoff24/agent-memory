@@ -38,6 +38,9 @@ done < <(find scripts -maxdepth 1 -type f -name '*.sh' | sort)
 phase "cargo metadata"
 cargo metadata --locked --format-version=1 --no-deps >/dev/null
 
+phase "dependency health"
+./scripts/check-dependency-health.sh
+
 if [[ "${MEMORUM_CHECK_FAST_COMPILE:-0}" == "1" ]]; then
   phase "optional rust compile check"
   # Exclude memoryd-web from the fast Rust compile path because its build.rs

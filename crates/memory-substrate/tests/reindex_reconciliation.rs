@@ -16,6 +16,13 @@ async fn external_edit_to_same_path_is_indexed_by_reindex() {
 
     assert_eq!(count, 1);
     assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].memory_id, memory.frontmatter.id);
+    assert_eq!(hits[0].text, "externalneedle edited by human");
+    let stale_hits = substrate
+        .query_chunks(ChunkQuery { text: Some("body".to_string()), triple: None, vector: None })
+        .await
+        .expect("query stale body text");
+    assert!(stale_hits.is_empty(), "old chunk text should be removed after reindex: {stale_hits:#?}");
     drop(temp);
 }
 
@@ -121,12 +128,22 @@ async fn mass_changes_converge_to_fresh_reindex_state() {
 
     assert_eq!(reindexed, 25);
     assert_eq!(hits.len(), 20);
+    for seq in 0..25 {
+        let expected_id = MemoryId::new(format!("mem_20260424_a1b2c3d4e5f60718_{seq:06}"));
+        let unique_hits = substrate
+            .query_chunks(ChunkQuery { text: Some(format!("massneedle {seq}")), triple: None, vector: None })
+            .await
+            .unwrap_or_else(|err| panic!("query mass fixture {seq}: {err}"));
+        assert_eq!(unique_hits.len(), 1, "mass fixture {seq} should have exactly one indexed chunk");
+        assert_eq!(unique_hits[0].memory_id, expected_id);
+    }
 }
 
 #[tokio::test]
 async fn path_only_rename_reindexes_existing_memory_to_new_path() {
     let (_temp, substrate, roots, mut memory) = seeded("mem_20260424_a1b2c3d4e5f60718_020002").await;
-    let old_path = roots.repo.join(memory.path.clone().expect("old path").as_path());
+    let old_repo_path = memory.path.clone().expect("old path");
+    let old_path = roots.repo.join(old_repo_path.as_path());
     let new_repo_path = RepoPath::new("agent/playbooks/renamed-memory.md");
     let new_path = roots.repo.join(new_repo_path.as_path());
     std::fs::create_dir_all(new_path.parent().expect("new parent")).expect("new parent");
@@ -146,14 +163,17 @@ async fn path_only_rename_reindexes_existing_memory_to_new_path() {
         .await
         .expect("query renamed");
 
+    assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].path, new_repo_path);
+    assert!(hits.iter().all(|hit| hit.path != old_repo_path));
 }
 
 #[tokio::test]
 async fn rename_plus_id_change_removes_old_id_and_indexes_new_id() {
     let (_temp, substrate, roots, mut memory) = seeded("mem_20260424_a1b2c3d4e5f60718_020003").await;
     let old_id = memory.frontmatter.id.clone();
-    let old_path = roots.repo.join(memory.path.clone().expect("old path").as_path());
+    let old_repo_path = memory.path.clone().expect("old path");
+    let old_path = roots.repo.join(old_repo_path.as_path());
     let new_id = MemoryId::new("mem_20260424_a1b2c3d4e5f60718_020004");
     let new_repo_path = RepoPath::new("agent/playbooks/renamed-with-new-id.md");
     let new_path = roots.repo.join(new_repo_path.as_path());
@@ -185,7 +205,9 @@ async fn rename_plus_id_change_removes_old_id_and_indexes_new_id() {
         })
         .await
         .expect("query new id");
+    assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].path, new_repo_path);
+    assert!(hits.iter().all(|hit| hit.path != old_repo_path));
 }
 
 async fn seeded(id: &str) -> (tempfile::TempDir, Substrate, Roots, Memory) {

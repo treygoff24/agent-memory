@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use memoryd::mcp::{
     forward_to_daemon, ForgetRequest, RevealRequest, StartupRequest, SupersedeRequest, ToolRequest, WriteRequest,
@@ -11,6 +12,7 @@ use memoryd::protocol::{
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::task::JoinHandle;
+use tokio::time::timeout;
 
 static SOCKET_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -42,7 +44,7 @@ async fn mcp_governance_forward_memory_write_forwards_to_governed_daemon_payload
     })
     .await;
 
-    let response = forward_to_daemon(
+    let response = forward_to_single_request_daemon(
         &socket,
         "req-write",
         ToolRequest::MemoryWrite(WriteRequest {
@@ -52,15 +54,14 @@ async fn mcp_governance_forward_memory_write_forwards_to_governed_daemon_payload
             meta: serde_json::json!({ "namespace": "project", "sensitivity": "internal" }),
         }),
     )
-    .await
-    .expect("write forwards to daemon");
+    .await;
 
     let ResponseResult::Success(ResponsePayload::GovernanceWrite(write)) = response.result else {
         panic!("expected GovernanceWrite success, got {:?}", response.result);
     };
     assert_eq!(write.status, GovernanceStatus::Promoted);
     assert_eq!(write.id.as_deref(), Some("mem_20260429_a1b2c3d4e5f60718_900001"));
-    server.await.expect("server joins").expect("server ok");
+    await_single_request_daemon(server).await;
     let _ = std::fs::remove_file(socket);
 }
 
@@ -94,7 +95,7 @@ async fn mcp_governance_forward_memory_supersede_forwards_to_governed_daemon_pay
     })
     .await;
 
-    let response = forward_to_daemon(
+    let response = forward_to_single_request_daemon(
         &socket,
         "req-supersede",
         ToolRequest::MemorySupersede(SupersedeRequest {
@@ -112,15 +113,14 @@ async fn mcp_governance_forward_memory_supersede_forwards_to_governed_daemon_pay
             }),
         }),
     )
-    .await
-    .expect("supersede forwards to daemon");
+    .await;
 
     let ResponseResult::Success(ResponsePayload::GovernanceSupersede(supersede)) = response.result else {
         panic!("expected GovernanceSupersede success, got {:?}", response.result);
     };
     assert_eq!(supersede.status, GovernanceStatus::Promoted);
     assert_eq!(supersede.new_id.as_deref(), Some("mem_20260429_a1b2c3d4e5f60718_900002"));
-    server.await.expect("server joins").expect("server ok");
+    await_single_request_daemon(server).await;
     let _ = std::fs::remove_file(socket);
 }
 
@@ -146,7 +146,7 @@ async fn mcp_governance_forward_memory_forget_forwards_to_governed_daemon_payloa
     })
     .await;
 
-    let response = forward_to_daemon(
+    let response = forward_to_single_request_daemon(
         &socket,
         "req-forget",
         ToolRequest::MemoryForget(ForgetRequest {
@@ -154,15 +154,14 @@ async fn mcp_governance_forward_memory_forget_forwards_to_governed_daemon_payloa
             reason: "user requested removal".to_string(),
         }),
     )
-    .await
-    .expect("forget forwards to daemon");
+    .await;
 
     let ResponseResult::Success(ResponsePayload::GovernanceForget(forget)) = response.result else {
         panic!("expected GovernanceForget success, got {:?}", response.result);
     };
     assert_eq!(forget.status, GovernanceStatus::Tombstoned);
     assert_eq!(forget.id, "mem_20260429_a1b2c3d4e5f60718_900001");
-    server.await.expect("server joins").expect("server ok");
+    await_single_request_daemon(server).await;
     let _ = std::fs::remove_file(socket);
 }
 
@@ -189,7 +188,7 @@ async fn mcp_governance_forward_memory_reveal_forwards_to_privacy_reveal_payload
     })
     .await;
 
-    let response = forward_to_daemon(
+    let response = forward_to_single_request_daemon(
         &socket,
         "req-reveal",
         ToolRequest::MemoryReveal(RevealRequest {
@@ -197,14 +196,13 @@ async fn mcp_governance_forward_memory_reveal_forwards_to_privacy_reveal_payload
             reason: "user asked for contact cell".to_string(),
         }),
     )
-    .await
-    .expect("reveal forwards to daemon");
+    .await;
 
     let ResponseResult::Success(ResponsePayload::Reveal(reveal)) = response.result else {
         panic!("expected Reveal success, got {:?}", response.result);
     };
     assert!(reveal.body.contains("202-555-0198"));
-    server.await.expect("server joins").expect("server ok");
+    await_single_request_daemon(server).await;
     let _ = std::fs::remove_file(socket);
 }
 
@@ -217,7 +215,7 @@ async fn mcp_governance_forward_memory_startup_uses_daemon_path() {
     })
     .await;
 
-    let response = forward_to_daemon(
+    let response = forward_to_single_request_daemon(
         &socket,
         "req-startup",
         ToolRequest::MemoryStartup(StartupRequest {
@@ -230,15 +228,14 @@ async fn mcp_governance_forward_memory_startup_uses_daemon_path() {
             budget_tokens: Some(3_600),
         }),
     )
-    .await
-    .expect("startup forwards");
+    .await;
 
     let ResponseResult::Error(error) = response.result else {
         panic!("expected startup error, got {:?}", response.result);
     };
     assert_eq!(error.code, "not_implemented");
     assert!(error.message.contains("fixture"));
-    server.await.expect("server joins").expect("server ok");
+    await_single_request_daemon(server).await;
     let _ = std::fs::remove_file(socket);
 }
 
@@ -249,16 +246,32 @@ where
     let _ = std::fs::remove_file(socket);
     let listener = UnixListener::bind(socket).expect("bind fake daemon socket");
     let task = tokio::spawn(async move {
-        let (stream, _) = listener.accept().await?;
+        let (stream, _) = timeout(Duration::from_secs(2), listener.accept()).await??;
         let mut reader = BufReader::new(stream);
         let mut line = String::new();
-        reader.read_line(&mut line).await?;
+        timeout(Duration::from_secs(2), reader.read_line(&mut line)).await??;
         let request = RequestEnvelope::from_json_line(&line)?;
         let response = assert_and_respond(request);
-        reader.get_mut().write_all(response.to_json_line()?.as_bytes()).await?;
+        let response_line = response.to_json_line()?;
+        timeout(Duration::from_secs(2), reader.get_mut().write_all(response_line.as_bytes())).await??;
         Ok(())
     });
     task
+}
+
+async fn forward_to_single_request_daemon(socket: &Path, id: &str, request: ToolRequest) -> ResponseEnvelope {
+    timeout(Duration::from_secs(2), forward_to_daemon(socket, id, request))
+        .await
+        .expect("MCP forward completes before timeout")
+        .expect("MCP request forwards to fake daemon")
+}
+
+async fn await_single_request_daemon(server: JoinHandle<anyhow::Result<()>>) {
+    timeout(Duration::from_secs(2), server)
+        .await
+        .expect("fake daemon stops before timeout")
+        .expect("fake daemon joins")
+        .expect("fake daemon returns ok");
 }
 
 fn unique_socket_path(test_name: &str) -> PathBuf {

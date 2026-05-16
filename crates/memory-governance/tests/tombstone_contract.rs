@@ -45,11 +45,10 @@ fn matching_tombstone_refuses_with_tombstone_ref_details() {
 
 #[test]
 fn malformed_tombstone_jsonl_returns_typed_load_error_and_fails_closed() {
-    let temp_dir = std::env::temp_dir().join(format!("memory-governance-bad-tombstone-{}", std::process::id()));
-    fs::create_dir_all(&temp_dir).expect("create temp tombstone dir");
-    fs::write(temp_dir.join("bad.jsonl"), "{not-json}\n").expect("write malformed tombstone");
+    let temp_dir = tempfile::tempdir().expect("create temp tombstone dir");
+    fs::write(temp_dir.path().join("bad.jsonl"), "{not-json}\n").expect("write malformed tombstone");
 
-    let load_error = TombstoneIndex::load_jsonl_dir(&temp_dir).expect_err("malformed JSONL is rejected");
+    let load_error = TombstoneIndex::load_jsonl_dir(temp_dir.path()).expect_err("malformed JSONL is rejected");
     assert!(matches!(load_error, TombstoneLoadError::MalformedJsonl { line: 1, .. }));
 
     let decision = TombstoneIndex::fail_closed_decision(&load_error);
@@ -62,7 +61,7 @@ fn malformed_tombstone_jsonl_returns_typed_load_error_and_fails_closed() {
         }
     );
 
-    fs::remove_dir_all(temp_dir).expect("remove temp tombstone dir");
+    drop(temp_dir);
 }
 
 fn fixture_dir() -> PathBuf {

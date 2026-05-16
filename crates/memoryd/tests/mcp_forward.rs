@@ -95,12 +95,16 @@ async fn forward_memory_startup_forwards_required_binding_context_to_daemon() {
     })
     .await;
 
-    let response = forward_to_daemon(&socket, "req-startup", ToolRequest::MemoryStartup(startup_request()))
-        .await
-        .expect("startup forwards to daemon");
+    let response = timeout(
+        Duration::from_secs(2),
+        forward_to_daemon(&socket, "req-startup", ToolRequest::MemoryStartup(startup_request())),
+    )
+    .await
+    .expect("startup forward completes before timeout")
+    .expect("startup forwards to daemon");
 
     assert_not_implemented(&response, "fixture");
-    daemon.await.expect("daemon joins").expect("daemon ok");
+    await_single_request_daemon(daemon).await;
     let _ = std::fs::remove_file(socket);
 }
 
@@ -165,24 +169,28 @@ async fn forward_memory_observe_sends_observe_payload_to_daemon() {
     })
     .await;
 
-    let response = forward_to_daemon(
-        &socket,
-        "req-observe",
-        ToolRequest::MemoryObserve(ObserveRequest {
-            text: "agent noticed repeated cache invalidation churn".to_owned(),
-            kind: ObserveKindRequest::Pattern,
-            entities: vec!["ent_cache".to_owned(), "ent_repo".to_owned()],
-            cwd: "/tmp/project".to_owned(),
-            session_id: "sess_mcp".to_owned(),
-            harness: "codex".to_owned(),
-            harness_version: Some("0.0.0".to_owned()),
-        }),
+    let response = timeout(
+        Duration::from_secs(2),
+        forward_to_daemon(
+            &socket,
+            "req-observe",
+            ToolRequest::MemoryObserve(ObserveRequest {
+                text: "agent noticed repeated cache invalidation churn".to_owned(),
+                kind: ObserveKindRequest::Pattern,
+                entities: vec!["ent_cache".to_owned(), "ent_repo".to_owned()],
+                cwd: "/tmp/project".to_owned(),
+                session_id: "sess_mcp".to_owned(),
+                harness: "codex".to_owned(),
+                harness_version: Some("0.0.0".to_owned()),
+            }),
+        ),
     )
     .await
+    .expect("observe forward completes before timeout")
     .expect("observe forwards to daemon");
 
     assert_not_implemented(&response, "observe");
-    daemon.await.expect("daemon joins").expect("daemon ok");
+    await_single_request_daemon(daemon).await;
     let _ = std::fs::remove_file(socket);
 }
 
@@ -218,11 +226,13 @@ async fn forward_spec_shaped_memory_observe_sends_defaulted_binding_to_daemon() 
     )
     .expect("spec-shaped observe request parses");
 
-    let response =
-        forward_to_daemon(&socket, "req-observe-defaults", request).await.expect("observe forwards to daemon");
+    let response = timeout(Duration::from_secs(2), forward_to_daemon(&socket, "req-observe-defaults", request))
+        .await
+        .expect("observe forward completes before timeout")
+        .expect("observe forwards to daemon");
 
     assert_not_implemented(&response, "observe");
-    daemon.await.expect("daemon joins").expect("daemon ok");
+    await_single_request_daemon(daemon).await;
     let _ = std::fs::remove_file(socket);
 }
 
@@ -241,7 +251,7 @@ fn spawn_daemon(socket: &Path, substrate: Substrate) -> (watch::Sender<bool>, Jo
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let socket = socket.to_path_buf();
     // Tight idle timeout so a misbehaving test cannot hang the runtime.
-    let options = ServerOptions { idle_frame_timeout: Duration::from_secs(5) };
+    let options = ServerOptions { idle_frame_timeout: Duration::from_secs(5), ..ServerOptions::default() };
     let task = tokio::spawn(serve_substrate_with(socket, substrate, options, shutdown_rx));
     (shutdown_tx, task)
 }
@@ -280,16 +290,25 @@ where
     let _ = std::fs::remove_file(socket);
     let listener = tokio::net::UnixListener::bind(socket).expect("bind fake daemon socket");
     tokio::spawn(async move {
-        let (stream, _) = listener.accept().await?;
+        let (stream, _) = timeout(Duration::from_secs(2), listener.accept()).await??;
         let mut reader = tokio::io::BufReader::new(stream);
         let mut line = String::new();
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
-        reader.read_line(&mut line).await?;
+        timeout(Duration::from_secs(2), reader.read_line(&mut line)).await??;
         let request = memoryd::protocol::RequestEnvelope::from_json_line(&line)?;
         let response = assert_and_respond(request);
-        reader.get_mut().write_all(response.to_json_line()?.as_bytes()).await?;
+        let response_line = response.to_json_line()?;
+        timeout(Duration::from_secs(2), reader.get_mut().write_all(response_line.as_bytes())).await??;
         Ok(())
     })
+}
+
+async fn await_single_request_daemon(daemon: JoinHandle<anyhow::Result<()>>) {
+    timeout(Duration::from_secs(2), daemon)
+        .await
+        .expect("fake daemon stops before timeout")
+        .expect("fake daemon joins")
+        .expect("fake daemon returns ok");
 }
 
 fn startup_request() -> StartupRequest {

@@ -9,6 +9,10 @@ fn coordination_config_loads_defaults_when_block_absent() {
 
     assert_eq!(config.level, 2);
     assert_eq!(config.relevance_gate.threshold, 0.6);
+    assert_eq!(config.relevance_gate.recency_window_seconds, 1800);
+    assert_eq!(config.relevance_gate.per_turn_cap, 2);
+    assert_eq!(config.relevance_gate.cross_device_startup_window_seconds, 86400);
+    assert_eq!(config.relevance_gate.cross_device_startup_threshold, 0.7);
     assert_eq!(config.presence.stale_after_seconds, 300);
     assert_eq!(config.claim_lock.ttl_seconds, 300);
 }
@@ -26,6 +30,8 @@ coordination:
     threshold: 0.8
     recency_window_seconds: 900
     per_turn_cap: 1
+    cross_device_startup_window_seconds: 7200
+    cross_device_startup_threshold: 0.9
   presence:
     heartbeat_seconds: 20
     stale_after_seconds: 60
@@ -41,6 +47,8 @@ coordination:
     assert_eq!(config.relevance_gate.threshold, 0.8);
     assert_eq!(config.relevance_gate.recency_window_seconds, 900);
     assert_eq!(config.relevance_gate.per_turn_cap, 1);
+    assert_eq!(config.relevance_gate.cross_device_startup_window_seconds, 7200);
+    assert_eq!(config.relevance_gate.cross_device_startup_threshold, 0.9);
     assert_eq!(config.presence.heartbeat_seconds, 20);
     assert_eq!(config.presence.stale_after_seconds, 60);
     assert_eq!(config.claim_lock.ttl_seconds, 120);

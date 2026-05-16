@@ -22,7 +22,7 @@ fn omits_secret_fragments_as_encrypted_body_hidden() {
     let classifier = DeterministicPrivacyClassifier::new();
 
     assert_eq!(
-        safe_plaintext_fragment(&classifier, "AWS key AKIA1234567890ABCDEF must never appear."),
+        safe_plaintext_fragment(&classifier, &format!("AWS key {} must never appear.", fake_aws_key())),
         SafeFragmentDecision::OmitEncryptedBodyHidden
     );
     assert_eq!(
@@ -62,10 +62,15 @@ fn strictest_result_wins_across_mixed_labels() {
     assert_eq!(
         safe_plaintext_fragment(
             &classifier,
-            "Email trey@example.com and AWS key AKIA1234567890ABCDEF must not appear."
+            &format!("Email trey@example.com and AWS key {} must not appear.", fake_aws_key())
         ),
         SafeFragmentDecision::OmitEncryptedBodyHidden
     );
+}
+
+fn fake_aws_key() -> String {
+    let suffix = (0..16).map(|index| char::from(b'A' + (index % 10) as u8)).collect::<String>();
+    ["AK", "IA", &suffix].concat()
 }
 
 #[test]

@@ -8,7 +8,8 @@ use clap::Parser;
 use memorum_coordination::gate::CandidateEmbedding;
 use memorum_coordination::{CoordinationConfig, PeerWriteCandidate, QueryEmbedding, RelevanceGate, SessionContext};
 use memory_substrate::{
-    EmbeddingTriple, Entity, MemoryId, MemoryStatus, RecallIndexRow, RepoPath, Scope, Sensitivity, SourceKind,
+    EmbeddingTriple, Entity, MemoryId, MemoryStatus, MemoryType, RecallIndexRow, RepoPath, Scope, Sensitivity,
+    SourceKind,
 };
 use serde::{Deserialize, Serialize};
 
@@ -119,19 +120,7 @@ fn main() -> anyhow::Result<()> {
 
     if args.assert {
         let baseline_path = args.baseline.as_ref().context("baseline is required in assert mode")?;
-        if baseline_requires_bootstrap(baseline_path)? {
-            enforce_budget(&report)?;
-            let proposed_path = proposed_baseline_path(baseline_path);
-            write_report(&proposed_path, &report)?;
-            eprintln!("first run — wrote .proposed; commit as baseline once verified.");
-            println!("{}", serde_json::to_string_pretty(&report)?);
-            return Ok(());
-        }
-
-        let baseline = read_baseline(baseline_path)?;
-        validate_baseline_contract(&baseline, &report, baseline_path)?;
-        enforce_budget(&baseline).context("baseline contains failing Stream I peer relevance measurement")?;
-        enforce_budget(&report)?;
+        validate_assert_baseline(baseline_path, &report)?;
     }
 
     if let Some(output_path) = args.output.as_ref() {
@@ -263,15 +252,29 @@ fn round6(value: f64) -> f64 {
 }
 
 fn enforce_budget(report: &BenchReport) -> anyhow::Result<()> {
-    if report.peer_relevance_gate.pass {
-        Ok(())
-    } else {
+    let within_budget = match report.peer_relevance_gate.budget_operator {
+        BudgetOperator::LessThanOrEqual => report.peer_relevance_gate.p95_ms <= report.peer_relevance_gate.budget_ms,
+    };
+
+    if report.peer_relevance_gate.pass != within_budget {
+        bail!(
+            "Stream I peer relevance gate pass flag is {}, but p95={}ms with budget <= {}ms computes to {}",
+            report.peer_relevance_gate.pass,
+            report.peer_relevance_gate.p95_ms,
+            report.peer_relevance_gate.budget_ms,
+            within_budget
+        );
+    }
+
+    if !within_budget {
         bail!(
             "Stream I peer relevance gate p95={}ms exceeds budget <= {}ms",
             report.peer_relevance_gate.p95_ms,
             report.peer_relevance_gate.budget_ms
         );
     }
+
+    Ok(())
 }
 
 fn read_baseline(path: &Path) -> anyhow::Result<BenchReport> {
@@ -285,17 +288,6 @@ fn write_report(path: &Path, report: &BenchReport) -> anyhow::Result<()> {
     }
     std::fs::write(path, format!("{}\n", serde_json::to_string_pretty(report)?))
         .with_context(|| format!("write {}", path.display()))
-}
-
-fn baseline_requires_bootstrap(path: &Path) -> anyhow::Result<bool> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(true),
-        Err(error) => return Err(error).with_context(|| format!("read baseline {}", path.display())),
-    };
-    let value = serde_json::from_str::<serde_json::Value>(&text)
-        .with_context(|| format!("parse baseline {}", path.display()))?;
-    Ok(value.get("runs").and_then(serde_json::Value::as_u64).is_some_and(|runs| runs == 0))
 }
 
 fn proposed_baseline_path(path: &Path) -> PathBuf {
@@ -323,6 +315,13 @@ fn guard_immutable_baseline_path(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn validate_assert_baseline(baseline_path: &Path, current: &BenchReport) -> anyhow::Result<()> {
+    let baseline = read_baseline(baseline_path)?;
+    validate_baseline_contract(&baseline, current, baseline_path)?;
+    enforce_budget(&baseline).context("baseline contains failing Stream I peer relevance measurement")?;
+    enforce_budget(current)
+}
+
 fn validate_baseline_contract(baseline: &BenchReport, current: &BenchReport, path: &Path) -> anyhow::Result<()> {
     if baseline.schema_version != current.schema_version {
         bail!("baseline {} schema_version mismatch", path.display());
@@ -341,6 +340,12 @@ fn validate_baseline_contract(baseline: &BenchReport, current: &BenchReport, pat
     }
     if baseline.peer_relevance_gate.budget_ms != current.peer_relevance_gate.budget_ms {
         bail!("baseline {} peer relevance budget does not match current fixture", path.display());
+    }
+    if baseline.peer_relevance_gate.budget_operator != current.peer_relevance_gate.budget_operator {
+        bail!("baseline {} peer relevance budget operator does not match current fixture", path.display());
+    }
+    if baseline.peer_relevance_gate.sample_count != current.peer_relevance_gate.sample_count {
+        bail!("baseline {} peer relevance sample count does not match current fixture", path.display());
     }
     Ok(())
 }
@@ -419,6 +424,7 @@ fn recall_row(
         path: RepoPath::try_new(format!("projects/stream-i/peer-{index:03}.md"))
             .map_err(|err| anyhow!("invalid fixture repo path: {err}"))?,
         summary: format!("Peer update fixture {index:03}"),
+        memory_type: MemoryType::Pattern,
         status: MemoryStatus::Active,
         scope: Scope::Project,
         canonical_namespace_id: Some("stream-i".to_owned()),
@@ -524,5 +530,75 @@ mod tests {
             output_destination(args.output.as_deref().expect("output"), args.promote_canonical),
             PathBuf::from("bench/stream-i-cross-session-results.darwin-arm64.json")
         );
+    }
+
+    #[test]
+    fn assert_mode_missing_baseline_fails_without_writing_proposed_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let baseline = temp.path().join("missing.json");
+        let current = sample_report("darwin-arm64");
+
+        let err = validate_assert_baseline(&baseline, &current).expect_err("missing baseline must fail");
+
+        assert!(err.to_string().contains("read baseline"), "err: {err:#}");
+        assert!(!proposed_baseline_path(&baseline).exists());
+    }
+
+    #[test]
+    fn enforce_budget_recomputes_pass_from_numeric_fields() {
+        let mut report = sample_report("darwin-arm64");
+        report.peer_relevance_gate.p95_ms = report.peer_relevance_gate.budget_ms + 1.0;
+        report.peer_relevance_gate.pass = true;
+
+        let err = enforce_budget(&report).expect_err("inconsistent passing baseline must fail");
+
+        assert!(err.to_string().contains("pass flag"), "err: {err:#}");
+    }
+
+    #[test]
+    fn baseline_contract_rejects_changed_sample_count() {
+        let current = sample_report("darwin-arm64");
+        let mut baseline = current.clone();
+        baseline.peer_relevance_gate.sample_count += 1;
+
+        let err = validate_baseline_contract(&baseline, &current, Path::new("baseline.json"))
+            .expect_err("sample-count drift must fail");
+
+        assert!(err.to_string().contains("sample count"), "err: {err:#}");
+    }
+
+    fn sample_report(profile: &str) -> BenchReport {
+        BenchReport {
+            schema_version: 1,
+            fixture_version: FIXTURE_VERSION.to_owned(),
+            profile: profile.to_owned(),
+            runs: 1,
+            platform: PlatformReport { os: "test-os".to_owned(), arch: "test-arch".to_owned() },
+            fixture: FixtureReport {
+                run_date: RUN_DATE.to_owned(),
+                run_at: RUN_AT.to_owned(),
+                candidate_count: CANDIDATE_COUNT,
+                within_recency_count: WITHIN_RECENCY_COUNT,
+                outside_recency_count: OUTSIDE_RECENCY_COUNT,
+                salient_entity_count: SALIENT_ENTITY_COUNT,
+                salient_path_count: SALIENT_PATH_COUNT,
+                precomputed_embedding_dimension: DEFAULT_EMBEDDING_DIMENSION,
+                sample_count: SAMPLE_COUNT,
+            },
+            peer_relevance_gate: PeerRelevanceGateReport {
+                description: "test".to_owned(),
+                statistic_unit: "milliseconds_per_candidate".to_owned(),
+                p50_ms: 1.0,
+                p95_ms: 1.0,
+                p99_ms: 1.0,
+                budget_ms: RELEVANCE_GATE_BUDGET_MS,
+                budget_operator: BudgetOperator::LessThanOrEqual,
+                sample_count: SAMPLE_COUNT,
+                pass: true,
+                selected_peer_updates: CoordinationConfig::default().relevance_gate.per_turn_cap,
+                capped_peer_updates: 0,
+                embedding_worker_wait_excluded: true,
+            },
+        }
     }
 }

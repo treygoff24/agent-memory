@@ -51,6 +51,10 @@ async fn artifact_memory_preserves_tool_output_handle_through_recall_search_and_
         recall_block.contains(&artifact_id),
         "startup recall should include artifact memory {artifact_id}:\n{recall_block}"
     );
+    eval_assert!(
+        recall_block.contains(ARTIFACT_HANDLE),
+        "startup recall should preserve artifact handle for {artifact_id}:\n{recall_block}"
+    );
 
     let search_json = observations.last_search_json.as_deref().expect("search response captured");
     let hits = search_hits(search_json);

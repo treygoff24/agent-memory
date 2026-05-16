@@ -2,6 +2,8 @@ use axum::body::{to_bytes, Body};
 use axum::http::{header, Request, StatusCode};
 use memoryd_web::fixture_router;
 use serde_json::{json, Value};
+use std::sync::Arc;
+use tokio::sync::Barrier;
 use tower::ServiceExt;
 
 const REVIEWABLE_MEMORY_ID: &str = "mem_20260501_a1b2c3d4e5f60718_000001";
@@ -10,13 +12,25 @@ const REVIEWABLE_MEMORY_ID: &str = "mem_20260501_a1b2c3d4e5f60718_000001";
 async fn test_concurrent_post_same_memory_second_returns_409() {
     let app = fixture_router();
     let token = fetch_csrf_token(app.clone()).await;
+    let barrier = Arc::new(Barrier::new(3));
 
-    let first = app.clone().oneshot(post_review_action(&token, REVIEWABLE_MEMORY_ID));
-    let second = app.oneshot(post_review_action(&token, REVIEWABLE_MEMORY_ID));
+    let first_app = app.clone();
+    let first_token = token.clone();
+    let first_barrier = Arc::clone(&barrier);
+    let first = tokio::spawn(async move {
+        first_barrier.wait().await;
+        first_app.oneshot(post_review_action(&first_token, REVIEWABLE_MEMORY_ID)).await
+    });
+    let second_barrier = Arc::clone(&barrier);
+    let second = tokio::spawn(async move {
+        second_barrier.wait().await;
+        app.oneshot(post_review_action(&token, REVIEWABLE_MEMORY_ID)).await
+    });
+    barrier.wait().await;
     let (first, second) = tokio::join!(first, second);
 
-    let first = first.expect("first request succeeds");
-    let second = second.expect("second request succeeds");
+    let first = first.expect("first task joins").expect("first request succeeds");
+    let second = second.expect("second task joins").expect("second request succeeds");
     let first_status = first.status();
     let second_status = second.status();
     let mut statuses = [first_status, second_status];

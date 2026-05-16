@@ -31,6 +31,7 @@ async fn level1_daemon_delta_has_no_coordination_insertion() {
     assert!(!delta.contains("coordination="), "{delta}");
     assert!(!delta.contains("<peer-update"), "{delta}");
     assert!(!delta.contains("<peer-presence"), "{delta}");
+    assert_eq!(fixture.peer_activity().await.total_recorded, 0);
 }
 
 #[tokio::test]
@@ -60,6 +61,7 @@ async fn level2_daemon_delta_omits_below_threshold_peer_update() {
     let delta = fixture.delta(&message_for(peer_id, "ent_receiver_only")).await;
 
     assert!(!delta.contains("<peer-update"), "{delta}");
+    assert_eq!(fixture.peer_activity().await.total_recorded, 0);
 }
 
 #[tokio::test]
@@ -75,6 +77,7 @@ async fn daemon_delta_uses_non_default_coordination_threshold() {
     let delta = fixture.delta(&message_for(peer_id, "ent_stream_i_threshold")).await;
 
     assert!(!delta.contains("<peer-update"), "0.8 score should not clear configured 0.9 threshold: {delta}");
+    assert_eq!(fixture.peer_activity().await.total_recorded, 0);
 }
 
 #[tokio::test]
@@ -221,6 +224,7 @@ async fn production_delta_delivery_populates_peer_activity_audit() {
     assert_eq!(activity.entries[0].memory_id, peer_id);
     assert_eq!(activity.entries[0].to_session_id, "sess_current");
     assert!(activity.entries[0].summary.contains("Audit records rendered"));
+    assert!(!activity.entries[0].summary.contains("raw body secret"));
 }
 
 #[tokio::test]
@@ -272,6 +276,12 @@ async fn peer_update_cooldown_is_per_receiving_session_in_daemon_ram() {
     assert!(first.contains("<peer-update"), "{first}");
     assert!(!second.contains("<peer-update"), "{second}");
     assert!(other_receiver.contains("<peer-update"), "{other_receiver}");
+
+    let activity = fixture.peer_activity().await;
+    assert_eq!(activity.total_recorded, 2);
+    assert_eq!(activity.entries.iter().filter(|entry| entry.memory_id == peer_id).count(), 2);
+    assert_eq!(activity.entries.iter().filter(|entry| entry.to_session_id == "sess_current").count(), 1);
+    assert_eq!(activity.entries.iter().filter(|entry| entry.to_session_id == "sess_other_receiver").count(), 1);
 }
 
 struct CoordinationFixture {

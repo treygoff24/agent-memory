@@ -149,7 +149,7 @@ impl McpServerProcess {
             .arg(socket)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::inherit())
             .spawn()
             .expect("spawn memoryd mcp");
 
@@ -173,9 +173,14 @@ impl McpServerProcess {
     }
 
     fn request(&mut self, request: Value) -> Value {
+        let expected_id = request.get("id").cloned().expect("MCP request has id");
         self.notify(request);
         let line = self.stdout.recv_timeout(Duration::from_secs(5)).expect("MCP server responds before timeout");
-        serde_json::from_str(&line).unwrap_or_else(|error| panic!("MCP response is JSON ({error}): {line}"))
+        let response: Value =
+            serde_json::from_str(&line).unwrap_or_else(|error| panic!("MCP response is JSON ({error}): {line}"));
+        assert_eq!(response["jsonrpc"], "2.0");
+        assert_eq!(response["id"], expected_id);
+        response
     }
 
     fn notify(&mut self, notification: Value) {
@@ -199,7 +204,7 @@ impl Drop for McpServerProcess {
 fn spawn_daemon(socket: &Path, substrate: Substrate) -> (watch::Sender<bool>, JoinHandle<anyhow::Result<()>>) {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let socket = socket.to_path_buf();
-    let options = ServerOptions { idle_frame_timeout: Duration::from_secs(5) };
+    let options = ServerOptions { idle_frame_timeout: Duration::from_secs(5), ..ServerOptions::default() };
     let task = tokio::spawn(serve_substrate_with(socket, substrate, options, shutdown_rx));
     (shutdown_tx, task)
 }

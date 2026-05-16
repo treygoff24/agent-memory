@@ -26,6 +26,8 @@ async fn test_startup_recall_emits_recall_hit_per_memory() {
         assert!(response.recall_block.contains(id), "startup XML should include {id}");
     }
     assert_eq!(fixture.recall_hit_ids(), sorted_set(expected_ids));
+    let raw_recall_hits = fixture.recall_hit_id_list();
+    assert_recall_hit_counts(&raw_recall_hits, expected_ids, 1);
 }
 
 #[tokio::test]
@@ -38,9 +40,16 @@ async fn test_recall_hit_deduped_within_response() {
 
     let response = fixture.startup().await;
 
-    let recall_hit_ids = fixture.recall_hit_ids();
-    assert_eq!(recall_hit_ids, sorted_set(expected_ids));
-    assert_eq!(recall_hit_ids.len(), response.recall_explanation.sections[3].selected_ids.len());
+    let recall_hit_ids = fixture.recall_hit_id_list();
+    assert_recall_hit_counts(&recall_hit_ids, expected_ids, 1);
+    assert_eq!(recall_hit_ids.into_iter().collect::<BTreeSet<_>>(), sorted_set(expected_ids));
+    let recent_memory = response
+        .recall_explanation
+        .sections
+        .iter()
+        .find(|section| section.name == memoryd::recall::RecallSectionName::RecentMemory)
+        .expect("recent-memory recall section present");
+    assert_eq!(expected_ids.len(), recent_memory.selected_ids.len());
 }
 
 #[tokio::test]
@@ -133,6 +142,13 @@ async fn test_concurrent_recall_emission_uses_unique_central_sequences() {
         .collect::<Vec<_>>();
     let unique_sequences = recall_sequences.iter().copied().collect::<BTreeSet<_>>();
     assert_eq!(unique_sequences.len(), recall_sequences.len(), "RecallHit sequences must be unique under concurrency");
+    let expected_ids = [
+        "mem_20260501_6666666666666666_000001",
+        "mem_20260501_6666666666666666_000002",
+        "mem_20260501_6666666666666666_000003",
+    ];
+    let raw_recall_hits = fixture.recall_hit_id_list();
+    assert_recall_hit_counts(&raw_recall_hits, expected_ids, responses.len());
 
     fixture
         .substrate
@@ -318,6 +334,21 @@ impl RecallHitFixture {
 
 fn sorted_set<const N: usize>(ids: [&str; N]) -> BTreeSet<String> {
     ids.into_iter().map(str::to_owned).collect()
+}
+
+fn assert_recall_hit_counts<const N: usize>(actual_ids: &[String], expected_ids: [&str; N], expected_per_id: usize) {
+    assert_eq!(
+        actual_ids.len(),
+        expected_ids.len() * expected_per_id,
+        "raw RecallHit cardinality mismatch: {actual_ids:?}"
+    );
+    let mut counts = BTreeMap::<&str, usize>::new();
+    for id in actual_ids {
+        *counts.entry(id.as_str()).or_default() += 1;
+    }
+    for id in expected_ids {
+        assert_eq!(counts.get(id).copied(), Some(expected_per_id), "unexpected RecallHit count for {id}: {counts:?}");
+    }
 }
 
 fn assert_unique(values: impl IntoIterator<Item = u64>, label: &str) {

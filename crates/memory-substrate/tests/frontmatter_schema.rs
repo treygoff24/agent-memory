@@ -184,19 +184,48 @@ fn frontmatter_field_rule_matrix_accepts_and_rejects_known_shapes() {
     }
 
     let negative = [
-        minimal_doc().replace("id: mem_20260424_a1b2c3d4e5f60718_000001", "id: bad"),
-        minimal_doc().replace("summary: A useful pattern", "summary: "),
-        minimal_doc().replace("confidence: 1.0", "confidence: 1.5"),
-        minimal_doc().replace("updated_at: 2026-04-24T12:00:00Z", "updated_at: 2026-04-23T12:00:00Z"),
-        minimal_doc().replace("scope: agent", "scope: project"),
-        minimal_doc().replace("component: test", "component: null"),
-        minimal_doc().replace(
-            "sensitivity: internal",
-            "sensitivity: confidential\nretrieval_policy:\n  passive_recall: true\n  max_scope: agent\n  mask_personal_for_synthesis: false\n  index_body: true\n  index_embeddings: true",
+        (
+            "id",
+            minimal_doc().replace("id: mem_20260424_a1b2c3d4e5f60718_000001", "id: bad"),
+            ValidationError::BadShape("frontmatter: invalid memory id: bad".to_string()),
+        ),
+        (
+            "summary",
+            minimal_doc().replace("summary: A useful pattern", "summary: \"\""),
+            ValidationError::BadShape("summary".to_string()),
+        ),
+        (
+            "confidence",
+            minimal_doc().replace("confidence: 1.0", "confidence: 1.5"),
+            ValidationError::BadShape("confidence".to_string()),
+        ),
+        (
+            "updated_at",
+            minimal_doc().replace("updated_at: 2026-04-24T12:00:00Z", "updated_at: 2026-04-23T12:00:00Z"),
+            ValidationError::BadShape("updated_at".to_string()),
+        ),
+        (
+            "namespace",
+            minimal_doc().replace("scope: agent", "scope: project"),
+            ValidationError::BadShape("namespace".to_string()),
+        ),
+        (
+            "author.component",
+            minimal_doc().replace("component: test", "component: null"),
+            ValidationError::BadShape("author.component".to_string()),
+        ),
+        (
+            "retrieval_policy",
+            minimal_doc().replace(
+                "sensitivity: internal",
+                "sensitivity: confidential\nretrieval_policy:\n  passive_recall: true\n  max_scope: agent\n  mask_personal_for_synthesis: false\n  index_body: true\n  index_embeddings: true",
+            ),
+            ValidationError::BadShape("retrieval_policy".to_string()),
         ),
     ];
-    for text in negative {
-        parse_document(&text, None).expect_err("negative matrix fixture is rejected");
+    for (case, text, expected) in negative {
+        let actual = parse_document(&text, None).expect_err("negative matrix fixture is rejected");
+        assert_eq!(actual, expected, "{case} fixture should fail for the targeted rule");
     }
 }
 

@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use memory_substrate::events::EventKind;
 use memory_substrate::tree::{validate_tree, TreeValidationMode};
 use memory_substrate::{
@@ -49,9 +51,15 @@ async fn supersession_lifecycle_updates_bidirectional_chain_and_records_event() 
     assert_eq!(outcome.new_id, new_id);
     assert!(outcome.new_outcome.committed);
     assert!(outcome.old_outcome.committed);
+    assert!(outcome.new_outcome.event_recorded);
+    assert!(outcome.old_outcome.event_recorded);
 
     let old_memory = substrate.read_memory(&outcome.old_id).await.expect("read old");
     let new_memory = substrate.read_memory(&outcome.new_id).await.expect("read new");
+    assert_eq!(old_memory.frontmatter.summary, "Old claim");
+    assert_eq!(old_memory.body, "The old claim is active.");
+    assert_eq!(new_memory.frontmatter.summary, "New claim");
+    assert_eq!(new_memory.body, "The replacement claim is active.");
     assert_eq!(old_memory.frontmatter.status, MemoryStatus::Superseded);
     assert_eq!(old_memory.frontmatter.superseded_by, vec![outcome.new_id.clone()]);
     assert_eq!(new_memory.frontmatter.supersedes, vec![outcome.old_id.clone()]);
@@ -60,10 +68,16 @@ async fn supersession_lifecycle_updates_bidirectional_chain_and_records_event() 
 
     let events = substrate.events().expect("events after");
     assert!(events.len() > event_count_before_supersession);
-    assert!(events
+    let committed_ids: BTreeSet<_> = events
         .iter()
         .skip(event_count_before_supersession)
-        .any(|event| matches!(&event.kind, EventKind::WriteCommitted { id, .. } if id == &outcome.old_id)));
+        .filter_map(|event| match &event.kind {
+            EventKind::WriteCommitted { id, .. } => Some(id.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(committed_ids.contains(&outcome.old_id), "old memory status mutation must record an event");
+    assert!(committed_ids.contains(&outcome.new_id), "replacement memory write must record an event");
 }
 
 fn sample_memory(id: MemoryId, summary: &str, body: &str) -> Memory {

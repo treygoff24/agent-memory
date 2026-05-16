@@ -1,42 +1,42 @@
 use std::process::Command;
 
 use chrono::{TimeZone, Utc};
-use clap::Parser as _;
+use clap::{CommandFactory as _, Parser as _};
 use memory_substrate::{InitOptions, Roots, Substrate};
 use memoryd::cli::{
     reality_check_request_payload, validate_snooze_until, validate_ui_stdin, web_request_payload, Cli,
     Command as CliCommand, RealityCheckCommand, WebCommand,
 };
-use memoryd::protocol::{RealityCheckRequest, RequestPayload};
+use memoryd::protocol::{RealityCheckRequest, RequestPayload, ResponseEnvelope, ResponsePayload, ResponseResult};
+use serde_json::Value;
 
 #[test]
 fn cli_contract_help_exposes_daemon_and_agent_facing_client_commands() {
     let output = Command::new(env!("CARGO_BIN_EXE_memoryd")).arg("--help").output().expect("run memoryd --help");
 
     assert!(output.status.success());
-    let stdout = String::from_utf8(output.stdout).expect("help is utf8");
-    for command in [
-        "serve",
-        "mcp",
-        "status",
-        "doctor",
-        "search",
-        "get",
-        "write-note",
-        "source",
-        "ui",
-        "web",
-        "reality-check",
-        "privacy",
-        "privacy-filter",
-        "device",
-    ] {
-        assert!(stdout.contains(command), "help should list {command}");
-    }
-    assert!(stdout.contains("dream"), "top-level help should expose dream admin commands");
-    for admin_only in ["rollback", "pin", "unpin", "policy"] {
-        assert!(!stdout.contains(admin_only), "admin-only command leaked into initial CLI: {admin_only}");
-    }
+    let command_names = top_level_command_names();
+    assert_command_names_include(
+        &command_names,
+        &[
+            "serve",
+            "mcp",
+            "status",
+            "doctor",
+            "search",
+            "get",
+            "write-note",
+            "source",
+            "ui",
+            "web",
+            "reality-check",
+            "privacy",
+            "privacy-filter",
+            "device",
+            "dream",
+        ],
+    );
+    assert_command_names_exclude(&command_names, &["rollback", "pin", "unpin", "policy"]);
 }
 
 #[test]
@@ -77,12 +77,16 @@ fn doctor_unhealthy_exit_is_nonzero_when_no_harness_is_authenticated() {
 
     assert_eq!(output.status.code(), Some(1), "unhealthy doctor should exit 1");
     let stdout = String::from_utf8(output.stdout).expect("doctor stdout is utf8");
-    assert!(stdout.contains("\"doctor\""), "doctor should return a successful doctor response: {stdout}");
+    let response: ResponseEnvelope = serde_json::from_str(&stdout).expect("doctor stdout is response JSON");
+    let ResponseResult::Success(ResponsePayload::Doctor(doctor)) = response.result else {
+        panic!("doctor should return a successful doctor response: {stdout}");
+    };
+    assert!(!doctor.healthy, "doctor should report unhealthy when no harness is available: {stdout}");
+    let stdout_json: Value = serde_json::from_str(&stdout).expect("doctor stdout is json");
     assert!(
-        stdout.contains("\"healthy\": false"),
-        "doctor should report unhealthy when no harness is available: {stdout}"
+        !json_strings_contain(&stdout_json, "daemon PATH="),
+        "doctor output should not disclose the full daemon PATH: {stdout}"
     );
-    assert!(!stdout.contains("daemon PATH="), "doctor output should not disclose the full daemon PATH: {stdout}");
 }
 
 /// Parsing-coverage test using clap's in-process parser — does not spawn the binary
@@ -196,10 +200,8 @@ fn cli_contract_clap_parses_all_dream_subcommands_and_help_exposes_them() {
 
     let output = Command::new(env!("CARGO_BIN_EXE_memoryd")).args(["dream", "--help"]).output().expect("dream help");
     assert!(output.status.success());
-    let stdout = String::from_utf8(output.stdout).expect("dream help utf8");
-    for command in ["status", "now", "review", "enable", "disable"] {
-        assert!(stdout.contains(command), "dream help should list {command}");
-    }
+    let dream_command_names = subcommand_names("dream");
+    assert_command_names_include(&dream_command_names, &["status", "now", "review", "enable", "disable"]);
 }
 
 #[test]
@@ -228,13 +230,25 @@ fn test_ui_subprocess_args_does_not_forward_panel() {
 fn test_clap_parses_web_enable_with_port() {
     let cli = Cli::try_parse_from(["memoryd", "web", "enable", "--port", "7138"]).expect("web enable parses");
 
-    match cli.command {
-        CliCommand::Web(web) => match web.command {
+    match &cli.command {
+        CliCommand::Web(web) => match &web.command {
             WebCommand::Enable(args) => assert_eq!(args.port, 7138),
             other => panic!("expected web enable, got {other:?}"),
         },
         other => panic!("expected web command, got {other:?}"),
     }
+    let CliCommand::Web(web) = cli.command else {
+        panic!("expected web command");
+    };
+    assert_eq!(
+        web_request_payload(&web.command),
+        RequestPayload::WebEnable {
+            port: 7138,
+            socket_path: memoryd::socket::resolve_socket_path(&memoryd::socket::default_runtime_root())
+                .to_string_lossy()
+                .into_owned()
+        }
+    );
 }
 
 #[test]
@@ -332,7 +346,7 @@ fn test_memoryd_web_enable_delegates_to_daemon() {
 
 #[test]
 fn test_memoryd_reality_check_run_json_exits_without_interactive() {
-    let cli = Cli::try_parse_from(["memoryd", "reality-check", "run", "--json", "--top-n", "5"])
+    let cli = Cli::try_parse_from(["memoryd", "reality-check", "run", "--json", "--top-n", "5", "--namespace", "me"])
         .expect("reality-check run --json parses");
 
     let CliCommand::RealityCheck(args) = cli.command else {
@@ -341,14 +355,14 @@ fn test_memoryd_reality_check_run_json_exits_without_interactive() {
 
     assert_eq!(
         reality_check_request_payload(&args.command).expect("json run maps to request"),
-        RequestPayload::RealityCheck(RealityCheckRequest::List { namespace: None, limit: Some(5) })
+        RequestPayload::RealityCheck(RealityCheckRequest::List { namespace: Some("me".to_string()), limit: Some(5) })
     );
 }
 
 #[test]
 fn test_memoryd_reality_check_run_interactive_forwards_top_n() {
-    let cli =
-        Cli::try_parse_from(["memoryd", "reality-check", "run", "--top-n", "5"]).expect("reality-check run parses");
+    let cli = Cli::try_parse_from(["memoryd", "reality-check", "run", "--top-n", "5", "--namespace", "me"])
+        .expect("reality-check run parses");
 
     let CliCommand::RealityCheck(args) = cli.command else {
         panic!("expected reality-check command");
@@ -356,7 +370,11 @@ fn test_memoryd_reality_check_run_interactive_forwards_top_n() {
 
     assert_eq!(
         reality_check_request_payload(&args.command).expect("interactive run maps to request"),
-        RequestPayload::RealityCheck(RealityCheckRequest::Run { session_id: None, namespace: None, limit: Some(5) })
+        RequestPayload::RealityCheck(RealityCheckRequest::Run {
+            session_id: None,
+            namespace: Some("me".to_string()),
+            limit: Some(5)
+        })
     );
 }
 
@@ -380,4 +398,38 @@ fn test_memoryd_reality_check_snooze_until_reaches_daemon_request() {
 #[test]
 fn test_memoryd_reality_check_snooze_invalid_date_exits_1() {
     assert_eq!(validate_snooze_until(Some("next-week")), Err(1));
+}
+
+fn top_level_command_names() -> Vec<String> {
+    Cli::command().get_subcommands().map(|command| command.get_name().to_string()).collect()
+}
+
+fn subcommand_names(parent: &str) -> Vec<String> {
+    let command = Cli::command();
+    let parent = command.find_subcommand(parent).unwrap_or_else(|| panic!("missing {parent} command"));
+    parent.get_subcommands().map(|command| command.get_name().to_string()).collect()
+}
+
+fn assert_command_names_include(actual: &[String], expected: &[&str]) {
+    for command in expected {
+        assert!(actual.iter().any(|actual| actual == command), "command metadata should list {command}: {actual:?}");
+    }
+}
+
+fn assert_command_names_exclude(actual: &[String], expected: &[&str]) {
+    for command in expected {
+        assert!(
+            !actual.iter().any(|actual| actual == command),
+            "command metadata should not list {command}: {actual:?}"
+        );
+    }
+}
+
+fn json_strings_contain(value: &Value, needle: &str) -> bool {
+    match value {
+        Value::String(text) => text.contains(needle),
+        Value::Array(values) => values.iter().any(|value| json_strings_contain(value, needle)),
+        Value::Object(values) => values.values().any(|value| json_strings_contain(value, needle)),
+        Value::Null | Value::Bool(_) | Value::Number(_) => false,
+    }
 }

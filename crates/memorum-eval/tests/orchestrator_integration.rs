@@ -1,5 +1,6 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde_json::Value;
@@ -24,7 +25,7 @@ fn filtered_json_run_reports_spec_result_fields() {
     let fake_cargo = fake_passing_cargo();
     let output = Command::new(env!("CARGO_BIN_EXE_memorum-eval"))
         .args(["--filter", "t01", "--output", "json"])
-        .env("MEMORUM_EVAL_CARGO", &fake_cargo)
+        .env("MEMORUM_EVAL_CARGO", fake_cargo.path())
         .output()
         .expect("spawn memorum-eval");
 
@@ -39,10 +40,7 @@ fn filtered_json_run_reports_spec_result_fields() {
     let test = &report["tests"][0];
     assert_eq!(test["number"], 1);
     assert_eq!(test["name"], "exact_identifier_recall");
-    assert!(
-        matches!(test["status"].as_str(), Some("passed" | "failed")),
-        "status should be present and terminal: {test:#?}"
-    );
+    assert_eq!(test["status"], "passed", "fake passing cargo should report a passed test row: {test:#?}");
     assert!(test.get("failure_detail").is_some(), "failure_detail field should always be present: {test:#?}");
 }
 
@@ -51,7 +49,7 @@ fn mock_harness_runs_catalog_without_live_credentials_or_real_cargo_failures() {
     let fake_cargo = fake_passing_cargo();
     let output = Command::new(env!("CARGO_BIN_EXE_memorum-eval"))
         .args(["--harness", "mock", "--output", "json"])
-        .env("MEMORUM_EVAL_CARGO", &fake_cargo)
+        .env("MEMORUM_EVAL_CARGO", fake_cargo.path())
         .output()
         .expect("spawn memorum-eval");
 
@@ -112,7 +110,7 @@ fn runnable_catalog_failure_propagates_to_json_and_exit_code() {
     let fake_cargo = fake_failing_cargo();
     let output = Command::new(env!("CARGO_BIN_EXE_memorum-eval"))
         .args(["--filter", "t01", "--output", "json"])
-        .env("MEMORUM_EVAL_CARGO", &fake_cargo)
+        .env("MEMORUM_EVAL_CARGO", fake_cargo.path())
         .output()
         .expect("spawn memorum-eval");
 
@@ -137,13 +135,13 @@ fn real_harness_with_present_credentials_does_not_skip_as_not_implemented() {
     let fake_cargo = fake_failing_cargo();
     let fake_harness_path = fake_harness_path();
 
-    for test_number in ["t13", "t15"] {
+    for (test_number, expected_number) in [("t13", 13), ("t15", 15)] {
         let output = Command::new(env!("CARGO_BIN_EXE_memorum-eval"))
             .args(["--harness", "all", "--filter", test_number, "--output", "json"])
-            .env("MEMORUM_EVAL_CARGO", &fake_cargo)
+            .env("MEMORUM_EVAL_CARGO", fake_cargo.path())
             .env("MEMORUM_EVAL_CLAUDE_KEY", "fake-present-claude-key")
             .env("MEMORUM_EVAL_CODEX_KEY", "fake-present-codex-key")
-            .env("PATH", &fake_harness_path)
+            .env("PATH", fake_harness_path.path())
             .output()
             .expect("spawn memorum-eval");
 
@@ -154,6 +152,7 @@ fn real_harness_with_present_credentials_does_not_skip_as_not_implemented() {
         assert_eq!(report["missing_credentials"].as_array().expect("missing_credentials array").len(), 0);
 
         let test = &report["tests"][0];
+        assert_eq!(test["number"], expected_number);
         assert_eq!(test["status"], "failed", "present credentials should dispatch through cargo: {test:#?}");
         assert_eq!(test["skip_reason"], Value::Null, "real-harness dispatch must not skip: {test:#?}");
         assert!(
@@ -168,7 +167,7 @@ fn t16_dispatches_instead_of_stale_stream_g_skip() {
     let fake_cargo = fake_failing_cargo();
     let output = Command::new(env!("CARGO_BIN_EXE_memorum-eval"))
         .args(["--harness", "mock", "--filter", "t16", "--output", "json"])
-        .env("MEMORUM_EVAL_CARGO", &fake_cargo)
+        .env("MEMORUM_EVAL_CARGO", fake_cargo.path())
         .output()
         .expect("spawn memorum-eval");
 
@@ -200,7 +199,7 @@ fn output_file_receives_same_json_report_as_stdout() {
             "--output-file",
             output_path.to_str().expect("temp path should be utf-8"),
         ])
-        .env("MEMORUM_EVAL_CARGO", &fake_cargo)
+        .env("MEMORUM_EVAL_CARGO", fake_cargo.path())
         .output()
         .expect("spawn memorum-eval");
 
@@ -219,50 +218,71 @@ fn memorum_eval<const N: usize>(args: [&str; N]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_memorum-eval")).args(args).output().expect("spawn memorum-eval")
 }
 
-fn fake_failing_cargo() -> std::path::PathBuf {
-    let path = std::env::temp_dir().join(format!("memorum-eval-fake-cargo-{}.sh", unique_suffix()));
-    fs::write(&path, "#!/bin/sh\nprintf 'fake cargo failure for args: %s\\n' \"$*\" >&2\nexit 42\n")
-        .expect("write fake cargo");
-    let mut permissions = fs::metadata(&path).expect("fake cargo metadata").permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&path, permissions).expect("chmod fake cargo");
-    path
+struct TempPath {
+    _dir: tempfile::TempDir,
+    path: PathBuf,
 }
 
-fn fake_passing_cargo() -> std::path::PathBuf {
-    let path = std::env::temp_dir().join(format!("memorum-eval-fake-pass-cargo-{}.sh", unique_suffix()));
-    fs::write(
-        &path,
+impl TempPath {
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+fn fake_failing_cargo() -> TempPath {
+    fake_cargo_script(
+        "memorum-eval-fake-cargo",
+        "#!/bin/sh\nprintf 'fake cargo failure for args: %s\\n' \"$*\" >&2\nexit 42\n",
+    )
+}
+
+fn fake_passing_cargo() -> TempPath {
+    fake_cargo_script(
+        "memorum-eval-fake-pass-cargo",
         "#!/bin/sh\nprintf 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\\n'\nprintf 'MEMORUM_EVAL_ASSERTIONS=1\\n'\nexit 0\n",
     )
-    .expect("write fake passing cargo");
-    let mut permissions = fs::metadata(&path).expect("fake passing cargo metadata").permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&path, permissions).expect("chmod fake passing cargo");
-    path
 }
 
-fn fake_harness_path() -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("memorum-eval-fake-harnesses-{}", unique_suffix()));
-    fs::create_dir_all(&dir).expect("create fake harness dir");
-    write_fake_harness(&dir, "claude");
-    write_fake_harness(&dir, "codex");
-    dir
+fn fake_sleeping_cargo() -> TempPath {
+    fake_cargo_script("memorum-eval-sleep-cargo", "#!/bin/sh\nsleep 30\nprintf 'should not complete\\n'\nexit 0\n")
 }
 
-fn unique_suffix() -> String {
-    let nanos =
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock after unix epoch").as_nanos();
-    format!("{}-{nanos}", std::process::id())
+fn fake_no_cleanup_checking_cargo() -> TempPath {
+    fake_cargo_script(
+        "memorum-eval-no-cleanup-cargo",
+        "#!/bin/sh\nif [ \"$MEMORUM_EVAL_NO_CLEANUP\" != \"1\" ]; then echo missing no-cleanup env >&2; exit 42; fi\nprintf 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\\n'\nprintf 'MEMORUM_EVAL_ASSERTIONS=1\\n'\nexit 0\n",
+    )
 }
 
-fn write_fake_harness(dir: &std::path::Path, name: &str) {
+fn fake_harness_path() -> TempPath {
+    let dir = tempfile::Builder::new().prefix("memorum-eval-fake-harnesses").tempdir().expect("fake harness dir");
+    write_fake_harness(dir.path(), "claude");
+    write_fake_harness(dir.path(), "codex");
+    let path = dir.path().to_path_buf();
+    TempPath { _dir: dir, path }
+}
+
+fn fake_cargo_script(prefix: &str, body: &str) -> TempPath {
+    let dir = tempfile::Builder::new().prefix(prefix).tempdir().expect("fake cargo tempdir");
+    let path = dir.path().join(format!("{prefix}.sh"));
+    write_executable(&path, body, "fake cargo");
+    TempPath { _dir: dir, path }
+}
+
+fn write_fake_harness(dir: &Path, name: &str) {
     let path = dir.join(name);
-    fs::write(&path, "#!/bin/sh\nif [ \"$1\" = \"--help\" ]; then echo '--mcp-config'; exit 0; fi\nexit 42\n")
-        .expect("write fake harness");
-    let mut permissions = fs::metadata(&path).expect("fake harness metadata").permissions();
+    write_executable(
+        &path,
+        "#!/bin/sh\nif [ \"$1\" = \"--help\" ]; then echo '--mcp-config'; exit 0; fi\nexit 42\n",
+        "fake harness",
+    );
+}
+
+fn write_executable(path: &Path, body: &str, label: &str) {
+    fs::write(path, body).unwrap_or_else(|error| panic!("write {label}: {error}"));
+    let mut permissions = fs::metadata(path).unwrap_or_else(|error| panic!("{label} metadata: {error}")).permissions();
     permissions.set_mode(0o755);
-    fs::set_permissions(&path, permissions).expect("chmod fake harness");
+    fs::set_permissions(path, permissions).unwrap_or_else(|error| panic!("chmod {label}: {error}"));
 }
 
 fn find_test(tests: &[Value], number: u64) -> &Value {
@@ -281,10 +301,10 @@ fn skipped_real_harness_tests(tests: &[Value]) -> Vec<&Value> {
 #[test]
 fn t17_and_t18_dispatch_through_cargo_not_permanently_skipped() {
     let fake_cargo = fake_failing_cargo();
-    for test_number in ["t17", "t18"] {
+    for (test_number, expected_number) in [("t17", 17), ("t18", 18)] {
         let output = Command::new(env!("CARGO_BIN_EXE_memorum-eval"))
             .args(["--harness", "mock", "--filter", test_number, "--output", "json"])
-            .env("MEMORUM_EVAL_CARGO", &fake_cargo)
+            .env("MEMORUM_EVAL_CARGO", fake_cargo.path())
             .output()
             .expect("spawn memorum-eval");
 
@@ -292,7 +312,9 @@ fn t17_and_t18_dispatch_through_cargo_not_permanently_skipped() {
         assert!(!output.status.success(), "fake cargo should cause {test_number} to fail");
 
         let report = json_stdout(output);
+        assert_eq!(report["total"], 1);
         let test = &report["tests"][0];
+        assert_eq!(test["number"], expected_number);
         assert_eq!(
             test["status"], "failed",
             "{test_number} should run through cargo dispatch, not be pre-skipped: {test:#?}"
@@ -322,12 +344,14 @@ fn t19_is_not_skipped_by_default_with_stream_i_feature() {
     let fake_cargo = fake_failing_cargo();
     let output = Command::new(env!("CARGO_BIN_EXE_memorum-eval"))
         .args(["--harness", "mock", "--filter", "t19", "--output", "json"])
-        .env("MEMORUM_EVAL_CARGO", &fake_cargo)
+        .env("MEMORUM_EVAL_CARGO", fake_cargo.path())
         .output()
         .expect("spawn memorum-eval");
 
     let report = json_stdout(output);
+    assert_eq!(report["total"], 1);
     let test = &report["tests"][0];
+    assert_eq!(test["number"], 19);
 
     // With stream-i-deps enabled by default, T19 should reach MockHarness or cargo dispatch,
     // not be pre-skipped with STREAM_I_DEPS_DISABLED.
@@ -346,23 +370,14 @@ fn t19_is_not_skipped_by_default_with_stream_i_feature() {
 /// should be recorded as skipped, not passed.
 #[test]
 fn skip_marker_in_cargo_stdout_produces_skipped_result_not_pass() {
-    use std::fs;
-    use std::os::unix::fs::PermissionsExt;
-
-    // Create a fake cargo that exits 0 but emits a skip marker in test stdout
-    let path = std::env::temp_dir().join(format!("memorum-eval-skip-cargo-{}.sh", std::process::id()));
-    fs::write(
-        &path,
+    let fake_cargo = fake_cargo_script(
+        "memorum-eval-skip-cargo",
         "#!/bin/sh\nprintf 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\\n'\nprintf 'MEMORUM_EVAL_SKIP:STREAM_G_RC_HANDLER_NOT_SHIPPED\\n'\nexit 0\n",
-    )
-    .expect("write skip-marker fake cargo");
-    let mut perms = fs::metadata(&path).expect("fake cargo metadata").permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(&path, perms).expect("chmod fake cargo");
+    );
 
     let output = Command::new(env!("CARGO_BIN_EXE_memorum-eval"))
         .args(["--harness", "mock", "--filter", "t16", "--output", "json"])
-        .env("MEMORUM_EVAL_CARGO", &path)
+        .env("MEMORUM_EVAL_CARGO", fake_cargo.path())
         .output()
         .expect("spawn memorum-eval");
 
@@ -370,7 +385,9 @@ fn skip_marker_in_cargo_stdout_produces_skipped_result_not_pass() {
     assert!(output.status.success(), "skip marker run should exit 0: {}", diagnostic(&output));
 
     let report = json_stdout(output);
+    assert_eq!(report["total"], 1);
     let test = &report["tests"][0];
+    assert_eq!(test["number"], 16);
     assert_eq!(test["status"], "skipped", "skip-marker stdout should produce a skipped result: {test:#?}");
     assert!(
         test["skip_reason"].as_str().is_some_and(|r| r.contains("STREAM_G_RC_HANDLER_NOT_SHIPPED")),
@@ -381,59 +398,48 @@ fn skip_marker_in_cargo_stdout_produces_skipped_result_not_pass() {
 
 #[test]
 fn deferred_feature_skip_marker_reports_feature_deferred_kind() {
-    let fake_bin = std::env::temp_dir().join(format!("memorum-eval-deferred-cargo-{}.sh", std::process::id()));
-    std::fs::write(
-        &fake_bin,
+    let fake_cargo = fake_cargo_script(
+        "memorum-eval-deferred-cargo",
         "#!/bin/sh\nprintf 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\\n'\nprintf 'MEMORUM_EVAL_SKIP:STREAM_D_ROTATION_CONTRACT_NOT_SHIPPED\\n'\nexit 0\n",
-    )
-    .expect("write fake cargo");
-    let mut perms = fs::metadata(&fake_bin).expect("fake cargo metadata").permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(&fake_bin, perms).expect("chmod fake cargo");
+    );
 
     let output = Command::new(env!("CARGO_BIN_EXE_memorum-eval"))
-        .env("MEMORUM_EVAL_CARGO", &fake_bin)
+        .env("MEMORUM_EVAL_CARGO", fake_cargo.path())
         .args(["--harness", "mock", "--filter", "18", "--output", "json"])
         .output()
         .expect("run memorum-eval");
 
     assert!(output.status.success(), "deferred feature skip run should exit 0: {}", diagnostic(&output));
     let report = json_stdout(output);
+    assert_eq!(report["total"], 1);
     let test = &report["tests"][0];
+    assert_eq!(test["number"], 18);
     assert_eq!(test["status"], "skipped");
     assert_eq!(test["skip_reason"], "STREAM_D_ROTATION_CONTRACT_NOT_SHIPPED");
     assert_eq!(test["skip_kind"], "feature_deferred");
-
-    let _ = fs::remove_file(fake_bin);
 }
 
 /// H-B3 regression: cargo-test success that includes MEMORUM_EVAL_ASSERTIONS=<n>
 /// should populate the assertions field accurately (not hardcoded 1).
 #[test]
 fn assertion_count_marker_in_cargo_stdout_populates_assertions_field() {
-    use std::fs;
-    use std::os::unix::fs::PermissionsExt;
-
-    let path = std::env::temp_dir().join(format!("memorum-eval-assert-cargo-{}.sh", std::process::id()));
-    fs::write(
-        &path,
+    let fake_cargo = fake_cargo_script(
+        "memorum-eval-assert-cargo",
         "#!/bin/sh\nprintf 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\\n'\nprintf 'MEMORUM_EVAL_ASSERTIONS=7\\n'\nexit 0\n",
-    )
-    .expect("write assertion-count fake cargo");
-    let mut perms = fs::metadata(&path).expect("fake cargo metadata").permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(&path, perms).expect("chmod fake cargo");
+    );
 
     let output = Command::new(env!("CARGO_BIN_EXE_memorum-eval"))
         .args(["--harness", "mock", "--filter", "t01", "--output", "json"])
-        .env("MEMORUM_EVAL_CARGO", &path)
+        .env("MEMORUM_EVAL_CARGO", fake_cargo.path())
         .output()
         .expect("spawn memorum-eval");
 
     assert!(output.status.success(), "assertion-count run should exit 0: {}", diagnostic(&output));
 
     let report = json_stdout(output);
+    assert_eq!(report["total"], 1);
     let test = &report["tests"][0];
+    assert_eq!(test["number"], 1);
     assert_eq!(test["status"], "passed", "assertion-count run should pass: {test:#?}");
     assert_eq!(
         test["assertions"].as_u64(),
@@ -442,6 +448,50 @@ fn assertion_count_marker_in_cargo_stdout_populates_assertions_field() {
     );
     assert_eq!(test["assertions_passed"].as_u64(), Some(7), "assertions_passed should match assertions: {test:#?}");
     assert_eq!(test["assertions_failed"].as_u64(), Some(0));
+}
+
+#[test]
+fn timeout_flag_stops_slow_cargo_dispatch() {
+    let fake_cargo = fake_sleeping_cargo();
+    let started = std::time::Instant::now();
+    let output = Command::new(env!("CARGO_BIN_EXE_memorum-eval"))
+        .args(["--harness", "mock", "--filter", "t01", "--timeout", "1", "--output", "json"])
+        .env("MEMORUM_EVAL_CARGO", fake_cargo.path())
+        .output()
+        .expect("spawn memorum-eval");
+
+    assert!(started.elapsed() < std::time::Duration::from_secs(5), "--timeout should stop the cargo child promptly");
+    assert!(!output.status.success(), "timeout run should exit non-zero: {}", diagnostic(&output));
+
+    let report = json_stdout(output);
+    assert_eq!(report["total"], 1);
+    assert_eq!(report["timed_out"], true);
+    assert_eq!(report["failed"], 1);
+
+    let test = &report["tests"][0];
+    assert_eq!(test["number"], 1);
+    assert_eq!(test["status"], "failed");
+    assert_eq!(test["failure_detail"], "TIMEOUT");
+}
+
+#[test]
+fn no_cleanup_flag_is_passed_to_cargo_dispatch() {
+    let fake_cargo = fake_no_cleanup_checking_cargo();
+    let output = Command::new(env!("CARGO_BIN_EXE_memorum-eval"))
+        .args(["--harness", "mock", "--filter", "t01", "--no-cleanup", "--output", "json"])
+        .env("MEMORUM_EVAL_CARGO", fake_cargo.path())
+        .output()
+        .expect("spawn memorum-eval");
+
+    assert!(output.status.success(), "--no-cleanup should be visible to cargo dispatch: {}", diagnostic(&output));
+
+    let report = json_stdout(output);
+    assert_eq!(report["total"], 1);
+    assert_eq!(report["failed"], 0);
+
+    let test = &report["tests"][0];
+    assert_eq!(test["number"], 1);
+    assert_eq!(test["status"], "passed");
 }
 
 fn json_stdout(output: std::process::Output) -> Value {

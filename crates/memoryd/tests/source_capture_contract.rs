@@ -38,7 +38,14 @@ async fn source_capture_rejects_empty_or_sensitive_operator_inputs_before_networ
     )
     .await;
     match response.result {
-        ResponseResult::Error(error) => assert_eq!(error.code, "invalid_request"),
+        ResponseResult::Error(error) => {
+            assert_eq!(error.code, "invalid_request");
+            assert!(
+                error.message.contains("source capture note must not contain sensitive material"),
+                "sensitive note should fail before capture/network path, got: {}",
+                error.message
+            );
+        }
         other => panic!("expected invalid request, got {other:?}"),
     }
 }

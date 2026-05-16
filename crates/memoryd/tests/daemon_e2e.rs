@@ -4,14 +4,16 @@
 //! shutting the daemon down and reopening the substrate from disk.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use memory_substrate::{InitOptions, MemoryId, Roots, Substrate};
 use memoryd::client;
 use memoryd::protocol::{RequestPayload, ResponsePayload, ResponseResult};
 use memoryd::server::{serve_substrate_with, ServerOptions};
+use tokio::io::AsyncReadExt;
 use tokio::net::UnixStream;
-use tokio::sync::watch;
+use tokio::sync::{watch, Notify};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
 
@@ -82,17 +84,33 @@ async fn server_shuts_down_promptly_when_signal_fires_with_in_flight_idle_connec
     let socket = unique_socket_path("e2e-shutdown");
     let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
     let substrate = init_substrate(&roots).await;
-    let (shutdown_tx, server) = spawn_daemon(&socket, substrate);
-    wait_for_socket(&socket).await;
+    let accepted = Arc::new(Notify::new());
+    let (shutdown_tx, server) = spawn_daemon_with_options(
+        &socket,
+        substrate,
+        ServerOptions {
+            idle_frame_timeout: Duration::from_secs(5),
+            accepted_connection_notify: Some(accepted.clone()),
+        },
+    );
 
     // Open a connection but send nothing. Without graceful shutdown, this
-    // connection task would sit on `read_frame` until the idle timeout fires.
+    // connection task would sit on read_frame until the idle timeout fires.
     // With graceful shutdown, the connection's read loop selects against the
     // shutdown receiver and exits immediately when the signal lands.
-    let _idle = UnixStream::connect(&socket).await.expect("connection establishes");
+    let mut idle = connect_when_ready(&socket).await;
+    timeout(Duration::from_secs(1), accepted.notified())
+        .await
+        .expect("daemon accepts the idle connection before shutdown");
 
     let started = std::time::Instant::now();
     shutdown_tx.send(true).expect("shutdown signal lands");
+    let mut byte = [0_u8; 1];
+    let bytes_read = timeout(Duration::from_secs(1), idle.read(&mut byte))
+        .await
+        .expect("idle connection closes before idle timeout")
+        .expect("idle connection read succeeds");
+    assert_eq!(bytes_read, 0, "idle connection should reach EOF on shutdown");
     timeout(Duration::from_secs(1), server)
         .await
         .expect("server stops well under the idle timeout window")
@@ -105,9 +123,20 @@ async fn server_shuts_down_promptly_when_signal_fires_with_in_flight_idle_connec
 }
 
 fn spawn_daemon(socket: &Path, substrate: Substrate) -> (watch::Sender<bool>, JoinHandle<anyhow::Result<()>>) {
+    spawn_daemon_with_options(
+        socket,
+        substrate,
+        ServerOptions { idle_frame_timeout: Duration::from_secs(5), ..ServerOptions::default() },
+    )
+}
+
+fn spawn_daemon_with_options(
+    socket: &Path,
+    substrate: Substrate,
+    options: ServerOptions,
+) -> (watch::Sender<bool>, JoinHandle<anyhow::Result<()>>) {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let socket = socket.to_path_buf();
-    let options = ServerOptions { idle_frame_timeout: Duration::from_secs(5) };
     let task = tokio::spawn(serve_substrate_with(socket, substrate, options, shutdown_rx));
     (shutdown_tx, task)
 }
@@ -126,6 +155,16 @@ async fn wait_for_socket(socket: &Path) {
     for _ in 0..200 {
         if UnixStream::connect(socket).await.is_ok() {
             return;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    panic!("daemon did not bind socket at {}", socket.display());
+}
+
+async fn connect_when_ready(socket: &Path) -> UnixStream {
+    for _ in 0..200 {
+        if let Ok(stream) = UnixStream::connect(socket).await {
+            return stream;
         }
         sleep(Duration::from_millis(10)).await;
     }

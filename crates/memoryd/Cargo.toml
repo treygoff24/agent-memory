@@ -19,7 +19,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-serde_yaml.workspace = true
+yaml_serde.workspace = true
 sha2.workspace = true
 hex.workspace = true
 tempfile.workspace = true
@@ -44,6 +44,7 @@ path = "src/bin/stream_f_dream_bench.rs"
 required-features = ["dev-fixtures"]
 
 [dev-dependencies]
+base64.workspace = true
 memory-test-support = { path = "../memory-test-support" }
 rusqlite.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

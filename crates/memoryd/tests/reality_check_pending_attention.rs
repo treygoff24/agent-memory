@@ -73,6 +73,35 @@ async fn test_reality_check_due_item_appears_at_most_once_per_7_day_window() {
 
     assert!(first.recall_block.contains(REALITY_CHECK_DUE_ITEM));
     assert!(!second.recall_block.contains("reality_check_due"));
+    assert!(fixture.reality_check_surface_marker().exists(), "first surface must persist restart marker");
+}
+
+#[tokio::test]
+async fn test_reality_check_due_suppressed_by_persisted_marker_after_restart() {
+    let fixture = PendingAttentionFixture::new().await;
+    fixture.write_reality_check_state(RealityCheckState {
+        last_completed_at: Some(Utc::now() - Duration::days(8)),
+        snooze_until: None,
+    });
+    fixture.write_reality_check_surface_marker(Utc::now() - Duration::days(1));
+
+    let startup = fixture.startup().await;
+
+    assert!(!startup.recall_block.contains("reality_check_due"));
+}
+
+#[tokio::test]
+async fn test_reality_check_due_reappears_after_persisted_marker_expires() {
+    let fixture = PendingAttentionFixture::new().await;
+    fixture.write_reality_check_state(RealityCheckState {
+        last_completed_at: Some(Utc::now() - Duration::days(8)),
+        snooze_until: None,
+    });
+    fixture.write_reality_check_surface_marker(Utc::now() - Duration::days(8));
+
+    let startup = fixture.startup().await;
+
+    assert!(startup.recall_block.contains(REALITY_CHECK_DUE_ITEM));
 }
 
 #[tokio::test]
@@ -181,6 +210,16 @@ impl PendingAttentionFixture {
 
     fn write_reality_check_state(&self, reality_check: RealityCheckState) {
         DaemonState { reality_check, ..Default::default() }.save(&self.runtime).expect("daemon state writes");
+    }
+
+    fn write_reality_check_surface_marker(&self, surfaced_at: chrono::DateTime<Utc>) {
+        let marker = self.reality_check_surface_marker();
+        std::fs::create_dir_all(marker.parent().expect("marker parent")).expect("marker parent dir");
+        std::fs::write(marker, surfaced_at.to_rfc3339()).expect("write reality-check surface marker");
+    }
+
+    fn reality_check_surface_marker(&self) -> std::path::PathBuf {
+        self.runtime.join("state").join("reality-check-pending-attention.last")
     }
 
     async fn write_memory_with_entities(&self, entities: &[&str]) {

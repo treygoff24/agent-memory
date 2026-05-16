@@ -16,15 +16,17 @@ mod t20_web_source_grounding;
 mod support {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixStream;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::process::{Command, Stdio};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use serde_json::Value;
 
     pub fn daemon_request(socket_path: &Path, request: Value) -> Value {
         let mut stream = UnixStream::connect(socket_path)
             .unwrap_or_else(|err| panic!("connect to memoryd socket {}: {err}", socket_path.display()));
+        stream.set_write_timeout(Some(DAEMON_REQUEST_TIMEOUT)).expect("set daemon request write timeout");
+        stream.set_read_timeout(Some(DAEMON_REQUEST_TIMEOUT)).expect("set daemon request read timeout");
         let frame = serde_json::json!({"id": unique_request_id(), "request": request});
         writeln!(stream, "{frame}").expect("write daemon request");
 
@@ -32,6 +34,8 @@ mod support {
         BufReader::new(stream).read_line(&mut response).expect("read daemon response");
         serde_json::from_str(&response).unwrap_or_else(|err| panic!("daemon response is JSON: {err}\n{response}"))
     }
+
+    const DAEMON_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
     pub fn git<const N: usize>(repo: &Path, args: [&str; N]) {
         let output = Command::new("git").args(args).current_dir(repo).output().expect("run git command");
@@ -51,21 +55,34 @@ mod support {
     }
 
     pub fn debug_binary(name: &str, package: &str) -> std::path::PathBuf {
-        let target_dir = std::env::var_os("CARGO_TARGET_DIR")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target"));
-        let binary = target_dir.join("debug").join(name);
-        if binary.exists() {
-            return binary;
-        }
-
-        let status = Command::new("cargo")
-            .args(["build", "-p", package])
+        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+        let status = Command::new(cargo)
+            .args(["build", "-p", package, "--bin", name])
+            .current_dir(workspace_root())
             .stdin(Stdio::null())
             .status()
             .unwrap_or_else(|err| panic!("build {package}: {err}"));
-        assert!(status.success(), "cargo build -p {package} failed");
+        assert!(status.success(), "cargo build -p {package} --bin {name} failed");
+
+        let binary = target_dir().join("debug").join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+        assert!(
+            binary.is_file(),
+            "cargo build -p {package} --bin {name} succeeded but {} was not created",
+            binary.display()
+        );
         binary
+    }
+
+    fn target_dir() -> PathBuf {
+        match std::env::var_os("CARGO_TARGET_DIR").map(PathBuf::from) {
+            Some(path) if path.is_absolute() => path,
+            Some(path) => workspace_root().join(path),
+            None => workspace_root().join("target"),
+        }
+    }
+
+    fn workspace_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
     }
 
     pub fn read_device_id(runtime_dir: &Path) -> String {

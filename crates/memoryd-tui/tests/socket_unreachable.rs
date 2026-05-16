@@ -1,4 +1,5 @@
-use memoryd_tui::app::{App, DaemonSnapshot};
+use memoryd_tui::app::{App, DaemonSnapshot, SocketState};
+use memoryd_tui::client::DaemonClient;
 use memoryd_tui::config::UiConfig;
 use ratatui::{backend::TestBackend, Terminal};
 
@@ -50,4 +51,26 @@ fn test_loading_snapshot_does_not_render_sample_memory_content() {
     assert!(!frame.contains("Deploy target is production ECS"));
     assert!(!frame.contains("My preferred stack is TypeScript + Rust"));
     assert!(!frame.contains("project:atlasos"));
+}
+
+#[tokio::test]
+async fn poll_daemon_marks_missing_socket_unreachable_through_client() {
+    let socket = std::path::PathBuf::from(format!("/tmp/memoryd-tui-missing-{}.sock", std::process::id()));
+    let _ = std::fs::remove_file(&socket);
+    let config = UiConfig { socket_path: socket.clone(), ..UiConfig::default() };
+    let client = DaemonClient::new(&socket);
+    let mut app = App::new(config);
+
+    app.poll_daemon(&client).await;
+
+    match app.socket_state() {
+        SocketState::Unreachable { path, error } => {
+            assert_eq!(path, &socket);
+            assert!(error.contains(&socket.display().to_string()), "error should name socket path: {error}");
+        }
+        SocketState::Connected => panic!("missing daemon socket should mark app unreachable"),
+    }
+    let frame = render(&mut app);
+    assert!(frame.contains("Daemon unreachable"));
+    assert!(frame.contains(&format!("Socket: {}", socket.display())));
 }

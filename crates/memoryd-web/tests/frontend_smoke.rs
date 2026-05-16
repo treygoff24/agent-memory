@@ -68,21 +68,42 @@ fn assert_no_inline_script_or_style(body: &str) {
 }
 
 fn assert_no_inline_tag(body: &str, tag: &str) {
-    let lower = body.to_lowercase();
     let mut offset = 0;
-    while let Some(start) = lower[offset..].find(&format!("<{tag}")) {
-        let absolute_start = offset + start;
-        let Some(open_end) = lower[absolute_start..].find('>').map(|index| absolute_start + index) else {
+    let open_needle = format!("<{tag}");
+    let close_needle = format!("</{tag}>");
+    while let Some(absolute_start) = find_ascii_case_insensitive(body, &open_needle, offset) {
+        let Some(open_end) = body[absolute_start..].find('>').map(|index| absolute_start + index) else {
             break;
         };
-        let open_tag = &lower[absolute_start..=open_end];
-        let Some(close_start) = lower[open_end + 1..].find(&format!("</{tag}>")).map(|index| open_end + 1 + index)
-        else {
+        let open_tag = &body[absolute_start..=open_end];
+        let content_start = open_end + 1;
+        let Some(close_start) = find_ascii_case_insensitive(body, &close_needle, content_start) else {
             break;
         };
-        let inline_body = body[open_end + 1..close_start].trim();
-        let external_script = tag == "script" && open_tag.contains(" src=");
+        let inline_body = body[content_start..close_start].trim();
+        let external_script = tag == "script" && contains_ascii_case_insensitive(open_tag, " src=");
         assert!(external_script || inline_body.is_empty(), "inline {tag} should be absent: {inline_body}");
-        offset = close_start + tag.len() + 3;
+        offset = close_start + close_needle.len();
     }
+}
+
+fn find_ascii_case_insensitive(haystack: &str, needle: &str, from: usize) -> Option<usize> {
+    haystack.as_bytes()[from..]
+        .windows(needle.len())
+        .position(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
+        .map(|index| from + index)
+}
+
+fn contains_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
+    find_ascii_case_insensitive(haystack, needle, 0).is_some()
+}
+
+#[test]
+fn inline_tag_scanner_preserves_offsets_after_non_ascii_text() {
+    assert_no_inline_script_or_style("<main>İ</main><script src=\"/assets/app.js\"></script><style></style>");
+
+    let inline = std::panic::catch_unwind(|| {
+        assert_no_inline_script_or_style("<main>İ</main><script src=\"/assets/app.js\"></script><style>body{}</style>");
+    });
+    assert!(inline.is_err(), "inline style content must still be rejected");
 }

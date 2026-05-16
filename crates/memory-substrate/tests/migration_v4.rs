@@ -2,7 +2,7 @@ use chrono::{TimeZone, Utc};
 use memory_substrate::events::{append_event, Event, EventKind, EVENT_SCHEMA_VERSION};
 use memory_substrate::index::{open_index, INDEX_SUPPORTED_SCHEMA_VERSION};
 use memory_substrate::{DeviceId, EventId, InitOptions, MemoryId, OperationId, Roots, Substrate};
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 
 #[test]
 fn index_supported_schema_version_is_4() {
@@ -35,17 +35,30 @@ fn fresh_schema_includes_v4_tables_and_original_confidence() {
 fn opening_v3_database_migrates_to_v4_idempotently() {
     let temp = tempfile::tempdir().expect("tempdir");
     let db_path = temp.path().join("index.sqlite");
+    create_v3_index_fixture(&db_path);
     {
-        let conn = open_index(&db_path).expect("first open");
-        conn.execute("DELETE FROM schema_migrations WHERE version = 4", []).expect("simulate v3 schema");
-        conn.execute("DROP TABLE events_log", []).expect("drop v4 table");
-        conn.execute("DROP TABLE memory_supersession", []).expect("drop v4 table");
+        let v3 = Connection::open(&db_path).expect("inspect v3 fixture");
+        assert!(!table_exists(&v3, "events_log"));
+        assert!(!table_exists(&v3, "memory_supersession"));
+        assert_eq!(column_type(&v3, "memories", "original_confidence"), None);
+        let max_version: u32 = v3
+            .query_row("SELECT COALESCE(MAX(version), 0) FROM schema_migrations", [], |row| row.get(0))
+            .expect("read v3 migration version");
+        assert_eq!(max_version, 3);
     }
 
     let conn = open_index(&db_path).expect("migrate v3 to v4");
     assert!(table_exists(&conn, "events_log"));
     assert!(table_exists(&conn, "memory_supersession"));
     assert_eq!(column_type(&conn, "memories", "original_confidence").as_deref(), Some("REAL"));
+    let original_confidence: f64 = conn
+        .query_row(
+            "SELECT original_confidence FROM memories WHERE id = ?1",
+            ["mem_20260429_a1b2c3d4e5f60718_800001"],
+            |row| row.get(0),
+        )
+        .expect("original_confidence backfilled from v3 frontmatter");
+    assert_eq!(original_confidence, 0.73);
     let max_version: u32 = conn
         .query_row("SELECT COALESCE(MAX(version), 0) FROM schema_migrations", [], |row| row.get(0))
         .expect("read schema migration version");
@@ -57,6 +70,14 @@ fn opening_v3_database_migrates_to_v4_idempotently() {
         .query_row("SELECT COUNT(*) FROM schema_migrations WHERE version = 4", [], |row| row.get(0))
         .expect("count v4 rows");
     assert_eq!(version_rows, 1);
+    let original_confidence_after_reopen: f64 = reopened
+        .query_row(
+            "SELECT original_confidence FROM memories WHERE id = ?1",
+            ["mem_20260429_a1b2c3d4e5f60718_800001"],
+            |row| row.get(0),
+        )
+        .expect("original_confidence remains backfilled after idempotent reopen");
+    assert_eq!(original_confidence_after_reopen, 0.73);
 }
 
 #[tokio::test]
@@ -117,6 +138,88 @@ fn column_type(conn: &Connection, table: &str, column: &str) -> Option<String> {
         .collect::<Result<Vec<_>, _>>()
         .expect("collect columns");
     columns.into_iter().find_map(|(name, ty)| (name == column).then_some(ty))
+}
+
+fn create_v3_index_fixture(path: &std::path::Path) {
+    let conn = Connection::open(path).expect("open v3 fixture db");
+    conn.execute_batch(
+        r#"
+CREATE TABLE schema_migrations(
+  version INTEGER PRIMARY KEY,
+  applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE memories(
+  id                          TEXT PRIMARY KEY,
+  path                        TEXT NOT NULL UNIQUE,
+  schema_version              INTEGER NOT NULL,
+  type                        TEXT NOT NULL,
+  scope                       TEXT NOT NULL,
+  namespace                   TEXT,
+  canonical_namespace_id      TEXT,
+  summary                     TEXT NOT NULL,
+  confidence                  REAL NOT NULL,
+  trust_level                 TEXT NOT NULL,
+  sensitivity                 TEXT NOT NULL,
+  status                      TEXT NOT NULL,
+  review_state                TEXT,
+  requires_user_confirmation  INTEGER NOT NULL,
+  created_at                  TEXT NOT NULL,
+  updated_at                  TEXT NOT NULL,
+  observed_at                 TEXT,
+  valid_from                  TEXT,
+  valid_until                 TEXT,
+  ttl                         TEXT,
+  author                      TEXT NOT NULL,
+  source_kind                 TEXT NOT NULL,
+  source_harness              TEXT,
+  source_device               TEXT,
+  body_hash                   TEXT NOT NULL,
+  frontmatter_json            TEXT NOT NULL CHECK (json_valid(frontmatter_json)),
+  file_hash                   TEXT NOT NULL,
+  file_mtime_ns               INTEGER NOT NULL,
+  indexed_at                  TEXT NOT NULL,
+  metadata_only               INTEGER NOT NULL DEFAULT 0,
+  passive_recall              INTEGER NOT NULL DEFAULT 1,
+  index_body                  INTEGER NOT NULL DEFAULT 1,
+  human_review_required       INTEGER NOT NULL DEFAULT 0,
+  max_scope                   TEXT NOT NULL DEFAULT 'agent'
+);
+"#,
+    )
+    .expect("create v3 schema");
+    conn.execute("INSERT INTO schema_migrations(version) VALUES (1), (2), (3)", []).expect("seed v3 migrations");
+    let frontmatter = serde_json::json!({
+        "id": "mem_20260429_a1b2c3d4e5f60718_800001",
+        "summary": "v3 memory with original confidence in frontmatter",
+        "confidence": 0.91,
+        "original_confidence": 0.73,
+        "supersedes": []
+    });
+    conn.execute(
+        r#"
+INSERT INTO memories(
+  id, path, schema_version, type, scope, namespace, canonical_namespace_id, summary, confidence,
+  trust_level, sensitivity, status, review_state, requires_user_confirmation,
+  created_at, updated_at, observed_at, valid_from, valid_until, ttl, author, source_kind,
+  source_harness, source_device, body_hash, frontmatter_json, file_hash, file_mtime_ns,
+  indexed_at, metadata_only, passive_recall, index_body, human_review_required, max_scope
+) VALUES (
+  ?1, ?2, 1, 'pattern', 'agent', NULL, NULL, ?3, 0.91,
+  'trusted', 'internal', 'active', NULL, 0,
+  '2026-04-29T12:00:00Z', '2026-04-29T12:00:00Z', NULL, NULL, NULL, NULL,
+  '{"kind":"system"}', 'import', NULL, NULL, 'body-hash', ?4, 'file-hash', 1,
+  '2026-04-29T12:00:00Z', 0, 1, 1, 0, 'agent'
+)
+"#,
+        params![
+            "mem_20260429_a1b2c3d4e5f60718_800001",
+            "agent/patterns/mem_20260429_a1b2c3d4e5f60718_800001.md",
+            "v3 memory with original confidence in frontmatter",
+            frontmatter.to_string(),
+        ],
+    )
+    .expect("seed v3 memory");
 }
 
 fn recall_hit_event(event_id: &str, device: &str, seq: u64) -> Event {

@@ -91,7 +91,7 @@ fn scalar_to_yaml(value: &Value) -> String {
 
 /// YAML reserved literals that must be quoted to prevent misinterpretation.
 /// Without quoting, a YAML parser reads these as Boolean/null scalars (YAML 1.1)
-/// or null/bool (YAML 1.2). We produce YAML 1.1-compatible output that serde_yaml
+/// or null/bool (YAML 1.2). We produce YAML 1.1-compatible output that yaml_serde
 /// and the merge driver both consume.
 const YAML_RESERVED: &[&str] = &[
     "null", "Null", "NULL", "~", "true", "True", "TRUE", "false", "False", "FALSE", "yes", "Yes", "YES", "no", "No",

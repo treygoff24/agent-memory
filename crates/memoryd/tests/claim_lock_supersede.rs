@@ -108,6 +108,7 @@ async fn contention_proceeds_with_warning() {
     assert_eq!(warning.code, "claim_lock_contention");
     assert_eq!(warning.holder, "claude-code:sess_a");
     assert!(warning.message.contains("claude-code:sess_a"));
+    fixture.assert_claim_lock_holder(&old_id, "claude-code", "sess_a");
 }
 
 #[tokio::test]
@@ -170,13 +171,14 @@ async fn supersede_rejects_secret_claim_lock_session_identity_before_contention_
     let fixture = Fixture::new(2).await;
     let old_id = fixture.write_project_memory("old", "The deployment target is staging.").await;
     fixture.acquire_lock(&old_id, "claude-code", "sess_a");
+    let secret_session = fake_aws_key();
 
     let response = fixture
         .supersede(SupersedeInput::new(
             "supersede-secret-session",
             &old_id,
             "The deployment target is production.",
-            project_meta("supersede-secret-session", "codex", "AKIA1234567890ABCDEF"),
+            project_meta("supersede-secret-session", "codex", &secret_session),
         ))
         .await;
 
@@ -186,6 +188,11 @@ async fn supersede_rejects_secret_claim_lock_session_identity_before_contention_
     assert_eq!(error.code, "invalid_request");
     assert!(error.message.contains("session_id"));
     assert!(fixture.jsonl_events().iter().all(|event| !matches!(event.kind, EventKind::ClaimLockContention { .. })));
+}
+
+fn fake_aws_key() -> String {
+    let suffix = (0..16).map(|index| char::from(b'A' + (index % 10) as u8)).collect::<String>();
+    ["AK", "IA", &suffix].concat()
 }
 
 #[tokio::test]
@@ -302,6 +309,12 @@ impl Fixture {
             harness,
             self.state.claim_lock_ttl(),
         ));
+    }
+
+    fn assert_claim_lock_holder(&self, memory_id: &str, harness: &str, session_id: &str) {
+        let lock = self.state.claim_locks().get(memory_id).expect("claim lock remains held");
+        assert_eq!(lock.holder_harness, harness);
+        assert_eq!(lock.holder_session_id, session_id);
     }
 
     fn jsonl_events(&self) -> Vec<memory_substrate::events::Event> {

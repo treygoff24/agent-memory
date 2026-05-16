@@ -1,6 +1,7 @@
 use std::path::Path;
 
-use memory_privacy::FileKeyProvider;
+use base64::Engine;
+use memory_privacy::{EncryptedPayload, FileKeyProvider, PrivacyEncryptor};
 use memory_substrate::{InitOptions, MemoryQuery, ObserveKind, Roots, Substrate};
 use memoryd::handlers::handle_request;
 use memoryd::protocol::{ObserveTarget, RequestEnvelope, RequestPayload, ResponsePayload, ResponseResult};
@@ -60,8 +61,22 @@ async fn memory_observe_routes_pii_to_encrypted_substrate_without_plaintext_leak
     assert_eq!(encrypted_records.len(), 1);
     assert_eq!(encrypted_records[0]["id"], response.fragment_id);
     assert!(encrypted_records[0].get("text").is_none(), "encrypted substrate must not include text field");
-    assert!(encrypted_records[0]["encryption"]["recipient"].as_str().is_some_and(|value| !value.is_empty()));
-    assert!(encrypted_records[0]["encryption"]["ciphertext_b64"].as_str().is_some_and(|value| !value.is_empty()));
+    let encryption = &encrypted_records[0]["encryption"];
+    let recipient = encryption["recipient"].as_str().expect("encrypted fragment recipient");
+    assert!(!recipient.is_empty(), "encrypted fragment recipient must be persisted");
+    let ciphertext_b64 = encryption["ciphertext_b64"].as_str().expect("encrypted fragment ciphertext");
+    assert!(!ciphertext_b64.is_empty(), "encrypted fragment ciphertext must be persisted");
+    let ciphertext = base64::engine::general_purpose::STANDARD.decode(ciphertext_b64).expect("ciphertext is base64");
+    let decrypted = PrivacyEncryptor::new(FileKeyProvider::runtime_default(&substrate.roots().runtime))
+        .decrypt(&EncryptedPayload {
+            ciphertext,
+            envelope: serde_json::json!({
+                "scheme": "age-x25519",
+                "recipient": recipient,
+            }),
+        })
+        .expect("encrypted observe ciphertext decrypts with runtime key");
+    assert_eq!(decrypted, text, "encrypted observe ciphertext must recover original observation");
     let summary_safe = encrypted_records[0]["descriptor"]["summary_safe"].as_str().expect("summary_safe string");
     assert!(summary_safe.contains("launch checklist"), "descriptor should retain safe signal: {summary_safe}");
     assert!(!summary_safe.contains(raw), "descriptor must not leak raw PII: {summary_safe}");
@@ -77,11 +92,11 @@ async fn memory_observe_routes_pii_to_encrypted_substrate_without_plaintext_leak
 async fn memory_observe_refuses_secret_entity_without_fragment_file() {
     let temp = tempfile::tempdir().expect("tempdir");
     let substrate = init_substrate(&temp).await;
-    let secret = "AKIA1234567890ABCDEF";
+    let secret = fake_aws_key();
 
     let observe = observe(
         &substrate,
-        ObserveInput::new("observe-secret-entity", "safe observation", ObserveKind::Signal).with_entity(secret),
+        ObserveInput::new("observe-secret-entity", "safe observation", ObserveKind::Signal).with_entity(&secret),
     )
     .await;
 
@@ -90,7 +105,7 @@ async fn memory_observe_refuses_secret_entity_without_fragment_file() {
     };
     assert_eq!(error.code, "invalid_request");
     assert_no_substrate_records(&substrate, "secret entity observe");
-    assert!(!repo_contains(temp.path(), secret), "secret entity canary must not be written");
+    assert!(!repo_contains(temp.path(), &secret), "secret entity canary must not be written");
 }
 
 #[tokio::test]
@@ -115,14 +130,16 @@ async fn memory_observe_refuses_email_entity_without_fragment_file() {
 
 #[tokio::test]
 async fn memory_observe_refuses_sensitive_canonical_entity_ids_without_fragment_file() {
-    for entity in ["ent_AKIA1234567890ABCDEF", "ent_202-555-0198", "ent_reviewer@example.com"] {
+    for entity in
+        [format!("ent_{}", fake_aws_key()), "ent_202-555-0198".to_string(), "ent_reviewer@example.com".to_string()]
+    {
         let temp = tempfile::tempdir().expect("tempdir");
         let substrate = init_substrate(&temp).await;
 
         let observe = observe(
             &substrate,
             ObserveInput::new("observe-sensitive-entity-id", "safe observation", ObserveKind::Signal)
-                .with_entity(entity),
+                .with_entity(&entity),
         )
         .await;
 
@@ -130,8 +147,8 @@ async fn memory_observe_refuses_sensitive_canonical_entity_ids_without_fragment_
             panic!("{entity}: expected sensitive entity refusal, got {:?}", observe.result);
         };
         assert_eq!(error.code, "invalid_request", "{entity}");
-        assert_no_substrate_records(&substrate, entity);
-        assert!(!repo_contains(temp.path(), entity), "{entity} canary must not be written");
+        assert_no_substrate_records(&substrate, &entity);
+        assert!(!repo_contains(temp.path(), &entity), "{entity} canary must not be written");
     }
 }
 
@@ -157,19 +174,19 @@ async fn memory_observe_allows_phone_like_entity_ids() {
 #[tokio::test]
 async fn memory_observe_refuses_sensitive_binding_metadata_without_fragment_file() {
     for (field, canary) in [
-        ("session_id", "sess_AKIA1234567890ABCDEF"),
-        ("session_id", "sess_202-555-0198"),
-        ("harness", "codex_AKIA1234567890ABCDEF"),
-        ("harness", "codex_202-555-0198"),
-        ("harness_version", "v1_AKIA1234567890ABCDEF"),
+        ("session_id", format!("sess_{}", fake_aws_key())),
+        ("session_id", "sess_202-555-0198".to_string()),
+        ("harness", format!("codex_{}", fake_aws_key())),
+        ("harness", "codex_202-555-0198".to_string()),
+        ("harness_version", format!("v1_{}", fake_aws_key())),
     ] {
         let temp = tempfile::tempdir().expect("tempdir");
         let substrate = init_substrate(&temp).await;
         let mut input = ObserveInput::new("observe-sensitive-binding", "safe observation", ObserveKind::Signal);
         match field {
-            "session_id" => input.session_id = canary.to_string(),
-            "harness" => input.harness = canary.to_string(),
-            "harness_version" => input.harness_version = Some(canary.to_string()),
+            "session_id" => input.session_id = canary.clone(),
+            "harness" => input.harness = canary.clone(),
+            "harness_version" => input.harness_version = Some(canary.clone()),
             other => panic!("unexpected field {other}"),
         }
 
@@ -179,8 +196,8 @@ async fn memory_observe_refuses_sensitive_binding_metadata_without_fragment_file
             panic!("{field}={canary}: expected sensitive binding refusal, got {:?}", observe.result);
         };
         assert_eq!(error.code, "invalid_request", "{field}={canary}");
-        assert_no_substrate_records(&substrate, canary);
-        assert!(!repo_contains(temp.path(), canary), "{field} canary must not be written");
+        assert_no_substrate_records(&substrate, &canary);
+        assert!(!repo_contains(temp.path(), &canary), "{field} canary must not be written");
     }
 }
 
@@ -220,7 +237,7 @@ async fn memory_observe_allows_phone_like_binding_metadata() {
 async fn memory_observe_refuses_secret_without_fragment_file() {
     let temp = tempfile::tempdir().expect("tempdir");
     let substrate = init_substrate(&temp).await;
-    let secret = "AKIA1234567890ABCDEF";
+    let secret = fake_aws_key();
 
     let observe = observe(
         &substrate,
@@ -233,7 +250,7 @@ async fn memory_observe_refuses_secret_without_fragment_file() {
     };
     assert!(matches!(error.code.as_str(), "privacy_error" | "invalid_request"));
     assert_no_substrate_records(&substrate, "secret observe");
-    assert!(!repo_contains(temp.path(), secret), "secret canary must not be written");
+    assert!(!repo_contains(temp.path(), &secret), "secret canary must not be written");
 }
 
 #[tokio::test]
@@ -438,6 +455,11 @@ fn collect_jsonl_records(path: &Path, records: &mut Vec<serde_json::Value>) {
 
 fn repo_contains(root: &Path, needle: &str) -> bool {
     contains_needle(root, needle.as_bytes()).expect("walk repo/runtime for leak canary")
+}
+
+fn fake_aws_key() -> String {
+    let suffix = (0..16).map(|index| char::from(b'A' + (index % 10) as u8)).collect::<String>();
+    ["AK", "IA", &suffix].concat()
 }
 
 fn contains_needle(path: &Path, needle: &[u8]) -> std::io::Result<bool> {

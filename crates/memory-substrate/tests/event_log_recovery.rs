@@ -82,12 +82,15 @@ fn read_events_falls_back_to_recovery_on_single_trailing_malformed_line() {
     let path = temp.path().join("events/dev.jsonl");
     let event = sample_event("evt_1", "op_1");
     append_event(&path, &event).expect("append");
+    let valid_bytes = std::fs::read(&path).expect("read valid prefix");
     std::fs::OpenOptions::new().append(true).open(&path).expect("open").write_all(b"{garbage}").expect("write garbage");
 
     // read_events should recover and return the valid event.
     let events = read_events(&path).expect("forgiving read");
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].id, event.id);
+    assert_eq!(std::fs::read(&path).expect("read recovered log"), valid_bytes);
+    read_events_strict(&path).expect("strict read after forgiving recovery");
 }
 
 /// Property test: random byte garbage appended to a valid log is recovered

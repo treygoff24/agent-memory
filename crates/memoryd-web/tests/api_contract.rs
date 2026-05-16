@@ -83,7 +83,7 @@ async fn test_daemon_backed_recall_hits_route_surfaces_live_recall_emission() {
     let server = tokio::spawn(serve_substrate_with(
         socket.clone(),
         substrate,
-        ServerOptions { idle_frame_timeout: Duration::from_secs(5) },
+        ServerOptions { idle_frame_timeout: Duration::from_secs(5), ..ServerOptions::default() },
         shutdown_rx,
     ));
     wait_for_socket(&socket).await;
@@ -156,7 +156,7 @@ async fn test_daemon_backed_reality_check_route_creates_session_and_confirms() {
     let server = tokio::spawn(serve_substrate_with(
         socket.clone(),
         substrate,
-        ServerOptions { idle_frame_timeout: Duration::from_secs(5) },
+        ServerOptions { idle_frame_timeout: Duration::from_secs(5), ..ServerOptions::default() },
         shutdown_rx,
     ));
     wait_for_socket(&socket).await;
@@ -427,7 +427,7 @@ async fn test_notifications_stream_returns_sse_heartbeat_snapshot() {
         response.headers().get(header::CONTENT_TYPE).and_then(|value| value.to_str().ok()).unwrap_or_default();
     assert!(content_type.starts_with("text/event-stream"));
 
-    let body = response_body(response).await;
+    let body = sse_body(response).await;
     assert!(body.contains("event: heartbeat"));
     assert!(body.contains("review_queue_over"));
 }
@@ -441,7 +441,7 @@ async fn test_daemon_configured_notifications_stream_returns_empty_heartbeat() {
         .expect("request succeeds");
 
     assert_eq!(response.status(), StatusCode::OK);
-    let body = response_body(response).await;
+    let body = sse_body(response).await;
     assert!(body.contains("event: heartbeat"));
     assert!(body.contains(r#""notifications":[]"#));
 }
@@ -521,6 +521,10 @@ async fn json_body(response: axum::response::Response) -> Value {
 async fn response_body(response: axum::response::Response) -> String {
     let bytes = to_bytes(response.into_body(), RESPONSE_LIMIT).await.expect("body bytes are collected");
     String::from_utf8(bytes.to_vec()).expect("response is utf8")
+}
+
+async fn sse_body(response: axum::response::Response) -> String {
+    timeout(Duration::from_secs(1), response_body(response)).await.expect("SSE heartbeat response is bounded")
 }
 
 fn assert_json_content_type(response: &axum::response::Response, route: &str) {

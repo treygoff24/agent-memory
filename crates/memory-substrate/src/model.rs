@@ -1249,6 +1249,8 @@ pub struct RecallIndexRow {
     pub path: RepoPath,
     /// Frontmatter summary.
     pub summary: String,
+    /// Frontmatter memory type.
+    pub memory_type: MemoryType,
     /// Lifecycle status.
     pub status: MemoryStatus,
     /// Namespace scope.

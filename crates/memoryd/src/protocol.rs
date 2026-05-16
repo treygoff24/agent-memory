@@ -114,6 +114,8 @@ pub enum RequestPayload {
     },
     PeerReleaseLock {
         memory_id: String,
+        #[serde(default)]
+        expected_holder: Option<PeerReleaseLockExpectedHolder>,
     },
     Observe {
         text: String,
@@ -584,11 +586,18 @@ pub struct PeerReleaseLockResponse {
     pub released: Option<ClaimLockInfo>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PeerReleaseLockExpectedHolder {
+    pub holder_harness: String,
+    pub holder_session_id: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PeerReleaseLockStatus {
     Released,
     NoLockFound,
+    LockChanged,
 }
 
 pub fn render_peer_status_human(status: &PeerStatusResponse) -> String {

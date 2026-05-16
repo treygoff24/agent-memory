@@ -50,7 +50,13 @@ async fn write_memory_dual_writes_jsonl_and_sqlite_events_log() {
 
     assert_eq!(kind, "write_committed");
     assert_eq!(memory_id, memory.frontmatter.id.as_str());
-    assert!(payload_json.contains("write_committed"));
+    let payload_kind: EventKind = serde_json::from_str(&payload_json).expect("payload_json should decode as EventKind");
+    let EventKind::WriteCommitted { id, path, classification } = payload_kind else {
+        panic!("payload_json should be a write_committed event kind");
+    };
+    assert_eq!(id.as_str(), memory.frontmatter.id.as_str());
+    assert_eq!(path.as_str(), memory.path.as_ref().expect("fixture memory has repo path").as_str());
+    assert_eq!(classification, ClassificationOutcome::Trusted);
 }
 
 #[tokio::test]

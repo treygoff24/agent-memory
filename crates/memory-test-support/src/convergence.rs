@@ -42,7 +42,7 @@ pub enum DivergenceKind {
 
 /// Compare two repo roots for spec §13.6.1 canonical-content equality.
 ///
-/// - `.md` files: parse → re-serialize via serde_yaml (canonical) → compare.
+/// - `.md` files: parse → re-serialize via yaml_serde (canonical) → compare.
 /// - `.jsonl` files: parse each line as JSON, sort by
 ///   `(ts, device, seq, id)`, re-serialize → compare.
 /// - Everything else (YAML, gitattributes, etc.): byte-compare directly.
@@ -135,7 +135,7 @@ fn compare_roots(left: &Path, right: &Path) -> anyhow::Result<ConvergenceReport>
 
 /// Compare two Markdown files at the canonical-content level.
 ///
-/// Parses frontmatter + body, re-serializes via serde_yaml (sorted keys),
+/// Parses frontmatter + body, re-serializes via yaml_serde (sorted keys),
 /// and byte-compares the result.
 ///
 /// Falls back to byte comparison when the parse fails (preserving error
@@ -173,9 +173,9 @@ fn canonical_markdown(path: &Path, bytes: &[u8]) -> anyhow::Result<Vec<u8>> {
     let text = std::str::from_utf8(bytes).context("markdown utf8")?;
     // Split on the YAML frontmatter delimiter.
     let (frontmatter_yaml, body) = split_frontmatter(path, text)?;
-    // Parse and re-serialize via serde_yaml (canonical: sorted keys, no anchors).
-    let value: serde_yaml::Value = serde_yaml::from_str(frontmatter_yaml).context("frontmatter parse")?;
-    let re_serialized = serde_yaml::to_string(&value).context("frontmatter serialize")?;
+    // Parse and re-serialize via yaml_serde (canonical: sorted keys, no anchors).
+    let value: yaml_serde::Value = yaml_serde::from_str(frontmatter_yaml).context("frontmatter parse")?;
+    let re_serialized = yaml_serde::to_string(&value).context("frontmatter serialize")?;
     // Reconstruct: delimiter + canonical frontmatter + delimiter + body.
     let canonical = format!("---\n{re_serialized}---\n{body}");
     Ok(canonical.into_bytes())

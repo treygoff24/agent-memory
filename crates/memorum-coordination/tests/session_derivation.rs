@@ -2,7 +2,9 @@ use chrono::{DateTime, TimeZone, Utc};
 use memorum_coordination::gate::{path_fraction, PeerWriteCandidate};
 use memorum_coordination::session::StartupRecallEntityInput;
 use memorum_coordination::{ConcurrentSessionMode, CoordinationConfig, ProjectBinding, RelevanceGate, SessionContext};
-use memory_substrate::{Entity, MemoryId, MemoryStatus, RecallIndexRow, RepoPath, Scope, Sensitivity, SourceKind};
+use memory_substrate::{
+    Entity, MemoryId, MemoryStatus, MemoryType, RecallIndexRow, RepoPath, Scope, Sensitivity, SourceKind,
+};
 use std::collections::HashSet;
 
 #[test]
@@ -236,6 +238,7 @@ fn row<const N: usize>(id: &str, entity_ids: [&str; N], now: DateTime<Utc>) -> R
         id: MemoryId::new(id),
         path: RepoPath::from_unchecked(format!("project:proj/{id}.md")),
         summary: format!("summary for {id}"),
+        memory_type: MemoryType::Pattern,
         status: MemoryStatus::Active,
         scope: Scope::Project,
         canonical_namespace_id: Some("proj".to_string()),

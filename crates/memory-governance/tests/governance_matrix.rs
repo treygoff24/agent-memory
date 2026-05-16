@@ -18,7 +18,7 @@ fn governance_matrix_covers_actor_grounding_paths() {
     let grounding_file = write_grounding_file();
 
     for fixture in ACTOR_FIXTURES {
-        let candidate = actor_candidate(fixture.actor, fixture.scope, fixture.claim, &grounding_file);
+        let candidate = actor_candidate(fixture.actor, fixture.scope, fixture.claim, grounding_file.path());
         let decision = engine(FakeSimilaritySearch::default(), FakeTiebreaker::new(TiebreakOutcome::Unclear))
             .evaluate_write(&candidate);
 
@@ -37,8 +37,6 @@ fn governance_matrix_covers_actor_grounding_paths() {
             ),
         }
     }
-
-    std::fs::remove_file(grounding_file).expect("remove grounding fixture");
 }
 
 #[test]
@@ -295,10 +293,15 @@ fn existing_id(fixture: &governance_fixtures::RelationFixture) -> String {
     format!("existing-{}", fixture.name)
 }
 
-fn write_grounding_file() -> PathBuf {
-    let path = std::env::temp_dir().join(format!("agent-memory-governance-grounding-{}.md", std::process::id()));
-    std::fs::write(&path, "local evidence for a grounded agent write\n").expect("write grounding fixture");
-    path
+fn write_grounding_file() -> tempfile::NamedTempFile {
+    let mut file = tempfile::Builder::new()
+        .prefix("agent-memory-governance-grounding-")
+        .suffix(".md")
+        .tempfile()
+        .expect("create grounding fixture");
+    std::io::Write::write_all(&mut file, b"local evidence for a grounded agent write\n")
+        .expect("write grounding fixture");
+    file
 }
 
 #[derive(Clone, Debug, Default)]
