@@ -110,8 +110,11 @@ const MIN_RENDERED_EDGE_WEIGHT = 0.3;
 
 function topGraphNodes(nodes: EntityNode[]): EntityNode[] {
     return [...nodes]
-        .sort((left, right) =>
-            right.memory_count - left.memory_count || left.label.localeCompare(right.label) || left.id.localeCompare(right.id),
+        .sort(
+            (left, right) =>
+                right.memory_count - left.memory_count ||
+                left.label.localeCompare(right.label) ||
+                left.id.localeCompare(right.id),
         )
         .slice(0, MAX_RENDERED_NODES);
 }
@@ -236,7 +239,8 @@ export function EntityGraph({
                     role="status"
                 >
                     <span>
-                        Showing top {MAX_RENDERED_NODES.toLocaleString()} of {apiNodes.length.toLocaleString()} entities.
+                        Showing top {MAX_RENDERED_NODES.toLocaleString()} of {apiNodes.length.toLocaleString()}{' '}
+                        entities.
                     </span>
                     <button
                         type="button"

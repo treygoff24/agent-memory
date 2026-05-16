@@ -67,18 +67,18 @@ For current behavior of each stream, consult its live spec and API doc — not t
 
 When Trey says "the spec" or "the plan" without a version, he means the latest. Older versions stay on disk for history — do not consult them for current behavior. When asked "where are we," check `git status`, `git worktree list`, `git log --oneline -20`, and the plan's task list — don't infer from older docs.
 
-| Stream | Live spec | Live plan | API/dev docs |
-|---|---|---|---|
-| System | `docs/specs/system-v0.2.md` | — | — |
-| A | `docs/specs/stream-a-core-substrate-v1.1.md` | `docs/plans/2026-04-26-stream-a-core-substrate-implementation-plan-v0.3.md` | `docs/api/stream-a-public-api.md`, `docs/dev/stream-a-architecture.md` |
-| B | (in system spec) | `docs/plans/2026-04-28-stream-b-daemon-mcp.md` | — |
-| C | (in system spec) | `docs/plans/2026-04-29-stream-c-governance.md` | `docs/api/stream-c-governance-api.md`, `docs/runbooks/governance-review.md` |
-| D | `docs/specs/stream-d-privacy-v0.1.md` | (in C plan) | `docs/api/stream-d-privacy-api.md` |
-| E | `docs/specs/stream-e-passive-recall-v0.5.md` | `docs/plans/2026-04-30-stream-e-passive-recall.md` (rev v0.4) | `docs/api/stream-e-passive-recall-api.md` |
-| F | `docs/specs/stream-f-dreaming-v0.3.md` | `docs/plans/2026-04-30-stream-f-dreaming.md` | `docs/api/stream-f-dreaming-api.md` |
-| G | `docs/specs/stream-g-observability-v0.1.md` | `docs/plans/2026-05-01-stream-g-observability.md` | `docs/api/stream-g-observability-api.md`, `docs/dev/stream-g-architecture.md`, `docs/runbooks/reality-check.md` |
-| H | `docs/specs/stream-h-eval-harness-v0.1.md` | `docs/plans/2026-05-01-stream-h-eval-harness.md` | `docs/api/stream-h-eval-api.md` |
-| I | `docs/specs/stream-i-cross-session-v0.1.md` | `docs/plans/2026-05-01-stream-i-cross-session.md` | `docs/api/stream-i-cross-session-api.md`, `docs/dev/stream-i-architecture.md` |
+| Stream | Live spec                                    | Live plan                                                                   | API/dev docs                                                                                                    |
+| ------ | -------------------------------------------- | --------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| System | `docs/specs/system-v0.2.md`                  | —                                                                           | —                                                                                                               |
+| A      | `docs/specs/stream-a-core-substrate-v1.1.md` | `docs/plans/2026-04-26-stream-a-core-substrate-implementation-plan-v0.3.md` | `docs/api/stream-a-public-api.md`, `docs/dev/stream-a-architecture.md`                                          |
+| B      | (in system spec)                             | `docs/plans/2026-04-28-stream-b-daemon-mcp.md`                              | —                                                                                                               |
+| C      | (in system spec)                             | `docs/plans/2026-04-29-stream-c-governance.md`                              | `docs/api/stream-c-governance-api.md`, `docs/runbooks/governance-review.md`                                     |
+| D      | `docs/specs/stream-d-privacy-v0.1.md`        | (in C plan)                                                                 | `docs/api/stream-d-privacy-api.md`                                                                              |
+| E      | `docs/specs/stream-e-passive-recall-v0.5.md` | `docs/plans/2026-04-30-stream-e-passive-recall.md` (rev v0.4)               | `docs/api/stream-e-passive-recall-api.md`                                                                       |
+| F      | `docs/specs/stream-f-dreaming-v0.3.md`       | `docs/plans/2026-04-30-stream-f-dreaming.md`                                | `docs/api/stream-f-dreaming-api.md`                                                                             |
+| G      | `docs/specs/stream-g-observability-v0.1.md`  | `docs/plans/2026-05-01-stream-g-observability.md`                           | `docs/api/stream-g-observability-api.md`, `docs/dev/stream-g-architecture.md`, `docs/runbooks/reality-check.md` |
+| H      | `docs/specs/stream-h-eval-harness-v0.1.md`   | `docs/plans/2026-05-01-stream-h-eval-harness.md`                            | `docs/api/stream-h-eval-api.md`                                                                                 |
+| I      | `docs/specs/stream-i-cross-session-v0.1.md`  | `docs/plans/2026-05-01-stream-i-cross-session.md`                           | `docs/api/stream-i-cross-session-api.md`, `docs/dev/stream-i-architecture.md`                                   |
 
 Other refs:
 

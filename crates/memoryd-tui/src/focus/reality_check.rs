@@ -22,7 +22,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, styles: &ThemeStyles
         ]),
         Line::from(gauge),
         Line::from(state.current_title.as_deref().unwrap_or("No Reality Check item selected.")),
-        Line::from("y confirm · k correct · f forget · s skip · Esc inbox"),
+        Line::from("k correct · Esc inbox"),
     ];
     frame.render_widget(
         Paragraph::new(body).style(styles.base).block(

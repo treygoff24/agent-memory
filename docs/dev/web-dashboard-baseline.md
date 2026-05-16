@@ -78,14 +78,14 @@ boundary.
 Manual walkthrough against brief §10 anti-patterns, plus automated grep over the live CSS and
 component sources. **Verdict: clean across all six axes.**
 
-| Anti-pattern              | Method                                            | Finding   |
-| ------------------------- | ------------------------------------------------- | --------- |
-| Glassmorphism             | `grep "backdrop-filter\|blur("` over `src/**/*.css` | 0 hits    |
-| Gradient buttons          | `grep "linear-gradient\|radial-gradient"`         | 0 hits    |
-| Emoji in UI strings       | `grep "[◇●▸⚠○▣◈◆]"` post-Phosphor swap           | Only the brand sigil `◆` in `TopBar.tsx` and `FocusStrip.tsx` (the explicit `§5 invariant 6` exception); plus `icons.ts` doc comments. |
-| AI-sparkle / glow / aurora| `grep "sparkle\|glow\|aurora\|shimmer"`           | 0 hits    |
-| Drop-shadows for hierarchy| Audited 18 `box-shadow` uses in `app.css`         | All functional: inset accent strips on active nav items, modal/tooltip elevation (legitimate overlay lift), pulse-bad animated outline ring on status dots. **Zero "drop-shadow for visual hierarchy in normal flow."** |
-| Card-grid as default      | `grep "cards-grid\|card-grid"` in `src/**/*.tsx`  | 0 hits in components; brief permits Settings (`.cards-grid`) and `.theme-grid` which are explicit grid surfaces, not default-content containers. |
+| Anti-pattern               | Method                                              | Finding                                                                                                                                                                                                                 |
+| -------------------------- | --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Glassmorphism              | `grep "backdrop-filter\|blur("` over `src/**/*.css` | 0 hits                                                                                                                                                                                                                  |
+| Gradient buttons           | `grep "linear-gradient\|radial-gradient"`           | 0 hits                                                                                                                                                                                                                  |
+| Emoji in UI strings        | `grep "[◇●▸⚠○▣◈◆]"` post-Phosphor swap              | Only the brand sigil `◆` in `TopBar.tsx` and `FocusStrip.tsx` (the explicit `§5 invariant 6` exception); plus `icons.ts` doc comments.                                                                                  |
+| AI-sparkle / glow / aurora | `grep "sparkle\|glow\|aurora\|shimmer"`             | 0 hits                                                                                                                                                                                                                  |
+| Drop-shadows for hierarchy | Audited 18 `box-shadow` uses in `app.css`           | All functional: inset accent strips on active nav items, modal/tooltip elevation (legitimate overlay lift), pulse-bad animated outline ring on status dots. **Zero "drop-shadow for visual hierarchy in normal flow."** |
+| Card-grid as default       | `grep "cards-grid\|card-grid"` in `src/**/*.tsx`    | 0 hits in components; brief permits Settings (`.cards-grid`) and `.theme-grid` which are explicit grid surfaces, not default-content containers.                                                                        |
 
 ### Stale-state notes from Phase 0 status block
 

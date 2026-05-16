@@ -2870,19 +2870,26 @@ async fn review_queue_response(
     let mut items = queue
         .items
         .into_iter()
-        .map(|item| ReviewQueueItemResponse {
-            body: bodies_by_id.remove(&item.id).map(|body| bounded(&body, REVIEW_QUEUE_BODY_MAX)).unwrap_or_default(),
-            id: item.id,
-            summary: bounded(&item.summary, REVIEW_QUEUE_SUMMARY_MAX),
-            status: item.status.as_str().to_string(),
-            policy_applied: bounded(&item.policy_applied, REVIEW_QUEUE_POLICY_MAX),
-            reason: item.reason.map(|reason| bounded(&reason, REVIEW_QUEUE_REASON_MAX)),
-            next_actions: item
-                .next_actions
-                .into_iter()
-                .take(4)
-                .map(|action| bounded(&action, REVIEW_QUEUE_ACTION_MAX))
-                .collect(),
+        .map(|item| {
+            let (body, body_truncated) = bodies_by_id
+                .remove(&item.id)
+                .map(|body| bounded_with_truncation(&body, REVIEW_QUEUE_BODY_MAX))
+                .unwrap_or_default();
+            ReviewQueueItemResponse {
+                body,
+                body_truncated,
+                id: item.id,
+                summary: bounded(&item.summary, REVIEW_QUEUE_SUMMARY_MAX),
+                status: item.status.as_str().to_string(),
+                policy_applied: bounded(&item.policy_applied, REVIEW_QUEUE_POLICY_MAX),
+                reason: item.reason.map(|reason| bounded(&reason, REVIEW_QUEUE_REASON_MAX)),
+                next_actions: item
+                    .next_actions
+                    .into_iter()
+                    .take(4)
+                    .map(|action| bounded(&action, REVIEW_QUEUE_ACTION_MAX))
+                    .collect(),
+            }
         })
         .collect::<Vec<_>>();
     while serialized_payload_len(&ResponsePayload::ReviewQueue(ReviewQueueResponse { items: items.clone() }))

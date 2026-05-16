@@ -38,6 +38,7 @@ impl DaemonClient {
                     status: item.status,
                     reason: item.reason,
                     body: item.body,
+                    body_truncated: item.body_truncated,
                 })
                 .collect();
         }

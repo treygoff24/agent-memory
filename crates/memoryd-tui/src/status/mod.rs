@@ -4,8 +4,22 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::app::{App, ReviewAction, SocketState};
+use crate::inbox::InboxItem;
 use crate::state::FocusKind;
 use crate::theme_glue::ThemeStyles;
+
+const REVIEW_HINTS: &[(&str, &str)] = &[
+    ("a", "approve"),
+    ("r", "reject"),
+    ("f", "forget"),
+    ("enter", "inspect"),
+    ("tab", "filter"),
+    (":", "palette"),
+    ("?", "help"),
+];
+const INBOX_HINTS: &[(&str, &str)] = &[("enter", "inspect"), ("tab", "filter"), (":", "palette"), ("?", "help")];
+const REALITY_CHECK_HINTS: &[(&str, &str)] = &[("k", "correct"), ("esc", "back")];
+const CORRECT_EDITOR_HINTS: &[(&str, &str)] = &[("ctrl-s", "submit"), ("esc", "back"), ("enter", "newline")];
 
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, styles: &ThemeStyles) {
     let chunks = Layout::default()
@@ -34,14 +48,14 @@ fn vitals_line<'a>(app: &'a App, styles: &'a ThemeStyles) -> Line<'a> {
 
 fn hint_line<'a>(app: &'a App, styles: &'a ThemeStyles) -> Line<'a> {
     if let Some(pending) = app.pending_action() {
-        let verb = match pending.action() {
-            ReviewAction::Approve => "approved",
-            ReviewAction::Reject => "rejected",
-            ReviewAction::Forget => "forgotten",
+        let (verb, style) = match pending.action() {
+            ReviewAction::Approve => ("approved", styles.ok),
+            ReviewAction::Reject => ("rejected", styles.warn),
+            ReviewAction::Forget => ("forgotten", styles.bad),
         };
         return Line::from(vec![
             Span::raw(" "),
-            Span::styled(verb, styles.ok),
+            Span::styled(verb, style),
             Span::raw("   "),
             Span::styled("u", styles.accent),
             Span::raw(" "),
@@ -53,17 +67,10 @@ fn hint_line<'a>(app: &'a App, styles: &'a ThemeStyles) -> Line<'a> {
         return Line::from(vec![Span::raw(" "), Span::styled(footer_hint.to_string(), styles.warn)]);
     }
     let hints = match app.focus() {
-        FocusKind::None => &[
-            ("a", "approve"),
-            ("r", "reject"),
-            ("f", "forget"),
-            ("enter", "inspect"),
-            ("tab", "filter"),
-            (":", "palette"),
-            ("?", "help"),
-        ][..],
-        FocusKind::RealityCheck { .. } => &[("k", "correct"), ("esc", "back")][..],
-        FocusKind::CorrectEditor { .. } => &[("ctrl-s", "submit"), ("esc", "back"), ("enter", "newline")][..],
+        FocusKind::None if matches!(app.selected_item(), Some(InboxItem::ReviewCandidate { .. })) => REVIEW_HINTS,
+        FocusKind::None => INBOX_HINTS,
+        FocusKind::RealityCheck { .. } => REALITY_CHECK_HINTS,
+        FocusKind::CorrectEditor { .. } => CORRECT_EDITOR_HINTS,
     };
     let mut spans: Vec<Span<'a>> = Vec::with_capacity(hints.len() * 4);
     spans.push(Span::raw(" "));

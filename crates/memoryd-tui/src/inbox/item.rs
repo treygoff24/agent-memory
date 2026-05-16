@@ -9,6 +9,7 @@ pub enum InboxItem {
         reason: Option<String>,
         age_label: String,
         body: String,
+        body_truncated: bool,
     },
     Conflict {
         id: String,
@@ -120,6 +121,7 @@ impl From<ReviewQueueItemResponse> for InboxItem {
             reason: item.reason,
             age_label: item.status,
             body: item.body,
+            body_truncated: item.body_truncated,
         }
     }
 }

@@ -65,15 +65,7 @@ export const glyphIcons: Record<GlyphKind, GlyphEntry> = {
  */
 export { CheckCircle, Circle, Diamond, Play };
 
-export type NavIconKind =
-    | 'inbox'
-    | 'reality'
-    | 'recall'
-    | 'dreams'
-    | 'peers'
-    | 'governance'
-    | 'entities'
-    | 'settings';
+export type NavIconKind = 'inbox' | 'reality' | 'recall' | 'dreams' | 'peers' | 'governance' | 'entities' | 'settings';
 
 export const navIcons: Record<NavIconKind, Icon> = {
     inbox: Tray,

@@ -957,6 +957,8 @@ pub struct ReviewQueueItemResponse {
     pub next_actions: Vec<String>,
     #[serde(default)]
     pub body: String,
+    #[serde(default)]
+    pub body_truncated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

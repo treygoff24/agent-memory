@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -96,6 +97,7 @@ pub struct App {
     reality_check: RealityCheckState,
     correct_editor: CorrectEditorState,
     pending_action: Option<PendingAction>,
+    queued_review_ids: HashSet<String>,
     pending_trust_artifact_id: Option<String>,
     queued_daemon_calls: Vec<DaemonCall>,
     should_quit: bool,
@@ -171,6 +173,7 @@ impl App {
             reality_check: RealityCheckState::default(),
             correct_editor: CorrectEditorState::default(),
             pending_action: None,
+            queued_review_ids: HashSet::new(),
             pending_trust_artifact_id: None,
             queued_daemon_calls: Vec::new(),
             should_quit: false,
@@ -284,6 +287,7 @@ impl App {
         self.socket_state = SocketState::Connected;
         self.snapshot = snapshot;
         self.rebuild_inbox();
+        self.retain_live_queued_review_ids();
     }
 
     pub fn set_trust_artifact(&mut self, artifact: TrustArtifact) {
@@ -317,6 +321,7 @@ impl App {
 
     fn commit_pending_action(&mut self) {
         if let Some(pending) = self.pending_action.take() {
+            self.queued_review_ids.insert(pending.memory_id.clone());
             self.queued_daemon_calls.push(DaemonCall::Review { action: pending.action, memory_id: pending.memory_id });
         }
     }
@@ -576,21 +581,38 @@ impl App {
     }
 
     fn stage_review_action(&mut self, action: ReviewAction, now: Instant) {
-        self.commit_pending_action();
-        let Some(memory_id) = self.selected_item().map(|item| item.id().to_string()) else {
+        let Some(memory_id) = self.selected_review_candidate_id() else {
+            self.snapshot.footer_hint = "selected item is not a review candidate".to_string();
             return;
         };
+        if self.pending_action.as_ref().is_some_and(|pending| pending.memory_id == memory_id) {
+            self.snapshot.footer_hint = "review action already staged; u undo".to_string();
+            return;
+        }
+        if self.queued_review_ids.contains(&memory_id) {
+            self.snapshot.footer_hint = "review action already queued for selected item".to_string();
+            return;
+        }
+        self.commit_pending_action();
+        self.snapshot.footer_hint.clear();
         self.pending_action = Some(PendingAction { staged_at: now, action, memory_id });
-        self.advance_selection_one();
+        self.advance_selection_after_review_action();
     }
 
-    fn advance_selection_one(&mut self) {
+    fn advance_selection_after_review_action(&mut self) {
         let len = self.visible_items_len();
         if len == 0 {
             self.selected = 0;
             return;
         }
         self.selected = (self.selected + 1).min(len.saturating_sub(1));
+    }
+
+    fn selected_review_candidate_id(&self) -> Option<String> {
+        match self.selected_item()? {
+            InboxItem::ReviewCandidate { id, .. } => Some(id.clone()),
+            _ => None,
+        }
     }
 
     fn open_memory_detail(&mut self) {
@@ -634,6 +656,11 @@ impl App {
     fn rebuild_inbox(&mut self) {
         self.inbox_items = self.snapshot.inbox_items();
         self.selected = self.selected.min(self.visible_items_len().saturating_sub(1));
+    }
+
+    fn retain_live_queued_review_ids(&mut self) {
+        let review_ids = self.snapshot.review_queue.iter().map(|row| row.id.as_str()).collect::<HashSet<_>>();
+        self.queued_review_ids.retain(|id| review_ids.contains(id.as_str()));
     }
 
     fn render_modal(&self, frame: &mut Frame<'_>, area: Rect, styles: &ThemeStyles) {
@@ -928,6 +955,7 @@ impl DaemonSnapshot {
                     status: "candidate".to_string(),
                     reason: Some("requires_user_confirmation".to_string()),
                     body: "Use CITEXT for the users.email column so lookups don't have to LOWER() the input and the unique index works on case-insensitive equality without a function index.".to_string(),
+                    body_truncated: false,
                 },
                 ReviewQueueRow {
                     id: "mem_20260501_0123456789abcdef_000007".to_string(),
@@ -936,6 +964,7 @@ impl DaemonSnapshot {
                     status: "dream_low_confidence".to_string(),
                     reason: Some("dream_low_confidence".to_string()),
                     body: "Dream-generated candidate proposing a synthesis from recall patterns. Confidence 0.41 — under the 0.65 floor for auto-promotion. Awaiting human verdict.".to_string(),
+                    body_truncated: false,
                 },
             ],
             conflicts: vec![ConflictRow {
@@ -1001,6 +1030,7 @@ impl DaemonSnapshot {
                     reason: row.reason.clone(),
                     age_label: row.status.clone(),
                     body: row.body.clone(),
+                    body_truncated: row.body_truncated,
                 })
                 .collect(),
             self.dreams
@@ -1043,6 +1073,7 @@ pub struct ReviewQueueRow {
     pub status: String,
     pub reason: Option<String>,
     pub body: String,
+    pub body_truncated: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConflictRow {

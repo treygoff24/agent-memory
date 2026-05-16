@@ -1,9 +1,8 @@
 import { useEffect } from 'react';
 
-import { Circle } from '../ui/icons';
-
 import type { InspectorAction, InspectorItem, InspectorLayout } from './types';
 
+import { Circle } from '../ui/icons';
 import { DreamOutputInspector } from './kinds/dreamOutput';
 import { EntityDetailInspector } from './kinds/entityDetail';
 import { GovernanceDecisionInspector } from './kinds/governanceDecision';

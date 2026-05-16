@@ -25,5 +25,19 @@ fn inspector_routes_review_item() {
     let frame = render(app);
 
     assert!(frame.contains("Review candidate"));
+    assert!(frame.contains("Body"));
+    assert!(frame.contains("Use CITEXT for the users.email column"));
     assert!(frame.contains("requires_user_confirmation"));
+}
+
+#[test]
+fn inspector_marks_truncated_review_body() {
+    let mut snapshot = DaemonSnapshot::sample();
+    snapshot.review_queue[0].body_truncated = true;
+    let mut app = App::with_snapshot(snapshot);
+    app.set_selected(3);
+    let frame = render(app);
+
+    assert!(frame.contains("Body"));
+    assert!(frame.contains("truncated"));
 }

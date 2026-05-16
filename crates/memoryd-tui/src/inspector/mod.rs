@@ -29,7 +29,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, item: Option<&InboxItem>, style
 }
 
 fn review_view<'a>(item: &'a InboxItem, styles: &ThemeStyles) -> Vec<Line<'a>> {
-    let InboxItem::ReviewCandidate { id, title, namespace, reason, body, .. } = item else {
+    let InboxItem::ReviewCandidate { id, title, namespace, reason, body, body_truncated, .. } = item else {
         return Vec::new();
     };
     let mut lines = vec![
@@ -41,6 +41,9 @@ fn review_view<'a>(item: &'a InboxItem, styles: &ThemeStyles) -> Vec<Line<'a>> {
         Line::from(""),
         Line::from("Body"),
     ];
+    if *body_truncated {
+        lines.push(Line::from("(truncated in review queue response — open detail/reveal for full body)"));
+    }
     if body.is_empty() {
         lines.push(Line::from("(empty — daemon shipped no body for this candidate)"));
     } else {

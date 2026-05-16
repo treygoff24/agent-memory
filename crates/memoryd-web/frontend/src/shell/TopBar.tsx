@@ -1,5 +1,5 @@
-import { chromeIcons } from '../ui/icons';
 import { StatusDot } from '../ui';
+import { chromeIcons } from '../ui/icons';
 export function TopBar({ onPalette, onBell }: { onPalette(): void; onBell(): void }) {
     const Palette = chromeIcons.palette;
     const BellIcon = chromeIcons.bell;

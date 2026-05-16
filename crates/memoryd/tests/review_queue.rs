@@ -45,6 +45,8 @@ async fn review_queue_returns_quarantined_memories_from_substrate() {
     assert_eq!(queue.items[0].policy_applied, "governance-quarantine-v1");
     assert_eq!(queue.items[0].reason.as_deref(), Some("contradiction requires review"));
     assert_eq!(queue.items[0].next_actions, ["review_approve", "review_reject"]);
+    assert_eq!(queue.items[0].body, quarantined.body);
+    assert!(!queue.items[0].body_truncated);
 }
 
 #[tokio::test]
@@ -110,6 +112,30 @@ async fn review_queue_response_is_frame_bounded_for_oversized_review_fields() {
     assert_eq!(queue.items.len(), 1);
     assert_eq!(queue.items[0].summary.len(), 280);
     assert!(queue.items[0].reason.as_deref().expect("reason").len() < MAX_FRAME_BYTES / 2);
+}
+
+#[tokio::test]
+async fn review_queue_marks_truncated_bodies() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let substrate = init_substrate(roots).await;
+    let mut oversized = review_memory();
+    oversized.body = format!("{}{}", "x".repeat(1024), "tail-not-rendered");
+    write_test_memory(&substrate, oversized).await;
+
+    let response = handle_request(
+        &substrate,
+        RequestEnvelope::new("req-review-queue-body-truncated", RequestPayload::ReviewQueue { limit: Some(10) }),
+    )
+    .await;
+
+    let ResponseResult::Success(ResponsePayload::ReviewQueue(queue)) = response.result else {
+        panic!("expected review queue success");
+    };
+    assert_eq!(queue.items.len(), 1);
+    assert_eq!(queue.items[0].body.len(), 1024);
+    assert!(queue.items[0].body_truncated);
+    assert!(!queue.items[0].body.contains("tail-not-rendered"));
 }
 
 #[test]
