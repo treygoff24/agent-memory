@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "item_id": "export-encrypted-default-03",
+  "started_at": "2026-05-17T04:26:39.785747Z",
+  "finished_at": "2026-05-17T04:26:41.276787Z",
+  "exit_code": 0,
+  "passed": true,
+  "test_command": "cargo test -p memoryd --test export_encrypted_default",
+  "stdout_tail": "\nrunning 1 test\ntest encrypted_bodies_are_never_emitted_no_reveal_event ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.25s\n\n",
+  "stderr_tail": "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.19s\n     Running tests/export_encrypted_default.rs (target/debug/deps/export_encrypted_default-93343388359dd856)\n"
+}
