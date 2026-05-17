@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "item_id": "export-since-filter-02",
+  "started_at": "2026-05-17T04:23:32.648060Z",
+  "finished_at": "2026-05-17T04:23:34.151876Z",
+  "exit_code": 0,
+  "passed": true,
+  "test_command": "cargo test -p memoryd --test export_since_filter",
+  "stdout_tail": "\nrunning 1 test\ntest since_filter_is_inclusive_and_rejects_bare_dates ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.25s\n\n",
+  "stderr_tail": "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.20s\n     Running tests/export_since_filter.rs (target/debug/deps/export_since_filter-1f6a007489f9eea5)\n"
+}
