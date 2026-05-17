@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "item_id": "export-out-atomic-write-04",
+  "started_at": "2026-05-17T04:30:42.894168Z",
+  "finished_at": "2026-05-17T04:30:44.489066Z",
+  "exit_code": 0,
+  "passed": true,
+  "test_command": "cargo test -p memoryd --test export_out_atomic",
+  "stdout_tail": "\nrunning 1 test\ntest out_writes_atomically_and_matches_stdout ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.35s\n\n",
+  "stderr_tail": "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.18s\n     Running tests/export_out_atomic.rs (target/debug/deps/export_out_atomic-22a2c9c9e8fb73b1)\n"
+}

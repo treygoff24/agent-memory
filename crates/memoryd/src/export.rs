@@ -277,6 +277,16 @@ fn atomic_write_export(target: &std::path::Path, bytes: &[u8]) -> std::io::Resul
     let parent = target
         .parent()
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "output path has no parent directory"))?;
+    // Surface the missing-parent case early with the path baked into
+    // the error message so operators see WHICH parent is missing,
+    // rather than a bare "No such file or directory" propagated from
+    // the file creation below (spec §8.4).
+    if !parent.exists() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("parent directory does not exist: {}", parent.display()),
+        ));
+    }
     let pid = std::process::id();
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
