@@ -33,7 +33,7 @@ If a gate fails, fix the issue and rerun the **narrow failing gate** first. Repo
 ## Who's doing what
 
 - **Codex** owned Stream A and implemented Streams G, H, and I. The worktree-per-task / per-task-gate / orchestrator-merged-lockfile workflow is its idiom.
-- **Claude (you)** owns Stream B (shipped 2026-04-28). For H/I implementation, Claude is reviewer-only unless Trey explicitly redirects. Otherwise Claude is architect/reviewer here: spec authorship, plan critique, plan-reviewer passes, sanity checks, and ad-hoc work Trey hands you. **Do not modify Stream A modules** unless Trey explicitly redirects (he did once, for the FTS5 sanitization fix in `946d75f`); the substrate is otherwise a frozen contract for downstream streams.
+- **Claude (you)** owns Stream B (shipped 2026-04-28). For H/I implementation, Claude is reviewer-only unless Trey explicitly redirects. Otherwise Claude is architect/reviewer here: spec authorship, plan critique, plan-reviewer passes, sanity checks, and ad-hoc work Trey hands you. Streams A–I are all shipped and Memorum is in dogfood; the historical "Stream A is a frozen contract — don't touch" guardrail is retired. Treat any module as fair game when the work warrants it, with normal care around the spec invariants below.
 - **Trey** drives. He'll tell you what's next.
 
 ## Working with Codex overnight (operational rules)
