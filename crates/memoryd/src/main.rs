@@ -493,6 +493,9 @@ async fn main() -> anyhow::Result<()> {
                 );
             }
         },
+        Command::Export(args) => {
+            memoryd::export::run_export(args).await?;
+        }
     }
     Ok(())
 }

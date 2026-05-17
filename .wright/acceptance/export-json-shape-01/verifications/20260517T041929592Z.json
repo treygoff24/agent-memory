@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "item_id": "export-json-shape-01",
+  "started_at": "2026-05-17T04:19:29.592869Z",
+  "finished_at": "2026-05-17T04:19:31.121839Z",
+  "exit_code": 0,
+  "passed": true,
+  "test_command": "cargo test -p memoryd --test export_json_shape",
+  "stdout_tail": "\nrunning 1 test\ntest export_json_shape_validates_v0_1_schema ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.26s\n\n",
+  "stderr_tail": "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.21s\n     Running tests/export_json_shape.rs (target/debug/deps/export_json_shape-c5c45c40b093a342)\n"
+}

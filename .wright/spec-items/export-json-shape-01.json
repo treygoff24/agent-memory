@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "id": "export-json-shape-01",
-  "status": "approved",
+  "status": "implemented",
   "spec_quote": "### `export-json-shape-01` — Default JSON output validates against the v0.1 schema\n\n**Depends on:** none (gating item).\n\n**Closure:** A new integration test under `crates/memoryd/tests/export_json_shape.rs` builds a 3-memory fixture (one plaintext, one encrypted, one metadata-only) using the `privacy_e2e.rs` pattern. The test spawns `memoryd export --repo … --runtime …` via `std::process::Command`, captures stdout, parses it as JSON, and asserts:\n\n- `schema_version == 1`\n- `exported_at` parses as RFC3339 UTC, millisecond-precision\n- `source_device_id` matches the fixture's device id, non-empty\n- `filters.since` is JSON `null` (no `--since` was passed)\n- `memory_count == 3` and `memories.length == 3`\n- Each memory has `id`, `scope`, `status`, `frontmatter`, `body`, `body_marker`, `created_at`, `updated_at`\n- Each memory's `scope` is one of the permitted serde-canonical strings from §4\n- Each memory's `status` is one of the permitted serde-canonical strings from §4\n- Memories are sorted by `(updated_at, id)` ascending\n- The subprocess's captured stderr contains exactly one success-summary line matching the regex `^memory_count=\\d+ bytes=\\d+$` and no other lines\n\n**Minimum scope hint:** new export subcommand wired into `crates/memoryd/`; new test file; an additive `Substrate` iterator method only if §7 MAY justifies it.",
   "spec_source": {
     "path": "docs/specs/feature-memoryd-export-v0.1.md",
@@ -24,5 +24,5 @@
   ],
   "planner_note": "Gating item. Wire `memoryd export` as a new subcommand on the existing binary. Install the privacy runtime BEFORE opening the substrate — mirror the serve command's `Command::Serve` arm in `crates/memoryd/src/main.rs` (privacy_runtime install, then Substrate::open). Do NOT reuse `serve_runtime::open_substrate_for_serve`; its `&ServeArgs` shape doesn't fit export (no socket / init / force_unsafe_durability). Use serde-canonical serialization for `Scope` and `MemoryStatus` (no hand-stringification). Fixture builder follows the `privacy_e2e.rs` pattern: one plaintext, one Ciphertext, one MetadataOnly memory. The implementer may add a single additive `pub fn iter_memory_envelopes(&self) -> impl Iterator<Item = Result<MemoryEnvelope, SubstrateError>>` on `Substrate` if `query_memory` cannot satisfy §4 ergonomically (§7 MAY); only one new method, no shape changes.",
   "created_at": "2026-05-17T03:13:35.137451Z",
-  "updated_at": "2026-05-17T03:13:35.137451Z"
+  "updated_at": "2026-05-17T04:19:31.121839Z"
 }

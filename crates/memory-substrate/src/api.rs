@@ -1264,6 +1264,37 @@ impl Substrate {
         self.durability
     }
 
+    /// Iterate all canonical memory envelopes stored in this substrate.
+    ///
+    /// Walks every path returned by `tree::relative_memory_paths` and reads each
+    /// one as a `MemoryEnvelope` (plaintext, ciphertext, or metadata-only).
+    /// Skips non-canonical Stream F paths (same filter as `read_path_envelope`).
+    ///
+    /// Added to satisfy the `memoryd export` read path per spec
+    /// `feature-memoryd-export-v0.1.md §7 MAY`. Read-only; no index mutations.
+    pub fn iter_memory_envelopes(&self) -> impl Iterator<Item = Result<MemoryEnvelope, SubstrateError>> + '_ {
+        crate::tree::relative_memory_paths(&self.roots.repo)
+            .into_iter()
+            .filter_map(move |raw| {
+                let rel = raw.to_string_lossy().replace('\\', "/");
+                let path = RepoPath::new(rel);
+                if is_noncanonical_stream_f_repo_path(path.as_str()) {
+                    return None;
+                }
+                let result = if path.as_str().starts_with("encrypted/") {
+                    self.read_ciphertext_envelope(&path).map_err(SubstrateError::from)
+                } else {
+                    crate::markdown::read_memory_file(&self.roots.repo, &path)
+                        .map(|(memory, _)| {
+                            let body = memory.body.clone();
+                            MemoryEnvelope { metadata: memory, content: MemoryContent::Plaintext(body) }
+                        })
+                        .map_err(SubstrateError::from)
+                };
+                Some(result)
+            })
+    }
+
     /// Synchronous watch subscription setup.
     pub fn watch(&self) -> Result<WatchSubscription, crate::error::WatchError> {
         watch_root_with_suppression(&self.roots.repo, Some(Arc::clone(&self.suppression)))

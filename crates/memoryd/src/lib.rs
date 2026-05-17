@@ -3,6 +3,7 @@
 //! services for the local-first memory daemon.
 
 pub mod cli;
+pub mod export;
 pub mod client;
 pub mod coordination_config;
 pub mod dream;

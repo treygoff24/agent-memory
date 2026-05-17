@@ -58,6 +58,8 @@ pub enum Command {
     PrivacyFilter(PrivacyFilterArgs),
     /// Local encrypted-tier device key commands.
     Device(DeviceArgs),
+    /// Export substrate contents as a portable JSON snapshot.
+    Export(crate::export::ExportArgs),
 }
 
 #[derive(Debug, Args)]
