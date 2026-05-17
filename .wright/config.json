@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "verifier": {
+    "default_test_command": "cargo test",
+    "timeout_seconds": 600
+  },
+  "planner": {
+    "provider": "anthropic",
+    "model": "claude-opus-4-7"
+  },
+  "approval": {
+    "require_human_for_planned_items": true
+  }
+}

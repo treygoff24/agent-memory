@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "export-since-filter-02",
+  "status": "approved",
+  "spec_quote": "### `export-since-filter-02` — `--since <ISO>` filters by `updated_at >= since`\n\n**Depends on:** `export-json-shape-01`.\n\n**Closure:** Integration test under `crates/memoryd/tests/export_since_filter.rs` builds a 4-memory fixture with `updated_at` values at the exact instants `T0`, `T0+1d`, `T0+2d`, `T0+3d`. Runs `memoryd export --since <T0+2d-ISO>` as a subprocess. Asserts:\n\n- `memory_count == 2`\n- The included ids are exactly the two memories at `T0+2d` and `T0+3d` (the boundary memory at `T0+2d` is included — verifies `>=` is inclusive, not strict `>`)\n- A second sub-case runs with `--since 2026-05-01` (bare date) and asserts exit code 2 plus a stderr message containing the canonical RFC3339 form\n\n**Minimum scope hint:** filter logic in the same subcommand file from `01`; new test file.",
+  "spec_source": {
+    "path": "docs/specs/feature-memoryd-export-v0.1.md",
+    "start_line": 163,
+    "end_line": 173
+  },
+  "acceptance_tests": [
+    {
+      "path": "crates/memoryd/tests/export_since_filter.rs",
+      "name_pattern": "since_filter_is_inclusive_and_rejects_bare_dates"
+    }
+  ],
+  "test_command": "cargo test -p memoryd --test export_since_filter",
+  "depends_on": [
+    "export-json-shape-01"
+  ],
+  "scope_hint": [
+    "crates/memoryd/src/export.rs",
+    "crates/memoryd/tests/export_since_filter.rs"
+  ],
+  "planner_note": "Parse `--since` as `DateTime<Utc>` strictly (chrono `DateTime::parse_from_rfc3339` then `to_utc`). Bare date `2026-05-01` MUST be rejected with exit code 2 — argparse failures use code 2; substrate/IO failures use code 1. Filter MUST compare `updated_at >= since` (>= inclusive). The boundary memory at exactly `T0+2d` must be INCLUDED in the output of `--since <T0+2d-ISO>`. The error message naming the canonical RFC3339 form must include a hint like `2026-05-01T00:00:00Z`.",
+  "created_at": "2026-05-17T03:13:35.172656Z",
+  "updated_at": "2026-05-17T03:13:35.172656Z"
+}

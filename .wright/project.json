@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "project_id": "prj_6ad427c1b228",
+  "git": {
+    "remote_url": "https://github.com/treygoff24/agent-memory.git",
+    "default_branch": "main",
+    "current_branch": "feature/tiered-gate-dashboard-workflow",
+    "head_sha": "89df6f40d1bba12698b022e11cd7dfdc19c8a657"
+  },
+  "created_at": "2026-05-17T03:12:18.043551Z"
+}

@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "id": "export-encrypted-default-03",
+  "status": "approved",
+  "spec_quote": "### `export-encrypted-default-03` — Encrypted bodies are never emitted, no reveal-flow side effects\n\n**Depends on:** `export-json-shape-01`.\n\n**Closure:** Integration test under `crates/memoryd/tests/export_encrypted_default.rs` builds a single-device fixture with two memories: one plaintext, one ciphertext (use the encrypted-memory fixture pattern from `privacy_e2e.rs`). Runs `memoryd export` as a subprocess. Asserts:\n\n- The plaintext memory's exported `body` equals the original plaintext, `body_marker` is `null`\n- The ciphertext memory's exported `body` is `null`, `body_marker` is `\"encrypted\"`\n- No `EncryptedContentRevealed` event appears in the current device's event log after the export (read via `Substrate::events()` from the same test substrate handle)\n- The original ciphertext bytes do NOT appear anywhere in the captured stdout bytes (defense-in-depth check)\n\n**Minimum scope hint:** body-variant routing in the same subcommand file from `01`; new test file. No Stream D code paths invoked from production code.",
+  "spec_source": {
+    "path": "docs/specs/feature-memoryd-export-v0.1.md",
+    "start_line": 175,
+    "end_line": 186
+  },
+  "acceptance_tests": [
+    {
+      "path": "crates/memoryd/tests/export_encrypted_default.rs",
+      "name_pattern": "encrypted_bodies_are_never_emitted_no_reveal_event"
+    }
+  ],
+  "test_command": "cargo test -p memoryd --test export_encrypted_default",
+  "depends_on": [
+    "export-json-shape-01"
+  ],
+  "scope_hint": [
+    "crates/memoryd/src/export.rs",
+    "crates/memoryd/tests/export_encrypted_default.rs",
+    "crates/memoryd/tests/privacy_e2e.rs"
+  ],
+  "planner_note": "Body-variant routing table (§6): Plaintext(text) -> body=text, body_marker=null; Ciphertext{..} -> body=null, body_marker=\"encrypted\"; MetadataOnly -> body=null, body_marker=\"metadata-only\". CRITICAL: do NOT invoke any Stream D reveal-policy code path. There is no flag in v0.1 that opts into decryption. The defense-in-depth assertion (ciphertext bytes absent from stdout) catches bugs where ciphertext might leak through frontmatter or another field by accident. The event-log check uses `Substrate::events()` on the same handle that built the fixture.",
+  "created_at": "2026-05-17T03:13:35.117850Z",
+  "updated_at": "2026-05-17T03:13:35.117850Z"
+}
