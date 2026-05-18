@@ -12,10 +12,10 @@ spec for a possible v0.2.
 
 ## 1. What shipped (concretely)
 
-| Repo                          | Commits since baseline | Headline |
-| ----------------------------- | ---------------------- | -------- |
-| `~/Code/wright`               | 9 (above M1 step 1, `95ffe6a`)            | M1 step 2 (`ingest`/`queue`/`claim`/`verify`/`done` + run records + e2e smoke) plus three review-fix passes (opus, opus, codex). |
-| `~/Code/agent-memory`         | 5 on `feature/tiered-gate-dashboard-workflow` | Item JSONs ingested, then four `feat(memoryd): wright[<item-id>] ...` commits implementing export end-to-end. |
+| Repo                  | Commits since baseline                        | Headline                                                                                                                         |
+| --------------------- | --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `~/Code/wright`       | 9 (above M1 step 1, `95ffe6a`)                | M1 step 2 (`ingest`/`queue`/`claim`/`verify`/`done` + run records + e2e smoke) plus three review-fix passes (opus, opus, codex). |
+| `~/Code/agent-memory` | 5 on `feature/tiered-gate-dashboard-workflow` | Item JSONs ingested, then four `feat(memoryd): wright[<item-id>] ...` commits implementing export end-to-end.                    |
 
 End state: `wright queue` reports "no items ready (4 total — 4 implemented)". `wright done` exits 0. `memoryd export --repo … --runtime …` works on real fixtures.
 
@@ -25,13 +25,14 @@ End state: `wright queue` reports "no items ready (4 total — 4 implemented)". 
 
 **The shape held.** The handoff's premise — external durable queue + atomic per-item work + verifier-decided closure — held under real work. There was never a moment where the system was unsure whether an item was done; either `cargo test` exited 0 or it didn't, and wright flipped the status to match. No agent self-assessment was load-bearing.
 
-**The context bundle is the right primitive.** `wright claim <id>` emits a single chunk — spec quote, source coordinates, acceptance tests, test command, scope hint, planner note — and that was *exactly* what the implementer needed to start working without re-reading the spec. The bundle is small enough to fit in an LLM context without truncation, structured enough to JSON-parse for tooling. Don't change this surface in M2.
+**The context bundle is the right primitive.** `wright claim <id>` emits a single chunk — spec quote, source coordinates, acceptance tests, test command, scope hint, planner note — and that was _exactly_ what the implementer needed to start working without re-reading the spec. The bundle is small enough to fit in an LLM context without truncation, structured enough to JSON-parse for tooling. Don't change this surface in M2.
 
 **The dependency gate worked first try.** Item 01 was the gating item; 02/03/04 each declared `depends_on: ["export-json-shape-01"]`. `wright queue --next` correctly returned 01 first; only after 01 flipped to `implemented` did the other three become ready. No special-casing in the implementer was required.
 
 **Iteration on failure is cheap.** Item 04 surfaced a real implementation gap (missing-parent error message lacked the parent path). The test failed, lock released, status returned to `approved`, fix was 6 lines in `export.rs::atomic_write_export`, re-test, re-verify, pass, commit. About six minutes of inner loop. The wright contract made the recovery mechanical.
 
 **Adversarial reviews caught real bugs.** Three reviews ran in this session — two opus clean-code passes, one Codex pass. Findings across them:
+
 - TOCTOU on lock acquire (opus 1)
 - Status-vs-record write ordering in verify (opus 2)
 - `{name}` substitution silently produces empty filter on empty refs (opus 2)
@@ -50,7 +51,7 @@ Every one of these was a real correctness issue, not a style nit. Three of them 
 
 **Spec wording on item 04 entry count.** Spec §8.4 says "the temp directory containing the output file has exactly two entries: the target file and a directory entry". The actual invariant is "no `.tmp` sidecar remains after a successful `--out` write" (the load-bearing thing). My test asserts that; a literal "exactly two entries" check doesn't match any natural layout. **Flag for export v0.2:** rewrite as "the output directory contains the target file and no `.tmp` sidecar".
 
-**Byte-for-byte stdout vs `--out` comparison races.** Spec §8.4 says "the two outputs are byte-for-byte identical". Two `memoryd export` invocations produce different `exported_at` stamps in the JSON (different millisecond), so a literal byte-compare fails reliably. The test compares modulo `exported_at`. **Flag for export v0.2:** rewrite as "the two outputs are byte-for-byte identical *modulo the wall-clock-stamped `exported_at` field*".
+**Byte-for-byte stdout vs `--out` comparison races.** Spec §8.4 says "the two outputs are byte-for-byte identical". Two `memoryd export` invocations produce different `exported_at` stamps in the JSON (different millisecond), so a literal byte-compare fails reliably. The test compares modulo `exported_at`. **Flag for export v0.2:** rewrite as "the two outputs are byte-for-byte identical _modulo the wall-clock-stamped `exported_at` field_".
 
 **Test command substitution token is unused.** Wright supports `{name}` in `test_command` to fill in `acceptance_tests[0].name_pattern`. None of the four items used it (we hand-specified `cargo test -p memoryd --test <file>`). It's still worth keeping the feature, but it's optional — the M1 design assumed it would be the primary mechanism; in practice authors prefer the fully-specified shell command.
 
@@ -58,12 +59,12 @@ Every one of these was a real correctness issue, not a style nit. Three of them 
 
 ## 4. Iteration count per item
 
-| Item                            | Implementations | Verify attempts | Notes |
-| ------------------------------- | --------------- | --------------- | ----- |
-| `export-json-shape-01`          | 1 (subagent)    | 1 (PASS)        | Gating; subagent timed out post-implementation; verify + commit done by driver. |
-| `export-since-filter-02`        | 1               | 1 (PASS)        | --since logic already shipped in 01; this item was purely the test. |
-| `export-encrypted-default-03`   | 1               | 1 (PASS)        | One import-path adjustment (`memory_substrate::events::EventKind` not the crate root). |
-| `export-out-atomic-write-04`    | 2               | 1 fail + 1 PASS | Surface gap in `atomic_write_export` error message; fix was 6 lines. |
+| Item                          | Implementations | Verify attempts | Notes                                                                                  |
+| ----------------------------- | --------------- | --------------- | -------------------------------------------------------------------------------------- |
+| `export-json-shape-01`        | 1 (subagent)    | 1 (PASS)        | Gating; subagent timed out post-implementation; verify + commit done by driver.        |
+| `export-since-filter-02`      | 1               | 1 (PASS)        | --since logic already shipped in 01; this item was purely the test.                    |
+| `export-encrypted-default-03` | 1               | 1 (PASS)        | One import-path adjustment (`memory_substrate::events::EventKind` not the crate root). |
+| `export-out-atomic-write-04`  | 2               | 1 fail + 1 PASS | Surface gap in `atomic_write_export` error message; fix was 6 lines.                   |
 
 Four items, four passing verifies, zero spec/closure edits. The pattern produced shippable code on first try in three of four cases; the fourth surfaced and recovered from a real bug. None of the four items required >3 implementation attempts (the handoff's escalation threshold).
 
@@ -77,7 +78,7 @@ Four items, four passing verifies, zero spec/closure edits. The pattern produced
 
 **M2-3. Parent-directory fsync.** Both `wright-core::store::atomic_write_json` and `wright-core::lock::acquire` `fsync` the data file but not the parent directory. On unexpected power loss, a freshly-renamed file might disappear. Not load-bearing under normal SIGKILL recovery (the use model for overnight loops on a Mac laptop), but worth tightening when M2 starts thinking about durability properly.
 
-**M2-4. Stale-lock detection.** Wright has no PID-liveness check on `acquire`. A crashed implementer leaves a lock file forever, recoverable only via `wright release`. The release subcommand now also flips `claimed -> approved` (added in this session's review fixes), so the recovery flow is one command, but the *detection* is still manual. M2 should auto-detect stale locks (cheaper than full PID-liveness — even just "lock older than N hours" would help).
+**M2-4. Stale-lock detection.** Wright has no PID-liveness check on `acquire`. A crashed implementer leaves a lock file forever, recoverable only via `wright release`. The release subcommand now also flips `claimed -> approved` (added in this session's review fixes), so the recovery flow is one command, but the _detection_ is still manual. M2 should auto-detect stale locks (cheaper than full PID-liveness — even just "lock older than N hours" would help).
 
 **M2-5. Loop telemetry / postmortem tooling.** Run records under `.wright/runs/` accumulated nicely (8 records per item × 4 items = ~32 records, plus init + ingests = ~45 total). There's no `wright log` / `wright report` command to summarize them. M2 milestone 3 already plans for this; the dogfood validates that the records have enough information.
 
@@ -101,6 +102,6 @@ The atomic-write inlining call-out (§7) was correct — having each subcommand 
 
 ## 7. Headline take
 
-Wright shipped its first feature through its own loop the same day the loop's `claim`/`verify`/`done` surface was implemented. Six commits in `~/Code/wright`, five in `~/Code/agent-memory`. Two of the wright commits were review-driven fixes that landed *before* the dogfood started shipping items — that's the right cadence.
+Wright shipped its first feature through its own loop the same day the loop's `claim`/`verify`/`done` surface was implemented. Six commits in `~/Code/wright`, five in `~/Code/agent-memory`. Two of the wright commits were review-driven fixes that landed _before_ the dogfood started shipping items — that's the right cadence.
 
 The pattern works. Multi-hour autonomous overnight runs of this shape should now be tractable, conditional on M2-1 (verify timeout) landing before any long-running agent is left unsupervised.

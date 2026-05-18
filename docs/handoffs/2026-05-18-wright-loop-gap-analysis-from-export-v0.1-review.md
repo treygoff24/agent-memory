@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-18
 **Source incident:** code review of the four wright-loop trial commits (`0542bb3` → `4969f57`) found **5 blockers, 10 design issues, 4 nits**. All four items had `wright verify` PASS. All four commits landed on the `feature/tiered-gate-dashboard-workflow` feature branch. The bugs reached the reviewed branch because wright's "verify" bar was, in practice, "did the one acceptance test pass."
-**Audience:** anyone designing wright M2 (or M3). The dogfood-learnings doc at `docs/handoffs/2026-05-16-wright-first-dogfood.md` covered what *worked* in the M1 loop; this covers what didn't and why.
+**Audience:** anyone designing wright M2 (or M3). The dogfood-learnings doc at `docs/handoffs/2026-05-16-wright-first-dogfood.md` covered what _worked_ in the M1 loop; this covers what didn't and why.
 
 This is a design-input document. Concrete proposals are in §5–§7; they're starting points, not commitments.
 
@@ -12,12 +12,12 @@ This is a design-input document. Concrete proposals are in §5–§7; they're st
 
 Five contract-level bugs landed on the reviewed feature branch with all four wright items marked `implemented`:
 
-| ID | Bug | How it got through verify |
-| --- | --- | --- |
-| **B1** | `--since 2026-05-01T00:00:00+00:00` (offset-qualified RFC3339) rejected with exit 2, contradicting spec §5 "Accepts the canonical RFC3339 form (`...Z` or `...+00:00`)." | Acceptance closure for item 02 only spelled out the `Z` form. Implementer wrote the minimal test to satisfy the closure. The `+00:00` form was never exercised. |
-| **B2** | Unreadable envelopes silently dropped from the export; `memory_count` shrinks, no stderr diagnostic, no exit code change. Implementer wrote `Err(_) => None` to be "defensive." | Acceptance test fixtures only contain readable envelopes. No spec text required a corrupt-file test. No structural lint flagged the implementer-introduced silent-error path. |
-| **B3** | Dead/no-op timestamp conditional (`if created_at == "1970-01-01T00:00:00Z" { epoch.clone() } else { created_at }` — both arms produce the same string). Either the author intended `format_rfc3339_millis` on one side, or this is straight dead code. | `cargo clippy` was never run as part of verify. Clippy's `if_same_then_else` catches this pattern. The targeted `cargo test` passes because no test exercises the branch. |
-| **B4** | `source_device_id` silently becomes `""` when device config is missing (`.unwrap_or_default()` on `Result<Option<...>, _>::Ok(None)`). A fresh-clone export emits an empty device id with no error. | Test fixture always sets a device id. Acceptance closure said "matches the fixture's device id, non-empty" — vacuously passes when the fixture is the source. The "what about absent state" case lives outside the closure. |
+| ID     | Bug                                                                                                                                                                                                                                                                               | How it got through verify                                                                                                                                                                                                     |
+| ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **B1** | `--since 2026-05-01T00:00:00+00:00` (offset-qualified RFC3339) rejected with exit 2, contradicting spec §5 "Accepts the canonical RFC3339 form (`...Z` or `...+00:00`)."                                                                                                          | Acceptance closure for item 02 only spelled out the `Z` form. Implementer wrote the minimal test to satisfy the closure. The `+00:00` form was never exercised.                                                               |
+| **B2** | Unreadable envelopes silently dropped from the export; `memory_count` shrinks, no stderr diagnostic, no exit code change. Implementer wrote `Err(_) => None` to be "defensive."                                                                                                   | Acceptance test fixtures only contain readable envelopes. No spec text required a corrupt-file test. No structural lint flagged the implementer-introduced silent-error path.                                                 |
+| **B3** | Dead/no-op timestamp conditional (`if created_at == "1970-01-01T00:00:00Z" { epoch.clone() } else { created_at }` — both arms produce the same string). Either the author intended `format_rfc3339_millis` on one side, or this is straight dead code.                            | `cargo clippy` was never run as part of verify. Clippy's `if_same_then_else` catches this pattern. The targeted `cargo test` passes because no test exercises the branch.                                                     |
+| **B4** | `source_device_id` silently becomes `""` when device config is missing (`.unwrap_or_default()` on `Result<Option<...>, _>::Ok(None)`). A fresh-clone export emits an empty device id with no error.                                                                               | Test fixture always sets a device id. Acceptance closure said "matches the fixture's device id, non-empty" — vacuously passes when the fixture is the source. The "what about absent state" case lives outside the closure.   |
 | **B5** | Spec §7 MUST: "Acknowledge the substrate open side effects in the user-facing docs (README / help text)." Help text says only `"Export substrate contents as a portable JSON snapshot."` — no mention of runtime-dir creation, index repair, event-log rebuild. No README change. | This MUST lived in §7 (Implementation boundaries), not §8 (Acceptance items). Wright items 01–04 each cover one §8 closure; nothing maps to §7's MUSTs. The "every spec MUST has an item that covers it" check doesn't exist. |
 
 Plus ten design/idiom issues — async-blocking sync IO, 140-line function, 280 LOC of duplicate test fixtures across four files, stringified errors, etc. Those are quality issues a code reviewer would catch in seconds. None of them were caught because **no code review step exists in the wright loop**.
@@ -28,13 +28,13 @@ The single root cause: **`wright verify` = "the one acceptance test passed." Tha
 
 ## 2. Why each bug got through
 
-Per-bug walk-through. The point isn't to relitigate the bugs; it's to identify the *class* of gap each one represents, because the wright-loop redesign should target classes, not instances.
+Per-bug walk-through. The point isn't to relitigate the bugs; it's to identify the _class_ of gap each one represents, because the wright-loop redesign should target classes, not instances.
 
 ### B1 — Spec contract surface wider than the test
 
-Spec §5 enumerates two valid forms for `--since`: `2026-05-01T00:00:00Z` and `2026-05-01T00:00:00+00:00`. The wright item-02 closure quoted *one* of them as an example. The implementer wrote one test row. The other valid form was never executed against the binary.
+Spec §5 enumerates two valid forms for `--since`: `2026-05-01T00:00:00Z` and `2026-05-01T00:00:00+00:00`. The wright item-02 closure quoted _one_ of them as an example. The implementer wrote one test row. The other valid form was never executed against the binary.
 
-**Class:** *Closure-narrower-than-spec.* When an acceptance closure cites a concrete value from the spec, the spec usually states or implies a *set* of valid values; the closure pulls a single representative. The implementer reads the closure, writes the minimal test that satisfies it, and the rest of the contract envelope goes unverified.
+**Class:** _Closure-narrower-than-spec._ When an acceptance closure cites a concrete value from the spec, the spec usually states or implies a _set_ of valid values; the closure pulls a single representative. The implementer reads the closure, writes the minimal test that satisfies it, and the rest of the contract envelope goes unverified.
 
 **Implementer's belief:** "I wrote a test that matches what the closure asks for, so the contract is closed."
 **Reality:** the closure was a fragment of the contract, not the whole thing.
@@ -43,10 +43,10 @@ Spec §5 enumerates two valid forms for `--since`: `2026-05-01T00:00:00Z` and `2
 
 The substrate iterator returns `Result<MemoryEnvelope, _>` per file. The implementer chose to `Err(_) => None` — a defensive shortcut that converts "any read error" into "exclude this row from the export." Nothing in the spec covers what should happen on a corrupt file. Nothing in the test fixtures includes a corrupt file. Wright has no way to know this branch exists.
 
-**Class:** *Silent-failure introduction.* The implementer adds a `.unwrap_or`, `.ok()`, `Err(_) => None`, or similar Result-eating construct to satisfy the type system without writing the unhappy-path logic. The acceptance test passes (the path is never taken). The unhappy case ships as silent data loss.
+**Class:** _Silent-failure introduction._ The implementer adds a `.unwrap_or`, `.ok()`, `Err(_) => None`, or similar Result-eating construct to satisfy the type system without writing the unhappy-path logic. The acceptance test passes (the path is never taken). The unhappy case ships as silent data loss.
 
 **Implementer's belief:** "Skipping unreadable files is safer than failing the export."
-**Reality:** silently underreporting `memory_count` is *less* safe than an explicit error, because the consumer has no signal anything went wrong.
+**Reality:** silently underreporting `memory_count` is _less_ safe than an explicit error, because the consumer has no signal anything went wrong.
 
 ### B3 — No static-analysis gate
 
@@ -56,13 +56,13 @@ let created_at = if created_at == "1970-01-01T00:00:00Z" { epoch.clone() } else 
 
 Both arms are the same string. Clippy's `if_same_then_else` lint catches this in milliseconds. The wright-M1 verify command was `cargo test -p memoryd --test export_json_shape` — no clippy, no fmt-check, no rustdoc, no nothing.
 
-**Class:** *Quality gate is "test passes" only.* Wright M1 trusts the implementer to have run their own clippy. In practice an LLM implementer racing against a stream-idle timeout doesn't.
+**Class:** _Quality gate is "test passes" only._ Wright M1 trusts the implementer to have run their own clippy. In practice an LLM implementer racing against a stream-idle timeout doesn't.
 
 ### B4 — Edge case outside the fixture surface
 
 `load_local_device_config` returns `Result<Option<DeviceConfig>, _>`. The implementer handled `Err` (good) and `Ok(None)` (silently → empty string, bad). The fixture's `Substrate::init` always sets a device id, so `Ok(None)` is never hit during the test. The acceptance closure says "non-empty" — vacuously satisfied.
 
-**Class:** *Acceptance fixture is the only execution path.* If the test only writes one shape of input, the implementer's branch-coverage is whatever the test happens to hit. The Option arms / Result arms / error paths that lie outside the fixture are unverified.
+**Class:** _Acceptance fixture is the only execution path._ If the test only writes one shape of input, the implementer's branch-coverage is whatever the test happens to hit. The Option arms / Result arms / error paths that lie outside the fixture are unverified.
 
 This compounds with B1 (which is the same gap, viewed from the spec side rather than the fixture side). The two together suggest a structural property: **the acceptance test is a single point, and the spec contract is a region; the gap between them is where bugs live.**
 
@@ -70,9 +70,9 @@ This compounds with B1 (which is the same gap, viewed from the spec side rather 
 
 The export spec is sectioned: §1 Goal, §2 Non-goals, §3 CLI surface, §4 Output schema, §5 Filters, §6 Encrypted handling, §7 Implementation boundaries (with MUSTs and MAYs), §8 Acceptance items, §9 Open questions.
 
-Items 01–04 live in §8 and each closes one §8 closure. §7 contains *its own* MUSTs — including "Acknowledge the substrate open side effects in the user-facing docs (README / help text)." That MUST has no item, was not in any closure, and never got done.
+Items 01–04 live in §8 and each closes one §8 closure. §7 contains _its own_ MUSTs — including "Acknowledge the substrate open side effects in the user-facing docs (README / help text)." That MUST has no item, was not in any closure, and never got done.
 
-**Class:** *Spec-coverage hole.* MUSTs scattered through non-acceptance sections of the spec have no item to map to. The implementer reads the item closure, not the whole spec. Wright doesn't compute "is every spec MUST claimed by some acceptance closure?" — so MUSTs outside §8 silently fall off the floor.
+**Class:** _Spec-coverage hole._ MUSTs scattered through non-acceptance sections of the spec have no item to map to. The implementer reads the item closure, not the whole spec. Wright doesn't compute "is every spec MUST claimed by some acceptance closure?" — so MUSTs outside §8 silently fall off the floor.
 
 ### I-series — no code review
 
@@ -108,7 +108,7 @@ Before proposing changes, stake out the things that worked and should survive M2
 - **Dependency ordering on items.** Worked first try. Keep.
 - **The state machine as the source of truth.** `Approved → Claimed → Implemented → Verified → Regressed` (the last one fixed mid-flight per the prior handoff). Keep.
 
-The M2 changes should *extend* the verifier and *insert* phases between claim and done — not redesign the queue.
+The M2 changes should _extend_ the verifier and _insert_ phases between claim and done — not redesign the queue.
 
 ---
 
@@ -174,7 +174,7 @@ The `plan-reviewer` agent in `~/.claude-shared/agents/` is the template. It runs
 
 **Why fresh context:** the implementer agent is biased by the path it walked to get the test passing. A fresh reviewer with the spec in hand and no implementation memory finds the gap between spec and code. This is exactly what plan-reviewer does today for plan documents.
 
-**Quality bar for the reviewer:** the spec quote in the context bundle should be the entire spec section the item draws from — not just the §8 closure. The reviewer should be instructed to compare the implementation against the spec wholesale ("did the implementer satisfy §5 for *all* forms named in §5, not just the one in the §8 closure?").
+**Quality bar for the reviewer:** the spec quote in the context bundle should be the entire spec section the item draws from — not just the §8 closure. The reviewer should be instructed to compare the implementation against the spec wholesale ("did the implementer satisfy §5 for _all_ forms named in §5, not just the one in the §8 closure?").
 
 **Cost discipline.** Reviews cost tokens. Default to opus (fresh-context bias matters more than speed). Cache the spec quote across all four items in a feature so it's one cache hit per feature, not per item.
 
@@ -201,7 +201,7 @@ Non-Rust support follows the same shape: a `stack: typescript` item runs `pnpm r
 At `wright ingest` time (feature start), the ingester parses the spec for MUST / MUST NOT clauses (a regex pass, plus light heuristics — "the export MUST", "MUST NOT", "is required to"). For each clause it asks the spec author to map it to either:
 
 - An acceptance item (`covered_by: ["item-id"]`), OR
-- An explicit `not_an_acceptance_target` field on the spec section ("this MUST is covered by other means: ___").
+- An explicit `not_an_acceptance_target` field on the spec section ("this MUST is covered by other means: \_\_\_").
 
 `wright ingest` exits non-zero if any MUST is unmapped. The export-v0.1 spec would have flagged §7's "Acknowledge the substrate open side effects" MUST: no item covered it.
 
@@ -241,7 +241,7 @@ When the spec author writes an acceptance closure that cites a concrete value, t
 
 Mechanism: at `wright ingest`, the ingester scans each item's closure for spec citations (regex / known-spec-anchor pattern). For each citation, it pulls the surrounding spec sentence and looks for "or", "either", "any of" — i.e. enumerations of valid values. It surfaces them to the spec author for inclusion.
 
-This is the most ambitious of the proposals; it crosses into "wright understands the spec" territory which is hard. Lighter version: the reviewer subagent (C2) gets the *entire* relevant spec section, not just the §8 closure, and is asked "what valid forms does §5 mandate that the test does NOT exercise?" The reviewer answer becomes a soft blocker for the next iteration.
+This is the most ambitious of the proposals; it crosses into "wright understands the spec" territory which is hard. Lighter version: the reviewer subagent (C2) gets the _entire_ relevant spec section, not just the §8 closure, and is asked "what valid forms does §5 mandate that the test does NOT exercise?" The reviewer answer becomes a soft blocker for the next iteration.
 
 I think C2 + C5 together cover most of P1 in practice. C6 is the formal version if we later find we want it.
 
@@ -263,7 +263,7 @@ The current handoffs are written by hand after the fact. Auto-emission means M3 
 
 ## 6. The minimum-viable change
 
-The user said: *"at a minimum, it should absolutely require code review and fix loops before it's allowed to exit somehow."*
+The user said: _"at a minimum, it should absolutely require code review and fix loops before it's allowed to exit somehow."_
 
 That's **C1 + C2 + C5**, in that order:
 
@@ -287,7 +287,7 @@ These are the calls I don't think wright-M2 can make without you:
 
 **Q2. Iteration ceiling.** When the reviewer blocks N times on the same item, what's N, and what happens at N? Hard escalation to a human, or a "lower the review bar after N attempts" mode? My instinct is hard escalation — silent bar-lowering reintroduces the "we shipped wrong code because the loop got tired" failure mode.
 
-**Q3. Spec-MUST coverage strictness.** Should `wright ingest` *block* on unmapped MUSTs (export-v0.1 wouldn't have ingested without §7's docs MUST being addressed), or warn-and-proceed? Hard block is the right shape if we trust the heuristic; warn-only is the right shape if we don't.
+**Q3. Spec-MUST coverage strictness.** Should `wright ingest` _block_ on unmapped MUSTs (export-v0.1 wouldn't have ingested without §7's docs MUST being addressed), or warn-and-proceed? Hard block is the right shape if we trust the heuristic; warn-only is the right shape if we don't.
 
 **Q4. Silent-failure lint scope.** Run only on the diff (cheap, false-negative-prone for refactors that move silent paths around) or on the full crate (slower, catches more). My instinct: diff-only for M2, full-crate as an opt-in `wright lint --full` for periodic sweeps.
 
@@ -301,7 +301,7 @@ These are the calls I don't think wright-M2 can make without you:
 
 The wright M1 loop shipped four acceptance items. All four passed `wright verify`. Code review of the resulting branch found 5 spec-contract blockers, 10 design issues, and 4 nits. None of the blockers were exotic; the four most-impactful (B1-B4) would have been caught by a 5-minute reviewer pass plus `cargo clippy`. The fifth (B5) was a §7 MUST orphaned from the §8 acceptance items.
 
-The structural cause is single-signal verify: `cargo test` PASS → item done. The M1 design intentionally trusted the test as the closure mechanism. That trust held for *mechanical correctness* (the test really does pass) but didn't transfer to *contract correctness* (the test covers one point in a region).
+The structural cause is single-signal verify: `cargo test` PASS → item done. The M1 design intentionally trusted the test as the closure mechanism. That trust held for _mechanical correctness_ (the test really does pass) but didn't transfer to _contract correctness_ (the test covers one point in a region).
 
 The minimum fix is **mandatory code review + fix loop**: insert `InReview` between `ImplementedDraft` and `Implemented`, dispatch an adversarial reviewer with the full spec section in hand, and require all blockers to clear before the item closes. Add `cargo clippy` and a silent-failure lint as cheap pre-review gates.
 
@@ -311,13 +311,13 @@ Everything else in §5 is supporting structure. C1 + C2 + C3 + C5 is the M2 floo
 
 ## Appendix A — Bug-to-mitigation matrix
 
-| Bug | Class | C1 review | C2 reviewer subagent | C3 static gate | C4 spec coverage | C5 silent-failure lint | C6 envelope fan-out |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| B1 (`+00:00` rejected) | Closure-narrower-than-spec | ✓ | ✓ (sees §5 fully) | — | — | — | ✓ |
-| B2 (silent skip of unreadable) | Silent-failure introduction | ✓ | ✓ | — | — | ✓ | — |
-| B3 (dead epoch conditional) | No static gate | ✓ | ✓ | ✓ | — | — | — |
-| B4 (empty device id) | Edge case outside fixture | ✓ | ✓ | — | — | ✓ | ✓ |
-| B5 (no docs MUST) | Spec-coverage hole | ✓ (if reviewer sees §7) | ✓ | — | ✓ | — | — |
+| Bug                            | Class                       | C1 review               | C2 reviewer subagent | C3 static gate | C4 spec coverage | C5 silent-failure lint | C6 envelope fan-out |
+| ------------------------------ | --------------------------- | ----------------------- | -------------------- | -------------- | ---------------- | ---------------------- | ------------------- |
+| B1 (`+00:00` rejected)         | Closure-narrower-than-spec  | ✓                       | ✓ (sees §5 fully)    | —              | —                | —                      | ✓                   |
+| B2 (silent skip of unreadable) | Silent-failure introduction | ✓                       | ✓                    | —              | —                | ✓                      | —                   |
+| B3 (dead epoch conditional)    | No static gate              | ✓                       | ✓                    | ✓              | —                | —                      | —                   |
+| B4 (empty device id)           | Edge case outside fixture   | ✓                       | ✓                    | —              | —                | ✓                      | ✓                   |
+| B5 (no docs MUST)              | Spec-coverage hole          | ✓ (if reviewer sees §7) | ✓                    | —              | ✓                | —                      | —                   |
 
 Every blocker is hit by C1+C2. C3 and C5 are cheap secondary nets for B2, B3, B4. C4 is the only one that catches B5 cleanly without relying on the reviewer remembering to check §7. C6 is a nice-to-have for B1/B4.
 
@@ -325,7 +325,7 @@ Every blocker is hit by C1+C2. C3 and C5 are cheap secondary nets for B2, B3, B4
 
 ## Appendix B — How this doc plugs into the prior wright-M2 surface
 
-`docs/handoffs/2026-05-16-wright-first-dogfood.md` §6 listed seven wright-M2 design issues from the implementation side (verify-timeout, concurrent-verify TOCTOU, parent-dir fsync, stale-lock detection, postmortem tooling, subagent-handoff orchestration, Regressed-state-as-ready). Those are still load-bearing. This doc adds a parallel set from the *review* side:
+`docs/handoffs/2026-05-16-wright-first-dogfood.md` §6 listed seven wright-M2 design issues from the implementation side (verify-timeout, concurrent-verify TOCTOU, parent-dir fsync, stale-lock detection, postmortem tooling, subagent-handoff orchestration, Regressed-state-as-ready). Those are still load-bearing. This doc adds a parallel set from the _review_ side:
 
 - **M2-A.** Mandatory review-and-fix phase (C1+C2 above).
 - **M2-B.** Pre-review static gate (C3).

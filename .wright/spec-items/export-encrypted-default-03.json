@@ -15,9 +15,7 @@
     }
   ],
   "test_command": "cargo test -p memoryd --test export_encrypted_default",
-  "depends_on": [
-    "export-json-shape-01"
-  ],
+  "depends_on": ["export-json-shape-01"],
   "scope_hint": [
     "crates/memoryd/src/export.rs",
     "crates/memoryd/tests/export_encrypted_default.rs",
