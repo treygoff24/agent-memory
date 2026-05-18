@@ -1086,33 +1086,6 @@ fn unix_millis() -> u128 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|duration| duration.as_millis()).unwrap_or_default()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn optional_timeout_bounds_in_process_runner() {
-        let context = RunContext {
-            harness_mode: HarnessMode::Mock,
-            timeout_seconds: Some(1),
-            no_cleanup: false,
-            verbose: false,
-            missing_credentials: Vec::new(),
-        };
-        let entry = TEST_CATALOG[0];
-        let started = Instant::now();
-
-        let result = run_with_optional_timeout(entry, started, &context, |entry, started, _context| {
-            std::thread::sleep(Duration::from_secs(5));
-            passed_result_with_count(entry, started.elapsed(), 1)
-        });
-
-        assert_eq!(result.status, TestStatus::Failed);
-        assert_eq!(result.failure_detail.as_deref(), Some("TIMEOUT"));
-        assert!(started.elapsed() < Duration::from_secs(3), "timeout should not wait for the runner to finish");
-    }
-}
-
 impl fmt::Display for OrchestratorError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -1189,5 +1162,32 @@ impl fmt::Display for SkipKind {
             Self::FeatureDeferred => formatter.write_str("feature_deferred"),
             Self::RuntimeSelfSkip => formatter.write_str("runtime_self_skip"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn optional_timeout_bounds_in_process_runner() {
+        let context = RunContext {
+            harness_mode: HarnessMode::Mock,
+            timeout_seconds: Some(1),
+            no_cleanup: false,
+            verbose: false,
+            missing_credentials: Vec::new(),
+        };
+        let entry = TEST_CATALOG[0];
+        let started = Instant::now();
+
+        let result = run_with_optional_timeout(entry, started, &context, |entry, started, _context| {
+            std::thread::sleep(Duration::from_secs(5));
+            passed_result_with_count(entry, started.elapsed(), 1)
+        });
+
+        assert_eq!(result.status, TestStatus::Failed);
+        assert_eq!(result.failure_detail.as_deref(), Some("TIMEOUT"));
+        assert!(started.elapsed() < Duration::from_secs(3), "timeout should not wait for the runner to finish");
     }
 }
