@@ -158,7 +158,7 @@ fn parse_since(raw: Option<&str>) -> Result<Option<DateTime<Utc>>, ExportError> 
         Some(s) => s,
     };
 
-    if raw.len() == 10 && raw.chars().nth(4) == Some('-') {
+    if chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d").is_ok() {
         return Err(ExportError::Argument(format!(
             "--since '{raw}' is a bare date; use RFC3339 form, e.g. {raw}T00:00:00Z"
         )));
@@ -207,8 +207,7 @@ fn collect_memories(substrate: &Substrate, since_dt: Option<DateTime<Utc>>) -> R
 
             let created_at = format_rfc3339_secs(fm.created_at);
             let updated_at = format_rfc3339_secs(fm.updated_at);
-            let frontmatter_value =
-                serde_json::to_value(fm).unwrap_or_else(|_| serde_json::Value::Object(Default::default()));
+            let frontmatter_value = serde_json::to_value(fm).expect("Frontmatter must serialize to JSON");
 
             Ok(Some(ExportMemory {
                 id: fm.id.as_str().to_string(),
@@ -227,7 +226,12 @@ fn collect_memories(substrate: &Substrate, since_dt: Option<DateTime<Utc>>) -> R
 
 fn emit_output(out: Option<&Path>, content: &str) -> Result<(), ExportError> {
     match out {
-        None => print!("{content}"),
+        None => {
+            let stdout = std::io::stdout();
+            let mut lock = stdout.lock();
+            lock.write_all(content.as_bytes()).map_err(|e| ExportError::Io(format!("stdout write failed: {e}")))?;
+            lock.flush().map_err(|e| ExportError::Io(format!("stdout flush failed: {e}")))?;
+        }
         Some(path) => {
             atomic_write_export(path, content.as_bytes())
                 .map_err(|e| ExportError::Io(format!("atomic write failed: {e}")))?;
@@ -257,11 +261,16 @@ fn atomic_write_export(target: &Path, bytes: &[u8]) -> std::io::Result<()> {
             format!("parent directory does not exist: {}", parent.display()),
         ));
     }
+    let target_name = target
+        .file_name()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "output path has no file name"))?
+        .to_string_lossy();
     let pid = std::process::id();
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().subsec_nanos();
-    let target_name = target.file_name().unwrap_or_else(|| std::ffi::OsStr::new("export")).to_string_lossy();
-    let tmp_path = parent.join(format!("{target_name}.{pid}.{nanos}.tmp"));
-    let mut file = std::fs::File::create(&tmp_path)?;
+    // Leading-dot hides the temp file from `ls` between fsync and rename.
+    let tmp_path = parent.join(format!(".{target_name}.{pid}.{nanos}.tmp"));
+    // create_new fails atomically if a stale temp exists, instead of truncating it.
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp_path)?;
     file.write_all(bytes)?;
     file.sync_all()?;
     drop(file);
