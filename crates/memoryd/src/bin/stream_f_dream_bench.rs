@@ -794,7 +794,7 @@ fn write_recall_questions(repo: &Path) -> anyhow::Result<()> {
 
 fn cleanup_memory(index: usize) -> Memory {
     let mut memory = bench_memory(index, Scope::User, None);
-    if index % 20 == 0 {
+    if index.is_multiple_of(20) {
         memory.frontmatter.status = MemoryStatus::Candidate;
         memory.frontmatter.trust_level = TrustLevel::Candidate;
         memory.frontmatter.requires_user_confirmation = true;
@@ -1104,6 +1104,6 @@ mod tests {
     }
 
     fn repeated_duration(ms: u64, count: usize) -> Vec<Duration> {
-        std::iter::repeat(Duration::from_millis(ms)).take(count).collect()
+        std::iter::repeat_n(Duration::from_millis(ms), count).collect()
     }
 }
