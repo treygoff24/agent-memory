@@ -59,6 +59,11 @@ pub enum Command {
     /// Local encrypted-tier device key commands.
     Device(DeviceArgs),
     /// Export substrate contents as a portable JSON snapshot.
+    ///
+    /// Note: opening the substrate triggers standard runtime-initialization side
+    /// effects (runtime-dir creation, index-repair replay, event-log mirror rebuild)
+    /// even though the export does not write memory content.  Stop any running
+    /// `memoryd serve` daemon before exporting against the same repo/runtime pair.
     Export(crate::export::ExportArgs),
 }
 
