@@ -348,17 +348,10 @@ async fn export_json_shape_validates_v0_1_schema() {
         stderr_lines.len()
     );
     let summary_line = stderr_lines[0];
-    // Match ^memory_count=\d+ bytes=\d+$ without regex crate.
+    // Spec §8.1: stderr success-summary matches ^memory_count=\d+ bytes=\d+$
+    let summary_re = regex::Regex::new(r"^memory_count=\d+ bytes=\d+$").expect("summary regex");
     assert!(
-        summary_line.starts_with("memory_count=") && summary_line.contains(" bytes="),
-        "stderr success-summary must start with 'memory_count=' and contain ' bytes='; got: '{summary_line}'"
+        summary_re.is_match(summary_line),
+        "stderr success-summary must match ^memory_count=\\d+ bytes=\\d+$; got: '{summary_line}'"
     );
-    // Both values must parse as positive integers.
-    let mc_part =
-        summary_line.strip_prefix("memory_count=").and_then(|s| s.split(' ').next()).expect("memory_count value");
-    mc_part.parse::<u64>().unwrap_or_else(|_| panic!("memory_count value '{mc_part}' is not an integer"));
-    let bytes_part = summary_line.split(" bytes=").nth(1).expect("bytes= part");
-    bytes_part.parse::<u64>().unwrap_or_else(|_| panic!("bytes value '{bytes_part}' is not an integer"));
-    // No extra content beyond the two fields.
-    assert!(!summary_line.contains('\n'), "success-summary must be a single line: {summary_line:?}");
 }
