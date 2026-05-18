@@ -512,6 +512,9 @@ fn reindex_stale_memories(repo: &Path, index: &mut Index) -> Result<u32, Box<dyn
         if repo_relative.components().next().is_some_and(|c| c.as_os_str() == "encrypted") {
             continue;
         }
+        if !is_canonical_memory_relative_path(repo_relative) {
+            continue;
+        }
         let Ok(relative_str) = repo_relative.to_str().ok_or("non-utf8 path") else { continue };
         let repo_path = RepoPath::new(relative_str);
 
@@ -543,6 +546,9 @@ fn scan_blocking_conflicts(repo: &Path) -> Result<Vec<String>, Box<dyn std::erro
         }
         let Ok(repo_relative) = path.strip_prefix(repo) else { continue };
         if repo_relative.components().next().is_some_and(|c| c.as_os_str() == "encrypted") {
+            continue;
+        }
+        if !is_canonical_memory_relative_path(repo_relative) {
             continue;
         }
         let Ok(relative_str) = repo_relative.to_str().ok_or("non-utf8 path") else { continue };
@@ -666,4 +672,12 @@ fn fsync_parent(path: &Path) -> std::io::Result<()> {
         std::fs::File::open(parent)?.sync_all()?;
     }
     Ok(())
+}
+
+/// Mirrors `tree::layout::is_canonical_memory_markdown_path` so reconcile-phase
+/// walkers skip the Stream F non-canonical path families (dream scratchpads,
+/// fetched web sources) instead of trying to parse them as canonical memories.
+fn is_canonical_memory_relative_path(relative: &Path) -> bool {
+    let rel = relative.to_string_lossy().replace('\\', "/");
+    !rel.starts_with("dreams/journal/") && !rel.starts_with("sources/web/")
 }
