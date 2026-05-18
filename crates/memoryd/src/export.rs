@@ -95,7 +95,13 @@ pub enum ExportError {
 }
 
 impl ExportError {
-    fn exit_code(&self) -> i32 {
+    /// Process exit code corresponding to this error variant.
+    ///
+    /// Argument failures map to 2 (clap convention for argparse errors);
+    /// substrate and IO failures map to 1.  Callers in `main.rs` consult this
+    /// to set the process exit code rather than the export module calling
+    /// `process::exit` itself.
+    pub fn exit_code(&self) -> i32 {
         match self {
             ExportError::Argument(_) => 2,
             ExportError::Substrate(_) | ExportError::Io(_) => 1,
@@ -105,18 +111,11 @@ impl ExportError {
 
 /// Run the export subcommand.
 ///
-/// Returns `Ok(())` on success.  On failure, prints to stderr and calls
-/// `std::process::exit` with the appropriate exit code so that stdout is never
-/// contaminated with diagnostic output.
-pub async fn run_export(args: ExportArgs) -> anyhow::Result<()> {
-    if let Err(err) = run_export_inner(args).await {
-        eprintln!("error: {err}");
-        std::process::exit(err.exit_code());
-    }
-    Ok(())
-}
-
-async fn run_export_inner(args: ExportArgs) -> Result<(), ExportError> {
+/// Returns `Ok(())` on success and `Err(ExportError)` on any failure.  The
+/// caller (typically `main.rs`) decides the process exit code by consulting
+/// [`ExportError::exit_code`] — this module never calls `process::exit`
+/// itself.
+pub async fn run_export(args: ExportArgs) -> Result<(), ExportError> {
     // --format is enforced at clap-parse time via ValueEnum; no runtime check needed.
     let since_dt = parse_since(args.since.as_deref())?;
 

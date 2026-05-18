@@ -494,7 +494,10 @@ async fn main() -> anyhow::Result<()> {
             }
         },
         Command::Export(args) => {
-            memoryd::export::run_export(args).await?;
+            if let Err(err) = memoryd::export::run_export(args).await {
+                eprintln!("error: {err}");
+                std::process::exit(err.exit_code());
+            }
         }
     }
     Ok(())
