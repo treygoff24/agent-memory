@@ -6,7 +6,7 @@
 //! beyond what `Substrate::open`'s standard runtime initialization already does.
 
 use std::io::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use memory_substrate::config::load_local_device_config;
@@ -15,11 +15,13 @@ use serde::Serialize;
 
 use crate::runtime_privacy::install_privacy_runtime_from_roots;
 
-// ---------------------------------------------------------------------------
-// CLI args
-// ---------------------------------------------------------------------------
-
 /// Arguments for `memoryd export`.
+///
+/// Note: opening the substrate triggers standard runtime-initialization side
+/// effects even though the export does not write memory content.  These include
+/// runtime-directory creation, index-repair replay, and event-log mirror
+/// rebuild.  Stop any running `memoryd serve` daemon before exporting against
+/// the same `--repo` / `--runtime` pair.
 #[derive(Debug, clap::Args)]
 pub struct ExportArgs {
     /// Canonical memory repository root.
@@ -35,15 +37,13 @@ pub struct ExportArgs {
     #[arg(long, default_value = "json")]
     pub format: String,
     /// Include only memories whose `updated_at >= <ISO8601>`.
+    ///
+    /// Accepts RFC3339 UTC (`2026-05-01T00:00:00Z` or `2026-05-01T00:00:00+00:00`).
+    /// Bare dates are rejected with exit code 2.
     #[arg(long)]
     pub since: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
-// Output schema types
-// ---------------------------------------------------------------------------
-
-/// Top-level export envelope (§4).
 #[derive(Serialize)]
 struct ExportEnvelope {
     schema_version: u32,
@@ -59,7 +59,6 @@ struct ExportFilters {
     since: Option<String>,
 }
 
-/// Per-memory row emitted in the export (§4).
 #[derive(Serialize)]
 struct ExportMemory {
     id: String,
@@ -71,10 +70,6 @@ struct ExportMemory {
     created_at: String,
     updated_at: String,
 }
-
-// ---------------------------------------------------------------------------
-// Error type
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, thiserror::Error)]
 pub enum ExportError {
@@ -95,10 +90,6 @@ impl ExportError {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Entry point
-// ---------------------------------------------------------------------------
-
 /// Run the export subcommand.
 ///
 /// Returns `Ok(())` on success.  On failure, prints to stderr and calls
@@ -113,117 +104,23 @@ pub async fn run_export(args: ExportArgs) -> anyhow::Result<()> {
 }
 
 async fn run_export_inner(args: ExportArgs) -> Result<(), ExportError> {
-    // Validate --format early (exit 2 on unknown).
-    if args.format != "json" {
-        return Err(ExportError::Argument(format!(
-            "--format '{}' is not supported in v0.1; only 'json' is accepted",
-            args.format
-        )));
-    }
+    validate_format(&args.format)?;
+    let since_dt = parse_since(args.since.as_deref())?;
 
-    // Parse --since early (exit 2 on bad value).
-    let since_dt: Option<DateTime<Utc>> = match args.since.as_deref() {
-        None => None,
-        Some(raw) => {
-            // Reject bare dates (YYYY-MM-DD) and non-RFC3339 values.
-            if raw.len() == 10 && raw.chars().nth(4) == Some('-') {
-                return Err(ExportError::Argument(format!(
-                    "--since '{raw}' is a bare date; use RFC3339 form, e.g. {raw}T00:00:00Z"
-                )));
-            }
-            raw.parse::<DateTime<Utc>>().map_err(|_| {
-                ExportError::Argument(format!(
-                    "--since '{raw}': parse failed; use RFC3339 UTC, e.g. 2026-05-01T00:00:00Z"
-                ))
-            })?;
-            // Re-parse as lenient chrono type (accepts offset-qualified too).
-            Some(
-                raw.parse::<DateTime<Utc>>()
-                    .or_else(|_| {
-                        raw.parse::<chrono::DateTime<chrono::FixedOffset>>()
-                            .map(|dt| dt.with_timezone(&Utc))
-                    })
-                    .map_err(|_| {
-                        ExportError::Argument(format!(
-                            "--since '{raw}': parse failed; use RFC3339 UTC, e.g. 2026-05-01T00:00:00Z"
-                        ))
-                    })?,
-            )
-        }
-    };
-
-    // Install privacy runtime BEFORE opening substrate (mirrors Command::Serve).
     install_privacy_runtime_from_roots(&args.repo, &args.runtime)
         .map_err(|e| ExportError::Substrate(format!("privacy runtime install failed: {e}")))?;
 
-    // Open substrate.
     let roots = Roots::new(args.repo.clone(), args.runtime.clone());
-    let substrate = Substrate::open(roots).await.map_err(|e| ExportError::Substrate(e.to_string()))?;
+    let substrate = Substrate::open(roots)
+        .await
+        .map_err(|e| ExportError::Substrate(e.to_string()))?;
 
-    // Read device id from runtime local-device.yaml.
-    let source_device_id = load_local_device_config(&args.runtime)
-        .map_err(|e| ExportError::Substrate(format!("device config load failed: {e}")))?
-        .map(|cfg| cfg.device.id)
-        .unwrap_or_default();
-
-    // exported_at: RFC3339 UTC millisecond precision.
+    let source_device_id = read_device_id(&args.runtime)?;
     let exported_at = format_rfc3339_millis(Utc::now());
-
-    // Collect all envelopes.
-    let mut memories: Vec<ExportMemory> = substrate
-        .iter_memory_envelopes()
-        .filter_map(|result| {
-            match result {
-                Err(_) => None, // skip unreadable files (e.g. legacy raw ciphertext)
-                Ok(envelope) => {
-                    let fm = &envelope.metadata.frontmatter;
-
-                    // Apply --since filter.
-                    if let Some(since) = since_dt {
-                        if fm.updated_at < since {
-                            return None;
-                        }
-                    }
-
-                    // Body-variant routing (§6).
-                    let (body, body_marker) = match &envelope.content {
-                        MemoryContent::Plaintext(text) => (Some(text.clone()), None),
-                        MemoryContent::Ciphertext { .. } => (None, Some("encrypted".to_string())),
-                        MemoryContent::MetadataOnly => (None, Some("metadata-only".to_string())),
-                    };
-
-                    // Timestamps — default to epoch when absent/zero (§4).
-                    let epoch = "1970-01-01T00:00:00Z".to_string();
-                    let created_at = format_rfc3339_secs(fm.created_at);
-                    let updated_at = format_rfc3339_secs(fm.updated_at);
-                    let created_at = if created_at == "1970-01-01T00:00:00Z" { epoch.clone() } else { created_at };
-                    let updated_at = if updated_at == "1970-01-01T00:00:00Z" { epoch } else { updated_at };
-
-                    // Frontmatter: serialize to serde_json::Value via canonical path.
-                    let frontmatter_value = serde_json::to_value(fm).unwrap_or(serde_json::Value::Object(Default::default()));
-
-                    Some(ExportMemory {
-                        id: fm.id.as_str().to_string(),
-                        scope: fm.scope,
-                        status: fm.status,
-                        frontmatter: frontmatter_value,
-                        body,
-                        body_marker,
-                        created_at,
-                        updated_at,
-                    })
-                }
-            }
-        })
-        .collect();
-
-    // Sort by (updated_at, id) ascending (§4).
-    memories.sort_by(|a, b| {
-        a.updated_at.cmp(&b.updated_at).then_with(|| a.id.cmp(&b.id))
-    });
+    let mut memories = collect_memories(&substrate, since_dt)?;
+    memories.sort_by(|a, b| a.updated_at.cmp(&b.updated_at).then_with(|| a.id.cmp(&b.id)));
 
     let memory_count = memories.len();
-
     let envelope = ExportEnvelope {
         schema_version: 1,
         exported_at,
@@ -233,39 +130,127 @@ async fn run_export_inner(args: ExportArgs) -> Result<(), ExportError> {
         memories,
     };
 
-    // Serialize to JSON (two-space indent, trailing newline).
     let json = serde_json::to_string_pretty(&envelope)
         .map_err(|e| ExportError::Io(format!("JSON serialization failed: {e}")))?;
-    let json_with_newline = format!("{json}\n");
-    let bytes_len = json_with_newline.len();
+    let output = format!("{json}\n");
+    let bytes_len = output.len();
 
-    // Emit to stdout or --out (§3).
-    match args.out {
-        None => {
-            print!("{json_with_newline}");
-        }
-        Some(out_path) => {
-            atomic_write_export(&out_path, json_with_newline.as_bytes())
-                .map_err(|e| ExportError::Io(format!("atomic write failed: {e}")))?;
-        }
-    }
-
-    // Success summary to stderr (§3).  Exactly one line; no trailing diagnostics.
+    emit_output(args.out.as_deref(), &output)?;
     eprintln!("memory_count={memory_count} bytes={bytes_len}");
 
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+fn validate_format(format: &str) -> Result<(), ExportError> {
+    if format != "json" {
+        return Err(ExportError::Argument(format!(
+            "--format '{format}' is not supported in v0.1; only 'json' is accepted"
+        )));
+    }
+    Ok(())
+}
 
-/// Format a `DateTime<Utc>` as RFC3339 UTC with millisecond precision.
+/// Parse the `--since` string into a UTC timestamp.
+///
+/// Accepts both `Z` and `+00:00` offset forms per spec §5.
+/// Rejects bare dates (`YYYY-MM-DD`) with exit code 2.
+fn parse_since(raw: Option<&str>) -> Result<Option<DateTime<Utc>>, ExportError> {
+    let raw = match raw {
+        None => return Ok(None),
+        Some(s) => s,
+    };
+
+    if raw.len() == 10 && raw.chars().nth(4) == Some('-') {
+        return Err(ExportError::Argument(format!(
+            "--since '{raw}' is a bare date; use RFC3339 form, e.g. {raw}T00:00:00Z"
+        )));
+    }
+
+    let dt = raw
+        .parse::<DateTime<Utc>>()
+        .or_else(|_| {
+            raw.parse::<chrono::DateTime<chrono::FixedOffset>>()
+                .map(|dt| dt.with_timezone(&Utc))
+        })
+        .map_err(|_| {
+            ExportError::Argument(format!(
+                "--since '{raw}': parse failed; use RFC3339 UTC, e.g. 2026-05-01T00:00:00Z"
+            ))
+        })?;
+
+    Ok(Some(dt))
+}
+
+fn read_device_id(runtime: &Path) -> Result<String, ExportError> {
+    load_local_device_config(runtime)
+        .map_err(|e| ExportError::Substrate(format!("device config load failed: {e}")))?
+        .ok_or_else(|| {
+            ExportError::Substrate(
+                "device config not found; run `memoryd serve --init` to initialize the runtime directory"
+                    .to_string(),
+            )
+        })
+        .map(|cfg| cfg.device.id)
+}
+
+fn collect_memories(
+    substrate: &Substrate,
+    since_dt: Option<DateTime<Utc>>,
+) -> Result<Vec<ExportMemory>, ExportError> {
+    substrate
+        .iter_memory_envelopes()
+        .map(|result| {
+            let envelope = result
+                .map_err(|e| ExportError::Substrate(format!("failed to read memory envelope: {e}")))?;
+            let fm = &envelope.metadata.frontmatter;
+
+            if let Some(since) = since_dt {
+                if fm.updated_at < since {
+                    return Ok(None);
+                }
+            }
+
+            let (body, body_marker) = match &envelope.content {
+                MemoryContent::Plaintext(text) => (Some(text.clone()), None),
+                MemoryContent::Ciphertext { .. } => (None, Some("encrypted".to_string())),
+                MemoryContent::MetadataOnly => (None, Some("metadata-only".to_string())),
+            };
+
+            let created_at = format_rfc3339_secs(fm.created_at);
+            let updated_at = format_rfc3339_secs(fm.updated_at);
+            let frontmatter_value = serde_json::to_value(fm)
+                .unwrap_or_else(|_| serde_json::Value::Object(Default::default()));
+
+            Ok(Some(ExportMemory {
+                id: fm.id.as_str().to_string(),
+                scope: fm.scope,
+                status: fm.status,
+                frontmatter: frontmatter_value,
+                body,
+                body_marker,
+                created_at,
+                updated_at,
+            }))
+        })
+        .collect::<Result<Vec<Option<ExportMemory>>, ExportError>>()
+        .map(|v| v.into_iter().flatten().collect())
+}
+
+fn emit_output(out: Option<&Path>, content: &str) -> Result<(), ExportError> {
+    match out {
+        None => print!("{content}"),
+        Some(path) => {
+            atomic_write_export(path, content.as_bytes())
+                .map_err(|e| ExportError::Io(format!("atomic write failed: {e}")))?;
+        }
+    }
+    Ok(())
+}
+
 fn format_rfc3339_millis(dt: DateTime<Utc>) -> String {
     dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
 }
 
-/// Format a `DateTime<Utc>` as RFC3339 UTC with second precision.
 fn format_rfc3339_secs(dt: DateTime<Utc>) -> String {
     dt.format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
@@ -273,14 +258,10 @@ fn format_rfc3339_secs(dt: DateTime<Utc>) -> String {
 /// Atomic write: write to temp → fsync → rename over target.
 ///
 /// Mirrors the pattern in `crates/memory-merge-driver/src/main.rs::persist_merged_output`.
-fn atomic_write_export(target: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
-    let parent = target
-        .parent()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "output path has no parent directory"))?;
-    // Surface the missing-parent case early with the path baked into
-    // the error message so operators see WHICH parent is missing,
-    // rather than a bare "No such file or directory" propagated from
-    // the file creation below (spec §8.4).
+fn atomic_write_export(target: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let parent = target.parent().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "output path has no parent directory")
+    })?;
     if !parent.exists() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
@@ -292,18 +273,15 @@ fn atomic_write_export(target: &std::path::Path, bytes: &[u8]) -> std::io::Resul
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .subsec_nanos();
-    let tmp_name = format!("{}.{pid}.{nanos}.tmp", target.display());
-    let tmp_path = parent.join(
-        std::path::Path::new(&tmp_name)
-            .file_name()
-            .unwrap_or_else(|| std::ffi::OsStr::new("export.tmp")),
-    );
-    // Write + fsync temp.
+    let target_name = target
+        .file_name()
+        .unwrap_or_else(|| std::ffi::OsStr::new("export"))
+        .to_string_lossy();
+    let tmp_path = parent.join(format!("{target_name}.{pid}.{nanos}.tmp"));
     let mut file = std::fs::File::create(&tmp_path)?;
     file.write_all(bytes)?;
     file.sync_all()?;
     drop(file);
-    // Rename over target.
     if let Err(err) = std::fs::rename(&tmp_path, target) {
         let _ = std::fs::remove_file(&tmp_path);
         return Err(err);

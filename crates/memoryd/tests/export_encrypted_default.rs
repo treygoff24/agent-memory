@@ -9,118 +9,29 @@ use std::process::Command;
 
 use memory_privacy::FileKeyProvider;
 use memory_substrate::events::EventKind;
-use memory_substrate::{
-    Author, AuthorKind, ClassificationOutcome, EventContext, Frontmatter, InitOptions, Memory, MemoryId, MemoryStatus,
-    MemoryType, RepoPath, RetrievalPolicy, Roots, Scope, Sensitivity, Source, SourceKind, Substrate, TrustLevel,
-    WriteMode, WritePolicy, WriteRequest,
-};
 use memoryd::handlers::handle_request;
 use memoryd::protocol::{RequestEnvelope, RequestPayload, ResponsePayload, ResponseResult};
+
+#[path = "export_fixture/mod.rs"]
+mod export_fixture;
+
+use export_fixture::{init_substrate, make_plaintext_memory, write_plaintext};
 
 const DEVICE_ID: &str = "dev_exportenc03";
 const PLAINTEXT_BODY: &str = "This is the plaintext body the export must include verbatim.";
 const ENCRYPTED_PLAINTEXT: &str = "SECRET-encrypted-content-202-555-0199-keep-out-of-stdout";
-
-async fn init_substrate(temp: &tempfile::TempDir) -> Substrate {
-    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
-    Substrate::init(roots, InitOptions { force_unsafe_durability: true, device_id: Some(DEVICE_ID.to_string()) })
-        .await
-        .expect("init substrate")
-}
-
-fn make_plaintext_memory(id: &str, body: &str) -> Memory {
-    let ts = chrono::DateTime::parse_from_rfc3339("2026-05-01T10:00:00Z")
-        .expect("ts")
-        .with_timezone(&chrono::Utc);
-    let mid = MemoryId::new(id);
-    Memory {
-        frontmatter: Frontmatter {
-            schema_version: memory_substrate::SUBSTRATE_SCHEMA_VERSION,
-            id: mid.clone(),
-            memory_type: MemoryType::Claim,
-            scope: Scope::Agent,
-            summary: "plaintext export-encrypted fixture".to_string(),
-            confidence: 0.9,
-            original_confidence: None,
-            trust_level: TrustLevel::Trusted,
-            sensitivity: Sensitivity::Internal,
-            status: MemoryStatus::Active,
-            created_at: ts,
-            updated_at: ts,
-            observed_at: None,
-            author: Author {
-                kind: AuthorKind::System,
-                user_handle: None,
-                harness: None,
-                harness_version: None,
-                session_id: None,
-                subagent_id: None,
-                phase: None,
-                component: Some("export-enc-test".to_string()),
-            },
-            namespace: None,
-            canonical_namespace_id: None,
-            tags: vec!["export-test".to_string()],
-            entities: Vec::new(),
-            aliases: Vec::new(),
-            source: Source {
-                kind: SourceKind::System,
-                reference: None,
-                harness: None,
-                harness_version: None,
-                session_id: None,
-                subagent_id: None,
-                device: None,
-            },
-            evidence: Vec::new(),
-            requires_user_confirmation: false,
-            review_state: None,
-            supersedes: Vec::new(),
-            superseded_by: Vec::new(),
-            related: Vec::new(),
-            tombstone_events: Vec::new(),
-            retrieval_policy: RetrievalPolicy {
-                passive_recall: true,
-                max_scope: Scope::Agent,
-                mask_personal_for_synthesis: false,
-                index_body: true,
-                index_embeddings: false,
-            },
-            write_policy: WritePolicy {
-                human_review_required: false,
-                policy_applied: "trusted-v1".to_string(),
-                expected_base_hash: None,
-            },
-            merge_diagnostics: None,
-            extras: Default::default(),
-        },
-        body: body.to_string(),
-        path: Some(RepoPath::new(format!("agent/claims/{}.md", mid.as_str()))),
-    }
-}
+const FIXTURE_TS: &str = "2026-05-01T10:00:00Z";
 
 #[tokio::test]
 async fn encrypted_bodies_are_never_emitted_no_reveal_event() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let substrate = init_substrate(&temp).await;
+    let substrate = init_substrate(&temp, DEVICE_ID).await;
 
     // ------------------------------------------------------------------
     // Plaintext memory.
     // ------------------------------------------------------------------
     let plain_id = "mem_20260501_aabbccdd00112233_000001";
-    substrate
-        .write_memory(WriteRequest {
-            operation_id: None,
-            memory: make_plaintext_memory(plain_id, PLAINTEXT_BODY),
-            expected_base_hash: None,
-            write_mode: WriteMode::CreateNew,
-            index_projection: None,
-            event_context: EventContext::default(),
-            allow_best_effort_durability: true,
-            classification: ClassificationOutcome::Trusted,
-        })
-        .await
-        .expect("write plaintext memory");
+    write_plaintext(&substrate, make_plaintext_memory(plain_id, PLAINTEXT_BODY, FIXTURE_TS)).await;
 
     // ------------------------------------------------------------------
     // Ciphertext memory (encrypts ENCRYPTED_PLAINTEXT through governance).
