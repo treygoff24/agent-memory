@@ -1,7 +1,7 @@
 # Wright loop — gap analysis from the export v0.1 post-ship review
 
 **Date:** 2026-05-18
-**Source incident:** code review of the four wright-loop trial commits (`0542bb3` → `4969f57`) found **5 blockers, 10 design issues, 4 nits**. All four items had `wright verify` PASS. All four commits landed on `feature/tiered-gate-dashboard-workflow`. The bugs shipped because wright's "verify" bar was, in practice, "did the one acceptance test pass."
+**Source incident:** code review of the four wright-loop trial commits (`0542bb3` → `4969f57`) found **5 blockers, 10 design issues, 4 nits**. All four items had `wright verify` PASS. All four commits landed on the `feature/tiered-gate-dashboard-workflow` feature branch. The bugs reached the reviewed branch because wright's "verify" bar was, in practice, "did the one acceptance test pass."
 **Audience:** anyone designing wright M2 (or M3). The dogfood-learnings doc at `docs/handoffs/2026-05-16-wright-first-dogfood.md` covered what *worked* in the M1 loop; this covers what didn't and why.
 
 This is a design-input document. Concrete proposals are in §5–§7; they're starting points, not commitments.
@@ -10,7 +10,7 @@ This is a design-input document. Concrete proposals are in §5–§7; they're st
 
 ## 1. What slipped through verify=PASS
 
-Five contract-level bugs landed in `main` with all four wright items marked `implemented`:
+Five contract-level bugs landed on the reviewed feature branch with all four wright items marked `implemented`:
 
 | ID | Bug | How it got through verify |
 | --- | --- | --- |
@@ -127,7 +127,7 @@ Approved
   → Claimed
     → ImplementedDraft       (test passes, but item is not closed)
       → InReview              (reviewer subagent dispatched)
-        → ReviewBlocked       (reviewer found blockers; back to Claimed)
+        → ReviewBlocked       (reviewer found blockers; item remains open and re-claimable)
         → ReviewApproved      (reviewer found no blockers OR all blockers resolved)
           → Verified          (final verify pass over the post-review state)
             → Implemented     (terminal)
@@ -138,7 +138,7 @@ The new states are `ImplementedDraft`, `InReview`, `ReviewBlocked`, `ReviewAppro
 **`wright verify` behavior change:**
 
 - On test PASS, status moves to `ImplementedDraft`, not `Implemented`.
-- A second command, `wright review <id>`, is required. It spawns a reviewer agent (see C2), captures structured findings to `.wright/acceptance/<id>/reviews/<timestamp>.json`, and flips status to `ReviewApproved` (no blockers) or `ReviewBlocked` (blockers; release lock, status returns to `Approved` with a `regression_reason: "review found blockers"`).
+- A second command, `wright review <id>`, is required. It spawns a reviewer agent (see C2), captures structured findings to `.wright/acceptance/<id>/reviews/<timestamp>.json`, and flips status to `ReviewApproved` (no blockers) or `ReviewBlocked` (blockers; release lock; item remains open and re-claimable with `regression_reason: "review found blockers"`).
 - On `ReviewBlocked`, the next `wright claim` returns the same item with the prior review report appended to the context bundle. Implementer iterates. New verify PASS → new review pass.
 - `wright done` only counts items in terminal `Implemented`. `ImplementedDraft` / `InReview` / `ReviewBlocked` / `ReviewApproved` are open.
 
@@ -184,11 +184,11 @@ The `plan-reviewer` agent in `~/.claude-shared/agents/` is the template. It runs
 
 Wright item files declare a stack (`rust`, `ts`, `python`, …). For `rust`, verify runs in sequence:
 
-1. `cargo fmt --check` — file-scoped to the item's touched files.
+1. Formatting — use `rustfmt --check <touched-rust-files>` for item-local Rust file checks, or `cargo fmt --all -- --check` when the item touches enough Rust surface that package/workspace formatting is the safer boundary.
 2. `cargo clippy --all-targets -p <touched-crate> -- -D warnings` — only the crate(s) touched by the item.
 3. The item's `test_command`.
 
-Failure on any of the three flips status to `Regressed`, releases the lock, returns to `Approved`. The reviewer subagent doesn't run until static gates pass — keep token-cost for high-value review work.
+Failure on any of the three flips status to `Regressed`, releases the lock, and leaves the item re-claimable. The reviewer subagent doesn't run until static gates pass — keep token-cost for high-value review work.
 
 **Scope discipline:** clippy on the full workspace would be slow and noisy. Clippy on just the crate the item touched is fast and contained. Per CLAUDE.md gate policy this is the "fast inner loop" tier.
 
