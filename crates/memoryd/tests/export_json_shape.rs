@@ -278,11 +278,15 @@ async fn export_json_shape_validates_v0_1_schema() {
             ts.parse::<chrono::DateTime<chrono::Utc>>()
                 .unwrap_or_else(|e| panic!("memory[{i}].{ts_field} '{ts}' is not valid RFC3339: {e}"));
             // Pin millisecond precision: must end with `.NNNZ` so round-trips don't lose sub-second order.
-            let dot_pos = ts.rfind('.')
+            let dot_pos = ts
+                .rfind('.')
                 .unwrap_or_else(|| panic!("memory[{i}].{ts_field} '{ts}' must include milliseconds (\\.\\d{{3}}Z)"));
             let ms_part = &ts[dot_pos + 1..ts.len() - 1];
             assert_eq!(ms_part.len(), 3, "memory[{i}].{ts_field} '{ts}' must have 3-digit ms component");
-            assert!(ms_part.chars().all(|c| c.is_ascii_digit()), "memory[{i}].{ts_field} ms part must be digits: '{ms_part}'");
+            assert!(
+                ms_part.chars().all(|c| c.is_ascii_digit()),
+                "memory[{i}].{ts_field} ms part must be digits: '{ms_part}'"
+            );
         }
     }
 
