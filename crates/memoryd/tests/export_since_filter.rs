@@ -5,6 +5,9 @@
 //! (inclusive at the boundary) and the parser strictly rejects bare
 //! dates with exit code 2 plus a stderr hint at the canonical RFC3339
 //! form.
+//!
+//! Also covers B1 regression: spec §5 accepts both `Z` and `+00:00` offset
+//! forms; the original implementation rejected `+00:00` with exit 2.
 
 use std::process::Command;
 
@@ -58,14 +61,10 @@ async fn since_filter_is_inclusive_and_rejects_bare_dates() {
         .expect("spawn memoryd export with --since");
     let stdout = String::from_utf8(output.stdout.clone()).expect("stdout utf-8");
     let stderr = String::from_utf8(output.stderr.clone()).expect("stderr utf-8");
-    assert!(
-        output.status.success(),
-        "expected exit 0 with valid --since; got {}\nstderr: {stderr}",
-        output.status
-    );
+    assert!(output.status.success(), "expected exit 0 with valid --since; got {}\nstderr: {stderr}", output.status);
 
-    let value: serde_json::Value = serde_json::from_str(&stdout)
-        .unwrap_or_else(|e| panic!("stdout is not valid JSON: {e}\nstdout: {stdout}"));
+    let value: serde_json::Value =
+        serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("stdout is not valid JSON: {e}\nstdout: {stdout}"));
 
     assert_eq!(value["memory_count"], serde_json::json!(2), "memory_count must be 2 (boundary inclusive)");
     let memories = value["memories"].as_array().expect("memories array");
@@ -80,11 +79,7 @@ async fn since_filter_is_inclusive_and_rejects_bare_dates() {
     );
 
     // filters.since should echo back the verbatim ISO string the operator passed.
-    assert_eq!(
-        value["filters"]["since"].as_str(),
-        Some(boundary),
-        "filters.since must be the verbatim --since value"
-    );
+    assert_eq!(value["filters"]["since"].as_str(), Some(boundary), "filters.since must be the verbatim --since value");
 
     // ------------------------------------------------------------------
     // Sub-case 2: bare-date input -> exit 2 with canonical-form hint
@@ -103,7 +98,10 @@ async fn since_filter_is_inclusive_and_rejects_bare_dates() {
         .expect("spawn memoryd export with bare-date --since");
     let bare_stderr = String::from_utf8(bare.stderr.clone()).expect("stderr utf-8");
     let bare_exit = bare.status.code().expect("export should exit with a code");
-    assert_eq!(bare_exit, 2, "bare-date --since must exit 2 (argparse failure); got {bare_exit}\nstderr: {bare_stderr}");
+    assert_eq!(
+        bare_exit, 2,
+        "bare-date --since must exit 2 (argparse failure); got {bare_exit}\nstderr: {bare_stderr}"
+    );
     // The error message must point at the canonical RFC3339 form. The
     // spec allows wording flexibility — the test asserts the canonical
     // example token appears so an operator pasting a bare date sees the
@@ -111,5 +109,67 @@ async fn since_filter_is_inclusive_and_rejects_bare_dates() {
     assert!(
         bare_stderr.contains("2026-05-01T00:00:00Z"),
         "bare-date error must mention the canonical RFC3339 form; got:\n{bare_stderr}"
+    );
+}
+
+#[tokio::test]
+async fn since_accepts_offset_qualified_rfc3339() {
+    // B1 regression: spec §5 requires both `Z` and `+00:00` forms to be
+    // accepted. The original implementation parsed `DateTime<Utc>` directly
+    // and returned the error before the FixedOffset fallback ran, so any
+    // `+00:00` value was rejected with exit 2.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let substrate = init_substrate(&temp, DEVICE_ID).await;
+
+    let ts = "2026-05-03T00:00:00Z";
+    let id_included = "mem_20260503_bbbb00000000bbbb_000001";
+    let id_excluded = "mem_20260501_bbbb00000000bbbb_000002";
+
+    write_plaintext(&substrate, make_plaintext_memory(id_included, "body included", ts)).await;
+    write_plaintext(&substrate, make_plaintext_memory(id_excluded, "body excluded", "2026-05-01T00:00:00Z")).await;
+
+    let repo = temp.path().join("repo");
+    let runtime = temp.path().join("runtime");
+
+    // Equivalent to `2026-05-03T00:00:00Z` but using `+00:00` suffix.
+    let since_offset = "2026-05-03T00:00:00+00:00";
+
+    let output = Command::new(env!("CARGO_BIN_EXE_memoryd"))
+        .args([
+            "export",
+            "--repo",
+            repo.to_str().expect("repo utf8"),
+            "--runtime",
+            runtime.to_str().expect("runtime utf8"),
+            "--since",
+            since_offset,
+        ])
+        .output()
+        .expect("spawn memoryd export with +00:00 --since");
+
+    let stderr = String::from_utf8(output.stderr.clone()).expect("stderr utf-8");
+    assert!(
+        output.status.success(),
+        "spec §5 requires +00:00 offset form to be accepted (B1 regression); exit={}\nstderr: {stderr}",
+        output.status
+    );
+
+    let stdout = String::from_utf8(output.stdout.clone()).expect("stdout utf-8");
+    let value: serde_json::Value =
+        serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("stdout not valid JSON: {e}"));
+
+    assert_eq!(
+        value["memory_count"],
+        serde_json::json!(1),
+        "only the boundary memory (id_included) should pass the +00:00 filter"
+    );
+    let memories = value["memories"].as_array().expect("memories array");
+    assert_eq!(memories[0]["id"].as_str(), Some(id_included), "included id mismatch");
+
+    // filters.since must echo back the verbatim +00:00 string.
+    assert_eq!(
+        value["filters"]["since"].as_str(),
+        Some(since_offset),
+        "filters.since must reflect the verbatim --since value passed"
     );
 }

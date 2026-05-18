@@ -204,7 +204,7 @@ fn bench_memory(index: usize) -> Memory {
         1 => Scope::Project,
         _ => Scope::Agent,
     };
-    let encrypted_like = index % 17 == 0;
+    let encrypted_like = index.is_multiple_of(17);
     let id = format!("mem_20260430_{:016x}_{:06}", index as u64 + SEED_SMOKE + SEED_RELEASE, index % 1_000_000);
     Memory {
         frontmatter: Frontmatter {
@@ -258,7 +258,7 @@ fn bench_memory(index: usize) -> Memory {
             related: Vec::new(),
             tombstone_events: Vec::new(),
             retrieval_policy: RetrievalPolicy {
-                passive_recall: index % 19 != 0,
+                passive_recall: !index.is_multiple_of(19),
                 max_scope: scope,
                 mask_personal_for_synthesis: encrypted_like,
                 index_body: !encrypted_like,

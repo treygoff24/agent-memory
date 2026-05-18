@@ -3,26 +3,21 @@
 /// Each export test binary declares `#[path = "export_fixture/mod.rs"] mod export_fixture;`
 /// to pull in these helpers without duplication.
 use memory_substrate::{
-    Author, AuthorKind, ClassificationOutcome, EventContext, Frontmatter, InitOptions, Memory, MemoryId,
-    MemoryStatus, MemoryType, RepoPath, RetrievalPolicy, Roots, Scope, Sensitivity, Source, SourceKind,
-    Substrate, TrustLevel, WriteMode, WritePolicy, WriteRequest,
+    Author, AuthorKind, ClassificationOutcome, EventContext, Frontmatter, InitOptions, Memory, MemoryId, MemoryStatus,
+    MemoryType, RepoPath, RetrievalPolicy, Roots, Scope, Sensitivity, Source, SourceKind, Substrate, TrustLevel,
+    WriteMode, WritePolicy, WriteRequest,
 };
 
 pub async fn init_substrate(temp: &tempfile::TempDir, device_id: &str) -> Substrate {
     let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
-    Substrate::init(roots, InitOptions {
-        force_unsafe_durability: true,
-        device_id: Some(device_id.to_string()),
-    })
-    .await
-    .expect("init substrate")
+    Substrate::init(roots, InitOptions { force_unsafe_durability: true, device_id: Some(device_id.to_string()) })
+        .await
+        .expect("init substrate")
 }
 
 /// Build a plaintext memory with the given id, body, and RFC3339 timestamp string.
 pub fn make_plaintext_memory(id: &str, body: &str, ts_str: &str) -> Memory {
-    let ts = chrono::DateTime::parse_from_rfc3339(ts_str)
-        .expect("fixed ts")
-        .with_timezone(&chrono::Utc);
+    let ts = chrono::DateTime::parse_from_rfc3339(ts_str).expect("fixed ts").with_timezone(&chrono::Utc);
     let mid = MemoryId::new(id);
     Memory {
         frontmatter: Frontmatter {

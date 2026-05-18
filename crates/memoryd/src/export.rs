@@ -111,9 +111,7 @@ async fn run_export_inner(args: ExportArgs) -> Result<(), ExportError> {
         .map_err(|e| ExportError::Substrate(format!("privacy runtime install failed: {e}")))?;
 
     let roots = Roots::new(args.repo.clone(), args.runtime.clone());
-    let substrate = Substrate::open(roots)
-        .await
-        .map_err(|e| ExportError::Substrate(e.to_string()))?;
+    let substrate = Substrate::open(roots).await.map_err(|e| ExportError::Substrate(e.to_string()))?;
 
     let source_device_id = read_device_id(&args.runtime)?;
     let exported_at = format_rfc3339_millis(Utc::now());
@@ -168,14 +166,9 @@ fn parse_since(raw: Option<&str>) -> Result<Option<DateTime<Utc>>, ExportError> 
 
     let dt = raw
         .parse::<DateTime<Utc>>()
-        .or_else(|_| {
-            raw.parse::<chrono::DateTime<chrono::FixedOffset>>()
-                .map(|dt| dt.with_timezone(&Utc))
-        })
+        .or_else(|_| raw.parse::<chrono::DateTime<chrono::FixedOffset>>().map(|dt| dt.with_timezone(&Utc)))
         .map_err(|_| {
-            ExportError::Argument(format!(
-                "--since '{raw}': parse failed; use RFC3339 UTC, e.g. 2026-05-01T00:00:00Z"
-            ))
+            ExportError::Argument(format!("--since '{raw}': parse failed; use RFC3339 UTC, e.g. 2026-05-01T00:00:00Z"))
         })?;
 
     Ok(Some(dt))
@@ -186,22 +179,18 @@ fn read_device_id(runtime: &Path) -> Result<String, ExportError> {
         .map_err(|e| ExportError::Substrate(format!("device config load failed: {e}")))?
         .ok_or_else(|| {
             ExportError::Substrate(
-                "device config not found; run `memoryd serve --init` to initialize the runtime directory"
-                    .to_string(),
+                "device config not found; run `memoryd serve --init` to initialize the runtime directory".to_string(),
             )
         })
         .map(|cfg| cfg.device.id)
 }
 
-fn collect_memories(
-    substrate: &Substrate,
-    since_dt: Option<DateTime<Utc>>,
-) -> Result<Vec<ExportMemory>, ExportError> {
+fn collect_memories(substrate: &Substrate, since_dt: Option<DateTime<Utc>>) -> Result<Vec<ExportMemory>, ExportError> {
     substrate
         .iter_memory_envelopes()
         .map(|result| {
-            let envelope = result
-                .map_err(|e| ExportError::Substrate(format!("failed to read memory envelope: {e}")))?;
+            let envelope =
+                result.map_err(|e| ExportError::Substrate(format!("failed to read memory envelope: {e}")))?;
             let fm = &envelope.metadata.frontmatter;
 
             if let Some(since) = since_dt {
@@ -218,8 +207,8 @@ fn collect_memories(
 
             let created_at = format_rfc3339_secs(fm.created_at);
             let updated_at = format_rfc3339_secs(fm.updated_at);
-            let frontmatter_value = serde_json::to_value(fm)
-                .unwrap_or_else(|_| serde_json::Value::Object(Default::default()));
+            let frontmatter_value =
+                serde_json::to_value(fm).unwrap_or_else(|_| serde_json::Value::Object(Default::default()));
 
             Ok(Some(ExportMemory {
                 id: fm.id.as_str().to_string(),
@@ -259,9 +248,9 @@ fn format_rfc3339_secs(dt: DateTime<Utc>) -> String {
 ///
 /// Mirrors the pattern in `crates/memory-merge-driver/src/main.rs::persist_merged_output`.
 fn atomic_write_export(target: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let parent = target.parent().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, "output path has no parent directory")
-    })?;
+    let parent = target
+        .parent()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "output path has no parent directory"))?;
     if !parent.exists() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
@@ -269,14 +258,8 @@ fn atomic_write_export(target: &Path, bytes: &[u8]) -> std::io::Result<()> {
         ));
     }
     let pid = std::process::id();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos();
-    let target_name = target
-        .file_name()
-        .unwrap_or_else(|| std::ffi::OsStr::new("export"))
-        .to_string_lossy();
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().subsec_nanos();
+    let target_name = target.file_name().unwrap_or_else(|| std::ffi::OsStr::new("export")).to_string_lossy();
     let tmp_path = parent.join(format!("{target_name}.{pid}.{nanos}.tmp"));
     let mut file = std::fs::File::create(&tmp_path)?;
     file.write_all(bytes)?;

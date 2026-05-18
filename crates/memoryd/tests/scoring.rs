@@ -543,7 +543,7 @@ fn performance_row(n: usize) -> RecallIndexRow {
             2 => Sensitivity::Confidential,
             _ => Sensitivity::Personal,
         })
-        .with_status(if n % 199 == 0 { MemoryStatus::Pinned } else { MemoryStatus::Active })
+        .with_status(if n.is_multiple_of(199) { MemoryStatus::Pinned } else { MemoryStatus::Active })
 }
 
 fn insert_performance_fixture(index: &Index, rows: &[RecallIndexRow], now: DateTime<Utc>) {
@@ -640,11 +640,11 @@ fn source_harness(index: usize) -> &'static str {
 }
 
 fn original_confidence(index: usize) -> Option<f64> {
-    (index % 3 != 0).then(|| 0.55 + f64::from((index % 40) as u32) / 100.0)
+    (!index.is_multiple_of(3)).then(|| 0.55 + f64::from((index % 40) as u32) / 100.0)
 }
 
 fn metadata_only(index: usize) -> bool {
-    index % 17 == 0
+    index.is_multiple_of(17)
 }
 
 fn percentile_p95(mut durations: Vec<StdDuration>) -> StdDuration {

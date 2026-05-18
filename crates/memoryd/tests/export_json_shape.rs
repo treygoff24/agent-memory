@@ -10,7 +10,8 @@ use std::process::Command;
 use memory_privacy::FileKeyProvider;
 use memory_substrate::{
     Author, AuthorKind, ClassificationOutcome, EncryptedWriteRequest, EventContext, Frontmatter, Memory, MemoryId,
-    MemoryStatus, MemoryType, RepoPath, RetrievalPolicy, Scope, Sensitivity, Source, SourceKind, TrustLevel, WritePolicy,
+    MemoryStatus, MemoryType, RepoPath, RetrievalPolicy, Scope, Sensitivity, Source, SourceKind, TrustLevel,
+    WritePolicy,
 };
 use memoryd::handlers::handle_request;
 use memoryd::protocol::{RequestEnvelope, RequestPayload, ResponsePayload, ResponseResult};
@@ -23,9 +24,7 @@ use export_fixture::{init_substrate, make_plaintext_memory, write_plaintext};
 const DEVICE_ID: &str = "dev_exportshape01";
 
 fn make_metadata_only_memory(id: &str, updated_at_str: &str) -> Memory {
-    let ts = chrono::DateTime::parse_from_rfc3339(updated_at_str)
-        .expect("fixed ts")
-        .with_timezone(&chrono::Utc);
+    let ts = chrono::DateTime::parse_from_rfc3339(updated_at_str).expect("fixed ts").with_timezone(&chrono::Utc);
     let id = MemoryId::new(id);
     Memory {
         frontmatter: Frontmatter {
@@ -223,10 +222,7 @@ async fn export_json_shape_validates_v0_1_schema() {
     // source_device_id matches fixture's device id and is non-empty
     let source_device_id = value["source_device_id"].as_str().expect("source_device_id is string");
     assert!(!source_device_id.is_empty(), "source_device_id must be non-empty");
-    assert_eq!(
-        source_device_id, DEVICE_ID,
-        "source_device_id must match fixture's device id"
-    );
+    assert_eq!(source_device_id, DEVICE_ID, "source_device_id must match fixture's device id");
 
     // filters.since is JSON null (no --since was passed)
     assert_eq!(
@@ -262,11 +258,7 @@ async fn export_json_shape_validates_v0_1_schema() {
 
         // scope is a permitted serde-canonical string
         let scope = mem["scope"].as_str().unwrap_or_else(|| panic!("memory[{i}].scope must be a string"));
-        assert!(
-            permitted_scopes.contains(&scope),
-            "memory[{i}].scope '{scope}' must be one of {:?}",
-            permitted_scopes
-        );
+        assert!(permitted_scopes.contains(&scope), "memory[{i}].scope '{scope}' must be one of {:?}", permitted_scopes);
 
         // status is a permitted serde-canonical string
         let status = mem["status"].as_str().unwrap_or_else(|| panic!("memory[{i}].status must be a string"));
@@ -297,10 +289,7 @@ async fn export_json_shape_validates_v0_1_schema() {
         let b_id = window[1]["id"].as_str().expect("id string");
         let a_key = (a_updated, a_id);
         let b_key = (b_updated, b_id);
-        assert!(
-            a_key <= b_key,
-            "memories must be sorted by (updated_at, id) ascending: {a_key:?} > {b_key:?}"
-        );
+        assert!(a_key <= b_key, "memories must be sorted by (updated_at, id) ascending: {a_key:?} > {b_key:?}");
     }
 
     // ------------------------------------------------------------------
@@ -323,7 +312,11 @@ async fn export_json_shape_validates_v0_1_schema() {
         panic!("encrypted memory with id {enc_id} not found; got ids: {ids:?}")
     });
     assert_eq!(enc_mem["body"], serde_json::Value::Null, "encrypted memory must have null body");
-    assert_eq!(enc_mem["body_marker"], serde_json::json!("encrypted"), "encrypted memory must have body_marker 'encrypted'");
+    assert_eq!(
+        enc_mem["body_marker"],
+        serde_json::json!("encrypted"),
+        "encrypted memory must have body_marker 'encrypted'"
+    );
 
     let meta_mem = memories.iter().find(|m| m["id"].as_str() == Some(meta_id)).unwrap_or_else(|| {
         let ids: Vec<_> = memories.iter().map(|m| m["id"].as_str()).collect();
@@ -354,19 +347,11 @@ async fn export_json_shape_validates_v0_1_schema() {
         "stderr success-summary must start with 'memory_count=' and contain ' bytes='; got: '{summary_line}'"
     );
     // Both values must parse as positive integers.
-    let mc_part = summary_line
-        .strip_prefix("memory_count=")
-        .and_then(|s| s.split(' ').next())
-        .expect("memory_count value");
+    let mc_part =
+        summary_line.strip_prefix("memory_count=").and_then(|s| s.split(' ').next()).expect("memory_count value");
     mc_part.parse::<u64>().unwrap_or_else(|_| panic!("memory_count value '{mc_part}' is not an integer"));
-    let bytes_part = summary_line
-        .split(" bytes=")
-        .nth(1)
-        .expect("bytes= part");
+    let bytes_part = summary_line.split(" bytes=").nth(1).expect("bytes= part");
     bytes_part.parse::<u64>().unwrap_or_else(|_| panic!("bytes value '{bytes_part}' is not an integer"));
     // No extra content beyond the two fields.
-    assert!(
-        !summary_line.contains('\n'),
-        "success-summary must be a single line: {summary_line:?}"
-    );
+    assert!(!summary_line.contains('\n'), "success-summary must be a single line: {summary_line:?}");
 }

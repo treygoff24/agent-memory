@@ -3,10 +3,10 @@
 //! services for the local-first memory daemon.
 
 pub mod cli;
-pub mod export;
 pub mod client;
 pub mod coordination_config;
 pub mod dream;
+pub mod export;
 pub mod handlers;
 pub mod mcp;
 pub mod mcp_stdio;

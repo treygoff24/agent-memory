@@ -146,5 +146,5 @@ fn luhn_valid_candidate(candidate: &str) -> bool {
         sum += value;
         double = !double;
     }
-    (13..=19).contains(&digits) && sum % 10 == 0
+    (13..=19).contains(&digits) && sum.is_multiple_of(10)
 }

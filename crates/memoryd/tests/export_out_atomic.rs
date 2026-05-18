@@ -78,11 +78,7 @@ async fn out_writes_atomically_and_matches_stdout() {
         .args(["--out", out_path.to_str().expect("out utf8")])
         .output()
         .expect("spawn --out-mode export");
-    assert!(
-        out_run.status.success(),
-        "--out-mode export failed\nstderr: {}",
-        String::from_utf8_lossy(&out_run.stderr)
-    );
+    assert!(out_run.status.success(), "--out-mode export failed\nstderr: {}", String::from_utf8_lossy(&out_run.stderr));
 
     let file_bytes = std::fs::read(&out_path).expect("read --out file");
 
@@ -124,16 +120,10 @@ async fn out_writes_atomically_and_matches_stdout() {
     // or other OS junk", and assert the load-bearing invariant: no
     // `.tmp` leftovers under any name.
     // ------------------------------------------------------------------
-    let leftovers: Vec<_> = std::fs::read_dir(out_temp.path())
-        .expect("read output dir")
-        .filter_map(Result::ok)
-        .collect();
-    let names: Vec<String> =
-        leftovers.iter().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
-    assert!(
-        names.iter().any(|n| n == "export.json"),
-        "output dir must contain the target file; saw {names:?}"
-    );
+    let leftovers: Vec<_> =
+        std::fs::read_dir(out_temp.path()).expect("read output dir").filter_map(Result::ok).collect();
+    let names: Vec<String> = leftovers.iter().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    assert!(names.iter().any(|n| n == "export.json"), "output dir must contain the target file; saw {names:?}");
     assert!(
         names.iter().all(|n| !n.contains(".tmp")),
         "no `.tmp` sidecar may remain after a successful --out run; saw {names:?}"
@@ -170,9 +160,6 @@ async fn out_writes_atomically_and_matches_stdout() {
         std::fs::read_dir(grandparent.path()).expect("read grandparent").filter_map(Result::ok).collect();
     for entry in &grandparent_entries {
         let name = entry.file_name().to_string_lossy().into_owned();
-        assert!(
-            !name.contains(".tmp"),
-            "no partial / .tmp file may remain in the grandparent on failure; saw {name}"
-        );
+        assert!(!name.contains(".tmp"), "no partial / .tmp file may remain in the grandparent on failure; saw {name}");
     }
 }

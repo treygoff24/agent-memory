@@ -876,7 +876,7 @@ fn recall_row(index: usize, now: DateTime<Utc>) -> RecallIndexRow {
         path: RepoPath::new(format!("me/{id}.md")),
         summary: format!("Stream G deterministic scoring fixture memory {index}"),
         memory_type: MemoryType::Pattern,
-        status: if index % 199 == 0 { MemoryStatus::Pinned } else { MemoryStatus::Active },
+        status: if index.is_multiple_of(199) { MemoryStatus::Pinned } else { MemoryStatus::Active },
         scope,
         canonical_namespace_id: (scope == Scope::Project).then(|| "agent-memory".to_owned()),
         updated_at: now - chrono::Duration::hours((index % 240) as i64),
@@ -911,11 +911,11 @@ fn sensitivity_for_index(index: usize) -> Sensitivity {
 }
 
 fn metadata_only(index: usize) -> bool {
-    index % 23 == 0
+    index.is_multiple_of(23)
 }
 
 fn original_confidence(index: usize) -> Option<f64> {
-    (index % 3 == 0).then(|| 0.65 + f64::from((index % 20) as u32) / 100.0)
+    index.is_multiple_of(3).then(|| 0.65 + f64::from((index % 20) as u32) / 100.0)
 }
 
 fn source_harness(index: usize) -> Option<&'static str> {

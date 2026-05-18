@@ -154,10 +154,7 @@ async fn encrypted_bodies_are_never_emitted_no_reveal_event() {
     // And the original plaintext we encrypted MUST NOT appear in stdout
     // either — the production code path is forbidden from decrypting,
     // so this should hold by construction.
-    assert!(
-        !stdout_str.contains(ENCRYPTED_PLAINTEXT),
-        "encrypted plaintext leaked into stdout"
-    );
+    assert!(!stdout_str.contains(ENCRYPTED_PLAINTEXT), "encrypted plaintext leaked into stdout");
 }
 
 /// Minimal recursive file walker — avoids pulling in the `walkdir`

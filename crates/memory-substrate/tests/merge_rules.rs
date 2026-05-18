@@ -413,6 +413,7 @@ fn first_diagnostic(slot: &Option<Value>) -> Value {
     arr.last().expect("at least one diagnostic").clone()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn assert_sensitivity_conflict_resolves_to_personal(
     base: &str,
     ours: &str,

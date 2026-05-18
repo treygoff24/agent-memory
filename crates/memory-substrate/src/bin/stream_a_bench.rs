@@ -223,6 +223,7 @@ async fn run_iterations(fixture: &Fixture, runs: usize, seed: u64) -> Result<Met
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_report(
     args: &BenchArgs,
     metrics: &Metrics,

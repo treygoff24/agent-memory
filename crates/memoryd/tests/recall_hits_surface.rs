@@ -131,6 +131,7 @@ async fn write_memory(substrate: &Substrate, id: MemoryId) {
         .expect("write memory");
 }
 
+#[allow(clippy::too_many_arguments)]
 fn recall_event(event_id: &str, seq: u64, id: MemoryId, event_at: &str, recalled_at: &str) -> Event {
     Event {
         schema: EVENT_SCHEMA_VERSION,
