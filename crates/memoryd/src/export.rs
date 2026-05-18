@@ -205,8 +205,8 @@ fn collect_memories(substrate: &Substrate, since_dt: Option<DateTime<Utc>>) -> R
                 MemoryContent::MetadataOnly => (None, Some("metadata-only".to_string())),
             };
 
-            let created_at = format_rfc3339_secs(fm.created_at);
-            let updated_at = format_rfc3339_secs(fm.updated_at);
+            let created_at = format_rfc3339_millis(fm.created_at);
+            let updated_at = format_rfc3339_millis(fm.updated_at);
             let frontmatter_value = serde_json::to_value(fm).expect("Frontmatter must serialize to JSON");
 
             Ok(Some(ExportMemory {
@@ -242,10 +242,6 @@ fn emit_output(out: Option<&Path>, content: &str) -> Result<(), ExportError> {
 
 fn format_rfc3339_millis(dt: DateTime<Utc>) -> String {
     dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
-}
-
-fn format_rfc3339_secs(dt: DateTime<Utc>) -> String {
-    dt.format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
 /// Atomic write: write to temp → fsync → rename over target.

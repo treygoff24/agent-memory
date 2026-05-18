@@ -105,7 +105,8 @@ async fn export_json_shape_validates_v0_1_schema() {
     // Memory 1: Plaintext
     // ------------------------------------------------------------------
     let plain_id = "mem_20260501_aabbccdd00112233_000001";
-    let plain_ts = "2026-05-01T10:00:00Z";
+    // Explicit sub-second component pins millisecond-precision round-trip (I1).
+    let plain_ts = "2026-05-01T10:00:00.456Z";
     write_plaintext(
         &substrate,
         make_plaintext_memory(plain_id, "This is the plaintext body for the export fixture.", plain_ts),
@@ -150,7 +151,7 @@ async fn export_json_shape_validates_v0_1_schema() {
     // ciphertext bytes.  When read back, the substrate returns MetadataOnly.
     // ------------------------------------------------------------------
     let meta_id = "mem_20260503_aabbccdd00112233_000003";
-    let meta_ts = "2026-05-03T12:00:00Z";
+    let meta_ts = "2026-05-03T12:00:00.789Z";
     let metadata_only_memory = make_metadata_only_memory(meta_id, meta_ts);
     substrate
         .write_encrypted(EncryptedWriteRequest {
@@ -271,11 +272,17 @@ async fn export_json_shape_validates_v0_1_schema() {
         // frontmatter is an object
         assert!(mem["frontmatter"].is_object(), "memory[{i}].frontmatter must be a JSON object");
 
-        // created_at and updated_at are RFC3339 strings
+        // created_at and updated_at are RFC3339 strings at millisecond precision (I1).
         for ts_field in &["created_at", "updated_at"] {
             let ts = mem[ts_field].as_str().unwrap_or_else(|| panic!("memory[{i}].{ts_field} must be a string"));
             ts.parse::<chrono::DateTime<chrono::Utc>>()
                 .unwrap_or_else(|e| panic!("memory[{i}].{ts_field} '{ts}' is not valid RFC3339: {e}"));
+            // Pin millisecond precision: must end with `.NNNZ` so round-trips don't lose sub-second order.
+            let dot_pos = ts.rfind('.')
+                .unwrap_or_else(|| panic!("memory[{i}].{ts_field} '{ts}' must include milliseconds (\\.\\d{{3}}Z)"));
+            let ms_part = &ts[dot_pos + 1..ts.len() - 1];
+            assert_eq!(ms_part.len(), 3, "memory[{i}].{ts_field} '{ts}' must have 3-digit ms component");
+            assert!(ms_part.chars().all(|c| c.is_ascii_digit()), "memory[{i}].{ts_field} ms part must be digits: '{ms_part}'");
         }
     }
 
