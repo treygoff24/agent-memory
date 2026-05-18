@@ -34,14 +34,27 @@ pub struct ExportArgs {
     #[arg(long)]
     pub out: Option<PathBuf>,
     /// Output format.  Only `json` is accepted in v0.1.
-    #[arg(long, default_value = "json")]
-    pub format: String,
+    #[arg(long, value_enum, default_value_t = ExportFormat::Json)]
+    pub format: ExportFormat,
     /// Include only memories whose `updated_at >= <ISO8601>`.
     ///
     /// Accepts RFC3339 UTC (`2026-05-01T00:00:00Z` or `2026-05-01T00:00:00+00:00`).
     /// Bare dates are rejected with exit code 2.
     #[arg(long)]
     pub since: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum ExportFormat {
+    Json,
+}
+
+impl std::fmt::Display for ExportFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Json => write!(f, "json"),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -104,7 +117,7 @@ pub async fn run_export(args: ExportArgs) -> anyhow::Result<()> {
 }
 
 async fn run_export_inner(args: ExportArgs) -> Result<(), ExportError> {
-    validate_format(&args.format)?;
+    // --format is enforced at clap-parse time via ValueEnum; no runtime check needed.
     let since_dt = parse_since(args.since.as_deref())?;
 
     install_privacy_runtime_from_roots(&args.repo, &args.runtime)
@@ -136,15 +149,6 @@ async fn run_export_inner(args: ExportArgs) -> Result<(), ExportError> {
     emit_output(args.out.as_deref(), &output)?;
     eprintln!("memory_count={memory_count} bytes={bytes_len}");
 
-    Ok(())
-}
-
-fn validate_format(format: &str) -> Result<(), ExportError> {
-    if format != "json" {
-        return Err(ExportError::Argument(format!(
-            "--format '{format}' is not supported in v0.1; only 'json' is accepted"
-        )));
-    }
     Ok(())
 }
 
