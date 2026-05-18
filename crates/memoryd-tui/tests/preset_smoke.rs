@@ -1,3 +1,9 @@
+// This test inspects ratatui Color values out of the rendered Buffer to verify
+// the theme_glue seam emits the expected RGB vs ANSI variants per capability.
+// The disallowed-types lint enforces the seam on the application side; tests
+// that verify the seam's output need direct access to ratatui::style::Color.
+#![allow(clippy::disallowed_types)]
+
 use memorum_theme::{presets, Charset, ColorCapability, Loader};
 use memoryd_tui::app::{App, AppParts, DaemonSnapshot};
 use memoryd_tui::config::UiConfig;

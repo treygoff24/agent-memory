@@ -1,3 +1,9 @@
+// This test inspects ratatui Color values out of the rendered Buffer to verify
+// the indexed-16 capability floor produces no RGB cells. The disallowed-types
+// lint enforces the theme_glue seam on the application side; tests that verify
+// the seam's output need direct access to ratatui::style::Color.
+#![allow(clippy::disallowed_types)]
+
 use memorum_theme::{Charset, ColorCapability, Loader};
 use memoryd_tui::app::{App, AppParts, DaemonSnapshot};
 use memoryd_tui::config::UiConfig;
