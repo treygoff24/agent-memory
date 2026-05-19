@@ -478,4 +478,3 @@ Then, before using this as an implementation tracker, run at least:
 ```bash
 scripts/check-fast.sh
 ```
-
