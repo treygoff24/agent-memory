@@ -47,3 +47,6 @@ crates/memoryd-web/frontend/tsconfig.tsbuildinfo
 # acceptance) IS committed.
 .wright/locks/
 .wright/runs/
+
+# tldr daemon runtime state (pid/status/cache). Per-machine, never share.
+.tldr/
