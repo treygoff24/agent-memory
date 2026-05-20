@@ -19,9 +19,12 @@ fn merge_driver_clean_round_trip_writes_merged_to_ours() {
     let base = temp.path().join("base.md");
     let ours_path = temp.path().join("ours.md");
     let theirs = temp.path().join("theirs.md");
-    let base_doc = doc(1, "base", "alpha\nbeta\ngamma\n");
-    let ours_doc = doc(1, "ours-summary", "alpha\nbeta\ngamma\n");
-    let theirs_doc = doc(1, "base", "alpha\nbeta\nGAMMA\n");
+    // `doc()` appends a trailing newline after `{body}`, so passing bodies
+    // without their own trailing `\n` keeps the on-disk body section a single
+    // line-terminated block — what the round-trip parse expects below.
+    let base_doc = doc(1, "base", "alpha\nbeta\ngamma");
+    let ours_doc = doc(1, "ours-summary", "alpha\nbeta\ngamma");
+    let theirs_doc = doc(1, "base", "alpha\nbeta\nGAMMA");
     std::fs::write(&base, &base_doc).expect("base");
     std::fs::write(&ours_path, &ours_doc).expect("ours");
     std::fs::write(&theirs, &theirs_doc).expect("theirs");
