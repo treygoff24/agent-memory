@@ -131,9 +131,10 @@ fn collect_absolute_path_literal_lines(tokens: &TokenStream, lines: &mut Vec<usi
 
 fn literal_has_absolute_path(token: &str) -> bool {
     token_string_value(token).is_some_and(|literal| {
-        ["/Users", "/home", "/var", "/tmp"]
-            .into_iter()
-            .any(|root| literal == root || literal.starts_with(&format!("{root}/")))
+        const ROOTS: &[&str] = &["/Users", "/home", "/var", "/tmp"];
+        // Multi-line raw strings can carry absolute paths on interior lines
+        // (e.g. r#"\n/tmp/memorum\n"#), so scan every line, not just the head.
+        literal.lines().any(|line| ROOTS.iter().any(|root| line == *root || line.starts_with(&format!("{root}/"))))
     })
 }
 
