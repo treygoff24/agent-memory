@@ -333,7 +333,7 @@ fn sample_memory(id: &str, summary: &str, body: &str) -> Memory {
     let now = Utc.with_ymd_and_hms(2026, 5, 1, 10, 0, 0).single().expect("fixture time");
     Memory {
         frontmatter: Frontmatter {
-            schema_version: 2,
+            schema_version: 1,
             id: MemoryId::new(id),
             memory_type: MemoryType::Pattern,
             scope: Scope::Project,
