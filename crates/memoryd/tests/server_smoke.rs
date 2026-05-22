@@ -35,16 +35,22 @@ async fn server_smoke_serves_status_over_newline_delimited_json() {
 
     let response = ResponseEnvelope::from_json_line(&line).expect("response decodes");
     assert_eq!(response.id, "req-status");
+    let ResponseResult::Success(ResponsePayload::Status(mut status)) = response.result else {
+        panic!("expected status success, got {:?}", response.result);
+    };
+    let daemon = status.daemon.take().expect("healthy status reports daemon process info");
+    assert_eq!(daemon.version, env!("CARGO_PKG_VERSION"));
+    assert!(daemon.pid > 0, "daemon pid must be a real process id");
     assert_eq!(
-        response.result,
-        ResponseResult::Success(ResponsePayload::Status(memoryd::protocol::StatusResponse {
+        status,
+        memoryd::protocol::StatusResponse {
             state: "healthy".to_owned(),
             guidance: "memoryd local daemon is accepting requests; substrate is not attached yet".to_owned(),
             recall: Default::default(),
             dreams: Default::default(),
             passive_notifications: Default::default(),
             ..Default::default()
-        }))
+        }
     );
 
     server.abort();
