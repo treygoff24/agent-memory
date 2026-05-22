@@ -3,3 +3,14 @@ docs/reviews/2026-05-08-gap-fix-verification.md
 docs/reference/*.md
 target/
 **/target/
+
+# Hand-authored design docs whose prose formatting oxfmt should not touch.
+GAPS.md
+
+# Local agent/tooling output directories. `--ignore-path .oxfmtignore`
+# overrides .gitignore, so these need their own entries even when ignored
+# by git.
+.clawpatch/
+.delegate/
+.tldr/
+
