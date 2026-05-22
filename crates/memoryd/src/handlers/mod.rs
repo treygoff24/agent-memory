@@ -1145,7 +1145,7 @@ async fn status_response(substrate: &Substrate, state: &HandlerState) -> StatusR
             None
         }
     };
-    let conflicts_count = match live_conflicts_count(substrate).await {
+    let conflicts_count = match live_conflicts_count(substrate) {
         Ok(count) => Some(count),
         Err(error) => {
             dashboard_warnings.push(format!("conflicts_count_unavailable: {}", bounded(&error.message, 160)));
@@ -1221,8 +1221,8 @@ async fn count_memories_by_status(substrate: &Substrate, status: MemoryStatus) -
     Ok(rows.len() as u64)
 }
 
-async fn live_conflicts_count(substrate: &Substrate) -> Result<u32, HandlerError> {
-    let count = count_memories_by_status(substrate, MemoryStatus::Quarantined).await?;
+fn live_conflicts_count(substrate: &Substrate) -> Result<u32, HandlerError> {
+    let count = substrate.startup_reconcile_report().blocking_conflicts.len();
     count.try_into().map_err(|_| HandlerError::substrate("conflict count exceeds u32"))
 }
 
@@ -1281,7 +1281,6 @@ async fn reality_check_response(
                         corrected: entry.corrected,
                         forgotten: entry.forgotten,
                         not_relevant: entry.not_relevant,
-                        skipped: entry.skipped,
                         deferred: entry.deferred,
                         remaining: entry.remaining,
                     })

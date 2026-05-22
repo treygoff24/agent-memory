@@ -260,7 +260,6 @@ pub struct RcSessionHistoryEntry {
     pub corrected: u32,
     pub forgotten: u32,
     pub not_relevant: u32,
-    pub skipped: u32,
     pub deferred: u32,
     pub remaining: u32,
 }
@@ -303,7 +302,6 @@ impl RcHistoryStore {
             corrected: session.items_corrected.len() as u32,
             forgotten: session.items_forgotten.len() as u32,
             not_relevant: session.items_not_relevant.len() as u32,
-            skipped: session.items_deferred.len() as u32,
             deferred: session.items_deferred.len() as u32,
             remaining: session.items_remaining.len() as u32,
         };

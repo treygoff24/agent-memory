@@ -480,7 +480,6 @@ pub struct RealityCheckHistorySession {
     pub corrected: u32,
     pub forgotten: u32,
     pub not_relevant: u32,
-    pub skipped: u32,
     pub deferred: u32,
     pub remaining: u32,
 }

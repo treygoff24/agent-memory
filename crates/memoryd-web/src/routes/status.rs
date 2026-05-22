@@ -172,9 +172,6 @@ impl StatusDashboardResponse {
         if status.conflicts_count.is_none() {
             warnings.push("conflicts_count_unavailable".to_owned());
         }
-        if status.peer_update_count.is_none() {
-            warnings.push("peer_update_snapshot_unavailable".to_owned());
-        }
         let active_sessions = status
             .peer_sessions
             .into_iter()

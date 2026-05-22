@@ -50,7 +50,6 @@ pub struct RealityCheckHistorySession {
     pub corrected: u32,
     pub forgotten: u32,
     pub not_relevant: u32,
-    pub skipped: u32,
     pub deferred: u32,
     pub remaining: u32,
 }
@@ -68,7 +67,6 @@ impl RealityCheckHistoryResponse {
                 corrected: 1,
                 forgotten: 0,
                 not_relevant: 1,
-                skipped: 0,
                 deferred: 0,
                 remaining: 0,
             }],
@@ -162,7 +160,6 @@ pub async fn reality_check_history(
                                 corrected: session.corrected,
                                 forgotten: session.forgotten,
                                 not_relevant: session.not_relevant,
-                                skipped: session.skipped,
                                 deferred: session.deferred,
                                 remaining: session.remaining,
                             })

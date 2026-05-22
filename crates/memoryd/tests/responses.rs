@@ -507,7 +507,6 @@ async fn test_completed_session_is_persisted_to_history_with_action_counts() {
     assert_eq!(session.corrected, 0);
     assert_eq!(session.forgotten, 0);
     assert_eq!(session.not_relevant, 1);
-    assert_eq!(session.skipped, 1);
     assert_eq!(session.deferred, 1);
     assert_eq!(session.remaining, 0);
 }

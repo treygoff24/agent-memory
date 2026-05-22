@@ -168,7 +168,6 @@ export interface RealityCheckHistoryResponse {
         corrected: number;
         forgotten: number;
         not_relevant: number;
-        skipped: number;
         deferred: number;
         remaining: number;
     }>;

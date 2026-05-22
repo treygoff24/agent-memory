@@ -336,7 +336,6 @@ fn test_reality_check_response_history_round_trips_serde() {
             corrected: 0,
             forgotten: 0,
             not_relevant: 1,
-            skipped: 1,
             deferred: 1,
             remaining: 0,
         }],

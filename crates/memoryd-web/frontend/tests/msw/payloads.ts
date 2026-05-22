@@ -594,7 +594,6 @@ export function payloadForApiRequest(
                               corrected: 1,
                               forgotten: 0,
                               not_relevant: 1,
-                              skipped: 0,
                               deferred: 0,
                               remaining: 0,
                           },
