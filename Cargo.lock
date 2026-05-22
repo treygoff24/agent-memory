@@ -1894,6 +1894,7 @@ dependencies = [
 name = "memory-source"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "encoding_rs",
  "memory-privacy",

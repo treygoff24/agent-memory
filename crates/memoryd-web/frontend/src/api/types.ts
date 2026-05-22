@@ -9,12 +9,12 @@ export interface ApiErrorBody {
 export interface DaemonStatus {
     version: string;
     pid: number;
-    uptime_seconds: number;
+    uptime_seconds: number | null;
 }
 
 export interface IndexStatus {
     active_memories: number;
-    last_reindex: string;
+    last_reindex: string | null;
 }
 
 export interface SyncStatus {
@@ -36,25 +36,27 @@ export interface ActiveSession {
 }
 
 export interface DreamRunSummary {
-    at: string;
-    promoted: number;
-    queued: number;
-    dropped: number;
+    at: string | null;
+    promoted: number | null;
+    queued: number | null;
+    dropped: number | null;
 }
 
 export interface DreamingStatus {
     status: string;
-    next_run: string;
+    next_run: string | null;
     last_run: DreamRunSummary;
 }
 
 export interface RecallStatus {
     startup_total: number;
     delta_total: number;
-    peer_update_total: number;
+    peer_update_snapshot_count: number;
 }
 
 export interface StatusResponse {
+    degraded: boolean;
+    warnings: string[];
     daemon: DaemonStatus;
     socket: string;
     index: IndexStatus;
@@ -157,12 +159,18 @@ export interface RealityCheckStatusResponse {
 
 export interface RealityCheckHistoryResponse {
     sessions: Array<{
+        session_id: string;
+        started_at: string;
         completed_at: string;
+        items_total: number;
+        reviewed: number;
         confirmed: number;
         corrected: number;
         forgotten: number;
         not_relevant: number;
         skipped: number;
+        deferred: number;
+        remaining: number;
     }>;
 }
 

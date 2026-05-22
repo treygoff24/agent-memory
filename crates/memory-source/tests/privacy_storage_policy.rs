@@ -1,6 +1,8 @@
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use memory_privacy::{FileKeyProvider, PrivacyEncryptor};
 use memory_source::{
     capture_web_source_with_resolver, extract::DEFAULT_EXTRACTED_TEXT_CAP, storage::ArtifactStore, AddressPolicy,
-    CaptureWebSourceRequest, StaticDnsResolver,
+    CaptureWebSourceRequest, RawStorage, StaticDnsResolver,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -11,7 +13,12 @@ async fn extracted_sensitive_text_refuses_before_artifact_write() {
     let temp = tempfile::tempdir().unwrap();
     let err = capture_web_source_with_resolver(
         temp.path(),
-        CaptureWebSourceRequest { url, excerpts: vec!["Safe quote".to_string()], note: None },
+        CaptureWebSourceRequest {
+            url,
+            excerpts: vec!["Safe quote".to_string()],
+            note: None,
+            ..CaptureWebSourceRequest::default()
+        },
         &resolver,
         AddressPolicy::AllowLoopbackForTests,
     )
@@ -27,7 +34,12 @@ async fn extracted_text_requiring_encryption_refuses_v0_1() {
     let temp = tempfile::tempdir().unwrap();
     let err = capture_web_source_with_resolver(
         temp.path(),
-        CaptureWebSourceRequest { url, excerpts: vec!["Safe quote".to_string()], note: None },
+        CaptureWebSourceRequest {
+            url,
+            excerpts: vec!["Safe quote".to_string()],
+            note: None,
+            ..CaptureWebSourceRequest::default()
+        },
         &resolver,
         AddressPolicy::AllowLoopbackForTests,
     )
@@ -37,13 +49,88 @@ async fn extracted_text_requiring_encryption_refuses_v0_1() {
 }
 
 #[tokio::test]
+async fn extracted_text_requiring_encryption_writes_ciphertext_with_key() {
+    let body = "Email trey@example.com before launch. Safe quote.";
+    let (url, resolver) = spawn_once("text/plain", body).await;
+    let temp = tempfile::tempdir().unwrap();
+    let key_path = temp.path().join("runtime/privacy/age-key.json");
+    let key_provider = FileKeyProvider::new(&key_path);
+    key_provider.onboard_local_file().unwrap();
+    let response = capture_web_source_with_resolver(
+        temp.path(),
+        CaptureWebSourceRequest {
+            url,
+            excerpts: vec!["Safe quote".to_string()],
+            note: None,
+            key_path: Some(key_path.clone()),
+            ..CaptureWebSourceRequest::default()
+        },
+        &resolver,
+        AddressPolicy::AllowLoopbackForTests,
+    )
+    .await
+    .unwrap();
+
+    assert!(response.warnings.contains(&"extracted_encrypted".to_string()));
+    let artifact_id = memory_source::SourceArtifactId::try_new(response.artifact_id).unwrap();
+    let artifact = ArtifactStore::new(temp.path()).verify_artifact_id(&artifact_id).unwrap();
+    let artifact_dir = temp.path().join("sources/web").join(artifact.manifest.captured_at.format("%Y/%m").to_string());
+    let artifact_dir = artifact_dir.join(artifact.manifest.artifact_id.as_str());
+    assert!(!artifact_dir.join("extracted.txt").exists());
+    assert!(artifact_dir.join("extracted.enc.age").exists());
+    assert_eq!(artifact.extracted_text, "");
+    assert!(artifact.encrypted_extracted_bytes.is_some());
+
+    let payload = memory_privacy::EncryptedPayload {
+        ciphertext: artifact.encrypted_extracted_bytes.unwrap(),
+        envelope: serde_json::json!({
+            "scheme": artifact.manifest.encryption_envelope.as_ref().unwrap().scheme,
+            "recipient": artifact.manifest.encryption_envelope.as_ref().unwrap().recipient,
+        }),
+    };
+    let plaintext = PrivacyEncryptor::new(key_provider).decrypt(&payload).unwrap();
+    assert_eq!(plaintext, body);
+}
+
+#[tokio::test]
+async fn sensitive_excerpt_refuses_even_when_artifact_encryption_key_exists() {
+    let body = "Email trey@example.com before launch. Safe quote.";
+    let (url, resolver) = spawn_once("text/plain", body).await;
+    let temp = tempfile::tempdir().unwrap();
+    let key_path = temp.path().join("runtime/privacy/age-key.json");
+    FileKeyProvider::new(&key_path).onboard_local_file().unwrap();
+    let err = capture_web_source_with_resolver(
+        temp.path(),
+        CaptureWebSourceRequest {
+            url,
+            excerpts: vec!["trey@example.com".to_string()],
+            note: None,
+            key_path: Some(key_path),
+            ..CaptureWebSourceRequest::default()
+        },
+        &resolver,
+        AddressPolicy::AllowLoopbackForTests,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(err.to_string().contains("excerpts must be safe plaintext"), "{err}");
+    assert!(!temp.path().join("sources").exists());
+}
+
+#[tokio::test]
 async fn unsafe_raw_html_omits_raw_but_safe_extraction_remains_groundable() {
     let body = "<html><head><script>SSN 123-45-6789</script></head><body>Safe exact quote.</body></html>";
     let (url, resolver) = spawn_once("text/html; charset=utf-8", body).await;
     let temp = tempfile::tempdir().unwrap();
     let response = capture_web_source_with_resolver(
         temp.path(),
-        CaptureWebSourceRequest { url, excerpts: vec!["Safe exact quote.".to_string()], note: None },
+        CaptureWebSourceRequest {
+            url,
+            excerpts: vec!["Safe exact quote.".to_string()],
+            note: None,
+            ..CaptureWebSourceRequest::default()
+        },
         &resolver,
         AddressPolicy::AllowLoopbackForTests,
     )
@@ -67,7 +154,12 @@ async fn raw_privacy_check_scans_beyond_extraction_projection_cap() {
     let temp = tempfile::tempdir().unwrap();
     let response = capture_web_source_with_resolver(
         temp.path(),
-        CaptureWebSourceRequest { url, excerpts: vec!["Safe exact quote.".to_string()], note: None },
+        CaptureWebSourceRequest {
+            url,
+            excerpts: vec!["Safe exact quote.".to_string()],
+            note: None,
+            ..CaptureWebSourceRequest::default()
+        },
         &resolver,
         AddressPolicy::AllowLoopbackForTests,
     )
@@ -79,6 +171,48 @@ async fn raw_privacy_check_scans_beyond_extraction_projection_cap() {
     let artifact_id = memory_source::SourceArtifactId::try_new(response.artifact_id).unwrap();
     let artifact = store.verify_artifact_id(&artifact_id).unwrap();
     assert!(artifact.raw_bytes.is_none());
+}
+
+#[tokio::test]
+async fn unsafe_raw_html_encrypts_raw_with_key_instead_of_omitting() {
+    let body = "<html><head><script>SSN 123-45-6789</script></head><body>Safe exact quote.</body></html>";
+    let (url, resolver) = spawn_once("text/html; charset=utf-8", body).await;
+    let temp = tempfile::tempdir().unwrap();
+    let key_path = temp.path().join("runtime/privacy/age-key.json");
+    let key_provider = FileKeyProvider::new(&key_path);
+    key_provider.onboard_local_file().unwrap();
+    let response = capture_web_source_with_resolver(
+        temp.path(),
+        CaptureWebSourceRequest {
+            url,
+            excerpts: vec!["Safe exact quote.".to_string()],
+            note: None,
+            key_path: Some(key_path.clone()),
+            ..CaptureWebSourceRequest::default()
+        },
+        &resolver,
+        AddressPolicy::AllowLoopbackForTests,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(response.capture_status, "complete");
+    assert!(response.warnings.contains(&"raw_encrypted".to_string()));
+    let artifact_id = memory_source::SourceArtifactId::try_new(response.artifact_id).unwrap();
+    let artifact = ArtifactStore::new(temp.path()).verify_artifact_id(&artifact_id).unwrap();
+    assert_eq!(artifact.manifest.raw_storage, RawStorage::Encrypted);
+    assert!(artifact.raw_bytes.is_none());
+    let encrypted_raw = artifact.encrypted_raw_bytes.unwrap();
+    let payload = memory_privacy::EncryptedPayload {
+        ciphertext: encrypted_raw,
+        envelope: serde_json::json!({
+            "scheme": artifact.manifest.encryption_envelope.as_ref().unwrap().scheme,
+            "recipient": artifact.manifest.encryption_envelope.as_ref().unwrap().recipient,
+        }),
+    };
+    let encoded_raw = PrivacyEncryptor::new(key_provider).decrypt(&payload).unwrap();
+    let decoded_raw = BASE64_STANDARD.decode(encoded_raw).unwrap();
+    assert_eq!(decoded_raw, body.as_bytes());
 }
 
 async fn spawn_once(content_type: &str, body: &str) -> (String, StaticDnsResolver) {

@@ -3,7 +3,8 @@ use memory_source::hash::sha256_prefixed;
 use memory_source::storage::excerpts_jsonl;
 use memory_source::{
     ArtifactStore, CaptureMethod, CaptureRequestSnapshot, CaptureResponseSnapshot, CaptureStatus, ExcerptLocator,
-    ExcerptMatchKind, ExcerptRecord, RawStorage, SourceArtifactId, WebCaptureArtifact, WebCaptureManifest,
+    ExcerptMatchKind, ExcerptRecord, ExtractedTextStorage, RawStorage, SourceArtifactId, WebCaptureArtifact,
+    WebCaptureManifest,
 };
 use memory_substrate::events::{append_event, Event, EventKind, EVENT_SCHEMA_VERSION};
 use memory_substrate::{
@@ -332,7 +333,7 @@ fn sample_memory(id: &str, summary: &str, body: &str) -> Memory {
     let now = Utc.with_ymd_and_hms(2026, 5, 1, 10, 0, 0).single().expect("fixture time");
     Memory {
         frontmatter: Frontmatter {
-            schema_version: 1,
+            schema_version: 2,
             id: MemoryId::new(id),
             memory_type: MemoryType::Pattern,
             scope: Scope::Project,
@@ -427,7 +428,7 @@ fn write_web_artifact(fixture: &Fixture) -> String {
     }];
     let excerpts_text = excerpts_jsonl(&excerpts).expect("excerpts jsonl");
     let manifest = WebCaptureManifest {
-        schema_version: 1,
+        schema_version: 2,
         artifact_id: artifact_id.clone(),
         kind: "web_capture".to_string(),
         original_url: "https://example.com/report".to_string(),
@@ -439,18 +440,32 @@ fn write_web_artifact(fixture: &Fixture) -> String {
         response: CaptureResponseSnapshot { http_status: 200, ..CaptureResponseSnapshot::default() },
         raw_sha256: Some(sha256_prefixed(b"full raw captured page body")),
         raw_zstd_sha256: None,
+        raw_encrypted_sha256: None,
         raw_storage: RawStorage::OmittedPrivacy,
         raw_omitted_reason: Some("privacy".to_string()),
-        extracted_text_sha256: sha256_prefixed(extracted_text.as_bytes()),
+        extracted_text_storage: ExtractedTextStorage::Plaintext,
+        encryption_envelope: None,
+        extracted_text_sha256: Some(sha256_prefixed(extracted_text.as_bytes())),
+
+        extracted_text_encrypted_sha256: None,
         excerpts_sha256: sha256_prefixed(excerpts_text.as_bytes()),
         raw_byte_len: "full raw captured page body".len(),
-        extracted_text_byte_len: extracted_text.len(),
+        extracted_text_byte_len: Some(extracted_text.len()),
+
+        extracted_text_encrypted_byte_len: None,
         capture_status: CaptureStatus::CompleteTextOnly,
         warnings: Vec::new(),
         merge_conflict: None,
     };
     ArtifactStore::new(fixture.roots.repo.clone())
-        .write_web_capture(&WebCaptureArtifact { manifest, extracted_text, excerpts, raw_bytes: None })
+        .write_web_capture(&WebCaptureArtifact {
+            manifest,
+            extracted_text,
+            excerpts,
+            raw_bytes: None,
+            encrypted_extracted_bytes: None,
+            encrypted_raw_bytes: None,
+        })
         .expect("write web artifact");
     format!("webcap:{artifact_id}#quote_0001")
 }

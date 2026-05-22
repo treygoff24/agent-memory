@@ -38,6 +38,7 @@ async fn capture_persists_only_redacted_urls() {
             url: format!("{base_url}/start?api_key=initial-secret&keep=1"),
             excerpts: vec!["exact relevant quote".to_string()],
             note: None,
+            ..CaptureWebSourceRequest::default()
         },
         &resolver,
         AddressPolicy::AllowLoopbackForTests,

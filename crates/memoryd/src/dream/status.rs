@@ -103,7 +103,7 @@ async fn cli_inventory(registry: &HarnessCliRegistry) -> Vec<HarnessCliStatus> {
     statuses
 }
 
-fn collect_active_leases(repo: &Path, now: DateTime<Utc>) -> Result<Vec<LeaseRecord>, String> {
+pub(crate) fn collect_active_leases(repo: &Path, now: DateTime<Utc>) -> Result<Vec<LeaseRecord>, String> {
     let path = repo.join("leases/journal.lease");
     if !path.exists() {
         return Ok(Vec::new());
@@ -123,7 +123,7 @@ fn collect_active_leases(repo: &Path, now: DateTime<Utc>) -> Result<Vec<LeaseRec
     Ok(leases)
 }
 
-fn collect_last_runs(repo: &Path) -> Result<Vec<ScopeRunSummary>, String> {
+pub(crate) fn collect_last_runs(repo: &Path) -> Result<Vec<ScopeRunSummary>, String> {
     let journal_root = repo.join("dreams/journal");
     let mut by_scope: BTreeMap<String, ScopeRunSummary> = BTreeMap::new();
     for path in files_under(&journal_root)? {

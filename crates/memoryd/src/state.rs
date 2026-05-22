@@ -11,8 +11,10 @@ const STATE_DIR: &str = "state";
 const DAEMON_STATE_FILE: &str = "state.json";
 const PENDING_FILE: &str = "reality-check-pending.json";
 const SESSION_FILE: &str = "reality-check-session.json";
+const HISTORY_FILE: &str = "reality-check-history.json";
 const PENDING_TTL: Duration = Duration::minutes(30);
 const SESSION_TTL: Duration = Duration::days(7);
+const HISTORY_TTL: Duration = Duration::days(90);
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DaemonState {
@@ -144,6 +146,14 @@ pub struct RcSessionState {
     #[serde(default)]
     pub items_reviewed: Vec<String>,
     #[serde(default)]
+    pub items_confirmed: Vec<String>,
+    #[serde(default)]
+    pub items_corrected: Vec<String>,
+    #[serde(default)]
+    pub items_forgotten: Vec<String>,
+    #[serde(default)]
+    pub items_not_relevant: Vec<String>,
+    #[serde(default)]
     pub items_deferred: Vec<String>,
     #[serde(default)]
     pub items_remaining: Vec<String>,
@@ -159,6 +169,10 @@ impl Default for RcSessionState {
             started_at: Utc::now(),
             items_total: 0,
             items_reviewed: Vec::new(),
+            items_confirmed: Vec::new(),
+            items_corrected: Vec::new(),
+            items_forgotten: Vec::new(),
+            items_not_relevant: Vec::new(),
             items_deferred: Vec::new(),
             items_remaining: Vec::new(),
             current_index: 0,
@@ -218,6 +232,88 @@ impl RcSessionStore {
 
     fn session_path(&self) -> PathBuf {
         state_file(&self.runtime_root, SESSION_FILE)
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RcSessionHistory {
+    #[serde(default = "state_schema_version")]
+    pub version: u32,
+    #[serde(default)]
+    pub sessions: Vec<RcSessionHistoryEntry>,
+}
+
+impl VersionedStateFile for RcSessionHistory {
+    fn version(&self) -> u32 {
+        self.version
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RcSessionHistoryEntry {
+    pub session_id: String,
+    pub started_at: DateTime<Utc>,
+    pub completed_at: DateTime<Utc>,
+    pub items_total: usize,
+    pub reviewed: u32,
+    pub confirmed: u32,
+    pub corrected: u32,
+    pub forgotten: u32,
+    pub not_relevant: u32,
+    pub skipped: u32,
+    pub deferred: u32,
+    pub remaining: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct RcHistoryStore {
+    runtime_root: PathBuf,
+}
+
+impl RcHistoryStore {
+    pub fn new(runtime_root: impl AsRef<Path>) -> Self {
+        Self { runtime_root: runtime_root.as_ref().to_path_buf() }
+    }
+
+    pub fn load(&self, now: DateTime<Utc>, limit: Option<usize>) -> std::io::Result<RcSessionHistory> {
+        let mut history = load_versioned_json_result::<RcSessionHistory>(&state_file(&self.runtime_root, HISTORY_FILE))
+            .map_err(|failure| std::io::Error::other(failure.to_string()))?
+            .unwrap_or_default();
+        history.sessions.retain(|entry| now.signed_duration_since(entry.completed_at) <= HISTORY_TTL);
+        history.sessions.sort_by(|left, right| right.completed_at.cmp(&left.completed_at));
+        if let Some(limit) = limit {
+            history.sessions.truncate(limit);
+        }
+        Ok(history)
+    }
+
+    pub fn append_completed(
+        &self,
+        session: &RcSessionState,
+        completed_at: DateTime<Utc>,
+    ) -> std::io::Result<RcSessionHistoryEntry> {
+        let mut history = self.load(completed_at, None)?;
+        let entry = RcSessionHistoryEntry {
+            session_id: session.session_id.clone(),
+            started_at: session.started_at,
+            completed_at,
+            items_total: session.items_total,
+            reviewed: session.items_reviewed.len() as u32,
+            confirmed: session.items_confirmed.len() as u32,
+            corrected: session.items_corrected.len() as u32,
+            forgotten: session.items_forgotten.len() as u32,
+            not_relevant: session.items_not_relevant.len() as u32,
+            skipped: session.items_deferred.len() as u32,
+            deferred: session.items_deferred.len() as u32,
+            remaining: session.items_remaining.len() as u32,
+        };
+        history.sessions.retain(|existing| existing.session_id != entry.session_id);
+        history.sessions.push(entry.clone());
+        history.sessions.sort_by(|left, right| right.completed_at.cmp(&left.completed_at));
+        let mut persisted = history;
+        persisted.version = STATE_SCHEMA_VERSION;
+        atomic_write_json(&state_dir(&self.runtime_root), HISTORY_FILE, &persisted)?;
+        Ok(entry)
     }
 }
 

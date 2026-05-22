@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+base64.workspace = true
 chrono.workspace = true
 encoding_rs.workspace = true
 memory-privacy = { path = "../memory-privacy" }

@@ -43,6 +43,7 @@ async fn server_smoke_serves_status_over_newline_delimited_json() {
             recall: Default::default(),
             dreams: Default::default(),
             passive_notifications: Default::default(),
+            ..Default::default()
         }))
     );
 

@@ -4,9 +4,10 @@ use memoryd::protocol::{
     CandidateWriteResult, CaptureSourceResponse, ComponentScores, DreamRunReport, DreamStatusCounters,
     DreamStatusReport, GetProvenance, GetResponse, GovernanceForgetResponse, GovernanceStatus,
     GovernanceSupersedeResponse, GovernanceWriteResponse, HarnessCliStatus, LeaseRecord, ObserveKind, ObserveResponse,
-    ObserveTarget, PassOutcome, PassStatus, PromptTransport, RealityCheckAction, RealityCheckItem, RealityCheckRequest,
-    RealityCheckResponse, RecallHitSummary, RecallHitsResponse, RequestEnvelope, RequestPayload, ResponseEnvelope,
-    ResponsePayload, ResponseResult, RevealResponse, ScopeRunSummary, SearchHit, SearchResponse, WriteNoteResponse,
+    ObserveTarget, PassOutcome, PassStatus, PromptTransport, RealityCheckAction, RealityCheckHistorySession,
+    RealityCheckItem, RealityCheckRequest, RealityCheckResponse, RecallHitSummary, RecallHitsResponse, RequestEnvelope,
+    RequestPayload, ResponseEnvelope, ResponsePayload, ResponseResult, RevealResponse, ScopeRunSummary, SearchHit,
+    SearchResponse, WriteNoteResponse,
 };
 use memoryd::recall::StartupRequest;
 
@@ -196,6 +197,15 @@ fn test_reality_check_request_list_round_trips_serde() {
 }
 
 #[test]
+fn test_reality_check_request_history_round_trips_serde() {
+    let request = RequestPayload::RealityCheck(RealityCheckRequest::History { limit: Some(4) });
+
+    let decoded = round_trip(&request);
+
+    assert_eq!(decoded, request);
+}
+
+#[test]
 fn test_reality_check_request_run_round_trips_serde() {
     let request = RequestPayload::RealityCheck(RealityCheckRequest::Run {
         session_id: None,
@@ -306,6 +316,30 @@ fn test_reality_check_response_pending_round_trips_serde() {
         items: vec![],
         total_scored: 5,
         last_completed_at: None,
+    });
+
+    let decoded = round_trip(&response);
+
+    assert_eq!(decoded, response);
+}
+
+#[test]
+fn test_reality_check_response_history_round_trips_serde() {
+    let response = ResponsePayload::RealityCheck(RealityCheckResponse::History {
+        sessions: vec![RealityCheckHistorySession {
+            session_id: "rcs_20260522_120000".to_owned(),
+            started_at: Utc.with_ymd_and_hms(2026, 5, 22, 12, 0, 0).unwrap(),
+            completed_at: Utc.with_ymd_and_hms(2026, 5, 22, 12, 3, 0).unwrap(),
+            items_total: 3,
+            reviewed: 2,
+            confirmed: 1,
+            corrected: 0,
+            forgotten: 0,
+            not_relevant: 1,
+            skipped: 1,
+            deferred: 1,
+            remaining: 0,
+        }],
     });
 
     let decoded = round_trip(&response);

@@ -43,16 +43,16 @@ use tokio::sync::{broadcast, Mutex};
 
 use crate::dream::rehydration;
 use crate::protocol::{
-    CaptureSourceResponse, ClaimLockWarning, ConflictSummary, ConflictsListResponse, EntitySummary, EventLogEntry,
-    EventsLogPageResponse, GetProvenance, GetResponse, GovernanceForgetResponse, GovernancePolicySnapshot,
-    GovernancePolicySummary, GovernanceStatus, GovernanceSupersedeResponse, GovernanceWriteResponse,
-    InjectableEventKind, InspectEntitiesResponse, NamespaceNode, NamespaceTreeResponse, NotificationEvent,
-    ObserveResponse, ObserveTarget, PassiveNotificationStatus, PeerActivityResponse, PeerDeliveryAuditEntry,
-    PeerReleaseLockResponse, PeerReleaseLockStatus, PeerSessionStatus, PeerStatusResponse, RealityCheckAction,
-    RealityCheckRequest, RealityCheckResponse, RequestEnvelope, RequestPayload, RespondRefusalKind, ResponseEnvelope,
-    ResponsePayload, RevealResponse, ReviewDecisionResponse, ReviewQueueItemResponse, ReviewQueueResponse, SearchHit,
-    SearchResponse, StatusResponse, WebDashboardStatus, WriteNoteResponse, MAX_FRAME_BYTES,
-    NOTIFICATION_CHANNEL_CAPACITY,
+    CaptureSourceResponse, ClaimLockWarning, CompactDreamStatus, ConflictSummary, ConflictsListResponse,
+    DaemonProcessStatus, EntitySummary, EventLogEntry, EventsLogPageResponse, GetProvenance, GetResponse,
+    GovernanceForgetResponse, GovernancePolicySnapshot, GovernancePolicySummary, GovernanceStatus,
+    GovernanceSupersedeResponse, GovernanceWriteResponse, IndexStats, InjectableEventKind, InspectEntitiesResponse,
+    NamespaceNode, NamespaceTreeResponse, NotificationEvent, ObserveResponse, ObserveTarget, PassiveNotificationStatus,
+    PeerActivityResponse, PeerDeliveryAuditEntry, PeerReleaseLockResponse, PeerReleaseLockStatus, PeerSessionStatus,
+    PeerStatusResponse, RealityCheckAction, RealityCheckHistorySession, RealityCheckRequest, RealityCheckResponse,
+    RequestEnvelope, RequestPayload, RespondRefusalKind, ResponseEnvelope, ResponsePayload, RevealResponse,
+    ReviewDecisionResponse, ReviewQueueCounts, ReviewQueueItemResponse, ReviewQueueResponse, SearchHit, SearchResponse,
+    StatusResponse, WebDashboardStatus, WriteNoteResponse, MAX_FRAME_BYTES, NOTIFICATION_CHANNEL_CAPACITY,
 };
 use crate::reality_check::{RcAdvanceRequest, RcRunRequest, RcSessionAdvance, RcSessionHandler};
 use crate::recall::{
@@ -509,7 +509,7 @@ async fn dispatch(
     request: RequestPayload,
 ) -> Result<ResponsePayload, HandlerError> {
     match request {
-        RequestPayload::Status => Ok(ResponsePayload::Status(status_response(state))),
+        RequestPayload::Status => Ok(ResponsePayload::Status(status_response(substrate, state).await)),
         RequestPayload::Doctor => Ok(ResponsePayload::Doctor(doctor_response(substrate).await)),
         RequestPayload::Search { query, limit, include_body } => {
             search_response(substrate, &query, limit, include_body).await
@@ -913,9 +913,14 @@ async fn capture_source_response(
             return Err(HandlerError::invalid_request("source capture note must not contain sensitive material"));
         }
     }
-    let response = capture_web_source(substrate.roots().repo.clone(), CaptureWebSourceRequest { url, excerpts, note })
-        .await
-        .map_err(HandlerError::source_capture)?;
+    let encryption_key = FileKeyProvider::runtime_default(&substrate.roots().runtime);
+    let key_path = encryption_key.path().exists().then(|| encryption_key.path().to_path_buf());
+    let response = capture_web_source(
+        substrate.roots().repo.clone(),
+        CaptureWebSourceRequest { url, excerpts, note, key_path, ..CaptureWebSourceRequest::default() },
+    )
+    .await
+    .map_err(HandlerError::source_capture)?;
     Ok(ResponsePayload::CaptureSource(CaptureSourceResponse {
         artifact_id: response.artifact_id,
         source_refs: response.source_refs,
@@ -1124,10 +1129,46 @@ fn parse_peer_activity_since(raw: &str) -> Result<chrono::DateTime<chrono::Utc>,
     Err(HandlerError::invalid_request("peer activity --since must be HH:MM, YYYY-MM-DD, or RFC3339"))
 }
 
-fn status_response(state: &HandlerState) -> StatusResponse {
+async fn status_response(substrate: &Substrate, state: &HandlerState) -> StatusResponse {
+    let mut dashboard_warnings = Vec::new();
+    let index_stats = match live_index_stats(substrate).await {
+        Ok(stats) => Some(stats),
+        Err(error) => {
+            dashboard_warnings.push(format!("index_stats_unavailable: {}", bounded(&error.message, 160)));
+            None
+        }
+    };
+    let review_queue_counts = match live_review_queue_counts(substrate).await {
+        Ok(counts) => Some(counts),
+        Err(error) => {
+            dashboard_warnings.push(format!("review_queue_counts_unavailable: {}", bounded(&error.message, 160)));
+            None
+        }
+    };
+    let conflicts_count = match live_conflicts_count(substrate).await {
+        Ok(count) => Some(count),
+        Err(error) => {
+            dashboard_warnings.push(format!("conflicts_count_unavailable: {}", bounded(&error.message, 160)));
+            None
+        }
+    };
+    let compact_dream_status = match live_compact_dream_status(substrate, chrono::Utc::now()) {
+        Ok(status) => Some(status),
+        Err(error) => {
+            dashboard_warnings.push(format!("compact_dream_status_unavailable: {}", bounded(&error, 160)));
+            None
+        }
+    };
+
     StatusResponse {
-        state: "ready".to_string(),
+        state: if dashboard_warnings.is_empty() { "ready".to_string() } else { "degraded".to_string() },
         guidance: "memoryd handlers are backed by the Stream A substrate.".to_string(),
+        daemon: Some(DaemonProcessStatus {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            pid: std::process::id(),
+            uptime_seconds: None,
+        }),
+        dashboard_warnings,
         recall: state.recall.snapshot(),
         dreams: Default::default(),
         passive_notifications: state
@@ -1136,7 +1177,71 @@ fn status_response(state: &HandlerState) -> StatusResponse {
             .into_iter()
             .map(|entry| PassiveNotificationStatus { message: entry.message, created_at: entry.created_at })
             .collect(),
+        index_stats,
+        review_queue_counts,
+        conflicts_count,
+        peer_sessions: peer_status_response(state).active_sessions,
+        peer_update_count: Some(state.peer_deliveries.snapshot().len() as u64),
+        compact_dream_status,
     }
+}
+
+async fn live_index_stats(substrate: &Substrate) -> Result<IndexStats, HandlerError> {
+    let active = count_memories_by_status(substrate, MemoryStatus::Active).await?;
+    let pinned = count_memories_by_status(substrate, MemoryStatus::Pinned).await?;
+    let last_reindex = substrate
+        .events()
+        .map_err(HandlerError::substrate)?
+        .into_iter()
+        .filter(|event| matches!(event.kind, EventKind::StartupReconciliationCompleted { .. }))
+        .max_by_key(|event| event.at)
+        .map(|event| event.at);
+    Ok(IndexStats { active_memories: active + pinned, last_reindex })
+}
+
+async fn live_review_queue_counts(substrate: &Substrate) -> Result<ReviewQueueCounts, HandlerError> {
+    let candidate = count_memories_by_status(substrate, MemoryStatus::Candidate).await?;
+    let quarantined = count_memories_by_status(substrate, MemoryStatus::Quarantined).await?;
+    Ok(ReviewQueueCounts { candidate, quarantined, dream_low_confidence: 0 })
+}
+
+async fn count_memories_by_status(substrate: &Substrate, status: MemoryStatus) -> Result<u64, HandlerError> {
+    let rows = substrate
+        .query_memory(MemoryQuery {
+            id: None,
+            tag: None,
+            status: Some(status),
+            include_metadata_only: true,
+            namespace_prefix: None,
+            passive_recall_only: false,
+            updated_since: None,
+        })
+        .await
+        .map_err(HandlerError::substrate)?;
+    Ok(rows.len() as u64)
+}
+
+async fn live_conflicts_count(substrate: &Substrate) -> Result<u32, HandlerError> {
+    let count = count_memories_by_status(substrate, MemoryStatus::Quarantined).await?;
+    count.try_into().map_err(|_| HandlerError::substrate("conflict count exceeds u32"))
+}
+
+fn live_compact_dream_status(
+    substrate: &Substrate,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<CompactDreamStatus, String> {
+    let roots = substrate.roots();
+    let enabled = crate::dream::status::dreaming_enabled(&roots.repo, &roots.runtime)?;
+    let last_runs = crate::dream::status::collect_last_runs(&roots.repo)?;
+    let active_leases = crate::dream::status::collect_active_leases(&roots.repo, now)?;
+    let latest_run = last_runs.iter().filter(|run| run.last_run_at.is_some()).max_by_key(|run| run.last_run_at);
+    Ok(CompactDreamStatus {
+        enabled,
+        last_run_at: latest_run.and_then(|run| run.last_run_at),
+        last_run_outcome: latest_run.and_then(|run| run.last_run_outcome),
+        next_scheduled_at: None,
+        active_leases: active_leases.into_iter().map(|lease| lease.scope).collect(),
+    })
 }
 
 async fn dream_status_response(substrate: &Substrate) -> Result<ResponsePayload, HandlerError> {
@@ -1158,6 +1263,31 @@ async fn reality_check_response(
             let response = handler.list(namespace, limit, now).await.map_err(HandlerError::substrate)?;
             Ok(ResponsePayload::RealityCheck(response))
         }
+        RealityCheckRequest::History { limit } => {
+            let history = crate::state::RcHistoryStore::new(&substrate.roots().runtime)
+                .load(chrono::Utc::now(), limit)
+                .map_err(HandlerError::substrate)?;
+            Ok(ResponsePayload::RealityCheck(RealityCheckResponse::History {
+                sessions: history
+                    .sessions
+                    .into_iter()
+                    .map(|entry| RealityCheckHistorySession {
+                        session_id: entry.session_id,
+                        started_at: entry.started_at,
+                        completed_at: entry.completed_at,
+                        items_total: entry.items_total,
+                        reviewed: entry.reviewed,
+                        confirmed: entry.confirmed,
+                        corrected: entry.corrected,
+                        forgotten: entry.forgotten,
+                        not_relevant: entry.not_relevant,
+                        skipped: entry.skipped,
+                        deferred: entry.deferred,
+                        remaining: entry.remaining,
+                    })
+                    .collect(),
+            }))
+        }
         mutating_request => {
             let _guard = state.reality_check_lock.lock().await;
             reality_check_mutating_response(substrate, mutating_request).await
@@ -1172,7 +1302,9 @@ async fn reality_check_mutating_response(
     let handler = RcSessionHandler::new(substrate);
     let now = chrono::Utc::now();
     let response = match request {
-        RealityCheckRequest::List { .. } => unreachable!("list requests are handled without the mutation lock"),
+        RealityCheckRequest::List { .. } | RealityCheckRequest::History { .. } => {
+            unreachable!("read-only requests are handled without the mutation lock")
+        }
         RealityCheckRequest::Run { session_id, namespace, limit } => handler
             .run(RcRunRequest { requested_session_id: session_id, namespace, limit, now })
             .await
@@ -1218,6 +1350,12 @@ async fn reality_check_mutating_response(
 
 async fn reality_check_respond(request: RealityCheckRespondRequest<'_>) -> Result<RealityCheckResponse, HandlerError> {
     let RealityCheckRespondRequest { substrate, handler, session_id, memory_id, action, now } = request;
+    if let Some(response) = handler
+        .try_finalize_completed_session_response(&session_id, &memory_id, now)
+        .map_err(HandlerError::substrate)?
+    {
+        return Ok(response);
+    }
     let session = match handler.load_session_for_response(&session_id, &memory_id, now) {
         Ok(session) => session,
         Err(response) => return Ok(*response),
@@ -1226,7 +1364,7 @@ async fn reality_check_respond(request: RealityCheckRespondRequest<'_>) -> Resul
     let advance = match action {
         RealityCheckAction::Confirm => {
             confirm_reality_check_item(substrate, &session_id, &memory_id, now).await?;
-            RcSessionAdvance::Reviewed
+            RcSessionAdvance::Confirmed
         }
         RealityCheckAction::Correct { new_body } => {
             match correct_reality_check_item(substrate, &session_id, &memory_id, new_body).await? {
@@ -1244,7 +1382,7 @@ async fn reality_check_respond(request: RealityCheckRespondRequest<'_>) -> Resul
                     }
                 }
             }
-            RcSessionAdvance::Reviewed
+            RcSessionAdvance::Corrected
         }
         RealityCheckAction::Forget { reason } => {
             if reason.trim().len() < 3 {
@@ -1256,11 +1394,11 @@ async fn reality_check_respond(request: RealityCheckRespondRequest<'_>) -> Resul
                 ));
             }
             forget_reality_check_item(substrate, &session_id, &memory_id, sanitize_forget_reason(&reason)).await?;
-            RcSessionAdvance::Reviewed
+            RcSessionAdvance::Forgotten
         }
         RealityCheckAction::NotRelevant => {
             not_relevant_reality_check_item(substrate, &session_id, &memory_id).await?;
-            RcSessionAdvance::Reviewed
+            RcSessionAdvance::NotRelevant
         }
         RealityCheckAction::SkipThisWeek => RcSessionAdvance::Deferred,
     };
@@ -1312,7 +1450,7 @@ async fn correct_reality_check_item(
         )));
     }
     let old = substrate.read_memory(memory_id).await.map_err(HandlerError::substrate)?;
-    let response = governance_supersede_response(
+    let response = match governance_supersede_response(
         substrate,
         None,
         GovernanceSupersedeRequest {
@@ -1330,7 +1468,19 @@ async fn correct_reality_check_item(
             }),
         },
     )
-    .await?;
+    .await
+    {
+        Ok(response) => response,
+        Err(error) if error.code == "privacy_error" => {
+            return Ok(Some(reality_check_refused(
+                session_id,
+                memory_id,
+                format!("governance refused correction: {}", error.message),
+                RespondRefusalKind::GovernanceRefused,
+            )));
+        }
+        Err(error) => return Err(error),
+    };
     let ResponsePayload::GovernanceSupersede(supersede) = response else {
         return Ok(Some(reality_check_refused(
             session_id,

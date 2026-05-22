@@ -3,7 +3,8 @@ use memory_source::hash::sha256_prefixed;
 use memory_source::storage::excerpts_jsonl;
 use memory_source::{
     ArtifactStore, CaptureMethod, CaptureRequestSnapshot, CaptureResponseSnapshot, CaptureStatus, ExcerptLocator,
-    ExcerptMatchKind, ExcerptRecord, RawStorage, SourceArtifactId, WebCaptureArtifact, WebCaptureManifest,
+    ExcerptMatchKind, ExcerptRecord, ExtractedTextStorage, RawStorage, SourceArtifactId, WebCaptureArtifact,
+    WebCaptureManifest,
 };
 use memory_substrate::merge::{merge_markdown, MergeInput, MergeResult};
 
@@ -94,7 +95,7 @@ fn artifact_fixture() -> WebCaptureArtifact {
     let raw_zstd = zstd::encode_all(raw.as_slice(), 0).unwrap();
     let excerpts_text = excerpts_jsonl(&excerpts).unwrap();
     let manifest = WebCaptureManifest {
-        schema_version: 1,
+        schema_version: 2,
         artifact_id,
         kind: "web_capture".to_string(),
         original_url: "https://example.com".to_string(),
@@ -106,17 +107,31 @@ fn artifact_fixture() -> WebCaptureArtifact {
         response: CaptureResponseSnapshot { http_status: 200, ..CaptureResponseSnapshot::default() },
         raw_sha256: Some(sha256_prefixed(&raw)),
         raw_zstd_sha256: Some(sha256_prefixed(&raw_zstd)),
+        raw_encrypted_sha256: None,
         raw_storage: RawStorage::Stored,
         raw_omitted_reason: None,
-        extracted_text_sha256: sha256_prefixed(extracted_text.as_bytes()),
+        extracted_text_storage: ExtractedTextStorage::Plaintext,
+        encryption_envelope: None,
+        extracted_text_sha256: Some(sha256_prefixed(extracted_text.as_bytes())),
+
+        extracted_text_encrypted_sha256: None,
         excerpts_sha256: sha256_prefixed(excerpts_text.as_bytes()),
         raw_byte_len: raw.len(),
-        extracted_text_byte_len: extracted_text.len(),
+        extracted_text_byte_len: Some(extracted_text.len()),
+
+        extracted_text_encrypted_byte_len: None,
         capture_status: CaptureStatus::Complete,
         warnings: Vec::new(),
         merge_conflict: None,
     };
-    WebCaptureArtifact { manifest, extracted_text, excerpts, raw_bytes: Some(raw) }
+    WebCaptureArtifact {
+        manifest,
+        extracted_text,
+        excerpts,
+        raw_bytes: Some(raw),
+        encrypted_extracted_bytes: None,
+        encrypted_raw_bytes: None,
+    }
 }
 
 fn manifest_json(status: CaptureStatus, warnings: &[&str]) -> String {

@@ -208,6 +208,8 @@ function reviewItems(scenario: ApiScenario) {
 
 function statusPayload(scenario: ApiScenario) {
     return {
+        degraded: false,
+        warnings: [],
         daemon: { version: '0.1.0-test', pid: 7137, uptime_seconds: 302440 },
         socket: 'ok',
         index: { active_memories: scenario === 'empty' ? 0 : 1204, last_reindex: now },
@@ -235,7 +237,7 @@ function statusPayload(scenario: ApiScenario) {
             next_run: '2026-05-09T03:00:00Z',
             last_run: { at: earlier, promoted: 3, queued: 1, dropped: 0 },
         },
-        recall: { startup_total: 42, delta_total: 119, peer_update_total: 8 },
+        recall: { startup_total: 42, delta_total: 119, peer_update_snapshot_count: 8 },
     };
 }
 
@@ -583,12 +585,18 @@ export function payloadForApiRequest(
                     ? []
                     : [
                           {
+                              session_id: 'rcs_fixture',
+                              started_at: '2026-05-01T13:55:00Z',
                               completed_at: '2026-05-01T14:00:00Z',
+                              items_total: 7,
+                              reviewed: 7,
                               confirmed: 5,
                               corrected: 1,
                               forgotten: 0,
                               not_relevant: 1,
                               skipped: 0,
+                              deferred: 0,
+                              remaining: 0,
                           },
                       ],
         });

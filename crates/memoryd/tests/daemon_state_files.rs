@@ -5,7 +5,7 @@ use tempfile::TempDir;
 #[path = "../src/state.rs"]
 mod state;
 
-use state::{DaemonState, RcPendingCache, RcSessionState, RcSessionStore, StateLoadFailure};
+use state::{DaemonState, RcHistoryStore, RcPendingCache, RcSessionState, RcSessionStore, StateLoadFailure};
 
 #[test]
 fn test_state_json_loads_cleanly() {
@@ -31,6 +31,31 @@ fn test_state_json_loads_cleanly() {
 
     assert_eq!(state.reality_check.last_completed_at, Some(last_completed_at));
     assert_eq!(state.reality_check.snooze_until, Some(snooze_until));
+}
+
+#[test]
+fn test_reality_check_history_store_persists_completed_session() {
+    let temp = TempDir::new().expect("tempdir");
+    let now = Utc::now();
+    let store = RcHistoryStore::new(temp.path());
+    let session = RcSessionState {
+        session_id: "rcs_state_test".to_owned(),
+        started_at: now - Duration::minutes(5),
+        items_total: 3,
+        items_reviewed: vec!["mem_confirmed".to_owned(), "mem_not_relevant".to_owned()],
+        items_confirmed: vec!["mem_confirmed".to_owned()],
+        items_not_relevant: vec!["mem_not_relevant".to_owned()],
+        items_deferred: vec!["mem_deferred".to_owned()],
+        ..RcSessionState::default()
+    };
+
+    let entry = store.append_completed(&session, now).expect("history writes");
+    let loaded = store.load(now, Some(1)).expect("history loads");
+
+    assert_eq!(entry.confirmed, 1);
+    assert_eq!(entry.not_relevant, 1);
+    assert_eq!(entry.deferred, 1);
+    assert_eq!(loaded.sessions, vec![entry]);
 }
 
 #[test]

@@ -3,11 +3,12 @@ use memory_substrate::{MemoryId, MemoryStatus, RecallIndexQuery, Scope, Substrat
 
 use crate::protocol::{RealityCheckCompletion, RealityCheckItem, RealityCheckResponse, RespondRefusalKind};
 use crate::reality_check::{score_memories_at, ScoredMemory, ScoringConfig, DEFAULT_TOP_N};
-use crate::state::{DaemonState, RcPendingCache, RcSessionState, RcSessionStore};
+use crate::state::{DaemonState, RcHistoryStore, RcPendingCache, RcSessionState, RcSessionStore};
 
 pub struct RcSessionHandler<'a> {
     substrate: &'a Substrate,
     store: RcSessionStore,
+    history_store: RcHistoryStore,
 }
 
 pub struct RcRunRequest {
@@ -26,7 +27,11 @@ struct PendingForSessionRequest {
 
 impl<'a> RcSessionHandler<'a> {
     pub fn new(substrate: &'a Substrate) -> Self {
-        Self { substrate, store: RcSessionStore::new(&substrate.roots().runtime) }
+        Self {
+            substrate,
+            store: RcSessionStore::new(&substrate.roots().runtime),
+            history_store: RcHistoryStore::new(&substrate.roots().runtime),
+        }
     }
 
     pub async fn list(
@@ -101,11 +106,52 @@ impl<'a> RcSessionHandler<'a> {
         }
     }
 
+    pub fn try_finalize_completed_session_response(
+        &self,
+        session_id: &str,
+        memory_id: &MemoryId,
+        now: DateTime<Utc>,
+    ) -> Result<Option<RealityCheckResponse>, std::io::Error> {
+        let Some(session) = self.store.load_if_recent(now)? else {
+            return Ok(None);
+        };
+        if session.session_id != session_id
+            || !session.items_remaining.is_empty()
+            || !session_contains_action(&session, memory_id.as_str())
+        {
+            return Ok(None);
+        }
+        let reviewed = session.items_reviewed.len();
+        let deferred = session.items_deferred.len();
+        self.finalize_completed_session(&session, now)?;
+        Ok(Some(RealityCheckResponse::RespondAccepted {
+            session_id: session.session_id,
+            memory_id: memory_id.clone(),
+            next_item: None,
+            completion: RealityCheckCompletion::Complete { reviewed, deferred, completed_at: now },
+        }))
+    }
+
     pub async fn advance(&self, request: RcAdvanceRequest) -> Result<RealityCheckResponse, std::io::Error> {
         let RcAdvanceRequest { mut session, memory_id, advance, now } = request;
         session.items_remaining.retain(|id| id != memory_id.as_str());
         match advance {
-            RcSessionAdvance::Reviewed => push_unique(&mut session.items_reviewed, memory_id.as_str()),
+            RcSessionAdvance::Confirmed => {
+                push_unique(&mut session.items_reviewed, memory_id.as_str());
+                push_unique(&mut session.items_confirmed, memory_id.as_str());
+            }
+            RcSessionAdvance::Corrected => {
+                push_unique(&mut session.items_reviewed, memory_id.as_str());
+                push_unique(&mut session.items_corrected, memory_id.as_str());
+            }
+            RcSessionAdvance::Forgotten => {
+                push_unique(&mut session.items_reviewed, memory_id.as_str());
+                push_unique(&mut session.items_forgotten, memory_id.as_str());
+            }
+            RcSessionAdvance::NotRelevant => {
+                push_unique(&mut session.items_reviewed, memory_id.as_str());
+                push_unique(&mut session.items_not_relevant, memory_id.as_str());
+            }
             RcSessionAdvance::Deferred => push_unique(&mut session.items_deferred, memory_id.as_str()),
         }
         session.current_index = session.items_reviewed.len() + session.items_deferred.len();
@@ -114,11 +160,8 @@ impl<'a> RcSessionHandler<'a> {
         if session.items_remaining.is_empty() {
             let completed_at = now;
             let reviewed = session.items_reviewed.len();
-            let mut daemon_state = DaemonState::load(&self.substrate.roots().runtime);
-            daemon_state.reality_check.last_completed_at = Some(completed_at);
-            daemon_state.save(&self.substrate.roots().runtime)?;
-            self.store.delete()?;
-            RcPendingCache::delete(&self.substrate.roots().runtime)?;
+            self.store.save(&session)?;
+            self.finalize_completed_session(&session, completed_at)?;
             return Ok(RealityCheckResponse::RespondAccepted {
                 session_id: session.session_id,
                 memory_id,
@@ -204,11 +247,37 @@ impl<'a> RcSessionHandler<'a> {
             Ok(None)
         }
     }
+
+    fn finalize_completed_session(
+        &self,
+        session: &RcSessionState,
+        completed_at: DateTime<Utc>,
+    ) -> Result<(), std::io::Error> {
+        self.history_store.append_completed(session, completed_at)?;
+        let mut daemon_state = DaemonState::load(&self.substrate.roots().runtime);
+        daemon_state.reality_check.last_completed_at = Some(completed_at);
+        daemon_state.save(&self.substrate.roots().runtime)?;
+        self.store.delete()?;
+        RcPendingCache::delete(&self.substrate.roots().runtime)?;
+        Ok(())
+    }
+}
+
+fn session_contains_action(session: &RcSessionState, memory_id: &str) -> bool {
+    session.items_reviewed.iter().any(|id| id == memory_id)
+        || session.items_deferred.iter().any(|id| id == memory_id)
+        || session.items_confirmed.iter().any(|id| id == memory_id)
+        || session.items_corrected.iter().any(|id| id == memory_id)
+        || session.items_forgotten.iter().any(|id| id == memory_id)
+        || session.items_not_relevant.iter().any(|id| id == memory_id)
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum RcSessionAdvance {
-    Reviewed,
+    Confirmed,
+    Corrected,
+    Forgotten,
+    NotRelevant,
     Deferred,
 }
 

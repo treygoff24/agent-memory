@@ -50,7 +50,7 @@ pub async fn sync_dashboard(State(state): State<WebState>) -> impl IntoResponse 
                         last_heartbeat_age_seconds: 0,
                     })
                     .collect(),
-                recent_delivery_count: data.status.recall.peer_update_total as usize,
+                recent_delivery_count: data.status.recall.peer_update_snapshot_count as usize,
             },
             claim_locks: ClaimLockSummary {
                 active_count: data

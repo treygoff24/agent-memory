@@ -212,6 +212,7 @@ pub fn default_observe_harness() -> String {
 #[serde(rename_all = "snake_case")]
 pub enum RealityCheckRequest {
     List { namespace: Option<String>, limit: Option<usize> },
+    History { limit: Option<usize> },
     Run { session_id: Option<String>, namespace: Option<String>, limit: Option<usize> },
     Respond { session_id: String, memory_id: MemoryId, action: RealityCheckAction },
     Skip,
@@ -266,6 +267,7 @@ pub enum ResponseResult {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[expect(clippy::large_enum_variant, reason = "protocol enum intentionally carries typed response DTOs")]
 pub enum ResponsePayload {
     Status(StatusResponse),
     Doctor(DoctorResponse),
@@ -462,6 +464,25 @@ pub enum RealityCheckResponse {
         cleared_pending: usize,
         cleared_session: bool,
     },
+    History {
+        sessions: Vec<RealityCheckHistorySession>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RealityCheckHistorySession {
+    pub session_id: String,
+    pub started_at: DateTime<Utc>,
+    pub completed_at: DateTime<Utc>,
+    pub items_total: usize,
+    pub reviewed: u32,
+    pub confirmed: u32,
+    pub corrected: u32,
+    pub forgotten: u32,
+    pub not_relevant: u32,
+    pub skipped: u32,
+    pub deferred: u32,
+    pub remaining: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -515,22 +536,67 @@ pub enum NotificationEvent {
     DailySynthesisSummaryReady { scope: String },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatusResponse {
     pub state: String,
     pub guidance: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daemon: Option<DaemonProcessStatus>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dashboard_warnings: Vec<String>,
     #[serde(default)]
     pub recall: RecallStatusCounters,
     #[serde(default)]
     pub dreams: DreamStatusCounters,
     #[serde(default)]
     pub passive_notifications: Vec<PassiveNotificationStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index_stats: Option<IndexStats>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_queue_counts: Option<ReviewQueueCounts>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conflicts_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub peer_sessions: Vec<PeerSessionStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_update_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_dream_status: Option<CompactDreamStatus>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PassiveNotificationStatus {
     pub message: String,
     pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexStats {
+    pub active_memories: u64,
+    pub last_reindex: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewQueueCounts {
+    pub candidate: u64,
+    pub quarantined: u64,
+    pub dream_low_confidence: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DaemonProcessStatus {
+    pub version: String,
+    pub pid: u32,
+    pub uptime_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompactDreamStatus {
+    pub enabled: bool,
+    pub last_run_at: Option<DateTime<Utc>>,
+    pub last_run_outcome: Option<PassStatus>,
+    pub next_scheduled_at: Option<DateTime<Utc>>,
+    pub active_leases: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]

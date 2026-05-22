@@ -22,6 +22,7 @@ async fn fetch_snapshot_starts_with_status_request() {
                 recall: Default::default(),
                 dreams: Default::default(),
                 passive_notifications: Vec::new(),
+                ..Default::default()
             }),
         );
         stream.get_mut().write_all(response.to_json_line().expect("json").as_bytes()).await.expect("write");

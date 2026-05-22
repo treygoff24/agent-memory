@@ -23,7 +23,9 @@ tombstones/*.jsonl merge=union\n\
 sources/web/**/manifest.json merge=memory-merge-driver\n\
 sources/web/**/excerpts.jsonl merge=memory-merge-driver\n\
 sources/web/**/extracted.txt merge=memory-merge-driver\n\
-sources/web/**/raw.bin.zst binary\n";
+sources/web/**/raw.bin.zst binary\n\
+sources/web/**/extracted.enc.age binary\n\
+sources/web/**/raw.enc.age binary\n";
 
 const MANAGED_GITATTRIBUTES_PATTERNS: &[&str] = &[
     "*",
@@ -40,6 +42,8 @@ const MANAGED_GITATTRIBUTES_PATTERNS: &[&str] = &[
     "sources/web/**/excerpts.jsonl",
     "sources/web/**/extracted.txt",
     "sources/web/**/raw.bin.zst",
+    "sources/web/**/extracted.enc.age",
+    "sources/web/**/raw.enc.age",
 ];
 
 /// Directories that should exist after init/adoption.

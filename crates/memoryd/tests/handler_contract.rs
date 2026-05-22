@@ -3,9 +3,9 @@ use std::process::Command;
 
 use memory_privacy::FileKeyProvider;
 use memory_substrate::{
-    config::PromptVersion, Author, AuthorKind, ClassificationOutcome, EventContext, Frontmatter, InitOptions, Memory,
-    MemoryContent, MemoryId, MemoryStatus, MemoryType, RetrievalPolicy, Roots, Scope, Sensitivity, Source, SourceKind,
-    Substrate, TrustLevel, WriteMode, WritePolicy, WriteRequest,
+    config::PromptVersion, events::EventKind, Author, AuthorKind, ClassificationOutcome, EventContext, Frontmatter,
+    InitOptions, Memory, MemoryContent, MemoryId, MemoryStatus, MemoryType, RetrievalPolicy, Roots, Scope, Sensitivity,
+    Source, SourceKind, Substrate, TrustLevel, WriteMode, WritePolicy, WriteRequest,
 };
 use memoryd::dream::{
     orchestration::{build_dream_run, DreamRunBuildRequest},
@@ -984,6 +984,62 @@ async fn status_response_includes_default_dream_counters() {
 
     assert_eq!(status.dreams.dream_runs_invoked_total, 0);
     assert!(status.dreams.pass_failed_total.is_empty());
+}
+
+#[tokio::test]
+async fn status_response_includes_live_dashboard_counts() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let substrate = init_substrate(roots).await;
+    let active = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "req-status-active",
+            RequestPayload::WriteMemory {
+                body: "Active memory for status dashboard".to_owned(),
+                title: Some("Status active".to_owned()),
+                tags: vec!["status-dashboard".to_owned()],
+                meta: serde_json::Value::Null,
+            },
+        ),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::GovernanceWrite(active_write)) = active.result else {
+        panic!("expected active memory write, got {:?}", active.result);
+    };
+    assert_eq!(active_write.status, GovernanceStatus::Promoted);
+    let candidate = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "req-status-candidate",
+            RequestPayload::WriteNote { text: "Candidate note for status dashboard".to_owned() },
+        ),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::WriteNote(_)) = candidate.result else {
+        panic!("expected candidate note write, got {:?}", candidate.result);
+    };
+    substrate
+        .record_event_best_effort(EventKind::StartupReconciliationCompleted { reindexed: 3, repaired_events: 0 })
+        .expect("startup reconciliation event writes");
+
+    let response = handle_request(&substrate, RequestEnvelope::new("req-status", RequestPayload::Status)).await;
+    let ResponseResult::Success(ResponsePayload::Status(status)) = response.result else {
+        panic!("expected status success, got {:?}", response.result);
+    };
+
+    let index = status.index_stats.expect("status includes live index stats");
+    assert_eq!(index.active_memories, 1);
+    assert!(index.last_reindex.is_some());
+
+    let review = status.review_queue_counts.expect("status includes review queue counts");
+    assert_eq!(review.candidate, 1);
+    assert_eq!(review.quarantined, 0);
+    assert_eq!(review.dream_low_confidence, 0);
+
+    assert_eq!(status.conflicts_count, Some(0));
+    assert_eq!(status.peer_update_count, Some(0));
+    assert!(status.peer_sessions.is_empty());
 }
 
 #[tokio::test]

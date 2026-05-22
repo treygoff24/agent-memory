@@ -41,24 +41,36 @@ pub struct RealityCheckHistoryResponse {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct RealityCheckHistorySession {
+    pub session_id: String,
+    pub started_at: chrono::DateTime<chrono::Utc>,
     pub completed_at: chrono::DateTime<chrono::Utc>,
+    pub items_total: usize,
+    pub reviewed: u32,
     pub confirmed: u32,
     pub corrected: u32,
     pub forgotten: u32,
     pub not_relevant: u32,
     pub skipped: u32,
+    pub deferred: u32,
+    pub remaining: u32,
 }
 
 impl RealityCheckHistoryResponse {
     pub fn fixture(now: chrono::DateTime<chrono::Utc>) -> Self {
         Self {
             sessions: vec![RealityCheckHistorySession {
+                session_id: "fixture".to_owned(),
+                started_at: now - chrono::Duration::days(7) - chrono::Duration::minutes(5),
                 completed_at: now - chrono::Duration::days(7),
+                items_total: 7,
+                reviewed: 7,
                 confirmed: 5,
                 corrected: 1,
                 forgotten: 0,
                 not_relevant: 1,
                 skipped: 0,
+                deferred: 0,
+                remaining: 0,
             }],
         }
     }
@@ -130,14 +142,33 @@ pub async fn reality_check_history(
             return match memoryd::client::request(
                 socket_path,
                 "web-reality-check-history",
-                RequestPayload::RealityCheck(RealityCheckRequest::List { namespace: None, limit: query.limit }),
+                RequestPayload::RealityCheck(RealityCheckRequest::History { limit: query.limit }),
             )
             .await
             {
                 Ok(response) => match response.result {
-                    ResponseResult::Success(ResponsePayload::RealityCheck(_)) => {
-                        Json(RealityCheckHistoryResponse { sessions: Vec::new() }).into_response()
-                    }
+                    ResponseResult::Success(ResponsePayload::RealityCheck(RealityCheckResponse::History {
+                        sessions,
+                    })) => Json(RealityCheckHistoryResponse {
+                        sessions: sessions
+                            .into_iter()
+                            .map(|session| RealityCheckHistorySession {
+                                session_id: session.session_id,
+                                started_at: session.started_at,
+                                completed_at: session.completed_at,
+                                items_total: session.items_total,
+                                reviewed: session.reviewed,
+                                confirmed: session.confirmed,
+                                corrected: session.corrected,
+                                forgotten: session.forgotten,
+                                not_relevant: session.not_relevant,
+                                skipped: session.skipped,
+                                deferred: session.deferred,
+                                remaining: session.remaining,
+                            })
+                            .collect(),
+                    })
+                    .into_response(),
                     ResponseResult::Error(error) => {
                         daemon_error("reality_check_history", error.code, error.message).into_response()
                     }

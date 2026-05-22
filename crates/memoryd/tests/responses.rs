@@ -125,7 +125,13 @@ async fn test_metadata_update_does_not_reset_observed_at() {
 async fn test_not_relevant_sets_passive_recall_false() {
     let fixture = Fixture::new().await;
     let id = fixture.write_memory("Not relevant item", "Not relevant body", Scope::User).await;
-    let session_id = fixture.start_session().await;
+    let session_id = match fixture
+        .reality_check(RealityCheckRequest::Run { session_id: None, namespace: None, limit: Some(5) })
+        .await
+    {
+        RealityCheckResponse::Pending { session_id: Some(session_id), .. } => session_id,
+        other => panic!("expected session id, got {other:?}"),
+    };
 
     fixture
         .reality_check(RealityCheckRequest::Respond {
@@ -450,6 +456,119 @@ async fn test_session_complete_updates_state_json() {
     assert!(!fixture.runtime.path().join("state/reality-check-session.json").exists());
 }
 
+#[tokio::test]
+async fn test_completed_session_is_persisted_to_history_with_action_counts() {
+    let fixture = Fixture::new().await;
+    let confirmed = fixture.write_memory("Confirmed item", "Confirmed body", Scope::User).await;
+    let not_relevant = fixture.write_memory("Not relevant history item", "Not relevant body", Scope::User).await;
+    let skipped = fixture.write_memory("Skipped history item", "Skipped body", Scope::User).await;
+    let session_id = fixture.start_session().await;
+
+    fixture
+        .reality_check(RealityCheckRequest::Respond {
+            session_id: session_id.clone(),
+            memory_id: confirmed,
+            action: RealityCheckAction::Confirm,
+        })
+        .await;
+    fixture
+        .reality_check(RealityCheckRequest::Respond {
+            session_id: session_id.clone(),
+            memory_id: not_relevant,
+            action: RealityCheckAction::NotRelevant,
+        })
+        .await;
+    let completed = fixture
+        .reality_check(RealityCheckRequest::Respond {
+            session_id: session_id.clone(),
+            memory_id: skipped,
+            action: RealityCheckAction::SkipThisWeek,
+        })
+        .await;
+
+    assert!(matches!(
+        completed,
+        RealityCheckResponse::RespondAccepted {
+            completion: RealityCheckCompletion::Complete { reviewed: 2, deferred: 1, .. },
+            ..
+        }
+    ));
+
+    let history = fixture.reality_check(RealityCheckRequest::History { limit: Some(1) }).await;
+    let RealityCheckResponse::History { sessions } = history else {
+        panic!("expected history response");
+    };
+    assert_eq!(sessions.len(), 1);
+    let session = &sessions[0];
+    assert_eq!(session.session_id, session_id);
+    assert_eq!(session.items_total, 3);
+    assert_eq!(session.reviewed, 2);
+    assert_eq!(session.confirmed, 1);
+    assert_eq!(session.corrected, 0);
+    assert_eq!(session.forgotten, 0);
+    assert_eq!(session.not_relevant, 1);
+    assert_eq!(session.skipped, 1);
+    assert_eq!(session.deferred, 1);
+    assert_eq!(session.remaining, 0);
+}
+
+#[tokio::test]
+async fn test_completion_surfaces_history_persistence_failure() {
+    let fixture = Fixture::new().await;
+    let id = fixture.write_memory("History persistence item", "History body", Scope::User).await;
+    let session_id = fixture.start_session().await;
+    let history_path = fixture.runtime.path().join("state/reality-check-history.json");
+    std::fs::create_dir_all(&history_path).expect("history path replaced by directory");
+
+    let response = fixture
+        .reality_check_envelope(RealityCheckRequest::Respond {
+            session_id: session_id.clone(),
+            memory_id: id.clone(),
+            action: RealityCheckAction::Confirm,
+        })
+        .await;
+
+    assert!(
+        matches!(response.result, ResponseResult::Error(_)),
+        "history persistence errors must be surfaced to the caller"
+    );
+    let state = DaemonState::load(fixture.runtime.path());
+    assert!(
+        state.reality_check.last_completed_at.is_none(),
+        "daemon state must not mark the session completed when history append fails"
+    );
+    let session = RcSessionStore::new(fixture.runtime.path())
+        .load_if_recent(chrono::Utc::now())
+        .expect("session load")
+        .expect("session retained for operator recovery");
+    assert!(
+        !session.items_remaining.iter().any(|remaining| remaining == id.as_str()),
+        "accepted action should not remain pending after history append failure"
+    );
+    assert!(session.items_confirmed.iter().any(|confirmed| confirmed == id.as_str()));
+
+    std::fs::remove_dir(&history_path).expect("remove blocking history directory");
+    let response = fixture
+        .reality_check_envelope(RealityCheckRequest::Respond {
+            session_id,
+            memory_id: id,
+            action: RealityCheckAction::Confirm,
+        })
+        .await;
+    assert!(
+        matches!(
+            response.result,
+            ResponseResult::Success(ResponsePayload::RealityCheck(RealityCheckResponse::RespondAccepted {
+                completion: RealityCheckCompletion::Complete { .. },
+                ..
+            }))
+        ),
+        "same response should finalize a previously actioned completed session after storage recovers"
+    );
+    assert!(DaemonState::load(fixture.runtime.path()).reality_check.last_completed_at.is_some());
+    assert!(!fixture.runtime.path().join("state/reality-check-session.json").exists());
+}
+
 struct Fixture {
     _repo: TempDir,
     runtime: TempDir,
@@ -531,15 +650,16 @@ impl Fixture {
     }
 
     async fn reality_check(&self, request: RealityCheckRequest) -> RealityCheckResponse {
-        let response = handle_request(
-            &self.substrate,
-            RequestEnvelope::new("reality-check", RequestPayload::RealityCheck(request)),
-        )
-        .await;
+        let response = self.reality_check_envelope(request).await;
         let ResponseResult::Success(ResponsePayload::RealityCheck(response)) = response.result else {
             panic!("expected reality check response, got {:?}", response.result);
         };
         response
+    }
+
+    async fn reality_check_envelope(&self, request: RealityCheckRequest) -> memoryd::protocol::ResponseEnvelope {
+        handle_request(&self.substrate, RequestEnvelope::new("reality-check", RequestPayload::RealityCheck(request)))
+            .await
     }
 
     async fn reality_check_with_state(
