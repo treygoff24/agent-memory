@@ -575,10 +575,9 @@ fn event_evidence(payload: &Value) -> String {
 }
 
 fn enum_value<T: Serialize>(value: &T) -> String {
-    serde_json::to_value(value)
-        .ok()
-        .and_then(|value| value.as_str().map(str::to_owned))
-        .unwrap_or_else(|| "unknown".to_owned())
+    let json = serde_json::to_value(value)
+        .expect("invariant: caller passes a unit-variant enum that serde always serializes infallibly");
+    json.as_str().expect("invariant: callers pass unit-variant enums that serialize to JSON strings").to_owned()
 }
 
 fn format_confidence(value: f64) -> String {

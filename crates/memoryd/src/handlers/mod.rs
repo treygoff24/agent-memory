@@ -1915,13 +1915,10 @@ async fn search_response(
     let mut hits = Vec::new();
     for chunk in chunks.into_iter().take(limit) {
         let body = if include_body {
-            match MemoryId::try_new(chunk.memory_id.as_str().to_string()) {
-                Ok(id) => substrate.read_memory_envelope(&id).await.ok().and_then(|envelope| match envelope.content {
-                    MemoryContent::Plaintext(body) => Some(body),
-                    MemoryContent::Ciphertext { .. } | MemoryContent::MetadataOnly => None,
-                }),
-                Err(_) => None,
-            }
+            substrate.read_memory_envelope(&chunk.memory_id).await.ok().and_then(|envelope| match envelope.content {
+                MemoryContent::Plaintext(body) => Some(body),
+                MemoryContent::Ciphertext { .. } | MemoryContent::MetadataOnly => None,
+            })
         } else {
             None
         };
@@ -1984,10 +1981,9 @@ fn get_provenance(memory: &Memory) -> GetProvenance {
 }
 
 fn serialized_enum_value<T: Serialize>(value: &T) -> String {
-    serde_json::to_value(value)
-        .ok()
-        .and_then(|value| value.as_str().map(str::to_string))
-        .unwrap_or_else(|| "unknown".to_string())
+    let json = serde_json::to_value(value)
+        .expect("invariant: caller passes a unit-variant enum that serde always serializes infallibly");
+    json.as_str().expect("invariant: callers pass unit-variant enums that serialize to JSON strings").to_string()
 }
 
 async fn reveal_response(substrate: &Substrate, id: &str, reason: &str) -> Result<ResponsePayload, HandlerError> {
@@ -2286,14 +2282,7 @@ fn privacy_span_records(privacy: &PrivacyDecision) -> Vec<PrivacySpanRecord> {
     privacy
         .spans
         .iter()
-        .map(|span| PrivacySpanRecord {
-            label: serde_json::to_value(span.label)
-                .ok()
-                .and_then(|value| value.as_str().map(str::to_string))
-                .unwrap_or_else(|| format!("{:?}", span.label)),
-            start: span.start,
-            end: span.end,
-        })
+        .map(|span| PrivacySpanRecord { label: serialized_enum_value(&span.label), start: span.start, end: span.end })
         .collect()
 }
 
@@ -3140,10 +3129,7 @@ fn review_envelope_from_memory(memory: Memory) -> ReviewMemoryEnvelope {
     ReviewMemoryEnvelope {
         id: memory.frontmatter.id.as_str().to_string(),
         summary: memory.frontmatter.summary,
-        status: serde_json::to_value(memory.frontmatter.status)
-            .ok()
-            .and_then(|value| value.as_str().map(str::to_string))
-            .unwrap_or_else(|| "active".to_string()),
+        status: serialized_enum_value(&memory.frontmatter.status),
         requires_user_confirmation: memory.frontmatter.requires_user_confirmation,
         review_state: memory.frontmatter.review_state,
         policy_applied: memory.frontmatter.write_policy.policy_applied,

@@ -14,11 +14,11 @@ pub mod privacy_filter;
 pub mod regex;
 pub mod secret_only_scan;
 
-pub use classifier::{DeterministicPrivacyClassifier, PrivacyClassifier};
+pub use classifier::{safe_plaintext_fragment, DeterministicPrivacyClassifier, PrivacyClassifier};
 pub use crypto::{EncryptedPayload, PrivacyEncryptor};
 pub use decision::{
-    safe_plaintext_fragment, PrivacyDecision, PrivacyLabel, PrivacyNamespace, PrivacyScanMetadata, PrivacySpan,
-    PrivacyStorageAction, PrivacyTier, SafeFragmentDecision,
+    PrivacyDecision, PrivacyLabel, PrivacyNamespace, PrivacyScanMetadata, PrivacySpan, PrivacyStorageAction,
+    PrivacyTier, SafeFragmentDecision,
 };
 pub use descriptor::{safe_descriptor_projection, SafeDescriptorProjection};
 pub use error::{PrivacyError, PrivacyResult};

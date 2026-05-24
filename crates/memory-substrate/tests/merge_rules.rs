@@ -393,8 +393,6 @@ proptest! {
     }
 }
 
-// ---- helpers ----
-
 fn merge(base: &str, ours: &str, theirs: &str) -> MergeResult {
     merge_markdown(MergeInput { base, ours, theirs, path: "agent/patterns/m.md" }).expect("merge")
 }

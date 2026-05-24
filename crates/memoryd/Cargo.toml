@@ -44,6 +44,5 @@ path = "src/bin/stream_f_dream_bench.rs"
 required-features = ["dev-fixtures"]
 
 [dev-dependencies]
-memory-test-support = { path = "../memory-test-support" }
 rusqlite.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

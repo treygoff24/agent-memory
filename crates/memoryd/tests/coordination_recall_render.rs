@@ -262,8 +262,6 @@ fn estimated_token_fixture_sanity() {
     assert_eq!(estimated_tokens("abcde"), 2);
 }
 
-// --- I-R3 tests: entity-recall entities= attribute ---
-
 /// When no salient entities are provided, the attribute is emitted empty.
 #[test]
 fn entity_recall_entities_attr_empty_when_no_salients() {

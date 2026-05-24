@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::routes::status::daemon_error;
-use crate::server::{backend_unavailable, WebState};
+use crate::state::{backend_unavailable, WebState};
 
 const FIXTURE_POLICY_YAML: &str = r#"name: project-standard
 version: 2

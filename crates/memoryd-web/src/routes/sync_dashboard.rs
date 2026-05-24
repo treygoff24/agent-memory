@@ -5,7 +5,7 @@ use memoryd::protocol::{ClaimLockInfo, PeerSessionStatus, RequestPayload, Respon
 use serde::Serialize;
 
 use crate::routes::status::{daemon_error, SyncStatus};
-use crate::server::{backend_unavailable, WebState};
+use crate::state::{backend_unavailable, WebState};
 
 #[derive(Clone, Debug, Serialize)]
 pub struct SyncDashboardResponse {

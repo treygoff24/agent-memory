@@ -1,21 +1,19 @@
 use std::io::{BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use memory_substrate::{InitOptions, Roots, Substrate};
 use memoryd::mcp::manifest;
-use memoryd::server::{serve_substrate_with, ServerOptions};
 use serde_json::{json, Value};
-use tokio::net::UnixStream;
-use tokio::sync::watch;
-use tokio::task::JoinHandle;
-use tokio::time::{sleep, timeout};
+
+mod common;
+use common::{shutdown, spawn_daemon, unique_socket_path, wait_for_socket};
 
 #[test]
 fn mcp_stdio_initialize_and_tools_list_round_trip_through_subprocess() {
-    let socket = unique_socket_path("mcp-stdio-list");
+    let socket = unique_socket_path("mcpstdio", "list");
     let mut server = McpServerProcess::spawn(&socket);
 
     let initialize = server.request(json!({
@@ -61,7 +59,7 @@ fn mcp_stdio_initialize_and_tools_list_round_trip_through_subprocess() {
 
 #[test]
 fn mcp_stdio_unknown_notifications_do_not_emit_responses() {
-    let socket = unique_socket_path("mcp-stdio-notification");
+    let socket = unique_socket_path("mcpstdio", "notification");
     let mut server = McpServerProcess::spawn(&socket);
 
     server.notify(json!({
@@ -79,7 +77,7 @@ fn mcp_stdio_unknown_notifications_do_not_emit_responses() {
 #[tokio::test(flavor = "multi_thread")]
 async fn mcp_stdio_tools_call_routes_through_daemon_forwarder() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let socket = unique_socket_path("mcp-stdio-call");
+    let socket = unique_socket_path("mcpstdio", "call");
     let substrate = init_substrate(&temp).await;
     let (shutdown_tx, daemon) = spawn_daemon(&socket, substrate);
     wait_for_socket(&socket).await;
@@ -196,44 +194,9 @@ impl Drop for McpServerProcess {
     }
 }
 
-fn spawn_daemon(socket: &Path, substrate: Substrate) -> (watch::Sender<bool>, JoinHandle<anyhow::Result<()>>) {
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let socket = socket.to_path_buf();
-    let options = ServerOptions { idle_frame_timeout: Duration::from_secs(5) };
-    let task = tokio::spawn(serve_substrate_with(socket, substrate, options, shutdown_rx));
-    (shutdown_tx, task)
-}
-
-async fn shutdown(shutdown_tx: watch::Sender<bool>, server: JoinHandle<anyhow::Result<()>>, socket: &Path) {
-    shutdown_tx.send(true).expect("shutdown signal lands");
-    timeout(Duration::from_secs(2), server)
-        .await
-        .expect("server stops before timeout")
-        .expect("server task joins")
-        .expect("server returns Ok");
-    let _ = std::fs::remove_file(socket);
-}
-
-async fn wait_for_socket(socket: &Path) {
-    for _ in 0..200 {
-        if UnixStream::connect(socket).await.is_ok() {
-            return;
-        }
-        sleep(Duration::from_millis(10)).await;
-    }
-    panic!("daemon did not bind socket at {}", socket.display());
-}
-
 async fn init_substrate(temp: &tempfile::TempDir) -> Substrate {
     let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
     Substrate::init(roots, InitOptions { force_unsafe_durability: true, device_id: Some("dev_mcpstdio".to_string()) })
         .await
         .expect("substrate init")
-}
-
-fn unique_socket_path(test_name: &str) -> PathBuf {
-    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).expect("system clock is after epoch").as_nanos();
-    let dir = PathBuf::from(format!("/tmp/memd-mcpstdio-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("create short socket directory");
-    dir.join(format!("{test_name}-{nonce}.sock"))
 }

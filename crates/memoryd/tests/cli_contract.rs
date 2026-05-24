@@ -89,21 +89,17 @@ fn doctor_unhealthy_exit_is_nonzero_when_no_harness_is_authenticated() {
 /// and does not require a running daemon.
 #[test]
 fn cli_contract_clap_parses_all_subcommands() {
-    // status
     Cli::try_parse_from(["memoryd", "status"]).expect("status parses");
     Cli::try_parse_from(["memoryd", "status", "--socket", "/tmp/test.sock"]).expect("status with socket parses");
 
-    // search
     Cli::try_parse_from(["memoryd", "search", "hello world"]).expect("search parses");
     Cli::try_parse_from(["memoryd", "search", "--limit", "5", "--include-body", "query text"])
         .expect("search with flags parses");
 
-    // get
     Cli::try_parse_from(["memoryd", "get", "mem-0001"]).expect("get parses");
     Cli::try_parse_from(["memoryd", "get", "--include-provenance", "mem-0002"])
         .expect("get with provenance flag parses");
 
-    // write-note
     Cli::try_parse_from(["memoryd", "write-note", "a quick note"]).expect("write-note parses");
     Cli::try_parse_from([
         "memoryd",
@@ -116,19 +112,16 @@ fn cli_contract_clap_parses_all_subcommands() {
     ])
     .expect("source capture parses");
 
-    // write-note must NOT accept --entity (flag was removed)
     assert!(
         Cli::try_parse_from(["memoryd", "write-note", "--entity", "Alice", "note text"]).is_err(),
-        "--entity flag should be rejected after removal"
+        "--entity flag should be rejected"
     );
 
-    // serve
     Cli::try_parse_from(["memoryd", "serve", "--repo", "/tmp/repo", "--runtime", "/tmp/rt"]).expect("serve parses");
     Cli::try_parse_from(["memoryd", "serve", "--init"]).expect("serve --init parses");
     Cli::try_parse_from(["memoryd", "mcp"]).expect("mcp parses");
     Cli::try_parse_from(["memoryd", "mcp", "--socket", "/tmp/test.sock"]).expect("mcp with socket parses");
 
-    // doctor
     Cli::try_parse_from(["memoryd", "doctor"]).expect("doctor parses");
 
     Cli::try_parse_from([
@@ -145,7 +138,6 @@ fn cli_contract_clap_parses_all_subcommands() {
     ])
     .expect("recall startup --no-include-recent parses");
 
-    // Stream D admin commands
     Cli::try_parse_from(["memoryd", "privacy", "status"]).expect("privacy status parses");
     Cli::try_parse_from(["memoryd", "privacy", "scan", "--text", "hello"]).expect("privacy scan text parses");
     Cli::try_parse_from(["memoryd", "privacy", "scan-delta", "--repo", "."]).expect("privacy scan-delta parses");

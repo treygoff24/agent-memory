@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
-use crate::decision::{safe_plaintext_fragment, SafeFragmentDecision};
+use crate::classifier::safe_plaintext_fragment;
+use crate::decision::SafeFragmentDecision;
 use crate::{PrivacyClassifier, PrivacySpan};
 
 const MAX_SUMMARY_BYTES: usize = 160;

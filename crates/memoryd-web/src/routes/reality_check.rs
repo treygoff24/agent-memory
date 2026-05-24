@@ -3,14 +3,14 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use memoryd::protocol::{
-    RealityCheckAction, RealityCheckCompletion, RealityCheckItem, RealityCheckRequest, RealityCheckResponse,
-    RequestPayload, ResponsePayload, ResponseResult,
+    RealityCheckAction, RealityCheckCompletion, RealityCheckHistorySession, RealityCheckItem, RealityCheckRequest,
+    RealityCheckResponse, RequestPayload, ResponsePayload, ResponseResult,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::routes::status::daemon_error;
 use crate::routes::REALITY_CHECK_SESSION_ID;
-use crate::server::{backend_unavailable, RealityCheckActionRecord, WebState};
+use crate::state::{backend_unavailable, RealityCheckActionRecord, WebState};
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct RealityCheckHistoryQuery {
@@ -37,21 +37,6 @@ pub struct RealityCheckActionResponse {
 #[derive(Clone, Debug, Serialize)]
 pub struct RealityCheckHistoryResponse {
     pub sessions: Vec<RealityCheckHistorySession>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct RealityCheckHistorySession {
-    pub session_id: String,
-    pub started_at: chrono::DateTime<chrono::Utc>,
-    pub completed_at: chrono::DateTime<chrono::Utc>,
-    pub items_total: usize,
-    pub reviewed: u32,
-    pub confirmed: u32,
-    pub corrected: u32,
-    pub forgotten: u32,
-    pub not_relevant: u32,
-    pub deferred: u32,
-    pub remaining: u32,
 }
 
 impl RealityCheckHistoryResponse {
@@ -147,25 +132,7 @@ pub async fn reality_check_history(
                 Ok(response) => match response.result {
                     ResponseResult::Success(ResponsePayload::RealityCheck(RealityCheckResponse::History {
                         sessions,
-                    })) => Json(RealityCheckHistoryResponse {
-                        sessions: sessions
-                            .into_iter()
-                            .map(|session| RealityCheckHistorySession {
-                                session_id: session.session_id,
-                                started_at: session.started_at,
-                                completed_at: session.completed_at,
-                                items_total: session.items_total,
-                                reviewed: session.reviewed,
-                                confirmed: session.confirmed,
-                                corrected: session.corrected,
-                                forgotten: session.forgotten,
-                                not_relevant: session.not_relevant,
-                                deferred: session.deferred,
-                                remaining: session.remaining,
-                            })
-                            .collect(),
-                    })
-                    .into_response(),
+                    })) => Json(RealityCheckHistoryResponse { sessions }).into_response(),
                     ResponseResult::Error(error) => {
                         daemon_error("reality_check_history", error.code, error.message).into_response()
                     }

@@ -1,3 +1,5 @@
+#[path = "../src/hash.rs"]
+mod hash;
 #[path = "../src/tombstone.rs"]
 mod tombstone;
 

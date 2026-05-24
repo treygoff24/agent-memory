@@ -1,16 +1,15 @@
 use std::path::Path;
 use std::process::Command;
-use std::time::Duration;
 
 use memory_substrate::{InitOptions, Roots, Substrate};
 use memoryd::client;
 use memoryd::protocol::{RequestPayload, ResponseEnvelope, ResponsePayload, ResponseResult};
-use memoryd::server::{serve_substrate_with, ServerOptions};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::watch;
+use tokio::net::UnixListener;
 use tokio::task::JoinHandle;
-use tokio::time::{sleep, timeout};
+
+mod common;
+use common::{shutdown, spawn_daemon, wait_for_socket};
 
 #[tokio::test]
 async fn recall_cli_startup_and_delta_print_only_xml_and_update_daemon_counters() {
@@ -159,14 +158,6 @@ async fn run_memoryd_async<const N: usize>(args: [&str; N]) -> std::process::Out
     .expect("memoryd blocking task joins")
 }
 
-fn spawn_daemon(socket: &Path, substrate: Substrate) -> (watch::Sender<bool>, JoinHandle<anyhow::Result<()>>) {
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let socket = socket.to_path_buf();
-    let options = ServerOptions { idle_frame_timeout: Duration::from_secs(5) };
-    let task = tokio::spawn(serve_substrate_with(socket, substrate, options, shutdown_rx));
-    (shutdown_tx, task)
-}
-
 async fn spawn_single_error_daemon(socket: &Path, code: &str) -> JoinHandle<anyhow::Result<()>> {
     let _ = std::fs::remove_file(socket);
     let listener = UnixListener::bind(socket).expect("bind fake daemon socket");
@@ -181,24 +172,4 @@ async fn spawn_single_error_daemon(socket: &Path, code: &str) -> JoinHandle<anyh
         reader.get_mut().write_all(response.to_json_line()?.as_bytes()).await?;
         Ok(())
     })
-}
-
-async fn shutdown(shutdown_tx: watch::Sender<bool>, server: JoinHandle<anyhow::Result<()>>, socket: &Path) {
-    shutdown_tx.send(true).expect("shutdown signal lands");
-    timeout(Duration::from_secs(2), server)
-        .await
-        .expect("server stops before timeout")
-        .expect("server task joins")
-        .expect("server returns Ok");
-    let _ = std::fs::remove_file(socket);
-}
-
-async fn wait_for_socket(socket: &Path) {
-    for _ in 0..200 {
-        if UnixStream::connect(socket).await.is_ok() {
-            return;
-        }
-        sleep(Duration::from_millis(10)).await;
-    }
-    panic!("daemon did not bind socket at {}", socket.display());
 }

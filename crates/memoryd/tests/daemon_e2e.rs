@@ -3,22 +3,21 @@
 //! the agent-facing subcommands, then proves the side effects landed by
 //! shutting the daemon down and reopening the substrate from disk.
 
-use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use memory_substrate::{InitOptions, MemoryId, Roots, Substrate};
 use memoryd::client;
 use memoryd::protocol::{RequestPayload, ResponsePayload, ResponseResult};
-use memoryd::server::{serve_substrate_with, ServerOptions};
 use tokio::net::UnixStream;
-use tokio::sync::watch;
-use tokio::task::JoinHandle;
-use tokio::time::{sleep, timeout};
+use tokio::time::timeout;
+
+mod common;
+use common::{shutdown, spawn_daemon, unique_socket_path, wait_for_socket};
 
 #[tokio::test]
 async fn cli_client_write_note_then_search_then_get_through_live_daemon() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let socket = unique_socket_path("e2e-write-search-get");
+    let socket = unique_socket_path("e2e", "write-search-get");
     let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
     let substrate = init_substrate(&roots).await;
     let (shutdown_tx, server) = spawn_daemon(&socket, substrate);
@@ -79,7 +78,7 @@ async fn cli_client_write_note_then_search_then_get_through_live_daemon() {
 #[tokio::test]
 async fn server_shuts_down_promptly_when_signal_fires_with_in_flight_idle_connection() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let socket = unique_socket_path("e2e-shutdown");
+    let socket = unique_socket_path("e2e", "shutdown");
     let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
     let substrate = init_substrate(&roots).await;
     let (shutdown_tx, server) = spawn_daemon(&socket, substrate);
@@ -104,34 +103,6 @@ async fn server_shuts_down_promptly_when_signal_fires_with_in_flight_idle_connec
     let _ = std::fs::remove_file(&socket);
 }
 
-fn spawn_daemon(socket: &Path, substrate: Substrate) -> (watch::Sender<bool>, JoinHandle<anyhow::Result<()>>) {
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let socket = socket.to_path_buf();
-    let options = ServerOptions { idle_frame_timeout: Duration::from_secs(5) };
-    let task = tokio::spawn(serve_substrate_with(socket, substrate, options, shutdown_rx));
-    (shutdown_tx, task)
-}
-
-async fn shutdown(shutdown_tx: watch::Sender<bool>, server: JoinHandle<anyhow::Result<()>>, socket: &Path) {
-    shutdown_tx.send(true).expect("shutdown signal lands");
-    timeout(Duration::from_secs(2), server)
-        .await
-        .expect("server stops before timeout")
-        .expect("server task joins")
-        .expect("server returns Ok");
-    let _ = std::fs::remove_file(socket);
-}
-
-async fn wait_for_socket(socket: &Path) {
-    for _ in 0..200 {
-        if UnixStream::connect(socket).await.is_ok() {
-            return;
-        }
-        sleep(Duration::from_millis(10)).await;
-    }
-    panic!("daemon did not bind socket at {}", socket.display());
-}
-
 async fn init_substrate(roots: &Roots) -> Substrate {
     Substrate::init(
         roots.clone(),
@@ -139,11 +110,4 @@ async fn init_substrate(roots: &Roots) -> Substrate {
     )
     .await
     .expect("substrate init")
-}
-
-fn unique_socket_path(test_name: &str) -> PathBuf {
-    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).expect("system clock is after epoch").as_nanos();
-    let dir = PathBuf::from(format!("/tmp/memd-e2e-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("create short socket directory");
-    dir.join(format!("{test_name}-{nonce}.sock"))
 }

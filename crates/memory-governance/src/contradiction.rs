@@ -1,10 +1,8 @@
 //! Trait-backed contradiction detection for candidate memory writes.
 
-use std::collections::BTreeSet;
-use std::hash::{Hash, Hasher};
-
 use serde::{Deserialize, Serialize};
 
+use crate::hash::{canonical_claim_hash, canonical_entity_hash};
 use crate::{CandidateTombstoneKey, Scope, Source};
 
 const DEFAULT_TOP_K_LIMIT: usize = 5;
@@ -356,52 +354,5 @@ where
 
     fn has_above_threshold_hit(&self, hits: &[ExistingMemorySummary]) -> bool {
         hits.iter().any(|hit| hit.similarity >= self.similarity_threshold)
-    }
-}
-
-fn canonical_claim_hash(claim: &str) -> String {
-    stable_hash(&canonical_text(claim))
-}
-
-fn canonical_entity_hash(entity_ids: &[String]) -> String {
-    stable_hash(
-        &entity_ids
-            .iter()
-            .map(|entity_id| canonical_text(entity_id))
-            .filter(|entity_id| !entity_id.is_empty())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>()
-            .join("\n"),
-    )
-}
-
-fn canonical_text(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
-}
-
-fn stable_hash(value: &str) -> String {
-    let mut hasher = StableHasher::default();
-    value.hash(&mut hasher);
-    format!("fnv64:{:016x}", hasher.finish())
-}
-
-#[derive(Default)]
-struct StableHasher(u64);
-
-impl Hasher for StableHasher {
-    fn write(&mut self, bytes: &[u8]) {
-        if self.0 == 0 {
-            self.0 = 0xcbf2_9ce4_8422_2325;
-        }
-
-        for byte in bytes {
-            self.0 ^= u64::from(*byte);
-            self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-    }
-
-    fn finish(&self) -> u64 {
-        self.0
     }
 }

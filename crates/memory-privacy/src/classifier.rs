@@ -1,6 +1,9 @@
 use memory_substrate::config::PrivacyEnforcement;
 
-use crate::decision::{PrivacyDecision, PrivacyNamespace, PrivacyStorageAction, PrivacyTier};
+use crate::decision::{
+    PrivacyDecision, PrivacyLabel, PrivacyNamespace, PrivacySpan, PrivacyStorageAction, PrivacyTier,
+    SafeFragmentDecision,
+};
 use crate::error::PrivacyResult;
 use crate::policy::{current_enforcement, CallerSensitivity, PrivacyPolicy};
 use crate::privacy_filter::PrivacyFilterProvider;
@@ -93,4 +96,37 @@ impl PrivacyClassifier for DeterministicPrivacyClassifier {
         };
         Ok(PrivacyDecision::new(resolved.tier, storage_action, spans, model))
     }
+}
+
+/// Classify a short fragment for safe plaintext emission.
+///
+/// This helper never reveals or decrypts persisted memory. It classifies the
+/// provided fragment under `PrivacyNamespace::Me`, then maps Stream D storage
+/// semantics into the narrower Stream E emission decision.
+pub fn safe_plaintext_fragment(classifier: &dyn PrivacyClassifier, fragment: &str) -> SafeFragmentDecision {
+    let Ok(decision) = classifier.classify(fragment, PrivacyNamespace::Me, None) else {
+        return SafeFragmentDecision::OmitEncryptedBodyHidden;
+    };
+
+    if decision.storage_action.refuses_storage() || decision.spans.iter().any(|span| span.label == PrivacyLabel::Secret)
+    {
+        return SafeFragmentDecision::OmitEncryptedBodyHidden;
+    }
+
+    if decision.spans.iter().any(label_requires_review) {
+        return SafeFragmentDecision::OmitReviewPending;
+    }
+
+    SafeFragmentDecision::Allow
+}
+
+fn label_requires_review(span: &PrivacySpan) -> bool {
+    matches!(
+        span.label,
+        PrivacyLabel::AccountNumber
+            | PrivacyLabel::PrivateAddress
+            | PrivacyLabel::PrivateEmail
+            | PrivacyLabel::PrivatePerson
+            | PrivacyLabel::PrivatePhone
+    ) || span.label.storage_action().requires_encryption()
 }

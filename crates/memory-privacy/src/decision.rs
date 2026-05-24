@@ -2,8 +2,6 @@ use chrono::{DateTime, Utc};
 use memory_substrate::{ClassificationOutcome, Sensitivity};
 use serde::{Deserialize, Serialize};
 
-use crate::classifier::PrivacyClassifier;
-
 /// Namespace used for privacy defaults.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -92,39 +90,6 @@ impl PrivacyStorageAction {
     pub fn refuses_storage(self) -> bool {
         matches!(self, Self::Refuse)
     }
-}
-
-/// Classify a short fragment for safe plaintext emission.
-///
-/// This helper never reveals or decrypts persisted memory. It classifies the
-/// provided fragment under `PrivacyNamespace::Me`, then maps Stream D storage
-/// semantics into the narrower Stream E emission decision.
-pub fn safe_plaintext_fragment(classifier: &dyn PrivacyClassifier, fragment: &str) -> SafeFragmentDecision {
-    let Ok(decision) = classifier.classify(fragment, PrivacyNamespace::Me, None) else {
-        return SafeFragmentDecision::OmitEncryptedBodyHidden;
-    };
-
-    if decision.storage_action.refuses_storage() || decision.spans.iter().any(|span| span.label == PrivacyLabel::Secret)
-    {
-        return SafeFragmentDecision::OmitEncryptedBodyHidden;
-    }
-
-    if decision.spans.iter().any(label_requires_review) {
-        return SafeFragmentDecision::OmitReviewPending;
-    }
-
-    SafeFragmentDecision::Allow
-}
-
-fn label_requires_review(span: &PrivacySpan) -> bool {
-    matches!(
-        span.label,
-        PrivacyLabel::AccountNumber
-            | PrivacyLabel::PrivateAddress
-            | PrivacyLabel::PrivateEmail
-            | PrivacyLabel::PrivatePerson
-            | PrivacyLabel::PrivatePhone
-    ) || span.label.storage_action().requires_encryption()
 }
 
 /// Detected privacy span label.

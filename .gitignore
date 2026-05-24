@@ -18,6 +18,11 @@ node_modules/
 .memory/
 .memoryd/
 
+# Local agent/tool runtime state
+.clawpatch/
+.tldr/
+.tldrignore
+
 # Generated gate outputs
 bench/results.*.json
 bench/durability-results.json

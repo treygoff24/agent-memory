@@ -202,7 +202,6 @@ impl<'a> Iterator for WordOffsets<'a> {
     type Item = (usize, &'a str);
 
     fn next(&mut self) -> Option<Self::Item> {
-        // Skip whitespace.
         while self.pos < self.text.len() && is_whitespace_byte(self.text.as_bytes()[self.pos]) {
             self.pos += 1;
         }
@@ -210,7 +209,6 @@ impl<'a> Iterator for WordOffsets<'a> {
             return None;
         }
         let word_start = self.pos;
-        // Consume non-whitespace.
         while self.pos < self.text.len() && !is_whitespace_byte(self.text.as_bytes()[self.pos]) {
             self.pos += 1;
         }

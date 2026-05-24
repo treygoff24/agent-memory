@@ -5,7 +5,7 @@ use axum::response::IntoResponse;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use crate::server::{backend_unavailable, WebState};
+use crate::state::{backend_unavailable, WebState};
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct RoiQuery {

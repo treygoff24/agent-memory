@@ -10,7 +10,6 @@ anyhow.workspace = true
 chrono.workspace = true
 clap.workspace = true
 dashmap.workspace = true
-memory-privacy = { path = "../memory-privacy" }
 memory-substrate = { path = "../memory-substrate" }
 serde.workspace = true
 serde_json.workspace = true

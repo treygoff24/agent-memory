@@ -2,9 +2,9 @@
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
+use crate::hash::{canonical_claim_hash, canonical_text, stable_hash};
 use crate::{GovernanceDecision, GovernanceRefusalReason, NextAction};
 use serde::{Deserialize, Serialize};
 
@@ -251,38 +251,4 @@ fn jsonl_paths(path: &Path) -> Result<Vec<PathBuf>, TombstoneLoadError> {
             Err(source) => Some(Err(TombstoneLoadError::ReadDir { path: path.to_path_buf(), source })),
         })
         .collect()
-}
-
-fn canonical_claim_hash(claim: &str) -> String {
-    stable_hash(&canonical_text(claim))
-}
-
-fn canonical_text(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
-}
-
-fn stable_hash(value: &str) -> String {
-    let mut hasher = StableHasher::default();
-    value.hash(&mut hasher);
-    format!("fnv64:{:016x}", hasher.finish())
-}
-
-#[derive(Default)]
-struct StableHasher(u64);
-
-impl Hasher for StableHasher {
-    fn write(&mut self, bytes: &[u8]) {
-        if self.0 == 0 {
-            self.0 = 0xcbf2_9ce4_8422_2325;
-        }
-
-        for byte in bytes {
-            self.0 ^= u64::from(*byte);
-            self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-    }
-
-    fn finish(&self) -> u64 {
-        self.0
-    }
 }

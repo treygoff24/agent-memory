@@ -79,8 +79,6 @@ impl Index {
         query_events_log_mirror_health(&self.connection, canonical_events)
     }
 
-    // -- Write methods -------------------------------------------------------
-
     /// Upsert a memory, populating all `memories` table columns (spec §10.1).
     pub fn upsert_memory(&mut self, memory: &Memory, metadata_only: bool) -> rusqlite::Result<()> {
         upsert_memory_row_with_full_metadata(&mut self.connection, memory, metadata_only, &self.active_embedding)
@@ -186,8 +184,6 @@ impl Index {
         let triple = self.active_embedding.clone();
         reconcile_active_embedding_jobs_impl(&mut self.connection, &triple)
     }
-
-    // -- Query methods -------------------------------------------------------
 
     /// Query chunks through FTS.
     ///

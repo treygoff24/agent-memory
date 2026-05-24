@@ -1,5 +1,5 @@
-use std::path::{Path, PathBuf};
-use std::time::{Duration as StdDuration, SystemTime, UNIX_EPOCH};
+use std::path::Path;
+use std::time::Duration as StdDuration;
 
 use chrono::{Duration, TimeZone, Utc};
 use memory_governance::review::{over_threshold, REVIEW_QUEUE_DOGFOOD_THRESHOLD};
@@ -18,12 +18,11 @@ use memoryd::notifications::passive::PassiveQueue;
 use memoryd::notifications::triggers::{notification_for, EventKind};
 use memoryd::protocol::{NotificationEvent, RequestPayload, ResponsePayload, ResponseResult, StatusResponse};
 use memoryd::reality_check::RcScheduler;
-use memoryd::server::{serve_substrate_with, ServerOptions};
 use memoryd::state::RealityCheckState;
-use tokio::net::UnixStream;
-use tokio::sync::watch;
-use tokio::task::JoinHandle;
-use tokio::time::{sleep, timeout};
+use tokio::time::sleep;
+
+mod common;
+use common::{shutdown, spawn_daemon, unique_socket_path, wait_for_socket};
 
 #[tokio::test]
 async fn dispatcher_passively_records_five_dogfood_notification_variants() {
@@ -86,7 +85,7 @@ async fn startup_reconcile_quarantine_report_fans_out_blocking_merge_notificatio
 
     assert_eq!(substrate.startup_reconcile_report().blocking_conflicts, vec![conflict_path.clone()]);
 
-    let socket = unique_socket_path("blocking-conflict");
+    let socket = unique_socket_path("notify", "blocking-conflict");
     let (shutdown_tx, server) = spawn_daemon(&socket, substrate);
     wait_for_socket(&socket).await;
 
@@ -230,14 +229,6 @@ fn sample_memory(id: &str) -> Memory {
     }
 }
 
-fn spawn_daemon(socket: &Path, substrate: Substrate) -> (watch::Sender<bool>, JoinHandle<anyhow::Result<()>>) {
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let socket = socket.to_path_buf();
-    let options = ServerOptions { idle_frame_timeout: StdDuration::from_secs(5) };
-    let task = tokio::spawn(serve_substrate_with(socket, substrate, options, shutdown_rx));
-    (shutdown_tx, task)
-}
-
 async fn wait_for_merge_conflict_passive_notification(socket: &Path) -> StatusResponse {
     let deadline = tokio::time::Instant::now() + StdDuration::from_secs(2);
     loop {
@@ -260,31 +251,4 @@ async fn status(socket: &Path) -> StatusResponse {
         ResponseResult::Success(ResponsePayload::Status(status)) => status,
         other => panic!("expected status response, got {other:?}"),
     }
-}
-
-async fn wait_for_socket(socket: &Path) {
-    for _ in 0..200 {
-        if UnixStream::connect(socket).await.is_ok() {
-            return;
-        }
-        sleep(StdDuration::from_millis(10)).await;
-    }
-    panic!("daemon did not bind socket at {}", socket.display());
-}
-
-async fn shutdown(shutdown_tx: watch::Sender<bool>, server: JoinHandle<anyhow::Result<()>>, socket: &Path) {
-    shutdown_tx.send(true).expect("shutdown signal lands");
-    timeout(StdDuration::from_secs(2), server)
-        .await
-        .expect("server stops before timeout")
-        .expect("server task joins")
-        .expect("server returns Ok");
-    let _ = std::fs::remove_file(socket);
-}
-
-fn unique_socket_path(test_name: &str) -> PathBuf {
-    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).expect("system clock is after epoch").as_nanos();
-    let dir = PathBuf::from(format!("/tmp/memd-notify-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("create short socket directory");
-    dir.join(format!("{test_name}-{nonce}.sock"))
 }

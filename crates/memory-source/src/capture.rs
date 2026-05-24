@@ -6,7 +6,6 @@ use memory_privacy::{
     DeterministicPrivacyClassifier, FileKeyProvider, PrivacyClassifier, PrivacyEncryptor, PrivacyNamespace,
     PrivacyStorageAction,
 };
-use reqwest::header::{ACCEPT, CONTENT_ENCODING, CONTENT_TYPE, ETAG, LAST_MODIFIED, LOCATION, USER_AGENT};
 
 use crate::adapters::{dispatch_capture, CaptureDispatch};
 use crate::error::{SourceError, SourceResult};
@@ -14,27 +13,11 @@ use crate::excerpt::create_excerpt_records;
 use crate::extract::{extract_text, raw_textual_projection};
 use crate::hash::sha256_prefixed;
 use crate::model::{
-    CaptureMode, CaptureRequestSnapshot, CaptureResponseSnapshot, CaptureStatus, EncryptionEnvelope,
-    ExtractedTextStorage, RawStorage, RedirectHop, SourceArtifactId, WebCaptureManifest, WebCaptureSourceRef,
-    WEB_CAPTURE_SCHEMA_VERSION,
+    CaptureMode, CaptureStatus, EncryptionEnvelope, ExtractedTextStorage, RawStorage, SourceArtifactId,
+    WebCaptureManifest, WebCaptureSourceRef, WEB_CAPTURE_SCHEMA_VERSION,
 };
 use crate::storage::{excerpts_jsonl, ArtifactStore, WebCaptureArtifact};
-use crate::url_safety::{
-    pinned_reqwest_client, redact_sensitive_location_header, redact_sensitive_url, validate_initial_url,
-    validate_redirect_url, AddressPolicy, DefaultDnsResolver, DnsResolver,
-};
-
-const MAX_RAW_BYTES: usize = 2 * 1024 * 1024;
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct HttpFetchResult {
-    pub bytes: Vec<u8>,
-    pub original_url: String,
-    pub final_url: String,
-    pub redirect_chain: Vec<RedirectHop>,
-    pub request: CaptureRequestSnapshot,
-    pub response: CaptureResponseSnapshot,
-}
+use crate::url_safety::{AddressPolicy, DefaultDnsResolver, DnsResolver};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CaptureWebSourceRequest {
@@ -190,93 +173,6 @@ pub async fn capture_web_source_with_resolver(
         capture_status: capture_status_name(artifact.manifest.capture_status).to_string(),
         warnings: artifact.manifest.warnings,
     })
-}
-
-pub async fn http_fetch(url: &str, resolver: &dyn DnsResolver, policy: AddressPolicy) -> SourceResult<HttpFetchResult> {
-    let mut hop = validate_initial_url(url, resolver, policy).await?;
-    let request_snapshot = CaptureRequestSnapshot::default();
-    let original_url = redact_sensitive_url(&hop.url).to_string();
-    let mut redirect_chain = Vec::new();
-    loop {
-        let client = pinned_reqwest_client(&hop)?;
-        let response = client
-            .get(hop.url.clone())
-            .header(USER_AGENT, request_snapshot.user_agent.as_str())
-            .header(ACCEPT, request_snapshot.accept.as_str())
-            .send()
-            .await
-            .map_err(|err| SourceError::CaptureFailed(format!("HTTP request failed: {err}")))?;
-        let remote_addr = response.remote_addr();
-        let Some(remote_addr) = remote_addr else {
-            return Err(SourceError::CaptureFailed("HTTP response did not expose remote address".to_string()));
-        };
-        if !hop.contains_remote_addr(remote_addr) {
-            return Err(SourceError::url_safety(format!(
-                "response remote address {remote_addr} was not in pinned DNS set"
-            )));
-        }
-        let status = response.status();
-        let headers = response.headers().clone();
-        if status.is_redirection() {
-            let location = headers
-                .get(LOCATION)
-                .and_then(|value| value.to_str().ok())
-                .ok_or_else(|| SourceError::CaptureFailed("redirect response is missing Location".to_string()))?
-                .to_string();
-            redirect_chain.push(RedirectHop {
-                url: redact_sensitive_url(&hop.url).to_string(),
-                status: status.as_u16(),
-                location: redact_sensitive_location_header(&location, &hop.url),
-            });
-            hop = validate_redirect_url(&hop.url, &location, resolver, policy, &redirect_chain).await?;
-            continue;
-        }
-        let response_snapshot = CaptureResponseSnapshot {
-            http_status: status.as_u16(),
-            content_type: header_string(&headers, CONTENT_TYPE),
-            content_encoding: header_string(&headers, CONTENT_ENCODING),
-            etag: header_string(&headers, ETAG),
-            last_modified: header_string(&headers, LAST_MODIFIED),
-            remote_addr: Some(remote_addr.to_string()),
-        };
-        if !status.is_success() {
-            return Err(SourceError::CaptureFailed(format!("HTTP status {} is not groundable", status.as_u16())));
-        }
-        let bytes = read_bounded_body(response).await?;
-        return Ok(HttpFetchResult {
-            bytes,
-            original_url,
-            final_url: redact_sensitive_url(&hop.url).to_string(),
-            redirect_chain,
-            request: request_snapshot,
-            response: response_snapshot,
-        });
-    }
-}
-
-fn header_string(headers: &reqwest::header::HeaderMap, name: reqwest::header::HeaderName) -> Option<String> {
-    headers.get(name).and_then(|value| value.to_str().ok()).map(str::to_string)
-}
-
-async fn read_bounded_body(mut response: reqwest::Response) -> SourceResult<Vec<u8>> {
-    if response.content_length().is_some_and(|length| length > MAX_RAW_BYTES as u64) {
-        return Err(SourceError::CaptureFailed(format!("HTTP response exceeded {MAX_RAW_BYTES} bytes")));
-    }
-
-    let mut bytes = Vec::new();
-    while let Some(chunk) =
-        response.chunk().await.map_err(|err| SourceError::CaptureFailed(format!("read HTTP response body: {err}")))?
-    {
-        let next_len = bytes
-            .len()
-            .checked_add(chunk.len())
-            .ok_or_else(|| SourceError::CaptureFailed("HTTP response size overflow".to_string()))?;
-        if next_len > MAX_RAW_BYTES {
-            return Err(SourceError::CaptureFailed(format!("HTTP response exceeded {MAX_RAW_BYTES} bytes")));
-        }
-        bytes.extend_from_slice(&chunk);
-    }
-    Ok(bytes)
 }
 
 #[derive(Clone, Debug)]

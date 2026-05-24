@@ -6,7 +6,8 @@ use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::recall::{DeltaRequest, DeltaResponse, RecallStatusCounters, StartupRequest, StartupResponse};
+use crate::recall::counters::RecallStatusCounters;
+use crate::recall::types::{DeltaRequest, DeltaResponse, StartupRequest, StartupResponse};
 
 pub use memorum_coordination::{ClaimLockInfo, PeerHeartbeat, PeerHeartbeatAck};
 pub use memory_governance::GovernanceRefusalReason;

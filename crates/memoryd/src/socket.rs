@@ -15,8 +15,6 @@ pub enum SocketProbe {
 }
 
 /// Probe whether a Unix socket accepts connections.
-///
-/// Task 5 upgrades this from connect-only liveness to a JSON-RPC status ping.
 pub fn probe_live_socket(path: &Path) -> SocketProbe {
     if !path.exists() {
         return SocketProbe::Absent;

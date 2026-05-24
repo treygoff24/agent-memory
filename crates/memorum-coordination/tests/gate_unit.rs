@@ -374,8 +374,6 @@ fn peer_update_ids(entries: &[PeerUpdateEntry]) -> Vec<String> {
     entries.iter().map(|entry| entry.reference.clone()).collect()
 }
 
-// --- I-R5: cross-device pass cool-down suppression ---
-
 /// Simulates the two-pass startup recall flow (same-device → cross-device).
 ///
 /// If a memory id is surfaced in pass 1 (same-device), it must be suppressed

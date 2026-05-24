@@ -35,7 +35,6 @@ impl Source {
         Self { kind, source_ref: source_ref.map(Into::into) }
     }
 
-    /// Return the source kind.
     #[must_use]
     pub fn kind(&self) -> SourceKind {
         self.kind

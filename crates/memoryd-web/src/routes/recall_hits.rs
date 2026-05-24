@@ -8,7 +8,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::routes::status::daemon_error;
-use crate::server::{backend_unavailable, WebState};
+use crate::state::{backend_unavailable, WebState};
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct RecallHitsQuery {

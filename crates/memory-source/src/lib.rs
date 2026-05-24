@@ -12,11 +12,11 @@ pub mod storage;
 pub mod url_safety;
 
 pub use adapters::{
-    dispatch_capture, CaptureDispatch, FetchedArtifact, LocalArtifactAdapter, UnsupportedArtifactAdapter,
+    dispatch_capture, http_fetch, CaptureDispatch, FetchedArtifact, HttpFetchResult, LocalArtifactAdapter,
+    UnsupportedArtifactAdapter,
 };
 pub use capture::{
-    capture_web_source, capture_web_source_with_resolver, http_fetch, CaptureWebSourceRequest,
-    CaptureWebSourceResponse, HttpFetchResult,
+    capture_web_source, capture_web_source_with_resolver, CaptureWebSourceRequest, CaptureWebSourceResponse,
 };
 pub use error::{SourceError, SourceResult};
 pub use model::{

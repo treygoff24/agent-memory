@@ -6,6 +6,7 @@ pub mod decision;
 pub mod engine;
 pub mod error;
 pub mod grounding;
+pub(crate) mod hash;
 pub mod policy;
 pub mod review;
 pub mod supersession;

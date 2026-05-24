@@ -6,7 +6,7 @@ use serde::Serialize;
 use std::collections::BTreeSet;
 
 use crate::routes::status::daemon_error;
-use crate::server::{backend_unavailable, WebState};
+use crate::state::{backend_unavailable, WebState};
 
 #[derive(Clone, Debug, Serialize)]
 pub struct EntityGraphResponse {

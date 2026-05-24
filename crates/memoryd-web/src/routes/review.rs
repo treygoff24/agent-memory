@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use tokio::time::{sleep, Duration};
 
 use crate::routes::status::daemon_error;
-use crate::server::{backend_unavailable, ReviewActionRecord, WebState};
+use crate::state::{backend_unavailable, ReviewActionRecord, WebState};
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct ReviewQueueQuery {

@@ -7,7 +7,7 @@ use memoryd::protocol::{ResponsePayload, ResponseResult};
 use serde::Serialize;
 use serde_json::json;
 
-use crate::server::{backend_unavailable, WebState};
+use crate::state::{backend_unavailable, WebState};
 
 #[derive(Clone, Debug, Serialize)]
 pub struct StatusDashboardResponse {

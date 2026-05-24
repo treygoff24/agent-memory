@@ -180,12 +180,16 @@ export interface RealityCheckRespondRequest {
     correction?: string;
 }
 
+export type RealityCheckCompletion =
+    | { progress: { remaining: number; deferred: number } }
+    | { complete: { reviewed: number; deferred: number; completed_at: string } };
+
 export interface RealityCheckActionResponse {
     accepted: boolean;
     session_id: string;
     memory_id: string;
     action: string;
-    completion: unknown;
+    completion: RealityCheckCompletion;
 }
 
 export interface RecallHitSummary {
@@ -203,6 +207,44 @@ export interface RecallHitsResponse {
     hits: RecallHitSummary[];
 }
 
+export interface ProvenanceEvent {
+    timestamp: string;
+    kind: string;
+    summary: string;
+    evidence: string;
+    device: string;
+}
+
+export interface PolicyDecision {
+    policy_applied: string;
+    policy_source: string;
+    confidence_floor_pass: string;
+    grounding_satisfied: string;
+    contradiction_result: string;
+    tombstone_enforced: string;
+    sensitivity_gate_result: string;
+}
+
+export interface PrivacyScan {
+    labels_detected: string[];
+    storage_action: string;
+}
+
+export type SupersessionDirection = 'supersedes' | 'superseded_by';
+
+export interface SupersessionHistoryEntry {
+    direction: SupersessionDirection;
+    memory_id: string;
+    at: string | null;
+    title: string;
+}
+
+export interface SyncStateDetail {
+    devices: string[];
+    merge_status: string;
+    claim_lock_status: string | null;
+}
+
 export interface AuditMemoryResponse {
     memory_id: string;
     title: string;
@@ -214,11 +256,11 @@ export interface AuditMemoryResponse {
     recall_count_total: number;
     recall_count_30d: number;
     last_recalled?: string | null;
-    provenance_chain: unknown[];
-    policy_decisions: unknown[];
-    privacy_scan: unknown;
-    supersession_history: unknown[];
-    sync_state: unknown;
+    provenance_chain: ProvenanceEvent[];
+    policy_decisions: PolicyDecision[];
+    privacy_scan: PrivacyScan;
+    supersession_history: SupersessionHistoryEntry[];
+    sync_state: SyncStateDetail;
 }
 
 export interface ProvenanceWalkResponse {
@@ -229,11 +271,59 @@ export interface ProvenanceWalkResponse {
     edges: Array<{ source: string; target: string; kind: string }>;
 }
 
+export type SafeContent = { kind: 'plaintext'; value: string } | { kind: 'encrypted' };
+
+export interface RecallStats {
+    total: number;
+    last_30_days: number;
+    last_recalled_at: string | null;
+}
+
+export interface SupersessionLink {
+    id: string;
+    timestamp: string | null;
+    title: SafeContent;
+}
+
+export interface WebSourceEvidence {
+    kind: string;
+    artifact_id: string;
+    excerpt_id: string;
+    available: boolean;
+    original_url?: string | null;
+    final_url?: string | null;
+    captured_at?: string | null;
+    quote?: string | null;
+    unavailable_reason?: string | null;
+}
+
+export interface TrustArtifact {
+    id: string;
+    namespace: string;
+    status: string;
+    sensitivity: string;
+    source: string;
+    source_evidence?: WebSourceEvidence;
+    title: SafeContent;
+    body: SafeContent;
+    current_confidence: string;
+    original_confidence: string;
+    confidence_reason: string | null;
+    trust_summary: string;
+    recall: RecallStats;
+    provenance_chain: ProvenanceEvent[];
+    policy_decisions: PolicyDecision[];
+    privacy_scan: PrivacyScan;
+    supersedes: SupersessionLink[];
+    superseded_by: SupersessionLink[];
+    sync_state: SyncStateDetail;
+}
+
 export interface TemporalStateResponse {
     memory_id: string;
     at?: string | null;
     viewing_historical_state: boolean;
-    artifact: unknown;
+    artifact: TrustArtifact;
 }
 
 export interface ReviewQueueItem {

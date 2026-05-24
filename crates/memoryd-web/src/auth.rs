@@ -3,31 +3,10 @@ use axum::extract::State;
 use axum::http::{Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
-use rand::RngCore;
 
-use crate::server::WebState;
+use crate::state::WebState;
 
-pub const CSRF_HEADER: &str = "x-memorum-csrf";
-const CSRF_TOKEN_BYTES: usize = 32;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CsrfToken(String);
-
-impl CsrfToken {
-    pub fn generate() -> Self {
-        let mut bytes = [0_u8; CSRF_TOKEN_BYTES];
-        rand::thread_rng().fill_bytes(&mut bytes);
-        Self(hex::encode(bytes))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    pub fn matches_header(&self, request: &Request<Body>) -> bool {
-        request.headers().get(CSRF_HEADER).and_then(|value| value.to_str().ok()).is_some_and(|value| value == self.0)
-    }
-}
+pub use crate::state::CSRF_HEADER;
 
 pub async fn require_csrf(
     State(state): State<WebState>,
