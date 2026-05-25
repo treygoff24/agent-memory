@@ -5,24 +5,20 @@ use memorum_eval::daemon_scaffold::DaemonScaffold;
 use memorum_eval::{eval_assert, eval_assert_eq, eval_flush_assertion_count};
 use serde_json::{json, Value};
 
-use crate::support::{daemon_request, debug_binary, find_file_with_extension, read_device_id};
+use crate::support::{daemon_request, debug_binary, find_file_with_extension};
 
-const STREAM_D_ROTATION_CONTRACT_NOT_SHIPPED: &str = "STREAM_D_ROTATION_CONTRACT_NOT_SHIPPED";
 const FIRST_PRIVATE_BODY: &str = "T18 private continuity contact is t18-before@example.com.";
 const SECOND_PRIVATE_BODY: &str = "T18 private continuity contact is t18-after@example.com.";
 
 #[tokio::test]
 async fn t18_encrypted_tier_key_rotation_preserves_reads_and_forward_secrecy() {
     let scaffold = DaemonScaffold::fresh().await;
-
-    if !rotation_contract_present(scaffold.tree_dir()) {
-        println!(
-            "MEMORUM_EVAL_SKIP:{STREAM_D_ROTATION_CONTRACT_NOT_SHIPPED}: Stream D key rotation contract is absent. \
-             The rotate-keys probe did not create keys/decommissioned plus keys/active.json, \
-             so Test #18 is semantically skipped instead of treating the shipped overwrite-only CLI as rotation."
-        );
-        return;
-    }
+    let initial_rotation = rotate_keys(scaffold.tree_dir());
+    assert_rotation_success(&initial_rotation, "initial key setup");
+    eval_assert!(
+        rotation_contract_files(scaffold.tree_dir()).is_present(),
+        "default key setup should create active key material plus a manifest"
+    );
 
     let first_response = write_pii_memory(scaffold.socket_path(), FIRST_PRIVATE_BODY, "t18-first");
     assert_write_promoted(&first_response);
@@ -33,12 +29,7 @@ async fn t18_encrypted_tier_key_rotation_preserves_reads_and_forward_secrecy() {
     let old_active_key = active_key_snapshot(scaffold.tree_dir());
 
     let rotation = rotate_keys(scaffold.tree_dir());
-    eval_assert!(
-        rotation.status.success(),
-        "memoryd device rotate-keys should exit 0 after the Stream D contract is present\nstdout={}\nstderr={}",
-        String::from_utf8_lossy(&rotation.stdout),
-        String::from_utf8_lossy(&rotation.stderr)
-    );
+    assert_rotation_success(&rotation, "second rotation");
     eval_assert!(
         rotation_contract_files(scaffold.tree_dir()).is_present(),
         "rotation contract files should remain present after rotation"
@@ -65,31 +56,12 @@ async fn t18_encrypted_tier_key_rotation_preserves_reads_and_forward_secrecy() {
     eval_flush_assertion_count();
 }
 
-fn rotation_contract_present(tree_dir: &Path) -> bool {
-    let files = rotation_contract_files(tree_dir);
-    if files.is_present() {
-        return true;
-    }
-
-    let output = rotate_keys(tree_dir);
-    if !output.status.success() {
-        println!(
-            "MEMORUM_EVAL_SKIP:{STREAM_D_ROTATION_CONTRACT_NOT_SHIPPED}: \
-             rotate-keys probe failed before contract files existed\nstdout={}\nstderr={}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return false;
-    }
-
-    rotation_contract_files(tree_dir).is_present()
-}
-
 fn rotation_contract_files(tree_dir: &Path) -> RotationContractFiles {
-    let key_dir = tree_dir.join(".memoryd/keys");
+    let key_dir = tree_dir.join(".memoryd/privacy");
     RotationContractFiles {
         decommissioned_dir: key_dir.join("decommissioned"),
         active_manifest: key_dir.join("active.json"),
+        active_key: key_dir.join("age-key.json"),
     }
 }
 
@@ -100,6 +72,15 @@ fn rotate_keys(tree_dir: &Path) -> std::process::Output {
         .arg(tree_dir.join(".memoryd"))
         .output()
         .expect("run memoryd device rotate-keys")
+}
+
+fn assert_rotation_success(output: &std::process::Output, label: &str) {
+    eval_assert!(
+        output.status.success(),
+        "memoryd device rotate-keys should exit 0 for {label}\nstdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 fn write_pii_memory(socket_path: &Path, body: &str, source_ref: &str) -> Value {
@@ -159,9 +140,8 @@ fn assert_body_absent_from_tree(tree_dir: &Path, body: &str) {
 
 fn active_key_snapshot(tree_dir: &Path) -> String {
     let runtime_dir = tree_dir.join(".memoryd");
-    let device_id = read_device_id(&runtime_dir);
-    let key_path = runtime_dir.join("keys").join(format!("{device_id}.age"));
-    let manifest_path = runtime_dir.join("keys/active.json");
+    let key_path = runtime_dir.join("privacy/age-key.json");
+    let manifest_path = runtime_dir.join("privacy/active.json");
     let key = std::fs::read_to_string(&key_path).unwrap_or_default();
     let manifest = std::fs::read_to_string(&manifest_path).unwrap_or_default();
     format!("{manifest}\n{key}")
@@ -205,6 +185,15 @@ fn assert_device_keys_rotated_event(tree_dir: &Path) {
         events.contains(r#""kind":"device_keys_rotated""#),
         "event log should include DeviceKeysRotated after key rotation:\n{events}"
     );
+    let rotation_events = events
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|event| event.get("kind").and_then(Value::as_str) == Some("device_keys_rotated"))
+        .collect::<Vec<_>>();
+    eval_assert!(
+        rotation_events.iter().all(|event| event.get("seq").and_then(Value::as_u64).is_some_and(|seq| seq > 0)),
+        "device_keys_rotated events must use the substrate sequence allocator, not seq=0:\n{events}"
+    );
 }
 
 fn event_log_text(tree_dir: &Path) -> String {
@@ -218,10 +207,11 @@ fn event_log_text(tree_dir: &Path) -> String {
 struct RotationContractFiles {
     decommissioned_dir: PathBuf,
     active_manifest: PathBuf,
+    active_key: PathBuf,
 }
 
 impl RotationContractFiles {
     fn is_present(&self) -> bool {
-        self.decommissioned_dir.is_dir() && self.active_manifest.is_file()
+        self.decommissioned_dir.is_dir() && self.active_manifest.is_file() && self.active_key.is_file()
     }
 }

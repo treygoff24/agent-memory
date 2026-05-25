@@ -86,7 +86,7 @@ fn mint_device_identity(runtime: &Path, device_id: Option<String>, force_new_dev
 
     let shard = id.get(4..12).unwrap_or("00000000");
     let yaml = format!(
-        "schema_version: 1\ndevice:\n  id: {id}\n  name: {id}\n  shard: {shard}\npaths:\n  memory_root: {}\n  runtime_root: {}\n",
+        "schema_version: 1\ndevice:\n  id: {id}\n  name: {id}\n  shard: {shard}\npaths:\n  memory_root: {}\n  runtime_root: {}\nprivacy:\n  classifier: true\n  encryption: true\n  masking: true\n",
         runtime.parent().map(|p| p.to_string_lossy()).unwrap_or_default(),
         runtime.to_string_lossy()
     );

@@ -6,7 +6,7 @@ use std::sync::Mutex;
 static ENV_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
 #[test]
-fn privacy_enforcement_defaults_to_dogfood_when_local_config_missing() {
+fn privacy_enforcement_defaults_to_safe_when_local_config_missing() {
     let temp = tempfile::tempdir().expect("tempdir");
     let repo = temp.path().join("repo");
     let runtime = temp.path().join("runtime");
@@ -15,10 +15,7 @@ fn privacy_enforcement_defaults_to_dogfood_when_local_config_missing() {
     let loaded = load_config(&repo, &runtime, None).expect("load config");
 
     assert_eq!(loaded.privacy_enforcement(), PrivacyEnforcement::default());
-    assert_eq!(
-        loaded.privacy_enforcement(),
-        PrivacyEnforcement { classifier: false, encryption: false, masking: false }
-    );
+    assert_eq!(loaded.privacy_enforcement(), PrivacyEnforcement { classifier: true, encryption: true, masking: true });
 }
 
 #[test]
@@ -53,7 +50,7 @@ privacy:
 }
 
 #[test]
-fn local_device_config_without_privacy_deserializes_to_dogfood_default() {
+fn local_device_config_without_privacy_deserializes_to_safe_default() {
     let temp = tempfile::tempdir().expect("tempdir");
     let runtime = temp.path().join("runtime");
     std::fs::create_dir_all(&runtime).expect("runtime");
@@ -70,7 +67,7 @@ device:
 
     let local = load_local_device_config(&runtime).expect("load local").expect("local config");
 
-    assert_eq!(local.privacy, PrivacyEnforcement::default());
+    assert_eq!(local.privacy, PrivacyEnforcement::paranoid());
 }
 
 #[test]

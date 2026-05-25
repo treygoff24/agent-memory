@@ -61,6 +61,7 @@ export function ThreePaneLayout(props: InboxLayoutProps) {
                         <Inspector
                             item={selectedInspector}
                             layout="narrow"
+                            onAction={props.onInspectorAction}
                         />
                     </div>
                 </section>

@@ -19,7 +19,8 @@ fn test_tui_shows_unreachable_state_on_socket_failure() {
     assert!(frame.contains("Daemon unreachable"));
     assert!(frame.contains("Socket: /run/user/1000/memoryd.sock"));
     assert!(frame.contains("Error:  Connection refused"));
-    assert!(frame.contains("Run `memoryd start`"));
+    assert!(frame.contains("Run `memoryd serve --init`"));
+    assert!(frame.contains("installer"));
     assert!(frame.contains("socket:UNREACHABLE"));
     assert!(!frame.contains("Pending review      7"));
 }

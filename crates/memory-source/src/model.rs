@@ -144,6 +144,10 @@ pub enum CaptureMode {
     #[default]
     HttpStatic,
     LocalArtifact,
+    PdfText,
+    BrowserRendered,
+    Screenshot,
+    Authenticated,
     Unsupported,
 }
 

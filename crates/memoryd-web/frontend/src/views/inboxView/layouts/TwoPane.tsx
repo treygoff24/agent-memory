@@ -31,6 +31,7 @@ export function TwoPaneLayout(props: InboxLayoutProps) {
                         <Inspector
                             item={selectedInspector}
                             layout="wide"
+                            onAction={props.onInspectorAction}
                         />
                     </div>
                 </section>

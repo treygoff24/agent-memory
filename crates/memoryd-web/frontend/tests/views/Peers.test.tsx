@@ -5,12 +5,15 @@ import { Peers } from '../../src/views/Peers';
 import { renderWithProviders } from '../support/render';
 
 describe('peers view', () => {
-    it('peers renders sortable trust ledger, paired badges, pair CTA, and peer-detail inspector', async () => {
+    it('peers renders session-derived peer status without inferred trust or fake keys', async () => {
         renderWithProviders(<Peers />);
         await screen.findAllByText('MacBook Pro');
 
         expect(screen.getByText('Peers')).toBeInTheDocument();
-        expect(screen.getByRole('button', { name: /\+ pair new device/i })).toBeInTheDocument();
+        const pairButton = screen.getByRole('button', { name: /\+ pair new device/i });
+        expect(pairButton).toBeDisabled();
+        expect(pairButton).toHaveAttribute('aria-describedby', 'pairing-unavailable-copy');
+        expect(screen.getByText(/Pairing API is not available in alpha/i)).toBeInTheDocument();
         const header = within(screen.getByTestId('peer-ledger-head'));
         for (const heading of [
             'device',
@@ -25,9 +28,12 @@ describe('peers view', () => {
             expect(header.getByRole('button', { name: new RegExp(heading, 'i') })).toBeInTheDocument();
         }
 
-        expect(screen.getByText('limited')).toBeInTheDocument();
-        expect(screen.getByText('fenced')).toBeInTheDocument();
-        expect(screen.getAllByText('revoked').length).toBeGreaterThan(0);
+        expect(screen.getAllByText('local active').length).toBeGreaterThan(0);
+        expect(screen.getAllByText('stale').length).toBeGreaterThan(0);
+        expect(screen.queryByText('limited')).not.toBeInTheDocument();
+        expect(screen.queryByText('fenced')).not.toBeInTheDocument();
+        expect(screen.queryByText('revoked')).not.toBeInTheDocument();
+        expect(screen.queryByText(/ed25519:/)).not.toBeInTheDocument();
         expect(screen.getByRole('region', { name: 'Inspector' })).toHaveTextContent('peer detail');
 
         fireEvent.click(screen.getByRole('button', { name: /events 24h/i }));

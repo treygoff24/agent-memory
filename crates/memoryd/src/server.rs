@@ -21,7 +21,7 @@ use crate::socket::{probe_live_socket, SocketProbe};
 pub use crate::protocol::MAX_FRAME_BYTES;
 
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 
 /// Tunable knobs for the daemon connection layer. Defaults are appropriate
 /// for production; tests typically override `idle_frame_timeout` to keep
@@ -183,10 +183,6 @@ async fn serve_with_dispatcher(
 
 #[cfg(unix)]
 fn harden_socket_permissions(socket_path: &Path) -> Result<()> {
-    if let Some(parent) = socket_path.parent() {
-        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
-            .with_context(|| format!("chmod owner-only socket parent {}", parent.display()))?;
-    }
     std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))
         .with_context(|| format!("chmod owner-only socket {}", socket_path.display()))
 }
@@ -379,21 +375,67 @@ fn healthy_status() -> StatusResponse {
 }
 
 async fn prepare_socket_path(socket_path: &Path) -> Result<()> {
-    if let Some(parent) = socket_path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .with_context(|| format!("create socket parent {}", parent.display()))?;
+    if let Some(parent) = socket_parent(socket_path) {
+        prepare_socket_parent(parent).await?;
     }
 
     match probe_live_socket(socket_path) {
         SocketProbe::Live => anyhow::bail!("socket_in_use: live memoryd already owns {}", socket_path.display()),
         SocketProbe::Absent => Ok(()),
-        SocketProbe::Stale => match tokio::fs::remove_file(socket_path).await {
+        SocketProbe::Stale => remove_stale_socket(socket_path).await,
+    }
+}
+
+fn socket_parent(socket_path: &Path) -> Option<&Path> {
+    socket_path.parent().filter(|parent| !parent.as_os_str().is_empty())
+}
+
+async fn prepare_socket_parent(parent: &Path) -> Result<()> {
+    match tokio::fs::metadata(parent).await {
+        Ok(metadata) if metadata.is_dir() => Ok(()),
+        Ok(_) => anyhow::bail!("socket_parent_not_directory: {}", parent.display()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .with_context(|| format!("create socket parent {}", parent.display()))?;
+            harden_created_socket_parent(parent)
+        }
+        Err(error) => Err(error).with_context(|| format!("inspect socket parent {}", parent.display())),
+    }
+}
+
+#[cfg(unix)]
+fn harden_created_socket_parent(parent: &Path) -> Result<()> {
+    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+        .with_context(|| format!("chmod owner-only newly-created socket parent {}", parent.display()))
+}
+
+#[cfg(not(unix))]
+fn harden_created_socket_parent(_parent: &Path) -> Result<()> {
+    Ok(())
+}
+
+async fn remove_stale_socket(socket_path: &Path) -> Result<()> {
+    match tokio::fs::symlink_metadata(socket_path).await {
+        Ok(metadata) if stale_path_is_socket(&metadata) => match tokio::fs::remove_file(socket_path).await {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error).with_context(|| format!("remove stale socket {}", socket_path.display())),
         },
+        Ok(_) => anyhow::bail!("refusing to remove non-socket path passed as daemon socket: {}", socket_path.display()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("inspect stale socket path {}", socket_path.display())),
     }
+}
+
+#[cfg(unix)]
+fn stale_path_is_socket(metadata: &std::fs::Metadata) -> bool {
+    metadata.file_type().is_socket()
+}
+
+#[cfg(not(unix))]
+fn stale_path_is_socket(_metadata: &std::fs::Metadata) -> bool {
+    false
 }
 
 #[cfg(test)]

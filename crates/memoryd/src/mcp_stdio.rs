@@ -61,11 +61,20 @@ struct McpToolDescriptor<'a> {
     output_schema: &'a Value,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StdioOptions {
+    pub allow_reveal: bool,
+}
+
 /// Run the newline-delimited JSON-RPC MCP stdio server.
 ///
 /// The MCP stdio transport reserves stdout for protocol frames. Diagnostics
 /// from this loop therefore go to stderr; normal EOF is not logged.
 pub async fn serve_stdio(socket_path: &Path) -> Result<()> {
+    serve_stdio_with_options(socket_path, StdioOptions::default()).await
+}
+
+pub async fn serve_stdio_with_options(socket_path: &Path, options: StdioOptions) -> Result<()> {
     let stdin = io::stdin();
     let mut stdout = io::stdout().lock();
 
@@ -76,7 +85,7 @@ pub async fn serve_stdio(socket_path: &Path) -> Result<()> {
         }
 
         let response = match serde_json::from_str::<JsonRpcMessage>(&line) {
-            Ok(message) => handle_message(socket_path, message).await,
+            Ok(message) => handle_message(socket_path, options, message).await,
             Err(error) => {
                 Some(error_response(None, -32700, "parse error", Some(json!({ "message": error.to_string() }))))
             }
@@ -93,7 +102,7 @@ pub async fn serve_stdio(socket_path: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn handle_message(socket_path: &Path, message: JsonRpcMessage) -> Option<JsonRpcResponse> {
+async fn handle_message(socket_path: &Path, options: StdioOptions, message: JsonRpcMessage) -> Option<JsonRpcResponse> {
     let id = message.id.clone();
     let is_notification = id.is_none();
     if message.jsonrpc.as_deref() != Some(JSONRPC_VERSION) {
@@ -106,9 +115,9 @@ async fn handle_message(socket_path: &Path, message: JsonRpcMessage) -> Option<J
     match message.method.as_str() {
         "initialize" => notification_or_success(is_notification, id, initialize_result()),
         "initialized" | "notifications/initialized" => None,
-        "tools/list" => notification_or_success(is_notification, id, tools_list_result()),
+        "tools/list" => notification_or_success(is_notification, id, tools_list_result(options)),
         "tools/call" if is_notification => None,
-        "tools/call" => Some(handle_tools_call(socket_path, id, message.params).await),
+        "tools/call" => Some(handle_tools_call(socket_path, options, id, message.params).await),
         method => notification_or_error(
             is_notification,
             error_response(id, -32601, format!("method not found: {method}"), None),
@@ -124,7 +133,12 @@ fn notification_or_error(is_notification: bool, response: JsonRpcResponse) -> Op
     (!is_notification).then_some(response)
 }
 
-async fn handle_tools_call(socket_path: &Path, id: Option<Value>, params: Value) -> JsonRpcResponse {
+async fn handle_tools_call(
+    socket_path: &Path,
+    options: StdioOptions,
+    id: Option<Value>,
+    params: Value,
+) -> JsonRpcResponse {
     let call = match serde_json::from_value::<ToolCallParams>(params) {
         Ok(call) => call,
         Err(error) => {
@@ -141,6 +155,14 @@ async fn handle_tools_call(socket_path: &Path, id: Option<Value>, params: Value)
         Ok(tool_name) => tool_name,
         Err(error) => return error_response(id, -32602, error.to_string(), None),
     };
+    if tool_name == ToolName::Reveal && !options.allow_reveal {
+        return error_response(
+            id,
+            -32602,
+            "memory_reveal is disabled for MCP stdio unless memoryd mcp --allow-reveal is set",
+            Some(json!({ "code": "reveal_disabled_on_mcp" })),
+        );
+    }
     let request = match mcp::request_from_args(tool_name, call.arguments) {
         Ok(request) => request,
         Err(error) => {
@@ -192,8 +214,8 @@ fn initialize_result() -> Value {
     })
 }
 
-fn tools_list_result() -> Value {
-    let manifest = mcp::manifest();
+fn tools_list_result(options: StdioOptions) -> Value {
+    let manifest = mcp::stdio_manifest(options.allow_reveal);
     let tools: Vec<_> = manifest.tools.iter().map(mcp_tool_descriptor).collect();
     json!({ "tools": tools })
 }

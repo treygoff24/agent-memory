@@ -219,6 +219,8 @@ install_memoryd_if_needed() {
       echo "+ command -v $bin"
     done
   fi
+  echo "installer binary set: memoryd, memoryd-tui, memoryd-web, memoryd-merge-driver"
+  echo "note: memorum-eval is a development/eval binary; install it separately with cargo install --path crates/memorum-eval --locked when needed."
 }
 
 stop_existing_daemon() {
@@ -338,8 +340,8 @@ if [ "$dry_run" -eq 0 ]; then
 memoryd is running (PID: $daemon_pid, log: $log_file).
 To stop:    kill \$(cat "$pid_file")
 To restart: bash scripts/install-memorum.sh --repo "$repo" --runtime "$runtime" --socket "$socket"
-To install daemon auto-restart on login: bash scripts/install-launchd.sh --repo "$repo" --runtime "$runtime" --daemon.
-To install the scheduled dream job: bash scripts/install-launchd.sh --repo "$repo" --runtime "$runtime" --dream-scheduler.
+To install daemon auto-restart on login: bash "$script_dir/install-launchd.sh" --repo "$repo" --runtime "$runtime" --daemon.
+To install the scheduled dream job: bash "$script_dir/install-launchd.sh" --repo "$repo" --runtime "$runtime" --dream-scheduler.
 LIFECYCLE
 else
   cat <<LIFECYCLE
@@ -348,8 +350,8 @@ PID file: $pid_file
 Log file: $log_file
 To stop:    kill \$(cat "$pid_file")
 To restart: bash scripts/install-memorum.sh --repo "$repo" --runtime "$runtime" --socket "$socket"
-To install daemon auto-restart on login: bash scripts/install-launchd.sh --repo "$repo" --runtime "$runtime" --daemon.
-To install the scheduled dream job: bash scripts/install-launchd.sh --repo "$repo" --runtime "$runtime" --dream-scheduler.
+To install daemon auto-restart on login: bash "$script_dir/install-launchd.sh" --repo "$repo" --runtime "$runtime" --daemon.
+To install the scheduled dream job: bash "$script_dir/install-launchd.sh" --repo "$repo" --runtime "$runtime" --dream-scheduler.
 LIFECYCLE
 fi
 
@@ -364,5 +366,9 @@ if ! command -v claude >/dev/null 2>&1 && ! command -v codex >/dev/null 2>&1; th
 fi
 
 if [ "$with_scheduler" -eq 1 ]; then
-  scripts/install-launchd.sh --repo "$repo" --runtime "$runtime"
+  scheduler_args=(--repo "$repo" --runtime "$runtime")
+  if [ "$dry_run" -eq 1 ]; then
+    scheduler_args+=(--dry-run)
+  fi
+  bash "$script_dir/install-launchd.sh" "${scheduler_args[@]}"
 fi

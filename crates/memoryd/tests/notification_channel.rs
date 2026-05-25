@@ -1,8 +1,14 @@
 use chrono::{TimeZone, Utc};
 use memory_substrate::MemoryId;
+use memoryd::handlers::{self, HandlerState};
 use memoryd::mcp::forward_payload_to_daemon;
+use memoryd::notifications::config::NotificationConfig;
+use memoryd::notifications::external::ExternalNotifier;
+use memoryd::notifications::os::OsNotifier;
+use memoryd::notifications::NotificationDispatcher;
 use memoryd::protocol::{
-    NotificationEvent, RealityCheckRequest, RequestPayload, ResponseResult, NOTIFICATION_CHANNEL_CAPACITY,
+    NotificationEvent, RealityCheckRequest, RequestEnvelope, RequestPayload, ResponsePayload, ResponseResult,
+    NOTIFICATION_CHANNEL_CAPACITY,
 };
 
 #[tokio::test]
@@ -49,4 +55,39 @@ async fn test_notification_event_mcp_rejected() {
     };
     assert_eq!(error.code, "method_not_allowed_on_mcp");
     assert!(!error.retryable);
+}
+
+#[tokio::test]
+async fn notifications_recent_returns_passive_queue() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let repo = temp.path().join("repo");
+    let runtime = temp.path().join("runtime");
+    let substrate = memory_substrate::Substrate::init(
+        memory_substrate::Roots::new(&repo, &runtime),
+        memory_substrate::InitOptions { force_unsafe_durability: true, device_id: Some("dev_notifs01".to_owned()) },
+    )
+    .await
+    .expect("substrate init");
+    let state = HandlerState::new();
+    let dispatcher = NotificationDispatcher::new(
+        state.passive_notifications(),
+        NotificationConfig::default(),
+        OsNotifier::disabled(),
+        ExternalNotifier::disabled(),
+    );
+    dispatcher.dispatch_event(NotificationEvent::ReviewQueueOverThreshold { count: 7, threshold: 5 }).await;
+
+    let response = handlers::handle_request_with_state(
+        &substrate,
+        &state,
+        RequestEnvelope::new("notifications-recent-test", RequestPayload::NotificationsRecent { limit: Some(50) }),
+    )
+    .await;
+
+    let ResponseResult::Success(ResponsePayload::NotificationsRecent(recent)) = response.result else {
+        panic!("expected notifications recent success, got {:?}", response.result);
+    };
+    assert_eq!(recent.notifications.len(), 1);
+    assert_eq!(recent.notifications[0].message, "Review queue has 7 items over threshold 5.");
+    assert!(!recent.notifications[0].id.is_empty());
 }

@@ -5,7 +5,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use memory_substrate::{InitOptions, Roots, Substrate};
-use memoryd::mcp::manifest;
+use memoryd::mcp::{manifest, stdio_manifest};
 use serde_json::{json, Value};
 
 mod common;
@@ -47,14 +47,67 @@ fn mcp_stdio_initialize_and_tools_list_round_trip_through_subprocess() {
     }));
 
     let actual_tools = tools_list["result"]["tools"].as_array().expect("tools/list returns an array");
-    let expected_manifest = manifest();
+    let expected_manifest = stdio_manifest(false);
     assert_eq!(actual_tools.len(), expected_manifest.tools.len());
+    assert!(
+        actual_tools.iter().all(|tool| tool["name"] != "memory_reveal"),
+        "default stdio bridge must hide memory_reveal"
+    );
     for (actual, expected) in actual_tools.iter().zip(expected_manifest.tools.iter()) {
         assert_eq!(actual["name"], expected.name);
         assert_eq!(actual["description"], expected.description);
         assert_eq!(actual["inputSchema"], expected.input_schema);
         assert_eq!(actual["outputSchema"], expected.output_schema);
     }
+}
+
+#[test]
+fn mcp_stdio_allow_reveal_flag_restores_reveal_tool() {
+    let socket = unique_socket_path("mcpstdio", "allow-reveal");
+    let mut server = McpServerProcess::spawn_with_args(&socket, &["--allow-reveal"]);
+    let _ = server.request(json!({
+        "jsonrpc": "2.0",
+        "id": "init",
+        "method": "initialize",
+        "params": {}
+    }));
+
+    let tools_list = server.request(json!({
+        "jsonrpc": "2.0",
+        "id": "tools-list",
+        "method": "tools/list",
+        "params": {}
+    }));
+
+    let actual_tools = tools_list["result"]["tools"].as_array().expect("tools/list returns an array");
+    assert_eq!(actual_tools.len(), manifest().tools.len());
+    assert!(
+        actual_tools.iter().any(|tool| tool["name"] == "memory_reveal"),
+        "--allow-reveal should expose memory_reveal for explicit MCP sessions"
+    );
+}
+
+#[test]
+fn mcp_stdio_rejects_reveal_call_when_reveal_is_not_allowed() {
+    let socket = unique_socket_path("mcpstdio", "reveal-disabled");
+    let mut server = McpServerProcess::spawn(&socket);
+    let response = server.request(json!({
+        "jsonrpc": "2.0",
+        "id": "reveal",
+        "method": "tools/call",
+        "params": {
+            "name": "memory_reveal",
+            "arguments": {
+                "id": "mem_20260525_abcdef1234567890_000001",
+                "reason": "user explicitly asked to reveal"
+            }
+        }
+    }));
+
+    assert_eq!(response["jsonrpc"], "2.0");
+    assert_eq!(response["id"], "reveal");
+    assert_eq!(response["error"]["code"], -32602);
+    assert_eq!(response["error"]["data"]["code"], "reveal_disabled_on_mcp");
 }
 
 #[test]
@@ -142,8 +195,14 @@ struct McpServerProcess {
 
 impl McpServerProcess {
     fn spawn(socket: &Path) -> Self {
+        Self::spawn_with_args(socket, &[])
+    }
+
+    fn spawn_with_args(socket: &Path, extra_args: &[&str]) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_memoryd"))
-            .args(["mcp", "--auto-start", "false", "--socket"])
+            .args(["mcp"])
+            .args(extra_args)
+            .arg("--socket")
             .arg(socket)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

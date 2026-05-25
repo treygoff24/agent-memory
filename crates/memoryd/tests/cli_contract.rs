@@ -111,6 +111,18 @@ fn cli_contract_clap_parses_all_subcommands() {
         "exact quote",
     ])
     .expect("source capture parses");
+    Cli::try_parse_from([
+        "memoryd",
+        "source",
+        "capture",
+        "--file",
+        "/tmp/report.md",
+        "--mode",
+        "local-artifact",
+        "--excerpt",
+        "exact quote",
+    ])
+    .expect("local source capture parses");
 
     assert!(
         Cli::try_parse_from(["memoryd", "write-note", "--entity", "Alice", "note text"]).is_err(),

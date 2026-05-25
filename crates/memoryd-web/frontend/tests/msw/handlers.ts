@@ -11,6 +11,7 @@ const routes = [
     ['GET', '/api/reality-check/history'],
     ['POST', '/api/reality-check/respond'],
     ['GET', '/api/recall-hits'],
+    ['GET', '/api/search'],
     ['GET', '/api/audit/:id'],
     ['GET', '/api/audit/:id/walk'],
     ['GET', '/api/audit/:id/temporal'],

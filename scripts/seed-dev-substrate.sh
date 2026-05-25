@@ -7,8 +7,8 @@
 # contradictions, Reality Check candidates, and privacy-encrypted samples.
 # Optionally enables the web dashboard at http://127.0.0.1:7137.
 #
-# Wipe: bash scripts/seed-dev-substrate.sh --reset
-#   or: rm -rf ~/memorum-dev ~/.memorum-dev
+# Wipe the default dev substrate: bash scripts/seed-dev-substrate.sh --reset
+# Custom-path resets require marker files previously created by this script.
 #
 # Requires: memoryd on PATH (install via scripts/install-memorum.sh), jq.
 #
@@ -27,6 +27,8 @@ Usage: scripts/seed-dev-substrate.sh [--reset] [--no-web] [--port N] [--repo PAT
 
 Options:
   --reset       Kill any running dev daemon and wipe the dev repo before seeding.
+                Default dev paths are allowed; custom paths must already contain
+                this script's marker file to protect against destructive typos.
   --no-web      Skip enabling the localhost web dashboard.
   --port N      Web dashboard port (default: 7137).
   --repo PATH   Canonical dev repo path (default: ~/memorum-dev).
@@ -37,26 +39,102 @@ USAGE
 
 repo="$HOME/memorum-dev"
 runtime="$HOME/.memorum-dev"
+default_repo="$repo"
+default_runtime="$runtime"
 port=7137
 reset=0
 enable_web=1
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$script_dir/.." && pwd -P)"
+seed_marker=".memorum-dev-seed"
+
+require_option_value() {
+  local flag="$1"
+  local value="${2-}"
+  if [ -z "$value" ] || [[ "$value" == --* ]]; then
+    echo "error: $flag requires a non-empty value" >&2
+    exit 2
+  fi
+  printf '%s' "$value"
+}
+
+reject_literal_tilde() {
+  local value="$1"
+  if [[ "$value" == "~" || "$value" == "~/"* ]]; then
+    echo "error: literal ~ is not expanded here; use \$HOME or an absolute path" >&2
+    exit 2
+  fi
+}
+
+absolute_path() {
+  local value="$1"
+  reject_literal_tilde "$value"
+  case "$value" in
+    /*) printf '%s' "$value" ;;
+    *) printf '%s/%s' "$(pwd -P)" "$value" ;;
+  esac
+}
+
+is_same_or_parent_of() {
+  local possible_parent="$1"
+  local child="$2"
+  [ "$possible_parent" = "$child" ] || [[ "$child" == "$possible_parent/"* ]]
+}
+
+require_safe_reset_path() {
+  local path="$1"
+  local kind="$2"
+  local default_path="$3"
+  if [ -z "$path" ] || [ "$path" = "/" ]; then
+    echo "error: refusing to reset unsafe $kind path: $path" >&2
+    exit 2
+  fi
+  if [ "$path" = "$HOME" ]; then
+    echo "error: refusing to reset $kind path equal to \$HOME" >&2
+    exit 2
+  fi
+  if is_same_or_parent_of "$path" "$repo_root"; then
+    echo "error: refusing to reset $kind path that contains this repository: $path" >&2
+    exit 2
+  fi
+  if [ "$path" != "$default_path" ] && [ ! -f "$path/$seed_marker" ]; then
+    echo "error: refusing to reset unmarked custom $kind path: $path" >&2
+    echo "       Run without --reset once to create a dev substrate marker, or remove it manually." >&2
+    exit 2
+  fi
+}
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --reset) reset=1; shift ;;
     --no-web) enable_web=0; shift ;;
-    --port) port="${2:?--port requires a value}"; shift 2 ;;
-    --repo) repo="${2:?--repo requires a value}"; shift 2 ;;
-    --runtime) runtime="${2:?--runtime requires a value}"; shift 2 ;;
+    --port) port="$(require_option_value --port "${2-}")"; shift 2 ;;
+    --repo) repo="$(require_option_value --repo "${2-}")"; shift 2 ;;
+    --runtime) runtime="$(require_option_value --runtime "${2-}")"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
 
+repo="$(absolute_path "$repo")"
+runtime="$(absolute_path "$runtime")"
+default_repo="$(absolute_path "$default_repo")"
+default_runtime="$(absolute_path "$default_runtime")"
+if [ "$repo" = "$runtime" ]; then
+  echo "error: --repo and --runtime must be different paths" >&2
+  exit 2
+fi
+
 socket="$runtime/memoryd.sock"
 pid_file="$runtime/memoryd.pid"
 log_file="$runtime/memoryd.log"
 grounding_dir="$runtime/grounding"
+
+if [ "$reset" -eq 1 ]; then
+  require_safe_reset_path "$repo" "repo" "$default_repo"
+  require_safe_reset_path "$runtime" "runtime" "$default_runtime"
+fi
 
 if ! command -v memoryd >/dev/null 2>&1; then
   echo "error: memoryd not on PATH. Install with: bash scripts/install-memorum.sh" >&2
@@ -104,6 +182,8 @@ fi
 
 mkdir -p "$repo" "$runtime" "$grounding_dir"
 chmod 700 "$runtime"
+printf 'created_by: scripts/seed-dev-substrate.sh\n' >"$repo/$seed_marker"
+printf 'created_by: scripts/seed-dev-substrate.sh\n' >"$runtime/$seed_marker"
 : >"$log_file"
 chmod 600 "$log_file"
 
@@ -262,7 +342,7 @@ A_PROJECT=(
   "rust-test-handbook:claim:Handbook tests serialize:The 12 handbook integration tests in crates/memorum-eval/tests/handbook.rs use serial_test serial to avoid APFS fsync-visibility races under heavy parallel load."
   "spec-versioning:decision:Spec and plan versioning convention:Spec and plan files are versioned by suffix (v1.1.md v0.5.md). New versions supersede. Old versions stay on disk for history."
   "branding:claim:Project ships as Memorum:Memorum (Latin genitive plural of memor mindful) is the canonical product name. Captured in system spec v0.2 section 22."
-  "mcp-tool-count:claim:Memorum exposes nine MCP tools:The agent-facing MCP surface is nine tools. memory_search memory_get memory_write memory_supersede memory_forget memory_reveal memory_startup memory_note memory_observe."
+  "mcp-tools:claim:Memorum exposes MCP memory tools:The canonical MCP manifest includes memory_search memory_get memory_write memory_supersede memory_forget memory_reveal memory_startup memory_note memory_observe memory_capture_source. Dogfood stdio sessions hide memory_reveal unless memoryd mcp is launched with --allow-reveal."
   "frontend-stack:claim:Web dashboard frontend stack:The localhost web dashboard frontend is React plus Tailwind plus Vite plus TanStack Router. Tested with Vitest unit plus visual regression plus Playwright e2e."
 )
 for entry in "${A_PROJECT[@]}"; do

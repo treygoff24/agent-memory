@@ -59,21 +59,25 @@ Static routes:
 
 API routes return `application/json`:
 
-| Route                                               | Response / body                                                  |
-| --------------------------------------------------- | ---------------------------------------------------------------- |
-| `GET /api/status`                                   | daemon status JSON                                               |
-| `GET /api/entity-graph?namespace=&depth=&focus=`    | `{ nodes, edges }` entity/co-mention/supersession graph          |
-| `GET /api/entity-graph/:entity_id`                  | entity detail, memories, supersession chain, recall history      |
-| `GET /api/roi?window=30\|90\|365`                   | promotion, refusal, dream, and Reality Check adherence metrics   |
-| `GET /api/reality-check`                            | `RealityCheckResponse::Pending`-compatible status/list           |
-| `POST /api/reality-check/respond`                   | body `{ memory_id, action, correction? }`; returns action result |
-| `GET /api/reality-check/history?limit=`             | completed-session summaries                                      |
-| `GET /api/recall-hits?since=&limit=`                | recent `RecallHit` events from the events-log mirror             |
-| `GET /api/audit/:id`                                | top-level audit/trust artifact object                            |
-| `GET /api/audit/:id/walk?direction=up\|down&depth=` | provenance graph walk                                            |
-| `GET /api/audit/:id/temporal?at=`                   | read-only temporal state                                         |
-| `GET /api/review?status=&namespace=&limit=&offset=` | review queue page                                                |
-| `POST /api/review/action`                           | body `{ id, action, reason? }`; returns review action result     |
+| Route                                               | Response / body                                                                       |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `GET /api/status`                                   | daemon status JSON                                                                    |
+| `GET /api/entity-graph?namespace=&depth=&focus=`    | `{ nodes, edges }` entity/co-mention/supersession graph                               |
+| `GET /api/entity-graph/:entity_id`                  | entity detail, memories, supersession chain, recall history                           |
+| `GET /api/roi?window=30\|90\|365`                   | alpha operational ROI metrics: promotion, refusal, dream, and Reality Check adherence |
+| `GET /api/notifications/stream`                     | SSE heartbeat carrying recent daemon passive notifications                            |
+| `GET /api/reality-check`                            | `RealityCheckResponse::Pending`-compatible status/list                                |
+| `POST /api/reality-check/respond`                   | body `{ memory_id, action, correction? }`; returns action result                      |
+| `GET /api/reality-check/history?limit=`             | completed-session summaries                                                           |
+| `GET /api/recall-hits?since=&limit=`                | recent `RecallHit` events from the events-log mirror                                  |
+| `GET /api/policy-editor`                            | policy YAML/files/summaries and `writable` status from daemon policy directory        |
+| `POST /api/policy-editor`                           | validate full policy set and atomically write one policy YAML file                    |
+| `GET /api/sync-dashboard`                           | daemon sync/peer/claim-lock state, with unknown fields labelled                       |
+| `GET /api/audit/:id`                                | top-level audit/trust artifact object                                                 |
+| `GET /api/audit/:id/walk?direction=up\|down&depth=` | provenance graph walk                                                                 |
+| `GET /api/audit/:id/temporal?at=`                   | read-only temporal state                                                              |
+| `GET /api/review?status=&namespace=&limit=&offset=` | review queue page                                                                     |
+| `POST /api/review/action`                           | body `{ id, action, reason? }`; returns review action result                          |
 
 `GET /api/recall-hits` returns:
 
@@ -98,7 +102,27 @@ API routes return `application/json`:
 
 CSRF: on server start, the dashboard generates a random 32-byte token, emits it in `<meta name="csrf-token">`, and requires `X-Memorum-CSRF` on every POST. Missing or wrong CSRF returns 403. Concurrent mutations serialize through the daemon; stale review/reality-check mutations return 409 with a typed JSON error.
 
-Deferred v1.1+ web sections: policy editor and sync dashboard routes are not implemented in v1. They should return 501 with a JSON note until a v1.1+ stream owns them. Audit walk's deeper recursive graph traversal is also v1.1+; the v1 `/api/audit/:id/walk` route returns the shallow trust-artifact-derived graph and must not return a stub.
+Alpha limitations are explicit rather than hidden behind fixture data:
+
+- `/api/roi` is not full business ROI. It is an alpha operational-metrics
+  surface over promotion/refusal/dream/Reality Check signals. It must return
+  live daemon-derived or zero metrics in daemon mode, never fixture values or a
+  stale status response.
+- `/api/notifications/stream` is local daemon/dashboard visibility only. It is
+  not guaranteed Slack/email/SMS delivery and does not persist external
+  delivery dead letters.
+- `/api/policy-editor` is writable only when the daemon reports the backing
+  policy directory is writable. Invalid YAML or an incomplete policy set fails
+  closed and must not mutate `policies/*.yaml`.
+- Pairing is unsupported in alpha unless a later code lane lands a real pairing
+  route. Visible pair controls must be disabled with accessible explanatory
+  copy rather than clickable no-ops.
+- Browser-rendered capture is unsupported by the dashboard/source grounding
+  surface; operators should save/export text or HTML and capture it as a local
+  artifact.
+- Audit walk's deeper recursive graph traversal is explicitly unsupported alpha
+  scope; the alpha route returns the shallow trust-artifact-derived graph and
+  must not return a placeholder stub.
 
 ## Reality Check CLI
 

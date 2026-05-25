@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 
-import { useEntityGraphQuery, type EntityNode } from '../api';
+import { useEntityDetailQuery, useEntityGraphQuery, type EntityDetailResponse, type EntityNode } from '../api';
 import { Inspector, type InspectorItem } from '../inspector';
 import { EntityTable } from './entitiesView';
 import { QueryErrorBanner, QueryLoadingBanner } from './QueryFeedback';
@@ -17,7 +17,7 @@ export interface EntityViewItem {
     namespaces: string[];
     firstSeen: string;
     lastSeen: string;
-    confidence: number;
+    confidence: number | null;
     sensitive?: boolean;
     recent: Array<{ id: string; title: string; weight: number }>;
 }
@@ -39,14 +39,7 @@ function normalizeKind(node: EntityNode): EntityKind {
     return 'project';
 }
 
-function confidenceForNode(node: EntityNode, index: number): number {
-    if (node.memory_count >= 40) return 0.96;
-    if (node.memory_count >= 30) return 0.88;
-    if (node.memory_count >= 15) return 0.91;
-    return Math.max(0.68, 0.84 - index * 0.02);
-}
-
-function toEntityViewItem(node: EntityNode, index: number): EntityViewItem {
+function toEntityViewItem(node: EntityNode): EntityViewItem {
     const kind = normalizeKind(node);
     const namespace = node.namespace ?? (kind === 'project' ? 'project:agent-memory' : `entity/${kind}`);
     return {
@@ -55,34 +48,17 @@ function toEntityViewItem(node: EntityNode, index: number): EntityViewItem {
         kind,
         mentions: node.memory_count,
         namespaces: [namespace],
-        firstSeen:
-            kind === 'language'
-                ? '2026-02-15'
-                : kind === 'tool'
-                  ? '2026-03-22'
-                  : kind === 'org'
-                    ? '2026-01-10'
-                    : '2026-04-01',
-        lastSeen: kind === 'org' ? '2026-05-01' : '2026-05-07',
-        confidence: confidenceForNode(node, index),
+        firstSeen: 'unknown',
+        lastSeen: 'unknown',
+        confidence: null,
         sensitive: namespace.startsWith('personal/'),
-        recent: [
-            {
-                id: `${node.id}_mem_a`,
-                title: `First reference of ${node.label}`,
-                weight: Math.max(0.4, confidenceForNode(node, index) - 0.02),
-            },
-            {
-                id: `${node.id}_mem_b`,
-                title: `${node.label} mentioned in recent session`,
-                weight: Math.max(0.4, confidenceForNode(node, index) - 0.09),
-            },
-        ],
+        recent: [],
     };
 }
 
 function valueForSort(item: EntityViewItem, key: EntitySortKey): string | number {
     if (key === 'namespaces') return item.namespaces.length;
+    if (key === 'confidence') return item.confidence ?? -1;
     return item[key];
 }
 
@@ -96,29 +72,46 @@ function sortEntities(items: EntityViewItem[], sort: SortState): EntityViewItem[
     });
 }
 
-function inspectorItemFromEntity(entity: EntityViewItem | undefined): InspectorItem | null {
+function detailConfidence(detail: EntityDetailResponse | undefined): number | null {
+    const confidences = detail?.related_memories
+        .map((memory) => memory.confidence)
+        .filter((value): value is number => typeof value === 'number');
+    if (!confidences?.length) return null;
+    return confidences.reduce((total, value) => total + value, 0) / confidences.length;
+}
+
+function inspectorItemFromEntity(
+    entity: EntityViewItem | undefined,
+    detail: EntityDetailResponse | undefined,
+): InspectorItem | null {
     if (!entity) return null;
+    const confidence = detailConfidence(detail);
+    const recent =
+        detail?.related_memories.map((memory) => ({
+            id: memory.id,
+            title: `${memory.status} · ${memory.namespace}`,
+            score: memory.confidence ?? 0,
+        })) ?? [];
+    const lastSeen = detail?.last_seen ?? entity.lastSeen;
+    const firstSeen = detail?.first_seen ?? entity.firstSeen;
     return {
         kind: 'entity-detail',
         id: entity.id,
         title: entity.name,
         namespace: entity.kind,
         body: `Memorum extracted ${entity.name} from ${entity.mentions.toLocaleString()} mentions across ${entity.namespaces.length} namespace${entity.namespaces.length === 1 ? '' : 's'}.`,
-        confidence: entity.confidence,
+        ...(confidence === null ? {} : { confidence }),
         sensitivity: entity.sensitive ? 'sensitive' : 'plain',
-        meta: entity.lastSeen,
+        meta: lastSeen,
         recallCountTotal: entity.mentions,
         recallCount30d: Math.min(entity.mentions, 30),
-        evidence: entity.recent.map((memory) => ({
-            id: memory.id,
-            title: memory.title,
-            score: memory.weight,
-        })),
+        evidence: recent,
         provenance: {
-            written: entity.lastSeen,
+            written: lastSeen,
             grounding: entity.namespaces.join(', '),
-            confidence: entity.confidence.toFixed(2),
+            confidence: confidence === null ? 'unknown' : confidence.toFixed(2),
             device: entity.kind,
+            firstSeen,
         },
         summary: entity.namespaces.join(', '),
     };
@@ -147,6 +140,7 @@ export function Entities() {
     }, [filter, items, search, sort]);
     const [selectedId, setSelectedId] = useState(items[0]?.id ?? '');
     const selected = filtered.find((item) => item.id === selectedId) ?? filtered[0];
+    const detailQuery = useEntityDetailQuery(selected?.id ?? '');
     const counts = filters.reduce<Record<EntityFilter, number>>(
         (acc, kind) => {
             acc[kind] = kind === 'all' ? items.length : items.filter((item) => item.kind === kind).length;
@@ -223,7 +217,7 @@ export function Entities() {
                 <div className="pane">
                     <div className="pane-scroll">
                         <Inspector
-                            item={inspectorItemFromEntity(selected)}
+                            item={inspectorItemFromEntity(selected, detailQuery.data)}
                             layout="narrow"
                         />
                     </div>

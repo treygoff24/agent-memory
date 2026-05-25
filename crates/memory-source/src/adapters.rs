@@ -64,11 +64,8 @@ impl LocalArtifactAdapter {
 pub struct UnsupportedArtifactAdapter;
 
 impl UnsupportedArtifactAdapter {
-    pub fn classify() -> SourceError {
-        SourceError::Unsupported(
-            "artifact type requires a specialized adapter that is not available in this source-capture path"
-                .to_string(),
-        )
+    pub fn classify(mode: CaptureMode) -> SourceError {
+        SourceError::Unsupported(unsupported_mode_guidance(mode).to_string())
     }
 }
 
@@ -103,7 +100,31 @@ pub async fn dispatch_capture(request: CaptureDispatch<'_>) -> SourceResult<Fetc
                 .ok_or_else(|| SourceError::CaptureFailed("local_artifact mode requires a local path".to_string()))?;
             LocalArtifactAdapter::read(path)
         }
-        CaptureMode::Unsupported => Err(UnsupportedArtifactAdapter::classify()),
+        CaptureMode::PdfText
+        | CaptureMode::BrowserRendered
+        | CaptureMode::Screenshot
+        | CaptureMode::Authenticated
+        | CaptureMode::Unsupported => Err(UnsupportedArtifactAdapter::classify(request.mode)),
+    }
+}
+
+fn unsupported_mode_guidance(mode: CaptureMode) -> &'static str {
+    match mode {
+        CaptureMode::PdfText => {
+            "pdf_text capture is unsupported in alpha; save/export a text/html artifact and import with --file"
+        }
+        CaptureMode::BrowserRendered => {
+            "browser_rendered capture is unsupported in alpha; save/export a text/html/PDF artifact and import with --file"
+        }
+        CaptureMode::Screenshot => {
+            "screenshot capture is unsupported in alpha; save/export a text/html/PDF artifact and import with --file"
+        }
+        CaptureMode::Authenticated => {
+            "authenticated capture is unsupported in alpha; save/export a text/html/PDF artifact and import with --file"
+        }
+        CaptureMode::Unsupported | CaptureMode::HttpStatic | CaptureMode::LocalArtifact => {
+            "artifact type is unsupported in alpha; save/export a text/html/PDF artifact and import with --file"
+        }
     }
 }
 

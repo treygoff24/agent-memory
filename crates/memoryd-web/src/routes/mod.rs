@@ -16,6 +16,7 @@ pub mod reality_check;
 pub mod recall_hits;
 pub mod review;
 pub mod roi;
+pub mod search;
 pub mod status;
 pub mod sync_dashboard;
 
@@ -26,6 +27,7 @@ pub use reality_check::{reality_check, reality_check_history, reality_check_resp
 pub use recall_hits::recall_hits;
 pub use review::{review_action, review_queue, ReviewActionRequest};
 pub use roi::{roi, RoiResponse};
+pub use search::search;
 pub use status::{notifications_stream, status, StatusDashboardResponse};
 pub use sync_dashboard::{sync_dashboard, SyncDashboardResponse};
 

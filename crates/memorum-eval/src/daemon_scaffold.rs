@@ -4,6 +4,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -190,6 +191,7 @@ fn spawn_memoryd(tree_dir: &Path, socket_path: &Path) -> Child {
             &socket_path.to_string_lossy(),
             "--init",
         ])
+        .env("MEMORYD_ENABLE_ECHO_DREAM_HARNESS", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -252,27 +254,23 @@ fn git_success<const N: usize>(current_dir: &Path, args: [&str; N]) -> bool {
 }
 
 fn memoryd_binary_path() -> PathBuf {
+    static MEMORYD_BINARY: OnceLock<PathBuf> = OnceLock::new();
+    MEMORYD_BINARY.get_or_init(build_memoryd_binary).clone()
+}
+
+fn build_memoryd_binary() -> PathBuf {
     let target_dir = std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target"));
     let binary = target_dir.join("debug").join("memoryd");
 
-    // Return the cached binary if it already exists. Callers that need
-    // TestInjectEvent support (e.g. T16) should ensure the binary was built with
-    // `--features test-utils` before invoking the test; if the feature is absent the
-    // daemon returns `method_not_allowed` with a clear message. Building memoryd
-    // here when the binary is already present triggers recursive cargo lock
-    // contention when the scaffold is called from an orchestrator subprocess.
-    if binary.exists() {
-        return binary;
-    }
-
-    // First-time build: include test-utils so T16's TestInjectEvent surface works.
+    // Include test-utils so T16's TestInjectEvent surface works,
+    // and dev-fixtures so T17 can exercise the deterministic echo dream harness.
     let status = Command::new("cargo")
-        .args(["build", "-p", "memoryd", "--features", "test-utils"])
+        .args(["build", "-p", "memoryd", "--features", "test-utils,dev-fixtures"])
         .status()
         .expect("build memoryd binary");
-    assert!(status.success(), "cargo build -p memoryd --features test-utils failed");
+    assert!(status.success(), "cargo build -p memoryd --features test-utils,dev-fixtures failed");
     binary
 }
 

@@ -33,6 +33,7 @@ export interface ProvenanceInfo {
     confidence?: string;
     device?: string;
     peers?: string;
+    firstSeen?: string;
 }
 
 export interface PolicyInfo {

@@ -1,13 +1,14 @@
 use chrono::{TimeZone, Utc};
 use memory_substrate::{EventId, MemoryId, MemoryStatus, Sensitivity};
 use memoryd::protocol::{
-    CandidateWriteResult, CaptureSourceResponse, ComponentScores, DreamRunReport, DreamStatusCounters,
-    DreamStatusReport, GetProvenance, GetResponse, GovernanceForgetResponse, GovernanceStatus,
-    GovernanceSupersedeResponse, GovernanceWriteResponse, HarnessCliStatus, LeaseRecord, ObserveKind, ObserveResponse,
-    ObserveTarget, PassOutcome, PassStatus, PromptTransport, RealityCheckAction, RealityCheckHistorySession,
-    RealityCheckItem, RealityCheckRequest, RealityCheckResponse, RecallHitSummary, RecallHitsResponse, RequestEnvelope,
-    RequestPayload, ResponseEnvelope, ResponsePayload, ResponseResult, RevealResponse, ScopeRunSummary, SearchHit,
-    SearchResponse, WriteNoteResponse,
+    CandidateWriteResult, CaptureSourceResponse, ComponentScores, DashboardRoiResponse, DreamRunReport,
+    DreamStatusCounters, DreamStatusReport, DreamingRoiSummary, GetProvenance, GetResponse, GovernanceForgetResponse,
+    GovernanceStatus, GovernanceSupersedeResponse, GovernanceWriteResponse, HarnessCliStatus, LeaseRecord, ObserveKind,
+    ObserveResponse, ObserveTarget, PassOutcome, PassStatus, PromptTransport, RealityCheckAction,
+    RealityCheckAdherenceSummary, RealityCheckHistorySession, RealityCheckItem, RealityCheckRequest,
+    RealityCheckResponse, RecallHitSummary, RecallHitsResponse, RequestEnvelope, RequestPayload, ResponseEnvelope,
+    ResponsePayload, ResponseResult, RevealResponse, ScopeRunSummary, SearchHit, SearchResponse, SourceCapturePayload,
+    WriteNoteResponse,
 };
 use memoryd::recall::StartupRequest;
 
@@ -30,11 +31,13 @@ fn protocol_contract_round_trips_request_variants_as_snake_case_json() {
         ),
         RequestEnvelope::new(
             "req-capture-source",
-            RequestPayload::CaptureSource {
-                url: "https://example.com/report".to_owned(),
+            RequestPayload::CaptureSource(SourceCapturePayload {
+                source: "https://example.com/report".to_owned(),
+                mode: Default::default(),
                 excerpts: vec!["exact quote".to_owned()],
                 note: Some("operator note".to_owned()),
-            },
+                local_path: None,
+            }),
         ),
         RequestEnvelope::new(
             "req-recall-hits",
@@ -115,6 +118,7 @@ fn protocol_contract_capture_source_response_round_trips() {
         ResponsePayload::CaptureSource(CaptureSourceResponse {
             artifact_id: "src_01J0Z7Y8Q9R0ABCDE123456789".to_owned(),
             source_refs: vec!["webcap:src_01J0Z7Y8Q9R0ABCDE123456789#quote_0001".to_owned()],
+            mode: memoryd::protocol::CaptureSourceMode::HttpStatic,
             final_url: "https://example.com/report".to_owned(),
             captured_at,
             capture_status: "complete_text_only".to_owned(),
@@ -154,6 +158,43 @@ fn protocol_contract_recall_hits_response_round_trips_daemon_dto() {
     assert_eq!(decoded, response);
     assert!(line.contains("\"recall_hits\""));
     assert!(line.contains("Protocol recall-hit fixture"));
+}
+
+#[test]
+fn protocol_contract_dashboard_roi_request_and_response_round_trip() {
+    let request = RequestPayload::DashboardRoi { window_days: 90 };
+
+    let decoded = round_trip(&request);
+
+    assert_eq!(decoded, request);
+    let request_json = serde_json::to_string(&request).expect("dashboard ROI request serializes");
+    assert!(request_json.contains("dashboard_roi"));
+    assert!(request_json.contains("window_days"));
+
+    let response = ResponseEnvelope::success(
+        "req-dashboard-roi",
+        ResponsePayload::DashboardRoi(DashboardRoiResponse {
+            window_days: 90,
+            promotion_rate: 0.5,
+            promotion_precision: 1.0,
+            refusal_breakdown: std::collections::BTreeMap::from([("grounding".to_owned(), 2)]),
+            dreaming: DreamingRoiSummary {
+                candidates_generated: 4,
+                promoted_silent: 1,
+                entered_review_queue: 2,
+                dropped: 1,
+                review_queue_approval_rate: 0.5,
+            },
+            reality_check_adherence: RealityCheckAdherenceSummary { weeks_completed: 3, weeks_skipped: 1 },
+        }),
+    );
+
+    let line = response.to_json_line().expect("dashboard ROI response serializes");
+    let decoded = ResponseEnvelope::from_json_line(&line).expect("dashboard ROI response deserializes");
+
+    assert_eq!(decoded, response);
+    assert!(line.contains("\"dashboard_roi\""));
+    assert!(line.contains("\"promotion_rate\""));
 }
 
 #[test]

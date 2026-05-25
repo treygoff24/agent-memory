@@ -1,8 +1,12 @@
-import { fireEvent, screen, within } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { http, HttpResponse } from 'msw';
+import { describe, expect, it, vi } from 'vitest';
 
 import { Inbox, inboxFilters } from '../../src/views/Inbox';
+import { server } from '../msw/server';
 import { renderWithProviders } from '../support/render';
+
+const reviewActions: Array<{ id?: string; action?: string }> = [];
 
 describe('Inbox view', () => {
     it('renders six filter pills with 1-6 keyboard shortcuts', async () => {
@@ -55,5 +59,33 @@ describe('Inbox view', () => {
         rerender(<Inbox layout="modal" />);
         fireEvent.click(screen.getByRole('option', { name: /Project uses pnpm/ }));
         expect(screen.getByRole('dialog', { name: 'Inbox inspector modal' })).toBeInTheDocument();
+    });
+
+    it('wires review inspector approve, reject, and forget actions while edit is disabled', async () => {
+        reviewActions.length = 0;
+        server.use(
+            http.post('/api/review/action', async ({ request }) => {
+                const payload = (await request.json()) as { id?: string; action?: string };
+                reviewActions.push(payload);
+                return HttpResponse.json({ ok: true, id: payload.id ?? 'mem_unknown', action: payload.action });
+            }),
+        );
+        const alert = vi.spyOn(window, 'alert').mockImplementation(() => undefined);
+        renderWithProviders(<Inbox />);
+
+        await screen.findAllByText('Project uses pnpm, never npm');
+        expect(screen.getByRole('button', { name: /Edit unavailable/i })).toBeDisabled();
+
+        fireEvent.click(screen.getByRole('button', { name: /Accept/i }));
+        fireEvent.click(screen.getByRole('button', { name: /Reject/i }));
+        fireEvent.click(screen.getByRole('button', { name: /Forget/i }));
+
+        await waitFor(() =>
+            expect(reviewActions.map((action) => action.action)).toEqual(
+                expect.arrayContaining(['approve', 'reject', 'forget']),
+            ),
+        );
+        expect(alert).not.toHaveBeenCalled();
+        alert.mockRestore();
     });
 });

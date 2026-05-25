@@ -28,9 +28,11 @@ export function InboxReviewInspector({ item, layout, onAction }: InspectorKindPr
                         </button>
                         <button
                             className="btn"
-                            onClick={() => onAction?.('edit', item)}
+                            disabled
+                            aria-disabled="true"
+                            title="Editing review candidates is not available in alpha."
                         >
-                            <span className="key">e</span>Edit
+                            <span className="key">e</span>Edit unavailable
                         </button>
                         <button
                             className="btn danger"

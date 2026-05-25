@@ -11,6 +11,7 @@ import type {
     RecallHitsResponse,
     ReviewQueueResponse,
     RoiResponse,
+    DashboardSearchResponse,
     StatusResponse,
     SyncDashboardResponse,
     TemporalStateResponse,
@@ -38,6 +39,7 @@ export const queryKeys = {
     realityCheck: ['realityCheck'] as const,
     realityCheckHistory: (limit?: number) => ['realityCheckHistory', limit ?? null] as const,
     recallHits: (params: RecallHitsParams = {}) => ['recallHits', params] as const,
+    search: (query: string) => ['search', query] as const,
     audit: (id: string) => ['audit', id] as const,
     auditWalk: (id: string, direction?: string, depth?: number) =>
         ['auditWalk', id, direction ?? null, depth ?? null] as const,
@@ -104,6 +106,10 @@ export function useRecallHitsQuery(params: RecallHitsParams = {}) {
         queryKey: queryKeys.recallHits(params),
         queryFn: () => apiJson<RecallHitsResponse>(withParams('/api/recall-hits', params)),
     });
+}
+
+export function searchMemories(query: string, limit = 5) {
+    return apiJson<DashboardSearchResponse>(withParams('/api/search', { q: query, limit }));
 }
 
 export function useAuditQuery(id: string) {

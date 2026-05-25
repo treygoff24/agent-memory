@@ -142,6 +142,19 @@ pub enum EventKind {
         /// Contending session.
         contender: String,
     },
+    /// Local encrypted-tier device key material rotated.
+    DeviceKeysRotated {
+        /// Previous active recipient, when a key existed before rotation.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        previous_recipient: Option<String>,
+        /// New active recipient.
+        active_recipient: String,
+    },
+    /// Governance policy file changed through the daemon policy editor.
+    PolicyChanged {
+        /// Plain YAML file name under the repository policies directory.
+        file_name: String,
+    },
     // Deferred §12.2 event kinds: WriteStarted, WriteIndexed, WriteEventAppendFailed,
     // Deleted, Superseded, IndexUpdated, IndexFailed, VectorReconciled,
     // EmbeddingJobEnqueued, EventLogRecovered, MergeQuarantined,

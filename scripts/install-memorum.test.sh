@@ -39,6 +39,8 @@ assert_contains "cargo install --path $repo_root/crates/memoryd --locked"
 assert_contains "cargo install --path $repo_root/crates/memoryd-tui --locked"
 assert_contains "cargo install --path $repo_root/crates/memoryd-web --locked"
 assert_contains "cargo install --path $repo_root/crates/memory-merge-driver --locked"
+assert_contains "installer binary set: memoryd, memoryd-tui, memoryd-web, memoryd-merge-driver"
+assert_contains "memorum-eval is a development/eval binary"
 assert_contains "memoryd serve --init --repo $repo --runtime $runtime --socket $runtime/memoryd.sock"
 assert_contains "memoryd status --socket $runtime/memoryd.sock"
 assert_contains "claude mcp add memorum memoryd -- mcp --socket \"$runtime/memoryd.sock\""
@@ -89,6 +91,36 @@ rel_not_contains() {
 rel_not_contains "--repo repo" "relative-repo"
 rel_not_contains "/tmp/memoryd.sock" "tmp-socket"
 rm -rf "$rel_tmp"
+
+# --- Absolute installer path with --with-scheduler works outside repo root ---
+scheduler_tmp="$(mktemp -d)"
+scheduler_physical="$(cd "$scheduler_tmp" && pwd -P)"
+scheduler_out="$scheduler_tmp/install-with-scheduler.out"
+(
+  cd "$scheduler_tmp"
+  bash "$repo_root/scripts/install-memorum.sh" \
+    --dry-run \
+    --force-reinstall \
+    --repo "$scheduler_physical/repo with spaces" \
+    --runtime "$scheduler_physical/runtime with spaces" \
+    --with-scheduler >"$scheduler_out"
+)
+if ! grep -Fq -- "com.memorum.daemon" "$scheduler_out"; then
+  echo "with-scheduler absolute-path test: missing daemon launchd dry-run output" >&2
+  cat "$scheduler_out" >&2
+  exit 1
+fi
+if ! grep -Fq -- "com.memorum.dream-scheduled" "$scheduler_out"; then
+  echo "with-scheduler absolute-path test: missing dream launchd dry-run output" >&2
+  cat "$scheduler_out" >&2
+  exit 1
+fi
+if grep -Fq -- "No such file or directory" "$scheduler_out"; then
+  echo "with-scheduler absolute-path test: scheduler lookup failed from outside repo root" >&2
+  cat "$scheduler_out" >&2
+  exit 1
+fi
+rm -rf "$scheduler_tmp"
 
 # --- Explicit relative --socket canonicalization ---
 socket_tmp="$(mktemp -d)"
@@ -242,6 +274,16 @@ grep -Fq '/absolute/path/to/memorum/.memoryd/memoryd.sock' "$repo_root/docs/mcp-
 grep -Fq '[mcp_servers.memorum]' "$repo_root/docs/mcp-wiring.md"
 grep -Fq '/absolute/path/to/memorum/.memoryd/memoryd.sock' "$repo_root/README.md"
 grep -Fq '/absolute/path/to/memorum/.memoryd/memoryd.sock' "$repo_root/docs/getting-started.md"
+grep -Fq 'memory_capture_source' "$repo_root/docs/getting-started.md"
+grep -Fq 'local_artifact' "$repo_root/docs/api/web-source-grounding-api.md"
+grep -Fq 'browser-rendered capture is unsupported' "$repo_root/docs/api/web-source-grounding-api.md"
+grep -Fq 'model privacy filter remains unsupported' "$repo_root/docs/api/web-source-grounding-api.md"
+grep -Fq 'not full business ROI' "$repo_root/docs/api/stream-g-observability-api.md"
+grep -Fq 'memorum-eval --harness mock --required-release-set alpha --output json' "$repo_root/docs/api/stream-h-eval-api.md"
+if rg -q 'nine MCP tools|nine tools|9 tools' "$repo_root/docs/getting-started.md" "$repo_root/scripts/seed-dev-substrate.sh"; then
+  echo "onboarding/dev substrate docs still contain stale nine-tool MCP language" >&2
+  exit 1
+fi
 if rg -q '/Users/you/' "$repo_root/README.md" "$repo_root/docs/getting-started.md" "$repo_root/docs/mcp-wiring.md"; then
   echo "onboarding docs still contain macOS-specific /Users/you/ placeholder" >&2
   exit 1

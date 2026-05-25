@@ -6,11 +6,18 @@ fn stream_h_eval_workflow_matches_ci_contract() {
     let workflow = read_workflow();
 
     assert_contains(&workflow, "v[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+", "release-candidate tag pattern");
+    assert_contains(&workflow, r#"branches: ["main"]"#, "cheap normal push branch trigger");
     assert_contains(&workflow, r#"cron: "0 3 * * *""#, "daily cron schedule");
     assert_contains(&workflow, "workflow_dispatch:", "manual dispatch trigger");
     assert_contains(&workflow, "harness_mode:", "manual harness_mode input");
 
     assert_contains(&workflow, r#"jq -r '.failed' "$RESULT_FILE""#, "failed-count jq expression");
+    assert_contains(&workflow, "--required-release-set alpha", "alpha required release set invocation");
+    assert_contains(
+        &workflow,
+        r#"jq -r '.release_blockers // [] | length' "$RESULT_FILE""#,
+        "release-blocker jq expression",
+    );
     assert_contains(&workflow, r#"[ "$FAILED" != "0" ]"#, "failed-count comparison");
     assert_contains(&workflow, ".number", "failure diagnostic test number field");
     assert_contains(&workflow, ".failure_detail", "failure diagnostic detail field");
@@ -33,6 +40,11 @@ fn stream_h_eval_workflow_matches_ci_contract() {
         &workflow,
         r#"jq -r '.missing_credentials // [] | join(", ")' "$RESULT_FILE""#,
         "missing-credentials jq expression",
+    );
+    assert_contains(
+        &workflow,
+        "Normal push runs the cheap mock/simulator alpha release set only.",
+        "visible non-release real-harness skip summary",
     );
 
     assert_contains(

@@ -1,4 +1,4 @@
-import type { InspectorItem } from '../../inspector';
+import type { InspectorAction, InspectorItem } from '../../inspector';
 
 export type InboxLayout = 'two-pane' | 'three-pane' | 'drawer' | 'modal';
 
@@ -42,4 +42,5 @@ export interface InboxLayoutProps {
     onCloseDrawer: () => void;
     onCloseModal: () => void;
     toInspectorItem: (item: InboxViewItem) => InspectorItem;
+    onInspectorAction: (action: InspectorAction, item: InspectorItem) => void;
 }

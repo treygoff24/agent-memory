@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context, Result};
 use memoryd::protocol::{
     ConflictsListResponse, EventsLogPageResponse, GovernancePolicySnapshot, InspectEntitiesResponse, MemoryId,
-    NamespaceTreeResponse, RealityCheckAction as ProtocolRealityCheckAction, RealityCheckRequest, RecallHitsResponse,
-    RequestPayload, ResponsePayload, ResponseResult, ReviewQueueResponse, StatusResponse,
+    NamespaceTreeResponse, RealityCheckAction as ProtocolRealityCheckAction, RealityCheckRequest, RealityCheckResponse,
+    RecallHitsResponse, RequestPayload, ResponsePayload, ResponseResult, ReviewQueueResponse, StatusResponse,
 };
 
 use crate::app::{DaemonCall, DaemonSnapshot, RealityCheckAction, ReviewAction};
@@ -28,42 +28,135 @@ impl DaemonClient {
         let mut snapshot = DaemonSnapshot::empty();
         snapshot.daemon_state = status.state;
         snapshot.footer_hint = "daemon connected · tab filters · enter inspect".to_string();
-        if let Ok(review) = self.review_queue(50).await {
-            snapshot.review_queue = review
-                .items
-                .into_iter()
-                .map(|item| crate::app::ReviewQueueRow {
-                    id: item.id,
-                    title: item.summary,
-                    namespace: "review".to_string(),
-                    status: item.status,
-                    reason: item.reason,
-                })
-                .collect();
+        match self.review_queue(50).await {
+            Ok(review) => {
+                snapshot.review_queue = review
+                    .items
+                    .into_iter()
+                    .map(|item| crate::app::ReviewQueueRow {
+                        id: item.id,
+                        title: item.summary,
+                        namespace: "review".to_string(),
+                        status: item.status,
+                        reason: item.reason,
+                    })
+                    .collect();
+            }
+            Err(error) => {
+                snapshot.review_queue.push(crate::app::ReviewQueueRow {
+                    id: "review_queue_unavailable".to_string(),
+                    title: "Review queue unavailable".to_string(),
+                    namespace: "daemon".to_string(),
+                    status: "unavailable".to_string(),
+                    reason: Some(error.to_string()),
+                });
+            }
         }
-        if let Ok(conflicts) = self.conflicts(50).await {
-            snapshot.conflicts = conflicts
-                .conflicts
-                .into_iter()
-                .map(|item| crate::app::ConflictRow {
-                    id: item.id.to_string(),
-                    title: item.summary,
-                    namespace: "conflict".to_string(),
-                    reason: item.reason,
-                })
-                .collect();
+        match self.conflicts(50).await {
+            Ok(conflicts) => {
+                snapshot.conflicts = conflicts
+                    .conflicts
+                    .into_iter()
+                    .map(|item| crate::app::ConflictRow {
+                        id: item.id.to_string(),
+                        title: item.summary,
+                        namespace: "conflict".to_string(),
+                        reason: item.reason,
+                    })
+                    .collect();
+            }
+            Err(error) => {
+                snapshot.conflicts.push(crate::app::ConflictRow {
+                    id: "conflicts_unavailable".to_string(),
+                    title: "Conflicts unavailable".to_string(),
+                    namespace: "daemon".to_string(),
+                    reason: Some(error.to_string()),
+                });
+            }
         }
-        if let Ok(recall) = self.recall_hits(50).await {
-            snapshot.recall = recall
-                .hits
-                .into_iter()
-                .map(|hit| crate::app::RecallHitRow {
-                    id: hit.memory_id.to_string(),
-                    title: hit.summary.unwrap_or_else(|| "recalled memory".to_string()),
-                    namespace: "recall".to_string(),
-                    age: hit.recalled_at.format("%H:%M").to_string(),
-                })
-                .collect();
+        match self.recall_hits(50).await {
+            Ok(recall) => {
+                snapshot.recall = recall
+                    .hits
+                    .into_iter()
+                    .map(|hit| crate::app::RecallHitRow {
+                        id: hit.memory_id.to_string(),
+                        title: hit.summary.unwrap_or_else(|| "recalled memory".to_string()),
+                        namespace: "recall".to_string(),
+                        age: hit.recalled_at.format("%H:%M").to_string(),
+                    })
+                    .collect();
+            }
+            Err(error) => {
+                snapshot.recall.push(crate::app::RecallHitRow {
+                    id: "recall_unavailable".to_string(),
+                    title: "Recall hits unavailable".to_string(),
+                    namespace: "daemon".to_string(),
+                    age: error.to_string(),
+                });
+            }
+        }
+        if let Some(dream_status) = status.compact_dream_status {
+            let label = if dream_status.enabled { "Dreaming enabled" } else { "Dreaming disabled" };
+            let suffix = dream_status
+                .next_scheduled_at
+                .map(|time| format!(" · next {}", time.format("%H:%M")))
+                .unwrap_or_default();
+            snapshot.dreams.push(crate::app::DreamRow {
+                id: "dream_status".to_string(),
+                title: format!("{label}{suffix}"),
+                namespace: "daemon".to_string(),
+            });
+        } else {
+            snapshot.dreams.push(crate::app::DreamRow {
+                id: "dream_status_unavailable".to_string(),
+                title: "Dream status unavailable".to_string(),
+                namespace: "daemon".to_string(),
+            });
+        }
+        match self.reality_check_pending().await {
+            Ok(RealityCheckResponse::Pending { items, .. }) => {
+                snapshot.due = items
+                    .into_iter()
+                    .map(|item| crate::app::RealityCheckRow {
+                        id: item.memory_id.to_string(),
+                        title: item.title,
+                        namespace: item.namespace,
+                        score: format!("{:.2}", item.score),
+                    })
+                    .collect();
+            }
+            Ok(_) => {
+                snapshot.due = Vec::new();
+            }
+            Err(error) => {
+                snapshot.due.push(crate::app::RealityCheckRow {
+                    id: "reality_check_unavailable".to_string(),
+                    title: "Reality Check unavailable".to_string(),
+                    namespace: "daemon".to_string(),
+                    score: error.to_string(),
+                });
+            }
+        }
+        match self.inspect_entities(50).await {
+            Ok(entities) => {
+                snapshot.memories = entities
+                    .entities
+                    .into_iter()
+                    .map(|entity| crate::app::MemoryRow {
+                        id: entity.entity_id,
+                        title: format!("Entity: {} · {} memories", entity.label, entity.memory_count),
+                        namespace: "entity".to_string(),
+                    })
+                    .collect();
+            }
+            Err(_) => {
+                snapshot.memories.push(crate::app::MemoryRow {
+                    id: "memories_unavailable".to_string(),
+                    title: "Memory/entity summaries unavailable".to_string(),
+                    namespace: "daemon".to_string(),
+                });
+            }
         }
         Ok(snapshot)
     }
@@ -116,6 +209,20 @@ impl DaemonClient {
             current_title: items.first().map(|item| item.title.clone()),
             ..Default::default()
         })
+    }
+
+    pub async fn reality_check_pending(&self) -> Result<RealityCheckResponse> {
+        expect_response(
+            self.request(
+                "memoryd-tui-reality-check-pending",
+                RequestPayload::RealityCheck(memoryd::protocol::RealityCheckRequest::List {
+                    namespace: None,
+                    limit: Some(50),
+                }),
+            )
+            .await?,
+            "reality_check",
+        )
     }
 
     pub async fn inspect_entities(&self, limit: usize) -> Result<InspectEntitiesResponse> {

@@ -60,13 +60,19 @@ export function EntityTable({ entities, selectedId, sort, onSort, onSelect }: En
                         <span className="ent-time mono">{entity.lastSeen}</span>
                         <span className="ent-time mono">{entity.firstSeen}</span>
                         <span className="ent-conf mono">
-                            <span className="conf-bar">
-                                <span
-                                    className="conf-fill"
-                                    style={{ width: `${entity.confidence * 100}%` }}
-                                />
-                            </span>
-                            {entity.confidence.toFixed(2)}
+                            {entity.confidence === null ? (
+                                'unknown'
+                            ) : (
+                                <>
+                                    <span className="conf-bar">
+                                        <span
+                                            className="conf-fill"
+                                            style={{ width: `${entity.confidence * 100}%` }}
+                                        />
+                                    </span>
+                                    {entity.confidence.toFixed(2)}
+                                </>
+                            )}
                         </span>
                     </button>
                 ))}

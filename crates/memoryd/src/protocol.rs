@@ -61,10 +61,20 @@ pub enum RequestPayload {
     TrustArtifact {
         id: String,
     },
-    CaptureSource {
-        url: String,
-        excerpts: Vec<String>,
-        note: Option<String>,
+    CaptureSource(SourceCapturePayload),
+    DashboardRoi {
+        window_days: u16,
+    },
+    NotificationsRecent {
+        limit: Option<usize>,
+    },
+    PolicyValidate {
+        raw_yaml: String,
+        file_name: Option<String>,
+    },
+    PolicyWrite {
+        raw_yaml: String,
+        file_name: Option<String>,
     },
     RecallHits {
         since: Option<DateTime<Utc>>,
@@ -276,6 +286,10 @@ pub enum ResponsePayload {
     Get(GetResponse),
     TrustArtifact(Box<crate::trust_artifact::TrustArtifact>),
     CaptureSource(CaptureSourceResponse),
+    DashboardRoi(DashboardRoiResponse),
+    NotificationsRecent(NotificationsRecentResponse),
+    PolicyValidate(PolicyEditorMutationResponse),
+    PolicyWrite(PolicyEditorMutationResponse),
     RecallHits(RecallHitsResponse),
     Reveal(RevealResponse),
     WriteNote(WriteNoteResponse),
@@ -302,6 +316,90 @@ pub enum ResponsePayload {
     GovernancePolicyDump(GovernancePolicySnapshot),
     ConflictsList(ConflictsListResponse),
     TestInjectEvent(TestInjectEventResponse),
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureSourceMode {
+    #[default]
+    HttpStatic,
+    LocalArtifact,
+    PdfText,
+    BrowserRendered,
+    Screenshot,
+    Authenticated,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceCapturePayload {
+    #[serde(alias = "url")]
+    pub source: String,
+    #[serde(default)]
+    pub mode: CaptureSourceMode,
+    pub excerpts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_path: Option<PathBuf>,
+}
+
+impl Default for SourceCapturePayload {
+    fn default() -> Self {
+        Self {
+            source: String::new(),
+            mode: CaptureSourceMode::HttpStatic,
+            excerpts: Vec::new(),
+            note: None,
+            local_path: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DashboardRoiResponse {
+    pub window_days: u16,
+    pub promotion_rate: f64,
+    pub promotion_precision: f64,
+    pub refusal_breakdown: BTreeMap<String, u32>,
+    pub dreaming: DreamingRoiSummary,
+    pub reality_check_adherence: RealityCheckAdherenceSummary,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DreamingRoiSummary {
+    pub candidates_generated: u32,
+    pub promoted_silent: u32,
+    pub entered_review_queue: u32,
+    pub dropped: u32,
+    pub review_queue_approval_rate: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RealityCheckAdherenceSummary {
+    pub weeks_completed: u32,
+    pub weeks_skipped: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotificationsRecentResponse {
+    pub notifications: Vec<NotificationSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotificationSnapshot {
+    pub id: String,
+    pub kind: String,
+    pub message: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PolicyEditorMutationResponse {
+    pub accepted: bool,
+    pub file_name: String,
+    pub policies: Vec<GovernancePolicySummary>,
 }
 
 /// Entity index summary for daemon-side TUI inspectors.
@@ -366,6 +464,12 @@ pub struct GovernancePolicySnapshot {
     pub source: String,
     pub raw_yaml: Option<String>,
     pub policies: Vec<GovernancePolicySummary>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_file: Option<String>,
+    #[serde(default)]
+    pub writable: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -393,6 +497,8 @@ pub struct RecallHitsResponse {
 pub struct CaptureSourceResponse {
     pub artifact_id: String,
     pub source_refs: Vec<String>,
+    #[serde(default)]
+    pub mode: CaptureSourceMode,
     pub final_url: String,
     pub captured_at: DateTime<Utc>,
     pub capture_status: String,

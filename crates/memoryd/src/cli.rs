@@ -2,7 +2,7 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
 use chrono::NaiveDate;
-use clap::{ArgAction, Args, Parser, Subcommand};
+use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 
 use crate::protocol::{PeerActivityFormat, RealityCheckRequest, RequestPayload};
 
@@ -72,8 +72,15 @@ pub struct McpArgs {
     #[arg(long, default_value = ".memoryd")]
     pub runtime: PathBuf,
     /// Auto-start memoryd when the resolved socket is absent.
-    #[arg(long, default_value_t = true, action = ArgAction::Set)]
+    #[arg(long, default_value_t = false, action = ArgAction::Set)]
     pub auto_start: bool,
+    /// Expose memory_reveal over the stdio MCP bridge.
+    ///
+    /// Leave disabled for normal agent dogfood: memory_get/search/startup are safe preview
+    /// paths, while reveal returns decrypted encrypted content and should be explicitly
+    /// enabled only for a harness/session that has user-directed reveal authority.
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub allow_reveal: bool,
 }
 
 #[derive(Debug, Args)]
@@ -289,13 +296,29 @@ pub struct SourceCaptureArgs {
     pub socket: Option<PathBuf>,
     /// Public HTTP(S) URL to capture.
     #[arg(long)]
-    pub url: String,
+    pub url: Option<String>,
+    /// Local text/html artifact to capture.
+    #[arg(long = "file")]
+    pub file: Option<PathBuf>,
+    /// Source capture mode.
+    #[arg(long, value_enum, default_value_t = SourceCaptureCliMode::HttpStatic)]
+    pub mode: SourceCaptureCliMode,
     /// Exact quote to anchor in extracted page text. Repeat for multiple quotes.
     #[arg(long = "excerpt")]
     pub excerpts: Vec<String>,
     /// Optional safe operator note.
     #[arg(long)]
     pub note: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum SourceCaptureCliMode {
+    HttpStatic,
+    LocalArtifact,
+    PdfText,
+    BrowserRendered,
+    Screenshot,
+    Authenticated,
 }
 
 #[derive(Debug, Args)]

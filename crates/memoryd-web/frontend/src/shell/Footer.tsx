@@ -1,12 +1,15 @@
+import type { ShellStatus } from './Shell';
+
 import { StatusDot } from '../ui';
-export function Footer() {
+
+export function Footer({ status }: { status: ShellStatus }) {
     return (
         <footer className="footer">
             <span className="vital">
-                <StatusDot /> daemon
+                <StatusDot kind={status.daemon} /> daemon
             </span>
             <span className="vital">
-                <StatusDot /> sync · 2 peers
+                <StatusDot kind={status.daemon === 'bad' ? 'idle' : 'ok'} /> {status.peerLabel}
             </span>
             <div className="right">
                 <span>

@@ -1,7 +1,14 @@
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Request, StatusCode};
+use memory_substrate::{InitOptions, Roots, Substrate};
+use memoryd::server::{serve_substrate_with, ServerOptions};
 use memoryd_web::{fixture_router, router_with_state, WebState};
 use serde_json::{json, Value};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::net::UnixStream;
+use tokio::sync::watch;
+use tokio::time::{sleep, timeout};
 use tower::ServiceExt;
 
 const RESPONSE_LIMIT: usize = 64 * 1024;
@@ -16,6 +23,30 @@ contradiction_policy: supersede
 review_gates:
   - low_confidence
 "#;
+
+#[tokio::test]
+async fn test_get_roi_daemon_returns_live_metrics_not_deferred_stub() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let substrate = init_substrate(temp.path()).await;
+    let socket = unique_socket_path("web-roi", "daemon-live");
+    let (shutdown_tx, server) = spawn_daemon(&socket, substrate);
+    wait_for_socket(&socket).await;
+
+    let response = router_with_state(WebState::daemon(&socket))
+        .oneshot(Request::builder().uri("/api/roi?window=90").body(Body::empty()).expect("request builds"))
+        .await
+        .expect("request succeeds");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    assert_eq!(body["window_days"], 90);
+    assert_eq!(body["promotion_rate"], 0.0);
+    assert_eq!(body["promotion_precision"], 0.0);
+    assert_eq!(body["refusal_breakdown"], json!({}));
+    assert_ne!(body["status"], "not_implemented");
+
+    shutdown(shutdown_tx, server, &socket).await;
+}
 
 #[tokio::test]
 async fn test_get_policy_editor_returns_current_policy_yaml_not_deferred_stub() {
@@ -192,4 +223,55 @@ fn seed_policy_dir(path: &std::path::Path) {
     )
     .expect("me policy");
     std::fs::write(path.join("project-standard.yaml"), PROJECT_POLICY).expect("project policy");
+}
+
+async fn init_substrate(root: &Path) -> Substrate {
+    Substrate::init(
+        Roots::new(root.join("repo"), root.join("runtime")),
+        InitOptions { force_unsafe_durability: true, device_id: Some("dev_webroi".to_owned()) },
+    )
+    .await
+    .expect("init substrate")
+}
+
+fn spawn_daemon(
+    socket: &Path,
+    substrate: Substrate,
+) -> (watch::Sender<bool>, tokio::task::JoinHandle<anyhow::Result<()>>) {
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let socket = socket.to_path_buf();
+    let options = ServerOptions { idle_frame_timeout: Duration::from_secs(5) };
+    let task = tokio::spawn(serve_substrate_with(socket, substrate, options, shutdown_rx));
+    (shutdown_tx, task)
+}
+
+async fn shutdown(
+    shutdown_tx: watch::Sender<bool>,
+    server: tokio::task::JoinHandle<anyhow::Result<()>>,
+    socket: &Path,
+) {
+    shutdown_tx.send(true).expect("shutdown signal lands");
+    timeout(Duration::from_secs(2), server)
+        .await
+        .expect("server stops before timeout")
+        .expect("server task joins")
+        .expect("server returns Ok");
+    let _ = std::fs::remove_file(socket);
+}
+
+async fn wait_for_socket(socket: &Path) {
+    for _ in 0..200 {
+        if UnixStream::connect(socket).await.is_ok() {
+            return;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    panic!("daemon did not bind socket at {}", socket.display());
+}
+
+fn unique_socket_path(prefix: &str, test_name: &str) -> PathBuf {
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).expect("system clock is after epoch").as_nanos();
+    let dir = PathBuf::from(format!("/tmp/memd-{prefix}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create short socket directory");
+    dir.join(format!("{test_name}-{nonce}.sock"))
 }

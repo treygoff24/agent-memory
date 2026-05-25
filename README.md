@@ -19,11 +19,30 @@ Claude / Codex / Cursor / any MCP client
 
 ## Install from this checkout
 
+For dogfooding, prefer the installer because it starts the daemon with the same
+runtime/socket layout used by the docs:
+
 ```bash
-cargo install --path crates/memoryd
-cargo install --path crates/memoryd-tui
-cargo install --path crates/memoryd-web
-cargo install --path crates/memorum-eval
+export MEMORUM_REPO="$HOME/memorum"
+export MEMORUM_RUNTIME="$MEMORUM_REPO/.memoryd"
+bash scripts/install-memorum.sh --force-reinstall --repo "$MEMORUM_REPO" --runtime "$MEMORUM_RUNTIME"
+```
+
+The installer installs the operator-facing dogfood binaries:
+`memoryd`, `memoryd-tui`, `memoryd-web`, and `memoryd-merge-driver`.
+`memorum-eval` is a development/eval binary; install it separately only when
+you are running evals.
+
+Manual equivalent:
+
+```bash
+cargo install --path crates/memoryd --locked
+cargo install --path crates/memoryd-tui --locked
+cargo install --path crates/memoryd-web --locked
+cargo install --path crates/memory-merge-driver --locked
+
+# Optional eval harness for development/release validation:
+cargo install --path crates/memorum-eval --locked
 ```
 
 For development without installing, use `cargo run --bin memoryd -- ...`.
@@ -67,6 +86,21 @@ Wire an MCP client to launch the stdio bridge. Use the absolute socket path prin
 Replace `/absolute/path/to/memorum` with your real path, or paste the installer snippet that already contains the canonicalized socket.
 
 Then ask the client to call `memory_write` with a grounded fact and `memory_search` for the same text. See `docs/getting-started.md` for a step-by-step path and `docs/mcp-wiring.md` for per-harness config snippets.
+
+## Alpha limits that are explicit
+
+- Source grounding supports deterministic static HTTP(S) capture and local
+  text/HTML artifact capture. Browser-rendered capture is unsupported, as are
+  screenshots/OCR, authenticated browser/cookie capture, and client-supplied
+  key paths or privacy bypass flags.
+- The model privacy filter remains unsupported in alpha. Memorum uses
+  deterministic privacy checks and fails closed rather than promising semantic
+  model classification.
+- Dashboard ROI is not full business ROI. It is an alpha operational metrics
+  surface over promotion, refusal, dream, and Reality Check adherence signals.
+- Device pairing is unsupported unless a daemon route is present; visible pair
+  controls should be disabled with explanatory copy instead of silently doing
+  nothing.
 
 ## Useful local commands
 

@@ -62,8 +62,8 @@ function DashboardApp() {
     const notificationRows = notifications.notifications;
     const notificationSummary =
         notificationRows.length > 0
-            ? notificationRows.map((item) => item.title).join('; ')
-            : (notifications.error ?? 'No new notifications.');
+            ? notificationRows.map((item) => item.message).join('; ')
+            : (notifications.error ?? 'No new notifications. Live updates will appear here.');
 
     return (
         <Shell
@@ -86,11 +86,25 @@ function DashboardApp() {
                                 className="notif-row"
                                 key={item.id}
                             >
-                                {item.title}
+                                <span className="ico">•</span>
+                                <div>
+                                    <div className="nt-title">{item.message}</div>
+                                    <div className="nt-meta">
+                                        {item.kind}
+                                        {item.created_at ? ` · ${item.created_at}` : ''}
+                                    </div>
+                                </div>
                             </div>
                         ))
                     ) : (
-                        <div className="notif-row">{notifications.error ?? 'No new notifications.'}</div>
+                        <div className="notif-row">
+                            <span className="ico">•</span>
+                            <div>
+                                <div className="nt-title">
+                                    {notifications.error ?? 'No new notifications. Live updates will appear here.'}
+                                </div>
+                            </div>
+                        </div>
                     )}
                 </div>
             )}

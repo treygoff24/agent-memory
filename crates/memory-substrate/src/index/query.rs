@@ -412,6 +412,8 @@ fn event_kind_name(kind: &EventKind) -> &'static str {
         EventKind::RealityCheckForgotten { .. } => "reality_check_forgotten",
         EventKind::RealityCheckNotRelevant { .. } => "reality_check_not_relevant",
         EventKind::ClaimLockContention { .. } => "claim_lock_contention",
+        EventKind::DeviceKeysRotated { .. } => "device_keys_rotated",
+        EventKind::PolicyChanged { .. } => "policy_changed",
     }
 }
 
@@ -433,7 +435,9 @@ fn event_memory_id(kind: &EventKind) -> Option<&str> {
         | EventKind::StartupReconciliationCompleted { .. }
         | EventKind::OperatorRepairRequired { .. }
         | EventKind::GitPushFailed { .. }
-        | EventKind::SubstrateFragmentWritten { .. } => None,
+        | EventKind::SubstrateFragmentWritten { .. }
+        | EventKind::DeviceKeysRotated { .. }
+        | EventKind::PolicyChanged { .. } => None,
     }
 }
 

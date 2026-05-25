@@ -27,6 +27,26 @@ fn identical_plaintext_encrypts_to_different_ciphertext() {
 }
 
 #[test]
+fn rotated_file_provider_keeps_old_ciphertext_revealable_and_uses_new_recipient() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let provider = FileKeyProvider::runtime_default(temp.path());
+    provider.onboard_local_file().expect("onboard key");
+    let encryptor = PrivacyEncryptor::new(provider.clone());
+    let before = encryptor.encrypt("private body before rotation").expect("encrypt before");
+    let before_recipient = before.envelope["recipient"].as_str().expect("recipient before").to_owned();
+
+    let rotation = provider.rotate_local_file().expect("rotate key");
+    let after = encryptor.encrypt("private body after rotation").expect("encrypt after");
+
+    assert_ne!(after.envelope["recipient"].as_str(), Some(before_recipient.as_str()));
+    assert_eq!(rotation.previous_recipient.as_deref(), Some(before_recipient.as_str()));
+    assert!(rotation.archived_key_path.as_ref().is_some_and(|path| path.is_file()));
+    assert!(provider.active_manifest_path().is_file());
+    assert_eq!(encryptor.decrypt(&before).expect("decrypt before"), "private body before rotation");
+    assert_eq!(encryptor.decrypt(&after).expect("decrypt after"), "private body after rotation");
+}
+
+#[test]
 fn missing_key_fails_closed() {
     let temp = tempfile::tempdir().expect("tempdir");
     let provider = FileKeyProvider::runtime_default(temp.path());

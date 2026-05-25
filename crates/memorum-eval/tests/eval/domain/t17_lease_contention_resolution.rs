@@ -7,8 +7,6 @@ use serde_json::{json, Value};
 
 use crate::support::{daemon_request, find_file_with_extension, git, read_device_id};
 
-const SEMANTIC_PARTIAL_LEASE_REENTRANCY_NOT_SHIPPED: &str = "SEMANTIC_PARTIAL_LEASE_REENTRANCY_NOT_SHIPPED";
-
 #[tokio::test]
 async fn t17_preseeded_two_device_lease_blocks_loser_and_allows_retry_after_release() {
     let scaffold = DaemonScaffold::two_device().await;
@@ -23,17 +21,6 @@ async fn t17_preseeded_two_device_lease_blocks_loser_and_allows_retry_after_rele
     git(scaffold.device_b.tree_dir(), ["pull", "--ff-only", "origin", "main"]);
 
     let device_b_blocked = dream_now(scaffold.device_b.socket_path(), false);
-    if protocol_error_code(&device_b_blocked) == Some("invalid_request")
-        && protocol_error_message(&device_b_blocked)
-            .is_some_and(|message| message.contains("unknown harness CLI override `echo`"))
-    {
-        println!(
-            "MEMORUM_EVAL_SKIP:{SEMANTIC_PARTIAL_LEASE_REENTRANCY_NOT_SHIPPED}: \
-             deterministic echo dream harness is not enabled in this memoryd binary, so the lease-contention \
-             semantic path cannot be exercised by the mock eval run."
-        );
-        return;
-    }
     assert_error_code(&device_b_blocked, "lease_held");
     eval_assert!(
         journal_files(scaffold.device_b.tree_dir()).is_empty(),
@@ -41,16 +28,6 @@ async fn t17_preseeded_two_device_lease_blocks_loser_and_allows_retry_after_rele
     );
 
     let device_a_same_lease = dream_now(scaffold.device_a.socket_path(), false);
-    if protocol_error_code(&device_a_same_lease) == Some("lease_held") {
-        println!(
-            "MEMORUM_EVAL_SKIP:{SEMANTIC_PARTIAL_LEASE_REENTRANCY_NOT_SHIPPED}: \
-             Current Stream F lease acquisition is not re-entrant for the same device; \
-             a pre-seeded local active lease returns lease_held unless forced, so the spec step where Device A \
-             proceeds under its own pre-seeded lease is not shipped yet. Verified the two-device loser backs off."
-        );
-        return;
-    }
-
     assert_pass_1_success(&device_a_same_lease);
     eval_assert!(
         !journal_files(scaffold.device_a.tree_dir()).is_empty(),
@@ -73,10 +50,6 @@ fn assert_error_code(response: &Value, expected: &str) {
 
 fn protocol_error_code(response: &Value) -> Option<&str> {
     response.pointer("/result/error/code").and_then(Value::as_str)
-}
-
-fn protocol_error_message(response: &Value) -> Option<&str> {
-    response.pointer("/result/error/message").and_then(Value::as_str)
 }
 
 fn assert_pass_1_success(response: &Value) {

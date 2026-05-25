@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
+import type { InspectorAction, InspectorItem } from '../inspector';
 import type { InboxFilterId, InboxItem, InboxKind, InboxLayout, InboxViewItem } from './inboxView';
 
-import { useReviewQueueQuery, type ReviewQueueItem } from '../api';
+import { useReviewActionMutation, useReviewQueueQuery, type ReviewQueueItem } from '../api';
 import { filterItems, inboxFilters, inspectorItemFromInbox, toInboxViewItem } from './inboxView/adapter';
 import { DrawerLayout, ModalSheetLayout, ThreePaneLayout, TwoPaneLayout } from './inboxView/layouts';
 import { QueryErrorBanner, QueryLoadingBanner } from './QueryFeedback';
@@ -64,6 +65,7 @@ function toInboxItem(item: ReviewQueueItem, index: number): InboxItem {
 
 export function Inbox({ layout, items: providedItems }: InboxProps) {
     const query = useReviewQueueQuery({ limit: 50 });
+    const reviewAction = useReviewActionMutation();
     const resolvedLayout = layout ?? layoutFromUrl();
     const sourceItems = useMemo(
         () => providedItems ?? query.data?.items.map(toInboxItem) ?? [],
@@ -103,6 +105,18 @@ export function Inbox({ layout, items: providedItems }: InboxProps) {
             if (resolvedLayout === 'modal') setModalOpen(true);
         },
         [resolvedLayout],
+    );
+
+    const handleInspectorAction = useCallback(
+        (action: InspectorAction, item: InspectorItem) => {
+            if (!['approve', 'reject', 'forget'].includes(action)) return;
+            const request = {
+                id: item.id,
+                action,
+            };
+            reviewAction.mutate(action === 'reject' ? { ...request, reason: 'web dashboard rejection' } : request);
+        },
+        [reviewAction],
     );
 
     const moveFocus = useCallback(
@@ -161,6 +175,7 @@ export function Inbox({ layout, items: providedItems }: InboxProps) {
         onCloseDrawer: () => setDrawerOpen(false),
         onCloseModal: () => setModalOpen(false),
         toInspectorItem: inspectorItemFromInbox,
+        onInspectorAction: handleInspectorAction,
     };
 
     const layoutNode =

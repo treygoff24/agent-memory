@@ -20,15 +20,14 @@ const columns: Array<{ key: PeerSortKey; label: string }> = [
 ];
 
 function trustTone(trust: PeerViewItem['trust']): string {
-    if (trust === 'revoked') return 'bad';
-    if (trust === 'limited') return 'warn';
+    if (trust === 'stale') return 'warn';
+    if (trust === 'unknown') return 'info';
     return 'info';
 }
 
 function syncTone(sync: PeerViewItem['sync']): string {
-    if (sync === 'revoked') return 'bad';
-    if (sync === 'behind') return 'warn';
-    if (sync === 'fenced') return 'info';
+    if (sync === 'stale') return 'warn';
+    if (sync === 'unknown') return 'info';
     return 'ok';
 }
 

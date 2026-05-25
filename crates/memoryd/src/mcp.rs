@@ -1,5 +1,5 @@
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -8,8 +8,8 @@ use serde_json::{json, Value};
 use crate::client;
 pub use crate::protocol::ObserveKind as ObserveKindRequest;
 use crate::protocol::{
-    default_observe_cwd, default_observe_harness, default_observe_session_id, ObserveKind, RequestPayload,
-    ResponseEnvelope, ResponseResult,
+    default_observe_cwd, default_observe_harness, default_observe_session_id, CaptureSourceMode, ObserveKind,
+    RequestPayload, ResponseEnvelope, ResponseResult, SourceCapturePayload,
 };
 pub use crate::recall::StartupRequest;
 
@@ -61,6 +61,7 @@ pub enum ToolRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SearchRequest {
     pub query: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -70,6 +71,7 @@ pub struct SearchRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GetRequest {
     pub id: String,
     #[serde(default)]
@@ -77,6 +79,7 @@ pub struct GetRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WriteRequest {
     pub body: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -88,6 +91,7 @@ pub struct WriteRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SupersedeRequest {
     pub old_id: String,
     pub new_body: String,
@@ -97,12 +101,14 @@ pub struct SupersedeRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ForgetRequest {
     pub id: String,
     pub reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RevealRequest {
     pub id: String,
     pub reason: String,
@@ -134,7 +140,12 @@ pub struct ObserveRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CaptureSourceRequest {
-    pub url: String,
+    #[serde(alias = "url")]
+    pub source: String,
+    #[serde(default)]
+    pub mode: CaptureSourceMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_path: Option<PathBuf>,
     pub excerpts: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
@@ -142,7 +153,21 @@ pub struct CaptureSourceRequest {
 
 pub fn manifest() -> Manifest {
     debug_assert_eq!(ToolName::all().len(), 10, "MCP v1 manifest tool count changed without a spec bump");
-    Manifest { tools: ToolName::all().iter().map(|name| descriptor(*name)).collect() }
+    manifest_from_tools(ToolName::all())
+}
+
+pub fn stdio_manifest(allow_reveal: bool) -> Manifest {
+    Manifest {
+        tools: ToolName::all()
+            .into_iter()
+            .filter(|name| allow_reveal || *name != ToolName::Reveal)
+            .map(descriptor)
+            .collect(),
+    }
+}
+
+fn manifest_from_tools<const N: usize>(tools: [ToolName; N]) -> Manifest {
+    Manifest { tools: tools.into_iter().map(descriptor).collect() }
 }
 
 pub fn request_from_args(name: ToolName, args: Value) -> Result<ToolRequest, serde_json::Error> {
@@ -229,9 +254,13 @@ pub async fn forward_to_daemon(
         ToolRequest::MemoryForget(args) => RequestPayload::Forget { id: args.id, reason: args.reason },
         ToolRequest::MemoryReveal(args) => RequestPayload::Reveal { id: args.id, reason: args.reason },
         ToolRequest::MemoryStartup(args) => RequestPayload::Startup(args),
-        ToolRequest::MemoryCaptureSource(args) => {
-            RequestPayload::CaptureSource { url: args.url, excerpts: args.excerpts, note: args.note }
-        }
+        ToolRequest::MemoryCaptureSource(args) => RequestPayload::CaptureSource(SourceCapturePayload {
+            source: args.source,
+            mode: args.mode,
+            excerpts: args.excerpts,
+            note: args.note,
+            local_path: args.local_path,
+        }),
     };
 
     forward_payload_to_daemon(socket_path, id, payload).await
@@ -420,12 +449,13 @@ fn descriptor(name: ToolName) -> ToolDescriptor {
                 &[
                     ("artifact_id", "string"),
                     ("source_refs", "array"),
+                    ("mode", "string"),
                     ("final_url", "string"),
                     ("captured_at", "string"),
                     ("capture_status", "string"),
                     ("warnings", "array"),
                 ],
-                &["artifact_id", "source_refs", "final_url", "captured_at", "capture_status", "warnings"],
+                &["artifact_id", "source_refs", "mode", "final_url", "captured_at", "capture_status", "warnings"],
             ),
         ),
     };
@@ -489,7 +519,19 @@ fn capture_source_input_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
-            "url": { "type": "string", "minLength": 1 },
+            "source": { "type": "string", "minLength": 1 },
+            "mode": {
+                "type": "string",
+                "enum": [
+                    "http_static",
+                    "local_artifact",
+                    "pdf_text",
+                    "browser_rendered",
+                    "screenshot",
+                    "authenticated"
+                ]
+            },
+            "local_path": { "type": "string", "minLength": 1 },
             "excerpts": {
                 "type": "array",
                 "minItems": 1,
@@ -498,7 +540,7 @@ fn capture_source_input_schema() -> Value {
             },
             "note": { "type": "string", "maxLength": 2048 }
         },
-        "required": ["url", "excerpts"],
+        "required": ["source", "excerpts"],
         "additionalProperties": false,
     })
 }

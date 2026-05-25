@@ -34,8 +34,8 @@ function RecallRow({
             <span className="rl-agent">{event.agent}</span>
             <span className="rl-summary">{event.memory}</span>
             <span className="rl-ns">{event.namespace}</span>
-            <span className="rl-lat">{event.latencyMs}ms</span>
-            <span className="rl-score">{event.score.toFixed(2)}</span>
+            <span className="rl-lat">{event.latencyMs === null ? 'unknown' : `${event.latencyMs}ms`}</span>
+            <span className="rl-score">{event.score === null ? 'unknown' : event.score.toFixed(2)}</span>
         </button>
     );
 }

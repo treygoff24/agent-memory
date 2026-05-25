@@ -36,6 +36,7 @@ pub struct EvalRunConfig {
     pub workers: usize,
     pub no_cleanup: bool,
     pub verbose: bool,
+    pub required_release_set: Option<RequiredReleaseSet>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +57,8 @@ pub struct EvalReport {
     pub skipped: usize,
     pub partial: bool,
     pub missing_credentials: Vec<String>,
+    pub required_release_set: Option<RequiredReleaseSet>,
+    pub release_blockers: Vec<String>,
     pub tests: Vec<EvalTestResult>,
     pub timed_out: bool,
 }
@@ -127,6 +130,11 @@ pub enum OutputFormat {
     Text,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum RequiredReleaseSet {
+    Alpha,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TestStatus {
     Passed,
@@ -156,6 +164,7 @@ impl Default for EvalRunConfig {
             workers: 4,
             no_cleanup: false,
             verbose: false,
+            required_release_set: None,
         }
     }
 }
@@ -197,6 +206,7 @@ impl EvalOrchestrator {
         } else {
             Vec::new()
         };
+        let release_blockers = release_blockers(config.required_release_set, &tests);
 
         Ok(EvalReport {
             run_id: new_run_id(),
@@ -209,6 +219,8 @@ impl EvalOrchestrator {
             skipped,
             partial,
             missing_credentials,
+            required_release_set: config.required_release_set,
+            release_blockers,
             tests,
             timed_out,
         })
@@ -357,7 +369,7 @@ pub const TEST_CATALOG: [CatalogEntry; 20] = [
         name: "lease_contention_resolution",
         group: CatalogGroup::Domain,
         mode: CatalogMode::Simulator,
-        deferred: true,
+        deferred: false,
         execution_group: ExecutionGroup::Serial,
     },
     CatalogEntry {
@@ -365,7 +377,7 @@ pub const TEST_CATALOG: [CatalogEntry; 20] = [
         name: "encrypted_tier_key_rotation",
         group: CatalogGroup::Domain,
         mode: CatalogMode::Simulator,
-        deferred: true,
+        deferred: false,
         execution_group: ExecutionGroup::Serial,
     },
     CatalogEntry {
@@ -412,6 +424,8 @@ pub fn report_to_json(report: &EvalReport) -> String {
             "  \"skipped\": {},\n",
             "  \"partial\": {},\n",
             "  \"missing_credentials\": {},\n",
+            "  \"required_release_set\": {},\n",
+            "  \"release_blockers\": {},\n",
             "  \"tests\": [\n{}\n  ]\n",
             "}}\n"
         ),
@@ -425,6 +439,8 @@ pub fn report_to_json(report: &EvalReport) -> String {
         report.skipped,
         report.partial,
         string_array_to_json(&report.missing_credentials),
+        optional_release_set_to_json(report.required_release_set),
+        string_array_to_json(&report.release_blockers),
         tests_json
     )
 }
@@ -456,7 +472,38 @@ pub fn exit_code_for_report(report: &EvalReport) -> u8 {
     if report.partial && report.harness_mode != HarnessMode::Mock {
         return 1;
     }
+    if !report.release_blockers.is_empty() {
+        return 1;
+    }
     0
+}
+
+fn release_blockers(required_release_set: Option<RequiredReleaseSet>, tests: &[EvalTestResult]) -> Vec<String> {
+    match required_release_set {
+        None => Vec::new(),
+        Some(RequiredReleaseSet::Alpha) => alpha_release_blockers(tests),
+    }
+}
+
+fn alpha_release_blockers(tests: &[EvalTestResult]) -> Vec<String> {
+    tests
+        .iter()
+        .filter_map(|test| {
+            let catalog_entry = TEST_CATALOG.iter().find(|entry| entry.number == test.number)?;
+            if catalog_entry.deferred {
+                return Some(format!("#{:02} {} remains catalog-deferred", test.number, test.name));
+            }
+            if test.skip_kind == Some(SkipKind::FeatureDeferred) {
+                return Some(format!(
+                    "#{:02} {} skipped required alpha coverage: {}",
+                    test.number,
+                    test.name,
+                    test.skip_reason.as_deref().unwrap_or("feature deferred")
+                ));
+            }
+            None
+        })
+        .collect()
 }
 
 fn select_tests(filter: Option<&str>) -> Result<Vec<CatalogEntry>, OrchestratorError> {
@@ -937,6 +984,10 @@ fn optional_skip_kind_to_json(value: Option<SkipKind>) -> String {
     value.map_or_else(|| "null".to_owned(), |value| format!("\"{}\"", value))
 }
 
+fn optional_release_set_to_json(value: Option<RequiredReleaseSet>) -> String {
+    value.map_or_else(|| "null".to_owned(), |value| format!("\"{}\"", value))
+}
+
 fn json_escape(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
     for character in value.chars() {
@@ -1021,6 +1072,14 @@ impl fmt::Display for OutputFormat {
         match self {
             Self::Json => formatter.write_str("json"),
             Self::Text => formatter.write_str("text"),
+        }
+    }
+}
+
+impl fmt::Display for RequiredReleaseSet {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Alpha => formatter.write_str("alpha"),
         }
     }
 }

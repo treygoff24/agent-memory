@@ -27,6 +27,22 @@ function parseHeartbeat(event: MessageEvent<string>): NotificationsHeartbeat | n
     }
 }
 
+function notificationKey(notification: NotificationSnapshotItem): string {
+    return notification.id || [notification.created_at ?? '', notification.kind, notification.message].join('|');
+}
+
+function dedupeNotifications(notifications: NotificationSnapshotItem[]): NotificationSnapshotItem[] {
+    const seen = new Set<string>();
+    const deduped: NotificationSnapshotItem[] = [];
+    for (const notification of notifications) {
+        const key = notificationKey(notification);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        deduped.push(notification);
+    }
+    return deduped.slice(0, 100);
+}
+
 export function startNotificationsStream(): () => void {
     if (events) return () => undefined;
     if (typeof EventSource === 'undefined') return () => undefined;
@@ -40,16 +56,21 @@ export function startNotificationsStream(): () => void {
     events.addEventListener('heartbeat', (event) => {
         const heartbeat = parseHeartbeat(event as MessageEvent<string>);
         if (!heartbeat) return;
+        const notifications = dedupeNotifications([...heartbeat.notifications, ...snapshot.notifications]);
         emit({
             connected: true,
-            notifications: heartbeat.notifications,
+            notifications,
             lastHeartbeat: new Date().toISOString(),
+            ...(heartbeat.error ? { error: heartbeat.error.message } : {}),
         });
     });
     events.onerror = () => {
-        emit({ ...snapshot, connected: false, error: 'Notification stream disconnected.' });
-        events?.close();
-        events = null;
+        if (snapshot.lastHeartbeat) return;
+        emit({
+            ...snapshot,
+            connected: false,
+            error: 'Waiting for live notification updates. Dashboard data is still available.',
+        });
     };
     return () => {
         events?.close();

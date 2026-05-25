@@ -114,19 +114,34 @@ Stream F is the first user of `MaskingSession` for outbound LLM prompt masking. 
 
 ## Runtime enforcement switches
 
-Memorum separates the non-negotiable secret-refusal invariant from dogfood-time privacy friction. At daemon startup, `memoryd serve` loads the per-device `local-device.yaml` privacy block and installs it once with `memory_privacy::install_runtime_enforcement(...)`. If no runtime config has been installed, the privacy crate falls back to `PrivacyEnforcement::paranoid()` so standalone library callers stay safe by default.
+Memorum separates the non-negotiable secret-refusal invariant from optional
+local test friction. At daemon startup, `memoryd serve` loads the per-device
+`local-device.yaml` privacy block and installs it once with
+`memory_privacy::install_runtime_enforcement(...)`. Fresh configs and missing
+runtime configs fall back to `PrivacyEnforcement::paranoid()` so alpha dogfood
+and standalone library callers stay safe by default.
 
 The local-only config shape is:
 
 ```yaml
 privacy:
-  classifier: false
-  encryption: false
-  masking: false
+  classifier: true
+  encryption: true
+  masking: true
 ```
 
-`classifier` controls the full PII classifier. When it is off, `DeterministicPrivacyClassifier::new()` still runs the always-on secret scan for AWS/GitHub/Stripe tokens, PEM private keys, JWTs, SSNs, Luhn-valid card numbers, and credential-like high-entropy tokens; any hit returns `PrivacyStorageAction::Refuse` before disk effects. Non-secret content returns trusted plaintext so the rest of the dogfood stack can be exercised on real engineering content.
+`classifier` controls the full PII classifier. When it is deliberately turned
+off for local testing, `DeterministicPrivacyClassifier::new()` still runs the
+always-on secret scan for AWS/GitHub/Stripe tokens, PEM private keys, JWTs,
+SSNs, Luhn-valid card numbers, and credential-like high-entropy tokens; any hit
+returns `PrivacyStorageAction::Refuse` before disk effects. Non-secret content
+returns trusted plaintext in that explicit low-friction mode.
 
-`encryption` controls whether labels that normally route to `EncryptAtRest` actually take the encrypted storage path. With `classifier: true` and `encryption: false`, the classifier still records private spans, but the storage action is downgraded to plaintext for dogfood. `masking` is reserved for masking-session consumers and is installed with the same runtime flag set.
+`encryption` controls whether labels that normally route to `EncryptAtRest`
+actually take the encrypted storage path. With `classifier: true` and
+`encryption: false`, the classifier still records private spans, but the
+storage action is downgraded to plaintext for explicit local tests. `masking`
+is reserved for masking-session consumers and is installed with the same runtime
+flag set.
 
 Environment parsing helpers accept `MEMORUM_PRIVACY_CLASSIFIER`, `MEMORUM_PRIVACY_ENCRYPTION`, and `MEMORUM_PRIVACY_MASKING` with `on/off`, `true/false`, `1/0`, or `yes/no`. These switches are per-device runtime state and must not be added to synced `config.yaml`.

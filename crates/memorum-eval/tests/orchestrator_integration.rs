@@ -215,6 +215,54 @@ fn output_file_receives_same_json_report_as_stdout() {
     );
 }
 
+#[test]
+fn required_alpha_release_set_rejects_feature_deferred_required_coverage() {
+    let fake_bin = std::env::temp_dir().join(format!("memorum-eval-required-alpha-cargo-{}.sh", unique_suffix()));
+    fs::write(
+        &fake_bin,
+        "#!/bin/sh\nprintf 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\\n'\nprintf 'MEMORUM_EVAL_SKIP:STREAM_D_ROTATION_CONTRACT_NOT_SHIPPED\\n'\nexit 0\n",
+    )
+    .expect("write fake cargo");
+    let mut perms = fs::metadata(&fake_bin).expect("fake cargo metadata").permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&fake_bin, perms).expect("chmod fake cargo");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_memorum-eval"))
+        .env("MEMORUM_EVAL_CARGO", &fake_bin)
+        .args(["--harness", "mock", "--filter", "18", "--required-release-set", "alpha", "--output", "json"])
+        .output()
+        .expect("run memorum-eval");
+
+    assert!(!output.status.success(), "alpha release set must fail on required feature-deferred coverage");
+    let report = json_stdout(output);
+    assert_eq!(report["required_release_set"], "alpha");
+    assert!(
+        report["release_blockers"].as_array().is_some_and(|blockers| !blockers.is_empty()),
+        "release blockers should explain the deferred required coverage: {report:#?}"
+    );
+
+    let _ = fs::remove_file(fake_bin);
+}
+
+#[test]
+fn required_alpha_release_set_passes_when_required_simulator_coverage_is_not_deferred() {
+    let fake_cargo = fake_passing_cargo();
+    let output = Command::new(env!("CARGO_BIN_EXE_memorum-eval"))
+        .args(["--harness", "mock", "--required-release-set", "alpha", "--output", "json"])
+        .env("MEMORUM_EVAL_CARGO", &fake_cargo)
+        .output()
+        .expect("spawn memorum-eval");
+
+    assert!(output.status.success(), "fixed required alpha simulator coverage should pass: {}", diagnostic(&output));
+    let report = json_stdout(output);
+    assert_eq!(report["required_release_set"], "alpha");
+    assert_eq!(
+        report["release_blockers"].as_array().expect("release_blockers should be an array").len(),
+        0,
+        "fixed alpha set should not report release blockers: {report:#?}"
+    );
+}
+
 fn memorum_eval<const N: usize>(args: [&str; N]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_memorum-eval")).args(args).output().expect("spawn memorum-eval")
 }

@@ -22,7 +22,7 @@ pub use decision::{
 };
 pub use descriptor::{safe_descriptor_projection, SafeDescriptorProjection};
 pub use error::{PrivacyError, PrivacyResult};
-pub use keys::{FileKeyProvider, KeyMaterial, KeyProvider};
+pub use keys::{FileKeyProvider, KeyMaterial, KeyProvider, KeyRotation};
 pub use masking::{MaskingSession, MaskingSessionId};
 pub use policy::{
     install_runtime_enforcement, AlreadyInstalled, CallerSensitivity, PrivacyEnforcement, PrivacyPolicy,

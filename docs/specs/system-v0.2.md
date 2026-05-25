@@ -230,11 +230,11 @@ Unchanged from v0.1 §4 and shipped per Stream A v1.1 §3 + Stream B's `RequestP
   - Review queue, reality-check scheduler, notification dispatcher.
   - Recall assembly (startup + delta) and peer-update relevance gate (Stream I).
   - Local web dashboard (opt-in, `http://localhost:7137`, Stream G).
-  - TUI rendering (`memory ui`, Stream G).
+  - TUI rendering (`memoryd ui`, Stream G).
 
 **Upgrade path:** daemon supports graceful reload. New daemon binary starts on a new socket path; clients reconnect on version-mismatch signal; old daemon drains and exits.
 
-**Lazy-start fallback:** if `memoryd` isn't running when an MCP client connects (e.g., during install), the client spawns it. Same daemon, lazy-initialized.
+**Current alpha MCP startup:** operators start `memoryd serve` first, then MCP clients run the stdio bridge `memoryd mcp --socket <socket_path>`. Lazy-start fallback remains a release-target behavior unless implemented and covered by the MCP bridge tests.
 
 Unchanged from v0.1 §5 and validated by Stream B's shipped supervisor (`serve_substrate_with(socket, substrate, options, shutdown_rx)`).
 
@@ -453,6 +453,12 @@ The v1 contract is ten MCP tools. No further tool addition or removal in v1.x. N
 
 **2026-05-07 amendment:** v1 MCP surface ratified at 10 tools (adds `memory_capture_source`, shipped 2026-05-06 in commit `ab66a34`). Surface frozen at 10 for v1.x. Daemon-protocol commands (`Status`, `Doctor`, `RealityCheck`, peer admin, etc.) are not part of the MCP surface and are exposed via the daemon socket only.
 
+**2026-05-25 alpha hardening note:** the canonical library manifest remains the
+ten-tool v1 contract, but the shipped `memoryd mcp` stdio bridge hides
+`memory_reveal` unless launched with `--allow-reveal`. This narrows normal
+dogfood sessions without changing the explicit reveal contract for
+user-authorized encrypted-content access.
+
 | # | Tool | Stream | Purpose |
 |---|---|---|---|
 | 1 | `memory_search` | A/B | hybrid keyword + vector + recency search across in-scope namespaces |
@@ -464,7 +470,7 @@ The v1 contract is ten MCP tools. No further tool addition or removal in v1.x. N
 | 7 | `memory_note` | A/B | substrate-layer write; cheap, no governance gates beyond Privacy Filter; feeds dreaming |
 | 8 | `memory_reveal` | D | audited unmask of an encrypted memory; bounded reason validation |
 | 9 | `memory_observe` | F | dream-substrate fragment write; entity-bearing; never becomes a canonical memory directly |
-| 10 | `memory_capture_source` | Source grounding | capture a public HTTP(S) source as a local verified `webcap:` artifact |
+| 10 | `memory_capture_source` | Source grounding | capture supported deterministic sources (`http_static`, `local_artifact`) as local verified `webcap:` artifacts; richer browser/PDF/auth modes are typed unsupported in alpha |
 
 Schemas as documented in:
 
@@ -512,7 +518,8 @@ memoryd privacy {scan,classify,decisions}
 memoryd privacy-filter {enable,disable,status}
 memoryd recall {startup-block,delta-block}     # Tier 1 hook entry points
 memoryd peer {status,activity}                 # Stream I surfaces
-memoryd init                                    # bootstrap wizard
+memoryd serve --init                            # current alpha bootstrap
+# memoryd init                                  # release-target bootstrap wizard, not current alpha
 memoryd ui                                      # Stream G TUI
 memoryd web {enable,disable,status}             # Stream G dashboard
 memoryd {start,stop,restart,reload,logs}
@@ -795,7 +802,7 @@ Stream H ships:
 
 Implementation note as of 2026-05-24: alpha bootstrap is `memoryd serve --init` plus `scripts/install-memorum.sh`; the full interactive `memoryd init` wizard remains a release-shape target and is not the current alpha entrypoint.
 
-`memoryd init` is an **interactive wizard by default**, with **flag overrides for every prompt** and **`--non-interactive` for scripts**. Flow:
+Release-target `memoryd init` is an **interactive wizard by default**, with **flag overrides for every prompt** and **`--non-interactive` for scripts**. Flow:
 
 1. **Welcome + license acknowledgment.** Apache 2.0 displayed; user acknowledges.
 2. **Memory tree location.** Prompt with default `~/.memory/`. `--memory-dir <path>` overrides.

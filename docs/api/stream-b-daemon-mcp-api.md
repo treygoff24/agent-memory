@@ -19,25 +19,46 @@ The MCP manifest exposes ten tools:
 
 ## `memory_capture_source`
 
-`memory_capture_source` captures a public HTTP(S) source as a local verified `webcap:` artifact before the agent writes a grounded memory.
+`memory_capture_source` captures a daemon-mediated source as a local verified `webcap:` artifact before the agent writes a grounded memory. Alpha supports deterministic-first capture only:
+
+- `http_static`: public HTTP(S) text/HTML fetched by the daemon.
+- `local_artifact`: an operator-visible local file captured by path.
+
+The schema also names `pdf_text`, `browser_rendered`, `screenshot`, and `authenticated` so clients can request them explicitly, but those modes fail closed with typed unsupported errors in this alpha. No browser cookies, screenshots, OCR, authenticated browser state, model privacy classifier toggles, key paths, raw key material, or privacy-bypass fields are accepted from MCP clients.
 
 Input:
 
 ```json
 {
-  "url": "https://example.com/report",
+  "source": "https://example.com/report",
+  "mode": "http_static",
   "excerpts": ["exact quote present on the page"],
   "note": "optional operator context"
 }
 ```
 
-Output includes `artifact_id`, one or more `source_refs`, the redacted `final_url`, capture timestamp, capture status, and warnings.
+Local artifact input:
+
+```json
+{
+  "source": "local-alpha-runbook",
+  "mode": "local_artifact",
+  "local_path": "/absolute/path/to/runbook.md",
+  "excerpts": ["exact quote present in the file"]
+}
+```
+
+Output includes `artifact_id`, one or more `source_refs`, the resolved capture `mode`, the redacted `final_url`, capture timestamp, capture status, and warnings.
 
 Rules:
 
 - URL fetching is daemon-mediated only.
-- Local/private network targets, embedded credentials, unsafe schemes, oversized bodies, and unsupported content fail closed.
+- `url` remains accepted as a backward-compatible alias for `source`, but new clients should send `source`.
+- Local/private network targets, embedded credentials, unsafe schemes, oversized bodies, unsupported content, and path traversal fail closed.
+- `local_artifact` requires `local_path`; HTTP modes must not send `local_path`.
 - Sensitive query parameters and redirect `Location` values are redacted before URLs are persisted.
+- Additional fields are rejected by the MCP parser.
+- `memory_reveal` is part of the v1 MCP contract, but the stdio bridge hides it by default; expose it only with `memoryd mcp --socket <path> --allow-reveal`.
 
 ## `memory_note`
 

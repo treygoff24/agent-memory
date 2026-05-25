@@ -44,6 +44,10 @@
    scripts/install-launchd.sh --repo "$MEMORUM_REPO" --runtime "$MEMORUM_RUNTIME"
    ```
 
+   You can also have the installer invoke the same launchd setup with
+   `scripts/install-memorum.sh --with-scheduler ...`; this works even when the
+   installer is called by absolute path from outside the repo root.
+
 6. Optional manual dream:
 
    ```bash
@@ -54,8 +58,16 @@
 
    ```bash
    memoryd web enable --socket "$MEMORUM_SOCKET"
+   curl -fsS http://127.0.0.1:7137/api/status >/dev/null
+   curl -fsS 'http://127.0.0.1:7137/api/roi?window=90' >/dev/null
+   curl -fsS --max-time 3 -N http://127.0.0.1:7137/api/notifications/stream || true
+   curl -fsS http://127.0.0.1:7137/api/policy-editor >/dev/null
    open http://127.0.0.1:7137
    ```
+
+   `/api/roi` is not full business ROI. It is the alpha operational metric set
+   for promotion/refusal/dream/Reality Check signals, and daemon mode should
+   return live or zero metrics rather than fixture/deferred data.
 
 8. Weekly Reality Check:
 
@@ -82,7 +94,18 @@ release tests, durability, convergence, or benches.
 Use `./scripts/check-dogfood.sh` before installing. It calls the fast gate, then
 adds the focused dogfood tests for the Recall TUI panel, panic restore, doctor
 health, startup recall peer-update references, live-harness skip honesty without
-provider keys, and the minimal `memoryd` feature compile.
+provider keys, minimal `memoryd` feature compile, daemon-backed dashboard ROI,
+notifications SSE, local-artifact source capture, policy GET/validate/write,
+and the eval alpha release-set dry run.
+
+The dogfood gate intentionally fails if an alpha surface is still a fixture,
+placeholder, or unclassified deferral. Acceptable alpha skips must say why they
+are unsupported alpha scope, such as browser-rendered source capture, device
+pairing, or model/semantic privacy classification.
+
+`check-dogfood.sh` chooses a free local web smoke port in the 7137-7199 range.
+Set `MEMORUM_DOGFOOD_WEB_PORT=7137` only when you specifically want to force the
+normal dashboard port.
 
 Reserve `bash scripts/check.sh` for release confidence. It is intentionally
 broader and slower than the dogfood bar.

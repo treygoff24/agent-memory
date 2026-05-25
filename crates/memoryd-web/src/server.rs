@@ -17,7 +17,7 @@ use crate::config::WebConfig;
 use crate::routes::{
     audit, audit_temporal, audit_walk, entity_detail, entity_graph, notifications_stream, policy_editor_get,
     policy_editor_post, reality_check, reality_check_history, reality_check_respond, recall_hits, review_action,
-    review_queue, roi, status, sync_dashboard,
+    review_queue, roi, search, status, sync_dashboard,
 };
 use crate::state::WebState;
 
@@ -54,6 +54,7 @@ pub fn router_with_state(state: WebState) -> Router {
         .route("/api/reality-check", get(reality_check))
         .route("/api/reality-check/history", get(reality_check_history))
         .route("/api/recall-hits", get(recall_hits))
+        .route("/api/search", get(search))
         .route("/api/audit/{id}", get(audit))
         .route("/api/audit/{id}/walk", get(audit_walk))
         .route("/api/audit/{id}/temporal", get(audit_temporal))

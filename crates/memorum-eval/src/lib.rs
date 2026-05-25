@@ -57,7 +57,7 @@ macro_rules! eval_assert_eq {
 use std::path::PathBuf;
 
 use clap::Parser;
-use orchestrator::{HarnessMode, OutputFormat};
+use orchestrator::{HarnessMode, OutputFormat, RequiredReleaseSet};
 
 #[derive(Debug, Parser)]
 #[command(name = "memorum-eval", bin_name = "memorum-eval", version, about = "Memorum eval harness orchestrator")]
@@ -97,6 +97,10 @@ pub struct EvalCli {
     /// Print per-step output as tests run.
     #[arg(short = 'v', long)]
     pub verbose: bool,
+
+    /// Fail if a required release coverage set still has deferred semantic tests.
+    #[arg(long, value_enum)]
+    pub required_release_set: Option<RequiredReleaseSet>,
 }
 
 impl EvalCli {
@@ -112,6 +116,7 @@ impl EvalCli {
             workers: self.workers,
             no_cleanup: self.no_cleanup,
             verbose: self.verbose,
+            required_release_set: self.required_release_set,
         }
     }
 }

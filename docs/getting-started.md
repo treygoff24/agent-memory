@@ -7,10 +7,22 @@ This guide starts a local memory daemon, verifies it, and wires an MCP client to
 From the repo root:
 
 ```bash
-cargo install --path crates/memoryd
-cargo install --path crates/memoryd-tui
-cargo install --path crates/memoryd-web
+bash scripts/install-memorum.sh --force-reinstall --repo "$HOME/memorum" --runtime "$HOME/memorum/.memoryd"
 ```
+
+The installer builds the dogfood operator binaries (`memoryd`, `memoryd-tui`,
+`memoryd-web`, and `memoryd-merge-driver`) and prints MCP client snippets with
+an absolute socket path. If you prefer a manual install, use the same binary set:
+
+```bash
+cargo install --path crates/memoryd --locked
+cargo install --path crates/memoryd-tui --locked
+cargo install --path crates/memoryd-web --locked
+cargo install --path crates/memory-merge-driver --locked
+```
+
+`memorum-eval` is separate development/eval tooling; install it only when you
+are running evals or release validation.
 
 For checkout-only development, prefix commands with `cargo run --bin memoryd --` instead of installing.
 
@@ -57,7 +69,12 @@ Add this to your MCP-capable client config. Replace the placeholder socket path 
 }
 ```
 
-Restart the client. It should list Memorum tools such as `memory_search`, `memory_get`, `memory_write`, `memory_supersede`, `memory_forget`, `memory_reveal`, `memory_startup`, `memory_note`, and `memory_observe`.
+Restart the client. In the default dogfood-safe mode it should list Memorum
+tools such as `memory_search`, `memory_get`, `memory_write`,
+`memory_supersede`, `memory_forget`, `memory_startup`, `memory_note`,
+`memory_observe`, and `memory_capture_source`. `memory_reveal` returns
+decrypted encrypted content, so the stdio bridge exposes it only when launched
+with `--allow-reveal` for an explicit, user-authorized reveal session.
 
 ## 5. First write/search round-trip
 
@@ -79,3 +96,34 @@ memoryd ui --socket "$MEMORUM_SOCKET"
 ```
 
 The web dashboard exposes status, Reality Check, review, audit, and `/api/recall-hits` for recent recall-hit events.
+Alpha dashboard ROI is operational telemetry over promotion/refusal/dream/Reality
+Check signals, not full business ROI. Device pairing is unsupported alpha scope,
+and browser-rendered source capture is unsupported alpha scope, unless a later
+daemon route explicitly lands them; controls for unsupported work should be
+disabled rather than inert.
+
+## 7. Optional source grounding smoke
+
+For a public static HTTP(S) page:
+
+```bash
+memoryd source capture \
+  --socket "$MEMORUM_SOCKET" \
+  --url https://example.com/report \
+  --excerpt 'exact quote present in extracted page text'
+```
+
+For a local text/HTML export:
+
+```bash
+memoryd source capture \
+  --socket "$MEMORUM_SOCKET" \
+  --file /absolute/path/to/exported-report.html \
+  --mode local-artifact \
+  --excerpt 'exact quote present in the exported artifact'
+```
+
+Source grounding does not support browser-rendered capture, authenticated
+browser sessions, screenshots/OCR, client-supplied key paths, or privacy bypass
+flags in alpha. The model privacy filter remains unsupported; deterministic
+privacy checks still apply and unsafe plaintext fails closed.

@@ -4,11 +4,10 @@ use serde::{Deserialize, Serialize};
 
 /// Runtime privacy enforcement flags.
 ///
-/// These are local-device settings, not synced repository policy. The dogfood
-/// default keeps the full classifier/encryption/masking stack off while the
-/// secret-refusal invariant remains enforced by `memory-privacy`'s always-on
-/// secret-only scanner. Use [`PrivacyEnforcement::paranoid`] for the eventual
-/// ship default.
+/// These are local-device settings, not synced repository policy. Fresh
+/// installs default to the full classifier/encryption/masking stack so alpha
+/// dogfood does not silently persist common PII in plaintext. Use
+/// [`PrivacyEnforcement::dogfood`] only for deliberate low-friction local tests.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PrivacyEnforcement {
     /// Run the full PII/privacy classifier in addition to the always-on secret scan.
@@ -23,12 +22,12 @@ pub struct PrivacyEnforcement {
 }
 
 impl PrivacyEnforcement {
-    /// Dogfood default: exercise the stack without full privacy friction.
+    /// Low-friction mode for deliberate local tests.
     pub const fn dogfood() -> Self {
         Self { classifier: false, encryption: false, masking: false }
     }
 
-    /// Safe production fallback used before runtime config is installed.
+    /// Safe default used before runtime config is installed.
     pub const fn paranoid() -> Self {
         Self { classifier: true, encryption: true, masking: true }
     }
@@ -40,7 +39,7 @@ impl PrivacyEnforcement {
         Ok(enforcement)
     }
 
-    /// Parse supported environment overrides on top of the dogfood default.
+    /// Parse supported environment overrides on top of the safe default.
     pub fn from_env() -> Result<Self, String> {
         let mut enforcement = Self::default();
         apply_bool_env("MEMORUM_PRIVACY_CLASSIFIER", &mut enforcement.classifier)?;
@@ -59,7 +58,7 @@ impl PrivacyEnforcement {
 
 impl Default for PrivacyEnforcement {
     fn default() -> Self {
-        Self::dogfood()
+        Self::paranoid()
     }
 }
 

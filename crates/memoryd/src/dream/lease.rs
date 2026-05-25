@@ -161,6 +161,9 @@ pub fn acquire_manual_lease_with_git(
         git.fetch_origin(&request.repo)?;
         if !request.force {
             if let Some(active) = active_lease(&lease_path, &request.scope, request.now)? {
+                if active.device == device_id {
+                    return Ok(LeaseAcquired { record: active, report: stub_report(&request) });
+                }
                 return Err(LeaseError::Held { scope: request.scope, by_device: active.device });
             }
         }

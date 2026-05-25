@@ -52,11 +52,12 @@ async fn test_daemon_backed_entity_graph_and_detail_return_live_entities() {
     assert_eq!(detail["entity_id"], "ent_agent_memory");
     assert_eq!(detail["label"], "agent-memory");
     assert!(detail["mentions"].as_array().expect("mentions array").iter().any(|mention| mention == memory_id.as_str()));
-    assert!(detail["related_memories"]
-        .as_array()
-        .expect("related memories array")
-        .iter()
-        .any(|memory| memory["id"] == memory_id.as_str()));
+    assert!(detail["related_memories"].as_array().expect("related memories array").iter().any(|memory| {
+        memory["id"] == memory_id.as_str()
+            && memory["namespace"] == "user"
+            && memory["status"] == "pinned"
+            && memory["confidence"] == 0.9
+    }));
     assert_ne!(detail["status"], "not_implemented");
 
     daemon.shutdown().await;

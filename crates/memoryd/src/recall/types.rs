@@ -9,6 +9,7 @@ pub const DEFAULT_STARTUP_BUDGET_TOKENS: usize = 3_600;
 pub const DEFAULT_DELTA_BUDGET_TOKENS: usize = 400;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StartupRequest {
     pub cwd: String,
     pub session_id: String,

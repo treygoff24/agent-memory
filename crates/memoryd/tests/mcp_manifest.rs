@@ -1,6 +1,8 @@
 use std::path::Path;
 
-use memoryd::mcp::{forward_payload_to_daemon, manifest, request_from_args, ObserveKindRequest, ToolName, ToolRequest};
+use memoryd::mcp::{
+    forward_payload_to_daemon, manifest, request_from_args, stdio_manifest, ObserveKindRequest, ToolName, ToolRequest,
+};
 use memoryd::protocol::{ObserveResponse, ObserveTarget, PeerHeartbeat, RequestPayload, ResponseResult};
 
 #[test]
@@ -24,6 +26,23 @@ fn mcp_manifest_declares_exact_agent_facing_tools_in_order() {
         ]
     );
     assert_eq!(manifest.tools.len(), 10);
+}
+
+#[test]
+fn mcp_stdio_manifest_hides_memory_reveal_unless_explicitly_allowed() {
+    let default_stdio = stdio_manifest(false);
+    assert!(
+        default_stdio.tools.iter().all(|tool| tool.name != "memory_reveal"),
+        "stdio MCP bridge must not expose memory_reveal by default"
+    );
+    assert_eq!(default_stdio.tools.len(), 9);
+
+    let reveal_stdio = stdio_manifest(true);
+    assert!(
+        reveal_stdio.tools.iter().any(|tool| tool.name == "memory_reveal"),
+        "--allow-reveal must restore the v1 reveal tool for explicit sessions"
+    );
+    assert_eq!(reveal_stdio.tools.len(), 10);
 }
 
 #[test]
@@ -220,20 +239,35 @@ fn tool_name_conversion_accepts_memory_observe() {
 }
 
 #[test]
-fn mcp_manifest_memory_capture_source_schema_has_no_bypass_flags() {
+fn mcp_manifest_memory_capture_source_schema_has_modes() {
     let manifest = manifest();
     let tool = manifest.tools.iter().find(|tool| tool.name == "memory_capture_source").expect("capture tool");
 
-    assert_eq!(tool.input_schema["required"], serde_json::json!(["url", "excerpts"]));
+    assert_eq!(tool.input_schema["required"], serde_json::json!(["source", "excerpts"]));
     assert_eq!(tool.input_schema["additionalProperties"], serde_json::json!(false));
+    assert_eq!(
+        tool.input_schema["properties"]["mode"]["enum"],
+        serde_json::json!([
+            "http_static",
+            "local_artifact",
+            "pdf_text",
+            "browser_rendered",
+            "screenshot",
+            "authenticated"
+        ])
+    );
+    assert!(tool.input_schema["properties"].get("local_path").is_some());
     assert!(tool.input_schema["properties"].get("allow_private_network").is_none());
-    assert!(tool.input_schema["properties"].get("local_file").is_none());
+    assert!(tool.input_schema["properties"].get("key_path").is_none());
+    assert!(tool.input_schema["properties"].get("raw_key").is_none());
     assert!(tool.input_schema["properties"].get("auth").is_none());
 
     let request = request_from_args(
         ToolName::try_from("memory_capture_source").expect("capture tool parses"),
         serde_json::json!({
-            "url": "https://example.com/report",
+            "source": "local:evidence.md",
+            "mode": "local_artifact",
+            "local_path": "/tmp/evidence.md",
             "excerpts": ["exact quote"],
             "note": "safe note"
         }),
@@ -243,7 +277,23 @@ fn mcp_manifest_memory_capture_source_schema_has_no_bypass_flags() {
     let ToolRequest::MemoryCaptureSource(args) = request else {
         panic!("expected MemoryCaptureSource request");
     };
+    assert_eq!(args.source, "local:evidence.md");
+    assert_eq!(args.mode, memoryd::protocol::CaptureSourceMode::LocalArtifact);
+    assert_eq!(args.local_path.as_deref(), Some(Path::new("/tmp/evidence.md")));
     assert_eq!(args.excerpts, vec!["exact quote"]);
+}
+
+#[test]
+fn mcp_capture_source_rejects_external_key_material_and_bypass_flags() {
+    for field in ["key_path", "raw_key", "key_material", "allow_private_network", "privacy_bypass"] {
+        let mut args = serde_json::json!({
+            "source": "https://example.com/report",
+            "excerpts": ["exact quote"]
+        });
+        args.as_object_mut().expect("object args").insert(field.to_string(), serde_json::json!(true));
+        let error = request_from_args(ToolName::CaptureSource, args).expect_err("unsafe field must be rejected");
+        assert!(error.to_string().contains(field), "unexpected error for {field}: {error}");
+    }
 }
 
 #[test]
@@ -258,6 +308,56 @@ fn memory_note_rejects_kind_instead_of_becoming_observe() {
     .expect_err("memory_note must not accept observe-only kind");
 
     assert!(error.to_string().contains("unknown field `kind`"), "unexpected error for extra kind: {error}");
+}
+
+#[test]
+fn mcp_tool_args_reject_unknown_fields_for_every_tool() {
+    for (tool, args) in [
+        (ToolName::Search, serde_json::json!({ "query": "cache", "extra": true })),
+        (ToolName::Get, serde_json::json!({ "id": "mem_20260525_abcdef1234567890_000001", "extra": true })),
+        (ToolName::Write, serde_json::json!({ "body": "alpha dogfood note", "extra": true })),
+        (
+            ToolName::Supersede,
+            serde_json::json!({
+                "old_id": "mem_20260525_abcdef1234567890_000001",
+                "new_body": "replacement",
+                "reason": "fix stale text",
+                "extra": true
+            }),
+        ),
+        (
+            ToolName::Forget,
+            serde_json::json!({
+                "id": "mem_20260525_abcdef1234567890_000001",
+                "reason": "user requested removal",
+                "extra": true
+            }),
+        ),
+        (
+            ToolName::Reveal,
+            serde_json::json!({
+                "id": "mem_20260525_abcdef1234567890_000001",
+                "reason": "user asked to reveal encrypted note",
+                "extra": true
+            }),
+        ),
+        (
+            ToolName::Startup,
+            serde_json::json!({ "cwd": "/tmp", "session_id": "sess", "harness": "codex", "extra": true }),
+        ),
+        (ToolName::Note, serde_json::json!({ "text": "dogfood note", "extra": true })),
+        (ToolName::Observe, serde_json::json!({ "text": "signal", "kind": "signal", "extra": true })),
+        (
+            ToolName::CaptureSource,
+            serde_json::json!({ "url": "https://example.com", "excerpts": ["quote"], "extra": true }),
+        ),
+    ] {
+        let error = request_from_args(tool, args).expect_err("unknown fields must be rejected");
+        assert!(
+            error.to_string().contains("unknown field `extra`"),
+            "{tool} accepted or misreported an extra field: {error}"
+        );
+    }
 }
 
 #[test]

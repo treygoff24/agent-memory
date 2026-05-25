@@ -18,6 +18,7 @@ export const apiRouteIds = [
     'GET /api/reality-check/history',
     'POST /api/reality-check/respond',
     'GET /api/recall-hits',
+    'GET /api/search',
     'GET /api/audit/:id',
     'GET /api/audit/:id/walk',
     'GET /api/audit/:id/temporal',
@@ -398,6 +399,23 @@ function recallHitsPayload(scenario: ApiScenario, url: globalThis.URL) {
     };
 }
 
+function searchPayload(scenario: ApiScenario, url: globalThis.URL) {
+    const query = url.searchParams.get('q') ?? '';
+    if (scenario === 'empty' || query.trim().length === 0) return { hits: [], total: 0, guidance: 'No matches.' };
+    return {
+        hits: [
+            {
+                id: 'mem_20260507_a1b2c3d4e5f60718_000010',
+                summary: `Project uses pnpm, never npm`,
+                snippet: `Matched ${query} in project memory.`,
+                score: 0.91,
+            },
+        ],
+        total: 1,
+        guidance: 'Search returns bounded matching chunks; call memory_get for the bounded record preview.',
+    };
+}
+
 function auditPayload(pathname: string) {
     const id = pathname.split('/')[3] || 'mem_20260507_a1b2c3d4e5f60718_000010';
     return {
@@ -510,6 +528,7 @@ function policyPayload() {
         raw_yaml: 'name: project-standard\nversion: 2\nscope: project\nconfidence_floor: 0.7\n',
         writable: true,
         files: ['project-standard.yaml'],
+        current_file: 'project-standard.yaml',
         policies: [
             {
                 scope: 'project',
@@ -529,15 +548,15 @@ function notificationsStream(): ApiMockResponse {
         notifications: [
             {
                 id: 'notif_review_threshold',
-                title: 'Review queue over threshold',
-                body: 'Governance queue has crossed the warning threshold.',
+                kind: 'passive',
+                message: 'Governance queue has crossed the warning threshold.',
                 tone: 'warn',
                 created_at: now,
             },
             {
                 id: 'notif_dream_scheduled',
-                title: 'Dream run scheduled for 03:00',
-                body: 'Nightly synthesis pass is queued.',
+                kind: 'passive',
+                message: 'Nightly synthesis pass is queued.',
                 tone: 'ok',
                 created_at: now,
             },
@@ -611,6 +630,7 @@ export function payloadForApiRequest(
         });
     }
     if (method === 'GET' && url.pathname === '/api/recall-hits') return jsonResponse(recallHitsPayload(scenario, url));
+    if (method === 'GET' && url.pathname === '/api/search') return jsonResponse(searchPayload(scenario, url));
     if (method === 'GET' && /^\/api\/audit\/[^/]+$/.test(url.pathname)) return jsonResponse(auditPayload(url.pathname));
     if (method === 'GET' && url.pathname.endsWith('/walk')) {
         return jsonResponse({

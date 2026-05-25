@@ -1,6 +1,10 @@
 # Stream H Eval API
 
-`memorum-eval` is the Stream H command-line orchestrator for the Memorum eval harness. It lists a 19-test catalog: 17 active tests plus 2 explicitly deferred tracking tests (#17/#18), plus future regression tests under `crates/memorum-eval/tests/eval/regression/`.
+`memorum-eval` is the Stream H command-line orchestrator for the Memorum eval
+harness. It lists the alpha catalog plus permanent regressions under
+`crates/memorum-eval/tests/eval/regression/`. The alpha release-set must not
+contain deferred required tests; if a semantic path is not exercised, the
+release-set gate fails instead of reporting a pass.
 
 ## CLI
 
@@ -16,6 +20,10 @@ Options:
   --output-file <PATH>   Write the JSON report to a file in addition to stdout.
   --timeout <SECONDS>    Per-test timeout override. Use 0 only to verify timeout handling.
   --workers <N>          Parallel worker count for parallel-group simulator tests. Default: 4.
+  --required-release-set <SET>
+                         Enforce a release-set contract such as alpha. The alpha
+                         set fails if any required catalog entry is deferred or
+                         skipped for a non-accepted reason.
   --no-cleanup           Preserve temporary test trees for debugging.
   --list                 Print catalog entries and exit 0.
   -v, --verbose          Print per-test progress diagnostics to stderr.
@@ -71,7 +79,10 @@ Field notes:
 - `partial` is true when any test is skipped.
 - `missing_credentials` is populated only for partial runs.
 - Each test entry always includes `deferred`, `failure_detail`, `skip_reason`, and `skip_kind`; absent optional values are JSON `null`.
-- `skip_kind` is `auth_missing`, `feature_deferred`, or `runtime_self_skip`. T17/T18 use `feature_deferred` in v1 because their upstream Stream F/D contracts are not shipped.
+- `skip_kind` is `auth_missing`, `feature_deferred`, or `runtime_self_skip`.
+  `feature_deferred` may appear in exploratory/non-release runs, but
+  `--required-release-set alpha` treats required deferred entries as a gate
+  failure.
 - Test statuses are `passed`, `failed`, or `skipped`.
 - Test modes are `simulator` or `real_harness`.
 - Test groups are `handbook`, `domain`, or `regression`.
@@ -84,6 +95,17 @@ Field notes:
 |    1 | One or more tests failed, or a non-mock full run skipped because required auth was missing.                                                           |
 |    2 | Internal orchestrator error, such as invalid worker count, no tests matching `--filter`, socket/scaffold setup failure, or output-file write failure. |
 |    3 | One or more tests exceeded the configured timeout.                                                                                                    |
+
+## Alpha release-set dry run
+
+The dogfood/release dry run is:
+
+```bash
+memorum-eval --harness mock --required-release-set alpha --output json
+```
+
+This mode is allowed to report accepted real-harness auth skips in mock mode,
+but it must report zero deferred required alpha tests.
 
 ## Test catalog
 
@@ -105,8 +127,8 @@ Field notes:
 |  14 | `merge_driver_semantic_correctness`  | domain     | simulator    | no       | serial    |
 |  15 | `privacy_filter_refusal_retry`       | domain     | real_harness | no       | serial    |
 |  16 | `reality_check_drift_scoring_sanity` | domain     | simulator    | no       | parallel  |
-|  17 | `lease_contention_resolution`        | domain     | simulator    | yes      | serial    |
-|  18 | `encrypted_tier_key_rotation`        | domain     | simulator    | yes      | serial    |
+|  17 | `lease_contention_resolution`        | domain     | simulator    | no       | serial    |
+|  18 | `encrypted_tier_key_rotation`        | domain     | simulator    | no       | serial    |
 |  19 | `peer_update_framing_correctness`    | regression | real_harness | no       | serial    |
 
 See `docs/runbooks/eval-real-harness-ci.md` for wiring real-harness secrets in GitHub Actions.

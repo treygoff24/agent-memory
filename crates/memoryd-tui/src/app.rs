@@ -803,7 +803,8 @@ fn render_socket_unreachable(frame: &mut Frame<'_>, area: Rect, socket_state: &S
         Line::from(format!("Socket: {}", path.display())),
         Line::from(format!("Error:  {error}")),
         Line::from(""),
-        Line::from("Run `memoryd start` to start the daemon."),
+        Line::from("Run `memoryd serve --init` to initialize and start the daemon."),
+        Line::from("Or run the Memorum installer if memoryd is not installed yet."),
         Line::from("Ctrl-r to retry. q to quit."),
     ];
     frame.render_widget(Clear, area);

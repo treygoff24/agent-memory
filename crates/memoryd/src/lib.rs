@@ -3,11 +3,13 @@
 pub mod cli;
 pub mod client;
 pub mod coordination_config;
+pub mod dashboard;
 pub mod dream;
 pub mod handlers;
 pub mod mcp;
 pub mod mcp_stdio;
 pub mod notifications;
+pub mod policy_editor;
 pub mod protocol;
 pub mod reality_check;
 pub mod recall;

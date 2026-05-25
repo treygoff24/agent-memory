@@ -41,7 +41,7 @@ pub struct IndexStatus {
 pub struct SyncStatus {
     pub ahead: u32,
     pub behind: u32,
-    pub last_push: DateTime<Utc>,
+    pub last_push: Option<DateTime<Utc>>,
     pub remote: String,
 }
 
@@ -91,7 +91,7 @@ impl StatusDashboardResponse {
             sync: SyncStatus {
                 ahead: 2,
                 behind: 0,
-                last_push: now,
+                last_push: Some(now),
                 remote: "git@github.com:trey/memory.git".to_owned(),
             },
             review: ReviewStatus { candidate: 3, quarantined: 2, dream_low_confidence: 2 },
@@ -135,18 +135,49 @@ pub async fn status(State(state): State<WebState>) -> impl IntoResponse {
 }
 
 pub async fn notifications_stream(State(state): State<WebState>) -> Response {
-    let notifications = if let Some(data) = state.dashboard_data() {
-        data.notifications.clone()
-    } else if state.daemon_socket().is_some() {
-        Vec::new()
-    } else {
+    if let Some(data) = state.dashboard_data() {
+        return notifications_heartbeat(json!({
+            "kind": "heartbeat",
+            "notifications": data.notifications.clone(),
+        }));
+    }
+    let Some(socket_path) = state.daemon_socket() else {
         return backend_unavailable("notifications_stream").into_response();
     };
-    let payload = json!({
+
+    let payload = match memoryd::client::request(
+        socket_path,
+        "web-notifications-recent",
+        memoryd::protocol::RequestPayload::NotificationsRecent { limit: Some(50) },
+    )
+    .await
+    {
+        Ok(response) => match response.result {
+            ResponseResult::Success(ResponsePayload::NotificationsRecent(recent)) => json!({
+                "kind": "heartbeat",
+                "notifications": recent.notifications,
+            }),
+            ResponseResult::Error(error) => notifications_error_payload(error.code, error.message),
+            other => notifications_error_payload("unexpected_response", format!("{other:?}")),
+        },
+        Err(error) => notifications_error_payload("daemon_unavailable", error.to_string()),
+    };
+    notifications_heartbeat(payload)
+}
+
+fn notifications_error_payload(code: impl Into<String>, message: impl Into<String>) -> serde_json::Value {
+    json!({
         "kind": "heartbeat",
-        "notifications": notifications,
-    });
-    let body = format!("event: heartbeat\ndata: {payload}\n\n");
+        "notifications": [],
+        "error": {
+            "code": code.into(),
+            "message": message.into(),
+        },
+    })
+}
+
+fn notifications_heartbeat(payload: serde_json::Value) -> Response {
+    let body = format!("retry: 5000\nevent: heartbeat\ndata: {payload}\n\n");
     let mut response = (StatusCode::OK, body).into_response();
     response.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("text/event-stream; charset=utf-8"));
     response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
@@ -155,7 +186,6 @@ pub async fn notifications_stream(State(state): State<WebState>) -> Response {
 
 impl StatusDashboardResponse {
     pub(crate) fn from_daemon(status: memoryd::protocol::StatusResponse) -> Self {
-        let now = Utc::now();
         let mut warnings = status.dashboard_warnings;
         let index_stats = status.index_stats;
         if index_stats.is_none() {
@@ -172,6 +202,7 @@ impl StatusDashboardResponse {
         if status.conflicts_count.is_none() {
             warnings.push("conflicts_count_unavailable".to_owned());
         }
+        warnings.push("sync_status_unavailable".to_owned());
         let active_sessions = status
             .peer_sessions
             .into_iter()
@@ -197,7 +228,7 @@ impl StatusDashboardResponse {
                 active_memories: index_stats.as_ref().map_or(0, |stats| stats.active_memories),
                 last_reindex: index_stats.and_then(|stats| stats.last_reindex),
             },
-            sync: SyncStatus { ahead: 0, behind: 0, last_push: now, remote: "daemon".to_owned() },
+            sync: SyncStatus { ahead: 0, behind: 0, last_push: None, remote: "unknown".to_owned() },
             review: ReviewStatus {
                 candidate: review_counts.as_ref().map_or(0, |counts| saturating_u32(counts.candidate)),
                 quarantined: review_counts.as_ref().map_or(0, |counts| saturating_u32(counts.quarantined)),
@@ -284,14 +315,16 @@ mod tests {
             ..Default::default()
         });
 
-        assert!(!response.degraded);
-        assert!(response.warnings.iter().all(|warning| !warning.contains("unavailable")));
+        assert!(response.degraded);
+        assert_eq!(response.warnings, vec!["sync_status_unavailable"]);
         assert_eq!(response.daemon.version, "0.1.0-daemon");
         assert_eq!(response.daemon.pid, 4242);
         assert_eq!(response.daemon.uptime_seconds, Some(99));
         assert_eq!(response.socket, "ready");
         assert_eq!(response.index.active_memories, 17);
         assert_eq!(response.index.last_reindex, Some(last_reindex));
+        assert_eq!(response.sync.remote, "unknown");
+        assert_eq!(response.sync.last_push, None);
         assert_eq!(response.review.candidate, 2);
         assert_eq!(response.review.quarantined, 4);
         assert_eq!(response.review.dream_low_confidence, 6);

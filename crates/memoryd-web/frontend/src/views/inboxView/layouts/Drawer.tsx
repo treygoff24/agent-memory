@@ -49,6 +49,7 @@ export function DrawerLayout(props: InboxLayoutProps) {
                         <Inspector
                             item={selectedInspector}
                             layout="narrow"
+                            onAction={props.onInspectorAction}
                         />
                     </div>
                 </aside>

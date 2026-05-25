@@ -16,6 +16,18 @@ paths=(
   docs/specs/stream-f-dreaming-v0.3.md
 )
 
+current_operator_docs=(
+  README.md
+  docs/getting-started.md
+  docs/mcp-wiring.md
+  docs/api/stream-b-daemon-mcp-api.md
+  docs/api/web-source-grounding-api.md
+  docs/api/stream-g-observability-api.md
+  docs/api/stream-h-eval-api.md
+  docs/dev/stream-h-test-catalog.md
+  docs/runbooks/dogfooding-day-one.md
+)
+
 failed=0
 
 # Stale Codex MCP TOML header: current shape is [mcp_servers.<name>]
@@ -92,6 +104,85 @@ if [ -n "$tilde_socket" ]; then
   printf '%s\n' "$tilde_socket" >&2
   echo "docs contain current commands/config with unexpanded ~; use \$HOME, MEMORUM_* env vars, or an absolute placeholder" >&2
   failed=1
+fi
+
+# Current operator/API docs may mention limitations, but placeholder/deferred
+# language must be classified as historical or explicitly unsupported. This
+# catches stale "will return 501 later" docs after a surface becomes alpha-owned.
+if stale_status_language="$(
+  rg -n 'deferred|coming soon|not implemented|placeholder|stub|not yet|future|v1\.1\+' "${current_operator_docs[@]}" 2>/dev/null \
+    | rg -vi 'historical|explicitly unsupported|unsupported alpha|unsupported mode|not implemented / disabled surface|placeholder socket path|replace the placeholder socket path|future-proofing|older CLIs|deferred to v2|model/semantic privacy classification remains unsupported|model privacy filter remains unsupported|browser-rendered capture is unsupported|pairing is unsupported|not full business ROI|alpha release-set|fixture/deferred data|unclassified deferral|deferred required|deferred entries|zero deferred|required deferred|required catalog entry is deferred|always includes `deferred`|must not return a placeholder|feature_deferred|\"deferred\": false' || true
+)"; then
+  if [ -n "$stale_status_language" ]; then
+    printf '%s\n' "$stale_status_language" >&2
+    echo "current docs contain unclassified placeholder/deferred language; classify it as historical, unsupported alpha scope, or update the stale claim" >&2
+    failed=1
+  fi
+fi
+
+if missing_source_modes="$(
+  for needle in 'http_static' 'local_artifact' 'browser-rendered capture is unsupported' 'model privacy filter remains unsupported'; do
+    if ! rg -q "$needle" docs/api/web-source-grounding-api.md; then
+      printf 'docs/api/web-source-grounding-api.md missing %s\n' "$needle"
+    fi
+  done
+  for needle in 'source' 'mode' 'local_artifact' 'typed unsupported' 'allow-reveal'; do
+    if ! rg -q "$needle" docs/api/stream-b-daemon-mcp-api.md; then
+      printf 'docs/api/stream-b-daemon-mcp-api.md missing %s\n' "$needle"
+    fi
+  done
+)"; then
+  if [ -n "$missing_source_modes" ]; then
+    printf '%s\n' "$missing_source_modes" >&2
+    echo "web source grounding docs must list supported alpha modes and explicit unsupported modes" >&2
+    failed=1
+  fi
+fi
+
+if stale_tui_command="$(rg -n '`memory ui`|memory ui' README.md docs/getting-started.md docs/mcp-wiring.md docs/api docs/specs/system-v0.2.md 2>/dev/null || true)"; then
+  if [ -n "$stale_tui_command" ]; then
+    printf '%s\n' "$stale_tui_command" >&2
+    echo "docs contain stale TUI command; use memoryd ui" >&2
+    failed=1
+  fi
+fi
+
+if uncaveated_init="$(
+  rg -n 'memoryd init' README.md docs/getting-started.md docs/mcp-wiring.md docs/api docs/specs/system-v0.2.md 2>/dev/null \
+    | rg -vi 'release-target|not current alpha|future|historical|remains a release-shape target|older docs|# memoryd init' || true
+)"; then
+  if [ -n "$uncaveated_init" ]; then
+    printf '%s\n' "$uncaveated_init" >&2
+    echo "docs contain uncaveated memoryd init references; alpha bootstrap is memoryd serve --init" >&2
+    failed=1
+  fi
+fi
+
+if uncaveated_lazy_start="$(
+  rg -n 'lazy-start|lazy start|lazy-initialized|lazy initialized' README.md docs/getting-started.md docs/mcp-wiring.md docs/api docs/specs/system-v0.2.md 2>/dev/null \
+    | rg -vi 'release-target|unless implemented|future|unsupported|not current alpha' || true
+)"; then
+  if [ -n "$uncaveated_lazy_start" ]; then
+    printf '%s\n' "$uncaveated_lazy_start" >&2
+    echo "docs contain uncaveated lazy-start MCP promises; alpha requires starting memoryd serve first" >&2
+    failed=1
+  fi
+fi
+
+if ! rg -q 'not full business ROI' docs/api/stream-g-observability-api.md docs/runbooks/dogfooding-day-one.md; then
+  echo "dashboard docs must classify ROI as alpha operational metrics, not full business ROI" >&2
+  failed=1
+fi
+
+if forbidden_capture_promises="$(
+  rg -n 'browser-rendered|authenticated browser|cookie|screenshot|OCR|pairing|model privacy filter|semantic privacy' README.md docs/getting-started.md docs/mcp-wiring.md docs/api docs/runbooks/dogfooding-day-one.md 2>/dev/null \
+    | rg -vi 'unsupported|out of scope|not implemented|disabled|explicitly|does not support|No cookies|client-supplied|key_path|raw key material|privacy classification' || true
+)"; then
+  if [ -n "$forbidden_capture_promises" ]; then
+    printf '%s\n' "$forbidden_capture_promises" >&2
+    echo "docs promise unsupported alpha behavior; mark it unsupported or remove the promise" >&2
+    failed=1
+  fi
 fi
 
 exit "$failed"

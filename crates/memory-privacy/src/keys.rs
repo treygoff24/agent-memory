@@ -1,6 +1,7 @@
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use age::secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
@@ -17,6 +18,15 @@ pub struct KeyMaterial {
     pub recipient: String,
     /// Local private key material or test secret.
     pub identity: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyRotation {
+    pub previous_recipient: Option<String>,
+    pub active_recipient: String,
+    pub active_key_path: PathBuf,
+    pub archived_key_path: Option<PathBuf>,
+    pub active_manifest_path: PathBuf,
 }
 
 impl KeyMaterial {
@@ -71,6 +81,11 @@ impl From<KeyRecord> for KeyMaterial {
 pub trait KeyProvider: Send + Sync {
     /// Load the active encryption key.
     fn load_key(&self) -> PrivacyResult<KeyMaterial>;
+
+    /// Load keys that may decrypt existing ciphertexts.
+    fn load_decryption_keys(&self) -> PrivacyResult<Vec<KeyMaterial>> {
+        self.load_key().map(|key| vec![key])
+    }
 }
 
 /// File-backed key provider used by local daemon tests and CLI onboarding.
@@ -93,19 +108,93 @@ impl FileKeyProvider {
     /// Write fresh key material for local onboarding/tests.
     pub fn onboard_local_file(&self) -> PrivacyResult<KeyMaterial> {
         let key = KeyMaterial::generate();
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).map_err(|err| PrivacyError::KeyUnavailable(err.to_string()))?;
-            harden_private_directory(parent)?;
-        }
-        let json = serde_json::to_string_pretty(&KeyRecord::from(key.clone()))
-            .map_err(|err| PrivacyError::KeyUnavailable(err.to_string()))?;
-        write_private_file(&self.path, json.as_bytes())?;
+        write_key_record(&self.path, &key)?;
+        self.write_active_manifest(&key)?;
         Ok(key)
+    }
+
+    /// Rotate active key material and keep prior local identities for decrypting old records.
+    pub fn rotate_local_file(&self) -> PrivacyResult<KeyRotation> {
+        fs::create_dir_all(self.decommissioned_dir()).map_err(|err| PrivacyError::KeyUnavailable(err.to_string()))?;
+        harden_private_directory(&self.decommissioned_dir())?;
+        let previous = match self.load_key() {
+            Ok(key) => Some(key),
+            Err(error) if is_missing_key_error(&error) => None,
+            Err(error) => return Err(error),
+        };
+        let archived_key_path = previous.as_ref().map(|key| self.archive_key(key)).transpose()?;
+        let active = KeyMaterial::generate();
+        write_key_record(&self.path, &active)?;
+        let active_manifest_path = self.write_active_manifest(&active)?;
+
+        Ok(KeyRotation {
+            previous_recipient: previous.map(|key| key.recipient),
+            active_recipient: active.recipient,
+            active_key_path: self.path.clone(),
+            archived_key_path,
+            active_manifest_path,
+        })
     }
 
     /// Key storage path.
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub fn active_manifest_path(&self) -> PathBuf {
+        self.key_store_dir().join("active.json")
+    }
+
+    pub fn decommissioned_dir(&self) -> PathBuf {
+        self.key_store_dir().join("decommissioned")
+    }
+
+    fn key_store_dir(&self) -> PathBuf {
+        self.path.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."))
+    }
+
+    fn write_active_manifest(&self, key: &KeyMaterial) -> PrivacyResult<PathBuf> {
+        let path = self.active_manifest_path();
+        let manifest = serde_json::json!({
+            "schema_version": 1,
+            "active_key_path": self.path.file_name().and_then(|name| name.to_str()).unwrap_or("age-key.json"),
+            "recipient": key.recipient,
+            "rotated_at_unix_nanos": unix_nanos()?,
+        });
+        let json = serde_json::to_vec_pretty(&manifest).map_err(|err| PrivacyError::KeyUnavailable(err.to_string()))?;
+        write_private_file(&path, &json)?;
+        Ok(path)
+    }
+
+    fn archive_key(&self, key: &KeyMaterial) -> PrivacyResult<PathBuf> {
+        let dir = self.decommissioned_dir();
+        fs::create_dir_all(&dir).map_err(|err| PrivacyError::KeyUnavailable(err.to_string()))?;
+        harden_private_directory(&dir)?;
+        let path = dir.join(format!("{}-age-key.json", unix_nanos()?));
+        write_key_record(&path, key)?;
+        Ok(path)
+    }
+
+    fn archived_keys(&self) -> PrivacyResult<Vec<KeyMaterial>> {
+        let dir = self.decommissioned_dir();
+        let Ok(entries) = fs::read_dir(&dir) else {
+            return Ok(Vec::new());
+        };
+        let mut keys = Vec::new();
+        for entry in entries {
+            let path = entry.map_err(|err| PrivacyError::KeyUnavailable(err.to_string()))?.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+            reject_symlink(&path)?;
+            validate_private_file(&path)?;
+            let text = fs::read_to_string(&path)
+                .map_err(|err| PrivacyError::KeyUnavailable(format!("{} ({err})", path.display())))?;
+            let record = serde_json::from_str::<KeyRecord>(&text)
+                .map_err(|err| PrivacyError::KeyUnavailable(format!("{} ({err})", path.display())))?;
+            keys.push(KeyMaterial::from(record));
+        }
+        Ok(keys)
     }
 }
 
@@ -119,6 +208,22 @@ impl KeyProvider for FileKeyProvider {
             .map(KeyMaterial::from)
             .map_err(|err| PrivacyError::KeyUnavailable(err.to_string()))
     }
+
+    fn load_decryption_keys(&self) -> PrivacyResult<Vec<KeyMaterial>> {
+        let mut keys = vec![self.load_key()?];
+        keys.extend(self.archived_keys()?);
+        Ok(keys)
+    }
+}
+
+fn write_key_record(path: &Path, key: &KeyMaterial) -> PrivacyResult<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| PrivacyError::KeyUnavailable(err.to_string()))?;
+        harden_private_directory(parent)?;
+    }
+    let json = serde_json::to_string_pretty(&KeyRecord::from(key.clone()))
+        .map_err(|err| PrivacyError::KeyUnavailable(err.to_string()))?;
+    write_private_file(path, json.as_bytes())
 }
 
 fn write_private_file(path: &Path, contents: &[u8]) -> PrivacyResult<()> {
@@ -144,6 +249,17 @@ fn write_private_file(path: &Path, contents: &[u8]) -> PrivacyResult<()> {
     }
     fs::rename(&temp_path, path).map_err(|err| PrivacyError::KeyUnavailable(err.to_string()))?;
     validate_private_file(path)
+}
+
+fn unix_nanos() -> PrivacyResult<u128> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .map_err(|err| PrivacyError::KeyUnavailable(err.to_string()))
+}
+
+fn is_missing_key_error(error: &PrivacyError) -> bool {
+    matches!(error, PrivacyError::KeyUnavailable(message) if message.contains("No such file") || message.contains("os error 2"))
 }
 
 fn reject_symlink(path: &Path) -> PrivacyResult<()> {

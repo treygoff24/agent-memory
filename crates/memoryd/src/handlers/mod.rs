@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
@@ -28,7 +28,7 @@ use memory_privacy::{
     EncryptedPayload, FileKeyProvider, PrivacyClassifier, PrivacyDecision, PrivacyEncryptor, PrivacyNamespace,
     PrivacyStorageAction, SafeFragmentDecision,
 };
-use memory_source::{capture_web_source, ArtifactStore, CaptureWebSourceRequest, SourceError};
+use memory_source::{capture_web_source, ArtifactStore, CaptureMode, CaptureWebSourceRequest, SourceError};
 use memory_substrate::{
     events::EventKind, Author, AuthorKind, ChunkQuery, ClassificationOutcome, EncryptedSubstrateDescriptor,
     EncryptedWriteRequest, EventContext, Frontmatter, IndexProjection, Memory, MemoryContent, MemoryId, MemoryQuery,
@@ -43,16 +43,17 @@ use tokio::sync::{broadcast, Mutex};
 
 use crate::dream::rehydration;
 use crate::protocol::{
-    CaptureSourceResponse, ClaimLockWarning, CompactDreamStatus, ConflictSummary, ConflictsListResponse,
-    DaemonProcessStatus, EntitySummary, EventLogEntry, EventsLogPageResponse, GetProvenance, GetResponse,
-    GovernanceForgetResponse, GovernancePolicySnapshot, GovernancePolicySummary, GovernanceStatus,
+    CaptureSourceMode, CaptureSourceResponse, ClaimLockWarning, CompactDreamStatus, ConflictSummary,
+    ConflictsListResponse, DaemonProcessStatus, EntitySummary, EventLogEntry, EventsLogPageResponse, GetProvenance,
+    GetResponse, GovernanceForgetResponse, GovernancePolicySnapshot, GovernancePolicySummary, GovernanceStatus,
     GovernanceSupersedeResponse, GovernanceWriteResponse, IndexStats, InjectableEventKind, InspectEntitiesResponse,
-    NamespaceNode, NamespaceTreeResponse, NotificationEvent, ObserveResponse, ObserveTarget, PassiveNotificationStatus,
-    PeerActivityResponse, PeerDeliveryAuditEntry, PeerReleaseLockResponse, PeerReleaseLockStatus, PeerSessionStatus,
-    PeerStatusResponse, RealityCheckAction, RealityCheckHistorySession, RealityCheckRequest, RealityCheckResponse,
-    RequestEnvelope, RequestPayload, RespondRefusalKind, ResponseEnvelope, ResponsePayload, RevealResponse,
-    ReviewDecisionResponse, ReviewQueueCounts, ReviewQueueItemResponse, ReviewQueueResponse, SearchHit, SearchResponse,
-    StatusResponse, WebDashboardStatus, WriteNoteResponse, MAX_FRAME_BYTES, NOTIFICATION_CHANNEL_CAPACITY,
+    NamespaceNode, NamespaceTreeResponse, NotificationEvent, NotificationsRecentResponse, ObserveResponse,
+    ObserveTarget, PassiveNotificationStatus, PeerActivityResponse, PeerDeliveryAuditEntry, PeerReleaseLockResponse,
+    PeerReleaseLockStatus, PeerSessionStatus, PeerStatusResponse, RealityCheckAction, RealityCheckHistorySession,
+    RealityCheckRequest, RealityCheckResponse, RequestEnvelope, RequestPayload, RespondRefusalKind, ResponseEnvelope,
+    ResponsePayload, RevealResponse, ReviewDecisionResponse, ReviewQueueCounts, ReviewQueueItemResponse,
+    ReviewQueueResponse, SearchHit, SearchResponse, SourceCapturePayload, StatusResponse, WebDashboardStatus,
+    WriteNoteResponse, MAX_FRAME_BYTES, NOTIFICATION_CHANNEL_CAPACITY,
 };
 use crate::reality_check::{RcAdvanceRequest, RcRunRequest, RcSessionAdvance, RcSessionHandler};
 use crate::recall::{
@@ -516,8 +517,23 @@ async fn dispatch(
         }
         RequestPayload::Get { id, include_provenance } => get_response(substrate, &id, include_provenance).await,
         RequestPayload::TrustArtifact { id } => trust_artifact_response(substrate, state, &id).await,
-        RequestPayload::CaptureSource { url, excerpts, note } => {
-            capture_source_response(substrate, url, excerpts, note).await
+        RequestPayload::CaptureSource(payload) => capture_source_response(substrate, payload).await,
+        RequestPayload::DashboardRoi { window_days } => crate::dashboard::roi::dashboard_roi(substrate, window_days)
+            .await
+            .map(ResponsePayload::DashboardRoi)
+            .map_err(HandlerError::substrate),
+        RequestPayload::NotificationsRecent { limit } => {
+            Ok(ResponsePayload::NotificationsRecent(notifications_recent_response(state, limit)))
+        }
+        RequestPayload::PolicyValidate { raw_yaml, file_name } => {
+            crate::policy_editor::validate(substrate.roots().repo.as_path(), &raw_yaml, file_name.as_deref())
+                .map(ResponsePayload::PolicyValidate)
+                .map_err(|error| HandlerError::invalid_request(format!("invalid governance policy: {error}")))
+        }
+        RequestPayload::PolicyWrite { raw_yaml, file_name } => {
+            crate::policy_editor::write(substrate, &raw_yaml, file_name.as_deref())
+                .map(ResponsePayload::PolicyWrite)
+                .map_err(|error| HandlerError::invalid_request(format!("invalid governance policy: {error}")))
         }
         RequestPayload::RecallHits { since, limit } => recall_hits_response(substrate, since, limit).await,
         RequestPayload::Reveal { id, reason } => reveal_response(substrate, &id, &reason).await,
@@ -576,6 +592,10 @@ async fn dispatch(
                 .await
         }
     }
+}
+
+fn notifications_recent_response(state: &HandlerState, limit: Option<usize>) -> NotificationsRecentResponse {
+    NotificationsRecentResponse { notifications: state.passive_notifications.recent_snapshots(limit) }
 }
 
 async fn recall_hits_response(
@@ -702,27 +722,40 @@ async fn namespace_tree_response(
 }
 
 fn governance_policy_dump_response(substrate: &Substrate) -> Result<ResponsePayload, HandlerError> {
-    let (policies, source) = load_policy_set(substrate.roots().repo.as_path())?;
-    let scopes = [GovernanceScope::Me, GovernanceScope::Project, GovernanceScope::Agent, GovernanceScope::Dreaming];
-    let mut summaries = Vec::new();
-    for scope in scopes {
-        let policy =
-            policies.policy_for_scope(scope).map_err(|error| HandlerError::invalid_request(error.to_string()))?;
-        let preview = policy.dry_run(&CandidateContext::new(scope).with_confidence(0.0).with_grounding(false));
-        summaries.push(GovernancePolicySummary {
-            scope: format!("{scope:?}").to_ascii_lowercase(),
-            selected_policy: preview.selected_policy,
-            policy_source: format!("{:?}", preview.policy_source).to_ascii_lowercase(),
-            confidence_floor: preview.confidence_floor,
-            review_gates: preview.triggered_review_gates,
-            requires_grounding: preview.requires_grounding,
-        });
+    match crate::policy_editor::snapshot(substrate.roots().repo.as_path()) {
+        Ok(snapshot) => Ok(ResponsePayload::GovernancePolicyDump(snapshot)),
+        Err(_) => {
+            let (policies, source) = load_policy_set(substrate.roots().repo.as_path())?;
+            Ok(ResponsePayload::GovernancePolicyDump(GovernancePolicySnapshot {
+                source: policy_source_string(source),
+                raw_yaml: first_policy_yaml(substrate.roots().repo.as_path()),
+                policies: summarize_governance_policy_set(&policies)?,
+                current_file: None,
+                files: Vec::new(),
+                writable: false,
+            }))
+        }
     }
-    Ok(ResponsePayload::GovernancePolicyDump(GovernancePolicySnapshot {
-        source: policy_source_string(source),
-        raw_yaml: first_policy_yaml(substrate.roots().repo.as_path()),
-        policies: summaries,
-    }))
+}
+
+fn summarize_governance_policy_set(policies: &PolicySet) -> Result<Vec<GovernancePolicySummary>, HandlerError> {
+    let scopes = [GovernanceScope::Me, GovernanceScope::Project, GovernanceScope::Agent, GovernanceScope::Dreaming];
+    scopes
+        .into_iter()
+        .map(|scope| {
+            let policy =
+                policies.policy_for_scope(scope).map_err(|error| HandlerError::invalid_request(error.to_string()))?;
+            let preview = policy.dry_run(&CandidateContext::new(scope).with_confidence(0.0).with_grounding(false));
+            Ok(GovernancePolicySummary {
+                scope: format!("{scope:?}").to_ascii_lowercase(),
+                selected_policy: preview.selected_policy,
+                policy_source: format!("{:?}", preview.policy_source).to_ascii_lowercase(),
+                confidence_floor: preview.confidence_floor,
+                review_gates: preview.triggered_review_gates,
+                requires_grounding: preview.requires_grounding,
+            })
+        })
+        .collect()
 }
 
 async fn conflicts_list_response(substrate: &Substrate, limit: Option<usize>) -> Result<ResponsePayload, HandlerError> {
@@ -795,7 +828,9 @@ fn memory_id_from_event_kind(kind: &EventKind) -> Option<MemoryId> {
         | EventKind::GitPushFailed { .. }
         | EventKind::WriteRefused { .. }
         | EventKind::EncryptedContentRevealed { .. }
-        | EventKind::SubstrateFragmentWritten { .. } => None,
+        | EventKind::SubstrateFragmentWritten { .. }
+        | EventKind::DeviceKeysRotated { .. }
+        | EventKind::PolicyChanged { .. } => None,
     }
 }
 
@@ -821,6 +856,10 @@ fn event_kind_summary(kind: &EventKind) -> String {
         EventKind::RealityCheckForgotten { id, .. } => format!("reality check forgot: {id}"),
         EventKind::RealityCheckNotRelevant { id, .. } => format!("reality check not relevant: {id}"),
         EventKind::ClaimLockContention { memory_id, .. } => format!("claim-lock contention: {memory_id}"),
+        EventKind::DeviceKeysRotated { active_recipient, .. } => {
+            format!("device keys rotated: active recipient {active_recipient}")
+        }
+        EventKind::PolicyChanged { file_name } => format!("policy changed: {file_name}"),
     }
 }
 
@@ -842,6 +881,8 @@ fn event_kind_label(kind: &EventKind) -> &'static str {
         EventKind::RealityCheckForgotten { .. } => "reality_check_forgotten",
         EventKind::RealityCheckNotRelevant { .. } => "reality_check_not_relevant",
         EventKind::ClaimLockContention { .. } => "claim_lock_contention",
+        EventKind::DeviceKeysRotated { .. } => "device_keys_rotated",
+        EventKind::PolicyChanged { .. } => "policy_changed",
     }
 }
 
@@ -887,10 +928,9 @@ async fn trust_artifact_response(
 
 async fn capture_source_response(
     substrate: &Substrate,
-    url: String,
-    excerpts: Vec<String>,
-    note: Option<String>,
+    payload: SourceCapturePayload,
 ) -> Result<ResponsePayload, HandlerError> {
+    let SourceCapturePayload { source, mode, excerpts, note, local_path } = payload;
     if excerpts.is_empty() {
         return Err(HandlerError::invalid_request("source capture requires at least one excerpt"));
     }
@@ -913,22 +953,69 @@ async fn capture_source_response(
             return Err(HandlerError::invalid_request("source capture note must not contain sensitive material"));
         }
     }
+    validate_source_capture_location(mode, local_path.as_deref())?;
     let encryption_key = FileKeyProvider::runtime_default(&substrate.roots().runtime);
     let key_path = encryption_key.path().exists().then(|| encryption_key.path().to_path_buf());
     let response = capture_web_source(
         substrate.roots().repo.clone(),
-        CaptureWebSourceRequest { url, excerpts, note, key_path, ..CaptureWebSourceRequest::default() },
+        CaptureWebSourceRequest {
+            url: source,
+            excerpts,
+            note,
+            mode: source_mode_to_capture_mode(mode),
+            local_path,
+            key_path,
+        },
     )
     .await
     .map_err(HandlerError::source_capture)?;
     Ok(ResponsePayload::CaptureSource(CaptureSourceResponse {
         artifact_id: response.artifact_id,
         source_refs: response.source_refs,
+        mode,
         final_url: response.final_url,
         captured_at: response.captured_at,
         capture_status: response.capture_status,
         warnings: response.warnings,
     }))
+}
+
+fn validate_source_capture_location(mode: CaptureSourceMode, local_path: Option<&Path>) -> Result<(), HandlerError> {
+    match mode {
+        CaptureSourceMode::HttpStatic => Ok(()),
+        CaptureSourceMode::LocalArtifact => {
+            let path = local_path
+                .ok_or_else(|| HandlerError::invalid_request("local_artifact source capture requires local_path"))?;
+            if path.components().any(|component| matches!(component, Component::ParentDir)) {
+                return Err(HandlerError::invalid_request("source capture local_path must not contain path traversal"));
+            }
+            Ok(())
+        }
+        CaptureSourceMode::PdfText
+        | CaptureSourceMode::BrowserRendered
+        | CaptureSourceMode::Screenshot
+        | CaptureSourceMode::Authenticated
+        | CaptureSourceMode::Unsupported => {
+            if local_path
+                .is_some_and(|path| path.components().any(|component| matches!(component, Component::ParentDir)))
+            {
+                return Err(HandlerError::invalid_request("source capture local_path must not contain path traversal"));
+            }
+            Ok(())
+        }
+    }
+}
+
+fn source_mode_to_capture_mode(mode: CaptureSourceMode) -> CaptureMode {
+    match mode {
+        CaptureSourceMode::HttpStatic => CaptureMode::HttpStatic,
+        CaptureSourceMode::LocalArtifact => CaptureMode::LocalArtifact,
+        CaptureSourceMode::PdfText => CaptureMode::PdfText,
+        CaptureSourceMode::BrowserRendered => CaptureMode::BrowserRendered,
+        CaptureSourceMode::Screenshot => CaptureMode::Screenshot,
+        CaptureSourceMode::Authenticated => CaptureMode::Authenticated,
+        CaptureSourceMode::Unsupported => CaptureMode::Unsupported,
+    }
 }
 
 async fn peer_heartbeat_response(
@@ -4158,10 +4245,10 @@ impl HandlerError {
         let code = match &error {
             SourceError::InvalidId(_)
             | SourceError::InvalidSourceRef(_)
-            | SourceError::Unsupported(_)
             | SourceError::UrlSafety(_)
             | SourceError::Privacy(_)
             | SourceError::ExcerptNotFound(_) => "invalid_request",
+            SourceError::Unsupported(_) => "unsupported",
             SourceError::Io(_) | SourceError::Json(_) | SourceError::Integrity(_) | SourceError::CaptureFailed(_) => {
                 "source_capture_failed"
             }

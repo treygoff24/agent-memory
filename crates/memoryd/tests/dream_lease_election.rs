@@ -60,7 +60,7 @@ fn active_foreign_lease_returns_lease_held_and_cli_exits_5() {
 }
 
 #[test]
-fn active_same_device_lease_returns_lease_held_unless_forced() {
+fn active_same_device_lease_is_reentrant_without_force() {
     let env = GitLeaseEnv::new("dev_local");
     env.append_lease(LeaseRecord {
         device: "dev_local".to_string(),
@@ -71,7 +71,7 @@ fn active_same_device_lease_returns_lease_held_unless_forced() {
     });
     env.commit_all("seed active local lease");
 
-    let err = acquire_manual_lease(LeaseAcquireRequest {
+    acquire_manual_lease(LeaseAcquireRequest {
         repo: env.repo.clone(),
         runtime: env.runtime.clone(),
         scope: "me".to_string(),
@@ -80,8 +80,7 @@ fn active_same_device_lease_returns_lease_held_unless_forced() {
         lease_window_seconds: 3_600,
         cli_used: None,
     })
-    .expect_err("same-device active lease blocks accidental duplicate manual run");
-    assert!(matches!(err, LeaseError::Held { by_device, .. } if by_device == "dev_local"));
+    .expect("same-device active lease is re-entrant");
 
     acquire_manual_lease(LeaseAcquireRequest {
         repo: env.repo.clone(),

@@ -5,8 +5,8 @@ import { Inspector, type InspectorItem } from '../inspector';
 import { TrustLedger } from './peersView';
 import { QueryErrorBanner, QueryLoadingBanner } from './QueryFeedback';
 
-export type PeerTrust = 'trusted' | 'limited' | 'revoked';
-export type PeerSync = 'in-sync' | 'behind' | 'fenced' | 'revoked';
+export type PeerTrust = 'local active' | 'stale' | 'unknown';
+export type PeerSync = 'active' | 'stale' | 'unknown';
 
 export interface PeerViewItem {
     id: string;
@@ -63,61 +63,40 @@ function lockHolder(lock: ClaimLockInfo): string {
 }
 
 function trustForSession(session: PeerSessionStatus): PeerTrust {
-    const marker = `${session.session_id} ${session.harness} ${session.namespace}`.toLowerCase();
-    if (marker.includes('old') || marker.includes('revoked') || marker.includes('archive')) return 'revoked';
-    if (marker.includes('phone') || marker.includes('limited') || marker.includes('personal')) return 'limited';
-    return 'trusted';
+    if (session.last_heartbeat_age_seconds > 900) return 'stale';
+    if (session.started_at) return 'local active';
+    return 'unknown';
 }
 
-function syncForSession(session: PeerSessionStatus, locksPending: number): PeerSync {
+function syncForSession(session: PeerSessionStatus): PeerSync {
     const trust = trustForSession(session);
-    if (trust === 'revoked') return 'revoked';
-    if (trust === 'limited') return 'fenced';
-    if (session.last_heartbeat_age_seconds > 900 || locksPending > 0) return 'behind';
-    return 'in-sync';
+    if (trust === 'local active') return 'active';
+    if (trust === 'stale') return 'stale';
+    return 'unknown';
 }
 
-function normalizePeer(session: PeerSessionStatus, locks: ClaimLockInfo[], index: number): PeerViewItem {
+function normalizePeer(session: PeerSessionStatus, locks: ClaimLockInfo[]): PeerViewItem {
     const device = deviceFromSession(session);
     const heldLocks = locks.filter((lock) => lockHolder(lock) === session.session_id);
     const trust = trustForSession(session);
-    const locksPending =
-        trust === 'limited'
-            ? Math.max(2, heldLocks.length)
-            : trust === 'revoked'
-              ? 0
-              : Math.max(0, heldLocks.length - 1);
-    const sync = syncForSession(session, locksPending);
-    const baseEvents = Math.max(0, 128 - index * 43);
+    const sync = syncForSession(session);
     const row: PeerViewItem = {
         id: session.session_id,
         label: session.harness,
         device,
         trust,
         sync,
-        reachable: trust !== 'revoked',
+        reachable: trust === 'local active',
         locksHeld: heldLocks.length,
-        locksPending,
-        events24h: trust === 'revoked' ? 0 : baseEvents,
-        eventsIn24h: trust === 'revoked' ? 0 : baseEvents,
-        eventsOut24h: trust === 'revoked' ? 0 : Math.max(0, Math.round(baseEvents * 0.72)),
-        devicePubkeyShort:
-            ['ed25519:8b3f…a91c', 'ed25519:c104…bb20', 'ed25519:901d…12aa', 'ed25519:5bf0…7c44'][index] ??
-            `ed25519:${index.toString(16).padStart(4, '0')}…`,
+        locksPending: 0,
+        events24h: 0,
+        eventsIn24h: 0,
+        eventsOut24h: 0,
+        devicePubkeyShort: 'unknown',
         lastHandshake: lastHandshake(session),
         lastHandshakeTs: session.started_at ?? 'unknown',
-        sessionsOpen: trust === 'revoked' ? 0 : Math.max(1, session.salient_entities.length || 1),
+        sessionsOpen: trust === 'local active' ? 1 : 0,
     };
-    if (trust === 'limited') {
-        row.fenceReason = 'limited trust: can read project memories but cannot write personal namespaces';
-    }
-    if (trust === 'revoked') {
-        row.revocation = {
-            at: '2026-04-21T16:10:00Z',
-            by: 'mbp',
-            reason: 'retired device no longer participates in claim-lock sync',
-        };
-    }
     return row;
 }
 
@@ -144,24 +123,24 @@ function inspectorItemFromPeer(peer: PeerViewItem | undefined): InspectorItem | 
         id: peer.id,
         title: peer.label,
         namespace: peer.device,
-        body: `${peer.label} is ${peer.trust}/${peer.sync}. ${peer.fenceReason ?? 'No namespace fence is active.'}`,
+        body: `${peer.label} is ${peer.trust}/${peer.sync}. Trust is not inferred without daemon policy state.`,
         meta: peer.lastHandshake,
         sessionId: peer.sessionsOpen > 0 ? `${peer.sessionsOpen} open` : 'none',
         recallCountTotal: peer.events24h,
         recallCount30d: peer.eventsIn24h,
         policy: {
             governance: `${peer.trust}/${peer.sync}`,
-            privacy: peer.fenceReason ? 'namespace fence active' : 'trusted peer policy',
-            tombstone: peer.revocation ? 'revoked' : 'none',
+            privacy: 'unknown',
+            tombstone: 'unknown',
         },
         provenance: {
             written: peer.lastHandshake,
             session: peer.sessionsOpen > 0 ? `${peer.sessionsOpen} active` : 'none',
             confidence: peer.trust,
             device: peer.devicePubkeyShort,
-            peers: peer.reachable ? 'reachable' : 'offline',
+            peers: peer.reachable ? 'reachable' : 'stale/unknown',
         },
-        summary: `${peer.eventsIn24h} inbound / ${peer.eventsOut24h} outbound events in the last 24h.`,
+        summary: 'Per-peer traffic is unavailable from the daemon; showing heartbeat and lock state only.',
     };
 }
 
@@ -169,8 +148,8 @@ export function Peers() {
     const query = useSyncDashboardQuery();
     const items = useMemo(
         () =>
-            query.data?.peer_presence.active_sessions.map((session, index) =>
-                normalizePeer(session, query.data?.claim_locks.locks ?? [], index),
+            query.data?.peer_presence.active_sessions.map((session) =>
+                normalizePeer(session, query.data?.claim_locks.locks ?? []),
             ) ?? [],
         [query.data],
     );
@@ -197,15 +176,25 @@ export function Peers() {
                 <span className="view-title">Peers</span>
                 <span className="view-subtitle">
                     · {items.length} known · {items.filter((peer) => peer.reachable).length} reachable ·{' '}
-                    {items.filter((peer) => peer.trust === 'trusted').length} trusted
+                    {items.filter((peer) => peer.trust === 'local active').length} local active
                 </span>
                 <span className="spacer" />
                 <button
                     className="btn primary"
                     type="button"
+                    disabled
+                    aria-disabled="true"
+                    aria-describedby="pairing-unavailable-copy"
+                    title="Pairing API is not available in alpha."
                 >
                     + pair new device
                 </button>
+                <span
+                    id="pairing-unavailable-copy"
+                    className="meta"
+                >
+                    Pairing API is not available in alpha.
+                </span>
             </div>
             <div className="panes-2">
                 <div className="pane left">

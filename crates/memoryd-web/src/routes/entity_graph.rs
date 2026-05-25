@@ -51,7 +51,7 @@ pub struct EntityMemorySummary {
     pub id: String,
     pub namespace: String,
     pub status: String,
-    pub confidence: f64,
+    pub confidence: Option<f64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -111,7 +111,7 @@ impl EntityDetailResponse {
                 id: "mem_20260501_a1b2c3d4e5f60718_000010".to_owned(),
                 namespace: "project:agent-memory".to_owned(),
                 status: "active".to_owned(),
-                confidence: 0.95,
+                confidence: Some(0.95),
             }],
             first_seen: Some("2026-05-01T11:02:00Z".to_owned()),
             last_seen: Some("2026-05-01T11:02:00Z".to_owned()),
@@ -119,7 +119,7 @@ impl EntityDetailResponse {
                 id: "mem_20260501_a1b2c3d4e5f60718_000010".to_owned(),
                 namespace: "project:agent-memory".to_owned(),
                 status: "active".to_owned(),
-                confidence: 0.95,
+                confidence: Some(0.95),
             }],
             supersession_chain: vec![
                 "mem_20260430_a1b2c3d4e5f60718_000004".to_owned(),
@@ -147,7 +147,7 @@ pub async fn entity_detail(State(state): State<WebState>, Path(entity_id): Path<
     let Some(data) = state.dashboard_data() else {
         if let Some(socket_path) = state.daemon_socket() {
             return match inspect_entities(socket_path, Some(entity_id.clone())).await {
-                Ok(entities) => Json(detail_from_entities(&entity_id, &entities)).into_response(),
+                Ok(entities) => Json(detail_from_entities(socket_path, &entity_id, &entities).await).into_response(),
                 Err(error) => error.into_response(),
             };
         }
@@ -215,7 +215,11 @@ fn co_mention_edges(entities: &[EntitySummary]) -> Vec<EntityEdge> {
     edges
 }
 
-fn detail_from_entities(entity_id: &str, entities: &[EntitySummary]) -> EntityDetailResponse {
+async fn detail_from_entities(
+    socket_path: &std::path::Path,
+    entity_id: &str,
+    entities: &[EntitySummary],
+) -> EntityDetailResponse {
     let entity = entities.iter().find(|entity| entity.entity_id == entity_id).or_else(|| entities.first());
     let (label, mentions) = match entity {
         Some(entity) => {
@@ -223,15 +227,17 @@ fn detail_from_entities(entity_id: &str, entities: &[EntitySummary]) -> EntityDe
         }
         None => (entity_id.to_owned(), Vec::new()),
     };
-    let related_memories = mentions
-        .iter()
-        .map(|id| EntityMemorySummary {
-            id: id.clone(),
-            namespace: "daemon".to_owned(),
-            status: "unknown".to_owned(),
-            confidence: 0.0,
-        })
-        .collect::<Vec<_>>();
+    let mut related_memories = Vec::new();
+    for id in &mentions {
+        related_memories.push(memory_summary_from_daemon(socket_path, id).await.unwrap_or_else(|| {
+            EntityMemorySummary {
+                id: id.clone(),
+                namespace: "unknown".to_owned(),
+                status: "unknown".to_owned(),
+                confidence: None,
+            }
+        }));
+    }
     EntityDetailResponse {
         entity_id: entity_id.to_owned(),
         label,
@@ -243,4 +249,23 @@ fn detail_from_entities(entity_id: &str, entities: &[EntitySummary]) -> EntityDe
         supersession_chain: Vec::new(),
         recall_history: Vec::new(),
     }
+}
+
+async fn memory_summary_from_daemon(socket_path: &std::path::Path, id: &str) -> Option<EntityMemorySummary> {
+    let response = memoryd::client::request(
+        socket_path,
+        format!("web-entity-detail-memory-{id}"),
+        RequestPayload::TrustArtifact { id: id.to_owned() },
+    )
+    .await
+    .ok()?;
+    let ResponseResult::Success(ResponsePayload::TrustArtifact(artifact)) = response.result else {
+        return None;
+    };
+    Some(EntityMemorySummary {
+        id: artifact.id.as_str().to_owned(),
+        namespace: artifact.namespace,
+        status: artifact.status,
+        confidence: artifact.current_confidence.parse::<f64>().ok(),
+    })
 }

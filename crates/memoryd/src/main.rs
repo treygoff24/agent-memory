@@ -1,14 +1,15 @@
 use std::io::IsTerminal;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use memory_privacy::{
-    install_runtime_enforcement, DeterministicPrivacyClassifier, FileKeyProvider, KeyProvider, PrivacyClassifier,
-    PrivacyNamespace,
+    install_runtime_enforcement, DeterministicPrivacyClassifier, FileKeyProvider, KeyProvider, KeyRotation,
+    PrivacyClassifier, PrivacyNamespace,
 };
+use memory_substrate::events::EventKind;
 use memory_substrate::{InitOptions, Roots, Substrate};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::watch;
@@ -19,8 +20,8 @@ use memoryd::cli::{
 };
 use memoryd::client;
 use memoryd::protocol::{
-    render_peer_activity_human, render_peer_status_human, DreamRunReport, PassStatus, PeerActivityFormat,
-    PeerReleaseLockStatus, RequestPayload, ResponsePayload, ResponseResult,
+    render_peer_activity_human, render_peer_status_human, CaptureSourceMode, DreamRunReport, PassStatus,
+    PeerActivityFormat, PeerReleaseLockStatus, RequestPayload, ResponsePayload, ResponseResult, SourceCapturePayload,
 };
 use memoryd::recall::{DeltaRequest, StartupRequest};
 use memoryd::server::{self, ServerOptions};
@@ -81,7 +82,11 @@ async fn main() -> anyhow::Result<()> {
             {
                 auto_start_daemon(&args.repo, &args.runtime, &socket).await?;
             }
-            memoryd::mcp_stdio::serve_stdio(&socket).await?;
+            memoryd::mcp_stdio::serve_stdio_with_options(
+                &socket,
+                memoryd::mcp_stdio::StdioOptions { allow_reveal: args.allow_reveal },
+            )
+            .await?;
         }
         Command::Status(args) => {
             print_response(
@@ -156,17 +161,10 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Source(args) => match args.command {
             SourceCommand::Capture(capture) => {
+                let socket = resolve_socket_arg(&capture.socket);
+                let request = source_capture_payload(capture)?;
                 print_response(
-                    client::request(
-                        resolve_socket_arg(&capture.socket),
-                        "cli-source-capture",
-                        RequestPayload::CaptureSource {
-                            url: capture.url,
-                            excerpts: capture.excerpts,
-                            note: capture.note,
-                        },
-                    )
-                    .await?,
+                    client::request(socket, "cli-source-capture", RequestPayload::CaptureSource(request)).await?,
                 )?;
             }
         },
@@ -476,7 +474,7 @@ async fn main() -> anyhow::Result<()> {
             }
         },
         Command::Device(args) => match args.command {
-            DeviceCommand::Onboard(args) | DeviceCommand::RotateKeys(args) => {
+            DeviceCommand::Onboard(args) => {
                 let provider = FileKeyProvider::runtime_default(&args.runtime);
                 let key = provider.onboard_local_file()?;
                 println!(
@@ -486,6 +484,23 @@ async fn main() -> anyhow::Result<()> {
                         "recipient": key.recipient,
                         "key_path": provider.path(),
                         "guidance": "Local Stream D key material created for encrypted-tier writes."
+                    }))?
+                );
+            }
+            DeviceCommand::RotateKeys(args) => {
+                let provider = FileKeyProvider::runtime_default(&args.runtime);
+                let rotation = provider.rotate_local_file()?;
+                record_device_keys_rotated_event(&args.runtime, &rotation).await?;
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "status": "ok",
+                        "recipient": rotation.active_recipient,
+                        "previous_recipient": rotation.previous_recipient,
+                        "key_path": rotation.active_key_path,
+                        "active_manifest": rotation.active_manifest_path,
+                        "archived_key_path": rotation.archived_key_path,
+                        "guidance": "Local Stream D key material rotated; old local identities remain available for reveal continuity."
                     }))?
                 );
             }
@@ -505,12 +520,53 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn record_device_keys_rotated_event(runtime: &Path, rotation: &KeyRotation) -> anyhow::Result<()> {
+    let Some(local_config) = memory_substrate::config::load_local_device_config(runtime).map_err(anyhow::Error::msg)?
+    else {
+        return Ok(());
+    };
+    let Some(repo) = local_config.paths.memory_root else {
+        return Ok(());
+    };
+
+    let substrate = Substrate::open(Roots::new(repo, runtime)).await?;
+    substrate.record_event_best_effort(EventKind::DeviceKeysRotated {
+        previous_recipient: rotation.previous_recipient.clone(),
+        active_recipient: rotation.active_recipient.clone(),
+    })?;
+    Ok(())
+}
+
 fn resolve_socket_arg(socket: &Option<PathBuf>) -> PathBuf {
     socket.clone().unwrap_or_else(|| memoryd::socket::resolve_socket_path(&memoryd::socket::default_runtime_root()))
 }
 
 fn resolve_socket_with_runtime(socket: &Option<PathBuf>, runtime: &std::path::Path) -> PathBuf {
     socket.clone().unwrap_or_else(|| memoryd::socket::resolve_socket_path(runtime))
+}
+
+fn source_capture_payload(args: memoryd::cli::SourceCaptureArgs) -> anyhow::Result<SourceCapturePayload> {
+    let mode = match args.mode {
+        memoryd::cli::SourceCaptureCliMode::HttpStatic => CaptureSourceMode::HttpStatic,
+        memoryd::cli::SourceCaptureCliMode::LocalArtifact => CaptureSourceMode::LocalArtifact,
+        memoryd::cli::SourceCaptureCliMode::PdfText => CaptureSourceMode::PdfText,
+        memoryd::cli::SourceCaptureCliMode::BrowserRendered => CaptureSourceMode::BrowserRendered,
+        memoryd::cli::SourceCaptureCliMode::Screenshot => CaptureSourceMode::Screenshot,
+        memoryd::cli::SourceCaptureCliMode::Authenticated => CaptureSourceMode::Authenticated,
+    };
+    let source = match (&args.url, &args.file) {
+        (Some(url), None) => url.clone(),
+        (None, Some(path)) => path.display().to_string(),
+        (Some(_), Some(_)) => anyhow::bail!("provide exactly one of --url or --file"),
+        (None, None) => anyhow::bail!("provide exactly one of --url or --file"),
+    };
+    if args.file.is_some() && mode == CaptureSourceMode::HttpStatic {
+        anyhow::bail!("--file requires --mode local-artifact or another explicit local capture mode");
+    }
+    if args.url.is_some() && mode != CaptureSourceMode::HttpStatic {
+        anyhow::bail!("--url only supports --mode http-static");
+    }
+    Ok(SourceCapturePayload { source, mode, excerpts: args.excerpts, note: args.note, local_path: args.file })
 }
 
 async fn auto_start_daemon(repo: &PathBuf, runtime: &PathBuf, socket: &PathBuf) -> anyhow::Result<()> {
@@ -521,6 +577,7 @@ async fn auto_start_daemon(repo: &PathBuf, runtime: &PathBuf, socket: &PathBuf) 
         .arg(repo)
         .arg("--runtime")
         .arg(runtime)
+        .arg("--init")
         .arg("--socket")
         .arg(socket)
         .stdin(Stdio::null())

@@ -18,6 +18,8 @@ describe('entities view', () => {
             ).toBeInTheDocument();
         }
         expect(screen.getByRole('region', { name: 'Inspector' })).toHaveTextContent('entity');
+        expect(screen.getAllByText('unknown').length).toBeGreaterThan(0);
+        expect(screen.queryByText('2026-04-01')).not.toBeInTheDocument();
 
         fireEvent.click(screen.getByRole('tab', { name: /tool/i }));
         fireEvent.change(screen.getByLabelText('Entity search'), { target: { value: 'pnpm' } });

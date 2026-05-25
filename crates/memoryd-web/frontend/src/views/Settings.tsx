@@ -5,6 +5,7 @@ import { AboutTab } from './settings/AboutTab';
 import { AppearanceTab } from './settings/AppearanceTab';
 import { KeyboardTab } from './settings/KeyboardTab';
 import { NotificationsTab } from './settings/NotificationsTab';
+import { PolicyEditorTab } from './settings/PolicyEditorTab';
 import { ThemeEditorTab } from './settings/ThemeEditorTab';
 
 const settingsTabs = [
@@ -12,6 +13,7 @@ const settingsTabs = [
     { id: 'theme-editor', label: 'Theme editor' },
     { id: 'keyboard', label: 'Keyboard' },
     { id: 'notifications', label: 'Notifications' },
+    { id: 'policies', label: 'Policies' },
     { id: 'about', label: 'About' },
 ] as const;
 
@@ -32,7 +34,7 @@ export function Settings() {
         <>
             <div className="view-header">
                 <span className="view-title">Settings</span>
-                <span className="view-subtitle">· appearance · keyboard · notifications</span>
+                <span className="view-subtitle">· appearance · keyboard · notifications · policies</span>
             </div>
             <div className="settings-layout">
                 {tweaksEnabled && (
@@ -82,6 +84,7 @@ export function Settings() {
                     {activeTab === 'theme-editor' && <ThemeEditorTab />}
                     {activeTab === 'keyboard' && <KeyboardTab />}
                     {activeTab === 'notifications' && <NotificationsTab />}
+                    {activeTab === 'policies' && <PolicyEditorTab />}
                     {activeTab === 'about' && <AboutTab />}
                 </div>
             </div>

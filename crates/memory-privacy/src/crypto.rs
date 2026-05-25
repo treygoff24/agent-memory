@@ -41,11 +41,17 @@ impl<P: KeyProvider> PrivacyEncryptor<P> {
     /// Decrypt an encrypted payload. Used for rotation tests and local repair tooling.
     pub fn decrypt(&self, payload: &EncryptedPayload) -> PrivacyResult<String> {
         validate_envelope_metadata(&payload.envelope)?;
-        let key = self.key_provider.load_key()?;
-        let identity = key.identity()?;
-        let plaintext =
-            age::decrypt(&identity, &payload.ciphertext).map_err(|err| PrivacyError::Crypto(err.to_string()))?;
-        String::from_utf8(plaintext).map_err(|err| PrivacyError::Crypto(err.to_string()))
+        let mut last_error = None;
+        for key in self.key_provider.load_decryption_keys()? {
+            let identity = key.identity()?;
+            match age::decrypt(&identity, &payload.ciphertext) {
+                Ok(plaintext) => {
+                    return String::from_utf8(plaintext).map_err(|err| PrivacyError::Crypto(err.to_string()));
+                }
+                Err(error) => last_error = Some(error.to_string()),
+            }
+        }
+        Err(PrivacyError::Crypto(last_error.unwrap_or_else(|| "no decryption keys available".to_string())))
     }
 }
 

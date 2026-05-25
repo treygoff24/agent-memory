@@ -2,6 +2,7 @@ name: Stream H Eval Harness
 
 on:
   push:
+    branches: ["main"]
     tags: ["v[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+"]
   schedule:
     - cron: "0 3 * * *"
@@ -31,10 +32,14 @@ jobs:
       - name: Build memorum-eval
         run: cargo build --release -p memorum-eval
 
+      - name: Enforce regression metadata contract
+        run: cargo test -p memorum-eval --test regression_meta -- --nocapture
+
       - name: Run eval harness (mock harness — always runs)
         run: |
           cargo run --release -p memorum-eval -- \
             --harness mock \
+            --required-release-set alpha \
             --output json \
             --output-file eval-results-mock.json
         env:
@@ -48,12 +53,19 @@ jobs:
           HARNESS_MODE="${{ github.event_name == 'workflow_dispatch' && inputs.harness_mode || 'all' }}"
           cargo run --release -p memorum-eval -- \
             --harness "$HARNESS_MODE" \
+            --required-release-set alpha \
             --output json \
             --output-file eval-results-full.json
         env:
           MEMORUM_EVAL_CLAUDE_KEY: ${{ secrets.MEMORUM_EVAL_CLAUDE_KEY }}
           MEMORUM_EVAL_CODEX_KEY: ${{ secrets.MEMORUM_EVAL_CODEX_KEY }}
           RUST_LOG: warn
+
+      - name: Skip real harnesses on non-release push
+        if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')
+        run: |
+          echo "Normal push runs the cheap mock/simulator alpha release set only."
+          echo "Real-harness semantic coverage runs on RC tags or explicit workflow_dispatch."
 
       - name: Upload eval results
         uses: actions/upload-artifact@v4
@@ -70,6 +82,13 @@ jobs:
           if [ "$FAILED" != "0" ]; then
             echo "Eval harness failed: $FAILED test(s) reported failure"
             jq -r '.tests[] | select(.status == "failed") | "  - #\(.number) \(.name): \(.failure_detail // \"no detail\")"' "$RESULT_FILE"
+            exit 1
+          fi
+
+          RELEASE_BLOCKERS=$(jq -r '.release_blockers // [] | length' "$RESULT_FILE")
+          if [ "$RELEASE_BLOCKERS" != "0" ]; then
+            echo "Required release set has $RELEASE_BLOCKERS blocker(s):"
+            jq -r '.release_blockers[] | "  - \(.)"' "$RESULT_FILE"
             exit 1
           fi
 

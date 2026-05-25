@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use memoryd::protocol::{RequestEnvelope, RequestPayload, ResponseEnvelope, ResponsePayload, ResponseResult};
 use memoryd::server::{serve, MAX_FRAME_BYTES};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixStream;
+use tokio::net::{UnixListener, UnixStream};
 use tokio::time::{sleep, timeout, Duration};
 
 #[cfg(unix)]
@@ -13,7 +13,8 @@ use std::os::unix::fs::PermissionsExt;
 #[tokio::test]
 async fn server_smoke_serves_status_over_newline_delimited_json() {
     let socket_path = unique_socket_path("status");
-    std::fs::write(&socket_path, b"stale socket placeholder").expect("stale path created");
+    let stale_listener = UnixListener::bind(&socket_path).expect("stale socket binds");
+    drop(stale_listener);
 
     let server = tokio::spawn(serve(socket_path.clone()));
     let stream = connect_with_retry(&socket_path).await;
@@ -52,6 +53,43 @@ async fn server_smoke_serves_status_over_newline_delimited_json() {
             ..Default::default()
         }
     );
+
+    server.abort();
+    let _ = std::fs::remove_file(socket_path);
+}
+
+#[tokio::test]
+async fn server_refuses_to_replace_regular_file_socket_path() {
+    let socket_path = unique_socket_path("regular-file");
+    std::fs::write(&socket_path, b"do not delete me").expect("regular file fixture created");
+
+    let result = timeout(Duration::from_secs(1), serve(socket_path.clone()))
+        .await
+        .expect("regular-file socket path fails fast instead of binding forever");
+
+    let error = result.expect_err("regular file socket path must be rejected");
+    let error_text = format!("{error:#}");
+    assert!(error_text.contains("refusing to remove non-socket path"), "unexpected error: {error_text}");
+    assert_eq!(
+        std::fs::read(&socket_path).expect("regular file preserved"),
+        b"do not delete me",
+        "daemon must not delete arbitrary files passed as --socket"
+    );
+
+    let _ = std::fs::remove_file(socket_path);
+}
+
+#[tokio::test]
+async fn server_does_not_chmod_existing_socket_parent_directory() {
+    let socket_path = unique_socket_path("parent-mode");
+    let parent = socket_path.parent().expect("socket has parent").to_path_buf();
+    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).expect("set parent mode fixture");
+
+    let server = tokio::spawn(serve(socket_path.clone()));
+    let _stream = connect_with_retry(&socket_path).await;
+
+    let parent_mode = std::fs::metadata(&parent).expect("parent metadata").permissions().mode() & 0o777;
+    assert_eq!(parent_mode, 0o755, "daemon must not chmod an existing caller-owned directory");
 
     server.abort();
     let _ = std::fs::remove_file(socket_path);

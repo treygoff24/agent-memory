@@ -16,6 +16,10 @@ async fn fresh_clone_adoption_regenerates_local_identity_event_log_and_merge_con
     let local_device = std::fs::read_to_string(runtime.join("local-device.yaml")).expect("local device");
     assert!(local_device.contains("device:"));
     assert!(local_device.contains("  id: dev_"));
+    assert!(local_device.contains("privacy:"));
+    assert!(local_device.contains("  classifier: true"));
+    assert!(local_device.contains("  encryption: true"));
+    assert!(local_device.contains("  masking: true"));
     let events_dir = repo.join("events");
     assert!(std::fs::read_dir(&events_dir)
         .expect("events dir")

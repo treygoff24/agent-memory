@@ -6,13 +6,17 @@ use memory_substrate::{
     MemoryType, RepoPath, RetrievalPolicy, Roots, Scope, Sensitivity, Source, SourceKind, Substrate, TrustLevel,
     WriteMode, WritePolicy, WriteRequest,
 };
-use memoryd::protocol::{RequestPayload, ResponsePayload, ResponseResult};
+use memoryd::protocol::{
+    NotificationSnapshot, NotificationsRecentResponse, RequestEnvelope, RequestPayload, ResponseEnvelope,
+    ResponsePayload, ResponseResult,
+};
 use memoryd::recall::StartupRequest;
 use memoryd::server::{serve_substrate_with, ServerOptions};
 use memoryd_web::{fixture_router, router, router_with_state, WebState};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
-use tokio::net::UnixStream;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::watch;
 use tokio::time::{sleep, timeout, Duration};
 use tower::ServiceExt;
@@ -138,6 +142,55 @@ async fn test_daemon_backed_recall_hits_route_surfaces_live_recall_emission() {
 }
 
 #[tokio::test]
+async fn test_search_route_forwards_to_daemon() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let repo = temp.path().join("repo");
+    let runtime = temp.path().join("runtime");
+    let socket = temp.path().join("memoryd.sock");
+    let substrate = Substrate::init(
+        Roots::new(&repo, &runtime),
+        InitOptions { force_unsafe_durability: true, device_id: Some("dev_websearch01".to_owned()) },
+    )
+    .await
+    .expect("substrate init");
+    let memory_id = MemoryId::new("mem_20260502_dddddddddddddddd_000001");
+    write_search_memory(&substrate, memory_id.clone()).await;
+
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let server = tokio::spawn(serve_substrate_with(
+        socket.clone(),
+        substrate,
+        ServerOptions { idle_frame_timeout: Duration::from_secs(5) },
+        shutdown_rx,
+    ));
+    wait_for_socket(&socket).await;
+
+    let response = router_with_state(WebState::daemon(&socket))
+        .oneshot(
+            Request::builder()
+                .uri("/api/search?q=daemon-visible-term&limit=5")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("request succeeds");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    assert_eq!(body["total"], 1);
+    assert_eq!(body["hits"][0]["id"], memory_id.as_str());
+    assert!(body["hits"][0].get("body").is_none(), "web search must forward include_body=false: {body}");
+
+    shutdown_tx.send(true).expect("shutdown signal lands");
+    timeout(Duration::from_secs(2), server)
+        .await
+        .expect("server stops before timeout")
+        .expect("server task joins")
+        .expect("server exits ok");
+    let _ = std::fs::remove_file(socket);
+}
+
+#[tokio::test]
 async fn test_daemon_backed_reality_check_route_creates_session_and_confirms() {
     let temp = tempfile::tempdir().expect("tempdir");
     let repo = temp.path().join("repo");
@@ -212,6 +265,34 @@ async fn test_daemon_backed_reality_check_route_creates_session_and_confirms() {
         .expect("server task joins")
         .expect("server exits ok");
     let _ = std::fs::remove_file(socket);
+}
+
+#[tokio::test]
+async fn test_notifications_stream_returns_daemon_notifications() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let socket = temp.path().join("memoryd.sock");
+    let daemon = tokio::spawn(fake_notifications_recent_daemon(socket.clone()));
+    wait_for_socket_path(&socket).await;
+
+    let response = router_with_state(WebState::daemon(&socket))
+        .oneshot(Request::builder().uri("/api/notifications/stream").body(Body::empty()).expect("request builds"))
+        .await
+        .expect("request succeeds");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let content_type = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    assert!(content_type.starts_with("text/event-stream"), "{content_type}");
+    let body = response_body(response).await;
+    assert!(body.starts_with("retry: 5000\nevent: heartbeat\n"), "{body}");
+    assert!(body.contains("notif_review_threshold"), "{body}");
+    assert!(body.contains("Review queue has 7 items over threshold 5."), "{body}");
+
+    daemon.await.expect("fake daemon joins").expect("fake daemon succeeds");
 }
 
 #[tokio::test]
@@ -428,6 +509,7 @@ async fn test_notifications_stream_returns_sse_heartbeat_snapshot() {
     assert!(content_type.starts_with("text/event-stream"));
 
     let body = response_body(response).await;
+    assert!(body.contains("retry: 5000"));
     assert!(body.contains("event: heartbeat"));
     assert!(body.contains("review_queue_over"));
 }
@@ -442,6 +524,7 @@ async fn test_daemon_configured_notifications_stream_returns_empty_heartbeat() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = response_body(response).await;
+    assert!(body.contains("retry: 5000"));
     assert!(body.contains("event: heartbeat"));
     assert!(body.contains(r#""notifications":[]"#));
 }
@@ -620,6 +703,85 @@ async fn write_recall_hit_memory(substrate: &Substrate, id: MemoryId) {
         .expect("fixture write");
 }
 
+async fn write_search_memory(substrate: &Substrate, id: MemoryId) {
+    substrate
+        .write_memory(WriteRequest {
+            operation_id: None,
+            memory: Memory {
+                frontmatter: Frontmatter {
+                    schema_version: 1,
+                    id: id.clone(),
+                    memory_type: MemoryType::Project,
+                    scope: Scope::User,
+                    summary: "daemon-visible-term search fixture".to_owned(),
+                    confidence: 0.9,
+                    original_confidence: None,
+                    trust_level: TrustLevel::Trusted,
+                    sensitivity: Sensitivity::Internal,
+                    status: MemoryStatus::Active,
+                    created_at: instant("2026-05-01T00:00:00Z"),
+                    updated_at: instant("2026-05-01T00:00:00Z"),
+                    observed_at: None,
+                    author: Author {
+                        kind: AuthorKind::Agent,
+                        user_handle: None,
+                        harness: Some("codex".to_owned()),
+                        harness_version: None,
+                        session_id: Some("sess_web_search".to_owned()),
+                        subagent_id: None,
+                        phase: None,
+                        component: None,
+                    },
+                    namespace: None,
+                    canonical_namespace_id: None,
+                    tags: Vec::new(),
+                    entities: Vec::new(),
+                    aliases: Vec::new(),
+                    source: Source {
+                        kind: SourceKind::AgentPrimary,
+                        reference: None,
+                        harness: Some("codex".to_owned()),
+                        harness_version: None,
+                        session_id: Some("sess_web_search".to_owned()),
+                        subagent_id: None,
+                        device: None,
+                    },
+                    evidence: Vec::new(),
+                    requires_user_confirmation: false,
+                    review_state: None,
+                    supersedes: Vec::new(),
+                    superseded_by: Vec::new(),
+                    related: Vec::new(),
+                    tombstone_events: Vec::new(),
+                    retrieval_policy: RetrievalPolicy {
+                        passive_recall: true,
+                        max_scope: Scope::User,
+                        mask_personal_for_synthesis: false,
+                        index_body: true,
+                        index_embeddings: true,
+                    },
+                    write_policy: WritePolicy {
+                        human_review_required: false,
+                        policy_applied: "web-search-live-test".to_owned(),
+                        expected_base_hash: None,
+                    },
+                    merge_diagnostics: None,
+                    extras: BTreeMap::new(),
+                },
+                body: "Search body contains daemon-visible-term and must not be returned by /api/search.".to_owned(),
+                path: Some(RepoPath::new(format!("me/{}.md", id.as_str()))),
+            },
+            expected_base_hash: None,
+            write_mode: WriteMode::CreateNew,
+            index_projection: None,
+            event_context: EventContext::default(),
+            allow_best_effort_durability: true,
+            classification: ClassificationOutcome::Trusted,
+        })
+        .await
+        .expect("fixture write");
+}
+
 async fn wait_for_socket(socket: &std::path::Path) {
     for _ in 0..200 {
         if UnixStream::connect(socket).await.is_ok() {
@@ -628,6 +790,41 @@ async fn wait_for_socket(socket: &std::path::Path) {
         sleep(Duration::from_millis(10)).await;
     }
     panic!("daemon did not bind socket at {}", socket.display());
+}
+
+async fn wait_for_socket_path(socket: &std::path::Path) {
+    for _ in 0..200 {
+        if socket.exists() {
+            return;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    panic!("daemon did not bind socket at {}", socket.display());
+}
+
+async fn fake_notifications_recent_daemon(socket: std::path::PathBuf) -> anyhow::Result<()> {
+    let _ = std::fs::remove_file(&socket);
+    let listener = UnixListener::bind(&socket)?;
+    let (stream, _) = listener.accept().await?;
+    let mut stream = BufReader::new(stream);
+    let mut line = String::new();
+    stream.read_line(&mut line).await?;
+    let request = RequestEnvelope::from_json_line(&line)?;
+    assert!(matches!(request.request, RequestPayload::NotificationsRecent { limit: Some(50) }));
+
+    let response = ResponseEnvelope::success(
+        request.id,
+        ResponsePayload::NotificationsRecent(NotificationsRecentResponse {
+            notifications: vec![NotificationSnapshot {
+                id: "notif_review_threshold".to_owned(),
+                kind: "passive".to_owned(),
+                message: "Review queue has 7 items over threshold 5.".to_owned(),
+                created_at: instant("2026-05-25T12:00:00Z"),
+            }],
+        }),
+    );
+    stream.get_mut().write_all(response.to_json_line()?.as_bytes()).await?;
+    Ok(())
 }
 
 fn instant(value: &str) -> DateTime<Utc> {

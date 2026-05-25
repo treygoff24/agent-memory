@@ -21,7 +21,7 @@ export interface SyncStatus {
     ahead: number;
     behind: number;
     remote: string;
-    last_push: string;
+    last_push: string | null;
 }
 
 export interface ReviewStatus {
@@ -94,7 +94,7 @@ export interface EntityMemorySummary {
     id: string;
     namespace: string;
     status: string;
-    confidence: number;
+    confidence: number | null;
 }
 
 export interface EntityDetailResponse {
@@ -205,6 +205,19 @@ export interface RecallHitsResponse {
     since?: string | null;
     limit: number;
     hits: RecallHitSummary[];
+}
+
+export interface SearchHitSummary {
+    id: string;
+    summary: string;
+    snippet: string;
+    score: number;
+}
+
+export interface DashboardSearchResponse {
+    hits: SearchHitSummary[];
+    total: number;
+    guidance: string;
 }
 
 export interface ProvenanceEvent {
@@ -368,6 +381,7 @@ export interface PolicyEditorResponse {
     raw_yaml: string;
     writable: boolean;
     files: string[];
+    current_file?: string | null;
     policies: GovernancePolicySummary[];
 }
 
@@ -417,8 +431,8 @@ export interface SyncDashboardResponse {
 
 export interface NotificationSnapshotItem {
     id: string;
-    title: string;
-    body: string;
+    kind: string;
+    message: string;
     tone?: 'ok' | 'warn' | 'bad';
     created_at?: string;
 }
@@ -426,4 +440,8 @@ export interface NotificationSnapshotItem {
 export interface NotificationsHeartbeat {
     kind: 'heartbeat';
     notifications: NotificationSnapshotItem[];
+    error?: {
+        code: string;
+        message: string;
+    };
 }

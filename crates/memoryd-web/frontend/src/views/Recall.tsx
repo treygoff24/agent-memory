@@ -15,8 +15,8 @@ export interface RecallLedgerEvent {
     agent: string;
     memory: string;
     namespace: string;
-    score: number;
-    latencyMs: number;
+    score: number | null;
+    latencyMs: number | null;
     session: string;
 }
 
@@ -45,21 +45,6 @@ function normalizeAgent(agent: string): string {
     return agent;
 }
 
-function agentFromDevice(device: string): string {
-    if (device === 'mbp') return 'codex';
-    if (device === 'mini') return 'claude-code';
-    return 'manual';
-}
-
-function namespaceFromSummary(summary: string): string {
-    if (/pnpm|typescript/i.test(summary)) return 'coding/typescript';
-    if (/editor/i.test(summary)) return 'prefs/editor';
-    if (/acme/i.test(summary)) return 'work/clients/acme';
-    if (/daughter|school|family/i.test(summary)) return 'personal/family';
-    if (/rust|go/i.test(summary)) return 'meta/preferences';
-    return 'project:agent-memory';
-}
-
 export function toRecallLedgerEvent(event: RawRecallEvent, index: number): RecallLedgerEvent {
     const date = new Date(event.time);
     const hh = String(date.getUTCHours()).padStart(2, '0');
@@ -80,20 +65,25 @@ export function toRecallLedgerEvent(event: RawRecallEvent, index: number): Recal
     };
 }
 
-function fromRecallHit(hit: RecallHitSummary, index: number): RecallLedgerEvent {
+function fromRecallHit(hit: RecallHitSummary): RecallLedgerEvent {
     const summary = hit.summary ?? hit.memory_id;
-    return toRecallLedgerEvent(
-        {
-            id: hit.event_id,
-            time: hit.recalled_at,
-            device: hit.device,
-            agent: agentFromDevice(hit.device),
-            memory: summary,
-            namespace: namespaceFromSummary(summary),
-            score: 0.5 + (index % 50) / 100,
-        },
-        index,
-    );
+    const date = new Date(hit.recalled_at);
+    const hh = String(date.getUTCHours()).padStart(2, '0');
+    const mm = String(date.getUTCMinutes()).padStart(2, '0');
+    const ss = String(date.getUTCSeconds()).padStart(2, '0');
+    return {
+        id: hit.event_id,
+        seq: hit.seq,
+        isoTime: hit.recalled_at,
+        time: `${hh}:${mm}:${ss}`,
+        device: hit.device,
+        agent: 'unknown',
+        memory: summary,
+        namespace: 'unknown',
+        score: null,
+        latencyMs: null,
+        session: 'unknown',
+    };
 }
 
 export function makeHeavyRecallEvents(count = 9000): RecallLedgerEvent[] {
@@ -149,10 +139,44 @@ function inspectorItemFromRecall(event: RecallLedgerEvent | undefined): Inspecto
         provenance: {
             written: event.time,
             session: event.session,
-            confidence: event.score.toFixed(2),
+            confidence: event.score === null ? 'unknown' : event.score.toFixed(2),
             device: event.device,
         },
     };
+}
+
+function csvCell(value: string | number): string {
+    const text = String(value);
+    return /[",\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+}
+
+function recallCsv(events: RecallLedgerEvent[]): string {
+    const header = ['time', 'seq', 'device', 'agent', 'memory', 'namespace', 'latency_ms', 'score', 'session'];
+    const rows = events.map((event) =>
+        [
+            event.isoTime,
+            event.seq,
+            event.device,
+            event.agent,
+            event.memory,
+            event.namespace,
+            event.latencyMs ?? 'unknown',
+            event.score ?? 'unknown',
+            event.session,
+        ]
+            .map(csvCell)
+            .join(','),
+    );
+    return [header.join(','), ...rows].join('\n');
+}
+
+function downloadRecallCsv(events: RecallLedgerEvent[]) {
+    const link = document.createElement('a');
+    link.href = `data:text/csv;charset=utf-8,${encodeURIComponent(recallCsv(events))}`;
+    link.download = 'memorum-recall-visible.csv';
+    document.body.append(link);
+    link.click();
+    link.remove();
 }
 
 export function Recall({ events, heavy }: RecallProps) {
@@ -230,6 +254,7 @@ export function Recall({ events, heavy }: RecallProps) {
                     <button
                         className="btn"
                         type="button"
+                        onClick={() => downloadRecallCsv(visible)}
                     >
                         export csv
                     </button>
