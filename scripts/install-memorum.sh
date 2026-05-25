@@ -16,6 +16,10 @@ repo_root="$(cd "$script_dir/.." && pwd)"
 export PATH="$HOME/.cargo/bin:$PATH"
 
 absolute_path() {
+  if [ -z "$1" ]; then
+    echo "error: path must not be empty" >&2
+    exit 2
+  fi
   case "$1" in
     /*) printf '%s\n' "$1" ;;
     *) printf '%s/%s\n' "$(pwd -P)" "$1" ;;
@@ -24,11 +28,21 @@ absolute_path() {
 
 reject_literal_tilde() {
   case "$1" in
-    *'~'*)
+    '~'|'~/'*|'~'?*)
       echo "error: literal ~ is not expanded here; pass \$HOME/... or an absolute path" >&2
       exit 2
       ;;
   esac
+}
+
+require_option_value() {
+  local flag="$1"
+  local value="${2:-}"
+  if [ -z "$value" ] || [[ "$value" == --* ]]; then
+    echo "error: $flag requires a non-empty value" >&2
+    usage >&2
+    exit 2
+  fi
 }
 
 repo="$HOME/memorum"
@@ -41,14 +55,17 @@ force_reinstall=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --repo)
+      require_option_value "$1" "${2:-}"
       repo="${2:-}"
       shift 2
       ;;
     --runtime)
+      require_option_value "$1" "${2:-}"
       runtime="${2:-}"
       shift 2
       ;;
     --socket)
+      require_option_value "$1" "${2:-}"
       socket="${2:-}"
       shift 2
       ;;

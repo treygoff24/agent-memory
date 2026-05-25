@@ -58,13 +58,13 @@ Wire an MCP client to launch the stdio bridge. Use the absolute socket path prin
   "mcpServers": {
     "memorum": {
       "command": "memoryd",
-      "args": ["mcp", "--socket", "/Users/you/memorum/.memoryd/memoryd.sock"]
+      "args": ["mcp", "--socket", "/absolute/path/to/memorum/.memoryd/memoryd.sock"]
     }
   }
 }
 ```
 
-Replace `/Users/you/memorum` with your real path, or paste the installer snippet that already contains the canonicalized socket.
+Replace `/absolute/path/to/memorum` with your real path, or paste the installer snippet that already contains the canonicalized socket.
 
 Then ask the client to call `memory_write` with a grounded fact and `memory_search` for the same text. See `docs/getting-started.md` for a step-by-step path and `docs/mcp-wiring.md` for per-harness config snippets.
 

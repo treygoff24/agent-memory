@@ -396,11 +396,14 @@ fn doctor_is_healthy_when_current_codex_login_status_is_authenticated() {
     let repo = temp.path().join("repo");
     let runtime = temp.path().join("runtime");
     let bin_dir = temp.path().join("bin");
+    let marker = temp.path().join("codex-called");
     std::fs::create_dir_all(&bin_dir).expect("bin dir");
 
     write_executable(
         bin_dir.join("codex"),
-        r#"#!/bin/sh
+        &format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> {}
 if [ "$1" = login ] && [ "$2" = status ]; then
   printf 'Logged in using ChatGPT\n'
   exit 0
@@ -408,6 +411,8 @@ fi
 printf 'unexpected codex args: %s\n' "$*" >&2
 exit 64
 "#,
+            shell_quote(&marker)
+        ),
     );
 
     init_test_substrate(&repo, &runtime, "dev_codex01");
@@ -430,6 +435,7 @@ exit 64
     let stdout = String::from_utf8(output.stdout).expect("doctor stdout utf8");
     assert!(stdout.contains("\"healthy\": true"), "{stdout}");
     assert!(!stdout.contains("codex auth status"), "current Codex probe should not use stale auth command: {stdout}");
+    assert_eq!(std::fs::read_to_string(marker).expect("codex marker"), "login status\n");
 }
 
 #[test]
@@ -438,11 +444,14 @@ fn doctor_is_healthy_when_current_claude_auth_status_is_authenticated() {
     let repo = temp.path().join("repo");
     let runtime = temp.path().join("runtime");
     let bin_dir = temp.path().join("bin");
+    let marker = temp.path().join("claude-called");
     std::fs::create_dir_all(&bin_dir).expect("bin dir");
 
     write_executable(
         bin_dir.join("claude"),
-        r#"#!/bin/sh
+        &format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> {}
 if [ "$1" = auth ] && [ "$2" = status ]; then
   printf 'authenticated\n'
   exit 0
@@ -450,6 +459,8 @@ fi
 printf 'unexpected claude args: %s\n' "$*" >&2
 exit 64
 "#,
+            shell_quote(&marker)
+        ),
     );
 
     init_test_substrate(&repo, &runtime, "dev_claude01");
@@ -475,6 +486,7 @@ exit 64
         !stdout.contains("claude config get auth.user"),
         "current Claude probe should not use stale auth command: {stdout}"
     );
+    assert_eq!(std::fs::read_to_string(marker).expect("claude marker"), "auth status\n");
 }
 
 #[test]
@@ -483,11 +495,14 @@ fn doctor_is_healthy_when_codex_falls_back_to_legacy_auth_status() {
     let repo = temp.path().join("repo");
     let runtime = temp.path().join("runtime");
     let bin_dir = temp.path().join("bin");
+    let marker = temp.path().join("codex-called");
     std::fs::create_dir_all(&bin_dir).expect("bin dir");
 
     write_executable(
         bin_dir.join("codex"),
-        r#"#!/bin/sh
+        &format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> {}
 if [ "$1" = login ] && [ "$2" = status ]; then
   printf 'error: unrecognized subcommand status\n' >&2
   exit 2
@@ -498,6 +513,8 @@ if [ "$1" = auth ] && [ "$2" = status ]; then
 fi
 exit 64
 "#,
+            shell_quote(&marker)
+        ),
     );
 
     init_test_substrate(&repo, &runtime, "dev_codex02");
@@ -519,4 +536,9 @@ exit 64
     );
     let stdout = String::from_utf8(output.stdout).expect("doctor stdout utf8");
     assert!(stdout.contains("\"healthy\": true"), "{stdout}");
+    assert_eq!(std::fs::read_to_string(marker).expect("codex marker"), "login status\nauth status\n");
+}
+
+fn shell_quote(path: &std::path::Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
 }

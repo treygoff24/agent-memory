@@ -39,6 +39,9 @@ bash -n scripts/check.sh scripts/check-fast.sh scripts/check-dogfood.sh scripts/
 phase "docs command validity"
 ./scripts/docs-command-validity.sh
 
+phase "installer test"
+./scripts/install-memorum.test.sh
+
 phase "targeted dogfood clippy"
 cargo clippy -p memoryd -p memoryd-tui -p memorum-eval -p memorum-coordination --all-targets -- -D warnings
 

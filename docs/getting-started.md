@@ -51,7 +51,7 @@ Add this to your MCP-capable client config. Replace the placeholder socket path 
   "mcpServers": {
     "memorum": {
       "command": "memoryd",
-      "args": ["mcp", "--socket", "/Users/you/memorum/.memoryd/memoryd.sock"]
+      "args": ["mcp", "--socket", "/absolute/path/to/memorum/.memoryd/memoryd.sock"]
     }
   }
 }

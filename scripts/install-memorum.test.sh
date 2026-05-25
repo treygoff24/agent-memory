@@ -50,7 +50,7 @@ grep -Fq 'kill -KILL "$existing_pid"' "$repo_root/scripts/install-memorum.sh"
 grep -Fq 'readiness_seconds=30' "$repo_root/scripts/install-memorum.sh"
 grep -Fq 'PATH="$HOME/.cargo/bin:$PATH"' "$repo_root/scripts/install-memorum.sh"
 
-# --- Relative path canonicalization ---
+# --- Relative path canonicalization (repo/runtime defaults) ---
 rel_tmp="$(mktemp -d)"
 rel_physical="$(cd "$rel_tmp" && pwd -P)"
 rel_out="$rel_tmp/install.out"
@@ -90,34 +90,168 @@ rel_not_contains "--repo repo" "relative-repo"
 rel_not_contains "/tmp/memoryd.sock" "tmp-socket"
 rm -rf "$rel_tmp"
 
-# --- Literal tilde rejection ---
-tilde_tmp="$(mktemp -d)"
-tilde_stdout="$tilde_tmp/stdout"
-tilde_stderr="$tilde_tmp/stderr"
-tilde_code=0
+# --- Explicit relative --socket canonicalization ---
+socket_tmp="$(mktemp -d)"
+socket_physical="$(cd "$socket_tmp" && pwd -P)"
+socket_out="$socket_tmp/install.out"
+(
+  cd "$socket_tmp"
+  bash "$repo_root/scripts/install-memorum.sh" \
+    --dry-run \
+    --force-reinstall \
+    --repo "$socket_physical/repo" \
+    --runtime "$socket_physical/runtime" \
+    --socket custom.sock >"$socket_out"
+)
+socket_expected="$socket_physical/custom.sock"
+if ! grep -Fq -- "memoryd serve --init --repo $socket_physical/repo --runtime $socket_physical/runtime --socket $socket_expected" "$socket_out"; then
+  echo "explicit relative --socket test: missing canonicalized serve command" >&2
+  cat "$socket_out" >&2
+  exit 1
+fi
+if ! grep -Fq -- "memoryd status --socket $socket_expected" "$socket_out"; then
+  echo "explicit relative --socket test: missing canonicalized status command" >&2
+  cat "$socket_out" >&2
+  exit 1
+fi
+rm -rf "$socket_tmp"
+
+# --- Empty argument rejection ---
+expect_empty_rejection() {
+  local flag="$1"
+  local label="$2"
+  local case_tmp="$tmp/empty-$label"
+  mkdir -p "$case_tmp"
+  local case_stdout="$case_tmp/stdout"
+  local case_stderr="$case_tmp/stderr"
+  local case_code=0
+  bash "$repo_root/scripts/install-memorum.sh" \
+    --dry-run \
+    --force-reinstall \
+    "$flag" "" \
+    >"$case_stdout" 2>"$case_stderr" || case_code=$?
+  if [ "$case_code" -ne 2 ]; then
+    echo "empty $label test: expected exit code 2, got $case_code" >&2
+    cat "$case_stderr" >&2
+    exit 1
+  fi
+  if ! grep -Fq 'requires a non-empty value' "$case_stderr"; then
+    echo "empty $label test: stderr missing non-empty error message" >&2
+    cat "$case_stderr" >&2
+    exit 1
+  fi
+  if grep -Fq -- 'MCP client snippet' "$case_stdout"; then
+    echo "empty $label test: stdout should not contain MCP snippet after rejection" >&2
+    cat "$case_stdout" >&2
+    exit 1
+  fi
+}
+
+expect_empty_rejection "--repo" "repo"
+expect_empty_rejection "--runtime" "runtime"
+expect_empty_rejection "--socket" "socket"
+
+expect_missing_rejection_before_next_flag() {
+  local flag="$1"
+  local next_flag="$2"
+  local label="$3"
+  local case_tmp="$tmp/missing-$label"
+  mkdir -p "$case_tmp"
+  local case_stdout="$case_tmp/stdout"
+  local case_stderr="$case_tmp/stderr"
+  local case_code=0
+  bash "$repo_root/scripts/install-memorum.sh" \
+    --dry-run \
+    --force-reinstall \
+    "$flag" "$next_flag" \
+    >"$case_stdout" 2>"$case_stderr" || case_code=$?
+  if [ "$case_code" -ne 2 ]; then
+    echo "missing $label test: expected exit code 2, got $case_code" >&2
+    cat "$case_stderr" >&2
+    exit 1
+  fi
+  if ! grep -Fq 'requires a non-empty value' "$case_stderr"; then
+    echo "missing $label test: stderr missing non-empty error message" >&2
+    cat "$case_stderr" >&2
+    exit 1
+  fi
+  if grep -Fq -- 'MCP client snippet' "$case_stdout"; then
+    echo "missing $label test: stdout should not contain MCP snippet after rejection" >&2
+    cat "$case_stdout" >&2
+    exit 1
+  fi
+}
+
+expect_missing_rejection_before_next_flag "--repo" "--runtime" "repo"
+expect_missing_rejection_before_next_flag "--runtime" "--socket" "runtime"
+expect_missing_rejection_before_next_flag "--socket" "--with-scheduler" "socket"
+
+# --- Leading literal tilde rejection ---
+expect_tilde_rejection() {
+  local flag="$1"
+  local value="$2"
+  local label="$3"
+  local case_tmp="$tmp/tilde-$label"
+  mkdir -p "$case_tmp"
+  local case_stdout="$case_tmp/stdout"
+  local case_stderr="$case_tmp/stderr"
+  local case_code=0
+  bash "$repo_root/scripts/install-memorum.sh" \
+    --dry-run \
+    --force-reinstall \
+    "$flag" "$value" \
+    >"$case_stdout" 2>"$case_stderr" || case_code=$?
+  if [ "$case_code" -ne 2 ]; then
+    echo "tilde $label test: expected exit code 2, got $case_code" >&2
+    cat "$case_stderr" >&2
+    exit 1
+  fi
+  if ! grep -Fq 'literal ~ is not expanded here' "$case_stderr"; then
+    echo "tilde $label test: stderr missing literal-tilde error message" >&2
+    cat "$case_stderr" >&2
+    exit 1
+  fi
+  if grep -Fq -- 'MCP client snippet' "$case_stdout"; then
+    echo "tilde $label test: stdout should not contain MCP snippet after tilde rejection" >&2
+    cat "$case_stdout" >&2
+    exit 1
+  fi
+}
+
+expect_tilde_rejection "--repo" '~/memorum' "repo"
+expect_tilde_rejection "--runtime" '~/memorum/.memoryd' "runtime"
+expect_tilde_rejection "--socket" '~/memorum/.memoryd/memoryd.sock' "socket"
+
+# Paths containing ~ away from the start should not be rejected.
+mid_tilde_tmp="$(mktemp -d)"
+mid_tilde_out="$mid_tilde_tmp/install.out"
 bash "$repo_root/scripts/install-memorum.sh" \
   --dry-run \
   --force-reinstall \
-  --repo '~/memorum' \
-  >"$tilde_stdout" 2>"$tilde_stderr" || tilde_code=$?
-if [ "$tilde_code" -ne 2 ]; then
-  echo "tilde test: expected exit code 2, got $tilde_code" >&2
-  cat "$tilde_stderr" >&2
+  --repo "$mid_tilde_tmp/repo~backup" \
+  --runtime "$mid_tilde_tmp/runtime" >"$mid_tilde_out"
+if ! grep -Fq -- 'MCP client snippet' "$mid_tilde_out"; then
+  echo "mid-tilde test: expected installer to accept path with ~ away from start" >&2
+  cat "$mid_tilde_out" >&2
   exit 1
 fi
-if ! grep -Fq 'literal ~ is not expanded here' "$tilde_stderr"; then
-  echo "tilde test: stderr missing literal-tilde error message" >&2
-  cat "$tilde_stderr" >&2
+rm -rf "$mid_tilde_tmp"
+
+# --- Onboarding docs use platform-neutral placeholders ---
+grep -Fq '/absolute/path/to/memorum/.memoryd/memoryd.sock' "$repo_root/docs/mcp-wiring.md"
+grep -Fq '[mcp_servers.memorum]' "$repo_root/docs/mcp-wiring.md"
+grep -Fq '/absolute/path/to/memorum/.memoryd/memoryd.sock' "$repo_root/README.md"
+grep -Fq '/absolute/path/to/memorum/.memoryd/memoryd.sock' "$repo_root/docs/getting-started.md"
+if rg -q '/Users/you/' "$repo_root/README.md" "$repo_root/docs/getting-started.md" "$repo_root/docs/mcp-wiring.md"; then
+  echo "onboarding docs still contain macOS-specific /Users/you/ placeholder" >&2
   exit 1
 fi
-if grep -Fq -- 'MCP client snippet' "$tilde_stdout"; then
-  echo "tilde test: stdout should not contain MCP snippet after tilde rejection" >&2
-  cat "$tilde_stdout" >&2
+if rg -q '^\[mcp\.' "$repo_root/docs/mcp-wiring.md"; then
+  echo "docs/mcp-wiring.md still contains stale [mcp.*] Codex header" >&2
   exit 1
 fi
-if grep -Fq -- '~/' "$tilde_stdout"; then
-  echo "tilde test: stdout contains literal ~ in a path" >&2
-  cat "$tilde_stdout" >&2
-  exit 1
-fi
-rm -rf "$tilde_tmp"
+
+# --- docs-command-validity.sh passes on current docs ---
+bash "$repo_root/scripts/docs-command-validity.sh"
+
+echo "install-memorum.test.sh: all checks passed"

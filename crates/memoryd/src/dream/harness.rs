@@ -100,6 +100,38 @@ struct AuthProbeCandidate {
 }
 
 const AUTH_DIAGNOSTIC_SUMMARY_MAX_CHARS: usize = 4096;
+const AUTH_UNSUPPORTED_COMMAND_MARKERS: &[&str] = &[
+    "unknown command",
+    "unknown subcommand",
+    "unrecognized command",
+    "unrecognized subcommand",
+    "invalid command",
+    "invalid subcommand",
+    "unsupported command",
+    "unsupported subcommand",
+];
+const AUTH_FAILURE_MARKERS: &[&str] = &[
+    "auth failed",
+    "invalid credential",
+    "invalid key",
+    "invalid token",
+    "not authenticated",
+    "not logged in",
+    "session expired",
+    "unrecognized account",
+    "unrecognized token",
+];
+
+fn auth_probe_candidate(program: &str, args: &[&str]) -> AuthProbeCandidate {
+    AuthProbeCandidate {
+        plan: HarnessCommandPlan {
+            program: program.to_owned(),
+            args: args.iter().map(|arg| (*arg).to_owned()).collect(),
+            prompt_transport: PromptTransport::Stdin,
+        },
+        unsupported_markers: AUTH_UNSUPPORTED_COMMAND_MARKERS,
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MinimalEnvironment {
@@ -268,34 +300,8 @@ impl ClaudeCodeCli {
 
     fn auth_probe_candidates(&self) -> Vec<AuthProbeCandidate> {
         vec![
-            AuthProbeCandidate {
-                plan: HarnessCommandPlan {
-                    program: "claude".to_owned(),
-                    args: vec!["auth".to_owned(), "status".to_owned()],
-                    prompt_transport: PromptTransport::Stdin,
-                },
-                unsupported_markers: &[
-                    "unknown command",
-                    "unknown subcommand",
-                    "unrecognized command",
-                    "unrecognized subcommand",
-                    "invalid command",
-                ],
-            },
-            AuthProbeCandidate {
-                plan: HarnessCommandPlan {
-                    program: "claude".to_owned(),
-                    args: vec!["config".to_owned(), "get".to_owned(), "auth.user".to_owned()],
-                    prompt_transport: PromptTransport::Stdin,
-                },
-                unsupported_markers: &[
-                    "unknown command",
-                    "unknown subcommand",
-                    "unrecognized command",
-                    "unrecognized subcommand",
-                    "invalid command",
-                ],
-            },
+            auth_probe_candidate("claude", &["auth", "status"]),
+            auth_probe_candidate("claude", &["config", "get", "auth.user"]),
         ]
     }
 }
@@ -373,24 +379,7 @@ impl CodexCli {
     }
 
     fn auth_probe_candidates(&self) -> Vec<AuthProbeCandidate> {
-        vec![
-            AuthProbeCandidate {
-                plan: HarnessCommandPlan {
-                    program: "codex".to_owned(),
-                    args: vec!["login".to_owned(), "status".to_owned()],
-                    prompt_transport: PromptTransport::Stdin,
-                },
-                unsupported_markers: &["unrecognized subcommand", "unknown command", "invalid command"],
-            },
-            AuthProbeCandidate {
-                plan: HarnessCommandPlan {
-                    program: "codex".to_owned(),
-                    args: vec!["auth".to_owned(), "status".to_owned()],
-                    prompt_transport: PromptTransport::Stdin,
-                },
-                unsupported_markers: &["unrecognized subcommand", "unknown command", "invalid command"],
-            },
-        ]
+        vec![auth_probe_candidate("codex", &["login", "status"]), auth_probe_candidate("codex", &["auth", "status"])]
     }
 }
 
@@ -500,7 +489,6 @@ async fn auth_probe(plan: HarnessCommandPlan, path_env: Option<OsString>, env_al
     }
 }
 
-/// Production entry point: runs the ordered auth probe candidates against real subprocesses.
 async fn auth_probe_any(
     candidates: Vec<AuthProbeCandidate>,
     path_env: Option<OsString>,
@@ -513,10 +501,8 @@ async fn auth_probe_any(
     .await
 }
 
-/// Generic loop over ordered auth probe candidates with an injected runner.
-/// In production the runner is `auth_probe`; in tests it is a fake so
-/// timeout/error branches and Unicode diagnostic truncation can be exercised
-/// without slow subprocess sleeps.
+/// Prefer the current auth command, and invoke legacy candidates only when the
+/// previous command failed because that command surface is unsupported.
 async fn auth_probe_any_with_runner<F, Fut>(candidates: Vec<AuthProbeCandidate>, mut runner: F) -> AuthProbeResult
 where
     F: FnMut(HarnessCommandPlan) -> Fut,
@@ -541,7 +527,7 @@ where
                 };
             }
             AuthProbeResult::Timeout => {
-                return AuthProbeResult::Error { message: format!("{command_label} timed out") };
+                return AuthProbeResult::Timeout;
             }
             AuthProbeResult::Error { message } => {
                 return AuthProbeResult::Error { message: format!("{command_label} error: {message}") };
@@ -569,6 +555,7 @@ fn command_label(plan: &HarnessCommandPlan) -> String {
 fn is_unsupported_auth_surface(stderr_tail: &str, markers: &[&str]) -> bool {
     let lower = stderr_tail.to_ascii_lowercase();
     markers.iter().any(|marker| lower.contains(marker))
+        && !AUTH_FAILURE_MARKERS.iter().any(|marker| lower.contains(marker))
 }
 
 fn summarize_unsupported_attempts(attempts: &[String]) -> String {
@@ -626,6 +613,7 @@ struct HardenedCaptureOptions {
 struct CapturedHardenedChild {
     stdout: String,
     stderr_tail: String,
+    auth_stdout_tail: Option<String>,
     status_code: Option<i32>,
     stdin_write_result: Result<(), HarnessCliError>,
     timed_out: bool,
@@ -677,16 +665,18 @@ fn capture_hardened_child(
     let stdin_write_result = join_stdin_writer(handles.stdin_writer);
     let stdout = join_reader(handles.stdout_reader)?;
     let stderr_tail = join_reader(handles.stderr_reader)?;
+    let auth_stdout_tail = (!options.redact_stderr).then(|| auth_diagnostic_tail(&stdout));
     let stdout = String::from_utf8_lossy(&stdout).into_owned();
     let stderr_tail = if options.redact_stderr {
         redacted_capture_diagnostic("stderr", &stderr_tail)
     } else {
-        auth_diagnostic_stderr_tail(&stderr_tail)
+        auth_diagnostic_tail(&stderr_tail)
     };
     let status = outcome.status;
     Ok(CapturedHardenedChild {
         stdout,
         stderr_tail,
+        auth_stdout_tail,
         status_code: status.code(),
         stdin_write_result,
         timed_out: outcome.timed_out,
@@ -704,7 +694,10 @@ fn finalize_hardened_output(
     }
 
     if !output.status_success {
-        return Err(HarnessCliError::SubprocessExit { code: output.status_code, stderr_tail: output.stderr_tail });
+        return Err(HarnessCliError::SubprocessExit {
+            code: output.status_code,
+            stderr_tail: auth_exit_diagnostic(output.auth_stdout_tail.as_deref(), &output.stderr_tail),
+        });
     }
     if !successful_stdout_allows_stdin_error(&output.stdout, &output.stdin_write_result) {
         output.stdin_write_result?;
@@ -855,7 +848,18 @@ fn redacted_capture_diagnostic(label: &str, bytes: &[u8]) -> String {
     }
 }
 
-fn auth_diagnostic_stderr_tail(bytes: &[u8]) -> String {
+fn auth_exit_diagnostic(stdout_tail: Option<&str>, stderr_tail: &str) -> String {
+    let Some(stdout_tail) = stdout_tail.filter(|tail| !tail.trim().is_empty()) else {
+        return stderr_tail.to_owned();
+    };
+    if stderr_tail.trim().is_empty() {
+        format!("stdout: {stdout_tail}")
+    } else {
+        format!("stdout: {stdout_tail}\nstderr: {stderr_tail}")
+    }
+}
+
+fn auth_diagnostic_tail(bytes: &[u8]) -> String {
     let tail_start = bytes.len().saturating_sub(AUTH_DIAGNOSTIC_TAIL_LIMIT_BYTES);
     let tail = String::from_utf8_lossy(&bytes[tail_start..]);
     redact_secret_tokens(&tail)
@@ -947,6 +951,39 @@ mod tests {
         AuthProbeCandidate { plan: make_plan(program, args), unsupported_markers: markers }
     }
 
+    #[test]
+    fn unsupported_auth_surface_requires_command_surface_marker_without_auth_failure_marker() {
+        for diagnostic in [
+            "error: unknown command status",
+            "error: unknown subcommand status",
+            "error: unrecognized command status",
+            "error: unrecognized subcommand status",
+            "error: invalid command status",
+            "error: invalid subcommand status",
+            "error: unsupported command status",
+            "error: unsupported subcommand status",
+            "stdout: error: unsupported subcommand status\nstderr:",
+        ] {
+            assert!(
+                is_unsupported_auth_surface(diagnostic, AUTH_UNSUPPORTED_COMMAND_MARKERS),
+                "expected unsupported diagnostic: {diagnostic}"
+            );
+        }
+
+        for diagnostic in [
+            "not logged in; run codex login",
+            "not authenticated; run claude auth login",
+            "auth failed: unrecognized account token",
+            "invalid token; run login again",
+            "session expired: unknown command permissions",
+        ] {
+            assert!(
+                !is_unsupported_auth_surface(diagnostic, AUTH_UNSUPPORTED_COMMAND_MARKERS),
+                "expected auth-failure diagnostic: {diagnostic}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn auth_probe_any_runs_legacy_after_unsupported_marker() {
         let candidates = vec![
@@ -956,8 +993,7 @@ mod tests {
 
         let mut calls: Vec<HarnessCommandPlan> = Vec::new();
         let result = auth_probe_any_with_runner(candidates, |plan| {
-            let called: Vec<HarnessCommandPlan> = calls.clone();
-            let call_index = called.len();
+            let call_index = calls.len();
             calls.push(plan.clone());
             async move {
                 if call_index == 0 {
@@ -1038,6 +1074,7 @@ mod tests {
         .await;
 
         assert!(!result.is_ok(), "timeout on preferred must not fall back to legacy");
+        assert!(matches!(result, AuthProbeResult::Timeout), "timeout should keep typed semantics: {result:?}");
         assert_eq!(calls.len(), 1, "should only call preferred candidate before timeout");
         assert_eq!(calls[0].args, ["auth", "status"]);
     }

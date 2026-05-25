@@ -1,5 +1,7 @@
 # Harness Auth and Alpha Docs Implementation Plan
 
+> **⚠️ Historical / post-implementation document.** This plan was executed on commit `a7371d7`. Embedded code snippets and file-change descriptions describe the *implementation target* and may diverge from the final shipped code. Do not treat any code block in this file as current source of truth -- consult the actual files for the authoritative implementation.
+
 **Goal:** Make `memoryd doctor`, dream harness selection, and alpha onboarding work on ordinary developer machines with current or slightly older Claude Code / Codex CLI installs.
 
 **Architecture:** Replace hard-coded single auth probes with provider-specific ordered probe strategies that prefer current CLI surfaces and fall back only for unsupported older surfaces. Keep the public `HarnessCli` contract stable, preserve bounded/redacted diagnostics, then update the alpha docs and docs-validity gate so users follow one private socket/runtime path.
@@ -41,10 +43,10 @@
 
 ## Task 1: Add behavior tests for robust auth probe selection
 
-**Parallel:** no  
-**Blocked by:** none  
-**Owned files:** `crates/memoryd/tests/dream_harness_cli.rs`  
-**Invariants:** Tests must exercise public `HarnessCli::auth_probe()` behavior through fake executable stubs on `PATH`; do not test private helper implementation details.  
+**Parallel:** no
+**Blocked by:** none
+**Owned files:** `crates/memoryd/tests/dream_harness_cli.rs`
+**Invariants:** Tests must exercise public `HarnessCli::auth_probe()` behavior through fake executable stubs on `PATH`; do not test private helper implementation details.
 **Out of scope:** Production code changes.
 
 **Files:**
@@ -203,10 +205,10 @@ Expected before Task 2: at least the preferred-command tests fail because curren
 
 ## Task 2: Implement ordered auth probe strategies
 
-**Parallel:** no  
-**Blocked by:** Task 1  
-**Owned files:** `crates/memoryd/src/dream/harness.rs`  
-**Invariants:** Public completion command argv remains unchanged: Claude uses `claude --print`; Codex uses `codex exec [-|--json -]`; prompt bytes never enter argv; auth diagnostics remain redacted and bounded.  
+**Parallel:** no
+**Blocked by:** Task 1
+**Owned files:** `crates/memoryd/src/dream/harness.rs`
+**Invariants:** Public completion command argv remains unchanged: Claude uses `claude --print`; Codex uses `codex exec [-|--json -]`; prompt bytes never enter argv; auth diagnostics remain redacted and bounded.
 **Out of scope:** Doctor policy changes, docs, or new harness providers.
 
 **Files:**
@@ -418,10 +420,10 @@ Expected: all pass.
 
 ## Task 3: Add doctor-level regression coverage with stub CLIs
 
-**Parallel:** no  
-**Blocked by:** Task 2  
-**Owned files:** `crates/memoryd/tests/cli_contract.rs`  
-**Invariants:** `memoryd doctor` health rule stays: clean substrate plus at least one authenticated enabled harness is healthy; missing/unauthenticated secondary harness can be a warning but not a hard failure when another enabled harness works.  
+**Parallel:** no
+**Blocked by:** Task 2
+**Owned files:** `crates/memoryd/tests/cli_contract.rs`
+**Invariants:** `memoryd doctor` health rule stays: clean substrate plus at least one authenticated enabled harness is healthy; missing/unauthenticated secondary harness can be a warning but not a hard failure when another enabled harness works.
 **Out of scope:** Changing doctor JSON shape beyond messages naturally produced by improved probes.
 
 **Files:**
@@ -506,10 +508,10 @@ Expected: all pass.
 
 ## Task 4: Verify live local CLI behavior without making CI require credentials
 
-**Parallel:** no  
-**Blocked by:** Tasks 2, 3, and 5  
-**Owned files:** none  
-**Invariants:** Live smoke instructions must not require provider keys in CI; they are operator/local alpha checks only.  
+**Parallel:** no
+**Blocked by:** Tasks 2, 3, and 5
+**Owned files:** none
+**Invariants:** Live smoke instructions must not require provider keys in CI; they are operator/local alpha checks only.
 **Out of scope:** Adding credentials to tests or CI.
 
 **Files:** none
@@ -540,10 +542,10 @@ Expected on an authenticated local machine: exit 0. If no harness is authenticat
 
 ## Task 5: Update current onboarding docs to one socket/runtime story
 
-**Parallel:** yes  
-**Blocked by:** none  
-**Owned files:** `README.md`, `docs/getting-started.md`, `docs/mcp-wiring.md`, `docs/runbooks/dogfooding-day-one.md`  
-**Invariants:** Canonical MCP bridge shape remains `memoryd mcp --socket <PATH>`; installer-emitted snippets should be treated as source of truth for alpha users.  
+**Parallel:** yes
+**Blocked by:** none
+**Owned files:** `README.md`, `docs/getting-started.md`, `docs/mcp-wiring.md`, `docs/runbooks/dogfooding-day-one.md`
+**Invariants:** Canonical MCP bridge shape remains `memoryd mcp --socket <PATH>`; installer-emitted snippets should be treated as source of truth for alpha users.
 **Out of scope:** Historical `docs/reviews/**`, historical `docs/plans/**`, and old stream v0.1/v0.2 specs unless explicitly marked current.
 
 **Files:**
@@ -664,10 +666,10 @@ Older CLIs may use legacy auth status commands; Memorum falls back only when the
 
 ## Task 6: Update live Stream F/system docs for auth and bootstrap reality
 
-**Parallel:** yes  
-**Blocked by:** Task 2  
-**Owned files:** `docs/specs/stream-f-dreaming-v0.3.md`, `docs/specs/system-v0.2.md`  
-**Invariants:** Do not rewrite historical specs wholesale; add/update focused notes so current readers do not implement stale auth probes or hunt for an absent `memoryd init` command.  
+**Parallel:** yes
+**Blocked by:** Task 2
+**Owned files:** `docs/specs/stream-f-dreaming-v0.3.md`, `docs/specs/system-v0.2.md`
+**Invariants:** Do not rewrite historical specs wholesale; add/update focused notes so current readers do not implement stale auth probes or hunt for an absent `memoryd init` command.
 **Out of scope:** Old stream-f v0.1/v0.2 docs unless explicitly linked as current.
 
 **Files:**
@@ -701,10 +703,10 @@ Keep the release-shape content if it is intentionally aspirational, but make the
 
 ## Task 7: Harden docs-validity and gate wiring
 
-**Parallel:** no  
-**Blocked by:** Tasks 5, 6, and 8  
-**Owned files:** `scripts/docs-command-validity.sh`, `scripts/check-fast.sh`, `scripts/check.sh`  
-**Invariants:** The docs-validity script should scan current docs only; do not fail on intentionally historical reviews/plans. The dogfood gate should catch onboarding regressions before alpha installs.  
+**Parallel:** no
+**Blocked by:** Tasks 5, 6, and 8
+**Owned files:** `scripts/docs-command-validity.sh`, `scripts/check-fast.sh`, `scripts/check.sh`
+**Invariants:** The docs-validity script should scan current docs only; do not fail on intentionally historical reviews/plans. The dogfood gate should catch onboarding regressions before alpha installs.
 **Out of scope:** Broad specgate ownership cleanup.
 
 **Files:**
@@ -810,10 +812,10 @@ Expected: all pass.
 
 ## Task 8: Canonicalize installer paths for pasteable MCP snippets
 
-**Parallel:** no  
-**Blocked by:** Task 5  
-**Owned files:** `scripts/install-memorum.sh`, `scripts/install-memorum.test.sh`  
-**Invariants:** Installer output should be directly pasteable into MCP configs. Dry-run should remain non-destructive except for temporary/test-owned directories if canonicalization requires path existence.  
+**Parallel:** no
+**Blocked by:** Task 5
+**Owned files:** `scripts/install-memorum.sh`, `scripts/install-memorum.test.sh`
+**Invariants:** Installer output should be directly pasteable into MCP configs. Dry-run should remain non-destructive except for temporary/test-owned directories if canonicalization requires path existence.
 **Out of scope:** Replacing the installer with `memoryd init`.
 
 **Files:**

@@ -430,7 +430,7 @@ fn codex_auth_probe_prefers_login_status() {
             bin_dir.path().join("codex"),
             &format!(
                 r#"#!/bin/sh
-printf '%s\n' "$*" >> '{}'
+printf '%s\n' "$*" >> {}
 if [ "$1" = login ] && [ "$2" = status ]; then
   printf 'Logged in using ChatGPT\n'
   exit 0
@@ -438,7 +438,7 @@ fi
 printf 'wrong command: %s\n' "$*" >&2
 exit 64
 "#,
-                marker.display()
+                shell_quote(&marker)
             ),
         );
 
@@ -461,7 +461,7 @@ fn codex_auth_probe_falls_back_to_legacy_auth_status_only_when_login_status_is_u
             bin_dir.path().join("codex"),
             &format!(
                 r#"#!/bin/sh
-printf '%s\n' "$*" >> '{}'
+printf '%s\n' "$*" >> {}
 if [ "$1" = login ] && [ "$2" = status ]; then
   printf 'error: unrecognized subcommand status\n' >&2
   exit 2
@@ -472,7 +472,7 @@ if [ "$1" = auth ] && [ "$2" = status ]; then
 fi
 exit 64
 "#,
-                marker.display()
+                shell_quote(&marker)
             ),
         );
 
@@ -488,6 +488,42 @@ exit 64
 }
 
 #[test]
+fn codex_auth_probe_falls_back_when_unsupported_diagnostic_is_stdout_only() {
+    let _guard = SUBPROCESS_TEST_LOCK.lock().expect("subprocess test lock");
+    run_async(async {
+        let bin_dir = tempfile::tempdir().expect("stub bin dir");
+        let marker = bin_dir.path().join("called");
+        write_executable(
+            bin_dir.path().join("codex"),
+            &format!(
+                r#"#!/bin/sh
+printf '%s\n' "$*" >> {}
+if [ "$1" = login ] && [ "$2" = status ]; then
+  printf 'error: unrecognized subcommand status\n'
+  exit 2
+fi
+if [ "$1" = auth ] && [ "$2" = status ]; then
+  printf 'authenticated\n'
+  exit 0
+fi
+exit 64
+"#,
+                shell_quote(&marker)
+            ),
+        );
+
+        let cli = CodexCli::with_path_env(bin_dir.path().as_os_str().to_owned());
+        let probe = cli.auth_probe().await;
+
+        assert!(
+            probe.is_ok(),
+            "legacy codex auth status should authenticate after stdout-only unsupported diagnostic: {probe:?}"
+        );
+        assert_eq!(std::fs::read_to_string(marker).expect("called marker"), "login status\nauth status\n");
+    });
+}
+
+#[test]
 fn codex_auth_probe_does_not_fallback_after_supported_login_status_auth_failure() {
     let _guard = SUBPROCESS_TEST_LOCK.lock().expect("subprocess test lock");
     run_async(async {
@@ -497,7 +533,7 @@ fn codex_auth_probe_does_not_fallback_after_supported_login_status_auth_failure(
             bin_dir.path().join("codex"),
             &format!(
                 r#"#!/bin/sh
-printf '%s\n' "$*" >> '{}'
+printf '%s\n' "$*" >> {}
 if [ "$1" = login ] && [ "$2" = status ]; then
   printf 'not logged in; run codex login\n' >&2
   exit 1
@@ -508,7 +544,7 @@ if [ "$1" = auth ] && [ "$2" = status ]; then
 fi
 exit 64
 "#,
-                marker.display()
+                shell_quote(&marker)
             ),
         );
 
@@ -530,7 +566,7 @@ fn codex_auth_probe_does_not_fallback_on_exit_code_alone() {
             bin_dir.path().join("codex"),
             &format!(
                 r#"#!/bin/sh
-printf '%s\n' "$*" >> '{}'
+printf '%s\n' "$*" >> {}
 if [ "$1" = login ] && [ "$2" = status ]; then
   printf 'not logged in; run codex login\n' >&2
   exit 2
@@ -541,7 +577,7 @@ if [ "$1" = auth ] && [ "$2" = status ]; then
 fi
 exit 64
 "#,
-                marker.display()
+                shell_quote(&marker)
             ),
         );
 
@@ -563,7 +599,7 @@ fn claude_auth_probe_prefers_auth_status() {
             bin_dir.path().join("claude"),
             &format!(
                 r#"#!/bin/sh
-printf '%s\n' "$*" >> '{}'
+printf '%s\n' "$*" >> {}
 if [ "$1" = auth ] && [ "$2" = status ]; then
   printf 'authenticated\n'
   exit 0
@@ -571,7 +607,7 @@ fi
 printf 'wrong command: %s\n' "$*" >&2
 exit 64
 "#,
-                marker.display()
+                shell_quote(&marker)
             ),
         );
 
@@ -594,7 +630,7 @@ fn claude_auth_probe_falls_back_to_legacy_config_get_only_when_auth_status_is_un
             bin_dir.path().join("claude"),
             &format!(
                 r#"#!/bin/sh
-printf '%s\n' "$*" >> '{}'
+printf '%s\n' "$*" >> {}
 if [ "$1" = auth ] && [ "$2" = status ]; then
   printf 'error: unknown command status\n' >&2
   exit 2
@@ -605,7 +641,7 @@ if [ "$1" = config ] && [ "$2" = get ] && [ "$3" = auth.user ]; then
 fi
 exit 64
 "#,
-                marker.display()
+                shell_quote(&marker)
             ),
         );
 
@@ -630,7 +666,7 @@ fn claude_auth_probe_does_not_fallback_after_supported_auth_status_auth_failure(
             bin_dir.path().join("claude"),
             &format!(
                 r#"#!/bin/sh
-printf '%s\n' "$*" >> '{}'
+printf '%s\n' "$*" >> {}
 if [ "$1" = auth ] && [ "$2" = status ]; then
   printf 'not authenticated; run claude auth login\n' >&2
   exit 1
@@ -641,7 +677,7 @@ if [ "$1" = config ] && [ "$2" = get ] && [ "$3" = auth.user ]; then
 fi
 exit 64
 "#,
-                marker.display()
+                shell_quote(&marker)
             ),
         );
 
@@ -663,7 +699,7 @@ fn claude_auth_probe_does_not_fallback_on_exit_code_alone() {
             bin_dir.path().join("claude"),
             &format!(
                 r#"#!/bin/sh
-printf '%s\n' "$*" >> '{}'
+printf '%s\n' "$*" >> {}
 if [ "$1" = auth ] && [ "$2" = status ]; then
   printf 'not authenticated; run claude auth login\n' >&2
   exit 2
@@ -674,7 +710,7 @@ if [ "$1" = config ] && [ "$2" = get ] && [ "$3" = auth.user ]; then
 fi
 exit 64
 "#,
-                marker.display()
+                shell_quote(&marker)
             ),
         );
 
@@ -694,6 +730,10 @@ fn write_executable(path: impl AsRef<std::path::Path>, contents: &str) {
     let mut permissions = std::fs::metadata(path.as_ref()).expect("stub metadata").permissions();
     permissions.set_mode(0o755);
     std::fs::set_permissions(path.as_ref(), permissions).expect("mark stub executable");
+}
+
+fn shell_quote(path: &std::path::Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
 }
 
 fn run_async<T>(future: impl std::future::Future<Output = T>) -> T {

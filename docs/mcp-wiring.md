@@ -22,7 +22,7 @@ All snippets assume the F-001 stdio bridge invocation:
 memoryd mcp --socket "$MEMORUM_SOCKET"
 ```
 
-Use an absolute socket path in JSON/TOML MCP configs. Most MCP clients do not expand `~` inside JSON/TOML. Replace `/Users/you/memorum` below with your real path, or paste the installer-printed snippet from `scripts/install-memorum.sh`.
+Use an absolute socket path in JSON/TOML MCP configs. Most MCP clients do not expand `~` inside JSON/TOML. Replace `/absolute/path/to/memorum` below with your real path, or paste the installer-printed snippet from `scripts/install-memorum.sh`.
 
 ## Claude Desktop
 
@@ -33,7 +33,7 @@ Add to the Claude Desktop MCP config JSON:
   "mcpServers": {
     "memorum": {
       "command": "memoryd",
-      "args": ["mcp", "--socket", "/Users/you/memorum/.memoryd/memoryd.sock"]
+      "args": ["mcp", "--socket", "/absolute/path/to/memorum/.memoryd/memoryd.sock"]
     }
   }
 }
@@ -50,7 +50,7 @@ Use the same server shape in the Claude Code MCP config surface for the project 
   "mcpServers": {
     "memorum": {
       "command": "memoryd",
-      "args": ["mcp", "--socket", "/Users/you/memorum/.memoryd/memoryd.sock"]
+      "args": ["mcp", "--socket", "/absolute/path/to/memorum/.memoryd/memoryd.sock"]
     }
   }
 }
@@ -61,9 +61,9 @@ Use the same server shape in the Claude Code MCP config surface for the project 
 Use the Codex MCP TOML configuration shape exercised by the eval harness:
 
 ```toml
-[mcp.memorum]
+[mcp_servers.memorum]
 command = "memoryd"
-args = ["mcp", "--socket", "/Users/you/memorum/.memoryd/memoryd.sock"]
+args = ["mcp", "--socket", "/absolute/path/to/memorum/.memoryd/memoryd.sock"]
 ```
 
 ## Verification

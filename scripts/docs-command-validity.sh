@@ -18,6 +18,24 @@ paths=(
 
 failed=0
 
+# Stale Codex MCP TOML header: current shape is [mcp_servers.<name>]
+if stale_codex_mcp="$(rg -n '^\[mcp\.' README.md docs/getting-started.md docs/mcp-wiring.md 2>/dev/null || true)"; then
+  if [ -n "$stale_codex_mcp" ]; then
+    printf '%s\n' "$stale_codex_mcp" >&2
+    echo "docs contain stale Codex MCP TOML header; use [mcp_servers.<name>]" >&2
+    failed=1
+  fi
+fi
+
+# macOS-specific placeholder paths in onboarding docs
+if stale_macos_placeholder="$(rg -n '/Users/you/' README.md docs/getting-started.md docs/mcp-wiring.md 2>/dev/null || true)"; then
+  if [ -n "$stale_macos_placeholder" ]; then
+    printf '%s\n' "$stale_macos_placeholder" >&2
+    echo "onboarding docs contain macOS-specific /Users/you/ placeholder; use /absolute/path/to/memorum" >&2
+    failed=1
+  fi
+fi
+
 # Stale cargo command: should use `cargo run --bin memoryd --` not `cargo run -p memoryd --`
 if stale_cargo="$(rg -n 'cargo run -p memoryd --' "${paths[@]}" 2>/dev/null)"; then
   if [ -n "$stale_cargo" ]; then
@@ -58,9 +76,9 @@ fi
 
 # Unexpanded tilde in current command paths: MCP clients do not expand ~ in
 # JSON/TOML, and the installer intentionally rejects literal tilde arguments.
-# Catches shell `--socket ~/...`, `--repo ~/...`, `--runtime ~/...`, plus quoted
-# onboarding/runtime snippets such as `"~/memorum/.memoryd/memoryd.sock"`.
-tilde_shell="$(rg -n -- '--(socket|repo|runtime)[[:space:]]+~/' "${paths[@]}" 2>/dev/null || true)"
+# Catches shell `--socket ~/...`, `--repo=~/...`, plus quoted onboarding/runtime
+# snippets such as `"~/memorum/.memoryd/memoryd.sock"`.
+tilde_shell="$(rg -n -- '--(socket|repo|runtime)(=|[[:space:]]+)~/' "${paths[@]}" 2>/dev/null || true)"
 tilde_dquote="$(rg -n -- '"~/[^"]*(memoryd\.sock|\.memoryd|memorum)' "${paths[@]}" 2>/dev/null || true)"
 tilde_squote="$(rg -n -- "'~/[^']*(memoryd\.sock|\.memoryd|memorum)" "${paths[@]}" 2>/dev/null || true)"
 tilde_socket="$(
