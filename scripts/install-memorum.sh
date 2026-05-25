@@ -15,6 +15,22 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
 export PATH="$HOME/.cargo/bin:$PATH"
 
+absolute_path() {
+  case "$1" in
+    /*) printf '%s\n' "$1" ;;
+    *) printf '%s/%s\n' "$(pwd -P)" "$1" ;;
+  esac
+}
+
+reject_literal_tilde() {
+  case "$1" in
+    *'~'*)
+      echo "error: literal ~ is not expanded here; pass \$HOME/... or an absolute path" >&2
+      exit 2
+      ;;
+  esac
+}
+
 repo="$HOME/memorum"
 runtime=""
 socket=""
@@ -66,6 +82,14 @@ fi
 if [ -z "$socket" ]; then
   socket="$runtime/memoryd.sock"
 fi
+
+reject_literal_tilde "$repo"
+reject_literal_tilde "$runtime"
+reject_literal_tilde "$socket"
+
+repo="$(absolute_path "$repo")"
+runtime="$(absolute_path "$runtime")"
+socket="$(absolute_path "$socket")"
 
 pid_file="$runtime/memoryd.pid"
 log_file="$runtime/memoryd.log"

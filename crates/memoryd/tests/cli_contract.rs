@@ -366,3 +366,157 @@ fn test_memoryd_reality_check_snooze_until_reaches_daemon_request() {
 fn test_memoryd_reality_check_snooze_invalid_date_exits_1() {
     assert_eq!(validate_snooze_until(Some("next-week")), Err(1));
 }
+
+// ── Doctor auth probe regression tests (Task 3) ─────────────────────────
+
+#[cfg(unix)]
+fn write_executable(path: impl AsRef<std::path::Path>, contents: &str) {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::write(path.as_ref(), contents).expect("write executable stub");
+    let mut permissions = std::fs::metadata(path.as_ref()).expect("stub metadata").permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(path.as_ref(), permissions).expect("mark stub executable");
+}
+
+fn init_test_substrate(repo: &std::path::Path, runtime: &std::path::Path, device_id: &str) {
+    tokio::runtime::Builder::new_current_thread().enable_all().build().expect("tokio runtime").block_on(async {
+        Substrate::init(
+            Roots::new(repo, runtime),
+            InitOptions { force_unsafe_durability: true, device_id: Some(device_id.to_owned()) },
+        )
+        .await
+        .expect("init substrate");
+    });
+}
+
+#[test]
+fn doctor_is_healthy_when_current_codex_login_status_is_authenticated() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let repo = temp.path().join("repo");
+    let runtime = temp.path().join("runtime");
+    let bin_dir = temp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).expect("bin dir");
+
+    write_executable(
+        bin_dir.join("codex"),
+        r#"#!/bin/sh
+if [ "$1" = login ] && [ "$2" = status ]; then
+  printf 'Logged in using ChatGPT\n'
+  exit 0
+fi
+printf 'unexpected codex args: %s\n' "$*" >&2
+exit 64
+"#,
+    );
+
+    init_test_substrate(&repo, &runtime, "dev_codex01");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_memoryd"))
+        .args(["doctor", "--repo"])
+        .arg(&repo)
+        .arg("--runtime")
+        .arg(&runtime)
+        .env("PATH", &bin_dir)
+        .output()
+        .expect("run memoryd doctor");
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "healthy doctor should exit 0: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("doctor stdout utf8");
+    assert!(stdout.contains("\"healthy\": true"), "{stdout}");
+    assert!(!stdout.contains("codex auth status"), "current Codex probe should not use stale auth command: {stdout}");
+}
+
+#[test]
+fn doctor_is_healthy_when_current_claude_auth_status_is_authenticated() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let repo = temp.path().join("repo");
+    let runtime = temp.path().join("runtime");
+    let bin_dir = temp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).expect("bin dir");
+
+    write_executable(
+        bin_dir.join("claude"),
+        r#"#!/bin/sh
+if [ "$1" = auth ] && [ "$2" = status ]; then
+  printf 'authenticated\n'
+  exit 0
+fi
+printf 'unexpected claude args: %s\n' "$*" >&2
+exit 64
+"#,
+    );
+
+    init_test_substrate(&repo, &runtime, "dev_claude01");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_memoryd"))
+        .args(["doctor", "--repo"])
+        .arg(&repo)
+        .arg("--runtime")
+        .arg(&runtime)
+        .env("PATH", &bin_dir)
+        .output()
+        .expect("run memoryd doctor");
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "healthy doctor should exit 0: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("doctor stdout utf8");
+    assert!(stdout.contains("\"healthy\": true"), "{stdout}");
+    assert!(
+        !stdout.contains("claude config get auth.user"),
+        "current Claude probe should not use stale auth command: {stdout}"
+    );
+}
+
+#[test]
+fn doctor_is_healthy_when_codex_falls_back_to_legacy_auth_status() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let repo = temp.path().join("repo");
+    let runtime = temp.path().join("runtime");
+    let bin_dir = temp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).expect("bin dir");
+
+    write_executable(
+        bin_dir.join("codex"),
+        r#"#!/bin/sh
+if [ "$1" = login ] && [ "$2" = status ]; then
+  printf 'error: unrecognized subcommand status\n' >&2
+  exit 2
+fi
+if [ "$1" = auth ] && [ "$2" = status ]; then
+  printf 'authenticated\n'
+  exit 0
+fi
+exit 64
+"#,
+    );
+
+    init_test_substrate(&repo, &runtime, "dev_codex02");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_memoryd"))
+        .args(["doctor", "--repo"])
+        .arg(&repo)
+        .arg("--runtime")
+        .arg(&runtime)
+        .env("PATH", &bin_dir)
+        .output()
+        .expect("run memoryd doctor");
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "healthy doctor should exit 0 after fallback: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("doctor stdout utf8");
+    assert!(stdout.contains("\"healthy\": true"), "{stdout}");
+}

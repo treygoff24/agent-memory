@@ -79,6 +79,7 @@ if command -v pnpm >/dev/null 2>&1 && [ -f package.json ]; then
 else
   echo "warning: pnpm/package.json unavailable; skipping JS format/lint checks" >&2
 fi
+run_parallel docs-validity    ./scripts/docs-command-validity.sh
 run_parallel baseline         ./scripts/check-baseline-discipline.sh
 if command -v specgate >/dev/null 2>&1; then
   run_parallel specgate-validate  specgate validate

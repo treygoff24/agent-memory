@@ -94,6 +94,14 @@ pub struct HarnessCommandPlan {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct AuthProbeCandidate {
+    plan: HarnessCommandPlan,
+    unsupported_markers: &'static [&'static str],
+}
+
+const AUTH_DIAGNOSTIC_SUMMARY_MAX_CHARS: usize = 4096;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MinimalEnvironment {
     values: BTreeMap<String, OsString>,
 }
@@ -257,6 +265,39 @@ impl ClaudeCodeCli {
             prompt_transport: PromptTransport::Stdin,
         }
     }
+
+    fn auth_probe_candidates(&self) -> Vec<AuthProbeCandidate> {
+        vec![
+            AuthProbeCandidate {
+                plan: HarnessCommandPlan {
+                    program: "claude".to_owned(),
+                    args: vec!["auth".to_owned(), "status".to_owned()],
+                    prompt_transport: PromptTransport::Stdin,
+                },
+                unsupported_markers: &[
+                    "unknown command",
+                    "unknown subcommand",
+                    "unrecognized command",
+                    "unrecognized subcommand",
+                    "invalid command",
+                ],
+            },
+            AuthProbeCandidate {
+                plan: HarnessCommandPlan {
+                    program: "claude".to_owned(),
+                    args: vec!["config".to_owned(), "get".to_owned(), "auth.user".to_owned()],
+                    prompt_transport: PromptTransport::Stdin,
+                },
+                unsupported_markers: &[
+                    "unknown command",
+                    "unknown subcommand",
+                    "unrecognized command",
+                    "unrecognized subcommand",
+                    "invalid command",
+                ],
+            },
+        ]
+    }
 }
 
 impl HarnessCli for ClaudeCodeCli {
@@ -278,16 +319,7 @@ impl HarnessCli for ClaudeCodeCli {
                 return AuthProbeResult::CliMissing { which: "claude", path: path_display(self.path_env.as_deref()) };
             }
 
-            auth_probe(
-                HarnessCommandPlan {
-                    program: "claude".to_owned(),
-                    args: vec!["config".to_owned(), "get".to_owned(), "auth.user".to_owned()],
-                    prompt_transport: PromptTransport::Stdin,
-                },
-                self.path_env.clone(),
-                CLAUDE_ENV_ALLOWLIST,
-            )
-            .await
+            auth_probe_any(self.auth_probe_candidates(), self.path_env.clone(), CLAUDE_ENV_ALLOWLIST).await
         })
     }
 
@@ -339,6 +371,27 @@ impl CodexCli {
 
         HarnessCommandPlan { program: "codex".to_owned(), args, prompt_transport: PromptTransport::Stdin }
     }
+
+    fn auth_probe_candidates(&self) -> Vec<AuthProbeCandidate> {
+        vec![
+            AuthProbeCandidate {
+                plan: HarnessCommandPlan {
+                    program: "codex".to_owned(),
+                    args: vec!["login".to_owned(), "status".to_owned()],
+                    prompt_transport: PromptTransport::Stdin,
+                },
+                unsupported_markers: &["unrecognized subcommand", "unknown command", "invalid command"],
+            },
+            AuthProbeCandidate {
+                plan: HarnessCommandPlan {
+                    program: "codex".to_owned(),
+                    args: vec!["auth".to_owned(), "status".to_owned()],
+                    prompt_transport: PromptTransport::Stdin,
+                },
+                unsupported_markers: &["unrecognized subcommand", "unknown command", "invalid command"],
+            },
+        ]
+    }
 }
 
 impl HarnessCli for CodexCli {
@@ -360,16 +413,7 @@ impl HarnessCli for CodexCli {
                 return AuthProbeResult::CliMissing { which: "codex", path: path_display(self.path_env.as_deref()) };
             }
 
-            auth_probe(
-                HarnessCommandPlan {
-                    program: "codex".to_owned(),
-                    args: vec!["auth".to_owned(), "status".to_owned()],
-                    prompt_transport: PromptTransport::Stdin,
-                },
-                self.path_env.clone(),
-                CODEX_ENV_ALLOWLIST,
-            )
-            .await
+            auth_probe_any(self.auth_probe_candidates(), self.path_env.clone(), CODEX_ENV_ALLOWLIST).await
         })
     }
 
@@ -453,6 +497,91 @@ async fn auth_probe(plan: HarnessCommandPlan, path_env: Option<OsString>, env_al
         }
         Err(HarnessCliError::Timeout { .. }) => AuthProbeResult::Timeout,
         Err(error) => AuthProbeResult::Error { message: error.to_string() },
+    }
+}
+
+/// Production entry point: runs the ordered auth probe candidates against real subprocesses.
+async fn auth_probe_any(
+    candidates: Vec<AuthProbeCandidate>,
+    path_env: Option<OsString>,
+    env_allowlist: &[&str],
+) -> AuthProbeResult {
+    auth_probe_any_with_runner(candidates, |plan| {
+        let path_env = path_env.clone();
+        async move { auth_probe(plan, path_env, env_allowlist).await }
+    })
+    .await
+}
+
+/// Generic loop over ordered auth probe candidates with an injected runner.
+/// In production the runner is `auth_probe`; in tests it is a fake so
+/// timeout/error branches and Unicode diagnostic truncation can be exercised
+/// without slow subprocess sleeps.
+async fn auth_probe_any_with_runner<F, Fut>(candidates: Vec<AuthProbeCandidate>, mut runner: F) -> AuthProbeResult
+where
+    F: FnMut(HarnessCommandPlan) -> Fut,
+    Fut: std::future::Future<Output = AuthProbeResult>,
+{
+    let mut unsupported = Vec::new();
+    for candidate in candidates {
+        let AuthProbeCandidate { plan, unsupported_markers } = candidate;
+        let command_label = command_label(&plan);
+        match runner(plan).await {
+            AuthProbeResult::Ok => return AuthProbeResult::Ok,
+            AuthProbeResult::AuthFailed { stderr_tail, .. }
+                if is_unsupported_auth_surface(&stderr_tail, unsupported_markers) =>
+            {
+                unsupported.push(format!("{command_label}: {stderr_tail}"));
+                continue;
+            }
+            AuthProbeResult::AuthFailed { exit_code, stderr_tail } => {
+                return AuthProbeResult::AuthFailed {
+                    exit_code,
+                    stderr_tail: format!("{command_label} failed: {stderr_tail}"),
+                };
+            }
+            AuthProbeResult::Timeout => {
+                return AuthProbeResult::Error { message: format!("{command_label} timed out") };
+            }
+            AuthProbeResult::Error { message } => {
+                return AuthProbeResult::Error { message: format!("{command_label} error: {message}") };
+            }
+            AuthProbeResult::CliMissing { which, path } => return AuthProbeResult::CliMissing { which, path },
+        }
+    }
+
+    AuthProbeResult::Error {
+        message: format!(
+            "no supported auth status command was accepted; tried {}",
+            summarize_unsupported_attempts(&unsupported)
+        ),
+    }
+}
+
+fn command_label(plan: &HarnessCommandPlan) -> String {
+    if plan.args.is_empty() {
+        plan.program.clone()
+    } else {
+        format!("{} {}", plan.program, plan.args.join(" "))
+    }
+}
+
+fn is_unsupported_auth_surface(stderr_tail: &str, markers: &[&str]) -> bool {
+    let lower = stderr_tail.to_ascii_lowercase();
+    markers.iter().any(|marker| lower.contains(marker))
+}
+
+fn summarize_unsupported_attempts(attempts: &[String]) -> String {
+    truncate_for_auth_diagnostic(&attempts.join("; "), AUTH_DIAGNOSTIC_SUMMARY_MAX_CHARS)
+}
+
+fn truncate_for_auth_diagnostic(value: &str, max_chars: usize) -> String {
+    let mut chars = value.chars();
+    let truncated = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        format!("{truncated}...")
+    } else {
+        truncated
     }
 }
 
@@ -800,4 +929,180 @@ fn is_executable_file(path: &Path) -> bool {
 #[cfg(not(unix))]
 fn is_executable_file(path: &Path) -> bool {
     std::fs::metadata(path).map(|metadata| metadata.is_file()).unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_plan(program: &str, args: &[&str]) -> HarnessCommandPlan {
+        HarnessCommandPlan {
+            program: program.to_owned(),
+            args: args.iter().map(|s| s.to_string()).collect(),
+            prompt_transport: PromptTransport::Stdin,
+        }
+    }
+
+    fn make_candidate(program: &str, args: &[&str], markers: &'static [&'static str]) -> AuthProbeCandidate {
+        AuthProbeCandidate { plan: make_plan(program, args), unsupported_markers: markers }
+    }
+
+    #[tokio::test]
+    async fn auth_probe_any_runs_legacy_after_unsupported_marker() {
+        let candidates = vec![
+            make_candidate("codex", &["login", "status"], &["unrecognized subcommand"]),
+            make_candidate("codex", &["auth", "status"], &["unrecognized subcommand"]),
+        ];
+
+        let mut calls: Vec<HarnessCommandPlan> = Vec::new();
+        let result = auth_probe_any_with_runner(candidates, |plan| {
+            let called: Vec<HarnessCommandPlan> = calls.clone();
+            let call_index = called.len();
+            calls.push(plan.clone());
+            async move {
+                if call_index == 0 {
+                    AuthProbeResult::AuthFailed {
+                        exit_code: Some(2),
+                        stderr_tail: "error: unrecognized subcommand status\n".to_owned(),
+                    }
+                } else {
+                    AuthProbeResult::Ok
+                }
+            }
+        })
+        .await;
+
+        assert!(result.is_ok(), "legacy candidate should succeed after unsupported preferred: {result:?}");
+        assert_eq!(calls.len(), 2, "should call both candidates");
+        assert_eq!(calls[0].args, ["login", "status"]);
+        assert_eq!(calls[1].args, ["auth", "status"]);
+    }
+
+    #[tokio::test]
+    async fn auth_probe_any_does_not_fallback_on_exit_code_without_unsupported_marker() {
+        let candidates = vec![
+            make_candidate("codex", &["login", "status"], &["unrecognized subcommand"]),
+            make_candidate("codex", &["auth", "status"], &["unrecognized subcommand"]),
+        ];
+
+        let mut calls: Vec<HarnessCommandPlan> = Vec::new();
+        let result = auth_probe_any_with_runner(candidates, |plan| {
+            calls.push(plan.clone());
+            async move {
+                AuthProbeResult::AuthFailed {
+                    exit_code: Some(2),
+                    stderr_tail: "not logged in; run codex login\n".to_owned(),
+                }
+            }
+        })
+        .await;
+
+        assert!(!result.is_ok(), "exit 2 without unsupported marker should not fall back");
+        assert_eq!(calls.len(), 1, "should only call preferred candidate");
+        assert_eq!(calls[0].args, ["login", "status"]);
+    }
+
+    #[tokio::test]
+    async fn auth_probe_any_does_not_fallback_on_non_command_unrecognized_auth_failure() {
+        let candidates = ClaudeCodeCli::new().auth_probe_candidates();
+
+        let mut calls: Vec<HarnessCommandPlan> = Vec::new();
+        let result = auth_probe_any_with_runner(candidates, |plan| {
+            calls.push(plan.clone());
+            async move {
+                AuthProbeResult::AuthFailed {
+                    exit_code: Some(1),
+                    stderr_tail: "auth failed: unrecognized account token; run claude login".to_owned(),
+                }
+            }
+        })
+        .await;
+
+        assert!(!result.is_ok(), "auth failure containing non-command 'unrecognized' must not fall back to legacy");
+        assert_eq!(calls.len(), 1, "should only call preferred candidate");
+        assert_eq!(calls[0].args, ["auth", "status"]);
+    }
+
+    #[tokio::test]
+    async fn auth_probe_any_does_not_fallback_on_preferred_timeout() {
+        let candidates = vec![
+            make_candidate("claude", &["auth", "status"], &["unknown command"]),
+            make_candidate("claude", &["config", "get", "auth.user"], &["unknown command"]),
+        ];
+
+        let mut calls: Vec<HarnessCommandPlan> = Vec::new();
+        let result = auth_probe_any_with_runner(candidates, |plan| {
+            calls.push(plan.clone());
+            async move { AuthProbeResult::Timeout }
+        })
+        .await;
+
+        assert!(!result.is_ok(), "timeout on preferred must not fall back to legacy");
+        assert_eq!(calls.len(), 1, "should only call preferred candidate before timeout");
+        assert_eq!(calls[0].args, ["auth", "status"]);
+    }
+
+    #[tokio::test]
+    async fn auth_probe_any_truncates_multibyte_unicode_diagnostic_without_panic() {
+        // Build a candidate list where every candidate is "unsupported," producing
+        // a long diagnostic summary that includes multibyte Unicode characters.
+        // The all-unsupported path exercises `summarize_unsupported_attempts` and
+        // `truncate_for_auth_diagnostic`.
+        let mut candidates = Vec::new();
+        for i in 0..100 {
+            candidates.push(make_candidate("codex", &[&format!("cmd{i}")], &["unsupported"]));
+        }
+
+        let mut call_index = 0;
+        let result = auth_probe_any_with_runner(candidates, |_plan| {
+            let i = call_index;
+            call_index += 1;
+            async move {
+                // Use multibyte Unicode in the stderr tail
+                AuthProbeResult::AuthFailed {
+                    exit_code: Some(2),
+                    stderr_tail: format!("error: unsupported command «テスト🧪» ({i})"),
+                }
+            }
+        })
+        .await;
+
+        match &result {
+            AuthProbeResult::Error { message } => {
+                assert!(
+                    message.contains("no supported auth status command was accepted"),
+                    "all-unsupported path should produce clear diagnostic, got: {message}"
+                );
+                // The message includes the multi-byte Unicode from the stderr tails
+                assert!(message.contains('«'), "diagnostic should include multibyte chars without crashing: {message}");
+                // Check char count (not byte length) because multibyte chars inflate byte count.
+                let char_count = message.chars().count();
+                assert!(
+                    char_count <= AUTH_DIAGNOSTIC_SUMMARY_MAX_CHARS + 300,
+                    "diagnostic summary should be bounded by char count, got {char_count} chars ({} bytes)",
+                    message.len()
+                );
+            }
+            other => panic!("expected Error after all unsupported, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn auth_probe_any_does_not_fallback_on_preferred_error() {
+        let candidates = vec![
+            make_candidate("codex", &["login", "status"], &["unrecognized subcommand"]),
+            make_candidate("codex", &["auth", "status"], &["unrecognized subcommand"]),
+        ];
+
+        let mut calls: Vec<HarnessCommandPlan> = Vec::new();
+        let result = auth_probe_any_with_runner(candidates, |plan| {
+            calls.push(plan.clone());
+            async move { AuthProbeResult::Error { message: "I/O error".to_owned() } }
+        })
+        .await;
+
+        assert!(!result.is_ok(), "I/O error on preferred must not fall back");
+        assert_eq!(calls.len(), 1, "should only call preferred candidate");
+        assert_eq!(calls[0].args, ["login", "status"]);
+    }
 }

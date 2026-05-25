@@ -793,6 +793,8 @@ Stream H ships:
 
 **v0.2 disposition:** in v1.
 
+Implementation note as of 2026-05-24: alpha bootstrap is `memoryd serve --init` plus `scripts/install-memorum.sh`; the full interactive `memoryd init` wizard remains a release-shape target and is not the current alpha entrypoint.
+
 `memoryd init` is an **interactive wizard by default**, with **flag overrides for every prompt** and **`--non-interactive` for scripts**. Flow:
 
 1. **Welcome + license acknowledgment.** Apache 2.0 displayed; user acknowledges.

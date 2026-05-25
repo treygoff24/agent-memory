@@ -34,7 +34,10 @@ cargo fmt --all -- --check
 phase "shell syntax"
 # Paths are repo-relative; this script (and the others under scripts/) assume CWD is
 # the repo root, matching how check.sh and check-dogfood.sh are invoked.
-bash -n scripts/check.sh scripts/check-fast.sh scripts/check-dogfood.sh scripts/install-memorum.sh
+bash -n scripts/check.sh scripts/check-fast.sh scripts/check-dogfood.sh scripts/install-memorum.sh scripts/install-launchd.sh scripts/docs-command-validity.sh scripts/install-memorum.test.sh scripts/install-launchd.test.sh
+
+phase "docs command validity"
+./scripts/docs-command-validity.sh
 
 phase "targeted dogfood clippy"
 cargo clippy -p memoryd -p memoryd-tui -p memorum-eval -p memorum-coordination --all-targets -- -D warnings

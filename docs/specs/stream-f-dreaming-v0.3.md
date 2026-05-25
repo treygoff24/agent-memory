@@ -411,8 +411,10 @@ pub trait HarnessCli: Send + Sync {
     /// O(1), cached, refreshed on `cli_inventory_refresh()`.
     fn is_installed(&self) -> bool;
 
-    /// Probe authentication. Implementations call a cheap auth-only
-    /// command (e.g. `claude config get auth.user`).
+    /// Probe authentication via ordered provider-specific auth commands:
+    /// prefer the current CLI surface first, fall back to a legacy command only
+    /// when the preferred surface is clearly unsupported. Auth failure or
+    /// timeout on a supported preferred command must not fall through to legacy.
     /// Returns `Ok(true)` only on confirmed authenticated state.
     async fn is_authenticated(&self) -> Result<bool, HarnessCliError>;
 
@@ -445,10 +447,12 @@ Stream F v0.2 ships these adapters. Each has a unit test that records the argv i
 
 | Adapter | Invocation | Stdin? | Auth probe |
 |---|---|---|---|
-| `ClaudeCodeCli` | `claude --print` (reads prompt from stdin) | yes | `claude config get auth.user` exit code |
-| `CodexCli` | `codex exec --json -` (reads prompt from stdin when `-`) for `expect_json=true`, otherwise `codex exec -` | yes | `codex auth status` exit code |
+| `ClaudeCodeCli` | `claude --print` (reads prompt from stdin) | yes | Prefer `claude auth status`; fallback to `claude config get auth.user` only when the preferred command is unsupported. |
+| `CodexCli` | `codex exec --json -` (reads prompt from stdin when `-`) for `expect_json=true`, otherwise `codex exec -` | yes | Prefer `codex login status`; fallback to `codex auth status` only when the preferred command is unsupported. |
 | `GeminiCli` | `gemini -p -` (reads prompt from stdin) | yes (when supported by upstream); falls back to argv with declared `PromptTransport::Argv` if upstream lacks stdin support at adapter ship time | per upstream conventions; `Ok(false)` with hint string if no probe is available |
 | `EchoCli` | test-only, replays canned outputs from a `HashMap<PromptHash, String>` fixture, never spawns a subprocess | n/a | always `Ok(true)` |
+
+**Auth probe invariant:** when the preferred supported command returns auth failure, timeout, or I/O error, the adapter must not invoke the legacy fallback. Legacy probes run only when stderr indicates the preferred command is unsupported (for example unrecognized subcommand).
 
 Each adapter declares `prompt_transport()` truthfully. Adapters whose upstream CLI does not support stdin must declare `PromptTransport::Argv`; the daemon will surface the implication in `memoryd dream status` and in the privacy disclosure (§14). The `GeminiCli` adapter ships in v0.2 only if upstream supports stdin; otherwise it ships in v0.3 once upstream lands stdin or the `Argv` declaration is reviewed by Trey.
 

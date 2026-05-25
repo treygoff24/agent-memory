@@ -12,44 +12,52 @@ cargo install --path crates/memoryd-tui
 cargo install --path crates/memoryd-web
 ```
 
-For checkout-only development, prefix commands with `cargo run -p memoryd --` instead of installing.
+For checkout-only development, prefix commands with `cargo run --bin memoryd --` instead of installing.
 
 ## 2. Initialize and start the daemon
 
+Define the private runtime and socket once per shell:
+
 ```bash
-mkdir -p ~/memorum
-memoryd serve --init --repo ~/memorum --runtime ~/memorum/.memoryd --socket /tmp/memoryd.sock
+export MEMORUM_REPO="$HOME/memorum"
+export MEMORUM_RUNTIME="$MEMORUM_REPO/.memoryd"
+export MEMORUM_SOCKET="$MEMORUM_RUNTIME/memoryd.sock"
+```
+
+```bash
+mkdir -p "$MEMORUM_REPO"
+memoryd serve --init --repo "$MEMORUM_REPO" --runtime "$MEMORUM_RUNTIME" --socket "$MEMORUM_SOCKET"
 ```
 
 Keep this process running. The socket path is what CLIs, the web dashboard, TUI, and MCP bridge use.
 
 ## 3. Verify daemon health
 
-In another shell:
+In another shell (with the same `MEMORUM_*` exports):
 
 ```bash
-memoryd status --socket /tmp/memoryd.sock
-memoryd doctor --repo ~/memorum --runtime ~/memorum/.memoryd
+memoryd status --socket "$MEMORUM_SOCKET"
+memoryd doctor --repo "$MEMORUM_REPO" --runtime "$MEMORUM_RUNTIME"
 ```
 
 Expected result: `status` returns a ready daemon response, and `doctor` reports either healthy or actionable findings. If doctor reports `events_log_mirror_lag`, run the reindex repair it prints.
 
 ## 4. Wire MCP
 
-Add this to your MCP-capable client config:
+Add this to your MCP-capable client config. Replace the placeholder socket path with the output of `echo "$MEMORUM_SOCKET"` (or the absolute path printed by `scripts/install-memorum.sh`). Most MCP clients do not expand `~` inside JSON/TOML.
 
 ```json
 {
   "mcpServers": {
     "memorum": {
       "command": "memoryd",
-      "args": ["mcp", "--socket", "/tmp/memoryd.sock"]
+      "args": ["mcp", "--socket", "/Users/you/memorum/.memoryd/memoryd.sock"]
     }
   }
 }
 ```
 
-Restart the client. It should list Memorum tools such as `memory_search`, `memory_get`, `memory_write`, `memory_note`, and `memory_startup`.
+Restart the client. It should list Memorum tools such as `memory_search`, `memory_get`, `memory_write`, `memory_supersede`, `memory_forget`, `memory_reveal`, `memory_startup`, `memory_note`, and `memory_observe`.
 
 ## 5. First write/search round-trip
 
@@ -58,16 +66,16 @@ From the MCP client, call `memory_write` with a grounded project fact. Then call
 CLI-only smoke path:
 
 ```bash
-memoryd write-note --socket /tmp/memoryd.sock "Memorum local smoke note from getting-started."
-memoryd search --socket /tmp/memoryd.sock "local smoke note"
+memoryd write-note --socket "$MEMORUM_SOCKET" "Memorum local smoke note from getting-started."
+memoryd search --socket "$MEMORUM_SOCKET" "local smoke note"
 ```
 
 ## 6. Optional observability
 
 ```bash
-memoryd web enable --socket /tmp/memoryd.sock --port 7137
+memoryd web enable --socket "$MEMORUM_SOCKET" --port 7137
 open http://localhost:7137
-memoryd ui --socket /tmp/memoryd.sock
+memoryd ui --socket "$MEMORUM_SOCKET"
 ```
 
 The web dashboard exposes status, Reality Check, review, audit, and `/api/recall-hits` for recent recall-hit events.

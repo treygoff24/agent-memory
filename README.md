@@ -30,40 +30,50 @@ For development without installing, use `cargo run --bin memoryd -- ...`.
 
 ## Quickstart
 
-```bash
-mkdir -p ~/memorum
-memoryd serve --init --repo ~/memorum --runtime ~/memorum/.memoryd --socket ~/memorum/.memoryd/memoryd.sock
-```
-
-In another shell:
+Define the private runtime and socket once per shell:
 
 ```bash
-memoryd status --socket ~/memorum/.memoryd/memoryd.sock
-memoryd doctor --repo ~/memorum --runtime ~/memorum/.memoryd
-memoryd mcp --socket ~/memorum/.memoryd/memoryd.sock
+export MEMORUM_REPO="$HOME/memorum"
+export MEMORUM_RUNTIME="$MEMORUM_REPO/.memoryd"
+export MEMORUM_SOCKET="$MEMORUM_RUNTIME/memoryd.sock"
 ```
 
-Wire an MCP client to launch the stdio bridge:
+```bash
+mkdir -p "$MEMORUM_REPO"
+memoryd serve --init --repo "$MEMORUM_REPO" --runtime "$MEMORUM_RUNTIME" --socket "$MEMORUM_SOCKET"
+```
+
+In another shell (reuse the same exports, or source them from your shell profile):
+
+```bash
+memoryd status --socket "$MEMORUM_SOCKET"
+memoryd doctor --repo "$MEMORUM_REPO" --runtime "$MEMORUM_RUNTIME"
+memoryd mcp --socket "$MEMORUM_SOCKET"
+```
+
+Wire an MCP client to launch the stdio bridge. Use the absolute socket path printed by `scripts/install-memorum.sh`; most MCP clients do not expand `~` inside JSON/TOML.
 
 ```json
 {
   "mcpServers": {
     "memorum": {
       "command": "memoryd",
-      "args": ["mcp", "--socket", "~/memorum/.memoryd/memoryd.sock"]
+      "args": ["mcp", "--socket", "/Users/you/memorum/.memoryd/memoryd.sock"]
     }
   }
 }
 ```
+
+Replace `/Users/you/memorum` with your real path, or paste the installer snippet that already contains the canonicalized socket.
 
 Then ask the client to call `memory_write` with a grounded fact and `memory_search` for the same text. See `docs/getting-started.md` for a step-by-step path and `docs/mcp-wiring.md` for per-harness config snippets.
 
 ## Useful local commands
 
 ```bash
-memoryd recall startup-block --socket ~/memorum/.memoryd/memoryd.sock --cwd "$PWD" --session-id smoke --harness codex
-memoryd web enable --socket ~/memorum/.memoryd/memoryd.sock --port 7137
-memoryd ui --socket ~/memorum/.memoryd/memoryd.sock
+memoryd recall startup-block --socket "$MEMORUM_SOCKET" --cwd "$PWD" --session-id smoke --harness codex
+memoryd web enable --socket "$MEMORUM_SOCKET" --port 7137
+memoryd ui --socket "$MEMORUM_SOCKET"
 memorum-eval --harness mock --output text
 ```
 

@@ -5,7 +5,10 @@ Memorum dogfood scheduling is macOS launchd-only for this release. The agent run
 ## Install
 
 ```bash
-scripts/install-launchd.sh --repo ~/memorum --runtime ~/memorum/.memoryd
+export MEMORUM_REPO="$HOME/memorum"
+export MEMORUM_RUNTIME="$MEMORUM_REPO/.memoryd"
+
+scripts/install-launchd.sh --repo "$MEMORUM_REPO" --runtime "$MEMORUM_RUNTIME"
 ```
 
 Preview without writing:
@@ -14,22 +17,22 @@ Preview without writing:
 scripts/install-launchd.sh --dry-run --repo /tmp/foo --runtime /tmp/bar
 ```
 
-The installer renders `scripts/templates/com.memorum.dream-scheduled.plist.template`, writes it to `~/Library/LaunchAgents/com.memorum.dream-scheduled.plist`, unloads any previous copy, then loads the new one.
+The installer renders `scripts/templates/com.memorum.dream-scheduled.plist.template`, writes it to `$HOME/Library/LaunchAgents/com.memorum.dream-scheduled.plist`, unloads any previous copy, then loads the new one.
 
 ## Inspect
 
 ```bash
 launchctl list | grep com.memorum.dream-scheduled
 launchctl print gui/$(id -u)/com.memorum.dream-scheduled
-cat ~/memorum/.memoryd/dream-scheduled.out.log
-cat ~/memorum/.memoryd/dream-scheduled.err.log
+cat "$MEMORUM_RUNTIME/dream-scheduled.out.log"
+cat "$MEMORUM_RUNTIME/dream-scheduled.err.log"
 ```
 
 ## Uninstall
 
 ```bash
-launchctl unload ~/Library/LaunchAgents/com.memorum.dream-scheduled.plist
-rm ~/Library/LaunchAgents/com.memorum.dream-scheduled.plist
+launchctl unload "$HOME/Library/LaunchAgents/com.memorum.dream-scheduled.plist"
+rm "$HOME/Library/LaunchAgents/com.memorum.dream-scheduled.plist"
 ```
 
 Dreams still require at least one authenticated harness CLI (`claude` or `codex`) visible to the launchd job's environment.

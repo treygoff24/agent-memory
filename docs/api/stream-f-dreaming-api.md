@@ -100,13 +100,13 @@ memoryd dream now --repo . --runtime .memoryd --scope project:agent-memory --cli
 memoryd dream scheduled --repo . --runtime .memoryd --scope project:agent-memory --cli codex --json
 memoryd dream cleanup --repo . --runtime .memoryd --json
 memoryd dream review --repo . --runtime .memoryd --since 7d
-memoryd dream disable --runtime ~/.memoryd
-memoryd dream enable --runtime ~/.memoryd
+memoryd dream disable --runtime .memoryd
+memoryd dream enable --runtime .memoryd
 ```
 
 Human `memoryd dream status` output begins with the privacy disclosure above as its first line when dreaming is enabled. JSON output is structured and includes CLI inventory, last runs, active leases, local disable state, and each adapter's `prompt_transport`.
 
-The device-local sentinel `~/.memoryd/dream-disabled` disables scheduled and manual dreaming on that device without changing synced per-scope config. `memoryd dream enable` removes the sentinel only after showing the privacy disclosure on first-run confirmation.
+The device-local sentinel under the selected runtime directory (for example, `.memoryd/dream-disabled`) disables scheduled and manual dreaming on that device without changing synced per-scope config. `memoryd dream enable` removes the sentinel only after showing the privacy disclosure on first-run confirmation.
 
 `memoryd dream scheduled` is the production entry point for the scheduled lease path. It uses the same dream pipeline as `memoryd dream now`, but calls the scheduled lease wrapper: `lease_held` is recorded as a skip, transient `lease_unavailable` failures retry inside `dreams.dream_retry_window_minutes` using exponential backoff of 1, 2, 4, 8, 16, then capped 32-minute sleeps, and each run writes its per-device summary under `dreams/cleanup/<device_id>/<YYYY-MM-DD>.json`. The harness installer should register the OS scheduler (launchd, systemd, cron, or equivalent) to invoke this command daily at `dreams.cleanup_run_hour_utc`.
 
