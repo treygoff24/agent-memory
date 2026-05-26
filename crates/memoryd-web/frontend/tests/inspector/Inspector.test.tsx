@@ -41,6 +41,23 @@ describe('inspector composition', () => {
         expect(screen.getByText('Nothing selected')).toBeInTheDocument();
     });
 
+    it('peer-detail TrafficCard renders em-dash when daemon supplies no events-24h counter', () => {
+        render(<Inspector item={{ ...base, kind: 'peer-detail', title: 'Peer: MacBook Pro' }} />);
+        // The "events 24h" <dt> is followed by its <dd>. With no recallCountTotal
+        // on the item, the card must render '—' rather than invent a value.
+        const eventsLabel = screen.getByText('events 24h');
+        const eventsValue = eventsLabel.nextElementSibling;
+        expect(eventsValue).not.toBeNull();
+        expect(eventsValue?.textContent).toBe('—');
+    });
+
+    it('peer-detail TrafficCard renders the daemon-supplied events-24h count when present', () => {
+        render(<Inspector item={{ ...base, kind: 'peer-detail', title: 'Peer: MacBook Pro', recallCountTotal: 47 }} />);
+        const eventsLabel = screen.getByText('events 24h');
+        const eventsValue = eventsLabel.nextElementSibling;
+        expect(eventsValue?.textContent).toBe('47');
+    });
+
     it('dispatches inbox-review keyboard actions a/r/e/f outside text inputs', () => {
         const onAction = vi.fn();
         render(

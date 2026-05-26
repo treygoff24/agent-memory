@@ -1,6 +1,6 @@
 # Alpha Core Gap Closeout Implementation Plan
 
-> **Status: substantively shipped 2026-05-26 (8 of 10 tasks Done, 2 Partial).** Audit closeout at `docs/reviews/2026-05-26-alpha-gap-audit.md` with per-task verdicts and file:line evidence. Tasks 1, 2, 3, 5, 6, 7, 8, 9 are Done. Task 4 is Partial — frontend `Entities.tsx normalizeKind` keyword heuristic and `Peers.tsx` hardcoded zero counters still invent daemon facts; the daemon-side `dashboard/status.rs` + `dashboard/entities.rs` modules from the plan were never created (route logic lives in `memoryd-web/src/routes/` instead, behavior correct). Task 10 is Partial only because (a) the Final alpha acceptance checklist below was never updated — closed by the audit, see the closeout doc — and (b) the structural audit did not run the gate (`bash scripts/check-dogfood.sh` + workspace clippy/tests + frontend typecheck/lint/Vitest), which remains the residual verification step before claiming alpha-ready.
+> **Status: 9 Done + 1 Partial (Task 10, pending live-smoke gate) as of 2026-05-26.** Audit closeout at `docs/reviews/2026-05-26-alpha-gap-audit.md` with per-task verdicts and file:line evidence. Tasks 1, 2, 3, 4, 5, 6, 7, 8, 9 are Done. Task 4's frontend partials (`Entities.tsx normalizeKind`, `Peers.tsx normalizePeer`, plus `TrustLedger.tsx` render-site nulls and `TrafficCard.tsx` event-counter passthrough) were fixed in the 2026-05-26 pre-dogfood cleanup pass; the daemon-side `dashboard/status.rs` + `dashboard/entities.rs` architecture deviation was accepted (see Architecture note in Task 4 below). Task 10 stays Partial until the live dogfood smoke is walked end-to-end on a clean machine.
 
 **Goal:** Close the alpha-readiness gaps found in the May 25 readiness audit, excluding the semantic/model privacy-filter item, so Memorum's dogfood surfaces are either genuinely daemon-backed or explicitly unavailable.
 
@@ -378,6 +378,8 @@ pnpm --dir crates/memoryd-web/frontend exec vitest run tests/views/Entities.test
 **Verification plan:**
 - Primary: focused web/TUI tests.
 - Secondary: `bash scripts/check-dogfood.sh`.
+
+> **Architecture note (2026-05-26):** The daemon-side `crates/memoryd/src/dashboard/status.rs` and `crates/memoryd/src/dashboard/entities.rs` modules called for in this task were not backfilled. Route logic lives directly in `crates/memoryd-web/src/routes/{status,entity_graph,sync_dashboard}.rs` instead. `crates/memoryd/src/dashboard/mod.rs` declares only `pub mod roi;`. Behavior matches the spec — `/api/status` and `/api/sync-dashboard` derive from live daemon state with no invented facts. Module layout diverges from the plan's recommendation. Decision accepted 2026-05-26: the routes-as-thin-adapters pattern is a reasonable layout for the current scope; backfilling daemon-side modules solely for plan-parity would be shuffling code without behavior change.
 
 ---
 
@@ -818,7 +820,7 @@ Closeout state recorded 2026-05-26 from `docs/reviews/2026-05-26-alpha-gap-audit
 - [x] `/api/roi` returns daemon data, not `501`. — Task 2.
 - [x] `/api/notifications/stream` returns daemon passive notifications. — Task 3.
 - [x] No visible dashboard button silently does nothing. — Task 6.
-- [ ] Dashboard status, peers, entities, and TUI panels never invent daemon facts. — **Task 4 partial.** Status, sync-dashboard, and TUI: correct. `EntityTable.tsx normalizeKind` still keyword-classifies to a `'project'` catch-all; `Peers.tsx normalizePeer` hardcodes `eventsIn24h: 0`, `eventsOut24h: 0`, `locksPending: 0`, `devicePubkeyShort: 'unknown'` instead of nulling fields the daemon doesn't supply. See closeout doc for the two-fix punch list.
+- [x] Dashboard status, peers, entities, and TUI panels never invent daemon facts. — Task 4. Frontend partials (`EntityTable.tsx normalizeKind`, `Peers.tsx normalizePeer`) fixed in 2026-05-26 pre-dogfood cleanup; architecture deviation accepted (see Architecture note in Task 4).
 - [x] Source capture supports alpha modes through CLI, daemon, and MCP; unsupported rich modes fail clearly. — Task 5.
 - [x] Policy editor GET shows daemon policy files/YAML as writable when allowed, and POST validates plus atomically writes daemon repo policies. — Task 7.
 - [x] Eval catalog has no required alpha deferred tests; RC/release CI fails on missing required semantic coverage. — Task 9.

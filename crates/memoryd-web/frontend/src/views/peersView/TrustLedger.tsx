@@ -74,10 +74,10 @@ export function TrustLedger({ peers, selectedId, sort, onSort, onSelect }: Trust
                         <span className="pr-key mono">{peer.devicePubkeyShort}</span>
                         <span className="pr-hand mono">{peer.lastHandshake}</span>
                         <span className="pr-locks mono">
-                            {peer.locksHeld}/{peer.locksPending}
+                            {peer.locksHeld}/{peer.locksPending ?? '—'}
                         </span>
                         <span className="pr-tx mono">
-                            ↓{peer.eventsIn24h} ↑{peer.eventsOut24h}
+                            ↓{peer.eventsIn24h ?? '—'} ↑{peer.eventsOut24h ?? '—'}
                         </span>
                     </button>
                 ))}

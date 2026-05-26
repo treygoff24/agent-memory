@@ -10,7 +10,7 @@ import type {
     RealityCheckStatusResponse,
     RecallHitsResponse,
     ReviewQueueResponse,
-    RoiResponse,
+    DashboardRoiResponse,
     DashboardSearchResponse,
     StatusResponse,
     SyncDashboardResponse,
@@ -83,7 +83,7 @@ export function useEntityDetailQuery(id: string) {
 export function useRoiQuery(windowDays?: number) {
     return useQuery({
         queryKey: queryKeys.roi(windowDays),
-        queryFn: () => apiJson<RoiResponse>(withParams('/api/roi', { window: windowDays })),
+        queryFn: () => apiJson<DashboardRoiResponse>(withParams('/api/roi', { window: windowDays })),
     });
 }
 

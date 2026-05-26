@@ -5,7 +5,7 @@ import { Inspector, type InspectorItem } from '../inspector';
 import { EntityTable } from './entitiesView';
 import { QueryErrorBanner, QueryLoadingBanner } from './QueryFeedback';
 
-export type EntityKind = 'person' | 'org' | 'project' | 'place' | 'tool' | 'language';
+export type EntityKind = 'person' | 'org' | 'project' | 'place' | 'tool' | 'language' | 'unknown';
 export type EntityFilter = 'all' | EntityKind;
 export type EntitySortKey = 'name' | 'kind' | 'mentions' | 'namespaces' | 'lastSeen' | 'firstSeen' | 'confidence';
 
@@ -27,21 +27,23 @@ interface SortState {
     dir: 'asc' | 'desc';
 }
 
-const filters: EntityFilter[] = ['all', 'person', 'org', 'project', 'place', 'tool', 'language'];
+const filters: EntityFilter[] = ['all', 'person', 'org', 'project', 'place', 'tool', 'language', 'unknown'];
 
+const KNOWN_KINDS = new Set<EntityKind>(['person', 'org', 'project', 'place', 'tool', 'language']);
+
+// The daemon's InspectEntities response (see crates/memoryd-web/src/routes/entity_graph.rs
+// node_from_entity) currently hardcodes kind: "entity" because EntitySummary has no
+// kind field — the daemon doesn't classify entities by kind in alpha. Until a
+// daemon-side classifier ships, every real entity will normalize to 'unknown' here,
+// which is the honest reflection of the daemon's actual state.
 function normalizeKind(node: EntityNode): EntityKind {
-    const marker = `${node.kind} ${node.label}`.toLowerCase();
-    if (marker.includes('person') || marker.includes('operator')) return 'person';
-    if (marker.includes('org') || marker.includes('acme')) return 'org';
-    if (marker.includes('place') || marker.includes('home') || marker.includes('office')) return 'place';
-    if (marker.includes('tool') || marker.includes('pnpm')) return 'tool';
-    if (marker.includes('language') || marker.includes('rust')) return 'language';
-    return 'project';
+    const raw = node.kind.toLowerCase();
+    return KNOWN_KINDS.has(raw as EntityKind) ? (raw as EntityKind) : 'unknown';
 }
 
 function toEntityViewItem(node: EntityNode): EntityViewItem {
     const kind = normalizeKind(node);
-    const namespace = node.namespace ?? (kind === 'project' ? 'project:agent-memory' : `entity/${kind}`);
+    const namespace = node.namespace ?? `entity/${kind}`;
     return {
         id: node.id,
         name: node.label,
@@ -146,7 +148,7 @@ export function Entities() {
             acc[kind] = kind === 'all' ? items.length : items.filter((item) => item.kind === kind).length;
             return acc;
         },
-        { all: 0, person: 0, org: 0, project: 0, place: 0, tool: 0, language: 0 },
+        { all: 0, person: 0, org: 0, project: 0, place: 0, tool: 0, language: 0, unknown: 0 },
     );
 
     function updateFilter(next: EntityFilter) {

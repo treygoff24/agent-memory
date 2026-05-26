@@ -109,7 +109,7 @@ export interface EntityDetailResponse {
     recall_history: Array<{ at: string; count: number }>;
 }
 
-export interface RoiResponse {
+export interface DashboardRoiResponse {
     window_days: number;
     promotion_rate: number;
     promotion_precision: number;

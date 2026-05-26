@@ -12,8 +12,10 @@ export interface PeerViewItem {
     id: string;
     label: string;
     locksHeld: number;
-    locksPending: number;
-    events24h: number;
+    /** null when the daemon does not supply a pending-lock count for this peer */
+    locksPending: number | null;
+    /** null when the daemon does not supply a 24h event count for this peer */
+    events24h: number | null;
     device: string;
     trust: PeerTrust;
     sync: PeerSync;
@@ -22,8 +24,10 @@ export interface PeerViewItem {
     lastHandshake: string;
     lastHandshakeTs: string;
     sessionsOpen: number;
-    eventsIn24h: number;
-    eventsOut24h: number;
+    /** null when the daemon does not supply inbound event counts for this peer */
+    eventsIn24h: number | null;
+    /** null when the daemon does not supply outbound event counts for this peer */
+    eventsOut24h: number | null;
     fenceReason?: string;
     revocation?: {
         at: string;
@@ -88,10 +92,10 @@ function normalizePeer(session: PeerSessionStatus, locks: ClaimLockInfo[]): Peer
         sync,
         reachable: trust === 'local active',
         locksHeld: heldLocks.length,
-        locksPending: 0,
-        events24h: 0,
-        eventsIn24h: 0,
-        eventsOut24h: 0,
+        locksPending: null,
+        events24h: null,
+        eventsIn24h: null,
+        eventsOut24h: null,
         devicePubkeyShort: 'unknown',
         lastHandshake: lastHandshake(session),
         lastHandshakeTs: session.started_at ?? 'unknown',
@@ -101,8 +105,8 @@ function normalizePeer(session: PeerSessionStatus, locks: ClaimLockInfo[]): Peer
 }
 
 function valueForSort(item: PeerViewItem, key: PeerSortKey): string | number {
-    if (key === 'locks') return item.locksHeld + item.locksPending;
-    if (key === 'events24h') return item.events24h;
+    if (key === 'locks') return item.locksHeld + (item.locksPending ?? 0);
+    if (key === 'events24h') return item.events24h ?? 0;
     return item[key];
 }
 
@@ -126,8 +130,15 @@ function inspectorItemFromPeer(peer: PeerViewItem | undefined): InspectorItem | 
         body: `${peer.label} is ${peer.trust}/${peer.sync}. Trust is not inferred without daemon policy state.`,
         meta: peer.lastHandshake,
         sessionId: peer.sessionsOpen > 0 ? `${peer.sessionsOpen} open` : 'none',
-        recallCountTotal: peer.events24h,
-        recallCount30d: peer.eventsIn24h,
+        // The peer-detail inspector card stack (peerDetail.tsx) renders
+        // ConnectionCard / ClaimLocksCard / TrafficCard — no RecentMemoriesCard
+        // — so recallCountTotal is safely overloaded here to feed TrafficCard's
+        // "events 24h" display. When the daemon doesn't supply per-peer event
+        // counters we omit the fields entirely so TrafficCard's em-dash
+        // fallback fires. Replace with dedicated peer-traffic fields on
+        // InspectorItem if these ever need to flow into a recall card.
+        ...(peer.events24h !== null ? { recallCountTotal: peer.events24h } : {}),
+        ...(peer.eventsIn24h !== null ? { recallCount30d: peer.eventsIn24h } : {}),
         policy: {
             governance: `${peer.trust}/${peer.sync}`,
             privacy: 'unknown',

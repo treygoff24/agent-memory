@@ -19,7 +19,7 @@ This sweep grounded every acceptance signal in the plan against actual file:line
 | 1 | Protocol and contract scaffolding | **Done** | Rust protocol DTOs complete; two TS-side gaps below. |
 | 2 | Real daemon-backed ROI metrics | **Done** | `/api/roi` returns live substrate-derived metrics, no 501. |
 | 3 | Daemon-backed notifications stream | **Done** | SSE path forwards `NotificationsRecent` with stable id + composite dedupe. |
-| 4 | Replace synthetic dashboard/TUI status and detail fields | **Partial** | Real frontend gaps remain on `Entities.tsx` and `Peers.tsx`; architectural deviation on the daemon-side dashboard modules. |
+| 4 | Replace synthetic dashboard/TUI status and detail fields | **Done** | Frontend partials fixed in pre-dogfood cleanup (2026-05-26): `EntityTable.tsx normalizeKind` keyword heuristic dropped, `Peers.tsx normalizePeer` hardcoded counters replaced with null/"unknown". Architecture deviation accepted as documented in plan amendment. |
 | 5 | Broaden source grounding at daemon/MCP/CLI boundary | **Done** | `local_artifact` shipped through CLI + MCP; rich modes return typed unsupported with actionable copy. |
 | 6 | Make visible web controls functional or explicitly disabled | **Done** | Top-bar search, recall CSV export, peers pair button, inspector approve/reject/forget all wired or aria-disabled with copy. |
 | 7 | Daemon-backed, visible policy editor writes | **Done** | Validate/write through daemon with atomic write + event-log audit; Settings tab mounts with `writable`-gated save. |
@@ -27,7 +27,7 @@ This sweep grounded every acceptance signal in the plan against actual file:line
 | 9 | Eval/release semantic coverage and CI hardening | **Done** | T17/T18 sentinels removed from test bodies; `--required-release-set alpha` flag real; `memoryd device rotate-keys` shipped. |
 | 10 | Integrated gate, live dogfood smoke, and cleanup | **Partial** | `scripts/check-dogfood.sh` covers all five smoke categories; only gap was the unchecked plan checklist itself (closed by this sweep). |
 
-**8 of 10 Done, 2 Partial.**
+**9 Done + 1 Partial (Task 10, pending live-smoke gate).** (Updated 2026-05-26: Task 4 frontend partials fixed in pre-dogfood cleanup pass — `Entities.tsx normalizeKind`, `Peers.tsx normalizePeer`, `TrustLedger.tsx` render-site nulls, `TrafficCard.tsx` event-counter passthrough — and the daemon-side `dashboard/status.rs` + `dashboard/entities.rs` architecture deviation was accepted and documented in the plan amendment. Task 10 stays Partial until the live dogfood smoke is walked end-to-end on a clean machine.)
 
 ---
 
@@ -76,7 +76,7 @@ Mapping from the plan's checklist to evidence:
 - [x] `/api/roi` returns daemon data, not `501`. — Task 2.
 - [x] `/api/notifications/stream` returns daemon passive notifications. — Task 3.
 - [x] No visible dashboard button silently does nothing. — Task 6.
-- [ ] **Dashboard status, peers, entities, and TUI panels never invent daemon facts.** — Task 4 partial. Status, sync-dashboard, TUI: correct. Entities `normalizeKind` and Peers hardcoded counters still invent.
+- [x] **Dashboard status, peers, entities, and TUI panels never invent daemon facts.** — Task 4. Frontend partials fixed in 2026-05-26 pre-dogfood cleanup; architecture deviation accepted (see section below).
 - [x] Source capture supports alpha modes through CLI, daemon, and MCP; unsupported rich modes fail clearly. — Task 5.
 - [x] Policy editor GET shows daemon policy files/YAML as writable when allowed, and POST validates plus atomically writes daemon repo policies. — Task 7.
 - [x] Eval catalog has no required alpha deferred tests; RC/release CI fails on missing required semantic coverage. — Task 9.
@@ -99,3 +99,13 @@ Mapping from the plan's checklist to evidence:
 4. **Live dogfood smoke per Task 10 Step 3.** Run the full `install-memorum.sh` + `memoryd serve` + MCP/web/TUI smoke loop on a clean machine. The plan's Step 3 is the explicit dogfood gate; structural audit doesn't substitute.
 
 Nothing here blocks alpha-readiness *substantively*. The remaining frontend cleanups are small and the gate confirmation is a routine run.
+
+---
+
+## 2026-05-26 architecture deviation acceptance
+
+**Deviation:** The plan for Task 4 called for daemon-side modules `crates/memoryd/src/dashboard/status.rs` and `crates/memoryd/src/dashboard/entities.rs`. Neither was created. `crates/memoryd/src/dashboard/mod.rs` declares only `pub mod roi;`. Route logic for `/api/status`, `/api/sync-dashboard`, and `/api/entity-graph` lives directly in `crates/memoryd-web/src/routes/{status,entity_graph,sync_dashboard}.rs`.
+
+**Rationale for acceptance:** Behavior is correct — all three routes derive values from live daemon state with no invented facts, matching the spec invariant. The daemon-side module structure was a plan recommendation for layering, not a behavior contract. Backfilling those modules without changing behavior would be code shuffling. The routes-as-thin-adapters layout is a reasonable pattern for the current scope.
+
+**Decision:** Accepted 2026-05-26. See the Architecture note in Task 4 of `docs/plans/2026-05-25-alpha-core-gap-closeout.md` for the full rationale and the plan amendment recording the decision.
