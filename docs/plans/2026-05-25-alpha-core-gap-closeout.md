@@ -1,5 +1,7 @@
 # Alpha Core Gap Closeout Implementation Plan
 
+> **Status: substantively shipped 2026-05-26 (8 of 10 tasks Done, 2 Partial).** Audit closeout at `docs/reviews/2026-05-26-alpha-gap-audit.md` with per-task verdicts and file:line evidence. Tasks 1, 2, 3, 5, 6, 7, 8, 9 are Done. Task 4 is Partial — frontend `Entities.tsx normalizeKind` keyword heuristic and `Peers.tsx` hardcoded zero counters still invent daemon facts; the daemon-side `dashboard/status.rs` + `dashboard/entities.rs` modules from the plan were never created (route logic lives in `memoryd-web/src/routes/` instead, behavior correct). Task 10 is Partial only because (a) the Final alpha acceptance checklist below was never updated — closed by the audit, see the closeout doc — and (b) the structural audit did not run the gate (`bash scripts/check-dogfood.sh` + workspace clippy/tests + frontend typecheck/lint/Vitest), which remains the residual verification step before claiming alpha-ready.
+
 **Goal:** Close the alpha-readiness gaps found in the May 25 readiness audit, excluding the semantic/model privacy-filter item, so Memorum's dogfood surfaces are either genuinely daemon-backed or explicitly unavailable.
 
 **Architecture:** Treat `memoryd` as the source of truth. Add protocol DTOs only where the daemon has real state to expose, keep web/TUI adapters thin, and remove fixture/heuristic UI behavior from daemon mode. Use vertical TDD: one public behavior test, minimal implementation, then refactor into small Rust modules instead of growing `handlers/mod.rs`.
@@ -811,12 +813,14 @@ Expected: every duplicate must be covered by the known-duplicate list near the t
 
 ## Final alpha acceptance checklist
 
-- [ ] `/api/roi` returns daemon data, not `501`.
-- [ ] `/api/notifications/stream` returns daemon passive notifications.
-- [ ] No visible dashboard button silently does nothing.
-- [ ] Dashboard status, peers, entities, and TUI panels never invent daemon facts.
-- [ ] Source capture supports alpha modes through CLI, daemon, and MCP; unsupported rich modes fail clearly.
-- [ ] Policy editor GET shows daemon policy files/YAML as writable when allowed, and POST validates plus atomically writes daemon repo policies.
-- [ ] Eval catalog has no required alpha deferred tests; RC/release CI fails on missing required semantic coverage.
-- [ ] Privacy remains deterministic-first by explicit alpha decision.
-- [ ] `bash scripts/check-dogfood.sh`, workspace clippy, workspace tests, frontend typecheck/lint/Vitest all pass.
+Closeout state recorded 2026-05-26 from `docs/reviews/2026-05-26-alpha-gap-audit.md`.
+
+- [x] `/api/roi` returns daemon data, not `501`. — Task 2.
+- [x] `/api/notifications/stream` returns daemon passive notifications. — Task 3.
+- [x] No visible dashboard button silently does nothing. — Task 6.
+- [ ] Dashboard status, peers, entities, and TUI panels never invent daemon facts. — **Task 4 partial.** Status, sync-dashboard, and TUI: correct. `EntityTable.tsx normalizeKind` still keyword-classifies to a `'project'` catch-all; `Peers.tsx normalizePeer` hardcodes `eventsIn24h: 0`, `eventsOut24h: 0`, `locksPending: 0`, `devicePubkeyShort: 'unknown'` instead of nulling fields the daemon doesn't supply. See closeout doc for the two-fix punch list.
+- [x] Source capture supports alpha modes through CLI, daemon, and MCP; unsupported rich modes fail clearly. — Task 5.
+- [x] Policy editor GET shows daemon policy files/YAML as writable when allowed, and POST validates plus atomically writes daemon repo policies. — Task 7.
+- [x] Eval catalog has no required alpha deferred tests; RC/release CI fails on missing required semantic coverage. — Task 9.
+- [x] Privacy remains deterministic-first by explicit alpha decision. — Explicit scope exclusion; no implementation work required.
+- [ ] `bash scripts/check-dogfood.sh`, workspace clippy, workspace tests, frontend typecheck/lint/Vitest all pass. — **Not exercised by the structural audit.** Gate script (`scripts/check-dogfood.sh`, 221 lines) covers all five required smoke categories; runtime confirmation is the residual verification step before claiming alpha-ready.
