@@ -271,7 +271,7 @@ fn forced_takeover_makes_forced_holder_active_and_ignores_stale_prior_holder() {
     })
     .expect("forced takeover succeeds");
 
-    let err = acquire_manual_lease(LeaseAcquireRequest {
+    let reacquired = acquire_manual_lease(LeaseAcquireRequest {
         repo: env.repo.clone(),
         runtime: env.runtime.clone(),
         scope: "me".to_string(),
@@ -280,9 +280,12 @@ fn forced_takeover_makes_forced_holder_active_and_ignores_stale_prior_holder() {
         lease_window_seconds: 3_600,
         cli_used: None,
     })
-    .expect_err("forced holder should be the active lease seen by subsequent non-force acquire");
+    .expect("re-entrant acquire by dev_local succeeds because the forced takeover made it the active holder; if the stale dev_foreign lease still owned the slot, this acquire would fail with Held { by_device: \"dev_foreign\" }");
 
-    assert!(matches!(err, LeaseError::Held { by_device, .. } if by_device == "dev_local"));
+    assert_eq!(
+        reacquired.record.device, "dev_local",
+        "forced takeover made dev_local the active holder; the stale dev_foreign lease is ignored",
+    );
 }
 
 #[test]

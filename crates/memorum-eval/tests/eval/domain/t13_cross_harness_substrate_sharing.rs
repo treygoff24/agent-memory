@@ -6,6 +6,7 @@ use memorum_eval::daemon_scaffold::DaemonScaffold;
 use memorum_eval::harness_runner::{HarnessRunner, RealHarness, HARNESS_MCP_CONFIG_PATH_ENV, HARNESS_PROJECT_CWD_ENV};
 use memorum_eval::{eval_assert, eval_assert_eq, eval_flush_assertion_count};
 use serde_json::{json, Value};
+use serial_test::serial;
 
 use crate::support::{daemon_request, find_file_with_extension};
 
@@ -17,6 +18,7 @@ const FACT_TEXT: &str =
 const HARNESS_TIMEOUT: Duration = Duration::from_secs(180);
 
 #[tokio::test]
+#[serial]
 async fn t13_cross_harness_substrate_sharing() {
     if missing_auth_keys() {
         eprintln!(

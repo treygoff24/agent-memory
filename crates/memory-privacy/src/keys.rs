@@ -248,7 +248,31 @@ fn write_private_file(path: &Path, contents: &[u8]) -> PrivacyResult<()> {
         file.sync_all().map_err(|err| PrivacyError::KeyUnavailable(err.to_string()))?;
     }
     fs::rename(&temp_path, path).map_err(|err| PrivacyError::KeyUnavailable(err.to_string()))?;
+    // Best-effort parent-directory fsync for crash durability on Unix
+    // filesystems that support it. POSIX rename is atomic and visible to
+    // other processes once it returns; this fsync exists so the new dirent
+    // survives an unclean shutdown, not for cross-process visibility.
+    // Filesystems that don't support directory fsync (some non-Unix targets,
+    // tmpfs variants) are tolerated — they would otherwise report write-failed
+    // after the rename has already succeeded, leaving callers with a
+    // half-rotated state on disk that the error message wouldn't predict.
+    sync_parent_dir_best_effort(path);
     validate_private_file(path)
+}
+
+fn sync_parent_dir_best_effort(path: &Path) {
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if parent.as_os_str().is_empty() {
+        return;
+    }
+    if let Ok(dir) = fs::File::open(parent) {
+        // Ignore errors: some filesystems return Unsupported/InvalidInput on
+        // directory fsync, and we'd rather under-fsync than report a spurious
+        // failure on a write that already succeeded.
+        let _ = dir.sync_all();
+    }
 }
 
 fn unix_nanos() -> PrivacyResult<u128> {

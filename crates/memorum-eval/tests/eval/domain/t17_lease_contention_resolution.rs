@@ -4,10 +4,12 @@ use std::path::Path;
 use memorum_eval::daemon_scaffold::DaemonScaffold;
 use memorum_eval::{eval_assert, eval_assert_eq, eval_flush_assertion_count};
 use serde_json::{json, Value};
+use serial_test::serial;
 
 use crate::support::{daemon_request, find_file_with_extension, git, read_device_id};
 
 #[tokio::test]
+#[serial]
 async fn t17_preseeded_two_device_lease_blocks_loser_and_allows_retry_after_release() {
     let scaffold = DaemonScaffold::two_device().await;
     let device_a_id = read_device_id(&scaffold.device_a.tree_dir().join(".memoryd"));

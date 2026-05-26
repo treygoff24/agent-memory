@@ -9,6 +9,7 @@ use memorum_eval::harness_runner::{
 };
 use memorum_eval::{eval_assert, eval_assert_eq, eval_flush_assertion_count};
 use serde_json::{json, Value};
+use serial_test::serial;
 
 use crate::support::daemon_request;
 
@@ -28,6 +29,7 @@ struct PrivacyRetryHarness {
 }
 
 #[tokio::test]
+#[serial]
 async fn t15_privacy_filter_refusal_and_retry() {
     run_privacy_filter_refusal_and_retry(PrivacyRetryHarness {
         harness: RealHarness::Claude,
@@ -39,6 +41,7 @@ async fn t15_privacy_filter_refusal_and_retry() {
 }
 
 #[tokio::test]
+#[serial]
 async fn t15_privacy_filter_refusal_and_retry_codex() {
     run_privacy_filter_refusal_and_retry(PrivacyRetryHarness {
         harness: RealHarness::Codex,

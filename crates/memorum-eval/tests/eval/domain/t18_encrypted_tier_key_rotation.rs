@@ -4,6 +4,7 @@ use std::process::Command;
 use memorum_eval::daemon_scaffold::DaemonScaffold;
 use memorum_eval::{eval_assert, eval_assert_eq, eval_flush_assertion_count};
 use serde_json::{json, Value};
+use serial_test::serial;
 
 use crate::support::{daemon_request, debug_binary, find_file_with_extension};
 
@@ -11,6 +12,7 @@ const FIRST_PRIVATE_BODY: &str = "T18 private continuity contact is t18-before@e
 const SECOND_PRIVATE_BODY: &str = "T18 private continuity contact is t18-after@example.com.";
 
 #[tokio::test]
+#[serial]
 async fn t18_encrypted_tier_key_rotation_preserves_reads_and_forward_secrecy() {
     let scaffold = DaemonScaffold::fresh().await;
     let initial_rotation = rotate_keys(scaffold.tree_dir());

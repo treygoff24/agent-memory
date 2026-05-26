@@ -89,7 +89,7 @@ pub fn bootstrap_repo_layout(root: &Path) -> std::io::Result<()> {
         std::fs::create_dir_all(root.join(dir))?;
     }
     reconcile_gitattributes(&root.join(".gitattributes"))?;
-    write_if_missing(&root.join(".gitignore"), "/.memoryd/\n*.sqlite\n*.sqlite-wal\n*.sqlite-shm\n/.*.tmp\n")?;
+    reconcile_gitignore(&root.join(".gitignore"))?;
     for dir in ["events", "policies", "leases"] {
         write_if_missing(&root.join(dir).join(".keep"), "")?;
     }
@@ -125,6 +125,42 @@ fn write_if_missing(path: &Path, contents: &str) -> std::io::Result<()> {
         return Ok(());
     }
     std::fs::write(path, contents)
+}
+
+/// Substrate-managed `.gitignore` entries. The substrate writes runtime state under
+/// these paths on its own and the user is never expected to commit them. Each entry
+/// must be present in every substrate-initialized repo, including ones initialized
+/// before a given entry was added to this list — that's the migration responsibility
+/// of `reconcile_gitignore`. Don't rely on `write_if_missing` for this; existing
+/// repos created before the Memorum rebrand (when `/.memorum/` was added here)
+/// would otherwise keep leaking substrate state into `git status` forever.
+const MANAGED_GITIGNORE_ENTRIES: &[&str] =
+    &["/.memoryd/", "/.memorum/", "*.sqlite", "*.sqlite-wal", "*.sqlite-shm", "/.*.tmp"];
+
+fn reconcile_gitignore(path: &Path) -> std::io::Result<()> {
+    let existing = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(err) => return Err(err),
+    };
+
+    let existing_entries: std::collections::HashSet<&str> =
+        existing.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with('#')).collect();
+    let missing: Vec<&&str> =
+        MANAGED_GITIGNORE_ENTRIES.iter().filter(|entry| !existing_entries.contains(**entry)).collect();
+    if missing.is_empty() && !existing.is_empty() {
+        return Ok(());
+    }
+
+    let mut reconciled = existing;
+    if !reconciled.is_empty() && !reconciled.ends_with('\n') {
+        reconciled.push('\n');
+    }
+    for entry in missing {
+        reconciled.push_str(entry);
+        reconciled.push('\n');
+    }
+    std::fs::write(path, reconciled)
 }
 
 fn reconcile_gitattributes(path: &Path) -> std::io::Result<()> {

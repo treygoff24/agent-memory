@@ -3,6 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use memorum_eval::daemon_scaffold::DaemonScaffold;
 use memorum_eval::{eval_assert, eval_flush_assertion_count};
+use serial_test::serial;
 
 use crate::support::{command_output, debug_binary};
 
@@ -12,6 +13,7 @@ const DEVICE_B_UPDATED_AT: &str = "2026-05-01T12:04:00Z";
 const MEMORY_ID: &str = "mem_20260501_a1b2c3d4e5f60718_000014";
 
 #[tokio::test]
+#[serial]
 async fn t14_merge_driver_preserves_two_device_semantic_edits() {
     let scaffold = DaemonScaffold::two_device().await;
     let temp_dir = scratch_dir();

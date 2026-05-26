@@ -171,11 +171,19 @@ impl Drop for TempTree {
 /// macOS's 104-character socket-name cap. The default tempdir on macOS lives
 /// under `/var/folders/...` and is too long once the test name + nonce are
 /// appended.
+///
+/// Socket name combines a monotonic process-local counter with the current
+/// nanos. The counter alone guarantees uniqueness across concurrent calls in
+/// the same process (covering the T14→T17 cross-scaffold pollution found in
+/// the 2026-05-26 audit); the nanos suffix keeps each path human-readable for
+/// debug log triage.
 fn short_socket_path(prefix: &str) -> PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH).expect("system clock before unix epoch").as_nanos();
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
     let dir = PathBuf::from(format!("/tmp/{prefix}-{}", std::process::id()));
     fs::create_dir_all(&dir).unwrap_or_else(|err| panic!("create short socket dir {}: {err}", dir.display()));
-    dir.join(format!("memoryd-{nanos}.sock"))
+    dir.join(format!("memoryd-{seq}-{nanos}.sock"))
 }
 
 fn spawn_memoryd(tree_dir: &Path, socket_path: &Path) -> Child {

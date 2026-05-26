@@ -4,6 +4,7 @@ use memorum_eval::daemon_scaffold::DaemonScaffold;
 use memorum_eval::{eval_assert, eval_assert_eq, eval_flush_assertion_count};
 use rusqlite::Connection;
 use serde_json::{json, Value};
+use serial_test::serial;
 
 use crate::support::daemon_request;
 
@@ -13,6 +14,7 @@ const SCORE_TOLERANCE: f64 = 1e-9;
 const COMPONENT_TOLERANCE: f64 = 0.02;
 
 #[tokio::test]
+#[serial]
 async fn t16_reality_check_drift_scores_order_and_explain_components() {
     let scaffold = DaemonScaffold::fresh().await;
     let probe = list_reality_check_items(scaffold.socket_path());

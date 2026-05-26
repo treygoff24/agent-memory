@@ -11,7 +11,12 @@ use crate::dream::lease::{LeaseCommit, LeaseError};
 /// without network remotes or racy real repositories.
 pub trait LeaseGit {
     fn fetch_origin(&mut self, repo: &Path) -> Result<(), LeaseError>;
-    fn has_dirty_user_work(&mut self, repo: &Path) -> Result<bool, LeaseError>;
+    /// Return the list of paths in the working tree that count as "dirty user work" —
+    /// anything `git status --porcelain --untracked-files=all` reports that is not
+    /// `leases/journal.lease`. Empty list means the tree is clean for lease purposes.
+    /// Callers should use `paths.is_empty()` for the boolean check and surface the
+    /// path list in operator-visible errors so the offending paths are diagnosable.
+    fn dirty_user_work_paths(&mut self, repo: &Path) -> Result<Vec<String>, LeaseError>;
     fn commit_lease(&mut self, repo: &Path, commit: &LeaseCommit<'_>) -> Result<(), LeaseError>;
     fn push(&mut self, repo: &Path) -> Result<(), LeaseError>;
     fn rollback_failed_lease_attempt(&mut self, repo: &Path) -> Result<(), LeaseError>;
@@ -25,8 +30,8 @@ impl LeaseGit for NativeLeaseGit {
         run_git(repo, &["fetch", "origin"]).map(|_| ()).map_err(|err| LeaseError::unavailable(err.to_string()))
     }
 
-    fn has_dirty_user_work(&mut self, repo: &Path) -> Result<bool, LeaseError> {
-        has_dirty_user_work(repo)
+    fn dirty_user_work_paths(&mut self, repo: &Path) -> Result<Vec<String>, LeaseError> {
+        dirty_user_work_paths(repo)
     }
 
     fn commit_lease(&mut self, repo: &Path, commit: &LeaseCommit<'_>) -> Result<(), LeaseError> {
@@ -87,8 +92,8 @@ impl LeaseGit for ScriptedLeaseGit {
         self.fetch_results.pop_front().unwrap_or(Ok(())).map_err(LeaseError::unavailable)
     }
 
-    fn has_dirty_user_work(&mut self, _repo: &Path) -> Result<bool, LeaseError> {
-        Ok(self.dirty_user_work)
+    fn dirty_user_work_paths(&mut self, _repo: &Path) -> Result<Vec<String>, LeaseError> {
+        if self.dirty_user_work { Ok(vec!["<scripted-dirty>".to_string()]) } else { Ok(Vec::new()) }
     }
 
     fn commit_lease(&mut self, _repo: &Path, _commit: &LeaseCommit<'_>) -> Result<(), LeaseError> {
@@ -110,10 +115,28 @@ impl LeaseGit for ScriptedLeaseGit {
     }
 }
 
-fn has_dirty_user_work(repo: &Path) -> Result<bool, LeaseError> {
+fn dirty_user_work_paths(repo: &Path) -> Result<Vec<String>, LeaseError> {
     let output = run_git(repo, &["status", "--porcelain=v1", "--untracked-files=all"])
         .map_err(|err| LeaseError::unavailable(err.to_string()))?;
-    Ok(output.lines().filter_map(status_path).any(|path| path != "leases/journal.lease"))
+    Ok(output.lines().filter_map(status_path).filter(|path| !is_substrate_managed_path(path)).map(str::to_string).collect())
+}
+
+/// Paths the substrate, daemon runtime, or lease subsystem manages on the user's behalf —
+/// the dirty-tree check refuses lease acquisition on user work, not on transient substrate
+/// state. Without this filter the daemon's own writes (per-device events log, substrate
+/// state, runtime artifacts) race the lease check under parallel load and flake T17.
+///
+/// Keep this list aligned with the auto-generated `.gitignore` written by
+/// `memory_substrate::tree::layout::bootstrap_repo_layout` so any path the substrate
+/// is allowed to author is also tolerated by the lease dirty-tree check.
+fn is_substrate_managed_path(path: &str) -> bool {
+    if path == "leases/journal.lease" {
+        return true;
+    }
+    // Substrate marker dir (.memorum), daemon runtime (.memoryd), and the per-device
+    // events log are all written by the daemon between substrate commit cycles.
+    const SUBSTRATE_MANAGED_PREFIXES: &[&str] = &[".memorum/", ".memoryd/", "events/"];
+    SUBSTRATE_MANAGED_PREFIXES.iter().any(|prefix| path.starts_with(prefix))
 }
 
 fn status_path(line: &str) -> Option<&str> {

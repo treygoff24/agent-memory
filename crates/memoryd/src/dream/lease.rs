@@ -167,10 +167,9 @@ pub fn acquire_manual_lease_with_git(
                 return Err(LeaseError::Held { scope: request.scope, by_device: active.device });
             }
         }
-        if git.has_dirty_user_work(&request.repo)? {
-            return Err(LeaseError::DirtyTree {
-                message: "working tree has uncommitted user changes outside leases/journal.lease".to_string(),
-            });
+        let dirty = git.dirty_user_work_paths(&request.repo)?;
+        if !dirty.is_empty() {
+            return Err(LeaseError::DirtyTree { message: dirty_tree_message(&dirty) });
         }
 
         let record = lease_record(&request, &device_id);
@@ -200,10 +199,9 @@ pub fn release_manual_lease_with_git(git: &mut impl LeaseGit, request: LeaseAcqu
     let lease_path = request.repo.join("leases/journal.lease");
 
     git.fetch_origin(&request.repo)?;
-    if git.has_dirty_user_work(&request.repo)? {
-        return Err(LeaseError::DirtyTree {
-            message: "working tree has uncommitted user changes outside leases/journal.lease".to_string(),
-        });
+    let dirty = git.dirty_user_work_paths(&request.repo)?;
+    if !dirty.is_empty() {
+        return Err(LeaseError::DirtyTree { message: dirty_tree_message(&dirty) });
     }
 
     let record = release_record(&request, &device_id);
@@ -402,6 +400,23 @@ fn retry_offsets(window_minutes: u16) -> Vec<u16> {
         delay = (delay * 2).min(32);
     }
     offsets
+}
+
+/// Build the `LeaseError::DirtyTree` message, including up to five of the offending
+/// paths so an operator (or a failing test) can see exactly what blocked the lease.
+fn dirty_tree_message(paths: &[String]) -> String {
+    const PREVIEW_CAP: usize = 5;
+    let preview: Vec<&str> = paths.iter().take(PREVIEW_CAP).map(String::as_str).collect();
+    let suffix = if paths.len() > PREVIEW_CAP {
+        format!(" (and {} more)", paths.len() - PREVIEW_CAP)
+    } else {
+        String::new()
+    };
+    format!(
+        "working tree has uncommitted user changes outside leases/journal.lease: [{}]{}",
+        preview.join(", "),
+        suffix
+    )
 }
 
 fn active_lease(lease_path: &Path, scope: &str, now: DateTime<Utc>) -> Result<Option<LeaseRecord>, LeaseError> {
