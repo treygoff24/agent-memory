@@ -22,6 +22,8 @@ node_modules/
 .clawpatch/
 .tldr/
 .tldrignore
+.code-briefcase/
+.code-briefcaseignore
 
 # Generated gate outputs
 bench/results.*.json

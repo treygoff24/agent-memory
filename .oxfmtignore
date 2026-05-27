@@ -14,5 +14,7 @@ GAPS.md
 .clawpatch/
 .delegate/
 .tldr/
+.code-briefcase/
+.code-briefcaseignore
 crates/memoryd-web/frontend/test-results/
 
