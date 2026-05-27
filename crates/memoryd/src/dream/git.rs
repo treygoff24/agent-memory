@@ -93,7 +93,11 @@ impl LeaseGit for ScriptedLeaseGit {
     }
 
     fn dirty_user_work_paths(&mut self, _repo: &Path) -> Result<Vec<String>, LeaseError> {
-        if self.dirty_user_work { Ok(vec!["<scripted-dirty>".to_string()]) } else { Ok(Vec::new()) }
+        if self.dirty_user_work {
+            Ok(vec!["<scripted-dirty>".to_string()])
+        } else {
+            Ok(Vec::new())
+        }
     }
 
     fn commit_lease(&mut self, _repo: &Path, _commit: &LeaseCommit<'_>) -> Result<(), LeaseError> {
@@ -118,7 +122,12 @@ impl LeaseGit for ScriptedLeaseGit {
 fn dirty_user_work_paths(repo: &Path) -> Result<Vec<String>, LeaseError> {
     let output = run_git(repo, &["status", "--porcelain=v1", "--untracked-files=all"])
         .map_err(|err| LeaseError::unavailable(err.to_string()))?;
-    Ok(output.lines().filter_map(status_path).filter(|path| !is_substrate_managed_path(path)).map(str::to_string).collect())
+    Ok(output
+        .lines()
+        .filter_map(status_path)
+        .filter(|path| !is_substrate_managed_path(path))
+        .map(str::to_string)
+        .collect())
 }
 
 /// Paths the substrate, daemon runtime, or lease subsystem manages on the user's behalf —

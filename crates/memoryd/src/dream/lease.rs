@@ -407,11 +407,8 @@ fn retry_offsets(window_minutes: u16) -> Vec<u16> {
 fn dirty_tree_message(paths: &[String]) -> String {
     const PREVIEW_CAP: usize = 5;
     let preview: Vec<&str> = paths.iter().take(PREVIEW_CAP).map(String::as_str).collect();
-    let suffix = if paths.len() > PREVIEW_CAP {
-        format!(" (and {} more)", paths.len() - PREVIEW_CAP)
-    } else {
-        String::new()
-    };
+    let suffix =
+        if paths.len() > PREVIEW_CAP { format!(" (and {} more)", paths.len() - PREVIEW_CAP) } else { String::new() };
     format!(
         "working tree has uncommitted user changes outside leases/journal.lease: [{}]{}",
         preview.join(", "),

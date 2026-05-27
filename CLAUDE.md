@@ -1,6 +1,6 @@
 # agent-memory
 
-Implementation home for the agent-memory system. Ships as **Memorum** (Latin genitive plural of *memor*, "mindful"). All nine streams (A–I) are shipped; see the Stream model below for the one-line breakdown.
+Implementation home for the agent-memory system. Ships as **Memorum** (Latin genitive plural of _memor_, "mindful"). All nine streams (A–I) are shipped; see the Stream model below for the one-line breakdown.
 
 ## Current status
 
@@ -30,17 +30,17 @@ For narrative history: `git log`. For per-stream state: read the live spec/plan 
 
 When Trey says "the spec" or "the plan" without a version, he means the latest. Live spec = highest-versioned `docs/specs/stream-X-...-vN.M.md` (older versions stay on disk for history; never mutate them). The parent system spec is `docs/specs/system-v0.2.md`.
 
-| Stream | Live spec | Live plan |
-|---|---|---|
-| A | `docs/specs/stream-a-core-substrate-v1.1.md` | `docs/plans/2026-04-26-stream-a-core-substrate-implementation-plan-v0.3.md` |
-| B | (in system spec) | `docs/plans/2026-04-28-stream-b-daemon-mcp.md` |
-| C | (in system spec) | `docs/plans/2026-04-29-stream-c-governance.md` |
-| D | `docs/specs/stream-d-privacy-v0.1.md` | (in Stream D plan) |
-| E | `docs/specs/stream-e-passive-recall-v0.5.md` | `docs/plans/2026-04-30-stream-e-passive-recall.md` |
-| F | `docs/specs/stream-f-dreaming-v0.3.md` | `docs/plans/2026-04-30-stream-f-dreaming.md` |
-| G | `docs/specs/stream-g-observability-v0.1.md` | `docs/plans/2026-05-01-stream-g-observability.md` |
-| H | `docs/specs/stream-h-eval-harness-v0.1.md` | `docs/plans/2026-05-01-stream-h-eval-harness.md` |
-| I | `docs/specs/stream-i-cross-session-v0.1.md` | `docs/plans/2026-05-01-stream-i-cross-session.md` |
+| Stream | Live spec                                    | Live plan                                                                   |
+| ------ | -------------------------------------------- | --------------------------------------------------------------------------- |
+| A      | `docs/specs/stream-a-core-substrate-v1.1.md` | `docs/plans/2026-04-26-stream-a-core-substrate-implementation-plan-v0.3.md` |
+| B      | (in system spec)                             | `docs/plans/2026-04-28-stream-b-daemon-mcp.md`                              |
+| C      | (in system spec)                             | `docs/plans/2026-04-29-stream-c-governance.md`                              |
+| D      | `docs/specs/stream-d-privacy-v0.1.md`        | (in Stream D plan)                                                          |
+| E      | `docs/specs/stream-e-passive-recall-v0.5.md` | `docs/plans/2026-04-30-stream-e-passive-recall.md`                          |
+| F      | `docs/specs/stream-f-dreaming-v0.3.md`       | `docs/plans/2026-04-30-stream-f-dreaming.md`                                |
+| G      | `docs/specs/stream-g-observability-v0.1.md`  | `docs/plans/2026-05-01-stream-g-observability.md`                           |
+| H      | `docs/specs/stream-h-eval-harness-v0.1.md`   | `docs/plans/2026-05-01-stream-h-eval-harness.md`                            |
+| I      | `docs/specs/stream-i-cross-session-v0.1.md`  | `docs/plans/2026-05-01-stream-i-cross-session.md`                           |
 
 API/architecture/runbook docs live at `docs/api/stream-X-*-api.md`, `docs/dev/stream-X-architecture.md`, and `docs/runbooks/*.md`. Reviews live at `docs/reviews/`. Background research (not implementation contracts): `docs/reference/handbook-v2.2.md`, `docs/reference/gpt-deep-research-2026-04-23.md`, `docs/handoff-2026-04-23.md`.
 
