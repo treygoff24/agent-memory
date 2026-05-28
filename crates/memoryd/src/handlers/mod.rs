@@ -3843,17 +3843,14 @@ impl GovernanceWriteInput {
         let related = self.related_for_persist();
         let supersedes = self.supersedes_for_persist();
         let evidence = self.evidence_for_persist();
-        let canonical_namespace_id =
-            self.meta.canonical_namespace_id.clone().or_else(|| self.substrate_namespace());
+        let canonical_namespace_id = self.meta.canonical_namespace_id.clone().or_else(|| self.substrate_namespace());
         // Importer writes carry already-vetted content from prior harness sessions and
         // should not flood the Reality Check review queue with low-confidence guesses.
         // Caller can suppress the review flag for non-candidate writes; lifecycle still
         // forces review for `Candidate`/`Quarantined` so the override never weakens
         // governance.
-        let requires_user_confirmation = self
-            .meta
-            .requires_user_confirmation
-            .map_or(requires_review, |caller| requires_review || caller);
+        let requires_user_confirmation =
+            self.meta.requires_user_confirmation.map_or(requires_review, |caller| requires_review || caller);
         Memory {
             frontmatter: Frontmatter {
                 schema_version: memory_substrate::SUBSTRATE_SCHEMA_VERSION,
@@ -3932,19 +3929,11 @@ impl GovernanceWriteInput {
     }
 
     fn related_for_persist(&self) -> Vec<MemoryId> {
-        self.meta
-            .related
-            .as_ref()
-            .map(|ids| ids.iter().cloned().map(MemoryId::new).collect())
-            .unwrap_or_default()
+        self.meta.related.as_ref().map(|ids| ids.iter().cloned().map(MemoryId::new).collect()).unwrap_or_default()
     }
 
     fn supersedes_for_persist(&self) -> Vec<MemoryId> {
-        self.meta
-            .supersedes
-            .as_ref()
-            .map(|ids| ids.iter().cloned().map(MemoryId::new).collect())
-            .unwrap_or_default()
+        self.meta.supersedes.as_ref().map(|ids| ids.iter().cloned().map(MemoryId::new).collect()).unwrap_or_default()
     }
 
     fn evidence_for_persist(&self) -> Vec<Evidence> {
@@ -4057,8 +4046,8 @@ impl GovernanceWriteInput {
             GovernanceSourceKindMeta::File | GovernanceSourceKindMeta::Import => SourceKind::File,
             GovernanceSourceKindMeta::AgentPrimary => SourceKind::AgentPrimary,
         };
-        let harness = matches!(self.meta.source_kind, GovernanceSourceKindMeta::Import)
-            .then(|| "memoryd-import".to_string());
+        let harness =
+            matches!(self.meta.source_kind, GovernanceSourceKindMeta::Import).then(|| "memoryd-import".to_string());
         Source {
             kind,
             reference: if storage_action.requires_encryption() {

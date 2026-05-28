@@ -30,16 +30,8 @@ use crate::import::{ImportError, ImportResult};
 /// `##` headings that are scaffolding rather than substantive sections. The
 /// multi-section heuristic ignores them when counting whether a topic file is
 /// a dossier worth decomposing.
-const BOILERPLATE_HEADINGS: &[&str] = &[
-    "why",
-    "how to apply",
-    "how",
-    "when",
-    "why this matters",
-    "references",
-    "links",
-    "context",
-];
+const BOILERPLATE_HEADINGS: &[&str] =
+    &["why", "how to apply", "how", "when", "why this matters", "references", "links", "context"];
 
 /// Output bundle for a Claude memory root parse. `candidates` carries the
 /// successful parses; `errors` carries per-file failures so the import report
@@ -106,10 +98,7 @@ fn parse_topic_file(path: &Path, root: &Path) -> ImportResult<Vec<ParsedMemory>>
     let frontmatter_hint = parse_frontmatter_hint(&frontmatter, &source_key)?;
     let body = body.trim_end_matches('\n').to_string();
     let cwd = cwd_from_encoded_path(path, root);
-    let title = frontmatter_hint
-        .get("name")
-        .and_then(Value::as_str)
-        .map(str::to_string);
+    let title = frontmatter_hint.get("name").and_then(Value::as_str).map(str::to_string);
     let sections = collect_substantive_sections(&body);
     if sections.len() >= 3 {
         Ok(sections
@@ -126,14 +115,7 @@ fn parse_topic_file(path: &Path, root: &Path) -> ImportResult<Vec<ParsedMemory>>
             })
             .collect())
     } else {
-        Ok(vec![build_memory(ClaudeCandidateInput {
-            source_key,
-            path,
-            cwd,
-            title,
-            frontmatter_hint,
-            body,
-        })])
+        Ok(vec![build_memory(ClaudeCandidateInput { source_key, path, cwd, title, frontmatter_hint, body })])
     }
 }
 
@@ -443,7 +425,10 @@ Promote to prod.\n";
         let out = run(tmp.path());
         assert_eq!(out.candidates.len(), 1, "good.md still imported");
         assert_eq!(out.candidates[0].title.as_deref(), Some("Good"));
-        assert!(out.errors.iter().any(|e| matches!(e, ImportError::Parse { source_key, .. } if source_key.contains("bad.md"))));
+        assert!(out
+            .errors
+            .iter()
+            .any(|e| matches!(e, ImportError::Parse { source_key, .. } if source_key.contains("bad.md"))));
     }
 
     #[test]
@@ -476,9 +461,6 @@ Promote to prod.\n";
         write_fixture(tmp.path(), "-Users-treygoff-Code-atlasos/memory/x.md", b"---\nname: X\n---\nbody\n");
         let out = run(tmp.path());
         assert_eq!(out.candidates.len(), 1);
-        assert_eq!(
-            out.candidates[0].cwd.as_deref(),
-            Some(Path::new("/Users/treygoff/Code/atlasos")),
-        );
+        assert_eq!(out.candidates[0].cwd.as_deref(), Some(Path::new("/Users/treygoff/Code/atlasos")),);
     }
 }

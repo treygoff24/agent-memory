@@ -87,7 +87,8 @@ pub struct InteractivePromptBackend;
 
 impl PromptBackend for InteractivePromptBackend {
     fn prompt_non_git_cwd(&mut self, cwd: &Path, synced_dir: Option<&'static str>) -> PromptResult {
-        let items = ["generate .memory-project.yaml here", "drop these memories into user scope", "skip these memories"];
+        let items =
+            ["generate .memory-project.yaml here", "drop these memories into user scope", "skip these memories"];
         let header = match synced_dir {
             Some(service) => format!(
                 "{path}\n⚠ This directory appears to be synced via {service}. The .memory-project.yaml file will be visible on other machines using that service.",
@@ -225,10 +226,7 @@ fn derive_canonical_id_for_dir(cwd: &Path) -> String {
 }
 
 fn derive_alias_for_dir(cwd: &Path) -> String {
-    cwd.file_name()
-        .and_then(std::ffi::OsStr::to_str)
-        .map(str::to_string)
-        .unwrap_or_else(|| "unnamed".to_string())
+    cwd.file_name().and_then(std::ffi::OsStr::to_str).map(str::to_string).unwrap_or_else(|| "unnamed".to_string())
 }
 
 /// Detect whether the given path lives under a known synced-dir root. Returns
@@ -239,8 +237,7 @@ pub fn detect_synced_dir(path: &Path) -> Option<&'static str> {
     if lower.contains("/dropbox/") || lower.ends_with("/dropbox") {
         return Some("Dropbox");
     }
-    if lower.contains("/icloud/") || lower.contains("/com~apple~clouddocs/") || lower.contains("/mobile documents/")
-    {
+    if lower.contains("/icloud/") || lower.contains("/com~apple~clouddocs/") || lower.contains("/mobile documents/") {
         return Some("iCloud");
     }
     if lower.contains("/onedrive/") || lower.ends_with("/onedrive") {
@@ -270,10 +267,7 @@ mod tests {
             Self { scripted: HashMap::new(), calls: 0 }
         }
         fn with(mut self, cwd: &Path, disposition: PromptedDisposition) -> Self {
-            self.scripted.insert(
-                cwd.to_path_buf(),
-                PromptResult { disposition, synced_dir_confirmed: None },
-            );
+            self.scripted.insert(cwd.to_path_buf(), PromptResult { disposition, synced_dir_confirmed: None });
             self
         }
     }
@@ -302,11 +296,8 @@ mod tests {
     #[tokio::test]
     async fn yaml_override_in_cwd_resolves_via_existing_resolver() {
         let tmp = tempfile::tempdir().expect("tmp");
-        std::fs::write(
-            tmp.path().join(".memory-project.yaml"),
-            "canonical_id: proj_test_yaml\nalias: test\n",
-        )
-        .expect("write yaml");
+        std::fs::write(tmp.path().join(".memory-project.yaml"), "canonical_id: proj_test_yaml\nalias: test\n")
+            .expect("write yaml");
         let mut prompts = ScriptedPrompts::new();
         let mut mapper = ProjectMapper::new();
         let binding = mapper.resolve(Some(tmp.path()), &mut prompts).await.expect("resolves");

@@ -216,11 +216,8 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tmp");
         let claude_dir = tmp.path().join(".claude");
         std::fs::create_dir_all(&claude_dir).expect("mkdir");
-        std::fs::write(
-            claude_dir.join("settings.json"),
-            r#"{"autoMemoryDirectory":"/custom/claude/memory"}"#,
-        )
-        .expect("write settings");
+        std::fs::write(claude_dir.join("settings.json"), r#"{"autoMemoryDirectory":"/custom/claude/memory"}"#)
+            .expect("write settings");
         let env = FakeEnv::new(Some(tmp.path().to_path_buf()));
         let root = discover_claude_memory_root_with_env(None, &env).expect("discovery ok").expect("some root");
         assert_eq!(root.path, PathBuf::from("/custom/claude/memory"));

@@ -222,9 +222,8 @@ impl DaemonClient for SocketDaemonClient {
         let envelope = crate::client::request(&self.socket_path, request_id, payload)
             .await
             .map_err(|error| ImportError::io(self.socket_path.clone(), std::io::Error::other(error.to_string())))?;
-        let crate::protocol::ResponseResult::Success(crate::protocol::ResponsePayload::GovernanceSupersede(
-            supersede,
-        )) = envelope.result
+        let crate::protocol::ResponseResult::Success(crate::protocol::ResponsePayload::GovernanceSupersede(supersede)) =
+            envelope.result
         else {
             return Err(ImportError::Parse {
                 source_key: "<daemon>".to_string(),
@@ -329,14 +328,7 @@ impl ImportEngine {
                 GovernanceStatus::Promoted => match (outcome.id, outcome.existing_id) {
                     (Some(written_id), None) => {
                         counters_mut(&mut report, &harness_key).written_new += 1;
-                        record_promoted(
-                            &mut state,
-                            action,
-                            &written_id,
-                            None,
-                            &mut alias_to_id,
-                            &self.state_path,
-                        )?;
+                        record_promoted(&mut state, action, &written_id, None, &mut alias_to_id, &self.state_path)?;
                     }
                     (_, Some(existing_id)) => {
                         counters_mut(&mut report, &harness_key).dedup_existing += 1;
@@ -345,14 +337,7 @@ impl ImportEngine {
                             harness: harness_key.clone(),
                             existing_memory_id: existing_id.clone(),
                         });
-                        record_promoted(
-                            &mut state,
-                            action,
-                            &existing_id,
-                            None,
-                            &mut alias_to_id,
-                            &self.state_path,
-                        )?;
+                        record_promoted(&mut state, action, &existing_id, None, &mut alias_to_id, &self.state_path)?;
                     }
                     (None, None) => {
                         record_unexpected_response(&mut report, &harness_key, action, "promoted-without-id");
@@ -369,7 +354,8 @@ impl ImportEngine {
                             );
                             continue;
                         };
-                        let supersede_meta = build_write_meta(action, &related, Some(std::slice::from_ref(&existing_id)));
+                        let supersede_meta =
+                            build_write_meta(action, &related, Some(std::slice::from_ref(&existing_id)));
                         let supersede = client
                             .supersede(SupersedeRequest {
                                 old_id: existing_id.clone(),
@@ -411,28 +397,14 @@ impl ImportEngine {
                     } else {
                         counters_mut(&mut report, &harness_key).written_candidate += 1;
                         if let Some(written_id) = outcome.id {
-                            record_promoted(
-                                &mut state,
-                                action,
-                                &written_id,
-                                None,
-                                &mut alias_to_id,
-                                &self.state_path,
-                            )?;
+                            record_promoted(&mut state, action, &written_id, None, &mut alias_to_id, &self.state_path)?;
                         }
                     }
                 }
                 GovernanceStatus::Quarantined => {
                     counters_mut(&mut report, &harness_key).quarantined += 1;
                     if let Some(written_id) = outcome.id {
-                        record_promoted(
-                            &mut state,
-                            action,
-                            &written_id,
-                            None,
-                            &mut alias_to_id,
-                            &self.state_path,
-                        )?;
+                        record_promoted(&mut state, action, &written_id, None, &mut alias_to_id, &self.state_path)?;
                     }
                 }
                 GovernanceStatus::Refused => {
@@ -490,18 +462,16 @@ fn register_aliases_for(candidate: &ParsedMemory, id: &str, alias_to_id: &mut Ha
 
 fn build_write_meta(action: &PlannedWrite, related: &[String], supersedes: Option<&[String]>) -> Value {
     let mut meta = serde_json::Map::new();
-    meta.insert("namespace".to_string(), Value::String(
-        match action.scope.namespace.as_deref() {
+    meta.insert(
+        "namespace".to_string(),
+        Value::String(match action.scope.namespace.as_deref() {
             Some("project") => "project".to_string(),
             _ => "me".to_string(),
-        },
-    ));
+        }),
+    );
     meta.insert("type".to_string(), Value::String("claim".to_string()));
     meta.insert("source_kind".to_string(), Value::String("import".to_string()));
-    meta.insert(
-        "source_ref".to_string(),
-        Value::String(action.candidate.source_path.display().to_string()),
-    );
+    meta.insert("source_ref".to_string(), Value::String(action.candidate.source_path.display().to_string()));
     // Imported memories carry a confidence of 0.7 (plan R1 bump from 0.5) so
     // they stay above the Reality Check review threshold while still ranking
     // below hand-written `0.85` memories.
@@ -517,27 +487,15 @@ fn build_write_meta(action: &PlannedWrite, related: &[String], supersedes: Optio
     if let Some(Value::Array(tags)) = action.candidate.frontmatter_hint.get("tags") {
         meta.insert("aliases".to_string(), Value::Array(tags.clone()));
     } else if let Some(title) = &action.candidate.title {
-        meta.insert(
-            "aliases".to_string(),
-            Value::Array(vec![Value::String(title.clone())]),
-        );
+        meta.insert("aliases".to_string(), Value::Array(vec![Value::String(title.clone())]));
     }
     if !related.is_empty() {
-        meta.insert(
-            "related".to_string(),
-            Value::Array(related.iter().cloned().map(Value::String).collect()),
-        );
+        meta.insert("related".to_string(), Value::Array(related.iter().cloned().map(Value::String).collect()));
     }
     if let Some(prior) = supersedes {
-        meta.insert(
-            "supersedes".to_string(),
-            Value::Array(prior.iter().cloned().map(Value::String).collect()),
-        );
+        meta.insert("supersedes".to_string(), Value::Array(prior.iter().cloned().map(Value::String).collect()));
     } else if let PlanAction::Supersede { prior_memory_id, .. } = &action.action {
-        meta.insert(
-            "supersedes".to_string(),
-            Value::Array(vec![Value::String(prior_memory_id.clone())]),
-        );
+        meta.insert("supersedes".to_string(), Value::Array(vec![Value::String(prior_memory_id.clone())]));
     }
     if let Some(Value::Array(evidence_refs)) = action.candidate.frontmatter_hint.get("evidence_refs") {
         let evidence: Vec<Value> = evidence_refs
@@ -551,10 +509,7 @@ fn build_write_meta(action: &PlannedWrite, related: &[String], supersedes: Optio
                     out.insert("observed_at".to_string(), Value::String(updated_at.to_string()));
                 }
                 if let Some(thread_id) = obj.get("thread_id").and_then(Value::as_str) {
-                    out.insert(
-                        "quote".to_string(),
-                        Value::String(format!("rollout thread {thread_id}")),
-                    );
+                    out.insert("quote".to_string(), Value::String(format!("rollout thread {thread_id}")));
                 }
                 Some(Value::Object(out))
             })
@@ -611,12 +566,7 @@ fn bump_refusal(counters: &mut HarnessCounters, reason: &str) {
     }
 }
 
-fn record_unexpected_response(
-    report: &mut ImportReport,
-    harness_key: &str,
-    action: &PlannedWrite,
-    reason: &str,
-) {
+fn record_unexpected_response(report: &mut ImportReport, harness_key: &str, action: &PlannedWrite, reason: &str) {
     counters_mut(report, harness_key).refused_other += 1;
     report.refusals.push(RefusalEntry {
         source_key: action.source_key.clone(),
@@ -646,11 +596,7 @@ impl ImportEngine {
     /// Planning phase. Discovers sources, parses, asks the project mapper for
     /// each unique non-git cwd, applies state-file dedup, topologically sorts
     /// the resulting actions by wiki-link dependency.
-    pub async fn plan(
-        &self,
-        options: ImportOptions,
-        prompts: &mut dyn PromptBackend,
-    ) -> ImportResult<ImportPlan> {
+    pub async fn plan(&self, options: ImportOptions, prompts: &mut dyn PromptBackend) -> ImportResult<ImportPlan> {
         let mut parse_errors = Vec::new();
         let mut candidates: Vec<ParsedMemory> = Vec::new();
 
@@ -698,28 +644,22 @@ impl ImportEngine {
             }
         }
         for cwd in ordered_cwds {
-            let scope = mapper
-                .resolve(cwd.as_deref(), prompts)
-                .await
-                .map_err(|error| ImportError::Parse {
-                    source_key: cwd.as_deref().map_or("<none>".to_string(), |c| c.display().to_string()),
-                    reason: format!("project mapping: {error}"),
-                })?;
+            let scope = mapper.resolve(cwd.as_deref(), prompts).await.map_err(|error| ImportError::Parse {
+                source_key: cwd.as_deref().map_or("<none>".to_string(), |c| c.display().to_string()),
+                reason: format!("project mapping: {error}"),
+            })?;
             cwd_to_scope.insert(cwd, scope);
         }
 
         // Pass 3: state-file dedup. Determine each candidate's action.
         let mut prelim: Vec<PlannedWrite> = Vec::with_capacity(candidates.len());
         for candidate in candidates {
-            let scope = cwd_to_scope
-                .get(&candidate.cwd)
-                .cloned()
-                .unwrap_or_else(|| ScopeBinding {
-                    scope: memory_substrate::Scope::User,
-                    namespace: Some("me".to_string()),
-                    canonical_namespace_id: None,
-                    resolution: ResolutionKind::UserScope,
-                });
+            let scope = cwd_to_scope.get(&candidate.cwd).cloned().unwrap_or_else(|| ScopeBinding {
+                scope: memory_substrate::Scope::User,
+                namespace: Some("me".to_string()),
+                canonical_namespace_id: None,
+                resolution: ResolutionKind::UserScope,
+            });
             let action = if matches!(scope.resolution, ResolutionKind::PromptedSkip) {
                 PlanAction::SkipByPrompt
             } else {
@@ -776,8 +716,7 @@ fn topo_sort(actions: Vec<PlannedWrite>) -> (Vec<PlannedWrite>, Vec<WikiLinkBack
     let mut alias_to_key: HashMap<String, String> = HashMap::new();
     let mut sorted_keys: Vec<String> = actions.iter().map(|w| w.source_key.clone()).collect();
     sorted_keys.sort();
-    let key_order: HashMap<String, usize> =
-        sorted_keys.iter().enumerate().map(|(i, k)| (k.clone(), i)).collect();
+    let key_order: HashMap<String, usize> = sorted_keys.iter().enumerate().map(|(i, k)| (k.clone(), i)).collect();
     for write in &actions {
         if let Some(title) = &write.candidate.title {
             alias_to_key.entry(title.to_ascii_lowercase()).or_insert_with(|| write.source_key.clone());
@@ -814,10 +753,7 @@ fn topo_sort(actions: Vec<PlannedWrite>) -> (Vec<PlannedWrite>, Vec<WikiLinkBack
                 if from_order < target_order {
                     // Forward edge: write must come after the target.
                     deps.entry(from_key.clone()).or_default().insert(target_key.clone());
-                    resolvable_aliases
-                        .entry(from_key.clone())
-                        .or_default()
-                        .insert(alias.clone(), target_key);
+                    resolvable_aliases.entry(from_key.clone()).or_default().insert(alias.clone(), target_key);
                 } else {
                     // Back-edge in source-key order — break deterministically.
                     back_edge_aliases.entry(from_key.clone()).or_default().push(alias.clone());
@@ -831,8 +767,7 @@ fn topo_sort(actions: Vec<PlannedWrite>) -> (Vec<PlannedWrite>, Vec<WikiLinkBack
 
     // Kahn's algorithm: in-degree sort over the forward-edge DAG. Tiebreak
     // ties by source-key for determinism.
-    let mut in_degree: BTreeMap<String, usize> =
-        actions.iter().map(|w| (w.source_key.clone(), 0)).collect();
+    let mut in_degree: BTreeMap<String, usize> = actions.iter().map(|w| (w.source_key.clone(), 0)).collect();
     let mut reverse_adj: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for (from, targets) in &deps {
         for target in targets {
@@ -841,11 +776,7 @@ fn topo_sort(actions: Vec<PlannedWrite>) -> (Vec<PlannedWrite>, Vec<WikiLinkBack
         }
     }
 
-    let mut queue: VecDeque<String> = in_degree
-        .iter()
-        .filter(|(_, &deg)| deg == 0)
-        .map(|(k, _)| k.clone())
-        .collect();
+    let mut queue: VecDeque<String> = in_degree.iter().filter(|(_, &deg)| deg == 0).map(|(k, _)| k.clone()).collect();
     let mut sorted_order: Vec<String> = Vec::with_capacity(actions.len());
     while let Some(key) = queue.pop_front() {
         sorted_order.push(key.clone());
@@ -869,25 +800,17 @@ fn topo_sort(actions: Vec<PlannedWrite>) -> (Vec<PlannedWrite>, Vec<WikiLinkBack
     // Any unconsumed nodes form a cycle. Walk them in source-key order, mark
     // their lowest-index incoming edge as a back-edge, and add them last.
     if sorted_order.len() < actions.len() {
-        let remaining: Vec<String> = actions
-            .iter()
-            .map(|w| w.source_key.clone())
-            .filter(|k| !sorted_order.contains(k))
-            .collect();
+        let remaining: Vec<String> =
+            actions.iter().map(|w| w.source_key.clone()).filter(|k| !sorted_order.contains(k)).collect();
         for key in remaining {
             // Find the back-edge to break: a dep this key still has whose
             // target is also unfinished.
             if let Some(targets) = deps.get(&key) {
                 for target in targets {
                     if !sorted_order.contains(target) {
-                        back_edge_aliases
-                            .entry(key.clone())
-                            .or_default()
-                            .push(format!("<cycle:{target}>"));
-                        back_edges.push(WikiLinkBackEdge {
-                            source_key: key.clone(),
-                            alias: format!("<cycle:{target}>"),
-                        });
+                        back_edge_aliases.entry(key.clone()).or_default().push(format!("<cycle:{target}>"));
+                        back_edges
+                            .push(WikiLinkBackEdge { source_key: key.clone(), alias: format!("<cycle:{target}>") });
                     }
                 }
             }
@@ -895,8 +818,7 @@ fn topo_sort(actions: Vec<PlannedWrite>) -> (Vec<PlannedWrite>, Vec<WikiLinkBack
         }
     }
 
-    let mut by_key: HashMap<String, PlannedWrite> =
-        actions.into_iter().map(|w| (w.source_key.clone(), w)).collect();
+    let mut by_key: HashMap<String, PlannedWrite> = actions.into_iter().map(|w| (w.source_key.clone(), w)).collect();
     let mut output = Vec::with_capacity(sorted_order.len());
     for key in sorted_order {
         if let Some(mut write) = by_key.remove(&key) {
@@ -998,12 +920,7 @@ mod tests {
 
     #[test]
     fn topo_sort_unresolvable_alias_stays_inert_not_back_edge() {
-        let actions = vec![make_planned(
-            "a",
-            "see [[missing]]",
-            vec!["missing".to_string()],
-            PlanAction::WriteNew,
-        )];
+        let actions = vec![make_planned("a", "see [[missing]]", vec!["missing".to_string()], PlanAction::WriteNew)];
         let (sorted, back_edges) = topo_sort(actions);
         assert_eq!(sorted.len(), 1);
         assert!(sorted[0].wiki_link_targets_resolvable.is_empty(), "unresolved alias is not a forward link");
@@ -1092,7 +1009,9 @@ mod tests {
             .await
             .expect("second plan");
         assert_eq!(plan.actions.len(), 1);
-        assert!(matches!(plan.actions[0].action, PlanAction::SkipUnchanged { ref existing_memory_id } if existing_memory_id == "mem_existing"));
+        assert!(
+            matches!(plan.actions[0].action, PlanAction::SkipUnchanged { ref existing_memory_id } if existing_memory_id == "mem_existing")
+        );
     }
 
     #[tokio::test]
@@ -1100,11 +1019,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tmp");
         let claude_root = tmp.path().join("claude");
         std::fs::create_dir_all(claude_root.join("proj/memory")).expect("mkdir");
-        std::fs::write(
-            claude_root.join("proj/memory/a.md"),
-            b"---\nname: A\n---\nNEW body\n",
-        )
-        .expect("write");
+        std::fs::write(claude_root.join("proj/memory/a.md"), b"---\nname: A\n---\nNEW body\n").expect("write");
 
         let mut state = ImportState::default();
         // The candidate source key will be "claude:proj/memory/a.md"; we
@@ -1221,16 +1136,13 @@ mod tests {
                 title: request.title.clone(),
                 meta: request.meta.clone(),
             });
-            Ok(self
-                .write_responses
-                .pop_front()
-                .unwrap_or(WriteMemoryOutcome {
-                    status: GovernanceStatus::Promoted,
-                    id: Some(format!("mem_mock_{:04}", self.write_calls.len())),
-                    existing_id: None,
-                    next_actions: Vec::new(),
-                    reason: None,
-                }))
+            Ok(self.write_responses.pop_front().unwrap_or(WriteMemoryOutcome {
+                status: GovernanceStatus::Promoted,
+                id: Some(format!("mem_mock_{:04}", self.write_calls.len())),
+                existing_id: None,
+                next_actions: Vec::new(),
+                reason: None,
+            }))
         }
 
         async fn supersede(&mut self, request: SupersedeRequest) -> ImportResult<SupersedeOutcome> {
@@ -1364,10 +1276,7 @@ mod tests {
         let actions = vec![make_planned("a", "body a", Vec::new(), PlanAction::WriteNew)];
         let mut client = MockDaemonClient::default();
         let opts = ExecuteOptions { dry_run: true, verbose_progress: false };
-        let result = engine
-            .execute(plan_with_actions(actions), opts, &mut client)
-            .await
-            .expect("dry-run ok");
+        let result = engine.execute(plan_with_actions(actions), opts, &mut client).await.expect("dry-run ok");
         assert_eq!(client.write_calls.len(), 0);
         assert_eq!(client.supersede_calls.len(), 0);
         // Dry-run still counts the intended write so the report previews the scope.
@@ -1417,5 +1326,4 @@ mod tests {
             .unwrap_or_default();
         assert_eq!(related, vec!["mem_b"], "wiki-link target resolved against in-flight alias map");
     }
-
 }

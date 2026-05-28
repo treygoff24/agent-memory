@@ -63,10 +63,7 @@ impl DaemonClient for AlwaysPromote {
         })
     }
 
-    async fn supersede(
-        &mut self,
-        _request: SupersedeRequest,
-    ) -> memoryd::import::ImportResult<SupersedeOutcome> {
+    async fn supersede(&mut self, _request: SupersedeRequest) -> memoryd::import::ImportResult<SupersedeOutcome> {
         self.supersede_calls += 1;
         self.next_id += 1;
         Ok(SupersedeOutcome {
@@ -96,10 +93,22 @@ fn write_file(dir: &Path, name: &str, body: &[u8]) -> PathBuf {
 fn seed_fixture_corpus(claude_root: &Path, codex_root: &Path) {
     // Claude corpus: one single-fact, one user_profile, one MEMORY.md (skipped),
     // one wiki-linked file.
-    write_file(claude_root, "proj/memory/build_commands.md", b"---\nname: Build commands\n---\nUse `cargo build --release` for prod builds.\n");
-    write_file(claude_root, "proj/memory/user_profile.md", b"---\nname: User profile\n---\nPrefers rust-analyzer over RLS.\n");
+    write_file(
+        claude_root,
+        "proj/memory/build_commands.md",
+        b"---\nname: Build commands\n---\nUse `cargo build --release` for prod builds.\n",
+    );
+    write_file(
+        claude_root,
+        "proj/memory/user_profile.md",
+        b"---\nname: User profile\n---\nPrefers rust-analyzer over RLS.\n",
+    );
     write_file(claude_root, "proj/memory/MEMORY.md", b"# Index\n- build: ./build_commands.md\n");
-    write_file(claude_root, "proj/memory/related.md", b"---\nname: Related\n---\nSee [[Build commands]] for the toolchain notes.\n");
+    write_file(
+        claude_root,
+        "proj/memory/related.md",
+        b"---\nname: Related\n---\nSee [[Build commands]] for the toolchain notes.\n",
+    );
 
     // Codex corpus: two Task Groups plus one ad-hoc note.
     write_file(
@@ -132,11 +141,7 @@ Use the PR template for non-trivial changes.
 - workflow, pr-template
 ",
     );
-    write_file(
-        codex_root,
-        "extensions/ad_hoc/notes/preference.md",
-        b"Prefer rustls over openssl for TLS.\n",
-    );
+    write_file(codex_root, "extensions/ad_hoc/notes/preference.md", b"Prefer rustls over openssl for TLS.\n");
 }
 
 #[tokio::test]
@@ -169,10 +174,7 @@ async fn first_run_imports_all_fixtures_and_records_them_in_state() {
     assert!(plan.actions.iter().all(|a| matches!(a.action, PlanAction::WriteNew)));
 
     let mut client = AlwaysPromote::default();
-    let result = engine
-        .execute(plan, ExecuteOptions::default(), &mut client)
-        .await
-        .expect("execute");
+    let result = engine.execute(plan, ExecuteOptions::default(), &mut client).await.expect("execute");
     assert_eq!(client.write_calls, 6);
     assert_eq!(result.state.imports.len(), 6, "every source recorded in state");
 
@@ -212,10 +214,7 @@ async fn empty_corpus_import_produces_zero_writes_and_clean_report() {
     assert!(plan.actions.is_empty());
 
     let mut client = AlwaysPromote::default();
-    let result = engine
-        .execute(plan, ExecuteOptions::default(), &mut client)
-        .await
-        .expect("execute");
+    let result = engine.execute(plan, ExecuteOptions::default(), &mut client).await.expect("execute");
     assert_eq!(client.write_calls, 0);
     assert_eq!(result.state.imports.len(), 0);
 }
@@ -246,10 +245,7 @@ async fn re_run_on_unchanged_fixtures_produces_zero_socket_writes() {
         .await
         .expect("first plan");
     let mut client = AlwaysPromote::default();
-    let first = engine
-        .execute(plan, ExecuteOptions::default(), &mut client)
-        .await
-        .expect("first execute");
+    let first = engine.execute(plan, ExecuteOptions::default(), &mut client).await.expect("first execute");
     assert_eq!(client.write_calls, 6);
 
     // Second run: state file loaded from disk; all sources unchanged → all
@@ -271,10 +267,7 @@ async fn re_run_on_unchanged_fixtures_produces_zero_socket_writes() {
     assert!(plan2.actions.iter().all(|a| matches!(a.action, PlanAction::SkipUnchanged { .. })));
 
     let mut client2 = AlwaysPromote::default();
-    let _result2 = engine
-        .execute(plan2, ExecuteOptions::default(), &mut client2)
-        .await
-        .expect("second execute");
+    let _result2 = engine.execute(plan2, ExecuteOptions::default(), &mut client2).await.expect("second execute");
     assert_eq!(client2.write_calls, 0, "idempotent re-run never re-writes");
     let _ = first;
 }
@@ -305,10 +298,7 @@ async fn re_run_with_changed_source_supersedes_prior_memory() {
         .await
         .expect("first plan");
     let mut client = AlwaysPromote::default();
-    let _first = engine
-        .execute(plan, ExecuteOptions::default(), &mut client)
-        .await
-        .expect("first execute");
+    let _first = engine.execute(plan, ExecuteOptions::default(), &mut client).await.expect("first execute");
 
     // Mutate one source file.
     std::fs::write(
@@ -330,16 +320,8 @@ async fn re_run_with_changed_source_supersedes_prior_memory() {
         )
         .await
         .expect("second plan");
-    let supersede_count = plan2
-        .actions
-        .iter()
-        .filter(|a| matches!(a.action, PlanAction::Supersede { .. }))
-        .count();
-    let skip_count = plan2
-        .actions
-        .iter()
-        .filter(|a| matches!(a.action, PlanAction::SkipUnchanged { .. }))
-        .count();
+    let supersede_count = plan2.actions.iter().filter(|a| matches!(a.action, PlanAction::Supersede { .. })).count();
+    let skip_count = plan2.actions.iter().filter(|a| matches!(a.action, PlanAction::SkipUnchanged { .. })).count();
     assert_eq!(supersede_count, 1, "one source mutated → one supersede");
     assert_eq!(skip_count, 5, "the other five sources stay unchanged");
 }

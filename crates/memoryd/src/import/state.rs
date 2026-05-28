@@ -166,10 +166,7 @@ impl ImportLockGuard {
 
     /// Acquire with a custom timeout (used by tests).
     pub fn acquire_with_timeout(state_path: &Path, timeout: Duration) -> ImportResult<Self> {
-        let parent = state_path
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."));
+        let parent = state_path.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
         std::fs::create_dir_all(&parent).map_err(|error| ImportError::io(&parent, error))?;
         let lock_path = state_path.with_extension("json.lock");
         let pid_path = parent.join("import.pid");

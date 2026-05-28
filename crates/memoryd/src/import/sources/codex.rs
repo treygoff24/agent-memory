@@ -112,10 +112,8 @@ fn parse_task_group_block(block: &TaskGroupBlock, index: usize, source_path: &Pa
         frontmatter_hint.insert("reuse_rule".to_string(), Value::String(rule));
     }
     if !keywords.is_empty() {
-        frontmatter_hint.insert(
-            "tags".to_string(),
-            Value::Array(keywords.iter().cloned().map(Value::String).collect()),
-        );
+        frontmatter_hint
+            .insert("tags".to_string(), Value::Array(keywords.iter().cloned().map(Value::String).collect()));
     }
     if !evidence_refs.is_empty() {
         let array: Vec<Value> = evidence_refs.iter().map(EvidenceRef::to_value).collect();
@@ -541,7 +539,10 @@ body
         let out = parse(tmp.path()).expect("parse ok");
         assert_eq!(out.candidates.len(), 1, "one parses, one errors");
         assert_eq!(out.candidates[0].title.as_deref(), Some("with scope"));
-        assert!(out.errors.iter().any(|e| matches!(e, ImportError::Parse { source_key, .. } if source_key.contains("missing-scope"))));
+        assert!(out
+            .errors
+            .iter()
+            .any(|e| matches!(e, ImportError::Parse { source_key, .. } if source_key.contains("missing-scope"))));
     }
 
     #[test]
