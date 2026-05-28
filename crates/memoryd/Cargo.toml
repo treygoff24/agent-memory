@@ -26,6 +26,7 @@ tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+ulid.workspace = true
 which.workspace = true
 zstd.workspace = true
 

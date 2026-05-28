@@ -1,6 +1,12 @@
 # Memorum (`agent-memory`)
 
-Memorum is a local-first, daemon-backed shared memory layer for agent harnesses. It stores canonical Markdown+YAML memories in a user-owned repo, maintains rebuildable SQLite/event indexes, routes writes through governance and privacy checks, and exposes recall/search/write tools over the `memoryd` daemon and MCP.
+Memorum is one shared memory layer for every coding assistant you use. If you bounce between Claude Code and Codex CLI — or want to — you've noticed each tool keeps its own private notes about your projects, your preferences, and what worked last time. Switch tools and the new one starts cold. Memorum is the missing piece: a local-first daemon that holds the source of truth, and an MCP server every harness can read from and write to.
+
+You install it once. Your existing notes from Claude Code's `~/.claude/projects/.../memory/` and Codex CLI's `~/.codex/memories/MEMORY.md` get backfilled on first run so nothing's lost. Every new memory either harness writes lands in one place. Recall hits the same store from every session.
+
+What's different from `CLAUDE.md` and `AGENTS.md`: those files are instructions _you write_ to direct the agent. Memorum is the memory _the agent accumulates_ across sessions — observations, decisions, fixes that worked, contradictions it caught. They complement each other. Memorum doesn't touch your `CLAUDE.md` or `AGENTS.md`.
+
+The repo lives on your disk under `$MEMORUM_REPO` (default `~/memorum`). It's plain Markdown + YAML frontmatter, version-controlled with git. No cloud component, no telemetry, no shared multi-tenant store.
 
 ```text
 Claude / Codex / Cursor / any MCP client
@@ -127,6 +133,8 @@ cargo test --workspace
 
 - System contract: `docs/specs/system-v0.2.md`
 - Getting started: `docs/getting-started.md`
+- Importing prior memories: `docs/importer.md`
+- Troubleshooting: `docs/troubleshooting.md`
 - MCP wiring: `docs/mcp-wiring.md`
 - API docs: `docs/api/`
 - Stream specs: `docs/specs/`

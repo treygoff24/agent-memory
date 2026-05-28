@@ -1,0 +1,872 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Memorum Importer — Decision Lock-In</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  :root {
+    --bg: #0e0e12;
+    --bg-elev: #17171c;
+    --bg-elev-2: #1d1d24;
+    --border: #2a2a33;
+    --border-strong: #3c3c47;
+    --text: #ececef;
+    --text-muted: #8b8b96;
+    --text-dim: #5a5a64;
+    --accent: #f5b945;
+    --accent-soft: rgba(245,185,69,0.12);
+    --accent-border: rgba(245,185,69,0.45);
+    --pro: #5fcc7a;
+    --con: #e2725b;
+    --info: #6db7e6;
+    --shadow: 0 10px 30px rgba(0,0,0,0.4);
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font:15px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+  a{color:var(--accent)}
+  code,.mono{font-family:var(--mono);font-size:0.92em}
+  main{max-width:980px;margin:0 auto;padding:48px 28px 160px}
+  header.top{margin-bottom:40px}
+  header.top h1{font-size:30px;margin:0 0 8px;letter-spacing:-0.02em}
+  header.top p.subtitle{color:var(--text-muted);margin:0 0 16px;font-size:16px}
+  header.top .meta{display:flex;gap:24px;color:var(--text-dim);font-size:13px;flex-wrap:wrap}
+  header.top .meta span strong{color:var(--text-muted);font-weight:600}
+
+  section.locked{background:var(--bg-elev);border:1px solid var(--border);border-radius:14px;padding:20px 24px;margin-bottom:40px}
+  section.locked h2{font-size:14px;text-transform:uppercase;letter-spacing:0.1em;color:var(--text-muted);margin:0 0 12px;font-weight:600}
+  section.locked ul{margin:0;padding:0;list-style:none}
+  section.locked li{padding:6px 0;color:var(--text-muted);font-size:14px;border-bottom:1px solid var(--border)}
+  section.locked li:last-child{border-bottom:none}
+  section.locked li::before{content:"✓ ";color:var(--pro);font-weight:bold;margin-right:6px}
+  section.locked li strong{color:var(--text)}
+
+  .card{background:var(--bg-elev);border:1px solid var(--border);border-radius:14px;padding:28px 32px;margin-bottom:24px;position:relative}
+  .card .qnum{position:absolute;top:24px;right:28px;font-family:var(--mono);font-size:13px;color:var(--text-dim);letter-spacing:0.04em}
+  .card h2{font-size:21px;margin:0 0 8px;letter-spacing:-0.01em;line-height:1.3;padding-right:60px}
+  .card .context{color:var(--text-muted);font-size:14px;margin:0 0 22px;line-height:1.6}
+  .card .context code{background:var(--bg-elev-2);padding:1px 6px;border-radius:4px;color:var(--text);border:1px solid var(--border)}
+
+  .options{display:flex;flex-direction:column;gap:12px;margin-bottom:18px}
+  .option{display:block;background:var(--bg-elev-2);border:1.5px solid var(--border);border-radius:10px;padding:16px 18px;cursor:pointer;transition:all 0.15s ease;position:relative}
+  .option:hover{border-color:var(--border-strong);background:#1f1f27}
+  .option.selected{border-color:var(--accent-border);background:var(--accent-soft)}
+  .option input[type=radio],.option input[type=checkbox]{display:none}
+  .option .label-row{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+  .option .letter{font-family:var(--mono);font-weight:700;color:var(--text-muted);font-size:13px;background:var(--border);padding:2px 8px;border-radius:4px;letter-spacing:0.04em}
+  .option.selected .letter{background:var(--accent);color:#0e0e12}
+  .option .label-text{font-size:15px;font-weight:600;color:var(--text)}
+  .option .recommended{background:var(--accent);color:#0e0e12;font-size:11px;font-weight:700;padding:2px 8px;border-radius:4px;letter-spacing:0.05em;text-transform:uppercase}
+  .option .desc{color:var(--text-muted);font-size:13.5px;margin:0 0 10px;line-height:1.55}
+  .option .desc code{background:rgba(255,255,255,0.04);padding:1px 5px;border-radius:3px;color:var(--text)}
+  .option .proscons{display:grid;grid-template-columns:1fr 1fr;gap:14px;font-size:13px;margin-top:6px}
+  .option .proscons .pros li{color:#a5d9b1}
+  .option .proscons .cons li{color:#e8a796}
+  .option .proscons ul{margin:0;padding-left:18px}
+  .option .proscons .pros ul li::marker{color:var(--pro)}
+  .option .proscons .cons ul li::marker{color:var(--con)}
+  .option .proscons h4{font-size:11px;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-dim);margin:0 0 6px;font-weight:600}
+
+  .other-row{margin-top:8px}
+  .other-row label{font-size:12px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.06em;display:block;margin-bottom:6px}
+  .other-row textarea{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font:14px/1.5 var(--mono);color:var(--text);resize:vertical;min-height:44px}
+  .other-row textarea:focus{outline:none;border-color:var(--accent-border)}
+
+  /* Table card for write-primitive mapping */
+  .ptable{width:100%;border-collapse:collapse;font-size:14px;margin-top:10px}
+  .ptable th{background:var(--bg-elev-2);color:var(--text-muted);text-align:left;padding:10px 12px;font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:0.06em;border-bottom:1px solid var(--border)}
+  .ptable td{padding:10px 12px;border-bottom:1px solid var(--border);vertical-align:top}
+  .ptable td:first-child{font-family:var(--mono);font-size:13px;color:var(--text)}
+  .ptable td .src-note{display:block;color:var(--text-dim);font-family:system-ui,sans-serif;font-size:12px;margin-top:3px}
+  .ptable select{background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font:13px var(--mono);min-width:180px;cursor:pointer}
+  .ptable select:focus{outline:none;border-color:var(--accent-border)}
+  .ptable tr.row-rec td{background:rgba(245,185,69,0.04)}
+  .ptable .rec-pill{display:inline-block;background:var(--accent);color:#0e0e12;font-size:10px;font-weight:700;padding:1px 6px;border-radius:3px;letter-spacing:0.05em;margin-left:6px;vertical-align:middle}
+
+  footer.dock{position:fixed;bottom:0;left:0;right:0;background:rgba(14,14,18,0.92);backdrop-filter:blur(12px);border-top:1px solid var(--border);padding:16px 28px;z-index:100}
+  footer.dock .inner{max-width:980px;margin:0 auto;display:flex;justify-content:space-between;align-items:center;gap:20px}
+  footer.dock .progress{flex:1;display:flex;align-items:center;gap:16px}
+  footer.dock .progress-bar{flex:1;height:8px;background:var(--bg-elev-2);border-radius:4px;overflow:hidden;max-width:380px}
+  footer.dock .progress-fill{height:100%;background:var(--accent);width:0%;transition:width 0.3s ease}
+  footer.dock .progress-text{font-size:13px;color:var(--text-muted);font-family:var(--mono);white-space:nowrap}
+  footer.dock button{background:var(--accent);color:#0e0e12;border:none;padding:12px 22px;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;letter-spacing:0.02em;transition:all 0.15s ease}
+  footer.dock button:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(245,185,69,0.3)}
+  footer.dock button:disabled{opacity:0.4;cursor:not-allowed;transform:none;box-shadow:none}
+
+  /* Modal */
+  .modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,0.7);display:none;align-items:center;justify-content:center;z-index:200;padding:24px}
+  .modal-backdrop.show{display:flex}
+  .modal{background:var(--bg-elev);border:1px solid var(--border);border-radius:14px;padding:28px;max-width:760px;width:100%;max-height:88vh;display:flex;flex-direction:column;box-shadow:var(--shadow)}
+  .modal h2{margin:0 0 8px;font-size:20px}
+  .modal p{color:var(--text-muted);margin:0 0 18px;font-size:14px}
+  .modal textarea{flex:1;width:100%;min-height:300px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:14px;font:13px/1.5 var(--mono);color:var(--text);resize:vertical}
+  .modal-buttons{display:flex;gap:10px;margin-top:16px;justify-content:flex-end;flex-wrap:wrap}
+  .modal-buttons button{background:var(--bg-elev-2);color:var(--text);border:1px solid var(--border);padding:10px 18px;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;transition:all 0.15s ease}
+  .modal-buttons button:hover{border-color:var(--border-strong);background:#22222a}
+  .modal-buttons button.primary{background:var(--accent);color:#0e0e12;border-color:var(--accent)}
+  .modal-buttons button.primary:hover{box-shadow:0 4px 12px rgba(245,185,69,0.3)}
+  .modal .copied{font-size:13px;color:var(--pro);margin-right:auto;align-self:center;font-weight:600;opacity:0;transition:opacity 0.2s ease}
+  .modal .copied.show{opacity:1}
+
+  /* Multi-select special styling */
+  .card.multi .option .label-row::before{content:"";width:18px;height:18px;border:1.5px solid var(--border-strong);border-radius:4px;display:inline-block;flex-shrink:0;background:var(--bg);position:relative;transition:all 0.15s}
+  .card.multi .option.selected .label-row::before{background:var(--accent);border-color:var(--accent);content:"✓";color:#0e0e12;font-weight:800;font-size:13px;text-align:center;line-height:14px}
+
+  @media (max-width:640px){
+    main{padding:32px 16px 200px}
+    .card{padding:22px}
+    .option .proscons{grid-template-columns:1fr}
+    footer.dock .inner{flex-direction:column;align-items:stretch}
+    footer.dock .progress{order:2}
+    footer.dock button{order:1;width:100%}
+  }
+</style>
+</head>
+<body>
+
+<main>
+  <header class="top">
+    <h1>Memorum Importer — Decision Lock-In</h1>
+    <p class="subtitle">Eleven open design decisions plus the pre-dogfood UX workstream. Pick your answers, optionally annotate, then hit <strong>Lock In</strong> to export the JSON.</p>
+    <div class="meta">
+      <span><strong>Context:</strong> Backfill importer that copies existing Claude Code &amp; Codex CLI memories into Memorum, non-destructive, idempotent.</span>
+      <span><strong>Recommendations:</strong> marked with an amber pill — they're my best read; override freely.</span>
+    </div>
+  </header>
+
+  <section class="locked">
+    <h2>Locked in so far</h2>
+    <ul>
+      <li><strong>Both Claude Code &amp; Codex CLI in v1</strong>, equal priority (you have a real Codex memory pile to import alongside Claude's).</li>
+      <li><strong>Importer lives as a new <code>memoryd import</code> CLI subcommand</strong>, not a new MCP tool (MCP is frozen at 10 tools per spec §14.1).</li>
+      <li><strong>Daemon classifies sensitivity, not the importer</strong>. Each <code>memory_write</code> body goes through Stream D's deterministic privacy filter at the daemon boundary; importer doesn't pre-classify.</li>
+      <li><strong>Provenance shape</strong>: <code>source.kind = "import"</code>, <code>source.harness = "claude-code" | "codex"</code>, <code>source.ref = &lt;original file path&gt;</code>. Existing frontmatter; no new schema.</li>
+      <li><strong>CLAUDE.md &amp; AGENTS.md out of scope</strong>. Those are user-authored instruction files, not learned memories. Distinct surface from Claude auto-memory (<code>~/.claude/projects/&lt;encoded&gt;/memory/</code>) and Codex <code>~/.codex/memories/</code>.</li>
+    </ul>
+  </section>
+
+  <!-- Q1 -->
+  <article class="card" data-question="granularity">
+    <div class="qnum">Q1 / 11</div>
+    <h2>Granularity — what becomes one Memorum memory?</h2>
+    <p class="context">Claude topic files vary wildly (some are 1-fact <code>feedback_*.md</code> at ~20 lines, others are 5KB multi-section dossiers with 6+ distinct facts). Codex Task Groups have rigid structure where facts live in cross-cutting <code>User preferences</code> / <code>Reusable knowledge</code> / <code>Failures</code> bullet sections, all tagged with <code>[Task N]</code>. Going too fine creates parser-fragile decomposition; too coarse loses fact-level revisability.</p>
+    <div class="options" role="radiogroup">
+
+      <label class="option">
+        <input type="radio" name="granularity" value="uniform_one_file" />
+        <div class="label-row"><span class="letter">A</span><span class="label-text">Uniform: 1 source file → 1 memory</span></div>
+        <p class="desc">Every Claude topic file becomes one memory regardless of internal structure. Every Codex Task Group becomes one memory. Simple, predictable, fast to implement.</p>
+        <div class="proscons">
+          <div class="pros"><h4>Pros</h4><ul><li>Zero parser complexity</li><li>Source's editorial unit always respected</li><li>Predictable count: N source files → N memories</li></ul></div>
+          <div class="cons"><h4>Cons</h4><ul><li>5KB Claude dossier with 6 facts is one memory — can't <code>memory_supersede</code> just one fact</li><li>Bigger memories = lower search precision per body chunk</li></ul></div>
+        </div>
+      </label>
+
+      <label class="option">
+        <input type="radio" name="granularity" value="adaptive" />
+        <div class="label-row"><span class="letter">B</span><span class="label-text">Adaptive: Claude file-level when single-fact, decompose by <code>##</code> when multi-fact dossier; Codex 1 Task Group = 1 memory</span><span class="recommended">Recommended</span></div>
+        <p class="desc">Claude <code>feedback_*.md</code> (single-fact files) become 1 memory each. Claude <code>project_*.md</code> / <code>reference_*.md</code> dossiers with 3+ substantive <code>##</code> sections (>3 lines each, ignoring boilerplate like <code>## Why:</code> / <code>## How to apply:</code>) get decomposed — one memory per section. Codex stays at 1 Task Group = 1 memory (the facts inside live in cross-cutting bullets that are too cross-referential to extract cleanly).</p>
+        <div class="proscons">
+          <div class="pros"><h4>Pros</h4><ul><li>Respects each source's natural editorial unit</li><li>Claude dossiers get fact-level revisability</li><li>Codex schema rigidity preserved (<code>applies_to: cwd=X</code> stays at memory level)</li></ul></div>
+          <div class="cons"><h4>Cons</h4><ul><li>Two different parsing strategies to implement</li><li>"Substantive section" heuristic needs tuning</li></ul></div>
+        </div>
+      </label>
+
+      <label class="option">
+        <input type="radio" name="granularity" value="finest" />
+        <div class="label-row"><span class="letter">C</span><span class="label-text">Always decompose to finest unit</span></div>
+        <p class="desc">Every <code>##</code> section in Claude, every bullet in Codex's <code>User preferences</code>/<code>Reusable knowledge</code>/<code>Failures</code> becomes its own Memorum memory.</p>
+        <div class="proscons">
+          <div class="pros"><h4>Pros</h4><ul><li>Maximum search precision</li><li>Each fact independently revisable</li></ul></div>
+          <div class="cons"><h4>Cons</h4><ul><li>Hundreds of tiny one-sentence memories</li><li>Loses <code>applies_to: cwd=X</code> Task Group context</li><li>Many more governance contradictions during import</li><li>Codex bullets have <code>[Task N]</code> refs that don't survive extraction</li></ul></div>
+        </div>
+      </label>
+
+    </div>
+    <div class="other-row"><label>Notes (optional)</label><textarea data-question="granularity" placeholder="Anything to add or push back on..."></textarea></div>
+  </article>
+
+  <!-- Q2 -->
+  <article class="card" data-question="wiki_links">
+    <div class="qnum">Q2 / 11</div>
+    <h2>Wiki-link translation</h2>
+    <p class="context">Claude memories contain inline <code>[[wiki_link_target]]</code> cross-references between memories (e.g., <code>Linked: [[project_campaign_intake_spec_wip]], [[feedback_heterogeneous_review_fanout]]</code>). Memorum's frontmatter already has a <code>related: [memory_id]</code> field for this exact purpose.</p>
+    <div class="options" role="radiogroup">
+
+      <label class="option">
+        <input type="radio" name="wiki_links" value="inert_text" />
+        <div class="label-row"><span class="letter">A</span><span class="label-text">Preserve as inert text in body</span></div>
+        <p class="desc">Leave <code>[[foo]]</code> as plain text in the imported memory body. Memorum has no <code>[[...]]</code> parser, so links don't resolve but the visible references remain.</p>
+        <div class="proscons">
+          <div class="pros"><h4>Pros</h4><ul><li>Zero implementation effort</li><li>Visible in body if user reads it</li></ul></div>
+          <div class="cons"><h4>Cons</h4><ul><li>Knowledge graph degrades to dead text</li><li>No <code>memory_search</code> traversal possible</li></ul></div>
+        </div>
+      </label>
+
+      <label class="option">
+        <input type="radio" name="wiki_links" value="alias_resolve_two_pass" />
+        <div class="label-row"><span class="letter">B</span><span class="label-text">Two-pass alias resolution → <code>related: [memory_id]</code></span><span class="recommended">Recommended</span></div>
+        <p class="desc">Pass 1: mint memory IDs and add source filename to each memory's <code>aliases</code> array. Pass 2: parse <code>[[wiki_links]]</code>, resolve target via alias lookup, write resolved IDs into <code>related: [...]</code>. Uses existing Memorum schema entirely.</p>
+        <div class="proscons">
+          <div class="pros"><h4>Pros</h4><ul><li>Preserves Claude's knowledge graph in Memorum-native form</li><li>Zero new schema</li><li>Entity Jaccard + alias lookup do the rest</li></ul></div>
+          <div class="cons"><h4>Cons</h4><ul><li>Two-pass parsing adds importer state</li><li>Unresolved links (target not in import set) need a fallback policy (drop? log? keep as text?)</li></ul></div>
+        </div>
+      </label>
+
+      <label class="option">
+        <input type="radio" name="wiki_links" value="new_schema" />
+        <div class="label-row"><span class="letter">C</span><span class="label-text">New frontmatter field <code>see_also: [string]</code></span></div>
+        <p class="desc">Preserve full fidelity with a new frontmatter bit holding original wiki-link targets as strings.</p>
+        <div class="proscons">
+          <div class="pros"><h4>Pros</h4><ul><li>Full source fidelity</li></ul></div>
+          <div class="cons"><h4>Cons</h4><ul><li>New schema bit = Memorum schema bump = version churn</li><li>Duplicates what <code>related</code> + <code>aliases</code> already do</li></ul></div>
+        </div>
+      </label>
+
+    </div>
+    <div class="other-row"><label>Notes (optional)</label><textarea data-question="wiki_links" placeholder="..."></textarea></div>
+  </article>
+
+  <!-- Q3: Write primitive table -->
+  <article class="card" data-question="write_primitives">
+    <div class="qnum">Q3 / 11</div>
+    <h2>Write primitive per source type</h2>
+    <p class="context">Memorum has three write primitives with different governance behavior: <code>memory_write</code> (full governance + contradiction detection + classification), <code>memory_note</code> (Privacy Filter only, no governance), <code>memory_observe</code> (Stream F dream-substrate fragment, never directly canonical). My recommendations are pre-selected per row — override any dropdown.</p>
+    <table class="ptable">
+      <thead>
+        <tr><th style="width:42%">Source surface</th><th style="width:28%">Primitive</th><th>Rationale</th></tr>
+      </thead>
+      <tbody>
+        <tr class="row-rec">
+          <td>Claude <code>feedback_*.md</code> (single-fact files)<span class="src-note">Deliberate user-distilled facts with YAML frontmatter</span></td>
+          <td><select data-row="claude_feedback"><option value="memory_write" selected>memory_write</option><option value="memory_note">memory_note</option><option value="memory_observe">memory_observe</option><option value="skip">skip</option></select><span class="rec-pill">REC</span></td>
+          <td>Want governance, contradiction detection, full canonical status.</td>
+        </tr>
+        <tr class="row-rec">
+          <td>Claude <code>project_*.md</code> / <code>reference_*.md</code> (decomposed by <code>##</code>)<span class="src-note">Each section a separate memory per Q1's adaptive rule</span></td>
+          <td><select data-row="claude_dossier"><option value="memory_write" selected>memory_write</option><option value="memory_note">memory_note</option><option value="memory_observe">memory_observe</option><option value="skip">skip</option></select><span class="rec-pill">REC</span></td>
+          <td>Same as feedback — first-class facts, governance-worthy.</td>
+        </tr>
+        <tr class="row-rec">
+          <td>Claude <code>MEMORY.md</code> (project index file)<span class="src-note">Just an index of links to topic files</span></td>
+          <td><select data-row="claude_memory_index"><option value="memory_write">memory_write</option><option value="memory_note">memory_note</option><option value="memory_observe">memory_observe</option><option value="skip" selected>skip</option></select><span class="rec-pill">REC</span></td>
+          <td>Pure wrapper — content already covered by topic files.</td>
+        </tr>
+        <tr class="row-rec">
+          <td>Claude <code>user_profile.md</code><span class="src-note">User-identity content, scope=user</span></td>
+          <td><select data-row="claude_user_profile"><option value="memory_write" selected>memory_write</option><option value="memory_note">memory_note</option><option value="memory_observe">memory_observe</option><option value="skip">skip</option></select><span class="rec-pill">REC</span></td>
+          <td>First-class identity memory, <code>scope: user</code>.</td>
+        </tr>
+        <tr class="row-rec">
+          <td>Codex <code>MEMORY.md</code> Task Groups<span class="src-note">Rigid schema; durable retrieval handbook</span></td>
+          <td><select data-row="codex_task_group"><option value="memory_write" selected>memory_write</option><option value="memory_note">memory_note</option><option value="memory_observe">memory_observe</option><option value="skip">skip</option></select><span class="rec-pill">REC</span></td>
+          <td>Deliberate distilled memories with rich frontmatter mapping.</td>
+        </tr>
+        <tr class="row-rec">
+          <td>Codex <code>raw_memories.md</code><span class="src-note">Codex's own mechanical Phase-1 merge</span></td>
+          <td><select data-row="codex_raw"><option value="memory_write">memory_write</option><option value="memory_note">memory_note</option><option value="memory_observe">memory_observe</option><option value="skip" selected>skip</option></select><span class="rec-pill">REC</span></td>
+          <td>Codex's own docs say "not the durable user-facing index." Intermediate state.</td>
+        </tr>
+        <tr class="row-rec">
+          <td>Codex <code>memory_summary.md</code><span class="src-note">v1-prefixed prompt summary, regenerated</span></td>
+          <td><select data-row="codex_summary"><option value="memory_write">memory_write</option><option value="memory_note">memory_note</option><option value="memory_observe">memory_observe</option><option value="skip" selected>skip</option></select><span class="rec-pill">REC</span></td>
+          <td>Derived prompt summary, redundant with MEMORY.md.</td>
+        </tr>
+        <tr class="row-rec">
+          <td>Codex <code>extensions/ad_hoc/notes/*.md</code><span class="src-note">User-explicit "remember this" edits</span></td>
+          <td><select data-row="codex_ad_hoc"><option value="memory_write">memory_write</option><option value="memory_note" selected>memory_note</option><option value="memory_observe">memory_observe</option><option value="skip">skip</option></select><span class="rec-pill">REC</span></td>
+          <td>User-explicit but informal — Memorum's <code>memory_note</code> is the matching primitive (substrate-level, no governance).</td>
+        </tr>
+        <tr class="row-rec">
+          <td>Codex <code>rollout_summaries/*.md</code><span class="src-note">Per-session traces — see Q4 for evidence-attach handling</span></td>
+          <td><select data-row="codex_rollouts"><option value="memory_write">memory_write</option><option value="memory_note">memory_note</option><option value="memory_observe">memory_observe</option><option value="skip" selected>skip (as memories — Q4 handles them as evidence)</option></select><span class="rec-pill">REC</span></td>
+          <td>Not memories themselves; they're source artifacts for Task Group memories. Q4 decides their handling.</td>
+        </tr>
+        <tr class="row-rec">
+          <td>Codex <code>skills/</code><span class="src-note">Reusable procedure scripts</span></td>
+          <td><select data-row="codex_skills"><option value="memory_write">memory_write</option><option value="memory_note">memory_note</option><option value="memory_observe">memory_observe</option><option value="skip" selected>skip</option></select><span class="rec-pill">REC</span></td>
+          <td>Orthogonal — these are skill scripts, not facts. Out of scope.</td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="other-row"><label>Notes (optional)</label><textarea data-question="write_primitives" placeholder="Push back on any row..."></textarea></div>
+  </article>
+
+  <!-- Q4 -->
+  <article class="card" data-question="rollout_summaries">
+    <div class="qnum">Q4 / 11</div>
+    <h2>Codex <code>rollout_summaries/</code> — provenance for Task Group memories</h2>
+    <p class="context">Each Codex Task Group references 1–N rollout summary files in its <code>### rollout_summary_files</code> section. They're the session-trace artifacts that <em>produced</em> the memory — the closest analog to source-grounding for Codex-origin memories.</p>
+    <div class="options" role="radiogroup">
+
+      <label class="option">
+        <input type="radio" name="rollout_summaries" value="alpha_skip" />
+        <div class="label-row"><span class="letter">α</span><span class="label-text">Skip entirely — Task Group memories have empty <code>evidence[]</code></span></div>
+        <p class="desc">Cleanest. We lose the audit chain back to specific Codex sessions.</p>
+        <div class="proscons">
+          <div class="pros"><h4>Pros</h4><ul><li>Zero implementation effort</li><li>No staleness concerns</li></ul></div>
+          <div class="cons"><h4>Cons</h4><ul><li>Loses honest provenance</li><li>Future "where did this memory come from?" answers nothing</li></ul></div>
+        </div>
+      </label>
+
+      <label class="option">
+        <input type="radio" name="rollout_summaries" value="beta_webcap" />
+        <div class="label-row"><span class="letter">β</span><span class="label-text"><code>memory_capture_source</code> per cited rollout → <code>webcap:</code> artifact in <code>evidence[]</code></span></div>
+        <p class="desc">Each cited rollout becomes a captured local-artifact webcap. Evidence rows reference the artifact ID. Fully respects Memorum's existing source-grounding contract.</p>
+        <div class="proscons">
+          <div class="pros"><h4>Pros</h4><ul><li>One source-grounding system for all evidence</li><li>Artifact persistence survives Codex's own pruning</li></ul></div>
+          <div class="cons"><h4>Cons</h4><ul><li>Creates one artifact per cited rollout (could be 100s)</li><li><code>memory_capture_source</code> isn't idempotent on same-file recall — importer needs a cache</li><li>Webcap is built for external HTTP sources; using it for local Codex files feels off</li></ul></div>
+        </div>
+      </label>
+
+      <label class="option">
+        <input type="radio" name="rollout_summaries" value="gamma_raw_evidence" />
+        <div class="label-row"><span class="letter">γ</span><span class="label-text">Raw file refs in <code>evidence[{ref: "file:///...md", quote: "..."}]</code></span><span class="recommended">Recommended</span></div>
+        <p class="desc">Evidence rows point directly at the rollout file path with an excerpt quote. No webcap artifact. Same-input produces same-output (idempotent for free).</p>
+        <div class="proscons">
+          <div class="pros"><h4>Pros</h4><ul><li>Idempotent without cache</li><li>Honest provenance</li><li>Files lighter than webcap artifacts</li><li>Survives Codex pruning gracefully — dead refs surface in <code>doctor</code>, don't crash import</li></ul></div>
+          <div class="cons"><h4>Cons</h4><ul><li>Creates a second class of evidence ref distinct from webcap (long-term wart)</li><li><code>doctor</code> may need to learn about file:// evidence ref staleness</li></ul></div>
+        </div>
+      </label>
+
+    </div>
+    <div class="other-row"><label>Notes (optional)</label><textarea data-question="rollout_summaries" placeholder="..."></textarea></div>
+  </article>
+
+  <!-- Q5 -->
+  <article class="card" data-question="non_git_cwds">
+    <div class="qnum">Q5 / 11</div>
+    <h2>Non-git cwds — how do we handle Dropbox / scratch dirs?</h2>
+    <p class="context">Memorum's project identity is <code>git remote get-url origin → normalize → SHA256 → proj_&lt;hex&gt;</code>. Codex Task Groups carry <code>applies_to: cwd=/Users/treygoff/Library/CloudStorage/Dropbox/Prospera</code> — Dropbox dirs, no git remote. Memorum has <strong>no path-hash fallback</strong>; non-git dirs have no project namespace.</p>
+    <div class="options" role="radiogroup">
+
+      <label class="option">
+        <input type="radio" name="non_git_cwds" value="drop_to_me" />
+        <div class="label-row"><span class="letter">A</span><span class="label-text">Drop into <code>scope: user</code> (the "me" namespace)</span></div>
+        <p class="desc">Any memory with non-git cwd becomes a user-scoped memory with <code>canonical_namespace_id: null</code>.</p>
+        <div class="proscons">
+          <div class="pros"><h4>Pros</h4><ul><li>Zero user prompts during import</li><li>Always succeeds</li></ul></div>
+          <div class="cons"><h4>Cons</h4><ul><li>Loses scoping — a Prospera policy memory becomes "user knowledge" not "Prospera project knowledge"</li><li>Cross-project context in <code>me</code> pollutes user-identity recall</li></ul></div>
+        </div>
+      </label>
+
+      <label class="option">
+        <input type="radio" name="non_git_cwds" value="auto_yaml" />
+        <div class="label-row"><span class="letter">B</span><span class="label-text">Auto-generate <code>.memory-project.yaml</code> in those dirs</span></div>
+        <p class="desc">Importer writes a <code>.memory-project.yaml</code> with a derived <code>canonical_id</code> (e.g., based on dir basename) so Memorum recognizes it as a project.</p>
+        <div class="proscons">
+          <div class="pros"><h4>Pros</h4><ul><li>Preserves project scoping</li><li>Future Memorum sessions in that dir auto-recognize it</li></ul></div>
+          <div class="cons"><h4>Cons</h4><ul><li>Importer writes files outside Memorum's repo — surprising side effect</li><li>Dropbox-sync interactions (file appears on other machines)</li><li>What if user later wants different project ID? Migration pain</li></ul></div>
+        </div>
+      </label>
+
+      <label class="option">
+        <input type="radio" name="non_git_cwds" value="prompt_per_cwd" />
+        <div class="label-row"><span class="letter">C</span><span class="label-text">Prompt per unique non-git cwd at import time</span><span class="recommended">Recommended</span></div>
+        <p class="desc">During the import scan, collect all unique non-git cwds. Before writing any memory, prompt: "Found cwd <code>/path</code> with N memories. Treat as: (1) new project — generate <code>.memory-project.yaml</code>, (2) drop to <code>me</code> scope, (3) skip these memories." Per-cwd, but in one batch up front.</p>
+        <div class="proscons">
+          <div class="pros"><h4>Pros</h4><ul><li>User explicitly aware of each non-default scope decision</li><li>Front-loaded — one prompting session, then the rest is automatic</li></ul></div>
+          <div class="cons"><h4>Cons</h4><ul><li>Slower first-run UX</li><li>For users with 10+ non-git cwds, prompting is tedious</li></ul></div>
+        </div>
+      </label>
+
+      <label class="option">
+        <input type="radio" name="non_git_cwds" value="refuse_setup_first" />
+        <div class="label-row"><span class="letter">D</span><span class="label-text">Refuse — require user to set up <code>.memory-project.yaml</code> manually first</span></div>
+        <p class="desc">Importer skips non-git cwds entirely and reports them. User runs <code>memoryd project init</code> in each, then re-runs import.</p>
+        <div class="proscons">
+          <div class="pros"><h4>Pros</h4><ul><li>Fully explicit user intent</li></ul></div>
+          <div class="cons"><h4>Cons</h4><ul><li>Requires N manual setup steps before any value</li><li>Friction at the worst time (first-run)</li></ul></div>
+        </div>
+      </label>
+
+    </div>
+    <div class="other-row"><label>Notes (optional)</label><textarea data-question="non_git_cwds" placeholder="..."></textarea></div>
+  </article>
+
+  <!-- Q6 -->
+  <article class="card" data-question="entity_strategy">
+    <div class="qnum">Q6 / 11</div>
+    <h2>Entity extraction strategy</h2>
+    <p class="context">Memorum has <strong>no body-derived entity extraction</strong> — the importer must supply entities explicitly per memory. Codex's <code>### keywords</code> and Claude's <code>name</code> frontmatter are the obvious source hints; we could also run deterministic regex (file paths, repo names, commit SHAs, PR numbers) or punt and let dreaming consolidate later.</p>
+    <div class="options" role="radiogroup">
+
+      <label class="option">
+        <input type="radio" name="entity_strategy" value="source_only" />
+        <div class="label-row"><span class="letter">A</span><span class="label-text">Source-provided only</span><span class="recommended">Recommended</span></div>
+        <p class="desc">Codex <code>### keywords</code> become entities/tags. Claude frontmatter <code>name</code> becomes the memory's primary entity. Everything else: tags, no entities.</p>
+        <div class="proscons">
+          <div class="pros"><h4>Pros</h4><ul><li>Honest — entities are what the source author explicitly named</li><li>Zero NER complexity</li><li>Recall still works via tags + project-namespace + recency (entity Jaccard is peer-update-only)</li></ul></div>
+          <div class="cons"><h4>Cons</h4><ul><li>Weaker entity-recall scoring (no file-path / commit-SHA entities)</li><li>Dreaming can backfill later but not immediately</li></ul></div>
+        </div>
+      </label>
+
+      <label class="option">
+        <input type="radio" name="entity_strategy" value="source_plus_regex" />
+        <div class="label-row"><span class="letter">B</span><span class="label-text">Source-provided + deterministic regex layer</span></div>
+        <p class="desc">Source hints plus regex extraction for file paths (<code>/foo/bar.ts</code>), repo names (heuristic), commit SHAs (<code>^[a-f0-9]{7,40}$</code>), PR refs (<code>#\d+</code>), URLs.</p>
+        <div class="proscons">
+          <div class="pros"><h4>Pros</h4><ul><li>Better immediate entity coverage</li><li>File-path entities particularly useful for code-related recall</li></ul></div>
+          <div class="cons"><h4>Cons</h4><ul><li>Regex precision/recall tradeoffs need tuning</li><li>False positives pollute entity index</li><li>Adds an importer-specific regex maintenance burden</li></ul></div>
+        </div>
+      </label>
+
+      <label class="option">
+        <input type="radio" name="entity_strategy" value="punt_to_dreaming" />
+        <div class="label-row"><span class="letter">C</span><span class="label-text">Punt — supply zero entities, let dreaming consolidate later</span></div>
+        <p class="desc">Skip entity extraction entirely on import. Stream F dreaming runs nightly and produces entity-bearing observations.</p>
+        <div class="proscons">
+          <div class="pros"><h4>Pros</h4><ul><li>Simplest importer</li><li>Lets the model-aware dream layer do entity work</li></ul></div>
+          <div class="cons"><h4>Cons</h4><ul><li>Day-one recall is weaker</li><li>Dreaming depends on harness CLI auth — may not run reliably</li></ul></div>
+        </div>
+      </label>
+
+      <label class="option">
+        <input type="radio" name="entity_strategy" value="layered_all" />
+        <div class="label-row"><span class="letter">D</span><span class="label-text">All three layered: source-provided + regex + dreaming backfill</span></div>
+        <p class="desc">Belt-and-suspenders. Source hints + regex at import + dreaming for semantic entities later.</p>
+        <div class="proscons">
+          <div class="pros"><h4>Pros</h4><ul><li>Maximum entity coverage</li></ul></div>
+          <div class="cons"><h4>Cons</h4><ul><li>All the regex pain plus all the dreaming-availability concerns</li><li>Compound complexity for a v1 importer</li></ul></div>
+        </div>
+      </label>
+
+    </div>
+    <div class="other-row"><label>Notes (optional)</label><textarea data-question="entity_strategy" placeholder="..."></textarea></div>
+  </article>
+
+  <!-- Q7 -->
+  <article class="card" data-question="state_file_location">
+    <div class="qnum">Q7 / 11</div>
+    <h2>Idempotency state file location</h2>
+    <p class="context">Memorum has no content-hash dedup or "skip if exists" mode. Re-running the importer needs its own state file mapping <code>source_path → {memory_id, content_hash, last_imported_at}</code> so we know what's already done.</p>
+    <div class="options" role="radiogroup">
+
+      <label class="option">
+        <input type="radio" name="state_file_location" value="repo_root" />
+        <div class="label-row"><span class="letter">A</span><span class="label-text"><code>$MEMORUM_REPO/.memorum/import-state.json</code></span><span class="recommended">Recommended</span></div>
+        <p class="desc">Lives alongside other Memorum repo-local state. Inspectable, debuggable, syncs with the repo if user opts to commit it (or stays local via <code>.gitignore</code>).</p>
+        <div class="proscons">
+          <div class="pros"><h4>Pros</h4><ul><li>Discoverable — user can <code>cat</code> it</li><li>Co-located with the substrate it describes</li><li>Per-Memorum-repo isolation (if user has multiple)</li></ul></div>
+          <div class="cons"><h4>Cons</h4><ul><li>One more file in <code>.memorum/</code> to <code>.gitignore</code></li></ul></div>
+        </div>
+      </label>
+
+      <label class="option">
+        <input type="radio" name="state_file_location" value="runtime" />
+        <div class="label-row"><span class="letter">B</span><span class="label-text"><code>$MEMORUM_RUNTIME/import-state.json</code></span></div>
+        <p class="desc">Lives in the private runtime dir next to <code>memoryd.pid</code> and <code>memoryd.log</code>.</p>
+        <div class="proscons">
+          <div class="pros"><h4>Pros</h4><ul><li>Always machine-local (runtime dir is private by convention)</li><li>Symmetric with other runtime artifacts</li></ul></div>
+          <div class="cons"><h4>Cons</h4><ul><li>If user rebuilds the runtime, import state is lost</li><li>Less obvious to find</li></ul></div>
+        </div>
+      </label>
+
+      <label class="option">
+        <input type="radio" name="state_file_location" value="sqlite" />
+        <div class="label-row"><span class="letter">C</span><span class="label-text">New SQLite table in the daemon DB</span></div>
+        <p class="desc"><code>import_state(source_harness, source_path, memory_id, content_hash, imported_at)</code> table inside the existing daemon SQLite.</p>
+        <div class="proscons">
+          <div class="pros"><h4>Pros</h4><ul><li>Queryable via SQL for diagnostics</li><li>Transactional with index writes</li></ul></div>
+          <div class="cons"><h4>Cons</h4><ul><li>Schema migration — needs a Stream A spec bump</li><li>Opaque to non-SQL users</li><li>Daemon DB is for derived index, not source-of-truth state</li></ul></div>
+        </div>
+      </label>
+
+    </div>
+    <div class="other-row"><label>Notes (optional)</label><textarea data-question="state_file_location" placeholder="..."></textarea></div>
+  </article>
+
+  <!-- Q8 -->
+  <article class="card" data-question="conflict_ux">
+    <div class="qnum">Q8 / 11</div>
+    <h2>Conflict UX — governance returns <code>refused: contradiction</code></h2>
+    <p class="context">Governance fires synchronously per write. If memory #51 contradicts already-imported #12, the write returns <code>{status: "refused", reason: "contradiction", existing_id: "..."}</code>. What does the importer do?</p>
+    <div class="options" role="radiogroup">
+
+      <label class="option">
+        <input type="radio" name="conflict_ux" value="skip_and_log" />
+        <div class="label-row"><span class="letter">A</span><span class="label-text">Skip the conflicting memory, log to import report</span><span class="recommended">Recommended</span></div>
+        <p class="desc">Conflict means the importer found a real disagreement. Skip the write, log <code>{source: ..., reason: "contradiction", existing_id: ...}</code>. At end of import, surface the report and let user decide what to do (manual <code>memory_supersede</code>, edit source, etc.).</p>
+        <div class="proscons">
+          <div class="pros"><h4>Pros</h4><ul><li>Safe default — never silently rewrites existing memories</li><li>User reviews conflicts before resolution</li></ul></div>
+          <div class="cons"><h4>Cons</h4><ul><li>Each conflict is manual work after import</li></ul></div>
+        </div>
+      </label>
+
+      <label class="option">
+        <input type="radio" name="conflict_ux" value="auto_supersede" />
+        <div class="label-row"><span class="letter">B</span><span class="label-text">Auto-supersede the existing memory when source is newer</span></div>
+        <p class="desc">When source's <code>updated_at</code> (or session-id timestamp) is more recent than the existing memory's <code>updated_at</code>, re-issue as <code>memory_supersede(existing_id)</code>. Otherwise skip.</p>
+        <div class="proscons">
+          <div class="pros"><h4>Pros</h4><ul><li>Hands-off resolution</li><li>Most-recent-fact wins</li></ul></div>
+          <div class="cons"><h4>Cons</h4><ul><li>Trusts source timestamps absolutely</li><li>Can silently supersede memories user wrote intentionally</li><li>"Newest wins" is not always correct (older may be ground truth)</li></ul></div>
+        </div>
+      </label>
+
+      <label class="option">
+        <input type="radio" name="conflict_ux" value="interactive" />
+        <div class="label-row"><span class="letter">C</span><span class="label-text">Interactive per-conflict prompt at import time</span></div>
+        <p class="desc">When a conflict fires, halt the per-record write, show both memories side-by-side in the CLI, prompt: keep existing / supersede with new / merge into a new memory / skip.</p>
+        <div class="proscons">
+          <div class="pros"><h4>Pros</h4><ul><li>Full user control per conflict</li><li>Best resolution quality</li></ul></div>
+          <div class="cons"><h4>Cons</h4><ul><li>Interrupts the import flow N times for users with N conflicts</li><li>Decision fatigue</li></ul></div>
+        </div>
+      </label>
+
+      <label class="option">
+        <input type="radio" name="conflict_ux" value="halt" />
+        <div class="label-row"><span class="letter">D</span><span class="label-text">Halt the entire import on first conflict</span></div>
+        <p class="desc">Fail-stop. Import aborts, user must resolve before re-running.</p>
+        <div class="proscons">
+          <div class="pros"><h4>Pros</h4><ul><li>Forces explicit resolution</li></ul></div>
+          <div class="cons"><h4>Cons</h4><ul><li>Catastrophic at scale — one conflict blocks 500 valid imports</li><li>Re-runs after every fix</li></ul></div>
+        </div>
+      </label>
+
+    </div>
+    <div class="other-row"><label>Notes (optional)</label><textarea data-question="conflict_ux" placeholder="..."></textarea></div>
+  </article>
+
+  <!-- Q9 -->
+  <article class="card" data-question="throughput">
+    <div class="qnum">Q9 / 11</div>
+    <h2>Bulk throughput strategy</h2>
+    <p class="context">Each <code>memory_write</code> is one socket round-trip + privacy classification + active-memory snapshot reload + governance evaluation. At 1000+ writes that's seconds-per-write. Three real options.</p>
+    <div class="options" role="radiogroup">
+
+      <label class="option">
+        <input type="radio" name="throughput" value="sequential" />
+        <div class="label-row"><span class="letter">A</span><span class="label-text">Sequential — accept seconds-per-write</span><span class="recommended">Recommended</span></div>
+        <p class="desc">Simple loop. Show progress to stderr. For your dogfood corpus (~50 Claude + ~50 Codex), expect 2-5 minute import. For larger users (300+ memories), 5-15 minutes.</p>
+        <div class="proscons">
+          <div class="pros"><h4>Pros</h4><ul><li>Reuses every existing privacy/governance guarantee</li><li>No new daemon code</li><li>Resumable (state file already needed for idempotency)</li></ul></div>
+          <div class="cons"><h4>Cons</h4><ul><li>Slow for power users with thousands of memories</li><li>Each write reloads policies + active-summaries (the hot path)</li></ul></div>
+        </div>
+      </label>
+
+      <label class="option">
+        <input type="radio" name="throughput" value="batch" />
+        <div class="label-row"><span class="letter">B</span><span class="label-text">Build internal batch path — load policies once per batch</span></div>
+        <p class="desc">New <code>RequestPayload::WriteMemoryBatch</code> that loads policies + tombstone index + active-summaries once, then iterates writes against the held snapshot.</p>
+        <div class="proscons">
+          <div class="pros"><h4>Pros</h4><ul><li>10-100x faster for large imports</li></ul></div>
+          <div class="cons"><h4>Cons</h4><ul><li>Stale active-summaries within batch — contradictions between two batch members not detected</li><li>New daemon code; touches Stream B + Stream C boundaries</li><li>Adds a protocol variant — Stream B amendment likely needed</li></ul></div>
+        </div>
+      </label>
+
+      <label class="option">
+        <input type="radio" name="throughput" value="hybrid" />
+        <div class="label-row"><span class="letter">C</span><span class="label-text">Hybrid: <code>memory_note</code> for bulk content + <code>memory_write</code> for high-value</span></div>
+        <p class="desc">Most Claude topic files and Codex Task Groups go through fast <code>memory_note</code> path (Privacy Filter only, no governance). Only "high-value" ones (e.g., user-tagged, identity memories) get full <code>memory_write</code>. Dreaming later promotes notes to canonical.</p>
+        <div class="proscons">
+          <div class="pros"><h4>Pros</h4><ul><li>Throughput improvement without new daemon code</li><li>Notes path is built to absorb bulk substrate</li></ul></div>
+          <div class="cons"><h4>Cons</h4><ul><li>Day-one recall sees notes, not canonical memories — possibly weaker until dreaming runs</li><li>Need a "high-value" heuristic</li></ul></div>
+        </div>
+      </label>
+
+    </div>
+    <div class="other-row"><label>Notes (optional)</label><textarea data-question="throughput" placeholder="..."></textarea></div>
+  </article>
+
+  <!-- Q10 -->
+  <article class="card" data-question="reimport_behavior">
+    <div class="qnum">Q10 / 11</div>
+    <h2>Re-import behavior when source has new content</h2>
+    <p class="context">After first import, the user keeps using Claude / Codex. New memories accumulate. Old ones may be edited. User runs <code>memoryd import</code> again. What happens?</p>
+    <div class="options" role="radiogroup">
+
+      <label class="option">
+        <input type="radio" name="reimport_behavior" value="skip_existing" />
+        <div class="label-row"><span class="letter">A</span><span class="label-text">Skip already-imported, only add new ones</span></div>
+        <p class="desc">Idempotent on already-seen source paths. Source-content changes are ignored.</p>
+        <div class="proscons">
+          <div class="pros"><h4>Pros</h4><ul><li>Simplest re-run semantics</li><li>Never overwrites</li></ul></div>
+          <div class="cons"><h4>Cons</h4><ul><li>Source edits silently lost</li><li>Stale Memorum memories vs. updated source</li></ul></div>
+        </div>
+      </label>
+
+      <label class="option">
+        <input type="radio" name="reimport_behavior" value="supersede_on_hash" />
+        <div class="label-row"><span class="letter">B</span><span class="label-text">Auto-supersede on content-hash change</span><span class="recommended">Recommended</span></div>
+        <p class="desc">Compare source's current content hash to last-imported hash from state file. If changed, issue <code>memory_supersede(prior_memory_id)</code> with the new content.</p>
+        <div class="proscons">
+          <div class="pros"><h4>Pros</h4><ul><li>Memorum stays in sync with source edits</li><li>Supersession chain preserves history</li><li>Hash is exact (no false positives)</li></ul></div>
+          <div class="cons"><h4>Cons</h4><ul><li>If user edits the imported Memorum memory directly, source re-import overwrites it (supersession asymmetric)</li></ul></div>
+        </div>
+      </label>
+
+      <label class="option">
+        <input type="radio" name="reimport_behavior" value="supersede_on_mtime" />
+        <div class="label-row"><span class="letter">C</span><span class="label-text">Auto-supersede on source mtime newer than last-import</span></div>
+        <p class="desc">Cheaper than hashing — just compare filesystem timestamps.</p>
+        <div class="proscons">
+          <div class="pros"><h4>Pros</h4><ul><li>Faster scan</li></ul></div>
+          <div class="cons"><h4>Cons</h4><ul><li>False positives (touch/git operations bump mtime without content change)</li><li>False negatives if Codex regenerates a file with same timestamp metadata</li></ul></div>
+        </div>
+      </label>
+
+      <label class="option">
+        <input type="radio" name="reimport_behavior" value="prompt_per_change" />
+        <div class="label-row"><span class="letter">D</span><span class="label-text">Prompt per changed source</span></div>
+        <p class="desc">Show diff, ask: supersede / keep existing / skip.</p>
+        <div class="proscons">
+          <div class="pros"><h4>Pros</h4><ul><li>Full user control on every change</li></ul></div>
+          <div class="cons"><h4>Cons</h4><ul><li>Tedious on each re-run</li></ul></div>
+        </div>
+      </label>
+
+    </div>
+    <div class="other-row"><label>Notes (optional)</label><textarea data-question="reimport_behavior" placeholder="..."></textarea></div>
+  </article>
+
+  <!-- Q11 -->
+  <article class="card" data-question="first_run_ux">
+    <div class="qnum">Q11 / 11</div>
+    <h2>First-run UX — when does the importer run?</h2>
+    <p class="context">User installs Memorum and runs <code>memoryd serve --init</code>. Should the importer fire automatically, only when explicitly invoked, or be offered as an opt-in during init?</p>
+    <div class="options" role="radiogroup">
+
+      <label class="option">
+        <input type="radio" name="first_run_ux" value="auto_on_init" />
+        <div class="label-row"><span class="letter">A</span><span class="label-text">Auto-run on <code>memoryd serve --init</code></span></div>
+        <p class="desc">First time the daemon initializes, scan for Claude / Codex memory and import found content.</p>
+        <div class="proscons">
+          <div class="pros"><h4>Pros</h4><ul><li>Zero-config for the user — Memorum just "knows what they already know"</li><li>Best dogfood experience</li></ul></div>
+          <div class="cons"><h4>Cons</h4><ul><li>Surprise side effects from a "serve" command</li><li>Init takes minutes instead of seconds</li><li>Non-git cwd prompts (Q5) interleave awkwardly with serve startup</li></ul></div>
+        </div>
+      </label>
+
+      <label class="option">
+        <input type="radio" name="first_run_ux" value="explicit_only" />
+        <div class="label-row"><span class="letter">B</span><span class="label-text">Explicit <code>memoryd import</code> only</span></div>
+        <p class="desc">User runs the import subcommand when they want it. <code>memoryd serve --init</code> stays fast and predictable.</p>
+        <div class="proscons">
+          <div class="pros"><h4>Pros</h4><ul><li>No surprise side effects</li><li>Clean separation of concerns</li></ul></div>
+          <div class="cons"><h4>Cons</h4><ul><li>User has to know the command exists</li><li>Discoverability problem — solved partly by the "why would I use this" intro doc</li></ul></div>
+        </div>
+      </label>
+
+      <label class="option">
+        <input type="radio" name="first_run_ux" value="wizard_asks" />
+        <div class="label-row"><span class="letter">C</span><span class="label-text">Interactive init wizard asks</span><span class="recommended">Recommended</span></div>
+        <p class="desc">A new <code>memoryd init</code> (separate from <code>serve --init</code>) is an interactive setup wizard that detects existing Claude/Codex memory and offers to import. Dry-runs first; asks before writing.</p>
+        <div class="proscons">
+          <div class="pros"><h4>Pros</h4><ul><li>Discoverability + explicit consent</li><li>Aligns with the pre-dogfood "interactive init wizard" deliverable (see below)</li><li>Detection report shows user what's available before they commit</li></ul></div>
+          <div class="cons"><h4>Cons</h4><ul><li>New CLI surface to build</li><li>Two init paths (<code>serve --init</code> and <code>init</code>) need clear naming</li></ul></div>
+        </div>
+      </label>
+
+    </div>
+    <div class="other-row"><label>Notes (optional)</label><textarea data-question="first_run_ux" placeholder="..."></textarea></div>
+  </article>
+
+  <!-- Q12 Pre-dogfood UX (multi-select) -->
+  <article class="card multi" data-question="predogfood_ux">
+    <div class="qnum">+ Bonus</div>
+    <h2>Pre-dogfood UX workstream (multi-select)</h2>
+    <p class="context">Adjacent to the importer but separate deliverables you flagged earlier. Pick all that should ship before dogfood. These are <em>not</em> part of the importer per se — they're the broader onboarding gap.</p>
+    <div class="options">
+
+      <label class="option">
+        <input type="checkbox" name="predogfood_ux" value="why_doc" />
+        <div class="label-row"><span class="letter">·</span><span class="label-text">"Why would I use this" intro doc</span></div>
+        <p class="desc">Top-of-README narrative section that opens with the user story (what Memorum does <em>for them</em>), not the architecture diagram. 2-3 paragraphs before any <code>bash</code> snippet.</p>
+      </label>
+
+      <label class="option">
+        <input type="checkbox" name="predogfood_ux" value="init_wizard" />
+        <div class="label-row"><span class="letter">·</span><span class="label-text">Interactive <code>memoryd init</code> wizard</span></div>
+        <p class="desc">Replaces the env-var-export ritual. Detects existing harnesses, offers to wire MCP, offers to run the importer (per Q11-C), prints next steps. The dogfood-day-one runbook condensed into one command.</p>
+      </label>
+
+      <label class="option">
+        <input type="checkbox" name="predogfood_ux" value="first_write_signal" />
+        <div class="label-row"><span class="letter">·</span><span class="label-text">First-write success signal</span></div>
+        <p class="desc">After the first <code>memory_write</code> from MCP, surface a visible confirmation ("✓ Memorum saved your first memory · id mem_… · view at http://localhost:7137/m/…"). Today the success state is invisible.</p>
+      </label>
+
+      <label class="option">
+        <input type="checkbox" name="predogfood_ux" value="troubleshooting_doc" />
+        <div class="label-row"><span class="letter">·</span><span class="label-text">Top-level <code>docs/troubleshooting.md</code></span></div>
+        <p class="desc">Hoist the troubleshooting block from <code>docs/runbooks/dogfooding-day-one.md</code> to a discoverable top-level doc. Covers <code>dream_disabled</code>, socket errors, doctor findings, MCP not listing tools, common first-run failures.</p>
+      </label>
+
+    </div>
+    <div class="other-row"><label>Notes (optional)</label><textarea data-question="predogfood_ux" placeholder="..."></textarea></div>
+  </article>
+
+</main>
+
+<footer class="dock">
+  <div class="inner">
+    <div class="progress">
+      <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+      <div class="progress-text" id="progress-text">0 / 11 answered</div>
+    </div>
+    <button id="lock-in" disabled>Lock In →</button>
+  </div>
+</footer>
+
+<div class="modal-backdrop" id="modal">
+  <div class="modal">
+    <h2>Locked in. Decisions exported below.</h2>
+    <p>Copy this JSON and paste it back to Claude in chat, or use the download button. All your selections, the table rows, and notes are included.</p>
+    <textarea id="export-json" readonly></textarea>
+    <div class="modal-buttons">
+      <span class="copied" id="copied-msg">✓ Copied to clipboard</span>
+      <button id="close-modal">Close</button>
+      <button id="download-json">Download JSON</button>
+      <button class="primary" id="copy-json">Copy to clipboard</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  const radioCards = document.querySelectorAll('.card:not(.multi):not([data-question="write_primitives"])');
+  const multiCards = document.querySelectorAll('.card.multi');
+  const tableCard = document.querySelector('.card[data-question="write_primitives"]');
+  const totalQuestions = 11;
+
+  // Radio card selection
+  radioCards.forEach(card => {
+    const opts = card.querySelectorAll('.option');
+    opts.forEach(opt => {
+      opt.addEventListener('click', (e) => {
+        if (e.target.tagName === 'TEXTAREA') return;
+        const input = opt.querySelector('input[type=radio]');
+        if (!input) return;
+        opts.forEach(o => o.classList.remove('selected'));
+        opt.classList.add('selected');
+        input.checked = true;
+        updateProgress();
+      });
+    });
+  });
+
+  // Multi card selection
+  multiCards.forEach(card => {
+    const opts = card.querySelectorAll('.option');
+    opts.forEach(opt => {
+      opt.addEventListener('click', (e) => {
+        if (e.target.tagName === 'TEXTAREA') return;
+        const input = opt.querySelector('input[type=checkbox]');
+        if (!input) return;
+        opt.classList.toggle('selected');
+        input.checked = opt.classList.contains('selected');
+      });
+    });
+  });
+
+  // Table card — pre-selected dropdowns count as "answered"
+  if (tableCard) {
+    const selects = tableCard.querySelectorAll('select');
+    selects.forEach(sel => {
+      sel.addEventListener('change', updateProgress);
+    });
+  }
+
+  function countAnsweredRadios() {
+    let n = 0;
+    radioCards.forEach(card => {
+      if (card.querySelector('input[type=radio]:checked')) n++;
+    });
+    return n;
+  }
+
+  function isTableAnswered() {
+    // Pre-filled with recommendations, so always count as answered once visited
+    return tableCard !== null;
+  }
+
+  function updateProgress() {
+    const radio = countAnsweredRadios();
+    const table = isTableAnswered() ? 1 : 0;
+    const total = radio + table;
+    const pct = (total / totalQuestions) * 100;
+    document.getElementById('progress-fill').style.width = pct + '%';
+    document.getElementById('progress-text').textContent = `${total} / ${totalQuestions} answered`;
+    document.getElementById('lock-in').disabled = total < totalQuestions;
+  }
+
+  // Initialize: table is auto-answered (pre-filled with recommendations)
+  updateProgress();
+
+  document.getElementById('lock-in').addEventListener('click', () => {
+    const decisions = {};
+    const notes = {};
+
+    // Radio questions
+    radioCards.forEach(card => {
+      const q = card.dataset.question;
+      const checked = card.querySelector('input[type=radio]:checked');
+      decisions[q] = checked ? checked.value : null;
+      const ta = card.querySelector('textarea');
+      if (ta && ta.value.trim()) notes[q] = ta.value.trim();
+    });
+
+    // Multi
+    multiCards.forEach(card => {
+      const q = card.dataset.question;
+      const checked = Array.from(card.querySelectorAll('input[type=checkbox]:checked')).map(i => i.value);
+      decisions[q] = checked;
+      const ta = card.querySelector('textarea');
+      if (ta && ta.value.trim()) notes[q] = ta.value.trim();
+    });
+
+    // Table
+    if (tableCard) {
+      const table = {};
+      tableCard.querySelectorAll('select').forEach(sel => {
+        table[sel.dataset.row] = sel.value;
+      });
+      decisions.write_primitives = table;
+      const ta = tableCard.querySelector('textarea');
+      if (ta && ta.value.trim()) notes.write_primitives = ta.value.trim();
+    }
+
+    const payload = {
+      version: 1,
+      timestamp: new Date().toISOString(),
+      tool: "memorum-importer-decision-lockin",
+      decisions,
+      notes
+    };
+
+    const json = JSON.stringify(payload, null, 2);
+    document.getElementById('export-json').value = json;
+    document.getElementById('modal').classList.add('show');
+  });
+
+  document.getElementById('close-modal').addEventListener('click', () => {
+    document.getElementById('modal').classList.remove('show');
+  });
+
+  document.getElementById('copy-json').addEventListener('click', () => {
+    const ta = document.getElementById('export-json');
+    ta.select();
+    document.execCommand('copy');
+    navigator.clipboard?.writeText(ta.value);
+    const msg = document.getElementById('copied-msg');
+    msg.classList.add('show');
+    setTimeout(() => msg.classList.remove('show'), 2000);
+  });
+
+  document.getElementById('download-json').addEventListener('click', () => {
+    const json = document.getElementById('export-json').value;
+    const blob = new Blob([json], {type: 'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `memorum-importer-decisions-${new Date().toISOString().slice(0,10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  });
+})();
+</script>
+
+</body>
+</html>

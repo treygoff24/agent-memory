@@ -31,11 +31,11 @@ use memory_privacy::{
 use memory_source::{capture_web_source, ArtifactStore, CaptureMode, CaptureWebSourceRequest, SourceError};
 use memory_substrate::{
     events::EventKind, Author, AuthorKind, ChunkQuery, ClassificationOutcome, EncryptedSubstrateDescriptor,
-    EncryptedWriteRequest, EventContext, Frontmatter, IndexProjection, Memory, MemoryContent, MemoryId, MemoryQuery,
-    MemoryStatus, MemoryType, ObserveKind, PrivacySpanRecord, RecallIndexQuery, RepoPath, RetrievalPolicy, Scope,
-    Sensitivity, Source, SourceKind, Substrate, SubstrateFragmentAppendRequest, SubstrateFragmentEncryption,
-    SubstrateFragmentPayload, SupersedeRequest as SubstrateSupersedeRequest, TombstoneRequest, TrustLevel, WriteMode,
-    WritePolicy, WriteRequest as SubstrateWriteRequest,
+    EncryptedWriteRequest, Entity, EventContext, Evidence, Frontmatter, IndexProjection, Memory, MemoryContent,
+    MemoryId, MemoryQuery, MemoryStatus, MemoryType, ObserveKind, PrivacySpanRecord, RecallIndexQuery, RepoPath,
+    RetrievalPolicy, Scope, Sensitivity, Source, SourceKind, Substrate, SubstrateFragmentAppendRequest,
+    SubstrateFragmentEncryption, SubstrateFragmentPayload, SupersedeRequest as SubstrateSupersedeRequest,
+    TombstoneRequest, TrustLevel, WriteMode, WritePolicy, WriteRequest as SubstrateWriteRequest,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -3537,6 +3537,40 @@ struct GovernanceMeta {
     #[serde(default = "default_supersede_harness")]
     harness: String,
     concurrent_session_mode: Option<ConcurrentSessionMode>,
+    // Importer-provenance fields (additive per Stream A §6.2/§6.5; all Option-wrapped so
+    // existing callers continue to work without supplying them). The daemon mints
+    // `Entity`/`Evidence` ids and `quote_norm_hash` from the caller-supplied surface form.
+    entities: Option<Vec<EntityMeta>>,
+    aliases: Option<Vec<String>>,
+    related: Option<Vec<String>>,
+    evidence: Option<Vec<EvidenceMeta>>,
+    supersedes: Option<Vec<String>>,
+    canonical_namespace_id: Option<String>,
+    requires_user_confirmation: Option<bool>,
+}
+
+/// Caller-supplied entity surface form. The substrate `Entity` struct adds nothing
+/// the daemon needs to compute, so this is a direct field-for-field carry.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EntityMeta {
+    id: String,
+    label: String,
+    #[serde(default)]
+    aliases: Vec<String>,
+}
+
+/// Caller-supplied evidence surface form. The daemon mints `id = ev_<ulid>` and
+/// computes `quote_norm_hash = sha256:<hex>` over the whitespace-normalized quote.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EvidenceMeta {
+    #[serde(rename = "ref")]
+    reference: String,
+    #[serde(default)]
+    quote: Option<String>,
+    #[serde(default)]
+    observed_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -3605,6 +3639,12 @@ enum GovernanceSourceKindMeta {
     Subagent,
     File,
     WebCapture,
+    /// Backfill from a prior harness's memory layer (Claude Code, Codex CLI).
+    /// Wire JSON is `"import"`; daemon-side mapping in `author()` and
+    /// `substrate_source()` records the import as an agent-authored file load
+    /// with `harness = "memoryd-import"`.
+    #[serde(rename = "import")]
+    Import,
 }
 
 impl Default for GovernanceMeta {
@@ -3622,6 +3662,13 @@ impl Default for GovernanceMeta {
             session_id: default_supersede_session_id(),
             harness: default_supersede_harness(),
             concurrent_session_mode: None,
+            entities: None,
+            aliases: None,
+            related: None,
+            evidence: None,
+            supersedes: None,
+            canonical_namespace_id: None,
+            requires_user_confirmation: None,
         }
     }
 }
@@ -3757,6 +3804,20 @@ impl GovernanceWriteInput {
         candidate
     }
 
+    /// Build a [`Memory`] from this write input, applying lifecycle, privacy, and any
+    /// caller-supplied importer-provenance fields.
+    ///
+    /// Mapping notes for `GovernanceSourceKindMeta::Import`:
+    /// - `author = Author { kind: Agent, harness: Some("memoryd-import"), .. }`
+    ///   (recorded as agent-authored, not user-authored, even though the content
+    ///   originated from the user's prior harness sessions).
+    /// - `source.kind = SourceKind::File` (the source IS a local file on disk,
+    ///   even though the upstream `source_kind` tag is `"import"`).
+    /// - `source.harness = Some("memoryd-import")` so downstream consumers can
+    ///   filter the backfill in dashboards and recall ranking.
+    ///
+    /// Evidence ids and `quote_norm_hash` are minted here from the caller-supplied
+    /// `EvidenceMeta` surface form so the importer never has to invent identifiers.
     fn to_memory(&self, id: MemoryId, lifecycle: GovernedLifecycle, privacy: &PrivacyDecision) -> Memory {
         let now = chrono::Utc::now();
         let summary = self.summary(privacy.storage_action);
@@ -3777,6 +3838,22 @@ impl GovernanceWriteInput {
         if let Some(descriptors) = self.safe_privacy_descriptors_value() {
             extras.insert("privacy_descriptors".to_string(), descriptors);
         }
+        let entities = self.entities_for_persist();
+        let aliases = self.aliases_for_persist();
+        let related = self.related_for_persist();
+        let supersedes = self.supersedes_for_persist();
+        let evidence = self.evidence_for_persist();
+        let canonical_namespace_id =
+            self.meta.canonical_namespace_id.clone().or_else(|| self.substrate_namespace());
+        // Importer writes carry already-vetted content from prior harness sessions and
+        // should not flood the Reality Check review queue with low-confidence guesses.
+        // Caller can suppress the review flag for non-candidate writes; lifecycle still
+        // forces review for `Candidate`/`Quarantined` so the override never weakens
+        // governance.
+        let requires_user_confirmation = self
+            .meta
+            .requires_user_confirmation
+            .map_or(requires_review, |caller| requires_review || caller);
         Memory {
             frontmatter: Frontmatter {
                 schema_version: memory_substrate::SUBSTRATE_SCHEMA_VERSION,
@@ -3794,17 +3871,17 @@ impl GovernanceWriteInput {
                 observed_at: None,
                 author: self.author(),
                 namespace: self.substrate_namespace(),
-                canonical_namespace_id: self.substrate_namespace(),
+                canonical_namespace_id,
                 tags: self.persisted_tags(privacy.storage_action),
-                entities: Vec::new(),
-                aliases: Vec::new(),
+                entities,
+                aliases,
                 source: self.substrate_source(privacy.storage_action),
-                evidence: Vec::new(),
-                requires_user_confirmation: requires_review,
+                evidence,
+                requires_user_confirmation,
                 review_state,
-                supersedes: Vec::new(),
+                supersedes,
                 superseded_by: Vec::new(),
-                related: Vec::new(),
+                related,
                 tombstone_events: Vec::new(),
                 retrieval_policy: RetrievalPolicy {
                     passive_recall: !matches!(lifecycle.status, MemoryStatus::Quarantined),
@@ -3831,6 +3908,65 @@ impl GovernanceWriteInput {
             body: self.body.clone(),
             path: Some(self.repo_path(id.as_str())),
         }
+    }
+
+    fn entities_for_persist(&self) -> Vec<Entity> {
+        self.meta
+            .entities
+            .as_ref()
+            .map(|entries| {
+                entries
+                    .iter()
+                    .map(|entry| Entity {
+                        id: entry.id.clone(),
+                        label: entry.label.clone(),
+                        aliases: entry.aliases.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn aliases_for_persist(&self) -> Vec<String> {
+        self.meta.aliases.clone().unwrap_or_default()
+    }
+
+    fn related_for_persist(&self) -> Vec<MemoryId> {
+        self.meta
+            .related
+            .as_ref()
+            .map(|ids| ids.iter().cloned().map(MemoryId::new).collect())
+            .unwrap_or_default()
+    }
+
+    fn supersedes_for_persist(&self) -> Vec<MemoryId> {
+        self.meta
+            .supersedes
+            .as_ref()
+            .map(|ids| ids.iter().cloned().map(MemoryId::new).collect())
+            .unwrap_or_default()
+    }
+
+    fn evidence_for_persist(&self) -> Vec<Evidence> {
+        let Some(entries) = self.meta.evidence.as_ref() else {
+            return Vec::new();
+        };
+        entries
+            .iter()
+            .map(|entry| {
+                let quote = entry.quote.clone().unwrap_or_default();
+                let quote_norm_hash = (!quote.is_empty()).then(|| compute_quote_norm_hash(&quote));
+                Evidence {
+                    id: format!("ev_{}", ulid::Ulid::new()),
+                    quote,
+                    quote_norm_hash,
+                    reference: entry.reference.clone(),
+                    weight: 1.0,
+                    observed_at: entry.observed_at,
+                    source: None,
+                }
+            })
+            .collect()
     }
 
     fn summary(&self, storage_action: PrivacyStorageAction) -> String {
@@ -3903,9 +4039,9 @@ impl GovernanceWriteInput {
             GovernanceSourceKindMeta::User => GovernanceSourceKind::User,
             GovernanceSourceKindMeta::Subagent => GovernanceSourceKind::Subagent,
             GovernanceSourceKindMeta::WebCapture => GovernanceSourceKind::WebCapture,
-            GovernanceSourceKindMeta::AgentPrimary | GovernanceSourceKindMeta::File => {
-                GovernanceSourceKind::AgentPrimary
-            }
+            GovernanceSourceKindMeta::AgentPrimary
+            | GovernanceSourceKindMeta::File
+            | GovernanceSourceKindMeta::Import => GovernanceSourceKind::AgentPrimary,
         };
         vec![GovernanceSource::new(kind, self.meta.source_ref.clone())]
     }
@@ -3915,9 +4051,14 @@ impl GovernanceWriteInput {
             GovernanceSourceKindMeta::User => SourceKind::User,
             GovernanceSourceKindMeta::Subagent => SourceKind::AgentSubagent,
             GovernanceSourceKindMeta::WebCapture => SourceKind::Web,
-            GovernanceSourceKindMeta::File => SourceKind::File,
+            // The importer reads files off disk, so the substrate source kind is `File`
+            // regardless of the upstream `source_kind = "import"` tag. The `harness`
+            // field below distinguishes import writes from generic file writes.
+            GovernanceSourceKindMeta::File | GovernanceSourceKindMeta::Import => SourceKind::File,
             GovernanceSourceKindMeta::AgentPrimary => SourceKind::AgentPrimary,
         };
+        let harness = matches!(self.meta.source_kind, GovernanceSourceKindMeta::Import)
+            .then(|| "memoryd-import".to_string());
         Source {
             kind,
             reference: if storage_action.requires_encryption() {
@@ -3929,7 +4070,7 @@ impl GovernanceWriteInput {
             } else {
                 self.meta.source_ref.clone().or_else(|| Some("memoryd.governance".to_string()))
             },
-            harness: None,
+            harness,
             harness_version: None,
             session_id: None,
             subagent_id: None,
@@ -3977,6 +4118,16 @@ impl GovernanceWriteInput {
                 harness_version: Some(env!("CARGO_PKG_VERSION").to_string()),
                 session_id: Some("memoryd-session".to_string()),
                 subagent_id: Some("memoryd-subagent".to_string()),
+                phase: None,
+                component: None,
+            },
+            GovernanceSourceKindMeta::Import => Author {
+                kind: AuthorKind::Agent,
+                user_handle: None,
+                harness: Some("memoryd-import".to_string()),
+                harness_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+                session_id: Some("memoryd-session".to_string()),
+                subagent_id: None,
                 phase: None,
                 component: None,
             },
@@ -4145,6 +4296,15 @@ fn insert_safe_descriptor(object: &mut serde_json::Map<String, Value>, key: &str
 
 fn is_safe_plaintext_for_indexing(text: &str) -> bool {
     matches!(safe_plaintext_fragment(&DeterministicPrivacyClassifier::new(), text), SafeFragmentDecision::Allow)
+}
+
+/// Compute the spec §6.5 `quote_norm_hash` over an evidence quote: whitespace-collapse
+/// to single spaces then SHA-256 the result, formatted as `sha256:<hex>`.
+fn compute_quote_norm_hash(quote: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let normalized = quote.split_whitespace().collect::<Vec<_>>().join(" ");
+    let digest = Sha256::digest(normalized.as_bytes());
+    format!("sha256:{}", hex::encode(digest))
 }
 
 fn safe_index_projection(memory: &Memory) -> Option<IndexProjection> {
@@ -4562,5 +4722,178 @@ mod tests {
         assert_eq!(sanitize_forget_reason(""), REDACTED_FORGET_REASON);
         assert_eq!(sanitize_forget_reason("SSN 123-45-6789"), REDACTED_FORGET_REASON);
         assert_eq!(sanitize_forget_reason(&"a".repeat(FORGET_REASON_MAX_CHARS + 10)).len(), FORGET_REASON_MAX_CHARS);
+    }
+
+    // -----------------------------------------------------------------------------------
+    // T00: importer-provenance fields on GovernanceMeta. The tests below lock the
+    // additive-extension contract — new optional fields round-trip, defaults stay
+    // None, `deny_unknown_fields` still rejects unknown keys, and `source_kind:
+    // "import"` maps to a file-source agent-author with the `memoryd-import` harness.
+    // -----------------------------------------------------------------------------------
+
+    fn write_input(meta: Value) -> GovernanceWriteInput {
+        GovernanceWriteInput::parse(GovernanceWriteInputParts {
+            body: "Body text".to_string(),
+            title: Some("Title".to_string()),
+            tags: Vec::new(),
+            meta,
+            source: MetaSource::Default,
+        })
+        .expect("write input parses")
+    }
+
+    fn plaintext_privacy_decision() -> memory_privacy::PrivacyDecision {
+        memory_privacy::PrivacyDecision::new(
+            memory_privacy::PrivacyTier::Internal,
+            memory_privacy::PrivacyStorageAction::Plaintext,
+            Vec::new(),
+            "test-classifier",
+        )
+    }
+
+    fn promoted_lifecycle() -> GovernedLifecycle {
+        GovernedLifecycle::new(MemoryStatus::Active, TrustLevel::Trusted, "test-policy".to_string())
+    }
+
+    #[test]
+    fn governance_meta_empty_payload_preserves_existing_defaults() {
+        let meta: GovernanceMeta = parse_governance_meta(Value::Null, MetaSource::Default).expect("null parses");
+        assert!(meta.entities.is_none());
+        assert!(meta.aliases.is_none());
+        assert!(meta.related.is_none());
+        assert!(meta.evidence.is_none());
+        assert!(meta.supersedes.is_none());
+        assert!(meta.canonical_namespace_id.is_none());
+        assert!(meta.requires_user_confirmation.is_none());
+
+        // Backward-compat: an empty payload should produce the exact same Memory shape
+        // as before the additive extension — empty entities/aliases/related/evidence/supersedes
+        // and canonical_namespace_id falling back to the default project namespace.
+        let input = write_input(Value::Null);
+        let memory = input.to_memory(
+            MemoryId::new("mem_20260527_a1b2c3d4e5f60718_000001"),
+            promoted_lifecycle(),
+            &plaintext_privacy_decision(),
+        );
+        assert!(memory.frontmatter.entities.is_empty());
+        assert!(memory.frontmatter.aliases.is_empty());
+        assert!(memory.frontmatter.related.is_empty());
+        assert!(memory.frontmatter.evidence.is_empty());
+        assert!(memory.frontmatter.supersedes.is_empty());
+        assert_eq!(memory.frontmatter.canonical_namespace_id.as_deref(), Some(DEFAULT_PROJECT_NAMESPACE));
+        assert!(!memory.frontmatter.requires_user_confirmation);
+    }
+
+    #[test]
+    fn governance_meta_accepts_importer_provenance_fields_and_round_trips_through_to_memory() {
+        let payload = serde_json::json!({
+            "namespace": "project",
+            "source_kind": "import",
+            "source_ref": "/Users/treygoff/.claude/projects/example/memory/topic.md",
+            "confidence": 0.7,
+            "requires_user_confirmation": false,
+            "canonical_namespace_id": "proj_0123456789abcdef",
+            "entities": [
+                { "id": "ent_acme", "label": "Acme Corp", "aliases": ["Acme", "ACME"] }
+            ],
+            "aliases": ["topic.md"],
+            "related": ["mem_20260527_a1b2c3d4e5f60718_000010"],
+            "supersedes": ["mem_20260527_a1b2c3d4e5f60718_000003"],
+            "evidence": [
+                {
+                    "ref": "file:///Users/treygoff/.codex/memories/rollouts/abc.md",
+                    "quote": "  shipped\n  fix  ",
+                    "observed_at": "2026-05-27T22:33:00Z"
+                }
+            ]
+        });
+        let input = write_input(payload);
+        let memory = input.to_memory(
+            MemoryId::new("mem_20260527_a1b2c3d4e5f60718_000042"),
+            promoted_lifecycle(),
+            &plaintext_privacy_decision(),
+        );
+
+        assert_eq!(memory.frontmatter.entities.len(), 1);
+        assert_eq!(memory.frontmatter.entities[0].id, "ent_acme");
+        assert_eq!(memory.frontmatter.entities[0].aliases, vec!["Acme".to_string(), "ACME".to_string()]);
+        assert_eq!(memory.frontmatter.aliases, vec!["topic.md".to_string()]);
+        assert_eq!(memory.frontmatter.related[0].as_str(), "mem_20260527_a1b2c3d4e5f60718_000010");
+        assert_eq!(memory.frontmatter.supersedes[0].as_str(), "mem_20260527_a1b2c3d4e5f60718_000003");
+        assert_eq!(memory.frontmatter.canonical_namespace_id.as_deref(), Some("proj_0123456789abcdef"));
+
+        // Evidence id is minted as `ev_<ulid>`; quote_norm_hash is `sha256:<hex>` over
+        // the whitespace-collapsed quote (so "  shipped\n  fix  " hashes the same as
+        // "shipped fix").
+        let evidence = &memory.frontmatter.evidence[0];
+        assert!(evidence.id.starts_with("ev_"));
+        assert_eq!(evidence.reference, "file:///Users/treygoff/.codex/memories/rollouts/abc.md");
+        assert_eq!(evidence.quote, "  shipped\n  fix  ");
+        let expected_hash = compute_quote_norm_hash("shipped fix");
+        assert_eq!(evidence.quote_norm_hash.as_deref(), Some(expected_hash.as_str()));
+        assert!(evidence.observed_at.is_some());
+    }
+
+    #[test]
+    fn governance_meta_import_source_kind_maps_to_file_source_and_memoryd_import_harness() {
+        let payload = serde_json::json!({
+            "namespace": "project",
+            "source_kind": "import",
+            "source_ref": "/Users/treygoff/.claude/projects/x/memory/y.md"
+        });
+        let input = write_input(payload);
+        assert!(matches!(input.meta.source_kind, GovernanceSourceKindMeta::Import));
+
+        let memory = input.to_memory(
+            MemoryId::new("mem_20260527_a1b2c3d4e5f60718_000007"),
+            promoted_lifecycle(),
+            &plaintext_privacy_decision(),
+        );
+
+        // Author records the agent-authored import with the dedicated harness tag so
+        // dashboards and recall ranking can identify backfilled content.
+        assert!(matches!(memory.frontmatter.author.kind, AuthorKind::Agent));
+        assert_eq!(memory.frontmatter.author.harness.as_deref(), Some("memoryd-import"));
+
+        // Substrate Source stays `File` (the source IS a local file) but the harness
+        // tag differentiates it from generic file writes.
+        assert!(matches!(memory.frontmatter.source.kind, SourceKind::File));
+        assert_eq!(memory.frontmatter.source.harness.as_deref(), Some("memoryd-import"));
+        assert_eq!(
+            memory.frontmatter.source.reference.as_deref(),
+            Some("/Users/treygoff/.claude/projects/x/memory/y.md")
+        );
+    }
+
+    #[test]
+    fn governance_meta_rejects_unknown_field() {
+        let payload = serde_json::json!({
+            "namespace": "project",
+            "source_kind": "user",
+            "zzz_unknown_field": 1
+        });
+        let err = parse_governance_meta(payload, MetaSource::Default).expect_err("unknown field is rejected");
+        assert!(err.message.contains("zzz_unknown_field"), "error mentions the field: {}", err.message);
+    }
+
+    #[test]
+    fn governance_meta_serializes_import_source_kind_as_lowercase_token() {
+        // Lock the wire format: the import variant must serialize as the JSON token
+        // `"import"` (matches Stream A spec §6 frontmatter source.kind) so MCP clients
+        // can submit the same shape that the importer uses internally.
+        let payload = serde_json::json!({ "source_kind": "import" });
+        let meta: GovernanceMeta = parse_governance_meta(payload, MetaSource::Default).expect("import parses");
+        assert!(matches!(meta.source_kind, GovernanceSourceKindMeta::Import));
+    }
+
+    #[test]
+    fn compute_quote_norm_hash_collapses_whitespace_and_produces_stable_hex() {
+        // Whitespace collapse is the invariant; two superficially different quotes
+        // that normalize to the same token sequence must hash identically.
+        let h1 = compute_quote_norm_hash("hello\tworld");
+        let h2 = compute_quote_norm_hash("hello   world\n");
+        assert_eq!(h1, h2);
+        assert!(h1.starts_with("sha256:"));
+        assert_eq!(h1.len(), "sha256:".len() + 64);
     }
 }

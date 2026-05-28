@@ -5,6 +5,7 @@ pub mod client;
 pub mod coordination_config;
 pub mod dashboard;
 pub mod dream;
+pub mod first_write;
 pub mod handlers;
 pub mod mcp;
 pub mod mcp_stdio;
