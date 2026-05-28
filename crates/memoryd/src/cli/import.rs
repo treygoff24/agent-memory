@@ -1,15 +1,16 @@
 use std::path::Path;
 
-use crate::cli::ImportArgs;
+use crate::cli::paths::resolve_socket_arg;
+use crate::cli::{ImportArgs, ImportHarness};
 use crate::import::pipeline::{ExecuteOptions, HarnessFilter, ImportEngine, ImportOptions, SocketDaemonClient};
-use crate::import::project_map::{InteractivePromptBackend, PromptBackend};
+use crate::import::project_map::{InteractivePromptBackend, PromptBackend, PromptResult, PromptedDisposition};
 use crate::import::state::{ImportLockGuard, ImportState};
 
 pub async fn run(args: ImportArgs) -> anyhow::Result<()> {
     let harness_filter = match args.harness {
-        crate::cli::ImportHarness::All => None,
-        crate::cli::ImportHarness::Claude => Some(HarnessFilter::Claude),
-        crate::cli::ImportHarness::Codex => Some(HarnessFilter::Codex),
+        ImportHarness::All => None,
+        ImportHarness::Claude => Some(HarnessFilter::Claude),
+        ImportHarness::Codex => Some(HarnessFilter::Codex),
     };
 
     let engine = ImportEngine::new(&args.repo);
@@ -49,7 +50,7 @@ pub async fn run(args: ImportArgs) -> anyhow::Result<()> {
         );
     }
 
-    let socket = crate::cli::paths::resolve_socket_arg(&args.socket);
+    let socket = resolve_socket_arg(&args.socket);
     let mut client = SocketDaemonClient::new(socket);
     let execute_opts = ExecuteOptions { dry_run: args.dry_run, verbose_progress: !args.quiet };
     let result = engine
@@ -71,15 +72,8 @@ pub async fn run(args: ImportArgs) -> anyhow::Result<()> {
 /// "skip" so an unattended run never blocks on stdin.
 struct DefaultSkipPrompts;
 
-impl crate::import::project_map::PromptBackend for DefaultSkipPrompts {
-    fn prompt_non_git_cwd(
-        &mut self,
-        _cwd: &Path,
-        _synced_dir: Option<&'static str>,
-    ) -> crate::import::project_map::PromptResult {
-        crate::import::project_map::PromptResult {
-            disposition: crate::import::project_map::PromptedDisposition::Skip,
-            synced_dir_confirmed: None,
-        }
+impl PromptBackend for DefaultSkipPrompts {
+    fn prompt_non_git_cwd(&mut self, _cwd: &Path, _synced_dir: Option<&'static str>) -> PromptResult {
+        PromptResult { disposition: PromptedDisposition::Skip, synced_dir_confirmed: None }
     }
 }

@@ -5,10 +5,11 @@ use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::watch;
 
 use crate::cli::paths::resolve_socket_with_runtime;
+use crate::cli::ServeArgs;
 use crate::server::{self, ServerOptions};
 use crate::state;
 
-pub async fn run(args: crate::cli::ServeArgs) -> anyhow::Result<()> {
+pub async fn run(args: ServeArgs) -> anyhow::Result<()> {
     let roots = Roots::new(args.repo, args.runtime);
     let loaded_config =
         memory_substrate::config::load_config(&roots.repo, &roots.runtime, None).map_err(anyhow::Error::msg)?;

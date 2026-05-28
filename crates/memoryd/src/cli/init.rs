@@ -1,10 +1,9 @@
 use std::path::PathBuf;
 
 use super::InitArgs;
+use crate::import::discovery::{discover_claude_memory_root, discover_codex_memory_root};
 
 pub async fn run(args: InitArgs) -> anyhow::Result<()> {
-    use crate::import::discovery::{discover_claude_memory_root, discover_codex_memory_root};
-
     // Default repo and runtime paths mirror `scripts/install-memorum.sh`.
     let default_repo = std::env::var("MEMORUM_REPO")
         .ok()

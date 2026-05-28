@@ -1,7 +1,7 @@
 use crate::cli::paths::resolve_socket_arg;
 use crate::cli::{WebArgs, WebCommand};
 use crate::client;
-use crate::protocol::{RequestPayload, ResponsePayload, ResponseResult};
+use crate::protocol::{RequestPayload, ResponseEnvelope, ResponsePayload, ResponseResult};
 
 pub async fn run(args: WebArgs) -> anyhow::Result<()> {
     match args.command {
@@ -36,7 +36,7 @@ enum WebOperation {
     Disable,
 }
 
-fn print_web_response(response: anyhow::Result<crate::protocol::ResponseEnvelope>, operation: WebOperation) -> ! {
+fn print_web_response(response: anyhow::Result<ResponseEnvelope>, operation: WebOperation) -> ! {
     match response {
         Ok(envelope) => match envelope.result {
             ResponseResult::Success(ResponsePayload::WebStatus(status)) => {
@@ -68,7 +68,7 @@ fn print_web_response(response: anyhow::Result<crate::protocol::ResponseEnvelope
     }
 }
 
-fn print_web_status(response: anyhow::Result<crate::protocol::ResponseEnvelope>, json: bool) -> ! {
+fn print_web_status(response: anyhow::Result<ResponseEnvelope>, json: bool) -> ! {
     match response {
         Ok(envelope) => match envelope.result {
             ResponseResult::Success(ResponsePayload::WebStatus(status)) => {

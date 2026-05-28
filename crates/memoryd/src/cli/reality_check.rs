@@ -8,17 +8,12 @@ use crate::protocol::{
 pub async fn run(args: RealityCheckArgs) -> anyhow::Result<()> {
     match args.command {
         RealityCheckCommand::Run(args) => {
+            let namespace = args.namespace;
+            let limit = args.top_n;
             let request = if args.json {
-                RequestPayload::RealityCheck(RealityCheckRequest::List {
-                    namespace: args.namespace.clone(),
-                    limit: args.top_n,
-                })
+                RequestPayload::RealityCheck(RealityCheckRequest::List { namespace, limit })
             } else {
-                RequestPayload::RealityCheck(RealityCheckRequest::Run {
-                    session_id: None,
-                    namespace: args.namespace.clone(),
-                    limit: args.top_n,
-                })
+                RequestPayload::RealityCheck(RealityCheckRequest::Run { session_id: None, namespace, limit })
             };
             let response = client::request(resolve_socket_arg(&args.socket), "cli-reality-check-run", request).await;
             print_reality_check_run(response, args.json, args.tui);

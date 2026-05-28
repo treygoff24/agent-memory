@@ -1,5 +1,6 @@
 use crate::cli::exit::{exit_protocol_error, exit_recall_unavailable};
-use crate::cli::{RecallArgs, RecallCommand, RecallSocketArgs};
+use crate::cli::paths::resolve_socket_with_runtime;
+use crate::cli::{RecallArgs, RecallCommand};
 use crate::client;
 use crate::protocol::{RequestPayload, ResponsePayload, ResponseResult};
 use crate::recall::{DeltaRequest, StartupRequest};
@@ -7,7 +8,7 @@ use crate::recall::{DeltaRequest, StartupRequest};
 pub async fn run(args: RecallArgs) -> anyhow::Result<()> {
     match args.command {
         RecallCommand::StartupBlock(args) => {
-            let socket = recall_socket_path(&args.socket);
+            let socket = resolve_socket_with_runtime(&args.socket.socket, &args.socket.runtime);
             let response = client::request(
                 &socket,
                 "cli-recall-startup",
@@ -25,7 +26,7 @@ pub async fn run(args: RecallArgs) -> anyhow::Result<()> {
             print_recall_startup(response)?;
         }
         RecallCommand::DeltaBlock(args) => {
-            let socket = recall_socket_path(&args.socket);
+            let socket = resolve_socket_with_runtime(&args.socket.socket, &args.socket.runtime);
             let response = client::request(
                 &socket,
                 "cli-recall-delta",
@@ -70,8 +71,4 @@ fn print_recall_delta(response: anyhow::Result<crate::protocol::ResponseEnvelope
         },
         Err(error) => exit_recall_unavailable(error),
     }
-}
-
-fn recall_socket_path(args: &RecallSocketArgs) -> std::path::PathBuf {
-    args.socket.clone().unwrap_or_else(|| crate::socket::resolve_socket_path(&args.runtime))
 }

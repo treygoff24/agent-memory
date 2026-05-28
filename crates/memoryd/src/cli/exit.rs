@@ -1,13 +1,6 @@
 use crate::dream::lease::LeaseError;
 use crate::protocol::{ProtocolError, ResponseEnvelope, ResponsePayload, ResponseResult};
 
-pub(crate) fn doctor_cli_exit_code(response: &ResponseEnvelope) -> i32 {
-    match &response.result {
-        ResponseResult::Success(ResponsePayload::Doctor(doctor)) if !doctor.healthy => 1,
-        _ => 0,
-    }
-}
-
 pub(crate) fn exit_protocol_error(error: ProtocolError) -> ! {
     eprintln!("{}: {}", error.code, error.message);
     std::process::exit(recall_exit_code(&error.code));
@@ -32,5 +25,12 @@ pub(crate) fn recall_exit_code(code: &str) -> i32 {
         "not_implemented" | "dream_pass_failed" => 4,
         "lease_held" | "lease_unavailable" | "lease_dirty_tree" => 5,
         _ => 1,
+    }
+}
+
+pub(crate) fn doctor_cli_exit_code(response: &ResponseEnvelope) -> i32 {
+    match &response.result {
+        ResponseResult::Success(ResponsePayload::Doctor(doctor)) if !doctor.healthy => 1,
+        _ => 0,
     }
 }
