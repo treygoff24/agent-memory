@@ -890,3 +890,39 @@ pub fn reality_check_request_payload(command: &RealityCheckCommand) -> Result<Re
 pub fn validate_snooze_until(raw: Option<&str>) -> Result<Option<NaiveDate>, i32> {
     raw.map(|value| NaiveDate::parse_from_str(value, "%Y-%m-%d").map_err(|_| 1)).transpose()
 }
+
+// Per-command runners — populated by the 2026-05-28 main.rs refactor.
+#[allow(dead_code)]
+pub(crate) mod serve;
+#[allow(dead_code)]
+pub(crate) mod daemon;
+#[allow(dead_code)]
+pub(crate) mod memory;
+#[allow(dead_code)]
+pub(crate) mod source;
+#[allow(dead_code)]
+pub(crate) mod review;
+#[allow(dead_code)]
+pub(crate) mod recall;
+#[allow(dead_code)]
+pub(crate) mod dream;
+#[allow(dead_code)]
+pub(crate) mod peer;
+#[allow(dead_code)]
+pub(crate) mod ui;
+#[allow(dead_code)]
+pub(crate) mod web;
+#[allow(dead_code)]
+pub(crate) mod reality_check;
+#[allow(dead_code)]
+pub(crate) mod privacy;
+#[allow(dead_code)]
+pub(crate) mod import;
+#[allow(dead_code)]
+pub(crate) mod init;
+#[allow(dead_code)]
+pub(crate) mod output;
+#[allow(dead_code)]
+pub(crate) mod exit;
+#[allow(dead_code)]
+pub(crate) mod paths;
