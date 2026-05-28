@@ -12,6 +12,20 @@ use memoryd::protocol::PromptTransport;
 
 static SUBPROCESS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// Acquire the process-global subprocess-test serialization guard, recovering
+/// from poison.
+///
+/// These tests mutate process-wide state (cwd, PATH) and so must run one at a
+/// time. Previously each call site used `.lock().expect(...)`; when one test
+/// panicked while holding the guard, the mutex became poisoned and every later
+/// test in the file panicked on acquire, cascading a single real failure into a
+/// wall of spurious ones. The guarded value is `()` (the mutex only provides
+/// mutual exclusion, it carries no data that a panic could leave inconsistent),
+/// so recovering the inner guard via `into_inner()` is always safe.
+fn lock_subprocess_test() -> std::sync::MutexGuard<'static, ()> {
+    SUBPROCESS_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[tokio::test]
 #[cfg(feature = "dev-fixtures")]
 async fn echo_cli_replays_canned_outputs_deterministically() {
@@ -37,7 +51,7 @@ fn claude_adapter_detects_stub_binary_on_path() {
 
 #[test]
 fn adapter_path_lookup_ignores_empty_path_components() {
-    let _guard = SUBPROCESS_TEST_LOCK.lock().expect("subprocess test lock");
+    let _guard = lock_subprocess_test();
     let temp = tempfile::tempdir().expect("cwd tempdir");
     write_executable(temp.path().join("claude"), "#!/bin/sh\nexit 0\n");
     let original_cwd = std::env::current_dir().expect("current dir");
@@ -68,7 +82,7 @@ fn claude_and_codex_adapter_argv_never_contains_prompt() {
 
 #[test]
 fn hardened_subprocess_sends_prompt_only_on_stdin_with_minimal_env_and_scratch_cwd() {
-    let _guard = SUBPROCESS_TEST_LOCK.lock().expect("subprocess test lock");
+    let _guard = lock_subprocess_test();
     run_async(async {
         let temp = tempfile::tempdir().expect("recorder tempdir");
         let recorder = temp.path().join("recorder");
@@ -164,7 +178,7 @@ fn adapter_environment_allowlists_do_not_cross_provider_credentials() {
 
 #[test]
 fn hardened_subprocess_timeout_terminates_child() {
-    let _guard = SUBPROCESS_TEST_LOCK.lock().expect("subprocess test lock");
+    let _guard = lock_subprocess_test();
     run_async(async {
         let temp = tempfile::tempdir().expect("timeout tempdir");
         let sleeper = temp.path().join("sleeper");
@@ -212,7 +226,7 @@ while :; do sleep 1; done
 
 #[test]
 fn hardened_subprocess_timeout_covers_non_reading_child_with_large_prompt() {
-    let _guard = SUBPROCESS_TEST_LOCK.lock().expect("subprocess test lock");
+    let _guard = lock_subprocess_test();
     run_async(async {
         let temp = tempfile::tempdir().expect("non-reader tempdir");
         let sleeper = temp.path().join("non-reader");
@@ -269,7 +283,7 @@ while :; do sleep 1; done
 
 #[test]
 fn hardened_subprocess_ignores_broken_pipe_after_successful_stdout() {
-    let _guard = SUBPROCESS_TEST_LOCK.lock().expect("subprocess test lock");
+    let _guard = lock_subprocess_test();
     run_async(async {
         let temp = tempfile::tempdir().expect("epipe tempdir");
         let early_exit = temp.path().join("early-exit");
@@ -309,7 +323,7 @@ exit 0
 
 #[test]
 fn hardened_subprocess_redacts_partial_prompt_echo_from_stderr_error() {
-    let _guard = SUBPROCESS_TEST_LOCK.lock().expect("subprocess test lock");
+    let _guard = lock_subprocess_test();
     run_async(async {
         let temp = tempfile::tempdir().expect("stderr tempdir");
         let echoer = temp.path().join("partial-stderr");
@@ -361,7 +375,7 @@ exit 23
 
 #[test]
 fn auth_probe_mode_preserves_stderr_tail_for_operator_diagnostics() {
-    let _guard = SUBPROCESS_TEST_LOCK.lock().expect("subprocess test lock");
+    let _guard = lock_subprocess_test();
     run_async(async {
         let temp = tempfile::tempdir().expect("auth stderr tempdir");
         let auth_probe = temp.path().join("auth-probe");
@@ -422,7 +436,7 @@ fn v0_2_registry_declares_no_argv_prompt_transport() {
 
 #[test]
 fn codex_auth_probe_prefers_login_status() {
-    let _guard = SUBPROCESS_TEST_LOCK.lock().expect("subprocess test lock");
+    let _guard = lock_subprocess_test();
     run_async(async {
         let bin_dir = tempfile::tempdir().expect("stub bin dir");
         let marker = bin_dir.path().join("called");
@@ -453,7 +467,7 @@ exit 64
 
 #[test]
 fn codex_auth_probe_falls_back_to_legacy_auth_status_only_when_login_status_is_unsupported() {
-    let _guard = SUBPROCESS_TEST_LOCK.lock().expect("subprocess test lock");
+    let _guard = lock_subprocess_test();
     run_async(async {
         let bin_dir = tempfile::tempdir().expect("stub bin dir");
         let marker = bin_dir.path().join("called");
@@ -489,7 +503,7 @@ exit 64
 
 #[test]
 fn codex_auth_probe_falls_back_when_unsupported_diagnostic_is_stdout_only() {
-    let _guard = SUBPROCESS_TEST_LOCK.lock().expect("subprocess test lock");
+    let _guard = lock_subprocess_test();
     run_async(async {
         let bin_dir = tempfile::tempdir().expect("stub bin dir");
         let marker = bin_dir.path().join("called");
@@ -525,7 +539,7 @@ exit 64
 
 #[test]
 fn codex_auth_probe_does_not_fallback_after_supported_login_status_auth_failure() {
-    let _guard = SUBPROCESS_TEST_LOCK.lock().expect("subprocess test lock");
+    let _guard = lock_subprocess_test();
     run_async(async {
         let bin_dir = tempfile::tempdir().expect("stub bin dir");
         let marker = bin_dir.path().join("called");
@@ -558,7 +572,7 @@ exit 64
 
 #[test]
 fn codex_auth_probe_does_not_fallback_on_exit_code_alone() {
-    let _guard = SUBPROCESS_TEST_LOCK.lock().expect("subprocess test lock");
+    let _guard = lock_subprocess_test();
     run_async(async {
         let bin_dir = tempfile::tempdir().expect("stub bin dir");
         let marker = bin_dir.path().join("called");
@@ -591,7 +605,7 @@ exit 64
 
 #[test]
 fn claude_auth_probe_prefers_auth_status() {
-    let _guard = SUBPROCESS_TEST_LOCK.lock().expect("subprocess test lock");
+    let _guard = lock_subprocess_test();
     run_async(async {
         let bin_dir = tempfile::tempdir().expect("stub bin dir");
         let marker = bin_dir.path().join("called");
@@ -622,7 +636,7 @@ exit 64
 
 #[test]
 fn claude_auth_probe_falls_back_to_legacy_config_get_only_when_auth_status_is_unsupported() {
-    let _guard = SUBPROCESS_TEST_LOCK.lock().expect("subprocess test lock");
+    let _guard = lock_subprocess_test();
     run_async(async {
         let bin_dir = tempfile::tempdir().expect("stub bin dir");
         let marker = bin_dir.path().join("called");
@@ -658,7 +672,7 @@ exit 64
 
 #[test]
 fn claude_auth_probe_does_not_fallback_after_supported_auth_status_auth_failure() {
-    let _guard = SUBPROCESS_TEST_LOCK.lock().expect("subprocess test lock");
+    let _guard = lock_subprocess_test();
     run_async(async {
         let bin_dir = tempfile::tempdir().expect("stub bin dir");
         let marker = bin_dir.path().join("called");
@@ -691,7 +705,7 @@ exit 64
 
 #[test]
 fn claude_auth_probe_does_not_fallback_on_exit_code_alone() {
-    let _guard = SUBPROCESS_TEST_LOCK.lock().expect("subprocess test lock");
+    let _guard = lock_subprocess_test();
     run_async(async {
         let bin_dir = tempfile::tempdir().expect("stub bin dir");
         let marker = bin_dir.path().join("called");

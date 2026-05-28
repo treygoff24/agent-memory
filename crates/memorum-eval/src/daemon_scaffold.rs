@@ -283,7 +283,13 @@ fn build_memoryd_binary() -> PathBuf {
 }
 
 fn wait_for_socket(socket_path: &Path) {
-    wait_for_socket_for(socket_path, Duration::from_secs(5), Duration::from_millis(100))
+    // Poll-until-connectable: `wait_for_socket_for` retries `UnixStream::connect`
+    // on a short backoff and returns the instant the socket accepts. The deadline
+    // is set generously (30s) so a slow-but-fine startup is not turned into a hard
+    // failure. On macOS, `syspolicyd` inspects a freshly-built binary on first
+    // launch, which can delay the socket bind well past a few seconds; the
+    // deadline only fires when the daemon genuinely never comes up.
+    wait_for_socket_for(socket_path, Duration::from_secs(30), Duration::from_millis(100))
         .unwrap_or_else(|error| panic!("{error}"));
 }
 
