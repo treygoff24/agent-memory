@@ -894,12 +894,12 @@ pub fn validate_snooze_until(raw: Option<&str>) -> Result<Option<NaiveDate>, i32
 // Per-command runners — populated by the 2026-05-28 main.rs refactor.
 pub mod daemon;
 pub mod dream;
-pub mod exit;
+pub(crate) mod exit;
 pub mod import;
 pub mod init;
 pub mod memory;
-pub mod output;
-pub mod paths;
+pub(crate) mod output;
+pub(crate) mod paths;
 pub mod peer;
 pub mod privacy;
 pub mod reality_check;
