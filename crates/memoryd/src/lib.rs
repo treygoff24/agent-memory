@@ -7,6 +7,7 @@ pub mod dashboard;
 pub mod dream;
 pub mod first_write;
 pub mod handlers;
+pub mod import;
 pub mod mcp;
 pub mod mcp_stdio;
 pub mod notifications;

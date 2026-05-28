@@ -58,6 +58,68 @@ pub enum Command {
     PrivacyFilter(PrivacyFilterArgs),
     /// Local encrypted-tier device key commands.
     Device(DeviceArgs),
+    /// Backfill prior Claude Code and Codex CLI memory into Memorum.
+    ///
+    /// Non-destructive and idempotent: source files are never modified, and
+    /// re-runs skip sources whose content hash hasn't changed since the last
+    /// import. Per the locked design, every memory goes through the daemon
+    /// socket so privacy, governance, and event-log machinery all fire.
+    Import(ImportArgs),
+    /// Interactive first-run setup: detect harness memory and offer to import.
+    Init(InitArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct InitArgs {
+    /// Canonical Memorum repo root (default `$MEMORUM_REPO` or `~/memorum`).
+    #[arg(long)]
+    pub repo: Option<PathBuf>,
+    /// Local per-device runtime directory (default `<repo>/.memoryd`).
+    #[arg(long)]
+    pub runtime: Option<PathBuf>,
+    /// Run without prompts; suitable for CI. Equivalent to answering "no" to
+    /// the import prompt and using all defaults.
+    #[arg(long, default_value_t = false)]
+    pub non_interactive: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ImportArgs {
+    /// Restrict the import to a single harness.
+    #[arg(long, value_enum, default_value_t = ImportHarness::All)]
+    pub harness: ImportHarness,
+    /// Plan and report what would be written, without issuing any daemon
+    /// requests or touching the state file.
+    #[arg(long, default_value_t = false)]
+    pub dry_run: bool,
+    /// Override the Claude Code memory directory (default:
+    /// `~/.claude/projects/`).
+    #[arg(long)]
+    pub from_claude: Option<PathBuf>,
+    /// Override the Codex CLI memory directory (default: `~/.codex/memories/`).
+    #[arg(long)]
+    pub from_codex: Option<PathBuf>,
+    /// Write a structured JSON report to this path.
+    #[arg(long)]
+    pub report: Option<PathBuf>,
+    /// Suppress per-write progress lines (still emits the final summary).
+    #[arg(long, default_value_t = false)]
+    pub quiet: bool,
+    /// Unix socket path used to reach memoryd.
+    #[arg(long)]
+    pub socket: Option<PathBuf>,
+    /// Canonical Memorum repo root (state file lives at
+    /// `<repo>/.memorum/import-state.json`).
+    #[arg(long, default_value = ".")]
+    pub repo: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "lowercase")]
+pub enum ImportHarness {
+    All,
+    Claude,
+    Codex,
 }
 
 #[derive(Debug, Args)]

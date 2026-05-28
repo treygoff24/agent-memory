@@ -521,7 +521,104 @@ async fn main() -> anyhow::Result<()> {
                 );
             }
         },
+        Command::Import(args) => {
+            run_import_command(args).await?;
+        }
+        Command::Init(args) => {
+            run_init_command(args).await?;
+        }
     }
+    Ok(())
+}
+
+async fn run_init_command(args: memoryd::cli::InitArgs) -> anyhow::Result<()> {
+    use memoryd::import::discovery::{discover_claude_memory_root, discover_codex_memory_root};
+
+    // Default repo and runtime paths mirror `scripts/install-memorum.sh`.
+    let default_repo = std::env::var("MEMORUM_REPO")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join("memorum")))
+        .unwrap_or_else(|| PathBuf::from("./memorum"));
+    let repo = args.repo.clone().unwrap_or(default_repo);
+    let runtime = args.runtime.clone().unwrap_or_else(|| repo.join(".memoryd"));
+    let socket = runtime.join("memoryd.sock");
+
+    println!("Memorum init");
+    println!("  repo:    {}", repo.display());
+    println!("  runtime: {}", runtime.display());
+    println!("  socket:  {}", socket.display());
+    println!();
+
+    let already_initialised = repo.join(".memorum").exists();
+    if already_initialised {
+        println!("Detected existing Memorum substrate at {}.", repo.display());
+        println!("Running detection-only: no re-init, no destructive changes.");
+        println!("If you want to re-import harness memory, run `memoryd import` explicitly.");
+        println!();
+    }
+
+    let claude_root = discover_claude_memory_root(None)?;
+    let codex_root = discover_codex_memory_root(None)?;
+
+    let claude_count = match &claude_root {
+        Some(root) if root.path.exists() => {
+            walkdir::WalkDir::new(&root.path)
+                .into_iter()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_type().is_file())
+                .filter(|entry| entry.path().extension().and_then(std::ffi::OsStr::to_str) == Some("md"))
+                .filter(|entry| entry.path().file_name().and_then(std::ffi::OsStr::to_str) != Some("MEMORY.md"))
+                .count()
+        }
+        _ => 0,
+    };
+    let codex_present = match &codex_root {
+        Some(root) => root.path.join("MEMORY.md").exists(),
+        None => false,
+    };
+
+    println!("Detected harness memory:");
+    println!("  Claude Code: {claude_count} memory topic file(s)");
+    println!("  Codex CLI:   {}", if codex_present { "MEMORY.md present" } else { "not found" });
+    println!();
+
+    let any = claude_count > 0 || codex_present;
+    if !any {
+        println!("Nothing to import. Run `memoryd serve --init --repo \"{}\" --runtime \"{}\"` to start the daemon.", repo.display(), runtime.display());
+        return Ok(());
+    }
+
+    if args.non_interactive {
+        println!("--non-interactive: skipping import prompt; run `memoryd import` later when ready.");
+        return Ok(());
+    }
+
+    let proceed = dialoguer::Confirm::new()
+        .with_prompt("Would you like to import detected harness memory now?")
+        .default(true)
+        .interact()
+        .unwrap_or(false);
+
+    if !proceed {
+        println!("Skipped import. Run `memoryd import` later when ready.");
+        return Ok(());
+    }
+
+    println!();
+    println!("Run this command in a separate shell once the daemon is up:");
+    println!(
+        "  memoryd import --repo \"{}\" --socket \"{}\"",
+        repo.display(),
+        socket.display(),
+    );
+    println!();
+    println!("Next steps:");
+    println!("  - Start daemon: memoryd serve --init --repo \"{}\" --runtime \"{}\" --socket \"{}\"",
+        repo.display(), runtime.display(), socket.display());
+    println!("  - Health check: memoryd doctor --repo \"{}\" --runtime \"{}\"", repo.display(), runtime.display());
+    println!("  - Troubleshooting: docs/troubleshooting.md");
+    println!("  - Importer details: docs/importer.md");
     Ok(())
 }
 
@@ -1060,6 +1157,92 @@ fn write_note_response_id(response: &memoryd::protocol::ResponseEnvelope) -> Opt
 /// user's very first memory. Failures here are non-fatal: the write already
 /// succeeded; the banner is purely a UX hint and we don't want a transient
 /// status-query error to mask the underlying success.
+async fn run_import_command(args: memoryd::cli::ImportArgs) -> anyhow::Result<()> {
+    use memoryd::import::pipeline::{
+        ExecuteOptions, HarnessFilter, ImportEngine, ImportOptions, SocketDaemonClient,
+    };
+    use memoryd::import::project_map::{InteractivePromptBackend, PromptBackend};
+    use memoryd::import::state::{ImportLockGuard, ImportState};
+
+    let harness_filter = match args.harness {
+        memoryd::cli::ImportHarness::All => None,
+        memoryd::cli::ImportHarness::Claude => Some(HarnessFilter::Claude),
+        memoryd::cli::ImportHarness::Codex => Some(HarnessFilter::Codex),
+    };
+
+    let engine = ImportEngine::new(&args.repo);
+    // Acquire the importer lock so concurrent invocations fail fast with a
+    // clear AnotherImportInProgress error.
+    let _lock = ImportLockGuard::acquire(&engine.state_path)
+        .map_err(|error| anyhow::anyhow!("acquire import lock: {error}"))?;
+    let state = ImportState::load(&engine.state_path)
+        .map_err(|error| anyhow::anyhow!("load import state: {error}"))?;
+
+    // Non-interactive callers (e.g. `memoryd init --non-interactive`) get a
+    // default-skip prompt backend; everyone else gets the dialoguer-backed one.
+    let mut prompts: Box<dyn PromptBackend> = if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        Box::new(InteractivePromptBackend)
+    } else {
+        Box::new(DefaultSkipPrompts)
+    };
+
+    let plan = engine
+        .plan(
+            ImportOptions {
+                from_claude: args.from_claude.clone(),
+                from_codex: args.from_codex.clone(),
+                harness_filter,
+                state,
+            },
+            prompts.as_mut(),
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!("plan import: {error}"))?;
+
+    if !args.quiet {
+        eprintln!(
+            "Planned {} write(s): claude={} codex={}",
+            plan.actions.len(),
+            plan.source_discovery_summary.claude_candidates,
+            plan.source_discovery_summary.codex_candidates,
+        );
+    }
+
+    let socket = resolve_socket_arg(&args.socket);
+    let mut client = SocketDaemonClient::new(socket);
+    let execute_opts = ExecuteOptions { dry_run: args.dry_run, verbose_progress: !args.quiet };
+    let result = engine
+        .execute(plan, execute_opts, &mut client)
+        .await
+        .map_err(|error| anyhow::anyhow!("execute import: {error}"))?;
+
+    println!("{}", result.report.to_text());
+    if let Some(path) = &args.report {
+        std::fs::write(path, result.report.to_json()?)?;
+        if !args.quiet {
+            eprintln!("Report written to {}", path.display());
+        }
+    }
+    Ok(())
+}
+
+/// Non-interactive fallback prompt backend: defaults every non-git cwd to
+/// "skip" so an unattended run never blocks on stdin.
+struct DefaultSkipPrompts;
+
+impl memoryd::import::project_map::PromptBackend for DefaultSkipPrompts {
+    fn prompt_non_git_cwd(
+        &mut self,
+        _cwd: &Path,
+        _synced_dir: Option<&'static str>,
+    ) -> memoryd::import::project_map::PromptResult {
+        memoryd::import::project_map::PromptResult {
+            disposition: memoryd::import::project_map::PromptedDisposition::Skip,
+            synced_dir_confirmed: None,
+        }
+    }
+}
+
 async fn maybe_emit_first_write_banner(socket: &Path, id: &str) {
     let envelope = match client::request(socket, "cli-first-write-status", RequestPayload::Status).await {
         Ok(envelope) => envelope,
