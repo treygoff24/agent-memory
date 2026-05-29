@@ -8,6 +8,10 @@ target/
 # Hand-authored design docs whose prose formatting oxfmt should not touch.
 GAPS.md
 handoff.md
+docs/importer.md
+docs/runbooks/init-wizard.md
+docs/explainers/*.html
+docs/reviews/2026-05-28-main-rs-refactor-review.md
 
 # Local agent/tooling output directories. `--ignore-path .oxfmtignore`
 # overrides .gitignore, so these need their own entries even when ignored
@@ -15,6 +19,7 @@ handoff.md
 .clawpatch/
 .delegate/
 .tldr/
+.wright/
 .code-briefcase/
 .code-briefcaseignore
 crates/memoryd-web/frontend/test-results/
