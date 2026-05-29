@@ -15,7 +15,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::Serialize;
 
 use crate::error::{
-    OpenError, ReadError, SubstrateError, SubstrateResult, VectorError, WriteFailure, WriteFailureKind,
+    OpenError, ReadError, SubstrateError, SubstrateResult, ValidationError, VectorError, WriteFailure, WriteFailureKind,
 };
 use crate::events::{
     append_event, append_event_best_effort, decode_line, read_events, reserve_event_sequence,
@@ -289,7 +289,7 @@ impl Substrate {
         self.guard_with_refusal_audit(
             validate_frontmatter(&request.memory.frontmatter).map_err(|err| WriteFailure {
                 outcome: outcome.clone(),
-                kind: WriteFailureKind::Validation(err.to_string()),
+                kind: WriteFailureKind::ValidationTyped(ValidationError::Other(err.to_string())),
             }),
             request.memory.frontmatter.id.clone(),
             request.memory.path.clone(),
@@ -309,7 +309,7 @@ impl Substrate {
         let upsert_res = {
             let mut index_guard = self.index.lock().map_err(|err| WriteFailure {
                 outcome: outcome.clone(),
-                kind: WriteFailureKind::Io(err.to_string()),
+                kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
             })?;
             index_guard.upsert_memory(&request.memory, false)
         };
@@ -352,10 +352,15 @@ impl Substrate {
             }),
             classification: request.classification,
         };
-        let device = DeviceId::try_new(&self.device_id)
-            .map_err(|err| WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::Io(err.to_string()) })?;
-        let seq = reserve_event_sequence(&self.roots.runtime, &self.event_log, &device)
-            .map_err(|err| WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::Io(err.to_string()) })?;
+        let device = DeviceId::try_new(&self.device_id).map_err(|err| WriteFailure {
+            outcome: outcome.clone(),
+            kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
+        })?;
+        let seq =
+            reserve_event_sequence(&self.roots.runtime, &self.event_log, &device).map_err(|err| WriteFailure {
+                outcome: outcome.clone(),
+                kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
+            })?;
         let event = Event {
             schema: crate::SUBSTRATE_SCHEMA_VERSION,
             id: EventId::new(format!("evt_{}", uuid::Uuid::new_v4())),
@@ -436,7 +441,7 @@ impl Substrate {
         let (mut old_memory, old_base_hash) =
             self.read_memory_with_hash(&old_id).await.map_err(|err| WriteFailure {
                 outcome: WriteOutcome::not_committed(operation_id.clone(), self.durability),
-                kind: WriteFailureKind::Validation(err.to_string()),
+                kind: WriteFailureKind::ValidationTyped(ValidationError::Other(err.to_string())),
             })?;
 
         if !replacement.frontmatter.supersedes.contains(&old_id) {
@@ -525,10 +530,12 @@ impl Substrate {
         )?;
         validate_frontmatter(&request.metadata_memory.frontmatter).map_err(|err| WriteFailure {
             outcome: outcome.clone(),
-            kind: WriteFailureKind::Validation(err.to_string()),
+            kind: WriteFailureKind::ValidationTyped(ValidationError::Other(err.to_string())),
         })?;
-        let path = encrypted_ciphertext_path(&request.metadata_memory)
-            .map_err(|err| WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::Validation(err) })?;
+        let path = encrypted_ciphertext_path(&request.metadata_memory).map_err(|err| WriteFailure {
+            outcome: outcome.clone(),
+            kind: WriteFailureKind::ValidationTyped(ValidationError::Other(err)),
+        })?;
         let mut stored_memory = request.metadata_memory.clone();
         stored_memory.frontmatter.extras.entry("encryption".to_string()).or_insert_with(|| {
             serde_json::json!({
@@ -547,9 +554,11 @@ impl Substrate {
             );
         }
         stored_memory.body = BASE64_STANDARD.encode(&request.ciphertext);
-        let encrypted_document = crate::frontmatter::serialize_document(&stored_memory).map_err(|err| {
-            WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::Validation(err.to_string()) }
-        })?;
+        let encrypted_document =
+            crate::frontmatter::serialize_document(&stored_memory).map_err(|err| WriteFailure {
+                outcome: outcome.clone(),
+                kind: WriteFailureKind::ValidationTyped(ValidationError::Other(err.to_string())),
+            })?;
         let ciphertext_hash = crate::markdown::hash_bytes(encrypted_document.as_bytes());
         atomic_write_bytes(BinaryWrite {
             repo: &self.roots.repo,
@@ -564,7 +573,7 @@ impl Substrate {
             kind: if err.kind() == std::io::ErrorKind::AlreadyExists {
                 WriteFailureKind::AlreadyExists
             } else {
-                WriteFailureKind::Io(err.to_string())
+                WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() }
             },
         })?;
         let mut stored_for_index = stored_memory.clone();
@@ -583,7 +592,7 @@ impl Substrate {
                     )),
                     operation_id: operation_id.clone(),
                 },
-                kind: WriteFailureKind::Io(err.to_string()),
+                kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
             })?
             .upsert_memory(&indexed_memory, metadata_only)
             .map_err(|_err| {
@@ -623,10 +632,15 @@ impl Substrate {
             path,
             classification: request.classification,
         };
-        let device = DeviceId::try_new(&self.device_id)
-            .map_err(|err| WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::Io(err.to_string()) })?;
-        let seq = reserve_event_sequence(&self.roots.runtime, &self.event_log, &device)
-            .map_err(|err| WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::Io(err.to_string()) })?;
+        let device = DeviceId::try_new(&self.device_id).map_err(|err| WriteFailure {
+            outcome: outcome.clone(),
+            kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
+        })?;
+        let seq =
+            reserve_event_sequence(&self.roots.runtime, &self.event_log, &device).map_err(|err| WriteFailure {
+                outcome: outcome.clone(),
+                kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
+            })?;
         let event = Event {
             schema: crate::SUBSTRATE_SCHEMA_VERSION,
             id: EventId::new(format!("evt_{}", uuid::Uuid::new_v4())),
@@ -701,23 +715,28 @@ impl Substrate {
         let outcome = WriteOutcome::not_committed(operation_id.clone(), self.durability);
         let envelope = self.read_memory_envelope(id).await.map_err(|err| WriteFailure {
             outcome: outcome.clone(),
-            kind: WriteFailureKind::Validation(err.to_string()),
+            kind: WriteFailureKind::ValidationTyped(ValidationError::Other(err.to_string())),
         })?;
         if matches!(envelope.content, MemoryContent::Plaintext(_)) {
             return Err(WriteFailure {
                 outcome,
-                kind: WriteFailureKind::Validation("encrypted metadata update requires encrypted content".to_string()),
+                kind: WriteFailureKind::ValidationTyped(ValidationError::Other(
+                    "encrypted metadata update requires encrypted content".to_string(),
+                )),
             });
         }
 
         let mut memory = envelope.metadata;
         let path = encrypted_metadata_path(&memory).map_err(|message| WriteFailure {
             outcome: outcome.clone(),
-            kind: WriteFailureKind::Validation(message),
+            kind: WriteFailureKind::ValidationTyped(ValidationError::Other(message)),
         })?;
         let current_hash = std::fs::read(self.roots.repo.join(path.as_path()))
             .map(|bytes| crate::markdown::hash_bytes(&bytes))
-            .map_err(|err| WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::Io(err.to_string()) })?;
+            .map_err(|err| WriteFailure {
+                outcome: outcome.clone(),
+                kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
+            })?;
         let preserved_body = memory.body.clone();
         let preserved_encryption = memory.frontmatter.extras.get("encryption").cloned();
 
@@ -735,7 +754,7 @@ impl Substrate {
         }
         validate_frontmatter(&memory.frontmatter).map_err(|err| WriteFailure {
             outcome: outcome.clone(),
-            kind: WriteFailureKind::Validation(err.to_string()),
+            kind: WriteFailureKind::ValidationTyped(ValidationError::Other(err.to_string())),
         })?;
         let final_hash = atomic_write(crate::markdown::AtomicWrite {
             repo: &self.roots.repo,
@@ -750,7 +769,10 @@ impl Substrate {
         let (indexed_memory, metadata_only) = encrypted_index_projection(&memory);
         self.index
             .lock()
-            .map_err(|err| WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::Io(err.to_string()) })?
+            .map_err(|err| WriteFailure {
+                outcome: outcome.clone(),
+                kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
+            })?
             .upsert_memory(&indexed_memory, metadata_only)
             .map_err(|_err| {
                 let pending = PendingEncryptedIndexOp {
@@ -800,19 +822,23 @@ impl Substrate {
         if matches!(request.classification, ClassificationOutcome::Secret) {
             return Err(WriteFailure { outcome, kind: WriteFailureKind::SecretRefused });
         }
-        validate_substrate_fragment_append(&request)
-            .map_err(|err| WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::Validation(err) })?;
+        validate_substrate_fragment_append(&request).map_err(|err| WriteFailure {
+            outcome: outcome.clone(),
+            kind: WriteFailureKind::ValidationTyped(ValidationError::Other(err)),
+        })?;
         let id = request.id.clone().unwrap_or_else(new_substrate_fragment_id);
         validate_substrate_fragment_id(&id).map_err(|err| WriteFailure {
             outcome: outcome.clone(),
-            kind: WriteFailureKind::Validation(err.to_string()),
+            kind: WriteFailureKind::ValidationTyped(ValidationError::Other(err.to_string())),
         })?;
         let device = DeviceId::try_new(&self.device_id).map_err(|err| WriteFailure {
             outcome: outcome.clone(),
-            kind: WriteFailureKind::Validation(err.to_string()),
+            kind: WriteFailureKind::ValidationTyped(ValidationError::Other(err.to_string())),
         })?;
-        let path = substrate_fragment_path(&request, device.as_str())
-            .map_err(|err| WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::Validation(err) })?;
+        let path = substrate_fragment_path(&request, device.as_str()).map_err(|err| WriteFailure {
+            outcome: outcome.clone(),
+            kind: WriteFailureKind::ValidationTyped(ValidationError::Other(err)),
+        })?;
 
         match &request.payload {
             SubstrateFragmentPayload::Plaintext { text } => {
@@ -835,7 +861,7 @@ impl Substrate {
                 )
                 .map_err(|err| WriteFailure {
                     outcome: outcome.clone(),
-                    kind: WriteFailureKind::Io(err.to_string()),
+                    kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
                 })?;
             }
             SubstrateFragmentPayload::Encrypted { encryption, descriptor } => {
@@ -859,7 +885,7 @@ impl Substrate {
                 )
                 .map_err(|err| WriteFailure {
                     outcome: outcome.clone(),
-                    kind: WriteFailureKind::Io(err.to_string()),
+                    kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
                 })?;
             }
         }
@@ -878,7 +904,7 @@ impl Substrate {
                 repair_required: Some(RepairRequired::PendingEvent),
                 operation_id: operation_id.clone(),
             },
-            kind: WriteFailureKind::Io(err.to_string()),
+            kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
         })?;
 
         Ok(SubstrateFragmentAppendOutcome { id, path, operation_id })
@@ -895,12 +921,14 @@ impl Substrate {
         if lifetime_days < 1 {
             return Err(WriteFailure {
                 outcome,
-                kind: WriteFailureKind::Validation("lifetime_days must be positive".to_string()),
+                kind: WriteFailureKind::ValidationTyped(ValidationError::Other(
+                    "lifetime_days must be positive".to_string(),
+                )),
             });
         }
         let device = DeviceId::try_new(&self.device_id).map_err(|err| WriteFailure {
             outcome: outcome.clone(),
-            kind: WriteFailureKind::Validation(err.to_string()),
+            kind: WriteFailureKind::ValidationTyped(ValidationError::Other(err.to_string())),
         })?;
         let device_dir = self.roots.repo.join("substrate").join(device.as_str());
         if !device_dir.exists() {
@@ -908,22 +936,25 @@ impl Substrate {
         }
 
         let mut archive_batches: BTreeMap<RepoPath, Vec<SubstrateFragmentRecord>> = BTreeMap::new();
-        for entry in std::fs::read_dir(&device_dir)
-            .map_err(|err| WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::Io(err.to_string()) })?
-        {
+        for entry in std::fs::read_dir(&device_dir).map_err(|err| WriteFailure {
+            outcome: outcome.clone(),
+            kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
+        })? {
             let entry = entry.map_err(|err| WriteFailure {
                 outcome: outcome.clone(),
-                kind: WriteFailureKind::Io(err.to_string()),
+                kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
             })?;
             let file_path = entry.path();
             if file_path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
                 continue;
             }
-            let repo_path = absolute_to_repo_path(&self.roots.repo, &file_path)
-                .map_err(|err| WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::Validation(err) })?;
+            let repo_path = absolute_to_repo_path(&self.roots.repo, &file_path).map_err(|err| WriteFailure {
+                outcome: outcome.clone(),
+                kind: WriteFailureKind::ValidationTyped(ValidationError::Other(err)),
+            })?;
             let records = read_substrate_records(&file_path).map_err(|err| WriteFailure {
                 outcome: outcome.clone(),
-                kind: WriteFailureKind::Io(err.to_string()),
+                kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
             })?;
             let (expired, live): (Vec<_>, Vec<_>) =
                 records.into_iter().partition(|record| record.ts + Duration::days(lifetime_days) <= now);
@@ -934,14 +965,20 @@ impl Substrate {
                 JsonlWriteTarget::new(&self.roots.repo, &repo_path, &operation_id, self.durability),
                 &live,
             )
-            .map_err(|err| WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::Io(err.to_string()) })?;
+            .map_err(|err| WriteFailure {
+                outcome: outcome.clone(),
+                kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
+            })?;
             for record in expired {
                 let archive_path = RepoPath::try_new(format!(
                     "substrate/archive/{}/{}.jsonl",
                     device.as_str(),
                     record.ts.format("%Y-%m")
                 ))
-                .map_err(|err| WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::Validation(err) })?;
+                .map_err(|err| WriteFailure {
+                    outcome: outcome.clone(),
+                    kind: WriteFailureKind::ValidationTyped(ValidationError::Other(err)),
+                })?;
                 archive_batches.entry(archive_path).or_default().push(record);
             }
         }
@@ -951,7 +988,7 @@ impl Substrate {
             let absolute_archive = self.roots.repo.join(archive_path.as_path());
             let mut records = read_substrate_records(&absolute_archive).map_err(|err| WriteFailure {
                 outcome: outcome.clone(),
-                kind: WriteFailureKind::Io(err.to_string()),
+                kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
             })?;
             let mut seen: BTreeSet<String> = records.iter().map(|record| record.id.clone()).collect();
             for record in new_records.drain(..) {
@@ -965,7 +1002,10 @@ impl Substrate {
                 JsonlWriteTarget::new(&self.roots.repo, &archive_path, &operation_id, self.durability),
                 &records,
             )
-            .map_err(|err| WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::Io(err.to_string()) })?;
+            .map_err(|err| WriteFailure {
+                outcome: outcome.clone(),
+                kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
+            })?;
         }
 
         Ok(SubstrateArchiveOutcome { fragments_archived })
@@ -977,7 +1017,7 @@ impl Substrate {
         let outcome = WriteOutcome::not_committed(operation_id.clone(), self.durability);
         let envelope = self.read_memory_envelope(&request.id).await.map_err(|err| WriteFailure {
             outcome: outcome.clone(),
-            kind: WriteFailureKind::Validation(err.to_string()),
+            kind: WriteFailureKind::ValidationTyped(ValidationError::Other(err.to_string())),
         })?;
         let mut memory = envelope.metadata;
         let path = memory
@@ -1006,7 +1046,7 @@ impl Substrate {
         memory.path = Some(path.clone());
         validate_frontmatter(&memory.frontmatter).map_err(|err| WriteFailure {
             outcome: outcome.clone(),
-            kind: WriteFailureKind::Validation(err.to_string()),
+            kind: WriteFailureKind::ValidationTyped(ValidationError::Other(err.to_string())),
         })?;
         let final_hash = atomic_write(crate::markdown::AtomicWrite {
             repo: &self.roots.repo,
@@ -1020,7 +1060,10 @@ impl Substrate {
         })?;
         self.index
             .lock()
-            .map_err(|err| WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::Io(err.to_string()) })?
+            .map_err(|err| WriteFailure {
+                outcome: outcome.clone(),
+                kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
+            })?
             .upsert_memory(&memory, true)
             .map_err(|_err| {
                 let pending = PendingIndexOp {
@@ -1055,10 +1098,15 @@ impl Substrate {
                     kind,
                 }
             })?;
-        let device = DeviceId::try_new(&self.device_id)
-            .map_err(|err| WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::Io(err.to_string()) })?;
-        let seq = reserve_event_sequence(&self.roots.runtime, &self.event_log, &device)
-            .map_err(|err| WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::Io(err.to_string()) })?;
+        let device = DeviceId::try_new(&self.device_id).map_err(|err| WriteFailure {
+            outcome: outcome.clone(),
+            kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
+        })?;
+        let seq =
+            reserve_event_sequence(&self.roots.runtime, &self.event_log, &device).map_err(|err| WriteFailure {
+                outcome: outcome.clone(),
+                kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
+            })?;
         let event = Event {
             schema: crate::SUBSTRATE_SCHEMA_VERSION,
             id: EventId::new(format!("evt_{}", uuid::Uuid::new_v4())),
@@ -1384,20 +1432,25 @@ impl Substrate {
         if !path.is_safe_relative() {
             return Err(WriteFailure {
                 outcome,
-                kind: WriteFailureKind::Validation(format!("invalid repo path: {}", path.as_str())),
+                kind: WriteFailureKind::ValidationTyped(ValidationError::Other(format!(
+                    "invalid repo path: {}",
+                    path.as_str()
+                ))),
             });
         }
         if path.as_str().starts_with("encrypted/") {
             return Err(WriteFailure {
                 outcome,
-                kind: WriteFailureKind::Validation(format!(
+                kind: WriteFailureKind::ValidationTyped(ValidationError::Other(format!(
                     "plaintext writes cannot target encrypted namespace: {}",
                     path.as_str()
-                )),
+                ))),
             });
         }
-        ensure_write_parent_contained(&self.roots.repo, &path)
-            .map_err(|err| WriteFailure { outcome, kind: WriteFailureKind::Validation(err) })
+        ensure_write_parent_contained(&self.roots.repo, &path).map_err(|err| WriteFailure {
+            outcome,
+            kind: WriteFailureKind::ValidationTyped(ValidationError::Other(err)),
+        })
     }
 
     fn enforce_best_effort_opt_in(&self, allow_best_effort: bool, outcome: WriteOutcome) -> Result<(), WriteFailure> {

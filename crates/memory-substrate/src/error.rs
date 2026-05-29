@@ -179,23 +179,17 @@ pub enum WriteFailureKind {
     /// Repair state could not be made durable.
     #[error("repair state not durable")]
     RepairStateNotDurable,
-    /// Validation failed (legacy stringly-typed variant).
+    /// Validation failed; `0` is the typed validation error.
     ///
-    /// Deferred: callers should switch to `ValidationTyped(ValidationError)` below;
-    /// tests still match on `Validation(String)` so both variants remain until call
-    /// sites are migrated.
-    #[error("validation failed: {0}")]
-    Validation(String),
-    /// Validation failed (typed source).
+    /// Free-form messages that have no dedicated [`ValidationError`] variant are
+    /// carried as [`ValidationError::Other`], whose `Display` renders the message
+    /// verbatim — so this variant's rendered text is identical to the message the
+    /// caller would have produced as a raw string.
     #[error("validation failed: {0}")]
     ValidationTyped(ValidationError),
-    /// IO failed (legacy stringly-typed variant).
-    ///
-    /// Deferred: replace with `IoTyped { kind, context }` below.
-    #[error("io failed: {0}")]
-    Io(String),
-    /// IO failed; `kind` is the typed signal, `context` is operator description.
-    #[error("io failed [{kind:?}]: {context}")]
+    /// IO failed; `kind` is the typed signal for programmatic dispatch, `context`
+    /// is the operator-facing description rendered in `Display`.
+    #[error("io failed: {context}")]
     IoTyped {
         /// Standard library IO error kind for programmatic dispatch.
         kind: std::io::ErrorKind,

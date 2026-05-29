@@ -176,7 +176,7 @@ async fn write_refuses_repo_path_escape() {
         })
         .await
         .expect_err("path escape refused");
-    assert!(matches!(err.kind, memory_substrate::WriteFailureKind::Validation(_)));
+    assert!(matches!(err.kind, memory_substrate::WriteFailureKind::ValidationTyped(_)));
     assert!(!temp.path().join("escape.md").exists());
 }
 
@@ -209,7 +209,7 @@ async fn plaintext_write_refuses_encrypted_namespace_before_disk_index_or_event_
         .expect_err("encrypted namespace refused");
 
     assert!(
-        matches!(err.kind, memory_substrate::WriteFailureKind::Validation(message) if message.contains("encrypted namespace"))
+        matches!(err.kind, memory_substrate::WriteFailureKind::ValidationTyped(message) if message.to_string().contains("encrypted namespace"))
     );
     assert!(!roots.repo.join(memory.path.expect("path").as_path()).exists());
     assert!(substrate
@@ -261,7 +261,9 @@ async fn plaintext_write_refuses_symlinked_parent_escape() {
         .await
         .expect_err("symlinked parent refused");
 
-    assert!(matches!(err.kind, memory_substrate::WriteFailureKind::Validation(message) if message.contains("symlink")));
+    assert!(
+        matches!(err.kind, memory_substrate::WriteFailureKind::ValidationTyped(message) if message.to_string().contains("symlink"))
+    );
     assert!(!outside.join(format!("{}.md", memory.frontmatter.id.as_str())).exists());
 }
 
@@ -343,7 +345,7 @@ async fn privacy_scan_private_credential_refuses_plaintext_before_disk_effect() 
         .expect_err("credential label refused");
 
     assert!(
-        matches!(err.kind, memory_substrate::WriteFailureKind::Validation(message) if message.contains("privacy_scan.private_credential"))
+        matches!(err.kind, memory_substrate::WriteFailureKind::ValidationTyped(message) if message.to_string().contains("privacy_scan.private_credential"))
     );
     assert!(!roots.repo.join(path.as_path()).exists());
     let hits = substrate
@@ -1041,7 +1043,9 @@ async fn encrypted_write_refuses_symlinked_encrypted_parent_escape() {
         .await
         .expect_err("symlinked encrypted parent refused");
 
-    assert!(matches!(err.kind, memory_substrate::WriteFailureKind::Io(message) if message.contains("symlink")));
+    assert!(
+        matches!(err.kind, memory_substrate::WriteFailureKind::IoTyped { context, .. } if context.contains("symlink"))
+    );
     assert!(!outside.join("patterns").join(format!("{}.md", memory.frontmatter.id.as_str())).exists());
 }
 
@@ -1087,7 +1091,7 @@ async fn encrypted_write_derives_ciphertext_path_under_encrypted_namespace_and_r
         })
         .await
         .expect_err("non-memory original path refused");
-    assert!(matches!(err.kind, memory_substrate::WriteFailureKind::Validation(_)));
+    assert!(matches!(err.kind, memory_substrate::WriteFailureKind::ValidationTyped(_)));
 }
 
 #[tokio::test]

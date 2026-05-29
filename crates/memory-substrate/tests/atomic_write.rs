@@ -52,7 +52,9 @@ fn atomic_write_refuses_plaintext_encrypted_namespace_before_disk_effects() {
     })
     .expect_err("plaintext atomic write to encrypted namespace is refused");
 
-    assert!(matches!(failure.kind, WriteFailureKind::Validation(message) if message.contains("encrypted namespace")));
+    assert!(
+        matches!(failure.kind, WriteFailureKind::ValidationTyped(message) if message.to_string().contains("encrypted namespace"))
+    );
     assert!(!temp.path().join("encrypted").exists());
 }
 
@@ -77,7 +79,9 @@ fn atomic_write_refuses_unsafe_repo_path_before_disk_effects() {
     })
     .expect_err("unsafe atomic write path is refused");
 
-    assert!(matches!(failure.kind, WriteFailureKind::Validation(message) if message.contains("invalid repo path")));
+    assert!(
+        matches!(failure.kind, WriteFailureKind::ValidationTyped(message) if message.to_string().contains("invalid repo path"))
+    );
     assert!(!temp.path().join(".git").exists());
 }
 

@@ -5,7 +5,7 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use crate::error::{WriteFailure, WriteFailureKind};
+use crate::error::{ValidationError, WriteFailure, WriteFailureKind};
 use crate::frontmatter::{parse_document, serialize_document};
 use crate::markdown::cas::hash_bytes;
 use crate::model::{DurabilityTier, Memory, OperationId, RepoPath, Sha256, WriteMode, WriteOutcome};
@@ -63,24 +63,29 @@ pub fn atomic_write(args: AtomicWrite<'_>) -> Result<Sha256, WriteFailure> {
     if !relative.is_safe_relative() {
         return Err(WriteFailure {
             outcome,
-            kind: WriteFailureKind::Validation(format!("invalid repo path: {}", relative.as_str())),
+            kind: WriteFailureKind::ValidationTyped(ValidationError::Other(format!(
+                "invalid repo path: {}",
+                relative.as_str()
+            ))),
         });
     }
     if relative.as_str().starts_with("encrypted/") && !args.allow_encrypted_namespace {
         return Err(WriteFailure {
             outcome,
-            kind: WriteFailureKind::Validation(format!(
+            kind: WriteFailureKind::ValidationTyped(ValidationError::Other(format!(
                 "plaintext writes cannot target encrypted namespace: {}",
                 relative.as_str()
-            )),
+            ))),
         });
     }
-    ensure_write_parent_contained(args.repo, &relative)
-        .map_err(|err| WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::Validation(err) })?;
+    ensure_write_parent_contained(args.repo, &relative).map_err(|err| WriteFailure {
+        outcome: outcome.clone(),
+        kind: WriteFailureKind::ValidationTyped(ValidationError::Other(err)),
+    })?;
     enforce_preconditions(&final_path, args.expected_base_hash, args.mode, outcome.clone())?;
     let contents = serialize_document(args.memory).map_err(|err| WriteFailure {
         outcome: outcome.clone(),
-        kind: WriteFailureKind::Validation(err.to_string()),
+        kind: WriteFailureKind::ValidationTyped(ValidationError::Other(err.to_string())),
     })?;
     let final_hash = hash_bytes(contents.as_bytes());
     if let Some(suppression) = args.suppression {
@@ -91,18 +96,25 @@ pub fn atomic_write(args: AtomicWrite<'_>) -> Result<Sha256, WriteFailure> {
     }
     let parent = final_path.parent().ok_or_else(|| WriteFailure {
         outcome: outcome.clone(),
-        kind: WriteFailureKind::Io("missing parent".to_string()),
+        kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::NotFound, context: "missing parent".to_string() },
     })?;
-    fs::create_dir_all(parent)
-        .map_err(|err| WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::Io(err.to_string()) })?;
+    fs::create_dir_all(parent).map_err(|err| WriteFailure {
+        outcome: outcome.clone(),
+        kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
+    })?;
     let file_name = final_path.file_name().and_then(|name| name.to_str()).unwrap_or("memory.md");
     let temp_path = parent.join(format!(".{file_name}.{}.tmp", args.operation_id.as_str()));
     let write_result = (|| {
         write_temp_file(&temp_path, contents.as_bytes(), outcome.clone())?;
-        fs::rename(&temp_path, &final_path)
-            .map_err(|err| WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::Io(err.to_string()) })?;
+        fs::rename(&temp_path, &final_path).map_err(|err| WriteFailure {
+            outcome: outcome.clone(),
+            kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
+        })?;
         if matches!(args.durability, DurabilityTier::Full) {
-            fsync_dir(parent).map_err(|err| WriteFailure { outcome, kind: WriteFailureKind::Io(err.to_string()) })?;
+            fsync_dir(parent).map_err(|err| WriteFailure {
+                outcome,
+                kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
+            })?;
         }
         Ok(())
     })();
@@ -183,7 +195,7 @@ fn enforce_preconditions(
         WriteMode::ReplaceExisting => {
             let bytes = fs::read(final_path).map_err(|err| WriteFailure {
                 outcome: outcome.clone(),
-                kind: WriteFailureKind::Io(err.to_string()),
+                kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
             })?;
             let current = hash_bytes(&bytes);
             if expected_base_hash.is_some_and(|expected| expected != &current) {
@@ -197,14 +209,18 @@ fn enforce_preconditions(
 }
 
 fn write_temp_file(path: &Path, contents: &[u8], outcome: WriteOutcome) -> Result<(), WriteFailure> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .map_err(|err| WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::Io(err.to_string()) })?;
-    file.write_all(contents)
-        .map_err(|err| WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::Io(err.to_string()) })?;
-    file.sync_all().map_err(|err| WriteFailure { outcome, kind: WriteFailureKind::Io(err.to_string()) })
+    let mut file = OpenOptions::new().write(true).create_new(true).open(path).map_err(|err| WriteFailure {
+        outcome: outcome.clone(),
+        kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
+    })?;
+    file.write_all(contents).map_err(|err| WriteFailure {
+        outcome: outcome.clone(),
+        kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
+    })?;
+    file.sync_all().map_err(|err| WriteFailure {
+        outcome,
+        kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
+    })
 }
 
 /// Fsync a directory entry so its parent journal captures the rename/truncation.
