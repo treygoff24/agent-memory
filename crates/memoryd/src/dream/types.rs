@@ -2,11 +2,21 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub const INVALID_REQUEST: &str = "invalid_request";
+pub const DREAM_UNAVAILABLE: &str = "dream_unavailable";
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum DreamError {
     #[error("invalid_request: {message}")]
     InvalidRequest { message: String },
+    /// A caller-supplied `--cli` override that names no registered harness. Kept
+    /// distinct from `InvalidRequest` because the dispatch sites treat it
+    /// specially (manual CLI exits 1; scheduled maps it to `LeaseError::InvalidRequest`).
+    #[error("invalid_request: unknown harness CLI override `{name}`")]
+    UnknownHarnessOverride { name: String },
+    /// No harness CLI could be selected (disabled, missing, or unauthenticated).
+    /// The `dream_unavailable` category: retryable, and the manual CLI exits 2.
+    #[error("dream_unavailable: {message}")]
+    Unavailable { message: String },
 }
 
 impl DreamError {
@@ -14,9 +24,18 @@ impl DreamError {
         Self::InvalidRequest { message: message.into() }
     }
 
+    pub fn unknown_harness_override(name: impl Into<String>) -> Self {
+        Self::UnknownHarnessOverride { name: name.into() }
+    }
+
+    pub fn unavailable(message: impl Into<String>) -> Self {
+        Self::Unavailable { message: message.into() }
+    }
+
     pub fn code(&self) -> &'static str {
         match self {
-            Self::InvalidRequest { .. } => INVALID_REQUEST,
+            Self::InvalidRequest { .. } | Self::UnknownHarnessOverride { .. } => INVALID_REQUEST,
+            Self::Unavailable { .. } => DREAM_UNAVAILABLE,
         }
     }
 }

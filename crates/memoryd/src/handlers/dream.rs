@@ -90,11 +90,9 @@ pub(crate) async fn dream_now_response(
 }
 
 fn dream_error_to_handler(error: crate::dream::types::DreamError) -> HandlerError {
-    let message = error.to_string();
-    if let Some(rest) = message.strip_prefix("invalid_request: dream_unavailable: ") {
-        HandlerError::dream_unavailable(rest.to_string())
-    } else {
-        HandlerError::from_dream(error)
+    match error {
+        crate::dream::types::DreamError::Unavailable { message } => HandlerError::dream_unavailable(message),
+        other => HandlerError::from_dream(other),
     }
 }
 

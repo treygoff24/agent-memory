@@ -101,14 +101,16 @@ async fn run_manual_dream(args: crate::cli::DreamNowArgs) -> anyhow::Result<Drea
             lease_window_seconds: u64::from(config.synced.dreams.lease_window_seconds),
             cli_used,
         });
-        let message = error.to_string();
-        if let Some(rest) = message.strip_prefix("invalid_request: dream_unavailable: ") {
-            eprintln!("dream_unavailable: {rest}");
-            std::process::exit(2);
-        }
-        if message.contains("unknown harness CLI override") {
-            eprintln!("invalid_request: {message}");
-            std::process::exit(1);
+        match error.downcast_ref::<crate::dream::types::DreamError>() {
+            Some(crate::dream::types::DreamError::Unavailable { message }) => {
+                eprintln!("dream_unavailable: {message}");
+                std::process::exit(2);
+            }
+            Some(crate::dream::types::DreamError::UnknownHarnessOverride { .. }) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+            _ => {}
         }
     }
 
@@ -205,7 +207,9 @@ async fn execute_dream_run(invocation: DreamRunInvocation) -> anyhow::Result<Dre
         &build.options,
     )
     .await
-    .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    // Preserve the typed `DreamError` (rather than flattening to a string) so the
+    // manual/scheduled dispatch sites can match its variant instead of sniffing text.
+    .map_err(anyhow::Error::new)?;
     crate::dream::run::DreamRunner::new(build.options.with_harness(harness), build.writer)
         .run()
         .await
@@ -213,11 +217,13 @@ async fn execute_dream_run(invocation: DreamRunInvocation) -> anyhow::Result<Dre
 }
 
 fn dream_run_error_to_lease_error(error: anyhow::Error) -> crate::dream::lease::LeaseError {
-    let message = error.to_string();
-    if message.contains("unknown harness CLI override") {
-        return crate::dream::lease::LeaseError::InvalidRequest { message };
+    if matches!(
+        error.downcast_ref::<crate::dream::types::DreamError>(),
+        Some(crate::dream::types::DreamError::UnknownHarnessOverride { .. })
+    ) {
+        return crate::dream::lease::LeaseError::InvalidRequest { message: error.to_string() };
     }
-    crate::dream::lease::LeaseError::unavailable(message)
+    crate::dream::lease::LeaseError::unavailable(error.to_string())
 }
 
 async fn run_dream_cleanup(args: crate::cli::DreamCleanupArgs) -> anyhow::Result<crate::dream::report::CleanupReport> {

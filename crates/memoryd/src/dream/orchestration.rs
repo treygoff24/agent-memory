@@ -108,44 +108,37 @@ pub async fn select_harness(
     let registry = HarnessCliRegistry::builtin_v0_2();
     if let Some(name) = cli_override {
         if registry.disabled_adapters().any(|adapter| adapter.name == name) {
-            return Err(DreamError::invalid_request(format!(
-                "dream_unavailable: harness CLI `{name}` is disabled in Stream F v0.2"
-            )));
+            return Err(DreamError::unavailable(format!("harness CLI `{name}` is disabled in Stream F v0.2")));
         }
-        let adapter = registry
-            .get(name)
-            .ok_or_else(|| DreamError::invalid_request(format!("unknown harness CLI override `{name}`")))?;
+        let adapter = registry.get(name).ok_or_else(|| DreamError::unknown_harness_override(name))?;
         if !adapter.is_installed() {
-            return Err(DreamError::invalid_request(format!(
-                "dream_unavailable: harness CLI `{name}` is not installed"
-            )));
+            return Err(DreamError::unavailable(format!("harness CLI `{name}` is not installed")));
         }
         let probe = adapter.auth_probe().await;
         match &probe {
             super::harness::AuthProbeResult::Ok => return Ok(adapter),
             super::harness::AuthProbeResult::CliMissing { .. } => {
-                return Err(DreamError::invalid_request(format!(
-                    "dream_unavailable: harness CLI `{name}` is not installed"
-                )));
+                return Err(DreamError::unavailable(format!("harness CLI `{name}` is not installed")));
             }
             super::harness::AuthProbeResult::AuthFailed { .. } => {
-                return Err(DreamError::invalid_request(format!(
-                    "dream_unavailable: harness CLI `{name}` is not authenticated: {}",
+                return Err(DreamError::unavailable(format!(
+                    "harness CLI `{name}` is not authenticated: {}",
                     probe.operator_message(adapter.name())
                 )));
             }
             super::harness::AuthProbeResult::Timeout | super::harness::AuthProbeResult::Error { .. } => {
-                return Err(DreamError::invalid_request(format!(
-                    "dream_unavailable: harness CLI `{name}` auth probe failed: {}",
+                return Err(DreamError::unavailable(format!(
+                    "harness CLI `{name}` auth probe failed: {}",
                     probe.operator_message(adapter.name())
                 )));
             }
         }
     }
 
-    registry.select_first_available(priority).await.ok_or_else(|| {
-        DreamError::invalid_request("dream_unavailable: no eligible harness CLI installed and authenticated")
-    })
+    registry
+        .select_first_available(priority)
+        .await
+        .ok_or_else(|| DreamError::unavailable("no eligible harness CLI installed and authenticated"))
 }
 
 #[cfg(any(test, feature = "dev-fixtures"))]
