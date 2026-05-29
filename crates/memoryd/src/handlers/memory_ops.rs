@@ -2,6 +2,7 @@
 //! observe pipeline with its field validators and encrypted-payload helpers, and
 //! the delta/startup recall responses.
 
+use super::governance::{classify_privacy, write_privacy_memory};
 use super::*;
 
 const SEARCH_LIMIT_DEFAULT: usize = 10;
