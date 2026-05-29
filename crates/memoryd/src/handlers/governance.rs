@@ -75,49 +75,19 @@ pub(crate) async fn governance_supersede_response(
     })?;
     let privacy = classify_input_privacy(&input)?;
     if let Some(refusal) = input.privacy_refusal(&privacy) {
-        return Ok(ResponsePayload::GovernanceSupersede(GovernanceSupersedeResponse {
-            status: GovernanceStatus::Refused,
-            new_id: None,
-            old_id: Some(old_id),
-            reason: refusal.reason,
-            chain: None,
-            policy_applied: refusal.policy_applied,
-            policy_source: refusal.policy_source,
-            warning: None,
-        }));
+        return Ok(ResponsePayload::GovernanceSupersede(supersede_refused(
+            old_id,
+            refusal.reason,
+            refusal.policy_applied,
+            refusal.policy_source,
+        )));
     }
 
     let new_id = substrate.next_memory_id().await.map_err(HandlerError::substrate)?;
     let candidate = input.candidate(new_id.as_str());
-    let (policies, policy_source) = match load_policy_set(substrate.roots().repo.as_path()) {
-        Ok(loaded) => loaded,
-        Err(error) => {
-            return Ok(ResponsePayload::GovernanceSupersede(GovernanceSupersedeResponse {
-                status: GovernanceStatus::Refused,
-                new_id: None,
-                old_id: Some(old_id),
-                reason: Some(GovernanceRefusalReason::Policy),
-                chain: None,
-                policy_applied: None,
-                policy_source: Some(error.message),
-                warning: None,
-            }));
-        }
-    };
-    let tombstones = match load_tombstone_index(substrate.roots().repo.as_path()) {
-        Ok(index) => index,
-        Err(error) => {
-            return Ok(ResponsePayload::GovernanceSupersede(GovernanceSupersedeResponse {
-                status: GovernanceStatus::Refused,
-                new_id: None,
-                old_id: Some(old_id),
-                reason: Some(GovernanceRefusalReason::Tombstone),
-                chain: None,
-                policy_applied: None,
-                policy_source: Some(error.message),
-                warning: None,
-            }));
-        }
+    let (policies, policy_source, tombstones) = match load_supersede_inputs(substrate, &old_id) {
+        Ok(inputs) => inputs,
+        Err(response) => return Ok(ResponsePayload::GovernanceSupersede(*response)),
     };
     let old_envelope = substrate.read_memory_envelope(&old_memory_id).await.map_err(HandlerError::substrate)?;
 
@@ -149,37 +119,9 @@ pub(crate) async fn governance_supersede_response(
         repo_root: substrate.roots().repo.clone(),
     });
     let decision = engine.evaluate_write(&candidate);
-
-    let policy_applied = match (old_is_encrypted, decision) {
-        (false, GovernanceWriteDecision::Supersession { existing_id, policy_applied, .. }) => {
-            if existing_id != old_id {
-                return Ok(ResponsePayload::GovernanceSupersede(GovernanceSupersedeResponse {
-                    status: GovernanceStatus::Refused,
-                    new_id: None,
-                    old_id: Some(old_id),
-                    reason: Some(GovernanceRefusalReason::Contradiction),
-                    chain: None,
-                    policy_applied: Some(policy_applied),
-                    policy_source: Some(policy_source_string(policy_source)),
-                    warning: None,
-                }));
-            }
-            policy_applied
-        }
-        (false, other) => {
-            return Ok(ResponsePayload::GovernanceSupersede(supersede_refusal(old_id, other, policy_source)));
-        }
-        // Encrypted-old path: `active = []` means contradiction detection can't fire,
-        // so engine.evaluate_write returns Promoted or Candidate when the candidate
-        // passes grounding + policy. Either is "the new content is acceptable; proceed
-        // with the explicit supersede". Refusals (missing grounding, secret material,
-        // tombstone match) still surface.
-        (true, GovernanceWriteDecision::Promoted { policy_applied, .. })
-        | (true, GovernanceWriteDecision::Candidate { policy_applied, .. })
-        | (true, GovernanceWriteDecision::Supersession { policy_applied, .. }) => policy_applied,
-        (true, other) => {
-            return Ok(ResponsePayload::GovernanceSupersede(supersede_refusal(old_id, other, policy_source)));
-        }
+    let policy_applied = match resolve_supersede_policy_applied(old_is_encrypted, decision, &old_id, policy_source) {
+        Ok(policy_applied) => policy_applied,
+        Err(response) => return Ok(ResponsePayload::GovernanceSupersede(*response)),
     };
 
     let mut replacement = input.to_memory(
@@ -734,6 +676,27 @@ fn tombstone_refusal(namespace: String, message: String, policy_source: PolicySo
     }
 }
 
+/// Build a refused supersede response. Centralizes the shared field shape
+/// (`status: Refused`, no `new_id`/`chain`, no `warning`) so the handler's
+/// several refusal exits read as one-liners.
+fn supersede_refused(
+    old_id: String,
+    reason: Option<GovernanceRefusalReason>,
+    policy_applied: Option<String>,
+    policy_source: Option<String>,
+) -> GovernanceSupersedeResponse {
+    GovernanceSupersedeResponse {
+        status: GovernanceStatus::Refused,
+        new_id: None,
+        old_id: Some(old_id),
+        reason,
+        chain: None,
+        policy_applied,
+        policy_source,
+        warning: None,
+    }
+}
+
 fn supersede_refusal(
     old_id: String,
     decision: GovernanceWriteDecision,
@@ -752,15 +715,63 @@ fn supersede_refusal(
             (GovernanceRefusalReason::Contradiction, Some(policy_applied))
         }
     };
-    GovernanceSupersedeResponse {
-        status: GovernanceStatus::Refused,
-        new_id: None,
-        old_id: Some(old_id),
-        reason: Some(reason),
-        chain: None,
-        policy_applied,
-        policy_source: Some(policy_source_string(policy_source)),
-        warning: None,
+    supersede_refused(old_id, Some(reason), policy_applied, Some(policy_source_string(policy_source)))
+}
+
+/// Load the policy set and tombstone index for a supersede, mapping either load
+/// failure to its refusal response. Returns the loaded inputs, or the refusal the
+/// handler should surface.
+fn load_supersede_inputs(
+    substrate: &Substrate,
+    old_id: &str,
+) -> Result<(PolicySet, PolicySource, TombstoneIndex), Box<GovernanceSupersedeResponse>> {
+    let (policies, policy_source) = load_policy_set(substrate.roots().repo.as_path()).map_err(|error| {
+        Box::new(supersede_refused(
+            old_id.to_string(),
+            Some(GovernanceRefusalReason::Policy),
+            None,
+            Some(error.message),
+        ))
+    })?;
+    let tombstones = load_tombstone_index(substrate.roots().repo.as_path()).map_err(|error| {
+        Box::new(supersede_refused(
+            old_id.to_string(),
+            Some(GovernanceRefusalReason::Tombstone),
+            None,
+            Some(error.message),
+        ))
+    })?;
+    Ok((policies, policy_source, tombstones))
+}
+
+/// Resolve the engine decision into the accepted supersede's `policy_applied`, or
+/// the refusal to surface. The plaintext-old path requires the detected supersession
+/// target to match the caller-named `old_id`; the encrypted-old path can't run
+/// body-based contradiction (`active = []`), so it accepts Promoted/Candidate/
+/// Supersession and lets the explicit supersede intent stand. Other decisions refuse.
+fn resolve_supersede_policy_applied(
+    old_is_encrypted: bool,
+    decision: GovernanceWriteDecision,
+    old_id: &str,
+    policy_source: PolicySource,
+) -> Result<String, Box<GovernanceSupersedeResponse>> {
+    match (old_is_encrypted, decision) {
+        (false, GovernanceWriteDecision::Supersession { existing_id, policy_applied, .. }) => {
+            if existing_id != old_id {
+                return Err(Box::new(supersede_refused(
+                    old_id.to_string(),
+                    Some(GovernanceRefusalReason::Contradiction),
+                    Some(policy_applied),
+                    Some(policy_source_string(policy_source)),
+                )));
+            }
+            Ok(policy_applied)
+        }
+        (false, other) => Err(Box::new(supersede_refusal(old_id.to_string(), other, policy_source))),
+        (true, GovernanceWriteDecision::Promoted { policy_applied, .. })
+        | (true, GovernanceWriteDecision::Candidate { policy_applied, .. })
+        | (true, GovernanceWriteDecision::Supersession { policy_applied, .. }) => Ok(policy_applied),
+        (true, other) => Err(Box::new(supersede_refusal(old_id.to_string(), other, policy_source))),
     }
 }
 
