@@ -21,6 +21,7 @@ node_modules/
 # Local agent/tool runtime state
 .clawpatch/
 .delegate/
+.desloppify/
 .tldr/
 .tldrignore
 .wright/
