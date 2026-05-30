@@ -20,8 +20,10 @@ node_modules/
 
 # Local agent/tool runtime state
 .clawpatch/
+.delegate/
 .tldr/
 .tldrignore
+.wright/
 .code-briefcase/
 .code-briefcaseignore
 
