@@ -6,15 +6,15 @@ If something goes wrong along the way, see [`docs/troubleshooting.md`](troublesh
 
 ## 0. (Optional) Import detection wizard
 
-If you'd like an on-ramp that detects existing harness memory and offers to import it before starting the daemon, you can run the optional wizard. This is not current alpha bootstrap; the daemon still starts with `memoryd serve --init` in step 2.
+If you'd like an on-ramp that detects existing harness memory and offers to import it before starting the daemon, you can run the optional wizard. This is not current alpha bootstrap; it does not start or configure the daemon. The daemon starts with `memoryd serve --init` in step 2.
 
 ```bash
-memoryd init  # not current alpha bootstrap; optional import wizard
+memoryd init  # optional import wizard; not current alpha bootstrap
 ```
 
 The wizard inspects `~/.claude/projects/` and `~/.codex/memories/`, reports counts, and offers to invoke `memoryd import` so your prior Claude Code and Codex CLI memory carries over into Memorum. See [`docs/importer.md`](importer.md) for the full importer story and [`docs/runbooks/init-wizard.md`](runbooks/init-wizard.md) for the wizard's flow.
 
-You can skip the wizard and run the steps below manually; `memoryd init` is an optional importer convenience, not current alpha daemon bootstrap.
+You can skip the wizard and run the steps below manually; `memoryd init` is an optional importer convenience, not current alpha bootstrap.
 
 ## 1. Build or install
 

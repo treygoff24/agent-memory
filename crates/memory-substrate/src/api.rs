@@ -1179,13 +1179,13 @@ impl Substrate {
     /// Rebuild derived index from files.
     pub async fn reindex(&self) -> SubstrateResult<usize> {
         let mut count = 0usize;
-        let repo_paths = collect_reindex_paths(&self.roots.repo).map_err(OpenError::OperatorRepairRequired)?;
+        let entries = collect_reindex_paths(&self.roots.repo).map_err(OpenError::OperatorRepairRequired)?;
         self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.clear_plaintext_memory_index()?;
-        for (_repo_path, memory, metadata_only, file_hash) in repo_paths {
+        for entry in entries {
             self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.upsert_memory_with_file_hash(
-                &memory,
-                metadata_only,
-                Some(&file_hash),
+                &entry.memory,
+                entry.metadata_only,
+                Some(&entry.file_hash),
             )?;
             count += 1;
         }
@@ -2045,12 +2045,12 @@ fn placeholder_frontmatter(id: &MemoryId) -> Frontmatter {
 }
 
 fn full_reindex_from_repo(repo: &std::path::Path, index: &mut Index) -> std::io::Result<usize> {
-    let repo_paths = collect_reindex_paths(repo).map_err(std::io::Error::other)?;
+    let entries = collect_reindex_paths(repo).map_err(std::io::Error::other)?;
     index.clear_plaintext_memory_index().map_err(|err| std::io::Error::other(err.to_string()))?;
     let mut count = 0usize;
-    for (_repo_path, memory, metadata_only, file_hash) in repo_paths {
+    for entry in entries {
         index
-            .upsert_memory_with_file_hash(&memory, metadata_only, Some(&file_hash))
+            .upsert_memory_with_file_hash(&entry.memory, entry.metadata_only, Some(&entry.file_hash))
             .map_err(|err| std::io::Error::other(err.to_string()))?;
         count += 1;
     }
@@ -2058,7 +2058,13 @@ fn full_reindex_from_repo(repo: &std::path::Path, index: &mut Index) -> std::io:
     Ok(count)
 }
 
-fn collect_reindex_paths(repo: &std::path::Path) -> Result<Vec<(RepoPath, Memory, bool, Sha256)>, String> {
+struct ReindexEntry {
+    memory: Memory,
+    metadata_only: bool,
+    file_hash: Sha256,
+}
+
+fn collect_reindex_paths(repo: &std::path::Path) -> Result<Vec<ReindexEntry>, String> {
     let mut acc = Vec::new();
     for raw in crate::tree::relative_memory_paths(repo) {
         let rel = raw.to_string_lossy().replace('\\', "/");
@@ -2081,7 +2087,7 @@ fn collect_reindex_paths(repo: &std::path::Path) -> Result<Vec<(RepoPath, Memory
                         } else {
                             true
                         };
-                        acc.push((path, indexed_memory, metadata_only, hash));
+                        acc.push(ReindexEntry { memory: indexed_memory, metadata_only, file_hash: hash });
                     } else {
                         return Err(format!(
                             "plaintext markdown under encrypted namespace requires operator repair: {}",
@@ -2094,7 +2100,7 @@ fn collect_reindex_paths(repo: &std::path::Path) -> Result<Vec<(RepoPath, Memory
         } else {
             acc.push(
                 read_memory_file(repo, &path)
-                    .map(|(memory, hash)| (path, memory, false, hash))
+                    .map(|(memory, hash)| ReindexEntry { memory, metadata_only: false, file_hash: hash })
                     .map_err(|err| err.to_string())?,
             );
         }

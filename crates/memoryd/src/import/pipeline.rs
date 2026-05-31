@@ -241,7 +241,48 @@ fn daemon_protocol_error(operation: &str, error: ProtocolError) -> ImportError {
 fn unexpected_daemon_payload(operation: &str, payload: &ResponsePayload) -> ImportError {
     ImportError::Parse {
         source_key: "<daemon>".to_string(),
-        reason: format!("{operation} returned unexpected daemon payload {payload:?}"),
+        reason: format!("{operation} returned unexpected daemon payload {}", response_payload_kind(payload)),
+    }
+}
+
+fn response_payload_kind(payload: &ResponsePayload) -> &'static str {
+    match payload {
+        ResponsePayload::Status(_) => "Status",
+        ResponsePayload::Doctor(_) => "Doctor",
+        ResponsePayload::Search(_) => "Search",
+        ResponsePayload::Get(_) => "Get",
+        ResponsePayload::TrustArtifact(_) => "TrustArtifact",
+        ResponsePayload::CaptureSource(_) => "CaptureSource",
+        ResponsePayload::DashboardRoi(_) => "DashboardRoi",
+        ResponsePayload::NotificationsRecent(_) => "NotificationsRecent",
+        ResponsePayload::PolicyValidate(_) => "PolicyValidate",
+        ResponsePayload::PolicyWrite(_) => "PolicyWrite",
+        ResponsePayload::RecallHits(_) => "RecallHits",
+        ResponsePayload::Reveal(_) => "Reveal",
+        ResponsePayload::WriteNote(_) => "WriteNote",
+        ResponsePayload::GovernanceWrite(_) => "GovernanceWrite",
+        ResponsePayload::GovernanceSupersede(_) => "GovernanceSupersede",
+        ResponsePayload::GovernanceForget(_) => "GovernanceForget",
+        ResponsePayload::ReviewQueue(_) => "ReviewQueue",
+        ResponsePayload::ReviewApprove(_) => "ReviewApprove",
+        ResponsePayload::ReviewReject(_) => "ReviewReject",
+        ResponsePayload::Startup(_) => "Startup",
+        ResponsePayload::Delta(_) => "Delta",
+        ResponsePayload::PeerHeartbeat(_) => "PeerHeartbeat",
+        ResponsePayload::PeerStatus(_) => "PeerStatus",
+        ResponsePayload::PeerActivity(_) => "PeerActivity",
+        ResponsePayload::PeerReleaseLock(_) => "PeerReleaseLock",
+        ResponsePayload::Observe(_) => "Observe",
+        ResponsePayload::DreamNow(_) => "DreamNow",
+        ResponsePayload::DreamStatus(_) => "DreamStatus",
+        ResponsePayload::WebStatus(_) => "WebStatus",
+        ResponsePayload::RealityCheck(_) => "RealityCheck",
+        ResponsePayload::InspectEntities(_) => "InspectEntities",
+        ResponsePayload::EventsLogPage(_) => "EventsLogPage",
+        ResponsePayload::NamespaceTree(_) => "NamespaceTree",
+        ResponsePayload::GovernancePolicyDump(_) => "GovernancePolicyDump",
+        ResponsePayload::ConflictsList(_) => "ConflictsList",
+        ResponsePayload::TestInjectEvent(_) => "TestInjectEvent",
     }
 }
 
@@ -923,6 +964,30 @@ mod tests {
         };
         assert!(reason.contains("Supersede"));
         assert!(reason.contains("Status"));
+    }
+
+    #[test]
+    fn unexpected_daemon_payload_omits_payload_body_content() {
+        let error = unexpected_daemon_payload(
+            "WriteMemory",
+            &ResponsePayload::Get(crate::protocol::GetResponse {
+                id: "mem-secret".to_string(),
+                summary: "private summary".to_string(),
+                body: "SECRET MEMORY BODY".to_string(),
+                truncated: false,
+                provenance: None,
+                guidance: "private guidance".to_string(),
+            }),
+        );
+
+        let ImportError::Parse { reason, .. } = error else {
+            panic!("unexpected payloads should stay reportable parse-style failures");
+        };
+        assert!(reason.contains("WriteMemory"));
+        assert!(reason.contains("Get"));
+        assert!(!reason.contains("SECRET MEMORY BODY"));
+        assert!(!reason.contains("private summary"));
+        assert!(!reason.contains("private guidance"));
     }
 
     #[test]
