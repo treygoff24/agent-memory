@@ -132,7 +132,7 @@ pub(crate) async fn get_response(
         body,
         truncated,
         provenance,
-        guidance: "Returned a bounded Stream A record preview.".to_string(),
+        guidance: "Returned a bounded Memorum record preview.".to_string(),
     }))
 }
 

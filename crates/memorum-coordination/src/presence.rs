@@ -131,21 +131,29 @@ impl PresenceRegistry {
     }
 
     pub fn snapshot_for_namespace(&self, namespace: &str) -> Vec<PresenceRecord> {
-        self.records.iter().filter(|entry| entry.namespace == namespace).map(|entry| entry.value().clone()).collect()
+        sorted_presence_records(
+            self.records
+                .iter()
+                .filter(|entry| entry.namespace == namespace)
+                .map(|entry| entry.value().clone())
+                .collect(),
+        )
     }
 
     pub fn all_records(&self) -> Vec<PresenceRecord> {
-        self.records.iter().map(|entry| entry.value().clone()).collect()
+        sorted_presence_records(self.records.iter().map(|entry| entry.value().clone()).collect())
     }
 
     pub fn active_peers(&self, query: ActivePeerQuery<'_>) -> Vec<PresenceRecord> {
-        self.records
-            .iter()
-            .filter(|entry| entry.namespace == query.namespace)
-            .filter(|entry| query.own_session_id != Some(entry.session_id.as_str()))
-            .filter(|entry| !is_stale(entry.value(), query.now, query.stale_threshold))
-            .map(|entry| entry.value().clone())
-            .collect()
+        sorted_presence_records(
+            self.records
+                .iter()
+                .filter(|entry| entry.namespace == query.namespace)
+                .filter(|entry| query.own_session_id != Some(entry.session_id.as_str()))
+                .filter(|entry| !is_stale(entry.value(), query.now, query.stale_threshold))
+                .map(|entry| entry.value().clone())
+                .collect(),
+        )
     }
 
     pub fn cleanup_stale(&self, stale_threshold: Duration) -> Vec<String> {
@@ -451,6 +459,11 @@ fn truncate_for_display(value: &str, max_bytes: usize) -> String {
             })
         })
         .collect()
+}
+
+fn sorted_presence_records(mut records: Vec<PresenceRecord>) -> Vec<PresenceRecord> {
+    records.sort_by(|left, right| left.session_id.cmp(&right.session_id));
+    records
 }
 
 fn is_stale(record: &PresenceRecord, now: Instant, stale_threshold: Duration) -> bool {

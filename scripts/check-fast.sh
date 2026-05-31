@@ -3,9 +3,19 @@ set -euo pipefail
 
 started_at="$(date +%s)"
 
+cleanup_cargo_target_dir=0
+if [[ -z "${CARGO_TARGET_DIR:-}" ]]; then
+  CARGO_TARGET_DIR="$(mktemp -d -t memorum-check-fast-target)"
+  export CARGO_TARGET_DIR
+  cleanup_cargo_target_dir=1
+fi
+
 finish() {
   local ended_at
   ended_at="$(date +%s)"
+  if [[ "$cleanup_cargo_target_dir" -eq 1 && "${MEMORUM_CHECK_FAST_KEEP_TARGET:-0}" != "1" ]]; then
+    rm -rf "$CARGO_TARGET_DIR"
+  fi
   echo "check-fast duration: $((ended_at - started_at))s"
 }
 trap finish EXIT
@@ -15,11 +25,16 @@ phase() {
   echo "==> $*"
 }
 
-if command -v sccache >/dev/null 2>&1; then
+# Keep the fast gate aligned with scripts/check.sh: avoid repo target-dir reuse
+# and sccache by default on macOS, where they have caused long gate hangs behind
+# syspolicyd/CSExattrCrypto. Operators can still opt in when their host is known
+# safe.
+if [[ "${MEMORUM_CHECK_FAST_USE_SCCACHE:-0}" == "1" ]] && command -v sccache >/dev/null 2>&1; then
   export RUSTC_WRAPPER="${RUSTC_WRAPPER:-sccache}"
   echo "using RUSTC_WRAPPER=$RUSTC_WRAPPER"
 else
-  echo "warning: sccache not installed; Rust compilation will not use sccache" >&2
+  unset RUSTC_WRAPPER
+  echo "sccache disabled for check-fast; set MEMORUM_CHECK_FAST_USE_SCCACHE=1 to opt in" >&2
 fi
 
 if command -v cargo-nextest >/dev/null 2>&1; then

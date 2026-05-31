@@ -421,7 +421,7 @@ fn delta_guidance(empty: bool) -> String {
     if empty {
         "No passive recall delta matched this turn.".to_owned()
     } else {
-        "Stream E passive recall delta assembled through daemon protocol.".to_owned()
+        "Memorum passive recall delta assembled through daemon protocol.".to_owned()
     }
 }
 

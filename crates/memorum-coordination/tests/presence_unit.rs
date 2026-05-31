@@ -188,13 +188,47 @@ fn test_all_records_snapshot() {
     let registry = PresenceRegistry::new();
     let now = Instant::now();
 
-    registry.upsert(record("sess_a", "project:alpha", now));
     registry.upsert(record("sess_b", "project:beta", now));
+    registry.upsert(record("sess_a", "project:alpha", now));
 
-    let mut session_ids = registry.all_records().into_iter().map(|record| record.session_id).collect::<Vec<_>>();
-    session_ids.sort();
+    let session_ids = registry.all_records().into_iter().map(|record| record.session_id).collect::<Vec<_>>();
 
     assert_eq!(session_ids, vec!["sess_a".to_string(), "sess_b".to_string()]);
+}
+
+#[test]
+fn test_namespace_and_active_peer_snapshots_are_sorted_by_session_id() {
+    let registry = PresenceRegistry::new();
+    let now = Instant::now();
+    let stale_after = Duration::from_secs(300);
+
+    registry.upsert(record("sess_c", "project:alpha", now));
+    registry.upsert(record("sess_a", "project:alpha", now));
+    registry.upsert(record("sess_b", "project:alpha", now));
+    registry.upsert(record("self", "project:alpha", now));
+    registry.upsert(record("sess_other", "project:beta", now));
+
+    let namespace_ids = registry
+        .snapshot_for_namespace("project:alpha")
+        .into_iter()
+        .map(|record| record.session_id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        namespace_ids,
+        vec!["self".to_string(), "sess_a".to_string(), "sess_b".to_string(), "sess_c".to_string()]
+    );
+
+    let peer_ids = registry
+        .active_peers(ActivePeerQuery {
+            namespace: "project:alpha",
+            own_session_id: Some("self"),
+            now,
+            stale_threshold: stale_after,
+        })
+        .into_iter()
+        .map(|record| record.session_id)
+        .collect::<Vec<_>>();
+    assert_eq!(peer_ids, vec!["sess_a".to_string(), "sess_b".to_string(), "sess_c".to_string()]);
 }
 
 #[test]

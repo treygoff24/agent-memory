@@ -21,7 +21,7 @@ use crate::import::report::{DedupEntry, HarnessCounters, ImportReport, RefusalEn
 use crate::import::sources::{claude, codex};
 use crate::import::state::{ImportRecord, ImportState, SupersededRecord};
 use crate::import::{ImportError, ImportResult};
-use crate::protocol::{GovernanceRefusalReason, GovernanceStatus};
+use crate::protocol::{GovernanceRefusalReason, GovernanceStatus, ProtocolError, ResponsePayload, ResponseResult};
 
 /// Caller-supplied options for the planning phase.
 #[derive(Debug, Clone, Default)]
@@ -194,13 +194,10 @@ impl DaemonClient for SocketDaemonClient {
         let envelope = crate::client::request(&self.socket_path, request_id, payload)
             .await
             .map_err(|error| ImportError::io(self.socket_path.clone(), std::io::Error::other(error.to_string())))?;
-        let crate::protocol::ResponseResult::Success(crate::protocol::ResponsePayload::GovernanceWrite(write)) =
-            envelope.result
-        else {
-            return Err(ImportError::Parse {
-                source_key: "<daemon>".to_string(),
-                reason: "unexpected response shape from WriteMemory".to_string(),
-            });
+        let write = match envelope.result {
+            ResponseResult::Success(ResponsePayload::GovernanceWrite(write)) => write,
+            ResponseResult::Error(error) => return Err(daemon_protocol_error("WriteMemory", error)),
+            ResponseResult::Success(payload) => return Err(unexpected_daemon_payload("WriteMemory", &payload)),
         };
         Ok(WriteMemoryOutcome {
             status: write.status,
@@ -222,15 +219,29 @@ impl DaemonClient for SocketDaemonClient {
         let envelope = crate::client::request(&self.socket_path, request_id, payload)
             .await
             .map_err(|error| ImportError::io(self.socket_path.clone(), std::io::Error::other(error.to_string())))?;
-        let crate::protocol::ResponseResult::Success(crate::protocol::ResponsePayload::GovernanceSupersede(supersede)) =
-            envelope.result
-        else {
-            return Err(ImportError::Parse {
-                source_key: "<daemon>".to_string(),
-                reason: "unexpected response shape from Supersede".to_string(),
-            });
+        let supersede = match envelope.result {
+            ResponseResult::Success(ResponsePayload::GovernanceSupersede(supersede)) => supersede,
+            ResponseResult::Error(error) => return Err(daemon_protocol_error("Supersede", error)),
+            ResponseResult::Success(payload) => return Err(unexpected_daemon_payload("Supersede", &payload)),
         };
         Ok(SupersedeOutcome { status: supersede.status, new_id: supersede.new_id, reason: supersede.reason })
+    }
+}
+
+fn daemon_protocol_error(operation: &str, error: ProtocolError) -> ImportError {
+    ImportError::Parse {
+        source_key: "<daemon>".to_string(),
+        reason: format!(
+            "{operation} failed with daemon error {}: {} (retryable={})",
+            error.code, error.message, error.retryable
+        ),
+    }
+}
+
+fn unexpected_daemon_payload(operation: &str, payload: &ResponsePayload) -> ImportError {
+    ImportError::Parse {
+        source_key: "<daemon>".to_string(),
+        reason: format!("{operation} returned unexpected daemon payload {payload:?}"),
     }
 }
 
@@ -877,6 +888,41 @@ mod tests {
             wiki_link_targets_resolvable: Vec::new(),
             wiki_link_targets_back_edge: Vec::new(),
         }
+    }
+
+    #[test]
+    fn daemon_protocol_error_keeps_code_message_and_retryability() {
+        let error = daemon_protocol_error(
+            "WriteMemory",
+            ProtocolError {
+                code: "invalid_request".to_string(),
+                message: "title is required".to_string(),
+                retryable: false,
+            },
+        );
+
+        let ImportError::Parse { source_key, reason } = error else {
+            panic!("daemon errors should stay reportable parse-style failures");
+        };
+        assert_eq!(source_key, "<daemon>");
+        assert!(reason.contains("WriteMemory"));
+        assert!(reason.contains("invalid_request"));
+        assert!(reason.contains("title is required"));
+        assert!(reason.contains("retryable=false"));
+    }
+
+    #[test]
+    fn unexpected_daemon_payload_names_operation_and_payload() {
+        let error = unexpected_daemon_payload(
+            "Supersede",
+            &ResponsePayload::Status(crate::protocol::StatusResponse::default()),
+        );
+
+        let ImportError::Parse { reason, .. } = error else {
+            panic!("unexpected payloads should stay reportable parse-style failures");
+        };
+        assert!(reason.contains("Supersede"));
+        assert!(reason.contains("Status"));
     }
 
     #[test]

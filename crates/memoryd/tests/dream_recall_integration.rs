@@ -411,7 +411,7 @@ fn stream_e_empty_baseline(cwd: &str) -> String {
         "  <pending-attention>".to_owned(),
         "  </pending-attention>".to_owned(),
         "  <recall-explanation policy=\"stream-e-v0.5\" budget-tokens=\"512\" used-tokens=\"{used}\">".to_owned(),
-        "    Deterministic passive recall from Stream A index rows.".to_owned(),
+        "    Deterministic passive recall from Memorum index rows.".to_owned(),
         "  </recall-explanation>".to_owned(),
         "</memory-recall>".to_owned(),
         String::new(),

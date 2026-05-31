@@ -4,17 +4,17 @@ This guide starts a local memory daemon, verifies it, and wires an MCP client to
 
 If something goes wrong along the way, see [`docs/troubleshooting.md`](troubleshooting.md) — it covers `dream_disabled`, socket errors, MCP listing empty, and the other first-run failure modes.
 
-## 0. (Optional) Interactive setup
+## 0. (Optional) Import detection wizard
 
-If you'd like an on-ramp that detects existing harness memory and offers to import it, start here:
+If you'd like an on-ramp that detects existing harness memory and offers to import it before starting the daemon, you can run the optional wizard. This is not current alpha bootstrap; the daemon still starts with `memoryd serve --init` in step 2.
 
 ```bash
-memoryd init
+memoryd init  # not current alpha bootstrap; optional import wizard
 ```
 
 The wizard inspects `~/.claude/projects/` and `~/.codex/memories/`, reports counts, and offers to invoke `memoryd import` so your prior Claude Code and Codex CLI memory carries over into Memorum. See [`docs/importer.md`](importer.md) for the full importer story and [`docs/runbooks/init-wizard.md`](runbooks/init-wizard.md) for the wizard's flow.
 
-You can skip the wizard and run the steps below manually; `memoryd init` is convenience, not requirement.
+You can skip the wizard and run the steps below manually; `memoryd init` is an optional importer convenience, not current alpha daemon bootstrap.
 
 ## 1. Build or install
 

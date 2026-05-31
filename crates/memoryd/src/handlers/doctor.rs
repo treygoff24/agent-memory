@@ -47,7 +47,7 @@ pub(super) async fn doctor_response(substrate: &Substrate) -> DoctorResponse {
     DoctorResponse {
         healthy: doctor_is_healthy(has_substrate_findings, enabled_harness_count, authenticated_harness_count),
         findings,
-        guidance: "Doctor reflects Stream A substrate validation, repair state, and Stream F harness availability."
+        guidance: "Doctor reflects Memorum substrate validation, repair state, and dreaming harness availability."
             .to_string(),
     }
 }

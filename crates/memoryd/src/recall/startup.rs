@@ -141,7 +141,7 @@ pub async fn build_startup_response_with_coordination_config(
         RenderedRecallSection { name: RecallSectionName::PendingAttention, body: rendered_pending_attention.body },
         RenderedRecallSection {
             name: RecallSectionName::RecallExplanation,
-            body: "Deterministic passive recall from Stream A index rows.".to_owned(),
+            body: "Deterministic passive recall from Memorum index rows.".to_owned(),
         },
     ];
     let startup_context = startup_context_from_selection(&session_binding, &selected);
@@ -181,7 +181,7 @@ pub async fn build_startup_response_with_coordination_config(
         recall_block,
         budget_used_tokens: explanation.budget_used_tokens,
         recall_explanation: explanation,
-        guidance: "Stream E passive recall assembled from read-only Stream A index projections.".to_owned(),
+        guidance: "Memorum passive recall assembled from read-only index projections.".to_owned(),
         dream_question_omissions: pending_attention_omissions,
     })
 }

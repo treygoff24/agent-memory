@@ -36,7 +36,7 @@ pub(crate) async fn status_response(substrate: &Substrate, state: &HandlerState)
 
     StatusResponse {
         state: if dashboard_warnings.is_empty() { "ready".to_string() } else { "degraded".to_string() },
-        guidance: "memoryd handlers are backed by the Stream A substrate.".to_string(),
+        guidance: "memoryd handlers are backed by the local Memorum substrate.".to_string(),
         daemon: Some(DaemonProcessStatus {
             version: env!("CARGO_PKG_VERSION").to_string(),
             pid: std::process::id(),

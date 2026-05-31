@@ -312,9 +312,8 @@ fn phase_5_replay_pending_events(
 
 /// Phase 6 — Index/file consistency.
 ///
-/// For each `.md` in the repo: compare `body_hash` + `file_mtime_ns` from
-/// the index against what's on disk.  Only reindex files whose hash has drifted.
-/// Falls back to full reindex when the index has no hash column yet (scaffold).
+/// For each `.md` in the repo: compare the indexed file hash against what's on
+/// disk. Only reindex files whose bytes have drifted.
 fn phase_6_index_consistency(repo: &Path, index: &mut Index, report: &mut ReconcileReport) -> std::io::Result<()> {
     let reindexed = reindex_stale_memories(repo, index)
         .map_err(|err| std::io::Error::other(format!("index consistency: {err}")))?;
@@ -457,7 +456,7 @@ fn upsert_with_hash_check(repo: &Path, index: &mut Index, op: &PendingIndexOp) -
         return ReplayOutcome::Deferred;
     }
 
-    match index.upsert_memory(&memory, false) {
+    match index.upsert_memory_with_file_hash(&memory, false, Some(&hash)) {
         Ok(_) => ReplayOutcome::Replayed,
         Err(err) => {
             tracing::warn!(op_id = op.op_id.as_str(), "pending index upsert failed: {err}");
@@ -478,7 +477,7 @@ fn replay_encrypted_op(repo: &Path, index: &mut Index, op: &PendingEncryptedInde
     if actual_hash != op.expected_ciphertext_hash {
         return ReplayOutcome::Deferred;
     }
-    match index.upsert_memory(&op.indexed_memory, op.metadata_only) {
+    match index.upsert_memory_with_file_hash(&op.indexed_memory, op.metadata_only, Some(&actual_hash)) {
         Ok(_) => ReplayOutcome::Replayed,
         Err(err) => {
             tracing::warn!(op_id = op.op_id.as_str(), "encrypted index upsert failed: {err}");
@@ -520,7 +519,7 @@ fn reindex_stale_memories(repo: &Path, index: &mut Index) -> Result<u32, Box<dyn
         let needs_reindex = index.file_hash_for(&repo_path).map(|idx_hash| idx_hash != disk_hash).unwrap_or(true);
 
         if needs_reindex {
-            index.upsert_memory(&memory, false)?;
+            index.upsert_memory_with_file_hash(&memory, false, Some(&disk_hash))?;
             count += 1;
         }
     }

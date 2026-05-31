@@ -15,7 +15,7 @@ use crate::index::chunking::chunk_memory;
 use crate::markdown::hash_bytes;
 use crate::model::{
     ChunkResult, EmbeddingTriple, EmbeddingUpdate, Entity, EventsLogMirrorHealth, Memory, MemoryId, MemoryQuery,
-    MemoryStatus, QueryResult, RecallIndexQuery, RecallIndexRow, RepoPath, Scope, Sensitivity, SourceKind,
+    MemoryStatus, QueryResult, RecallIndexQuery, RecallIndexRow, RepoPath, Scope, Sensitivity, Sha256, SourceKind,
 };
 
 /// Index handle.  Owns a single SQLite connection; all mutating methods take
@@ -81,7 +81,24 @@ impl Index {
 
     /// Upsert a memory, populating all `memories` table columns (spec §10.1).
     pub fn upsert_memory(&mut self, memory: &Memory, metadata_only: bool) -> rusqlite::Result<()> {
-        upsert_memory_row_with_full_metadata(&mut self.connection, memory, metadata_only, &self.active_embedding)
+        self.upsert_memory_with_file_hash(memory, metadata_only, None)
+    }
+
+    /// Upsert a memory with the actual on-disk file hash when the caller has it.
+    ///
+    /// Startup reconciliation uses this to compare future disk reads against the
+    /// exact bytes that were indexed, not merely the body hash.
+    pub fn upsert_memory_with_file_hash(
+        &mut self,
+        memory: &Memory,
+        metadata_only: bool,
+        file_hash: Option<&Sha256>,
+    ) -> rusqlite::Result<()> {
+        upsert_memory_row_with_full_metadata(
+            &mut self.connection,
+            memory,
+            MemoryUpsertOptions { metadata_only, file_hash, active_embedding: &self.active_embedding },
+        )
     }
 
     /// Clear all derived rows before a full reindex.
@@ -540,15 +557,21 @@ fn resolve_pending_embedding_job(txn: &Transaction<'_>, update: &EmbeddingUpdate
 
 /// Upsert a memory into SQLite, populating all `memories` columns (spec §10.1).
 ///
-/// `file_hash` mirrors `body_hash` and `file_mtime_ns` is 0 until the write
-/// path plumbs the real on-disk values (deferred).
+/// `file_hash` is the exact on-disk hash when the caller already has it; the
+/// body hash fallback preserves fixture call sites that do not touch disk.
+/// `file_mtime_ns` is still 0 until the write path plumbs real metadata.
+struct MemoryUpsertOptions<'a> {
+    metadata_only: bool,
+    file_hash: Option<&'a Sha256>,
+    active_embedding: &'a EmbeddingTriple,
+}
+
 fn upsert_memory_row_with_full_metadata(
     connection: &mut Connection,
     memory: &Memory,
-    metadata_only: bool,
-    active_embedding: &EmbeddingTriple,
+    options: MemoryUpsertOptions<'_>,
 ) -> rusqlite::Result<()> {
-    let active_embedding_dropped = is_dropped_triple_rusqlite(connection, active_embedding)?;
+    let active_embedding_dropped = is_dropped_triple_rusqlite(connection, options.active_embedding)?;
     let txn = connection.transaction()?;
 
     let path = resolve_memory_path(memory);
@@ -561,7 +584,7 @@ fn upsert_memory_row_with_full_metadata(
     let source_kind = source_kind_str(memory.frontmatter.source.kind);
     let body_hash = hash_bytes(memory.body.as_bytes()).to_string();
     let frontmatter_json = serde_json::to_string(&memory.frontmatter).unwrap_or_else(|_| "{}".to_string());
-    let file_hash = body_hash.clone(); // placeholder; deferred: plumb from fs::metadata
+    let file_hash = options.file_hash.map_or_else(|| body_hash.clone(), ToString::to_string);
     let file_mtime_ns: i64 = 0; // placeholder; deferred: plumb from fs::metadata
     let indexed_at = chrono::Utc::now().to_rfc3339();
     let created_at = memory.frontmatter.created_at.to_rfc3339();
@@ -642,7 +665,7 @@ fn upsert_memory_row_with_full_metadata(
             ":file_hash":                 &file_hash,
             ":file_mtime_ns":             file_mtime_ns,
             ":indexed_at":                &indexed_at,
-            ":metadata_only":             metadata_only as i64,
+            ":metadata_only":             options.metadata_only as i64,
             ":passive_recall":            passive_recall,
             ":index_body":                index_body,
             ":human_review_required":     human_review_required,
@@ -654,7 +677,7 @@ fn upsert_memory_row_with_full_metadata(
 
     // Rebuild chunks for this memory.
     txn.execute("DELETE FROM memory_chunks WHERE memory_id = ?1", [memory.frontmatter.id.as_str()])?;
-    if !metadata_only && memory.frontmatter.retrieval_policy.index_body {
+    if !options.metadata_only && memory.frontmatter.retrieval_policy.index_body {
         for chunk in chunk_memory(memory) {
             txn.execute(
                 "INSERT INTO memory_chunks(memory_id,chunk_id,body_hash,text,start_byte,end_byte)
@@ -676,9 +699,9 @@ fn upsert_memory_row_with_full_metadata(
                      ) VALUES (?1,?2,?3,?4,?5,?6)",
                     params![
                         chunk.chunk_id.as_str(),
-                        active_embedding.provider.as_str(),
-                        active_embedding.model_ref.as_str(),
-                        i64::from(active_embedding.dimension),
+                        options.active_embedding.provider.as_str(),
+                        options.active_embedding.model_ref.as_str(),
+                        i64::from(options.active_embedding.dimension),
                         chunk.body_hash.as_str(),
                         enqueued_at
                     ],
@@ -898,7 +921,7 @@ fn append_recall_index_filters(
         filters.push("memories.metadata_only = 0".to_string());
     }
     if !query.statuses.is_empty() {
-        let placeholders = vec!["?"; query.statuses.len()].join(",");
+        let placeholders = sql_placeholders(query.statuses.len());
         filters.push(format!("memories.status IN ({placeholders})"));
         for status in &query.statuses {
             bindings.push(rusqlite::types::Value::Text(status_str(*status).to_string()));
@@ -1093,7 +1116,7 @@ fn read_strings_by_memory(
     table: AuxiliaryStringTable,
     ids: &[String],
 ) -> rusqlite::Result<BTreeMap<String, Vec<String>>> {
-    let placeholders = vec!["?"; ids.len()].join(",");
+    let placeholders = sql_placeholders(ids.len());
     let sql = format!(
         "SELECT memory_id,{} FROM {} WHERE memory_id IN ({placeholders}) {}",
         table.column, table.table, table.order_by
@@ -1108,7 +1131,7 @@ fn read_strings_by_memory(
 }
 
 fn read_entities_by_memory(conn: &Connection, ids: &[String]) -> rusqlite::Result<BTreeMap<String, Vec<Entity>>> {
-    let placeholders = vec!["?"; ids.len()].join(",");
+    let placeholders = sql_placeholders(ids.len());
     let sql = format!(
         "SELECT memory_id,entity_id,label FROM memory_entities
          WHERE memory_id IN ({placeholders})
@@ -1132,7 +1155,7 @@ fn read_entity_aliases_by_memory(
     conn: &Connection,
     ids: &[String],
 ) -> rusqlite::Result<BTreeMap<(String, String), Vec<String>>> {
-    let placeholders = vec!["?"; ids.len()].join(",");
+    let placeholders = sql_placeholders(ids.len());
     let sql = format!(
         "SELECT memory_id,entity_id,alias FROM memory_entity_aliases
          WHERE memory_id IN ({placeholders})
@@ -1145,6 +1168,10 @@ fn read_entity_aliases_by_memory(
         aliases.entry((row.get(0)?, row.get(1)?)).or_default().push(row.get(2)?);
     }
     Ok(aliases)
+}
+
+fn sql_placeholders(count: usize) -> String {
+    std::iter::repeat_n("?", count).collect::<Vec<_>>().join(",")
 }
 
 fn row_to_result(row: &rusqlite::Row<'_>) -> rusqlite::Result<QueryResult> {

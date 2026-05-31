@@ -2,7 +2,7 @@ use chrono::Utc;
 use memory_substrate::index::{open_index, Index};
 use memory_substrate::{
     Author, AuthorKind, Frontmatter, Memory, MemoryId, MemoryStatus, MemoryType, RepoPath, RetrievalPolicy, Scope,
-    Sensitivity, Source, SourceKind, TrustLevel, WritePolicy,
+    Sensitivity, Sha256, Source, SourceKind, TrustLevel, WritePolicy,
 };
 
 #[test]
@@ -23,6 +23,19 @@ fn fts_update_and_delete_remove_old_terms() {
         .execute("DELETE FROM memory_chunks WHERE memory_id=?1", [memory.frontmatter.id.as_str()])
         .expect("delete chunks");
     assert!(index.query_chunks("newneedle").expect("new query after delete").is_empty());
+}
+
+#[test]
+fn upsert_can_store_actual_disk_file_hash_separately_from_body_hash() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let mut index = Index::new(open_index(&temp.path().join("index.sqlite")).expect("open index"));
+    let memory = sample_memory("mem_20260424_a1b2c3d4e5f60718_010101", "body hash differs from file hash");
+    let path = memory.path.clone().expect("fixture has path");
+    let file_hash = Sha256::new("sha256:file-bytes");
+
+    index.upsert_memory_with_file_hash(&memory, false, Some(&file_hash)).expect("upsert with file hash");
+
+    assert_eq!(index.file_hash_for(&path), Some(file_hash));
 }
 
 #[test]

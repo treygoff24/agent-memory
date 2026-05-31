@@ -311,7 +311,7 @@ impl Substrate {
                 outcome: outcome.clone(),
                 kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
             })?;
-            index_guard.upsert_memory(&request.memory, false)
+            index_guard.upsert_memory_with_file_hash(&request.memory, false, Some(&final_hash))
         };
         if let Err(_idx_err) = upsert_res {
             let pending = PendingIndexOp {
@@ -594,7 +594,7 @@ impl Substrate {
                 },
                 kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
             })?
-            .upsert_memory(&indexed_memory, metadata_only)
+            .upsert_memory_with_file_hash(&indexed_memory, metadata_only, Some(&ciphertext_hash))
             .map_err(|_err| {
                 let pending = PendingEncryptedIndexOp {
                     op_id: operation_id.clone(),
@@ -773,7 +773,7 @@ impl Substrate {
                 outcome: outcome.clone(),
                 kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
             })?
-            .upsert_memory(&indexed_memory, metadata_only)
+            .upsert_memory_with_file_hash(&indexed_memory, metadata_only, Some(&final_hash))
             .map_err(|_err| {
                 let pending = PendingEncryptedIndexOp {
                     op_id: operation_id.clone(),
@@ -1064,7 +1064,7 @@ impl Substrate {
                 outcome: outcome.clone(),
                 kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
             })?
-            .upsert_memory(&memory, true)
+            .upsert_memory_with_file_hash(&memory, true, Some(&final_hash))
             .map_err(|_err| {
                 let pending = PendingIndexOp {
                     op_id: operation_id.clone(),
@@ -1181,11 +1181,12 @@ impl Substrate {
         let mut count = 0usize;
         let repo_paths = collect_reindex_paths(&self.roots.repo).map_err(OpenError::OperatorRepairRequired)?;
         self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.clear_plaintext_memory_index()?;
-        for (_repo_path, memory, metadata_only) in repo_paths {
-            self.index
-                .lock()
-                .map_err(|err| OpenError::InvalidRoots(err.to_string()))?
-                .upsert_memory(&memory, metadata_only)?;
+        for (_repo_path, memory, metadata_only, file_hash) in repo_paths {
+            self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.upsert_memory_with_file_hash(
+                &memory,
+                metadata_only,
+                Some(&file_hash),
+            )?;
             count += 1;
         }
         self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.reconcile_active_embedding_jobs()?;
@@ -2047,22 +2048,24 @@ fn full_reindex_from_repo(repo: &std::path::Path, index: &mut Index) -> std::io:
     let repo_paths = collect_reindex_paths(repo).map_err(std::io::Error::other)?;
     index.clear_plaintext_memory_index().map_err(|err| std::io::Error::other(err.to_string()))?;
     let mut count = 0usize;
-    for (_repo_path, memory, metadata_only) in repo_paths {
-        index.upsert_memory(&memory, metadata_only).map_err(|err| std::io::Error::other(err.to_string()))?;
+    for (_repo_path, memory, metadata_only, file_hash) in repo_paths {
+        index
+            .upsert_memory_with_file_hash(&memory, metadata_only, Some(&file_hash))
+            .map_err(|err| std::io::Error::other(err.to_string()))?;
         count += 1;
     }
     index.reconcile_active_embedding_jobs().map_err(|err| std::io::Error::other(err.to_string()))?;
     Ok(count)
 }
 
-fn collect_reindex_paths(repo: &std::path::Path) -> Result<Vec<(RepoPath, Memory, bool)>, String> {
+fn collect_reindex_paths(repo: &std::path::Path) -> Result<Vec<(RepoPath, Memory, bool, Sha256)>, String> {
     let mut acc = Vec::new();
     for raw in crate::tree::relative_memory_paths(repo) {
         let rel = raw.to_string_lossy().replace('\\', "/");
         let path = RepoPath::new(rel.clone());
         if rel.starts_with("encrypted/") {
             match read_memory_file(repo, &path) {
-                Ok((memory, _hash)) => {
+                Ok((memory, hash)) => {
                     if memory.frontmatter.extras.contains_key("encryption") {
                         let mut indexed_memory = memory;
                         let metadata_only = if let Some(safe_body) = indexed_memory
@@ -2078,7 +2081,7 @@ fn collect_reindex_paths(repo: &std::path::Path) -> Result<Vec<(RepoPath, Memory
                         } else {
                             true
                         };
-                        acc.push((path, indexed_memory, metadata_only));
+                        acc.push((path, indexed_memory, metadata_only, hash));
                     } else {
                         return Err(format!(
                             "plaintext markdown under encrypted namespace requires operator repair: {}",
@@ -2091,7 +2094,7 @@ fn collect_reindex_paths(repo: &std::path::Path) -> Result<Vec<(RepoPath, Memory
         } else {
             acc.push(
                 read_memory_file(repo, &path)
-                    .map(|(memory, _hash)| (path, memory, false))
+                    .map(|(memory, hash)| (path, memory, false, hash))
                     .map_err(|err| err.to_string())?,
             );
         }
