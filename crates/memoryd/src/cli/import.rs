@@ -1,10 +1,9 @@
-use std::path::Path;
-
 use crate::cli::paths::resolve_socket_arg;
-use crate::cli::{ImportArgs, ImportHarness};
-use crate::import::pipeline::{ExecuteOptions, HarnessFilter, ImportEngine, ImportOptions, SocketDaemonClient};
-use crate::import::project_map::{InteractivePromptBackend, PromptBackend, PromptResult, PromptedDisposition};
-use crate::import::state::{ImportLockGuard, ImportState};
+use crate::cli::{ImportArgs, ImportHarness, NonGitCwdDefault};
+use crate::import::pipeline::{run_import_session, ExecuteOptions, HarnessFilter, ImportOptions, SocketDaemonClient};
+use crate::import::project_map::{
+    FixedDispositionBackend, InteractivePromptBackend, PromptBackend, PromptedDisposition,
+};
 
 pub async fn run(args: ImportArgs) -> anyhow::Result<()> {
     let harness_filter = match args.harness {
@@ -13,50 +12,28 @@ pub async fn run(args: ImportArgs) -> anyhow::Result<()> {
         ImportHarness::Codex => Some(HarnessFilter::Codex),
     };
 
-    let engine = ImportEngine::new(&args.repo);
-    // Acquire the importer lock so concurrent invocations fail fast with a
-    // clear AnotherImportInProgress error.
-    let _lock = ImportLockGuard::acquire(&engine.state_path)
-        .map_err(|error| anyhow::anyhow!("acquire import lock: {error}"))?;
-    let state = ImportState::load(&engine.state_path).map_err(|error| anyhow::anyhow!("load import state: {error}"))?;
-
     // Non-interactive callers (e.g. `memoryd init --non-interactive`) get a
     // default-skip prompt backend; everyone else gets the dialoguer-backed one.
-    let mut prompts: Box<dyn PromptBackend> = if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-        Box::new(InteractivePromptBackend)
-    } else {
-        Box::new(DefaultSkipPrompts)
-    };
-
-    let plan = engine
-        .plan(
-            ImportOptions {
-                from_claude: args.from_claude.clone(),
-                from_codex: args.from_codex.clone(),
-                harness_filter,
-                state,
-            },
-            prompts.as_mut(),
-        )
-        .await
-        .map_err(|error| anyhow::anyhow!("plan import: {error}"))?;
-
-    if !args.quiet {
-        eprintln!(
-            "Planned {} write(s): claude={} codex={}",
-            plan.actions.len(),
-            plan.source_discovery_summary.claude_candidates,
-            plan.source_discovery_summary.codex_candidates,
-        );
-    }
+    let mut prompts = prompt_backend(args.non_git_cwd_default);
 
     let socket = resolve_socket_arg(&args.socket);
     let mut client = SocketDaemonClient::new(socket);
     let execute_opts = ExecuteOptions { dry_run: args.dry_run, verbose_progress: !args.quiet };
-    let result = engine
-        .execute(plan, execute_opts, &mut client)
-        .await
-        .map_err(|error| anyhow::anyhow!("execute import: {error}"))?;
+    let result = run_import_session(
+        &args.repo,
+        ImportOptions {
+            from_claude: args.from_claude.clone(),
+            from_codex: args.from_codex.clone(),
+            harness_filter,
+            state: None,
+            plan_only: args.dry_run,
+        },
+        prompts.as_mut(),
+        &mut client,
+        execute_opts,
+    )
+    .await
+    .map_err(|error| anyhow::anyhow!("run import: {error}"))?;
 
     println!("{}", result.report.to_text());
     if let Some(path) = &args.report {
@@ -68,12 +45,18 @@ pub async fn run(args: ImportArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Non-interactive fallback prompt backend: defaults every non-git cwd to
-/// "skip" so an unattended run never blocks on stdin.
-struct DefaultSkipPrompts;
+fn prompt_backend(default: Option<NonGitCwdDefault>) -> Box<dyn PromptBackend> {
+    if let Some(default) = default {
+        return Box::new(FixedDispositionBackend::new(match default {
+            NonGitCwdDefault::Skip => PromptedDisposition::Skip,
+            NonGitCwdDefault::Me => PromptedDisposition::DropToMe,
+            NonGitCwdDefault::Generate => PromptedDisposition::GenerateProjectYaml,
+        }));
+    }
 
-impl PromptBackend for DefaultSkipPrompts {
-    fn prompt_non_git_cwd(&mut self, _cwd: &Path, _synced_dir: Option<&'static str>) -> PromptResult {
-        PromptResult { disposition: PromptedDisposition::Skip, synced_dir_confirmed: None }
+    if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        Box::new(InteractivePromptBackend)
+    } else {
+        Box::new(FixedDispositionBackend::new(PromptedDisposition::Skip))
     }
 }

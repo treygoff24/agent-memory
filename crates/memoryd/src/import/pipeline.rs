@@ -19,7 +19,7 @@ use crate::import::discovery::{
 use crate::import::project_map::{ProjectMapper, PromptBackend, ResolutionKind, ScopeBinding};
 use crate::import::report::{DedupEntry, HarnessCounters, ImportReport, RefusalEntry};
 use crate::import::sources::{claude, codex};
-use crate::import::state::{ImportRecord, ImportState, SupersededRecord};
+use crate::import::state::{ImportLockGuard, ImportRecord, ImportState, SupersededRecord};
 use crate::import::{ImportError, ImportResult};
 use crate::protocol::{GovernanceRefusalReason, GovernanceStatus, ProtocolError, ResponsePayload, ResponseResult};
 
@@ -32,9 +32,13 @@ pub struct ImportOptions {
     pub from_codex: Option<PathBuf>,
     /// Restrict planning to a single harness; `None` means import everything.
     pub harness_filter: Option<HarnessFilter>,
-    /// Pre-loaded state file for idempotency checks. `None` means "load from
-    /// disk at plan time using the default path".
-    pub state: ImportState,
+    /// Pre-loaded state for idempotency checks. `None` means an empty in-memory
+    /// state; disk-backed imports should go through [`run_import_session`].
+    pub state: Option<ImportState>,
+    /// Plan-only mode for dry-run callers. Project mapping records planned
+    /// side effects, such as `.memory-project.yaml` generation, without
+    /// writing them.
+    pub plan_only: bool,
 }
 
 /// `--harness claude|codex|all` selector.
@@ -311,6 +315,28 @@ pub struct ExecuteResult {
     pub state: ImportState,
 }
 
+pub struct ImportSession<'a, C: DaemonClient> {
+    pub repo_root: &'a Path,
+    pub options: ImportOptions,
+    pub prompts: &'a mut dyn PromptBackend,
+    pub client: &'a mut C,
+    pub execute_options: ExecuteOptions,
+}
+
+/// Run a complete disk-backed import session behind the importer invariants:
+/// acquire the import lock, load state, plan, execute, and let execution perform
+/// crash-safe state persistence. CLI and setup-engine callers should use this
+/// runner instead of hand-rolling lock/state plumbing.
+pub async fn run_import_session<C: DaemonClient>(session: ImportSession<'_, C>) -> ImportResult<ExecuteResult> {
+    let ImportSession { repo_root, mut options, prompts, client, execute_options } = session;
+    let engine = ImportEngine::new(repo_root);
+    let _lock = ImportLockGuard::acquire(&engine.state_path)?;
+    options.state = Some(ImportState::load(&engine.state_path)?);
+    options.plan_only = execute_options.dry_run;
+    let plan = engine.plan(options, prompts).await?;
+    engine.execute(plan, execute_options, client).await
+}
+
 impl ImportEngine {
     /// Build an engine pointed at the conventional state-file path.
     pub fn new(repo_root: &Path) -> Self {
@@ -523,7 +549,7 @@ fn build_write_meta(action: &PlannedWrite, related: &[String], supersedes: Optio
     );
     meta.insert("type".to_string(), Value::String("claim".to_string()));
     meta.insert("source_kind".to_string(), Value::String("import".to_string()));
-    meta.insert("source_ref".to_string(), Value::String(action.candidate.source_path.display().to_string()));
+    meta.insert("source_ref".to_string(), Value::String(format!("file:{}", action.candidate.source_path.display())));
     // Imported memories carry a confidence of 0.7 (plan R1 bump from 0.5) so
     // they stay above the Reality Check review threshold while still ranking
     // below hand-written `0.85` memories.
@@ -686,7 +712,7 @@ impl ImportEngine {
 
         // Pass 2: per-cwd project mapping. Walk unique cwds in deterministic
         // order so prompt order is stable across runs.
-        let mut mapper = ProjectMapper::new();
+        let mut mapper = ProjectMapper::new(options.plan_only);
         let mut cwd_to_scope: HashMap<Option<PathBuf>, ScopeBinding> = HashMap::new();
         let mut ordered_cwds: Vec<Option<PathBuf>> = Vec::new();
         let mut seen_cwds: HashSet<Option<PathBuf>> = HashSet::new();
@@ -704,6 +730,7 @@ impl ImportEngine {
         }
 
         // Pass 3: state-file dedup. Determine each candidate's action.
+        let state = options.state.clone().unwrap_or_default();
         let mut prelim: Vec<PlannedWrite> = Vec::with_capacity(candidates.len());
         for candidate in candidates {
             let scope = cwd_to_scope.get(&candidate.cwd).cloned().unwrap_or_else(|| ScopeBinding {
@@ -711,11 +738,12 @@ impl ImportEngine {
                 namespace: Some("me".to_string()),
                 canonical_namespace_id: None,
                 resolution: ResolutionKind::UserScope,
+                project_yaml: None,
             });
             let action = if matches!(scope.resolution, ResolutionKind::PromptedSkip) {
                 PlanAction::SkipByPrompt
             } else {
-                match options.state.imports.get(&candidate.source_key) {
+                match state.imports.get(&candidate.source_key) {
                     Some(record) if record.content_hash == candidate.content_hash => {
                         PlanAction::SkipUnchanged { existing_memory_id: record.memory_id.clone() }
                     }
@@ -752,7 +780,7 @@ impl ImportEngine {
             },
             unresolved_back_edges: back_edges,
             parse_errors,
-            state: options.state,
+            state,
         })
     }
 }
@@ -924,6 +952,7 @@ mod tests {
                 namespace: Some("me".to_string()),
                 canonical_namespace_id: None,
                 resolution: ResolutionKind::UserScope,
+                project_yaml: None,
             },
             action,
             wiki_link_targets_resolvable: Vec::new(),
@@ -1055,7 +1084,8 @@ mod tests {
                     from_claude: Some(claude_root),
                     from_codex: Some(PathBuf::from("/does/not/exist")),
                     harness_filter: None,
-                    state: ImportState::default(),
+                    state: Some(ImportState::default()),
+                    plan_only: false,
                 },
                 &mut prompts,
             )
@@ -1084,7 +1114,8 @@ mod tests {
                     from_claude: Some(claude_root.clone()),
                     from_codex: Some(PathBuf::from("/no")),
                     harness_filter: None,
-                    state: ImportState::default(),
+                    state: Some(ImportState::default()),
+                    plan_only: false,
                 },
                 &mut prompts,
             )
@@ -1113,7 +1144,8 @@ mod tests {
                     from_claude: Some(claude_root),
                     from_codex: Some(PathBuf::from("/no")),
                     harness_filter: None,
-                    state,
+                    state: Some(state),
+                    plan_only: false,
                 },
                 &mut prompts2,
             )
@@ -1155,7 +1187,8 @@ mod tests {
                     from_claude: Some(claude_root),
                     from_codex: Some(PathBuf::from("/no")),
                     harness_filter: None,
-                    state,
+                    state: Some(state),
+                    plan_only: false,
                 },
                 &mut prompts,
             )
@@ -1186,7 +1219,8 @@ mod tests {
                     from_claude: Some(claude_root),
                     from_codex: Some(PathBuf::from("/no")),
                     harness_filter: Some(HarnessFilter::Codex),
-                    state: ImportState::default(),
+                    state: Some(ImportState::default()),
+                    plan_only: false,
                 },
                 &mut prompts,
             )

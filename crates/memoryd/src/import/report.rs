@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::import::candidate::Harness;
 use crate::import::pipeline::{ImportPlan, WikiLinkBackEdge};
+use crate::import::project_map::ProjectYamlAction;
 
 /// Top-level import report. JSON-serializable; the text rendering is built
 /// from the same struct so the two views stay in sync.
@@ -70,6 +71,14 @@ pub struct CwdDispositionEntry {
     pub cwd: Option<PathBuf>,
     pub resolution: String,
     pub canonical_namespace_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_yaml: Option<CwdProjectYamlEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CwdProjectYamlEntry {
+    pub path: PathBuf,
+    pub action: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,15 +104,25 @@ impl ImportReport {
 
         let mut seen_cwds = std::collections::BTreeSet::new();
         let mut cwd_dispositions = Vec::new();
+        let mut project_yaml_writes = Vec::new();
         for action in &plan.actions {
             let cwd = action.candidate.cwd.clone();
             if !seen_cwds.insert(cwd.clone()) {
                 continue;
             }
+            if let Some(project_yaml) = &action.scope.project_yaml {
+                if matches!(project_yaml.action, ProjectYamlAction::Written) {
+                    project_yaml_writes.push(project_yaml.path.clone());
+                }
+            }
             cwd_dispositions.push(CwdDispositionEntry {
                 cwd,
-                resolution: format!("{:?}", action.scope.resolution),
+                resolution: action.scope.resolution.as_report_str().to_string(),
                 canonical_namespace_id: action.scope.canonical_namespace_id.clone(),
+                project_yaml: action.scope.project_yaml.as_ref().map(|project_yaml| CwdProjectYamlEntry {
+                    path: project_yaml.path.clone(),
+                    action: project_yaml.action.as_report_str().to_string(),
+                }),
             });
         }
 
@@ -131,7 +150,7 @@ impl ImportReport {
             dedups: Vec::new(),
             unresolved_back_edges,
             cwd_dispositions,
-            project_yaml_writes: Vec::new(),
+            project_yaml_writes,
             parse_errors,
         }
     }
@@ -168,6 +187,17 @@ impl ImportReport {
             buf.push_str("\nRefusals:\n");
             for refusal in &self.refusals {
                 buf.push_str(&format!("  [{}] {}: {}\n", refusal.harness, refusal.source_key, refusal.reason));
+            }
+        }
+        let skipped_by_prompt: usize = self.harnesses.values().map(|counters| counters.skipped_by_prompt).sum();
+        if skipped_by_prompt > 0 {
+            buf.push_str(&format!(
+                "\n{skipped_by_prompt} memories skipped (non-git cwd); re-run with --non-git-cwd-default {{me|generate}} to place them\n"
+            ));
+            for disposition in self.cwd_dispositions.iter().filter(|entry| entry.resolution == "prompted_skip") {
+                if let Some(cwd) = &disposition.cwd {
+                    buf.push_str(&format!("  {}\n", cwd.display()));
+                }
             }
         }
         if !self.unresolved_back_edges.is_empty() {

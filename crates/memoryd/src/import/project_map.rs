@@ -33,6 +33,9 @@ pub struct ScopeBinding {
     pub canonical_namespace_id: Option<String>,
     /// How this binding was resolved — surfaces in the import report.
     pub resolution: ResolutionKind,
+    /// `.memory-project.yaml` action taken or planned for prompted project
+    /// generation. `None` for mappings that did not involve project YAML.
+    pub project_yaml: Option<ProjectYamlDisposition>,
 }
 
 /// Provenance of a `ScopeBinding`. Surfaces in the import report so the user
@@ -52,6 +55,46 @@ pub enum ResolutionKind {
     PromptedSkip,
     /// No cwd hint at all — defaulted to user scope.
     UserScope,
+}
+
+impl ResolutionKind {
+    /// Stable report value. Keep this independent of `Debug` so JSON consumers
+    /// can rely on a documented string contract.
+    pub fn as_report_str(self) -> &'static str {
+        match self {
+            Self::GitRemote => "git_remote",
+            Self::YamlOverride => "yaml_override",
+            Self::PromptedNewProject => "prompted_new_project",
+            Self::PromptedDropToMe => "prompted_drop_to_me",
+            Self::PromptedSkip => "prompted_skip",
+            Self::UserScope => "user_scope",
+        }
+    }
+}
+
+/// `.memory-project.yaml` disposition for a non-git cwd.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectYamlDisposition {
+    pub path: PathBuf,
+    pub action: ProjectYamlAction,
+}
+
+/// Stable action values for project YAML reporting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectYamlAction {
+    PlannedWrite,
+    Written,
+    AlreadyExists,
+}
+
+impl ProjectYamlAction {
+    pub fn as_report_str(self) -> &'static str {
+        match self {
+            Self::PlannedWrite => "planned_write",
+            Self::Written => "written",
+            Self::AlreadyExists => "already_exists",
+        }
+    }
 }
 
 /// Whether the user wants the prompted action repeated for every memory tied to
@@ -78,6 +121,25 @@ pub trait PromptBackend: Send {
     /// Prompt the user for what to do with a non-git cwd. Implementations should
     /// surface the full path and any synced-dir warning.
     fn prompt_non_git_cwd(&mut self, cwd: &Path, synced_dir: Option<&'static str>) -> PromptResult;
+}
+
+/// Prompt backend for non-interactive callers that already made the placement
+/// decision via flags.
+#[derive(Debug, Clone, Copy)]
+pub struct FixedDispositionBackend {
+    disposition: PromptedDisposition,
+}
+
+impl FixedDispositionBackend {
+    pub fn new(disposition: PromptedDisposition) -> Self {
+        Self { disposition }
+    }
+}
+
+impl PromptBackend for FixedDispositionBackend {
+    fn prompt_non_git_cwd(&mut self, _cwd: &Path, _synced_dir: Option<&'static str>) -> PromptResult {
+        PromptResult { disposition: self.disposition, synced_dir_confirmed: None }
+    }
 }
 
 /// Production prompt backend that uses `dialoguer` over stdin/stdout. The
@@ -116,14 +178,15 @@ impl PromptBackend for InteractivePromptBackend {
 /// unique cwd so the user is prompted at most once per cwd path.
 #[derive(Default)]
 pub struct ProjectMapper {
+    plan_only: bool,
     prompted_cache: std::collections::HashMap<PathBuf, PromptResult>,
     project_yaml_writes: Vec<PathBuf>,
 }
 
 impl ProjectMapper {
     /// Build a new mapper.
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(plan_only: bool) -> Self {
+        Self { plan_only, ..Self::default() }
     }
 
     /// Paths where the mapper wrote a fresh `.memory-project.yaml` during the
@@ -145,6 +208,7 @@ impl ProjectMapper {
                 namespace: Some("me".to_string()),
                 canonical_namespace_id: None,
                 resolution: ResolutionKind::UserScope,
+                project_yaml: None,
             });
         };
 
@@ -161,6 +225,7 @@ impl ProjectMapper {
                     namespace: Some("project".to_string()),
                     canonical_namespace_id: Some(binding.canonical_id),
                     resolution,
+                    project_yaml: None,
                 });
             }
             None => {
@@ -181,19 +246,13 @@ impl ProjectMapper {
             PromptedDisposition::GenerateProjectYaml => {
                 let canonical_id = derive_canonical_id_for_dir(cwd);
                 let yaml_path = cwd.join(".memory-project.yaml");
-                if !yaml_path.exists() {
-                    let alias = derive_alias_for_dir(cwd);
-                    let yaml = format!("canonical_id: {canonical_id}\nalias: {alias}\n");
-                    std::fs::write(&yaml_path, yaml).map_err(|error| {
-                        RecallError::invalid_request(format!("write .memory-project.yaml: {error}"))
-                    })?;
-                    self.project_yaml_writes.push(yaml_path);
-                }
+                let yaml_action = self.prepare_project_yaml(cwd, &yaml_path, &canonical_id)?;
                 Ok(ScopeBinding {
                     scope: Scope::Project,
                     namespace: Some("project".to_string()),
                     canonical_namespace_id: Some(canonical_id),
                     resolution: ResolutionKind::PromptedNewProject,
+                    project_yaml: Some(ProjectYamlDisposition { path: yaml_path, action: yaml_action }),
                 })
             }
             PromptedDisposition::DropToMe => Ok(ScopeBinding {
@@ -201,14 +260,37 @@ impl ProjectMapper {
                 namespace: Some("me".to_string()),
                 canonical_namespace_id: None,
                 resolution: ResolutionKind::PromptedDropToMe,
+                project_yaml: None,
             }),
             PromptedDisposition::Skip => Ok(ScopeBinding {
                 scope: Scope::User,
                 namespace: None,
                 canonical_namespace_id: None,
                 resolution: ResolutionKind::PromptedSkip,
+                project_yaml: None,
             }),
         }
+    }
+
+    fn prepare_project_yaml(
+        &mut self,
+        cwd: &Path,
+        yaml_path: &Path,
+        canonical_id: &str,
+    ) -> Result<ProjectYamlAction, RecallError> {
+        if yaml_path.exists() {
+            return Ok(ProjectYamlAction::AlreadyExists);
+        }
+        if self.plan_only {
+            return Ok(ProjectYamlAction::PlannedWrite);
+        }
+
+        let alias = derive_alias_for_dir(cwd);
+        let yaml = format!("canonical_id: {canonical_id}\nalias: {alias}\n");
+        std::fs::write(yaml_path, yaml)
+            .map_err(|error| RecallError::invalid_request(format!("write .memory-project.yaml: {error}")))?;
+        self.project_yaml_writes.push(yaml_path.to_path_buf());
+        Ok(ProjectYamlAction::Written)
     }
 }
 
@@ -285,7 +367,7 @@ mod tests {
     #[tokio::test]
     async fn none_cwd_resolves_to_user_scope() {
         let mut prompts = ScriptedPrompts::new();
-        let mut mapper = ProjectMapper::new();
+        let mut mapper = ProjectMapper::new(false);
         let binding = mapper.resolve(None, &mut prompts).await.expect("resolves");
         assert_eq!(binding.scope, Scope::User);
         assert_eq!(binding.namespace.as_deref(), Some("me"));
@@ -299,7 +381,7 @@ mod tests {
         std::fs::write(tmp.path().join(".memory-project.yaml"), "canonical_id: proj_test_yaml\nalias: test\n")
             .expect("write yaml");
         let mut prompts = ScriptedPrompts::new();
-        let mut mapper = ProjectMapper::new();
+        let mut mapper = ProjectMapper::new(false);
         let binding = mapper.resolve(Some(tmp.path()), &mut prompts).await.expect("resolves");
         assert_eq!(binding.scope, Scope::Project);
         assert_eq!(binding.canonical_namespace_id.as_deref(), Some("proj_test_yaml"));
@@ -312,7 +394,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tmp");
         let cwd = tmp.path();
         let mut prompts = ScriptedPrompts::new().with(cwd, PromptedDisposition::DropToMe);
-        let mut mapper = ProjectMapper::new();
+        let mut mapper = ProjectMapper::new(false);
         let binding = mapper.resolve(Some(cwd), &mut prompts).await.expect("resolves");
         assert_eq!(binding.scope, Scope::User);
         assert_eq!(binding.resolution, ResolutionKind::PromptedDropToMe);
@@ -324,7 +406,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tmp");
         let cwd = tmp.path();
         let mut prompts = ScriptedPrompts::new().with(cwd, PromptedDisposition::Skip);
-        let mut mapper = ProjectMapper::new();
+        let mut mapper = ProjectMapper::new(false);
         let binding = mapper.resolve(Some(cwd), &mut prompts).await.expect("resolves");
         assert!(binding.namespace.is_none());
         assert_eq!(binding.resolution, ResolutionKind::PromptedSkip);
@@ -335,7 +417,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tmp");
         let cwd = tmp.path();
         let mut prompts = ScriptedPrompts::new().with(cwd, PromptedDisposition::GenerateProjectYaml);
-        let mut mapper = ProjectMapper::new();
+        let mut mapper = ProjectMapper::new(false);
         let binding = mapper.resolve(Some(cwd), &mut prompts).await.expect("resolves");
         assert_eq!(binding.scope, Scope::Project);
         assert!(binding.canonical_namespace_id.as_deref().is_some_and(|id| id.starts_with("proj_")));
@@ -350,11 +432,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn plan_only_generate_records_planned_yaml_without_writing_file() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let cwd = tmp.path();
+        let mut prompts = ScriptedPrompts::new().with(cwd, PromptedDisposition::GenerateProjectYaml);
+        let mut mapper = ProjectMapper::new(true);
+        let binding = mapper.resolve(Some(cwd), &mut prompts).await.expect("resolves");
+
+        let yaml_path = cwd.join(".memory-project.yaml");
+        assert!(!yaml_path.exists(), "plan-only mapping must not write yaml");
+        assert!(mapper.project_yaml_writes().is_empty(), "no actual yaml writes in plan-only mode");
+        let project_yaml = binding.project_yaml.expect("project yaml disposition");
+        assert_eq!(project_yaml.path, yaml_path);
+        assert_eq!(project_yaml.action, ProjectYamlAction::PlannedWrite);
+    }
+
+    #[tokio::test]
     async fn prompts_memoize_per_cwd_so_repeated_resolves_do_not_re_ask() {
         let tmp = tempfile::tempdir().expect("tmp");
         let cwd = tmp.path();
         let mut prompts = ScriptedPrompts::new().with(cwd, PromptedDisposition::DropToMe);
-        let mut mapper = ProjectMapper::new();
+        let mut mapper = ProjectMapper::new(false);
         let _first = mapper.resolve(Some(cwd), &mut prompts).await.expect("first");
         let _second = mapper.resolve(Some(cwd), &mut prompts).await.expect("second");
         assert_eq!(prompts.calls, 1, "prompt invoked once across two resolves of the same cwd");

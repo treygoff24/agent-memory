@@ -99,6 +99,13 @@ pub struct ImportArgs {
     /// Override the Codex CLI memory directory (default: `~/.codex/memories/`).
     #[arg(long)]
     pub from_codex: Option<PathBuf>,
+    /// Default placement for memories whose cwd is not a git checkout.
+    ///
+    /// Omit this flag to preserve the current safe behavior: interactive
+    /// terminals prompt, while non-interactive callers skip these memories and
+    /// receive an enumerated skip summary.
+    #[arg(long, value_enum)]
+    pub non_git_cwd_default: Option<NonGitCwdDefault>,
     /// Write a structured JSON report to this path.
     #[arg(long)]
     pub report: Option<PathBuf>,
@@ -120,6 +127,14 @@ pub enum ImportHarness {
     All,
     Claude,
     Codex,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "lowercase")]
+pub enum NonGitCwdDefault {
+    Skip,
+    Me,
+    Generate,
 }
 
 #[derive(Debug, Args)]
