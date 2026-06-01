@@ -85,6 +85,7 @@ pub trait McpWireRuntime {
     fn env_var(&self, key: &str) -> Option<String>;
     fn home_dir(&self) -> Option<PathBuf>;
     fn current_dir(&self) -> Result<PathBuf, WireError>;
+    fn claude_mcp_get(&mut self, name: &str) -> Result<Option<CommandResult>, WireError>;
     fn claude_mcp_add(&mut self, args: &[String]) -> Result<Option<CommandResult>, WireError>;
 }
 
@@ -143,8 +144,13 @@ pub enum WireError {
     #[error("failed to resolve current directory: {0}")]
     CurrentDir(#[source] io::Error),
 
-    #[error("failed to run claude mcp add: {0}")]
+    #[error("failed to run claude MCP command: {0}")]
     ClaudeCommand(#[source] io::Error),
+
+    #[error(
+        "Claude MCP server `{name}` already exists with different settings; remove or update it manually before rerunning setup"
+    )]
+    ClaudeServerConflict { name: String },
 }
 
 /// Wire an MCP server using the process environment and filesystem.
@@ -220,12 +226,40 @@ pub fn claude_mcp_add_args(spec: &McpServerSpec) -> Vec<String> {
 }
 
 fn wire_claude(spec: &McpServerSpec, runtime: &mut dyn McpWireRuntime) -> Result<WireOutcome, WireError> {
+    match runtime.claude_mcp_get(&spec.name) {
+        Ok(Some(result)) if result.success && claude_cli_server_matches(&result, spec) => {
+            return Ok(WireOutcome {
+                target: HarnessTarget::Claude,
+                status: WireStatus::AlreadyCurrent,
+                message: Some("Claude CLI MCP server is already current".to_string()),
+            });
+        }
+        Ok(Some(result)) if result.success => {
+            return Err(WireError::ClaudeServerConflict { name: spec.name.clone() });
+        }
+        Ok(Some(result)) if is_missing_claude_server(&result) => {}
+        Ok(Some(result)) => {
+            return wire_claude_json_fallback(spec, runtime, Some(command_failure_reason(&result)));
+        }
+        Ok(None) => {
+            return wire_claude_json_fallback(spec, runtime, Some("`claude` was not found on PATH".to_string()));
+        }
+        Err(error) => {
+            return wire_claude_json_fallback(spec, runtime, Some(error.to_string()));
+        }
+    }
+
     let cli_args = claude_mcp_add_args(spec);
     match runtime.claude_mcp_add(&cli_args) {
         Ok(Some(result)) if result.success => Ok(WireOutcome {
             target: HarnessTarget::Claude,
             status: WireStatus::Wired,
             message: Some("configured with `claude mcp add`".to_string()),
+        }),
+        Ok(Some(result)) if is_existing_claude_server(&result) => Ok(WireOutcome {
+            target: HarnessTarget::Claude,
+            status: WireStatus::AlreadyCurrent,
+            message: Some(command_failure_reason(&result)),
         }),
         Ok(Some(result)) => wire_claude_json_fallback(spec, runtime, Some(command_failure_reason(&result))),
         Ok(None) => wire_claude_json_fallback(spec, runtime, Some("`claude` was not found on PATH".to_string())),
@@ -244,16 +278,7 @@ fn wire_claude_json_fallback(
             status: merge.status,
             message: Some(fallback_message("wrote Claude project `.mcp.json` fallback", cli_reason.as_deref())),
         }),
-        Err(error) => Ok(WireOutcome {
-            target: HarnessTarget::Claude,
-            status: WireStatus::PrintedOnly,
-            message: Some(format!(
-                "could not run Claude CLI or write fallback config; printed JSON instead. CLI: {}; config: {}; snippet:\n{}",
-                cli_reason.as_deref().unwrap_or("not attempted"),
-                error,
-                claude_json_snippet(spec)?
-            )),
-        }),
+        Err(error) => Err(error),
     }
 }
 
@@ -307,12 +332,46 @@ fn fallback_message(action: &str, cli_reason: Option<&str>) -> String {
 }
 
 fn command_failure_reason(result: &CommandResult) -> String {
-    let detail = if result.stderr.trim().is_empty() { result.stdout.trim() } else { result.stderr.trim() };
+    let detail = command_output(result);
     if detail.is_empty() {
-        "`claude mcp add` exited unsuccessfully".to_string()
+        "Claude MCP command exited unsuccessfully".to_string()
     } else {
-        format!("`claude mcp add` exited unsuccessfully: {detail}")
+        format!("Claude MCP command exited unsuccessfully: {detail}")
     }
+}
+
+fn command_output(result: &CommandResult) -> String {
+    let stderr = result.stderr.trim();
+    if stderr.is_empty() {
+        result.stdout.trim().to_string()
+    } else {
+        stderr.to_string()
+    }
+}
+
+fn is_missing_claude_server(result: &CommandResult) -> bool {
+    command_output(result).to_ascii_lowercase().contains("no mcp server found")
+}
+
+fn is_existing_claude_server(result: &CommandResult) -> bool {
+    let output = command_output(result).to_ascii_lowercase();
+    output.contains("already exists") || output.contains("already configured") || output.contains("already been added")
+}
+
+fn claude_cli_server_matches(result: &CommandResult, spec: &McpServerSpec) -> bool {
+    let mut command_matches = false;
+    let mut args_matches = spec.args.is_empty();
+
+    for line in result.stdout.lines().map(str::trim) {
+        if let Some(command) = line.strip_prefix("Command:") {
+            command_matches = command.trim() == spec.command.to_string_lossy();
+        }
+        if let Some(args) = line.strip_prefix("Args:") {
+            args_matches = args.trim() == spec.args.join(" ");
+        }
+    }
+
+    command_matches && args_matches
 }
 
 fn codex_config_path(runtime: &dyn McpWireRuntime) -> Result<PathBuf, WireError> {
@@ -461,6 +520,18 @@ impl McpWireRuntime for SystemWireRuntime {
 
     fn current_dir(&self) -> Result<PathBuf, WireError> {
         std::env::current_dir().map_err(WireError::CurrentDir)
+    }
+
+    fn claude_mcp_get(&mut self, name: &str) -> Result<Option<CommandResult>, WireError> {
+        let Ok(claude) = which::which("claude") else {
+            return Ok(None);
+        };
+        let output = Command::new(claude).args(["mcp", "get", name]).output().map_err(WireError::ClaudeCommand)?;
+        Ok(Some(CommandResult {
+            success: output.status.success(),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        }))
     }
 
     fn claude_mcp_add(&mut self, args: &[String]) -> Result<Option<CommandResult>, WireError> {
