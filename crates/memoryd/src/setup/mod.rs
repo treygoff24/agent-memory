@@ -1,13 +1,14 @@
 //! Shared setup-engine scaffolding for `memoryd init`.
 //!
-//! This module intentionally contains only the type surface and detection
-//! scaffold. Step execution is wired in later onboarding tasks.
+//! The public setup engine keeps detection/decision collection in this module
+//! and delegates executable setup steps to `steps`.
 
 pub mod decide;
 pub mod detect;
 pub mod io;
 pub mod mcp_wire;
 pub mod report;
+pub mod steps;
 
 use std::path::{Path, PathBuf};
 
@@ -61,6 +62,42 @@ impl SetupEngine {
     /// Runtime directory targeted by setup.
     pub fn runtime(&self) -> &Path {
         &self.runtime
+    }
+
+    /// Run setup using default harness discovery and this engine's runtime socket.
+    pub async fn run(&self, io: &mut dyn SetupIo) -> SetupResult<SetupOutcome> {
+        self.run_with_options(io, self.default_detection_options()).await
+    }
+
+    /// Run setup with explicit detection options.
+    ///
+    /// This keeps tests deterministic by letting them pin harness roots and the
+    /// daemon socket while production callers use default discovery.
+    pub async fn run_with_options(
+        &self,
+        io: &mut dyn SetupIo,
+        mut options: SetupDetectionOptions,
+    ) -> SetupResult<SetupOutcome> {
+        if options.socket_path.is_none() {
+            options.socket_path = Some(crate::socket::resolve_socket_path(&self.runtime));
+        }
+
+        let detection = SetupDetection::run_with_options(options)?;
+        let decisions = collect_setup_decisions(io, &detection)?;
+        let plan = SetupPlan { detection: detection.clone(), decisions: decisions.clone() };
+        let mut report = SetupReport::new(detection, decisions);
+        report.push_step(SetupStepReport::new(SetupStep::Detect, SetupStepStatus::Succeeded));
+
+        steps::run_all(self, &plan, io, &mut report).await;
+        Ok(report)
+    }
+
+    fn default_detection_options(&self) -> SetupDetectionOptions {
+        SetupDetectionOptions {
+            claude_root_override: None,
+            codex_root_override: None,
+            socket_path: Some(crate::socket::resolve_socket_path(&self.runtime)),
+        }
     }
 }
 
