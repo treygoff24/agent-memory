@@ -3,11 +3,12 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/install-memorum.sh [--repo PATH] [--runtime PATH] [--socket PATH] [--with-scheduler] [--dry-run] [--force-reinstall]
+Usage: scripts/install-memorum.sh [--repo PATH] [--runtime PATH] [--socket PATH] [--with-scheduler] [--agent] [--dry-run] [--force-reinstall]
 
 Builds/installs memoryd, initializes a local repo/runtime, starts the daemon,
 prints an MCP client snippet, and optionally installs the launchd scheduler.
 Default socket: <runtime>/memoryd.sock.
+--agent appends a machine-parseable bootstrap summary for non-interactive runs.
 USAGE
 }
 
@@ -49,6 +50,7 @@ repo="$HOME/memorum"
 runtime=""
 socket=""
 with_scheduler=0
+agent_mode=0
 dry_run=0
 force_reinstall=0
 
@@ -71,6 +73,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --with-scheduler)
       with_scheduler=1
+      shift
+      ;;
+    --agent)
+      agent_mode=1
       shift
       ;;
     --dry-run)
@@ -158,6 +164,53 @@ chmod_private_file() {
   else
     chmod 600 "$path"
   fi
+}
+
+json_escape() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//$'\t'/\\t}"
+  value="${value//$'\r'/\\r}"
+  value="${value//$'\n'/\\n}"
+  printf '%s' "$value"
+}
+
+json_string() {
+  printf '"%s"' "$(json_escape "$1")"
+}
+
+json_string_array() {
+  local first=1
+  local value
+  printf '['
+  for value in "$@"; do
+    if [ "$first" -eq 0 ]; then
+      printf ','
+    fi
+    json_string "$value"
+    first=0
+  done
+  printf ']'
+}
+
+emit_agent_summary() {
+  local next_command="claude mcp add memorum -- memoryd mcp --socket \"$socket\""
+  local next_command_argv=(claude mcp add memorum -- memoryd mcp --socket "$socket")
+
+  printf 'MEMORUM_AGENT_SUMMARY_JSON={'
+  printf '"mode":"agent",'
+  printf '"repo":'
+  json_string "$repo"
+  printf ',"runtime":'
+  json_string "$runtime"
+  printf ',"socket":'
+  json_string "$socket"
+  printf ',"next_command":'
+  json_string "$next_command"
+  printf ',"next_command_argv":'
+  json_string_array "${next_command_argv[@]}"
+  printf '}\n'
 }
 
 pid_is_numeric() {
@@ -322,7 +375,7 @@ fi
 
 cat <<SNIPPET
 Claude MCP one-liner:
-claude mcp add memorum memoryd -- mcp --socket "$socket"
+claude mcp add memorum -- memoryd mcp --socket "$socket"
 
 MCP client snippet:
 {
@@ -371,4 +424,8 @@ if [ "$with_scheduler" -eq 1 ]; then
     scheduler_args+=(--dry-run)
   fi
   bash "$script_dir/install-launchd.sh" "${scheduler_args[@]}"
+fi
+
+if [ "$agent_mode" -eq 1 ]; then
+  emit_agent_summary
 fi

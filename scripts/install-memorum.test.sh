@@ -43,10 +43,12 @@ assert_contains "installer binary set: memoryd, memoryd-tui, memoryd-web, memory
 assert_contains "memorum-eval is a development/eval binary"
 assert_contains "memoryd serve --init --repo $repo --runtime $runtime --socket $runtime/memoryd.sock"
 assert_contains "memoryd status --socket $runtime/memoryd.sock"
-assert_contains "claude mcp add memorum memoryd -- mcp --socket \"$runtime/memoryd.sock\""
+assert_contains "claude mcp add memorum -- memoryd mcp --socket \"$runtime/memoryd.sock\""
+assert_not_contains "claude mcp add memorum memoryd -- mcp"
 assert_contains '"args": ["mcp", "--socket", "'"$runtime"'/memoryd.sock"]'
 assert_contains "command -v memoryd-merge-driver"
 assert_not_contains "/tmp/memoryd.sock"
+assert_not_contains "MEMORUM_AGENT_SUMMARY_JSON="
 
 grep -Fq 'kill -KILL "$existing_pid"' "$repo_root/scripts/install-memorum.sh"
 grep -Fq 'readiness_seconds=30' "$repo_root/scripts/install-memorum.sh"
@@ -77,7 +79,7 @@ rel_assert() {
 }
 rel_assert "memoryd serve --init --repo $rel_repo --runtime $rel_runtime --socket $rel_runtime/memoryd.sock" "serve"
 rel_assert "memoryd status --socket $rel_runtime/memoryd.sock" "status"
-rel_assert "claude mcp add memorum memoryd -- mcp --socket \"$rel_runtime/memoryd.sock\"" "claude"
+rel_assert "claude mcp add memorum -- memoryd mcp --socket \"$rel_runtime/memoryd.sock\"" "claude"
 rel_assert '"args": ["mcp", "--socket", "'"$rel_runtime"'/memoryd.sock"]' "json"
 rel_not_contains() {
   local needle="$1"
@@ -147,6 +149,51 @@ if ! grep -Fq -- "memoryd status --socket $socket_expected" "$socket_out"; then
   exit 1
 fi
 rm -rf "$socket_tmp"
+
+# --- Agent mode emits parseable summary with absolute socket and next command ---
+agent_tmp="$(mktemp -d)"
+agent_physical="$(cd "$agent_tmp" && pwd -P)"
+agent_out="$agent_tmp/install-agent.out"
+(
+  cd "$agent_tmp"
+  bash "$repo_root/scripts/install-memorum.sh" \
+    --dry-run \
+    --force-reinstall \
+    --agent \
+    --repo repo \
+    --runtime runtime >"$agent_out"
+)
+agent_summary_line="$(grep -E '^MEMORUM_AGENT_SUMMARY_JSON=' "$agent_out" || true)"
+if [ -z "$agent_summary_line" ]; then
+  echo "agent-mode test: missing MEMORUM_AGENT_SUMMARY_JSON line" >&2
+  cat "$agent_out" >&2
+  exit 1
+fi
+agent_summary_json="${agent_summary_line#MEMORUM_AGENT_SUMMARY_JSON=}"
+python3 - "$agent_summary_json" "$agent_physical/runtime/memoryd.sock" <<'PY'
+import json
+import os
+import sys
+
+summary = json.loads(sys.argv[1])
+expected_socket = sys.argv[2]
+assert summary["mode"] == "agent", summary
+assert summary["socket"] == expected_socket, summary
+assert os.path.isabs(summary["socket"]), summary
+assert summary["next_command"] == f'claude mcp add memorum -- memoryd mcp --socket "{expected_socket}"', summary
+assert summary["next_command_argv"] == [
+    "claude",
+    "mcp",
+    "add",
+    "memorum",
+    "--",
+    "memoryd",
+    "mcp",
+    "--socket",
+    expected_socket,
+], summary
+PY
+rm -rf "$agent_tmp"
 
 # --- Empty argument rejection ---
 expect_empty_rejection() {
