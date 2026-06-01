@@ -10,14 +10,6 @@ fn memorum_spec() -> McpServerSpec {
     McpServerSpec::new("memorum", "memoryd", vec!["mcp".into(), "--socket".into(), "/tmp/memoryd.sock".into()])
 }
 
-fn missing_claude_server() -> CommandResult {
-    CommandResult {
-        success: false,
-        stdout: String::new(),
-        stderr: "No MCP server found with name: \"memorum\".".to_string(),
-    }
-}
-
 fn successful_claude_add() -> CommandResult {
     CommandResult { success: true, stdout: "Added MCP server memorum".to_string(), stderr: String::new() }
 }
@@ -27,37 +19,6 @@ fn already_exists_claude_add() -> CommandResult {
         success: false,
         stdout: String::new(),
         stderr: "MCP server named memorum already exists".to_string(),
-    }
-}
-
-fn current_claude_server() -> CommandResult {
-    CommandResult {
-        success: true,
-        stdout: "\
-memorum:
-  Scope: Local config
-  Status: Connected
-  Type: stdio
-  Command: memoryd
-  Args: mcp --socket /tmp/memoryd.sock
-"
-        .to_string(),
-        stderr: String::new(),
-    }
-}
-
-fn conflicting_claude_server() -> CommandResult {
-    CommandResult {
-        success: true,
-        stdout: "\
-memorum:
-  Scope: Local config
-  Type: stdio
-  Command: otherd
-  Args: serve
-"
-        .to_string(),
-        stderr: String::new(),
     }
 }
 
@@ -151,7 +112,6 @@ fn print_only_writes_nothing() {
 
     assert_eq!(outcome.status, WireStatus::PrintedOnly);
     assert_eq!(runtime.write_count, 0);
-    assert_eq!(runtime.claude_get_count, 0);
     assert_eq!(runtime.claude_add_count, 0);
     assert!(runtime.files.is_empty());
 
@@ -160,7 +120,6 @@ fn print_only_writes_nothing() {
 
     assert_eq!(outcome.status, WireStatus::PrintedOnly);
     assert_eq!(runtime.write_count, 0);
-    assert_eq!(runtime.claude_get_count, 0);
     assert_eq!(runtime.claude_add_count, 0);
     assert!(runtime.files.is_empty());
 }
@@ -213,8 +172,7 @@ fn claude_falls_back_to_project_json_when_cli_is_absent() {
         .expect("claude fallback does not hard-fail setup");
 
     assert_eq!(outcome.status, WireStatus::Wired);
-    assert_eq!(runtime.claude_get_count, 1);
-    assert_eq!(runtime.claude_add_count, 0);
+    assert_eq!(runtime.claude_add_count, 1);
     let config = runtime.files.get(Path::new("/repo/.mcp.json")).expect("fallback config written");
     let parsed: serde_json::Value = serde_json::from_str(config).expect("valid json");
     assert_eq!(parsed["mcpServers"]["memorum"]["command"], "memoryd");
@@ -237,68 +195,46 @@ fn claude_fallback_preserves_backup_when_updating_existing_project_config() {
 
 #[test]
 fn claude_cli_success_does_not_write_project_fallback() {
-    let mut runtime =
-        FakeRuntime::default().with_claude_get(missing_claude_server()).with_claude_add(successful_claude_add());
+    let mut runtime = FakeRuntime::default().with_claude_add(successful_claude_add());
 
     let outcome = wire_with_runtime(HarnessTarget::Claude, &memorum_spec(), WireMode::Apply, &mut runtime)
         .expect("claude cli succeeds");
 
     assert_eq!(outcome.status, WireStatus::Wired);
-    assert_eq!(runtime.claude_get_count, 1);
     assert_eq!(runtime.claude_add_count, 1);
     assert_eq!(runtime.write_count, 0);
     assert!(runtime.files.is_empty());
 }
 
 #[test]
-fn claude_cli_already_current_skips_add_and_project_fallback() {
-    let mut runtime = FakeRuntime::default().with_claude_get(current_claude_server());
-
-    let outcome = wire_with_runtime(HarnessTarget::Claude, &memorum_spec(), WireMode::Apply, &mut runtime)
-        .expect("claude cli is already current");
-
-    assert_eq!(outcome.status, WireStatus::AlreadyCurrent);
-    assert_eq!(runtime.claude_get_count, 1);
-    assert_eq!(runtime.claude_add_count, 0);
-    assert_eq!(runtime.write_count, 0);
-    assert!(runtime.files.is_empty());
-}
-
-#[test]
 fn claude_cli_duplicate_add_does_not_write_project_fallback() {
-    let mut runtime =
-        FakeRuntime::default().with_claude_get(missing_claude_server()).with_claude_add(already_exists_claude_add());
+    let mut runtime = FakeRuntime::default().with_claude_add(already_exists_claude_add());
 
     let outcome = wire_with_runtime(HarnessTarget::Claude, &memorum_spec(), WireMode::Apply, &mut runtime)
         .expect("duplicate add is treated as already present");
 
     assert_eq!(outcome.status, WireStatus::AlreadyCurrent);
+    assert_eq!(runtime.claude_add_count, 1);
     assert_eq!(runtime.write_count, 0);
     assert!(runtime.files.is_empty());
 }
 
 #[test]
-fn claude_cli_conflicting_existing_server_is_error() {
-    let mut runtime = FakeRuntime::default().with_claude_get(conflicting_claude_server());
-
-    let error = wire_with_runtime(HarnessTarget::Claude, &memorum_spec(), WireMode::Apply, &mut runtime)
-        .expect_err("conflicting CLI-managed server should not be silently duplicated");
-
-    assert!(matches!(error, WireError::ClaudeServerConflict { .. }));
-    assert_eq!(runtime.claude_add_count, 0);
-    assert_eq!(runtime.write_count, 0);
-}
-
-#[test]
-fn claude_fallback_invalid_project_json_is_error() {
+fn claude_failed_cli_and_invalid_project_json_degrades_to_print_only() {
     let mut runtime = FakeRuntime::default()
         .with_current_dir(PathBuf::from("/repo"))
-        .with_file(PathBuf::from("/repo/.mcp.json"), "{not json");
+        .with_file(PathBuf::from("/repo/.mcp.json"), "{not json")
+        .with_claude_add(CommandResult {
+            success: false,
+            stdout: String::new(),
+            stderr: "Claude CLI rejected the request".to_string(),
+        });
 
-    let error = wire_with_runtime(HarnessTarget::Claude, &memorum_spec(), WireMode::Apply, &mut runtime)
-        .expect_err("invalid fallback config should fail apply mode");
+    let outcome = wire_with_runtime(HarnessTarget::Claude, &memorum_spec(), WireMode::Apply, &mut runtime)
+        .expect("print-only fallback succeeds");
 
-    assert!(matches!(error, WireError::JsonParse(_)));
+    assert_eq!(outcome.status, WireStatus::PrintedOnly);
+    assert!(outcome.message.as_deref().is_some_and(|message| message.contains("printed JSON instead")));
     assert_eq!(runtime.write_count, 0);
 }
 
@@ -320,12 +256,10 @@ struct FakeRuntime {
     env: HashMap<String, String>,
     home: Option<PathBuf>,
     current_dir: PathBuf,
-    claude_get_result: Option<CommandResult>,
     claude_add_result: Option<CommandResult>,
     write_count: usize,
     safe_write_count: usize,
     backups: BTreeMap<PathBuf, String>,
-    claude_get_count: usize,
     claude_add_count: usize,
 }
 
@@ -347,11 +281,6 @@ impl FakeRuntime {
 
     fn with_file(mut self, path: PathBuf, contents: &str) -> Self {
         self.files.insert(path, contents.to_string());
-        self
-    }
-
-    fn with_claude_get(mut self, result: CommandResult) -> Self {
-        self.claude_get_result = Some(result);
         self
     }
 
@@ -390,11 +319,6 @@ impl McpWireRuntime for FakeRuntime {
 
     fn current_dir(&self) -> Result<PathBuf, WireError> {
         Ok(self.current_dir.clone())
-    }
-
-    fn claude_mcp_get(&mut self, _name: &str) -> Result<Option<CommandResult>, WireError> {
-        self.claude_get_count += 1;
-        Ok(self.claude_get_result.clone())
     }
 
     fn claude_mcp_add(&mut self, _args: &[String]) -> Result<Option<CommandResult>, WireError> {
