@@ -179,21 +179,14 @@ impl PromptBackend for InteractivePromptBackend {
 /// unique cwd so the user is prompted at most once per cwd path.
 #[derive(Default)]
 pub struct ProjectMapper {
-    plan_only: bool,
+    _plan_only: bool,
     prompted_cache: std::collections::HashMap<PathBuf, PromptResult>,
-    project_yaml_writes: Vec<PathBuf>,
 }
 
 impl ProjectMapper {
     /// Build a new mapper.
     pub fn new(plan_only: bool) -> Self {
-        Self { plan_only, ..Self::default() }
-    }
-
-    /// Paths where the mapper wrote a fresh `.memory-project.yaml` during the
-    /// session. Surfaced to the import report so the user can see them.
-    pub fn project_yaml_writes(&self) -> &[PathBuf] {
-        &self.project_yaml_writes
+        Self { _plan_only: plan_only, ..Self::default() }
     }
 
     /// Resolve a single cwd. For non-git cwds the prompt backend is consulted
@@ -247,7 +240,7 @@ impl ProjectMapper {
             PromptedDisposition::GenerateProjectYaml => {
                 let canonical_id = derive_canonical_id_for_dir(cwd);
                 let yaml_path = cwd.join(".memory-project.yaml");
-                let yaml_action = self.prepare_project_yaml(cwd, &yaml_path, &canonical_id)?;
+                let yaml_action = self.prepare_project_yaml(&yaml_path)?;
                 Ok(ScopeBinding {
                     scope: Scope::Project,
                     namespace: Some("project".to_string()),
@@ -273,26 +266,28 @@ impl ProjectMapper {
         }
     }
 
-    fn prepare_project_yaml(
-        &mut self,
-        cwd: &Path,
-        yaml_path: &Path,
-        canonical_id: &str,
-    ) -> Result<ProjectYamlAction, RecallError> {
+    fn prepare_project_yaml(&mut self, yaml_path: &Path) -> Result<ProjectYamlAction, RecallError> {
         if yaml_path.exists() {
             return Ok(ProjectYamlAction::AlreadyExists);
         }
-        if self.plan_only {
-            return Ok(ProjectYamlAction::PlannedWrite);
-        }
-
-        let alias = derive_alias_for_dir(cwd);
-        let yaml = project_yaml_contents(canonical_id, &alias)?;
-        std::fs::write(yaml_path, yaml)
-            .map_err(|error| RecallError::invalid_request(format!("write .memory-project.yaml: {error}")))?;
-        self.project_yaml_writes.push(yaml_path.to_path_buf());
-        Ok(ProjectYamlAction::Written)
+        Ok(ProjectYamlAction::PlannedWrite)
     }
+}
+
+pub(crate) fn write_generated_project_yaml(
+    cwd: &Path,
+    yaml_path: &Path,
+    canonical_id: &str,
+) -> Result<ProjectYamlAction, RecallError> {
+    if yaml_path.exists() {
+        return Ok(ProjectYamlAction::AlreadyExists);
+    }
+
+    let alias = derive_alias_for_dir(cwd);
+    let yaml = project_yaml_contents(canonical_id, &alias)?;
+    std::fs::write(yaml_path, yaml)
+        .map_err(|error| RecallError::invalid_request(format!("write .memory-project.yaml: {error}")))?;
+    Ok(ProjectYamlAction::Written)
 }
 
 const MAX_GENERATED_PROJECT_FIELD_BYTES: usize = 128;
@@ -454,7 +449,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn non_git_cwd_prompted_generate_writes_project_yaml_and_returns_canonical_id() {
+    async fn non_git_cwd_prompted_generate_plans_project_yaml_and_returns_canonical_id() {
         let tmp = tempfile::tempdir().expect("tmp");
         let cwd = tmp.path();
         let mut prompts = ScriptedPrompts::new().with(cwd, PromptedDisposition::GenerateProjectYaml);
@@ -465,11 +460,10 @@ mod tests {
         assert_eq!(binding.resolution, ResolutionKind::PromptedNewProject);
 
         let yaml_path = cwd.join(".memory-project.yaml");
-        assert!(yaml_path.exists(), "yaml is written to disk");
-        let raw = std::fs::read_to_string(&yaml_path).expect("read yaml");
-        assert!(raw.contains("canonical_id: proj_"));
-        assert!(raw.contains("alias:"));
-        assert!(mapper.project_yaml_writes().contains(&yaml_path));
+        assert!(!yaml_path.exists(), "mapping only plans yaml; execution materializes it after successful daemon IO");
+        let project_yaml = binding.project_yaml.expect("project yaml disposition");
+        assert_eq!(project_yaml.path, yaml_path);
+        assert_eq!(project_yaml.action, ProjectYamlAction::PlannedWrite);
     }
 
     #[tokio::test]
@@ -484,6 +478,13 @@ mod tests {
             let mut mapper = ProjectMapper::new(false);
 
             let generated = mapper.resolve(Some(&cwd), &mut prompts).await.expect("generate binding");
+            let yaml_path = cwd.join(".memory-project.yaml");
+            write_generated_project_yaml(
+                &cwd,
+                &yaml_path,
+                generated.canonical_namespace_id.as_deref().expect("canonical id"),
+            )
+            .expect("write generated yaml");
             let parsed = resolve_project_binding(&cwd)
                 .await
                 .expect("generated project yaml parses")
@@ -505,7 +506,6 @@ mod tests {
 
         let yaml_path = cwd.join(".memory-project.yaml");
         assert!(!yaml_path.exists(), "plan-only mapping must not write yaml");
-        assert!(mapper.project_yaml_writes().is_empty(), "no actual yaml writes in plan-only mode");
         let project_yaml = binding.project_yaml.expect("project yaml disposition");
         assert_eq!(project_yaml.path, yaml_path);
         assert_eq!(project_yaml.action, ProjectYamlAction::PlannedWrite);

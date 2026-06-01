@@ -156,6 +156,33 @@ async fn generate_default_execute_writes_yaml_and_binds_project_scope() {
     assert_eq!(meta["source_ref"].as_str(), Some(expected_source_ref.as_str()));
 }
 
+#[tokio::test]
+#[serial]
+async fn generate_default_execute_does_not_write_yaml_when_daemon_write_fails() {
+    let fixture = ImportFixture::new();
+    let yaml_path = fixture.non_git_cwd.join(".memory-project.yaml");
+
+    let mut prompts = FixedDispositionBackend::new(PromptedDisposition::GenerateProjectYaml);
+    let mut client = FailingClient;
+    let error = run_import_session(
+        &fixture.repo,
+        ImportOptions {
+            from_claude: None,
+            from_codex: Some(fixture.codex_root.clone()),
+            harness_filter: Some(HarnessFilter::Codex),
+            state: ImportState::default(),
+        },
+        &mut prompts,
+        &mut client,
+        ExecuteOptions { dry_run: false, verbose_progress: false },
+    )
+    .await
+    .expect_err("transport failure should abort import");
+
+    assert!(format!("{error}").contains("socket down"), "unexpected error: {error}");
+    assert!(!yaml_path.exists(), "failed import must not leave generated .memory-project.yaml behind");
+}
+
 #[test]
 fn cli_import_delegates_lock_and_state_to_shared_runner() {
     let source = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/import.rs"))
@@ -248,6 +275,24 @@ impl DaemonClient for RecordingClient {
             existing_id: None,
             next_actions: Vec::new(),
             reason: None,
+        })
+    }
+
+    async fn supersede(&mut self, _request: SupersedeRequest) -> memoryd::import::ImportResult<SupersedeOutcome> {
+        panic!("test fixture should not supersede")
+    }
+}
+
+struct FailingClient;
+
+impl DaemonClient for FailingClient {
+    async fn write_memory(
+        &mut self,
+        _request: WriteMemoryRequest,
+    ) -> memoryd::import::ImportResult<WriteMemoryOutcome> {
+        Err(memoryd::import::ImportError::Io {
+            path: PathBuf::from("/tmp/memoryd.sock"),
+            source: std::io::Error::other("socket down"),
         })
     }
 

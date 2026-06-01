@@ -3,7 +3,7 @@
 //! diff between runs.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -158,6 +158,19 @@ impl ImportReport {
     /// Render the report as a JSON string. Used for `--report <path.json>`.
     pub fn to_json(&self) -> serde_json::Result<String> {
         serde_json::to_string_pretty(self)
+    }
+
+    pub fn mark_project_yaml_written(&mut self, path: &Path) {
+        if !self.project_yaml_writes.iter().any(|written| written == path) {
+            self.project_yaml_writes.push(path.to_path_buf());
+        }
+        for disposition in &mut self.cwd_dispositions {
+            if let Some(project_yaml) = &mut disposition.project_yaml {
+                if project_yaml.path == path {
+                    project_yaml.action = ProjectYamlAction::Written.as_report_str().to_string();
+                }
+            }
+        }
     }
 
     /// Render the report as a human-readable summary for stdout.

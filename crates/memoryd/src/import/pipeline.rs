@@ -16,7 +16,9 @@ use crate::import::candidate::{Harness, ParsedMemory};
 use crate::import::discovery::{
     discover_claude_memory_root, discover_codex_memory_root, ClaudeMemoryRoot, CodexMemoryRoot,
 };
-use crate::import::project_map::{ProjectMapper, PromptBackend, ResolutionKind, ScopeBinding};
+use crate::import::project_map::{
+    write_generated_project_yaml, ProjectMapper, ProjectYamlAction, PromptBackend, ResolutionKind, ScopeBinding,
+};
 use crate::import::report::{DedupEntry, HarnessCounters, ImportReport, RefusalEntry};
 use crate::import::sources::{claude, codex};
 use crate::import::state::{ImportLockGuard, ImportRecord, ImportState, SupersededRecord};
@@ -506,10 +508,38 @@ impl ImportEngine {
         }
 
         if !opts.dry_run {
+            materialize_planned_project_yamls(&mut report, &plan)?;
             state.save_canonical(&self.state_path)?;
         }
         Ok(ExecuteResult { report, state })
     }
+}
+
+fn materialize_planned_project_yamls(report: &mut ImportReport, plan: &ImportPlan) -> ImportResult<()> {
+    let mut seen = HashSet::new();
+    for action in &plan.actions {
+        let Some(project_yaml) = &action.scope.project_yaml else {
+            continue;
+        };
+        if !matches!(project_yaml.action, ProjectYamlAction::PlannedWrite) || !seen.insert(project_yaml.path.clone()) {
+            continue;
+        }
+
+        let cwd = action.candidate.cwd.as_deref().ok_or_else(|| ImportError::Parse {
+            source_key: action.source_key.clone(),
+            reason: "generated project yaml is missing cwd".to_string(),
+        })?;
+        let canonical_id = action.scope.canonical_namespace_id.as_deref().ok_or_else(|| ImportError::Parse {
+            source_key: action.source_key.clone(),
+            reason: "generated project yaml is missing canonical namespace id".to_string(),
+        })?;
+        write_generated_project_yaml(cwd, &project_yaml.path, canonical_id).map_err(|error| ImportError::Parse {
+            source_key: action.source_key.clone(),
+            reason: format!("write generated project yaml: {error}"),
+        })?;
+        report.mark_project_yaml_written(&project_yaml.path);
+    }
+    Ok(())
 }
 
 fn resolve_related_ids(action: &PlannedWrite, alias_to_id: &HashMap<String, String>) -> Vec<String> {
