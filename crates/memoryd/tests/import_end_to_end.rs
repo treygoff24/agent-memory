@@ -161,8 +161,7 @@ async fn first_run_imports_all_fixtures_and_records_them_in_state() {
                 from_claude: Some(claude_root.clone()),
                 from_codex: Some(codex_root.clone()),
                 harness_filter: None,
-                state: Some(ImportState::default()),
-                plan_only: false,
+                state: ImportState::default(),
             },
             &mut prompts,
         )
@@ -206,8 +205,7 @@ async fn empty_corpus_import_produces_zero_writes_and_clean_report() {
                 from_claude: Some(claude_root),
                 from_codex: Some(codex_root),
                 harness_filter: None,
-                state: Some(ImportState::default()),
-                plan_only: false,
+                state: ImportState::default(),
             },
             &mut prompts,
         )
@@ -240,8 +238,7 @@ async fn re_run_on_unchanged_fixtures_produces_zero_socket_writes() {
                 from_claude: Some(claude_root.clone()),
                 from_codex: Some(codex_root.clone()),
                 harness_filter: None,
-                state: Some(ImportState::default()),
-                plan_only: false,
+                state: ImportState::default(),
             },
             &mut prompts,
         )
@@ -261,8 +258,7 @@ async fn re_run_on_unchanged_fixtures_produces_zero_socket_writes() {
                 from_claude: Some(claude_root.clone()),
                 from_codex: Some(codex_root.clone()),
                 harness_filter: None,
-                state: Some(state_on_disk),
-                plan_only: false,
+                state: state_on_disk,
             },
             &mut prompts,
         )
@@ -295,8 +291,7 @@ async fn re_run_with_changed_source_supersedes_prior_memory() {
                 from_claude: Some(claude_root.clone()),
                 from_codex: Some(codex_root.clone()),
                 harness_filter: None,
-                state: Some(ImportState::default()),
-                plan_only: false,
+                state: ImportState::default(),
             },
             &mut prompts,
         )
@@ -319,8 +314,7 @@ async fn re_run_with_changed_source_supersedes_prior_memory() {
                 from_claude: Some(claude_root.clone()),
                 from_codex: Some(codex_root.clone()),
                 harness_filter: None,
-                state: Some(state_on_disk),
-                plan_only: false,
+                state: state_on_disk,
             },
             &mut prompts,
         )

@@ -7,6 +7,7 @@ use memoryd::import::pipeline::{
 };
 use memoryd::import::project_map::{FixedDispositionBackend, PromptedDisposition};
 use memoryd::import::report::ImportReport;
+use memoryd::import::state::ImportState;
 use memoryd::protocol::GovernanceStatus;
 use serial_test::serial;
 
@@ -129,8 +130,7 @@ async fn generate_default_execute_writes_yaml_and_binds_project_scope() {
             from_claude: None,
             from_codex: Some(fixture.codex_root.clone()),
             harness_filter: Some(HarnessFilter::Codex),
-            state: None,
-            plan_only: false,
+            state: ImportState::default(),
         },
         &mut prompts,
         &mut client,

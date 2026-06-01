@@ -15,6 +15,7 @@
 use std::path::{Path, PathBuf};
 
 use memory_substrate::Scope;
+use serde::Serialize;
 
 use crate::recall::project::resolve_project_binding;
 use crate::recall::types::ProjectBindingSource;
@@ -286,12 +287,27 @@ impl ProjectMapper {
         }
 
         let alias = derive_alias_for_dir(cwd);
-        let yaml = format!("canonical_id: {canonical_id}\nalias: {alias}\n");
+        let yaml = project_yaml_contents(canonical_id, &alias)?;
         std::fs::write(yaml_path, yaml)
             .map_err(|error| RecallError::invalid_request(format!("write .memory-project.yaml: {error}")))?;
         self.project_yaml_writes.push(yaml_path.to_path_buf());
         Ok(ProjectYamlAction::Written)
     }
+}
+
+const MAX_GENERATED_PROJECT_FIELD_BYTES: usize = 128;
+const GENERATED_PROJECT_ID_PREFIX: &str = "proj_";
+const GENERATED_PROJECT_ID_HASH_BYTES: usize = 16;
+
+#[derive(Serialize)]
+struct GeneratedProjectFile<'a> {
+    canonical_id: &'a str,
+    alias: &'a str,
+}
+
+fn project_yaml_contents(canonical_id: &str, alias: &str) -> Result<String, RecallError> {
+    serde_yaml::to_string(&GeneratedProjectFile { canonical_id, alias })
+        .map_err(|error| RecallError::invalid_request(format!("serialize .memory-project.yaml: {error}")))
 }
 
 fn derive_canonical_id_for_dir(cwd: &Path) -> String {
@@ -302,13 +318,38 @@ fn derive_canonical_id_for_dir(cwd: &Path) -> String {
         .map(str::to_ascii_lowercase)
         .unwrap_or_else(|| "dir".to_string());
     let basename = basename.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect::<String>();
+    let basename = if basename.is_empty() { "dir" } else { &basename };
     let suffix = hex::encode(Sha256::digest(cwd.display().to_string().as_bytes()));
     let short_suffix = suffix.get(..16).unwrap_or(&suffix);
+    let max_basename_bytes =
+        MAX_GENERATED_PROJECT_FIELD_BYTES - GENERATED_PROJECT_ID_PREFIX.len() - 1 - GENERATED_PROJECT_ID_HASH_BYTES;
+    let basename = truncate_to_byte_limit(basename, max_basename_bytes);
     format!("proj_{basename}-{short_suffix}")
 }
 
 fn derive_alias_for_dir(cwd: &Path) -> String {
-    cwd.file_name().and_then(std::ffi::OsStr::to_str).map(str::to_string).unwrap_or_else(|| "unnamed".to_string())
+    let alias = cwd
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .map(str::trim)
+        .filter(|alias| !alias.is_empty())
+        .unwrap_or("unnamed");
+    truncate_to_byte_limit(alias, MAX_GENERATED_PROJECT_FIELD_BYTES).to_string()
+}
+
+fn truncate_to_byte_limit(value: &str, max_bytes: usize) -> &str {
+    if value.len() <= max_bytes {
+        return value;
+    }
+    let mut end = 0;
+    for (index, character) in value.char_indices() {
+        let next = index + character.len_utf8();
+        if next > max_bytes {
+            break;
+        }
+        end = next;
+    }
+    &value[..end]
 }
 
 /// Detect whether the given path lives under a known synced-dir root. Returns
@@ -429,6 +470,29 @@ mod tests {
         assert!(raw.contains("canonical_id: proj_"));
         assert!(raw.contains("alias:"));
         assert!(mapper.project_yaml_writes().contains(&yaml_path));
+    }
+
+    #[tokio::test]
+    async fn generated_project_yaml_round_trips_for_yaml_like_and_long_directory_names() {
+        let temp = tempfile::tempdir().expect("tmp");
+        let cases = ["true".to_string(), "a".repeat(180)];
+
+        for case in cases {
+            let cwd = temp.path().join(case);
+            std::fs::create_dir_all(&cwd).expect("case dir");
+            let mut prompts = ScriptedPrompts::new().with(&cwd, PromptedDisposition::GenerateProjectYaml);
+            let mut mapper = ProjectMapper::new(false);
+
+            let generated = mapper.resolve(Some(&cwd), &mut prompts).await.expect("generate binding");
+            let parsed = resolve_project_binding(&cwd)
+                .await
+                .expect("generated project yaml parses")
+                .expect("project binding exists");
+
+            assert_eq!(parsed.canonical_id, generated.canonical_namespace_id.expect("canonical id"));
+            assert!(parsed.canonical_id.len() <= MAX_GENERATED_PROJECT_FIELD_BYTES);
+            assert!(parsed.alias.as_ref().is_some_and(|alias| alias.len() <= MAX_GENERATED_PROJECT_FIELD_BYTES));
+        }
     }
 
     #[tokio::test]
