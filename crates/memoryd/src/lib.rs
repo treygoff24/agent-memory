@@ -17,6 +17,7 @@ pub mod reality_check;
 pub mod recall;
 pub mod recall_hits;
 pub mod server;
+pub mod setup;
 pub mod slash_commands;
 pub mod socket;
 pub mod state;

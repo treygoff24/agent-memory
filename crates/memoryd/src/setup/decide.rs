@@ -1,0 +1,68 @@
+//! Owned setup decisions gathered by interactive or flag-driven frontends.
+
+use serde::{Deserialize, Serialize};
+
+/// Complete decision bundle for a setup run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetupDecisions {
+    pub import_memories: bool,
+    pub harnesses: HarnessSelection,
+    pub non_git_cwd_default: NonGitCwdDecision,
+    pub wire_mcp: WireMcpSelection,
+    pub daemon: DaemonStrategy,
+    pub print_only: bool,
+}
+
+impl Default for SetupDecisions {
+    fn default() -> Self {
+        Self {
+            import_memories: false,
+            harnesses: HarnessSelection::Current,
+            non_git_cwd_default: NonGitCwdDecision::Skip,
+            wire_mcp: WireMcpSelection::Current,
+            daemon: DaemonStrategy::OnDemand,
+            print_only: false,
+        }
+    }
+}
+
+/// Harness set selected for import.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HarnessSelection {
+    Current,
+    Claude,
+    Codex,
+    All,
+    None,
+}
+
+/// Default disposition for imported memories with non-git working directories.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NonGitCwdDecision {
+    Skip,
+    Me,
+    Generate,
+}
+
+/// Harness configs selected for MCP wiring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WireMcpSelection {
+    Current,
+    Claude,
+    Codex,
+    All,
+    None,
+}
+
+/// Daemon arrangement selected for setup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DaemonStrategy {
+    OnDemand,
+    Background,
+    Launchd,
+    None,
+}
