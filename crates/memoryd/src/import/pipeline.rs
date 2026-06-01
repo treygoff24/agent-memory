@@ -315,20 +315,18 @@ pub struct ExecuteResult {
     pub state: ImportState,
 }
 
-pub struct ImportSession<'a, C: DaemonClient> {
-    pub repo_root: &'a Path,
-    pub options: ImportOptions,
-    pub prompts: &'a mut dyn PromptBackend,
-    pub client: &'a mut C,
-    pub execute_options: ExecuteOptions,
-}
-
 /// Run a complete disk-backed import session behind the importer invariants:
 /// acquire the import lock, load state, plan, execute, and let execution perform
 /// crash-safe state persistence. CLI and setup-engine callers should use this
 /// runner instead of hand-rolling lock/state plumbing.
-pub async fn run_import_session<C: DaemonClient>(session: ImportSession<'_, C>) -> ImportResult<ExecuteResult> {
-    let ImportSession { repo_root, mut options, prompts, client, execute_options } = session;
+#[expect(clippy::too_many_arguments, reason = "task contract keeps session dependencies explicit")]
+pub async fn run_import_session<C: DaemonClient>(
+    repo_root: &Path,
+    mut options: ImportOptions,
+    prompts: &mut dyn PromptBackend,
+    client: &mut C,
+    execute_options: ExecuteOptions,
+) -> ImportResult<ExecuteResult> {
     let engine = ImportEngine::new(repo_root);
     let _lock = ImportLockGuard::acquire(&engine.state_path)?;
     options.state = Some(ImportState::load(&engine.state_path)?);
@@ -549,7 +547,7 @@ fn build_write_meta(action: &PlannedWrite, related: &[String], supersedes: Optio
     );
     meta.insert("type".to_string(), Value::String("claim".to_string()));
     meta.insert("source_kind".to_string(), Value::String("import".to_string()));
-    meta.insert("source_ref".to_string(), Value::String(format!("file:{}", action.candidate.source_path.display())));
+    meta.insert("source_ref".to_string(), Value::String(action.candidate.source_path.display().to_string()));
     // Imported memories carry a confidence of 0.7 (plan R1 bump from 0.5) so
     // they stay above the Reality Check review threshold while still ranking
     // below hand-written `0.85` memories.

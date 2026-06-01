@@ -152,6 +152,8 @@ async fn generate_default_execute_writes_yaml_and_binds_project_scope() {
     let meta = &client.write_calls[0].meta;
     assert_eq!(meta["namespace"], "project");
     assert_eq!(meta["canonical_namespace_id"], canonical_id);
+    let expected_source_ref = fixture.codex_root.join("MEMORY.md").display().to_string();
+    assert_eq!(meta["source_ref"].as_str(), Some(expected_source_ref.as_str()));
 }
 
 #[test]
