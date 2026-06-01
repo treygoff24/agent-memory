@@ -4,7 +4,7 @@
 //! injectable runtime seam keep config mutation testable without touching a
 //! developer's real Claude or Codex state.
 
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -80,7 +80,7 @@ pub struct CommandResult {
 /// Runtime boundary for filesystem, environment, and Claude CLI interactions.
 pub trait McpWireRuntime {
     fn read_to_string(&self, path: &Path) -> Result<Option<String>, WireError>;
-    fn write_string(&mut self, path: &Path, contents: &str) -> Result<(), WireError>;
+    fn write_config_file(&mut self, path: &Path, contents: &str) -> Result<(), WireError>;
     fn create_dir_all(&mut self, path: &Path) -> Result<(), WireError>;
     fn env_var(&self, key: &str) -> Option<String>;
     fn home_dir(&self) -> Option<PathBuf>;
@@ -113,6 +113,22 @@ pub enum WireError {
     #[error("failed to write {path}: {source}")]
     Write {
         path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+
+    #[error("failed to back up {path} to {backup_path}: {source}")]
+    Backup {
+        path: PathBuf,
+        backup_path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+
+    #[error("failed to replace {path} with {temp_path}: {source}")]
+    Replace {
+        path: PathBuf,
+        temp_path: PathBuf,
         #[source]
         source: io::Error,
     },
@@ -178,7 +194,7 @@ pub fn merge_claude_mcp_json(existing: &str, spec: &McpServerSpec) -> Result<Con
 /// Sibling servers and unrelated top-level config are preserved by `toml_edit`.
 pub fn merge_codex_mcp_toml(existing: &str, spec: &McpServerSpec) -> Result<ConfigMergeOutcome, WireError> {
     let mut document = parse_toml_document(existing)?;
-    let status = codex_status_before_merge(&document, spec);
+    let status = codex_status_before_merge(&document, spec)?;
 
     if status != WireStatus::AlreadyCurrent {
         insert_codex_server(&mut document, spec)?;
@@ -276,7 +292,7 @@ fn write_config(runtime: &mut dyn McpWireRuntime, path: &Path, body: &str) -> Re
     if let Some(parent) = path.parent() {
         runtime.create_dir_all(parent)?;
     }
-    runtime.write_string(path, body)
+    runtime.write_config_file(path, body)
 }
 
 fn print_only_outcome(target: HarnessTarget, snippet: String) -> WireOutcome {
@@ -353,12 +369,18 @@ fn parse_toml_document(existing: &str) -> Result<DocumentMut, WireError> {
     }
 }
 
-fn codex_status_before_merge(document: &DocumentMut, spec: &McpServerSpec) -> WireStatus {
-    match document.get("mcp_servers").and_then(Item::as_table_like).and_then(|servers| servers.get(&spec.name)) {
+fn codex_status_before_merge(document: &DocumentMut, spec: &McpServerSpec) -> Result<WireStatus, WireError> {
+    let Some(mcp_servers) = document.get("mcp_servers") else {
+        return Ok(WireStatus::Wired);
+    };
+    let servers =
+        mcp_servers.as_table_like().ok_or(WireError::InvalidConfigShape("Codex mcp_servers must be a TOML table"))?;
+
+    Ok(match servers.get(&spec.name) {
         None => WireStatus::Wired,
         Some(current) if codex_server_matches(current, spec) => WireStatus::AlreadyCurrent,
         Some(_) => WireStatus::Updated,
-    }
+    })
 }
 
 fn codex_server_matches(item: &Item, spec: &McpServerSpec) -> bool {
@@ -382,7 +404,7 @@ fn codex_server_table(spec: &McpServerSpec) -> Table {
 }
 
 fn insert_codex_server(document: &mut DocumentMut, spec: &McpServerSpec) -> Result<(), WireError> {
-    if document.get("mcp_servers").and_then(Item::as_table_like).is_none() {
+    if document.get("mcp_servers").is_none() {
         document["mcp_servers"] = Item::Table(Table::new());
     }
 
@@ -421,8 +443,8 @@ impl McpWireRuntime for SystemWireRuntime {
         }
     }
 
-    fn write_string(&mut self, path: &Path, contents: &str) -> Result<(), WireError> {
-        std::fs::write(path, contents).map_err(|source| WireError::Write { path: path.to_path_buf(), source })
+    fn write_config_file(&mut self, path: &Path, contents: &str) -> Result<(), WireError> {
+        write_config_file_safely(path, contents)
     }
 
     fn create_dir_all(&mut self, path: &Path) -> Result<(), WireError> {
@@ -451,5 +473,73 @@ impl McpWireRuntime for SystemWireRuntime {
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         }))
+    }
+}
+
+fn write_config_file_safely(path: &Path, contents: &str) -> Result<(), WireError> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    if path.exists() {
+        let backup_path = sibling_with_unique_suffix(path, "bak");
+        std::fs::copy(path, &backup_path).map_err(|source| WireError::Backup {
+            path: path.to_path_buf(),
+            backup_path: backup_path.clone(),
+            source,
+        })?;
+    }
+
+    let temp_path = sibling_with_unique_suffix(path, "tmp");
+    let write_result = (|| -> Result<(), WireError> {
+        let mut file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temp_path)
+            .map_err(|source| WireError::Write { path: temp_path.clone(), source })?;
+        file.write_all(contents.as_bytes()).map_err(|source| WireError::Write { path: temp_path.clone(), source })?;
+        file.sync_all().map_err(|source| WireError::Write { path: temp_path.clone(), source })?;
+        drop(file);
+
+        std::fs::rename(&temp_path, path).map_err(|source| WireError::Replace {
+            path: path.to_path_buf(),
+            temp_path: temp_path.clone(),
+            source,
+        })?;
+        Ok(())
+    })();
+
+    if write_result.is_err() {
+        let _ = std::fs::remove_file(&temp_path);
+    }
+    write_result?;
+
+    let _ = std::fs::File::open(parent).and_then(|dir| dir.sync_all());
+    Ok(())
+}
+
+fn sibling_with_unique_suffix(path: &Path, kind: &str) -> PathBuf {
+    let unique = ulid::Ulid::new();
+    let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or("config");
+    path.with_file_name(format!("{file_name}.{kind}-{unique}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn system_writer_replaces_config_and_preserves_backup() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.toml");
+        std::fs::write(&config_path, "old = true\n").expect("write old config");
+
+        write_config_file_safely(&config_path, "new = true\n").expect("safe write");
+
+        assert_eq!(std::fs::read_to_string(&config_path).expect("read new config"), "new = true\n");
+        let backups = std::fs::read_dir(temp.path())
+            .expect("list temp dir")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("config.toml.bak-"))
+            .collect::<Vec<_>>();
+        assert_eq!(backups.len(), 1, "expected one backup file");
+        assert_eq!(std::fs::read_to_string(backups[0].path()).expect("read backup"), "old = true\n");
     }
 }

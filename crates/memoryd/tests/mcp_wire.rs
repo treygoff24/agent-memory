@@ -57,6 +57,17 @@ args = ["mcp", "--socket", "/tmp/memoryd.sock", true]
 }
 
 #[test]
+fn codex_toml_rejects_non_table_mcp_servers() {
+    let error = merge_codex_mcp_toml("mcp_servers = \"legacy string\"\n", &memorum_spec())
+        .expect_err("non-table mcp_servers must not be overwritten");
+
+    assert!(
+        matches!(error, WireError::InvalidConfigShape("Codex mcp_servers must be a TOML table")),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
 fn claude_json_merge_preserves_sibling_servers() {
     let existing = r#"
 {
@@ -104,6 +115,35 @@ fn codex_apply_honors_codex_home_config_path() {
 }
 
 #[test]
+fn codex_apply_preserves_backup_when_updating_existing_config() {
+    let config_path = PathBuf::from("/custom/codex/config.toml");
+    let mut runtime = FakeRuntime::default().with_env("CODEX_HOME", "/custom/codex");
+    runtime.files.insert(config_path.clone(), "model = \"gpt-5.4\"\n".to_string());
+
+    let outcome = wire_with_runtime(HarnessTarget::Codex, &memorum_spec(), WireMode::Apply, &mut runtime)
+        .expect("codex config update succeeds");
+
+    assert_eq!(outcome.status, WireStatus::Wired);
+    assert_eq!(runtime.safe_write_count, 1);
+    assert_eq!(runtime.backups.get(&config_path).map(String::as_str), Some("model = \"gpt-5.4\"\n"));
+    assert!(runtime.files[&config_path].contains("[mcp_servers.memorum]"));
+}
+
+#[test]
+fn codex_apply_rejects_invalid_top_level_mcp_servers_without_writing() {
+    let config_path = PathBuf::from("/custom/codex/config.toml");
+    let mut runtime = FakeRuntime::default().with_env("CODEX_HOME", "/custom/codex");
+    runtime.files.insert(config_path.clone(), "mcp_servers = \"legacy string\"\n".to_string());
+
+    let error = wire_with_runtime(HarnessTarget::Codex, &memorum_spec(), WireMode::Apply, &mut runtime)
+        .expect_err("invalid config shape should fail closed");
+
+    assert!(matches!(error, WireError::InvalidConfigShape("Codex mcp_servers must be a TOML table")));
+    assert_eq!(runtime.safe_write_count, 0);
+    assert_eq!(runtime.files[&config_path], "mcp_servers = \"legacy string\"\n");
+}
+
+#[test]
 fn claude_falls_back_to_project_json_when_cli_is_absent() {
     let mut runtime = FakeRuntime::default().with_current_dir(PathBuf::from("/repo"));
 
@@ -114,6 +154,21 @@ fn claude_falls_back_to_project_json_when_cli_is_absent() {
     let config = runtime.files.get(Path::new("/repo/.mcp.json")).expect("fallback config written");
     let parsed: serde_json::Value = serde_json::from_str(config).expect("valid json");
     assert_eq!(parsed["mcpServers"]["memorum"]["command"], "memoryd");
+}
+
+#[test]
+fn claude_fallback_preserves_backup_when_updating_existing_project_config() {
+    let config_path = PathBuf::from("/repo/.mcp.json");
+    let mut runtime = FakeRuntime::default().with_current_dir(PathBuf::from("/repo"));
+    runtime.files.insert(config_path.clone(), "{\"theme\":\"dark\"}\n".to_string());
+
+    let outcome = wire_with_runtime(HarnessTarget::Claude, &memorum_spec(), WireMode::Apply, &mut runtime)
+        .expect("claude fallback config update succeeds");
+
+    assert_eq!(outcome.status, WireStatus::Wired);
+    assert_eq!(runtime.safe_write_count, 1);
+    assert_eq!(runtime.backups.get(&config_path).map(String::as_str), Some("{\"theme\":\"dark\"}\n"));
+    assert!(runtime.files[&config_path].contains("\"mcpServers\""));
 }
 
 #[test]
@@ -136,6 +191,8 @@ struct FakeRuntime {
     current_dir: PathBuf,
     claude_result: Option<CommandResult>,
     write_count: usize,
+    safe_write_count: usize,
+    backups: BTreeMap<PathBuf, String>,
 }
 
 impl FakeRuntime {
@@ -160,8 +217,12 @@ impl McpWireRuntime for FakeRuntime {
         Ok(self.files.get(path).cloned())
     }
 
-    fn write_string(&mut self, path: &Path, contents: &str) -> Result<(), WireError> {
+    fn write_config_file(&mut self, path: &Path, contents: &str) -> Result<(), WireError> {
         self.write_count += 1;
+        self.safe_write_count += 1;
+        if let Some(existing) = self.files.get(path) {
+            self.backups.insert(path.to_path_buf(), existing.clone());
+        }
         self.files.insert(path.to_path_buf(), contents.to_string());
         Ok(())
     }
