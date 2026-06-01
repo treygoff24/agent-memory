@@ -109,16 +109,16 @@ bash scripts/install-memorum.sh --agent
 
 `--agent` preserves the normal installer output and appends one final line
 prefixed with `MEMORUM_AGENT_SUMMARY_JSON=`. The value is JSON with absolute
-`repo`, `runtime`, and `socket` paths, plus both a pasteable `next_command` and
-an argv-safe `next_command_argv` array.
+`repo`, `runtime`, and `socket` paths, plus both a shell-escaped pasteable
+`next_command` and an argv-safe `next_command_argv` array.
 
 Example shape:
 
 ```text
-MEMORUM_AGENT_SUMMARY_JSON={"mode":"agent","repo":"/home/alice/memorum","runtime":"/home/alice/memorum/.memoryd","socket":"/home/alice/memorum/.memoryd/memoryd.sock","next_command":"claude mcp add memorum -- memoryd mcp --socket \"/home/alice/memorum/.memoryd/memoryd.sock\"","next_command_argv":["claude","mcp","add","memorum","--","memoryd","mcp","--socket","/home/alice/memorum/.memoryd/memoryd.sock"]}
+MEMORUM_AGENT_SUMMARY_JSON={"mode":"agent","repo":"/home/alice/memorum","runtime":"/home/alice/memorum/.memoryd","socket":"/home/alice/memorum/.memoryd/memoryd.sock","next_command":"claude mcp add memorum -- memoryd mcp --socket /home/alice/memorum/.memoryd/memoryd.sock","next_command_argv":["claude","mcp","add","memorum","--","memoryd","mcp","--socket","/home/alice/memorum/.memoryd/memoryd.sock"]}
 ```
 
-The Claude MCP one-liner uses the same grammar as `setup::mcp_wire`:
+The Claude MCP one-liner uses the same argument grammar as `setup::mcp_wire`:
 
 ```bash
 claude mcp add memorum -- memoryd mcp --socket "/absolute/path/to/memorum/.memoryd/memoryd.sock"

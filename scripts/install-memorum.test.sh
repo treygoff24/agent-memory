@@ -43,7 +43,7 @@ assert_contains "installer binary set: memoryd, memoryd-tui, memoryd-web, memory
 assert_contains "memorum-eval is a development/eval binary"
 assert_contains "memoryd serve --init --repo $repo --runtime $runtime --socket $runtime/memoryd.sock"
 assert_contains "memoryd status --socket $runtime/memoryd.sock"
-assert_contains "claude mcp add memorum -- memoryd mcp --socket \"$runtime/memoryd.sock\""
+assert_contains "claude mcp add memorum -- memoryd mcp --socket $runtime/memoryd.sock"
 assert_not_contains "claude mcp add memorum memoryd -- mcp"
 assert_contains '"args": ["mcp", "--socket", "'"$runtime"'/memoryd.sock"]'
 assert_contains "command -v memoryd-merge-driver"
@@ -79,7 +79,7 @@ rel_assert() {
 }
 rel_assert "memoryd serve --init --repo $rel_repo --runtime $rel_runtime --socket $rel_runtime/memoryd.sock" "serve"
 rel_assert "memoryd status --socket $rel_runtime/memoryd.sock" "status"
-rel_assert "claude mcp add memorum -- memoryd mcp --socket \"$rel_runtime/memoryd.sock\"" "claude"
+rel_assert "claude mcp add memorum -- memoryd mcp --socket $rel_runtime/memoryd.sock" "claude"
 rel_assert '"args": ["mcp", "--socket", "'"$rel_runtime"'/memoryd.sock"]' "json"
 rel_not_contains() {
   local needle="$1"
@@ -180,7 +180,7 @@ expected_socket = sys.argv[2]
 assert summary["mode"] == "agent", summary
 assert summary["socket"] == expected_socket, summary
 assert os.path.isabs(summary["socket"]), summary
-assert summary["next_command"] == f'claude mcp add memorum -- memoryd mcp --socket "{expected_socket}"', summary
+assert summary["next_command"] == f'claude mcp add memorum -- memoryd mcp --socket {expected_socket}', summary
 assert summary["next_command_argv"] == [
     "claude",
     "mcp",
@@ -194,6 +194,76 @@ assert summary["next_command_argv"] == [
 ], summary
 PY
 rm -rf "$agent_tmp"
+
+# --- Agent command is shell-safe for pasteable socket paths ---
+shell_tmp="$(mktemp -d)"
+shell_physical="$(cd "$shell_tmp" && pwd -P)"
+shell_marker="$shell_physical/should-not-exist"
+shell_socket="\$(touch $shell_marker).sock"
+shell_out="$shell_tmp/install-agent-shell-safe.out"
+(
+  cd "$shell_tmp"
+  bash "$repo_root/scripts/install-memorum.sh" \
+    --dry-run \
+    --force-reinstall \
+    --agent \
+    --repo repo \
+    --runtime runtime \
+    --socket "$shell_socket" >"$shell_out"
+)
+shell_summary_line="$(grep -E '^MEMORUM_AGENT_SUMMARY_JSON=' "$shell_out" || true)"
+if [ -z "$shell_summary_line" ]; then
+  echo "agent shell-safe test: missing MEMORUM_AGENT_SUMMARY_JSON line" >&2
+  cat "$shell_out" >&2
+  exit 1
+fi
+shell_summary_json="${shell_summary_line#MEMORUM_AGENT_SUMMARY_JSON=}"
+shell_command="$(python3 - "$shell_summary_json" "$shell_physical/$shell_socket" <<'PY'
+import json
+import sys
+
+summary = json.loads(sys.argv[1])
+expected_socket = sys.argv[2]
+assert summary["socket"] == expected_socket, summary
+assert summary["next_command_argv"][-1] == expected_socket, summary
+print(summary["next_command"])
+PY
+)"
+bash -c "claude() { :; }; $shell_command"
+if [ -e "$shell_marker" ]; then
+  echo "agent shell-safe test: next_command executed socket command substitution" >&2
+  cat "$shell_out" >&2
+  exit 1
+fi
+rm -rf "$shell_tmp"
+
+# --- Control characters are rejected before JSON emission ---
+control_tmp="$(mktemp -d)"
+control_stdout="$control_tmp/stdout"
+control_stderr="$control_tmp/stderr"
+control_code=0
+bash "$repo_root/scripts/install-memorum.sh" \
+  --dry-run \
+  --force-reinstall \
+  --agent \
+  --socket $'bad\001.sock' \
+  >"$control_stdout" 2>"$control_stderr" || control_code=$?
+if [ "$control_code" -ne 2 ]; then
+  echo "control-character test: expected exit code 2, got $control_code" >&2
+  cat "$control_stderr" >&2
+  exit 1
+fi
+if ! grep -Fq 'must not contain control characters' "$control_stderr"; then
+  echo "control-character test: stderr missing rejection message" >&2
+  cat "$control_stderr" >&2
+  exit 1
+fi
+if grep -Fq -- 'MEMORUM_AGENT_SUMMARY_JSON=' "$control_stdout"; then
+  echo "control-character test: stdout should not contain agent summary after rejection" >&2
+  cat "$control_stdout" >&2
+  exit 1
+fi
+rm -rf "$control_tmp"
 
 # --- Empty argument rejection ---
 expect_empty_rejection() {

@@ -36,6 +36,15 @@ reject_literal_tilde() {
   esac
 }
 
+reject_control_chars() {
+  local label="$1"
+  local value="$2"
+  if printf '%s' "$value" | LC_ALL=C grep -q '[[:cntrl:]]'; then
+    echo "error: $label must not contain control characters" >&2
+    exit 2
+  fi
+}
+
 require_option_value() {
   local flag="$1"
   local value="${2:-}"
@@ -113,6 +122,10 @@ reject_literal_tilde "$socket"
 repo="$(absolute_path "$repo")"
 runtime="$(absolute_path "$runtime")"
 socket="$(absolute_path "$socket")"
+
+reject_control_chars "--repo" "$repo"
+reject_control_chars "--runtime" "$runtime"
+reject_control_chars "--socket" "$socket"
 
 pid_file="$runtime/memoryd.pid"
 log_file="$runtime/memoryd.log"
@@ -194,8 +207,17 @@ json_string_array() {
   printf ']'
 }
 
+shell_word() {
+  printf '%q' "$1"
+}
+
+claude_mcp_command() {
+  printf 'claude mcp add memorum -- memoryd mcp --socket %s' "$(shell_word "$socket")"
+}
+
 emit_agent_summary() {
-  local next_command="claude mcp add memorum -- memoryd mcp --socket \"$socket\""
+  local next_command
+  next_command="$(claude_mcp_command)"
   local next_command_argv=(claude mcp add memorum -- memoryd mcp --socket "$socket")
 
   printf 'MEMORUM_AGENT_SUMMARY_JSON={'
@@ -211,6 +233,23 @@ emit_agent_summary() {
   printf ',"next_command_argv":'
   json_string_array "${next_command_argv[@]}"
   printf '}\n'
+}
+
+print_mcp_snippets() {
+  printf 'Claude MCP one-liner:\n'
+  claude_mcp_command
+  printf '\n\n'
+  cat <<SNIPPET
+MCP client snippet:
+{
+  "mcpServers": {
+    "memorum": {
+      "command": "memoryd",
+      "args": ["mcp", "--socket", $(json_string "$socket")]
+    }
+  }
+}
+SNIPPET
 }
 
 pid_is_numeric() {
@@ -373,20 +412,7 @@ else
   echo "+ memoryd status --socket $socket"
 fi
 
-cat <<SNIPPET
-Claude MCP one-liner:
-claude mcp add memorum -- memoryd mcp --socket "$socket"
-
-MCP client snippet:
-{
-  "mcpServers": {
-    "memorum": {
-      "command": "memoryd",
-      "args": ["mcp", "--socket", "$socket"]
-    }
-  }
-}
-SNIPPET
+print_mcp_snippets
 
 if [ "$dry_run" -eq 0 ]; then
   cat <<LIFECYCLE
