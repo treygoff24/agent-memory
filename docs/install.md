@@ -11,7 +11,7 @@ Install the daemon package directly from the Git repository:
 
 ```bash
 CARGO_NET_GIT_FETCH_WITH_CLI=true \
-  cargo install --git https://github.com/treygoff24/agent-memory.git memoryd --locked
+  cargo install --git https://github.com/treygoff24/agent-memory.git memoryd --locked --bin memoryd
 memoryd --version
 ```
 
@@ -19,7 +19,7 @@ For reproducible automation, pin the exact revision you reviewed:
 
 ```bash
 CARGO_NET_GIT_FETCH_WITH_CLI=true \
-  cargo install --git https://github.com/treygoff24/agent-memory.git --rev <COMMIT_SHA> memoryd --locked
+  cargo install --git https://github.com/treygoff24/agent-memory.git --rev <COMMIT_SHA> memoryd --locked --bin memoryd
 ```
 
 Cargo installs one package per invocation. To install the companion binaries,
@@ -53,11 +53,13 @@ argument:
 
 ```bash
 CARGO_NET_GIT_FETCH_WITH_CLI=true \
-  cargo install --git https://github.com/treygoff24/agent-memory.git memoryd --locked
+  cargo install --git https://github.com/treygoff24/agent-memory.git memoryd --locked --bin memoryd
 ```
 
 That command completed successfully and compiled the workspace path dependencies
-from Cargo's git checkout. It installed `memoryd v0.1.0` from
+from Cargo's git checkout. `--bin memoryd` keeps the daemon install scoped to
+the daemon binary instead of also installing benchmark binaries from the same
+package. It installed `memoryd v0.1.0` from
 `https://github.com/treygoff24/agent-memory.git#c223c906`.
 
 Without `CARGO_NET_GIT_FETCH_WITH_CLI=true`, Cargo's default git backend reached
