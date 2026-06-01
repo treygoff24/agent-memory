@@ -369,7 +369,7 @@ fn codex_server_matches(item: &Item, spec: &McpServerSpec) -> bool {
     let args = table
         .get("args")
         .and_then(Item::as_array)
-        .map(|array| array.iter().filter_map(|value| value.as_str().map(ToOwned::to_owned)).collect::<Vec<_>>());
+        .and_then(|array| array.iter().map(|value| value.as_str().map(str::to_owned)).collect::<Option<Vec<_>>>());
 
     command == Some(spec.command.to_string_lossy().as_ref()) && args.as_deref() == Some(spec.args.as_slice())
 }

@@ -48,6 +48,7 @@ scraper = "0.23"
 sqlite-vec = "=0.1.9"
 tempfile = "3.14"
 thiserror = "2.0"
+toml_edit = "0.22"
 tracing = "0.1"
 tokio = { version = "1.42", features = [
     "fs",

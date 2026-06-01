@@ -42,6 +42,21 @@ fn codex_toml_remerge_reports_already_current() {
 }
 
 #[test]
+fn codex_toml_remerge_repairs_malformed_args() {
+    let existing = r#"
+[mcp_servers.memorum]
+command = "memoryd"
+args = ["mcp", "--socket", "/tmp/memoryd.sock", true]
+"#;
+
+    let outcome = merge_codex_mcp_toml(existing, &memorum_spec()).expect("merge succeeds");
+
+    assert_eq!(outcome.status, WireStatus::Updated);
+    assert!(outcome.body.contains("args = [\"mcp\", \"--socket\", \"/tmp/memoryd.sock\"]"));
+    assert!(!outcome.body.contains("true"));
+}
+
+#[test]
 fn claude_json_merge_preserves_sibling_servers() {
     let existing = r#"
 {
