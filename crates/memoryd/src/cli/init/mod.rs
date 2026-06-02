@@ -6,7 +6,7 @@
 //!   and emits a JSON `SetupReport` on stdout (diagnostics on stderr).
 //! - [`interactive`] — TTY path. STUB until T05; today it short-circuits via
 //!   `InteractiveIo` (`SetupError::Unsupported`).
-//! - [`detect_and_advise`] — the legacy detect-and-advise advisory output kept
+//! - `detect_and_advise` — the legacy detect-and-advise advisory output kept
 //!   for backward compatibility on a bare interactive `memoryd init`.
 //!
 //! Dispatch rules:

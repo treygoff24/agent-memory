@@ -2,7 +2,7 @@
 //!
 //! STUB: T05 fills this in with dialoguer-backed prompts. For now it drives the
 //! shared setup engine through [`InteractiveIo`], whose decision methods return
-//! [`SetupError::Unsupported`]. The error surfaces as a non-zero exit so the
+//! `SetupError::Unsupported`. The error surfaces as a non-zero exit so the
 //! TTY path is visibly unfinished rather than silently doing nothing.
 
 use crate::cli::InitArgs;
