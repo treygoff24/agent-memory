@@ -26,7 +26,7 @@ pub async fn run(args: InitArgs) -> anyhow::Result<()> {
 
 /// Drive interactive setup with a caller-supplied [`SetupIo`] implementation.
 ///
-/// This seam keeps tests deterministic: pass a [`ScriptedIo`] (or any other
+/// This seam keeps tests deterministic: pass a `ScriptedIo` (or any other
 /// `SetupIo` impl) to exercise the full engine path without a real TTY.
 pub async fn run_with_io<I: SetupIo>(args: InitArgs, mut io: I) -> anyhow::Result<()> {
     let (repo, runtime) = resolve_repo_runtime(&args);
