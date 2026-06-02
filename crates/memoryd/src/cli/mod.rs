@@ -77,10 +77,70 @@ pub struct InitArgs {
     /// Local per-device runtime directory (default `<repo>/.memoryd`).
     #[arg(long)]
     pub runtime: Option<PathBuf>,
-    /// Run without prompts; suitable for CI. Equivalent to answering "no" to
-    /// the import prompt and using all defaults.
+    /// Run without prompts; drive the setup engine from flags and emit a
+    /// machine-readable report. Suitable for CI and agent bootstrap.
     #[arg(long, default_value_t = false)]
     pub non_interactive: bool,
+    /// Emit machine-readable JSON to stdout. Implied by `--non-interactive`
+    /// and `--detect-only`; diagnostics always go to stderr.
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
+    /// Run detection only: no decisions, no steps, zero mutation. Emits the
+    /// detection summary as JSON and exits.
+    #[arg(long, default_value_t = false)]
+    pub detect_only: bool,
+    /// Import detected harness memory through the daemon during setup.
+    #[arg(long, default_value_t = false)]
+    pub import: bool,
+    /// Harness set to import (default: the single detected harness).
+    #[arg(long, value_enum, default_value_t = InitHarness::Current)]
+    pub harness: InitHarness,
+    /// Default placement for imported memories whose cwd is not a git
+    /// checkout. Mirrors `memoryd import --non-git-cwd-default`.
+    #[arg(long, value_enum, default_value_t = NonGitCwdDefault::Skip)]
+    pub non_git_cwd_default: NonGitCwdDefault,
+    /// MCP configs to wire (default: the single detected harness).
+    #[arg(long, value_enum, default_value_t = WireMcpMode::Current)]
+    pub wire_mcp: WireMcpMode,
+    /// Daemon arrangement to provision during setup.
+    #[arg(long, value_enum, default_value_t = DaemonMode::OnDemand)]
+    pub daemon: DaemonMode,
+    /// Plan and report every step without applying side effects (dry-run
+    /// import, print-only MCP wiring).
+    #[arg(long, default_value_t = false)]
+    pub print_only: bool,
+}
+
+/// Harness selection for `memoryd init --harness`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "lowercase")]
+pub enum InitHarness {
+    Current,
+    Claude,
+    Codex,
+    All,
+    None,
+}
+
+/// MCP wiring selection for `memoryd init --wire-mcp`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "lowercase")]
+pub enum WireMcpMode {
+    Current,
+    Claude,
+    Codex,
+    All,
+    None,
+}
+
+/// Daemon arrangement for `memoryd init --daemon`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "kebab-case")]
+pub enum DaemonMode {
+    OnDemand,
+    Background,
+    Launchd,
+    None,
 }
 
 #[derive(Debug, Args)]
