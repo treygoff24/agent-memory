@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use memory_privacy::FileKeyProvider;
 use memory_substrate::{InitOptions, OpenError, Roots, Substrate};
 
 use crate::import::pipeline::{
@@ -311,16 +312,36 @@ fn combine_verification(status: VerificationSignal, doctor: VerificationSignal) 
 
 async fn ensure_substrate(repo: &Path, runtime: &Path, force_unsafe_durability: bool) -> Result<String, String> {
     let roots = Roots::new(repo.to_path_buf(), runtime.to_path_buf());
-    match Substrate::open(roots.clone()).await {
-        Ok(_) => return Ok(format!("Memorum repo already initialized at {}", repo.display())),
-        Err(OpenError::NotAMemorumSubstrate { .. } | OpenError::DeviceIdentityMissing { .. }) => {}
+    let message = match Substrate::open(roots.clone()).await {
+        Ok(_) => format!("Memorum repo already initialized at {}", repo.display()),
+        Err(OpenError::NotAMemorumSubstrate { .. } | OpenError::DeviceIdentityMissing { .. }) => {
+            Substrate::init(roots, InitOptions { force_unsafe_durability, device_id: None })
+                .await
+                .map(|_| format!("initialized Memorum repo at {}", repo.display()))
+                .map_err(|error| error.to_string())?
+        }
         Err(error) => return Err(error.to_string()),
-    }
+    };
 
-    Substrate::init(roots, InitOptions { force_unsafe_durability, device_id: None })
-        .await
-        .map(|_| format!("initialized Memorum repo at {}", repo.display()))
-        .map_err(|error| error.to_string())
+    ensure_privacy_key(runtime)?;
+    Ok(message)
+}
+
+/// Provision the local Stream D age key if it is absent.
+///
+/// Every write through the daemon — including harness imports — passes the
+/// privacy filter, which loads `FileKeyProvider::runtime_default(runtime)`. Until
+/// this ran during setup, the key file did not exist and the first write failed
+/// with `privacy key unavailable`, so `init --import` landed nothing. This
+/// mirrors `memoryd device onboard`. Idempotent on purpose: a key already on disk
+/// is left untouched — re-provisioning would generate a new identity and orphan
+/// the prior one, breaking decryption of anything already encrypted.
+fn ensure_privacy_key(runtime: &Path) -> Result<(), String> {
+    let provider = FileKeyProvider::runtime_default(runtime);
+    if provider.path().exists() {
+        return Ok(());
+    }
+    provider.onboard_local_file().map(|_| ()).map_err(|error| error.to_string())
 }
 
 async fn start_background_daemon(request: DaemonStepRequest<'_>) -> Result<String, String> {

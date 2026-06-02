@@ -65,12 +65,13 @@ use memoryd::setup::{SetupReport, SetupStep, SetupStepStatus};
 use memoryd::socket::{probe_live_socket, SocketProbe};
 use serial_test::serial;
 
-/// Whether a real-daemon import is currently expected to *land* memories in the
-/// substrate. Today it does not — imports are refused for grounding (see the
-/// module docs). Flip to `true` once the importer emits a groundable
-/// `source_ref`; the assertions below switch from "refused, nothing lands" to
-/// "both fixture memories land and are queryable".
-const EXPECTED_IMPORT_LANDS: bool = false;
+/// Whether a real-daemon import is expected to *land* memories in the substrate.
+/// True since the importer emits a governance-groundable `file:`-prefixed
+/// `source_ref` (`import::pipeline::groundable_source_ref`): both fixture
+/// memories pass the `*-strict` grounding policies, land on disk, and become
+/// queryable. The assertions below assert that landing and the idempotent skip
+/// on re-run.
+const EXPECTED_IMPORT_LANDS: bool = true;
 
 /// Number of importable memories the fixture corpus contains: one Claude topic
 /// file plus one Codex Task Group.
@@ -189,10 +190,17 @@ fn background_onboarding_is_clean_idempotent_and_governance_truthful() {
 /// importer emits a groundable `source_ref`.
 fn assert_first_run_disposition(claude: &HarnessCounters, codex: &HarnessCounters) {
     if EXPECTED_IMPORT_LANDS {
-        assert_eq!(claude.written_new, 1, "claude memory written new");
-        assert_eq!(codex.written_new, 1, "codex memory written new");
-        assert_eq!(claude.refused_grounding, 0, "no grounding refusal expected once the importer grounds writes");
-        assert_eq!(codex.refused_grounding, 0, "no grounding refusal expected once the importer grounds writes");
+        // Imports land as governance *candidates* (confidence 0.7, above the
+        // Reality Check review threshold but below hand-written memories), not as
+        // directly-promoted `written_new`. See import::pipeline build_write_meta.
+        assert_eq!(claude.written_candidate, 1, "claude memory written as candidate");
+        assert_eq!(codex.written_candidate, 1, "codex memory written as candidate");
+        assert_eq!(claude.written_new, 0, "imports are candidates, not direct promotions");
+        assert_eq!(codex.written_new, 0, "imports are candidates, not direct promotions");
+        assert_eq!(claude.refused_grounding, 0, "no grounding refusal once the importer grounds writes");
+        assert_eq!(codex.refused_grounding, 0, "no grounding refusal once the importer grounds writes");
+        assert_eq!(claude.refused_privacy, 0, "no privacy refusal once the key is provisioned");
+        assert_eq!(codex.refused_privacy, 0, "no privacy refusal once the key is provisioned");
     } else {
         // Current reality: the importer's bare `source_ref` fails grounding, so
         // every `*-strict` policy refuses the write. See the module docs.

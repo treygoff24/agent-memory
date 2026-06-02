@@ -562,6 +562,26 @@ fn register_aliases_for(candidate: &ParsedMemory, id: &str, alias_to_id: &mut Ha
     }
 }
 
+/// Format a candidate's on-disk source path as a governance-groundable `file:`
+/// reference.
+///
+/// Imported memories are promoted as `AgentPrimary`/`File` sources (see
+/// `handlers::governance`), and the built-in `*-strict` policies require
+/// grounding. `memory_governance::FileSourceResolver` only resolves a
+/// `file:`-prefixed ABSOLUTE path that exists on disk; a bare path is
+/// `Unsupported`, so every import write would be refused for grounding. The
+/// harness source file exists at import time, so prefix `file:` and ensure the
+/// path is absolute — canonicalizing a relative path against the importer's cwd
+/// so the daemon can resolve it regardless of its own working directory.
+fn groundable_source_ref(source_path: &Path) -> String {
+    let absolute = if source_path.is_absolute() {
+        source_path.to_path_buf()
+    } else {
+        std::fs::canonicalize(source_path).unwrap_or_else(|_| source_path.to_path_buf())
+    };
+    format!("file:{}", absolute.display())
+}
+
 fn build_write_meta(action: &PlannedWrite, related: &[String], supersedes: Option<&[String]>) -> Value {
     let mut meta = serde_json::Map::new();
     meta.insert(
@@ -573,7 +593,7 @@ fn build_write_meta(action: &PlannedWrite, related: &[String], supersedes: Optio
     );
     meta.insert("type".to_string(), Value::String("claim".to_string()));
     meta.insert("source_kind".to_string(), Value::String("import".to_string()));
-    meta.insert("source_ref".to_string(), Value::String(action.candidate.source_path.display().to_string()));
+    meta.insert("source_ref".to_string(), Value::String(groundable_source_ref(&action.candidate.source_path)));
     // Imported memories carry a confidence of 0.7 (plan R1 bump from 0.5) so
     // they stay above the Reality Check review threshold while still ranking
     // below hand-written `0.85` memories.

@@ -1216,8 +1216,17 @@ impl GovernanceWriteInput {
         if let Some(summary) = &self.meta.summary {
             fields.push(summary.as_str());
         }
-        if !matches!(self.meta.source_kind, GovernanceSourceKindMeta::WebCapture) {
-            if let Some(source_ref) = &self.meta.source_ref {
+        // Skip provenance *locators* from the privacy scan: a WebCapture URL or a
+        // `file:`-grounded import/file path is a machine-generated reference, not
+        // user-authored content. Scanning them produces false positives — a
+        // filesystem path's numeric run (PID, nanosecond timestamp) can be
+        // Luhn-valid and trip the credit-card detector, refusing an otherwise-clean
+        // import for privacy. Body, title, summary, and tags are still scanned, so
+        // genuine secret *content* is still caught.
+        if let Some(source_ref) = &self.meta.source_ref {
+            let is_provenance_locator = matches!(self.meta.source_kind, GovernanceSourceKindMeta::WebCapture)
+                || source_ref.starts_with("file:");
+            if !is_provenance_locator {
                 fields.push(source_ref.as_str());
             }
         }
@@ -1675,6 +1684,47 @@ mod tests {
         assert!(memory.frontmatter.supersedes.is_empty());
         assert_eq!(memory.frontmatter.canonical_namespace_id.as_deref(), Some(DEFAULT_PROJECT_NAMESPACE));
         assert!(!memory.frontmatter.requires_user_confirmation);
+    }
+
+    #[test]
+    fn privacy_scan_excludes_file_locator_so_path_digits_do_not_false_positive() {
+        // A grounded import carries `source_ref = file:<abs path>`. Filesystem
+        // paths routinely contain long digit runs (PIDs, nanosecond timestamps)
+        // that can be Luhn-valid and trip the credit-card secret detector. Such a
+        // locator is machine-generated provenance, not user content, so it must NOT
+        // be privacy-scanned — otherwise an otherwise-clean import is refused at
+        // random (~10% of nonces, see import::pipeline::groundable_source_ref). The
+        // canonical Visa test number `4111111111111111` is Luhn-valid and stands in
+        // for any such path component.
+        let luhn = "4111111111111111";
+        let file_ref = format!("file:/tmp/memd-run-{luhn}/topic.md");
+        let input = write_input(serde_json::json!({
+            "source_kind": "import",
+            "source_ref": file_ref,
+        }));
+        assert!(!input.privacy_scan_text().contains(luhn), "file: locator must be excluded from the privacy scan text");
+        let decision = classify_input_privacy(&input).expect("classify file-locator input");
+        assert_ne!(
+            decision.storage_action,
+            PrivacyStorageAction::Refuse,
+            "a file: locator with a Luhn-valid path component must not be refused for privacy"
+        );
+
+        // Positive control: the same value in user *content* (body) is still
+        // scanned and refused, proving the exclusion is scoped to the locator.
+        let body_input = GovernanceWriteInput::parse(GovernanceWriteInputParts {
+            body: format!("card {luhn} on file"),
+            title: None,
+            tags: Vec::new(),
+            meta: serde_json::json!({ "source_kind": "import" }),
+            source: MetaSource::Default,
+        })
+        .expect("body input parses");
+        assert_eq!(
+            classify_input_privacy(&body_input).expect("classify body input").storage_action,
+            PrivacyStorageAction::Refuse,
+            "a Luhn-valid number in the body is genuine secret content and must still be refused"
+        );
     }
 
     #[test]
