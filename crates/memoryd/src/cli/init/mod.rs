@@ -4,7 +4,7 @@
 //!
 //! - [`agent`] — non-interactive / machine path. Drives the engine from flags
 //!   and emits a JSON `SetupReport` on stdout (diagnostics on stderr).
-//! - [`interactive`] — TTY path. Drives the shared engine through `DialoguerIo`,
+//! - [`interactive`] — TTY path. Drives the shared engine through `InteractiveIo`,
 //!   presenting `dialoguer` prompts for each setup decision.
 //! - `detect_and_advise` — the legacy detect-and-advise advisory output kept
 //!   for backward compatibility on a bare interactive `memoryd init`.
@@ -50,7 +50,7 @@ pub async fn run(args: InitArgs) -> anyhow::Result<()> {
     if std::io::stdin().is_terminal() {
         if requests_engine_action(&args) {
             // TTY + action flags: hand off to the interactive frontend, which
-            // drives the engine via `DialoguerIo` prompts.
+            // drives the engine via `InteractiveIo` prompts.
             return interactive::run(args).await;
         }
         // Bare interactive invocation keeps the legacy advisory output. The
@@ -80,7 +80,7 @@ fn requests_engine_action(args: &InitArgs) -> bool {
 /// On a bare interactive `memoryd init`, the advisory path neither provisions a
 /// daemon nor wires MCP. A user who passes `--daemon background` or `--wire-mcp
 /// all` expecting those to take effect would otherwise get no signal that the
-/// flag was ignored. The interactive path (`DialoguerIo`) is only reached via
+/// flag was ignored. The interactive path (`InteractiveIo`) is only reached via
 /// `--import`/`--print-only` and presents prompts rather than honoring these mode
 /// selectors as flags, so on the bare advisory path surface a clear note that
 /// they require `--non-interactive` (or `--json`).

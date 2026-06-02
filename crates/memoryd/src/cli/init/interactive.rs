@@ -1,6 +1,6 @@
 //! Interactive (TTY) frontend for `memoryd init`.
 //!
-//! Drives the shared [`SetupEngine`] through [`DialoguerIo`], which implements
+//! Drives the shared [`SetupEngine`] through [`InteractiveIo`], which implements
 //! [`SetupIo`] by presenting `dialoguer`-backed prompts (Confirm, Select,
 //! MultiSelect) to the user. Declining every prompt is a safe no-op equivalent
 //! to `--detect-only`: no substrate is created, no daemon is arranged, no MCP
@@ -21,7 +21,7 @@ use super::resolve_repo_runtime;
 
 /// Drive interactive setup against a real TTY using `dialoguer` prompts.
 pub async fn run(args: InitArgs) -> anyhow::Result<()> {
-    run_with_io(args, DialoguerIo::default()).await
+    run_with_io(args, InteractiveIo::default()).await
 }
 
 /// Drive interactive setup with a caller-supplied [`SetupIo`] implementation.
@@ -35,7 +35,7 @@ pub async fn run_with_io<I: SetupIo>(args: InitArgs, mut io: I) -> anyhow::Resul
     Ok(())
 }
 
-// ── DialoguerIo ────────────────────────────────────────────────────────────
+// ── InteractiveIo ────────────────────────────────────────────────────────────
 
 /// Dialoguer-backed interactive I/O for `memoryd init`.
 ///
@@ -48,15 +48,15 @@ pub async fn run_with_io<I: SetupIo>(args: InitArgs, mut io: I) -> anyhow::Resul
 /// when the user opts into nothing (no import, no daemon, no MCP wiring) the
 /// session runs in dry-run mode and never provisions the substrate.
 ///
-/// [`print_only`]: DialoguerIo::print_only
+/// [`print_only`]: InteractiveIo::print_only
 #[derive(Debug, Default)]
-pub struct DialoguerIo {
+pub struct InteractiveIo {
     chose_import: bool,
     chose_daemon: bool,
     chose_wiring: bool,
 }
 
-impl SetupIo for DialoguerIo {
+impl SetupIo for InteractiveIo {
     fn confirm_import(&mut self, detection: &SetupDetection) -> SetupResult<bool> {
         let claude_count = detection.claude.candidates;
         let codex_count = detection.codex.candidates;
@@ -290,35 +290,35 @@ mod tests {
 
     // ── Test: decline-everything is a safe no-op ───────────────────────────
 
-    /// The shipped `DialoguerIo` must make declining every prompt a genuine
+    /// The shipped `InteractiveIo` must make declining every prompt a genuine
     /// no-op: when the user opts into nothing, `print_only()` returns `true`,
     /// which is what keeps `ensure_repo` from provisioning the substrate. This
     /// asserts the no-op is produced by the *decline decisions themselves*
     /// (`chose_*` all false), not by a hardcoded dry-run flag.
     #[test]
     fn dialoguer_io_decline_everything_is_print_only() {
-        // A `DialoguerIo` with no positive selections (the decline-everything
+        // An `InteractiveIo` with no positive selections (the decline-everything
         // state the prompt methods record) reports print-only.
-        let mut io = DialoguerIo::default();
+        let mut io = InteractiveIo::default();
         assert!(io.print_only().expect("print_only"), "declining everything must run as a dry-run no-op");
     }
 
     /// Conversely, opting into any single action (import, daemon, or wiring)
-    /// flips `DialoguerIo` out of no-op mode so the real steps run.
+    /// flips `InteractiveIo` out of no-op mode so the real steps run.
     #[test]
     fn dialoguer_io_any_action_runs_real_steps() {
-        let mut import_only = DialoguerIo { chose_import: true, ..DialoguerIo::default() };
+        let mut import_only = InteractiveIo { chose_import: true, ..InteractiveIo::default() };
         assert!(!import_only.print_only().expect("print_only"), "opting into import must run real steps");
 
-        let mut daemon_only = DialoguerIo { chose_daemon: true, ..DialoguerIo::default() };
+        let mut daemon_only = InteractiveIo { chose_daemon: true, ..InteractiveIo::default() };
         assert!(!daemon_only.print_only().expect("print_only"), "opting into a daemon must run real steps");
 
-        let mut wiring_only = DialoguerIo { chose_wiring: true, ..DialoguerIo::default() };
+        let mut wiring_only = InteractiveIo { chose_wiring: true, ..InteractiveIo::default() };
         assert!(!wiring_only.print_only().expect("print_only"), "opting into MCP wiring must run real steps");
     }
 
     /// Engine-level proof that a decline-everything session (the decision shape
-    /// the shipped `DialoguerIo` produces: nothing imported, no daemon, no
+    /// the shipped `InteractiveIo` produces: nothing imported, no daemon, no
     /// wiring, and therefore `print_only = true`) creates no substrate. Uses
     /// `ScriptedIo` to drive the engine deterministically without a real TTY.
     #[tokio::test]
@@ -326,7 +326,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let repo = temp.path().join("repo");
 
-        // Exactly what DialoguerIo records for a decline-everything session.
+        // Exactly what InteractiveIo records for a decline-everything session.
         let io = ScriptedIo::default(); // import=false, daemon=None, wire=None, print_only=true
         run_with_io(scratch_args(&repo), io).await.expect("run_with_io succeeds");
 
@@ -381,14 +381,14 @@ mod tests {
         assert!(repo.join(".memorum").exists(), "a real (non-dry-run) setup must create the substrate directory");
     }
 
-    // ── Test: SetupIo trait smoke-check on DialoguerIo ─────────────────────
+    // ── Test: SetupIo trait smoke-check on InteractiveIo ─────────────────────
 
-    /// Verify that `DialoguerIo`'s `note` method succeeds without a real TTY.
+    /// Verify that `InteractiveIo`'s `note` method succeeds without a real TTY.
     #[test]
     fn dialoguer_io_note_succeeds() {
-        let mut io = DialoguerIo::default();
+        let mut io = InteractiveIo::default();
         let note_result = io.note("test diagnostic message");
-        assert!(note_result.is_ok(), "DialoguerIo::note must succeed");
+        assert!(note_result.is_ok(), "InteractiveIo::note must succeed");
     }
 
     // ── Test: ScriptedIo unsupported variant produces SetupError ──────────

@@ -179,14 +179,20 @@ impl PromptBackend for InteractivePromptBackend {
 /// unique cwd so the user is prompted at most once per cwd path.
 #[derive(Default)]
 pub struct ProjectMapper {
-    _plan_only: bool,
     prompted_cache: std::collections::HashMap<PathBuf, PromptResult>,
 }
 
 impl ProjectMapper {
     /// Build a new mapper.
-    pub fn new(plan_only: bool) -> Self {
-        Self { _plan_only: plan_only, ..Self::default() }
+    ///
+    /// The mapper itself never writes `.memory-project.yaml`: a
+    /// `GenerateProjectYaml` disposition only records a [`ProjectYamlAction::PlannedWrite`]
+    /// (see the private `prepare_project_yaml`). The actual file write is performed
+    /// by `pipeline::materialize_planned_project_yamls`, which the executor gates on
+    /// `!dry_run`. Dry-run safety is therefore structural and does not depend on
+    /// any per-mapper flag.
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Resolve a single cwd. For non-git cwds the prompt backend is consulted
@@ -266,6 +272,12 @@ impl ProjectMapper {
         }
     }
 
+    /// Decide the `.memory-project.yaml` action for a `GenerateProjectYaml`
+    /// disposition without touching the filesystem. An existing file is reported
+    /// as [`ProjectYamlAction::AlreadyExists`]; otherwise the write is recorded as
+    /// [`ProjectYamlAction::PlannedWrite`]. Materialization is the executor's job
+    /// (`pipeline::materialize_planned_project_yamls`, gated on `!dry_run`), which
+    /// is what keeps dry-run safe.
     fn prepare_project_yaml(&mut self, yaml_path: &Path) -> Result<ProjectYamlAction, RecallError> {
         if yaml_path.exists() {
             return Ok(ProjectYamlAction::AlreadyExists);
@@ -403,7 +415,7 @@ mod tests {
     #[tokio::test]
     async fn none_cwd_resolves_to_user_scope() {
         let mut prompts = ScriptedPrompts::new();
-        let mut mapper = ProjectMapper::new(false);
+        let mut mapper = ProjectMapper::new();
         let binding = mapper.resolve(None, &mut prompts).await.expect("resolves");
         assert_eq!(binding.scope, Scope::User);
         assert_eq!(binding.namespace.as_deref(), Some("me"));
@@ -417,7 +429,7 @@ mod tests {
         std::fs::write(tmp.path().join(".memory-project.yaml"), "canonical_id: proj_test_yaml\nalias: test\n")
             .expect("write yaml");
         let mut prompts = ScriptedPrompts::new();
-        let mut mapper = ProjectMapper::new(false);
+        let mut mapper = ProjectMapper::new();
         let binding = mapper.resolve(Some(tmp.path()), &mut prompts).await.expect("resolves");
         assert_eq!(binding.scope, Scope::Project);
         assert_eq!(binding.canonical_namespace_id.as_deref(), Some("proj_test_yaml"));
@@ -430,7 +442,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tmp");
         let cwd = tmp.path();
         let mut prompts = ScriptedPrompts::new().with(cwd, PromptedDisposition::DropToMe);
-        let mut mapper = ProjectMapper::new(false);
+        let mut mapper = ProjectMapper::new();
         let binding = mapper.resolve(Some(cwd), &mut prompts).await.expect("resolves");
         assert_eq!(binding.scope, Scope::User);
         assert_eq!(binding.resolution, ResolutionKind::PromptedDropToMe);
@@ -442,7 +454,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tmp");
         let cwd = tmp.path();
         let mut prompts = ScriptedPrompts::new().with(cwd, PromptedDisposition::Skip);
-        let mut mapper = ProjectMapper::new(false);
+        let mut mapper = ProjectMapper::new();
         let binding = mapper.resolve(Some(cwd), &mut prompts).await.expect("resolves");
         assert!(binding.namespace.is_none());
         assert_eq!(binding.resolution, ResolutionKind::PromptedSkip);
@@ -453,7 +465,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tmp");
         let cwd = tmp.path();
         let mut prompts = ScriptedPrompts::new().with(cwd, PromptedDisposition::GenerateProjectYaml);
-        let mut mapper = ProjectMapper::new(false);
+        let mut mapper = ProjectMapper::new();
         let binding = mapper.resolve(Some(cwd), &mut prompts).await.expect("resolves");
         assert_eq!(binding.scope, Scope::Project);
         assert!(binding.canonical_namespace_id.as_deref().is_some_and(|id| id.starts_with("proj_")));
@@ -475,7 +487,7 @@ mod tests {
             let cwd = temp.path().join(case);
             std::fs::create_dir_all(&cwd).expect("case dir");
             let mut prompts = ScriptedPrompts::new().with(&cwd, PromptedDisposition::GenerateProjectYaml);
-            let mut mapper = ProjectMapper::new(false);
+            let mut mapper = ProjectMapper::new();
 
             let generated = mapper.resolve(Some(&cwd), &mut prompts).await.expect("generate binding");
             let yaml_path = cwd.join(".memory-project.yaml");
@@ -497,15 +509,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn plan_only_generate_records_planned_yaml_without_writing_file() {
+    async fn generate_disposition_records_planned_yaml_without_writing_file() {
         let tmp = tempfile::tempdir().expect("tmp");
         let cwd = tmp.path();
         let mut prompts = ScriptedPrompts::new().with(cwd, PromptedDisposition::GenerateProjectYaml);
-        let mut mapper = ProjectMapper::new(true);
+        let mut mapper = ProjectMapper::new();
         let binding = mapper.resolve(Some(cwd), &mut prompts).await.expect("resolves");
 
         let yaml_path = cwd.join(".memory-project.yaml");
-        assert!(!yaml_path.exists(), "plan-only mapping must not write yaml");
+        assert!(!yaml_path.exists(), "mapping only plans the yaml; the executor materializes it on a real run");
         let project_yaml = binding.project_yaml.expect("project yaml disposition");
         assert_eq!(project_yaml.path, yaml_path);
         assert_eq!(project_yaml.action, ProjectYamlAction::PlannedWrite);
@@ -516,7 +528,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tmp");
         let cwd = tmp.path();
         let mut prompts = ScriptedPrompts::new().with(cwd, PromptedDisposition::DropToMe);
-        let mut mapper = ProjectMapper::new(false);
+        let mut mapper = ProjectMapper::new();
         let _first = mapper.resolve(Some(cwd), &mut prompts).await.expect("first");
         let _second = mapper.resolve(Some(cwd), &mut prompts).await.expect("second");
         assert_eq!(prompts.calls, 1, "prompt invoked once across two resolves of the same cwd");

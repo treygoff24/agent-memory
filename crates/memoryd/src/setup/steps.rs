@@ -552,10 +552,25 @@ fn mcp_server_spec(engine: &SetupEngine, plan: &SetupPlan) -> Result<McpServerSp
 }
 
 fn absolute_path(path: &Path) -> Result<PathBuf, String> {
+    reject_literal_tilde(path)?;
     if path.is_absolute() {
         return Ok(path.to_path_buf());
     }
     Ok(std::env::current_dir().map_err(|error| error.to_string())?.join(path))
+}
+
+/// Reject a literal, unexpanded `~` path component, mirroring
+/// `install-launchd.sh`'s `reject_literal_tilde`. The shell never expands `~`
+/// inside quoted config values, so a path like `~/memorum/memoryd.sock` would
+/// be written verbatim and then joined onto the cwd as `/cwd/~/memorum/...`,
+/// producing a broken socket path. Rejecting it up front forces callers to pass
+/// `$HOME/...` or an already-absolute path.
+fn reject_literal_tilde(path: &Path) -> Result<(), String> {
+    let text = path.to_string_lossy();
+    if text == "~" || text.starts_with("~/") || text.starts_with("~\\") || (text.starts_with('~') && text.len() > 1) {
+        return Err(format!("literal ~ is not expanded here ({text}); pass $HOME/... or an absolute path"));
+    }
+    Ok(())
 }
 
 fn wire_outcome_summary(outcomes: Vec<Result<WireOutcome, String>>) -> WireStepOutcome {
@@ -809,6 +824,21 @@ mod tests {
         assert!(has_arg_pair(&spec.args, "--repo", &fixture.repo.to_string_lossy()));
         assert!(has_arg_pair(&spec.args, "--runtime", &fixture.runtime.to_string_lossy()));
         assert!(has_arg_pair(&spec.args, "--auto-start", "true"));
+    }
+
+    /// A literal `~` in any socket/repo/runtime path is rejected before it is
+    /// written into the MCP spec, matching `install-launchd.sh`'s
+    /// `reject_literal_tilde`. The shell would otherwise write `~` verbatim and
+    /// the engine would join it onto the cwd, producing a broken path.
+    #[test]
+    fn absolute_path_rejects_literal_tilde() {
+        for candidate in ["~", "~/memorum/memoryd.sock", "~root/memorum"] {
+            let error = absolute_path(Path::new(candidate)).expect_err("literal ~ must be rejected");
+            assert!(error.contains("literal ~"), "unexpected error for {candidate:?}: {error}");
+        }
+        // A path that merely contains a tilde mid-component (not a leading ~)
+        // is a legal filename and must not be rejected.
+        assert!(absolute_path(Path::new("/tmp/back~up/memoryd.sock")).is_ok());
     }
 
     #[tokio::test]

@@ -335,7 +335,9 @@ pub async fn run_import_session<C: DaemonClient>(
     // idempotent against already-imported sources.
     let _lock = if execute_options.dry_run { None } else { Some(ImportLockGuard::acquire(&engine.state_path)?) };
     options.state = ImportState::load(&engine.state_path)?;
-    let plan = engine.plan_with_mode(options, prompts, execute_options.dry_run).await?;
+    // Planning never writes `.memory-project.yaml`; `execute` is what gates the
+    // materialization on `!dry_run`, so the same plan is correct for both modes.
+    let plan = engine.plan(options, prompts).await?;
     engine.execute(plan, execute_options, client).await
 }
 
@@ -740,15 +742,6 @@ impl ImportEngine {
     /// each unique non-git cwd, applies state-file dedup, topologically sorts
     /// the resulting actions by wiki-link dependency.
     pub async fn plan(&self, options: ImportOptions, prompts: &mut dyn PromptBackend) -> ImportResult<ImportPlan> {
-        self.plan_with_mode(options, prompts, false).await
-    }
-
-    async fn plan_with_mode(
-        &self,
-        options: ImportOptions,
-        prompts: &mut dyn PromptBackend,
-        plan_only: bool,
-    ) -> ImportResult<ImportPlan> {
         let mut parse_errors = Vec::new();
         let mut candidates: Vec<ParsedMemory> = Vec::new();
 
@@ -786,7 +779,7 @@ impl ImportEngine {
 
         // Pass 2: per-cwd project mapping. Walk unique cwds in deterministic
         // order so prompt order is stable across runs.
-        let mut mapper = ProjectMapper::new(plan_only);
+        let mut mapper = ProjectMapper::new();
         let mut cwd_to_scope: HashMap<Option<PathBuf>, ScopeBinding> = HashMap::new();
         let mut ordered_cwds: Vec<Option<PathBuf>> = Vec::new();
         let mut seen_cwds: HashSet<Option<PathBuf>> = HashSet::new();
