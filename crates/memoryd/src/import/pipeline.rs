@@ -327,7 +327,13 @@ pub async fn run_import_session<C: DaemonClient>(
     execute_options: ExecuteOptions,
 ) -> ImportResult<ExecuteResult> {
     let engine = ImportEngine::new(repo_root);
-    let _lock = ImportLockGuard::acquire(&engine.state_path)?;
+    // A dry-run plans and counts without issuing daemon writes or persisting
+    // state, so it must not mutate disk. `ImportLockGuard::acquire` creates
+    // `.memorum/` plus the lock/pid files *before* `execute` consults `dry_run`,
+    // so only take the lock for a real run. Loading state is read-only (missing
+    // file → default), so it is safe either way and keeps the dry-run plan
+    // idempotent against already-imported sources.
+    let _lock = if execute_options.dry_run { None } else { Some(ImportLockGuard::acquire(&engine.state_path)?) };
     options.state = ImportState::load(&engine.state_path)?;
     let plan = engine.plan_with_mode(options, prompts, execute_options.dry_run).await?;
     engine.execute(plan, execute_options, client).await
@@ -472,6 +478,12 @@ impl ImportEngine {
                         counters_mut(&mut report, &harness_key).written_candidate += 1;
                         if let Some(written_id) = outcome.id {
                             record_promoted(&mut state, action, &written_id, None, &mut alias_to_id, &self.state_path)?;
+                        } else {
+                            // A candidate without an id leaves the source unrecorded,
+                            // so a re-run would re-write it (not idempotent). Surface
+                            // it rather than silently dropping the bookkeeping, just
+                            // like the promoted-without-id case above.
+                            record_unexpected_response(&mut report, &harness_key, action, "candidate-without-id");
                         }
                     }
                 }
@@ -479,6 +491,8 @@ impl ImportEngine {
                     counters_mut(&mut report, &harness_key).quarantined += 1;
                     if let Some(written_id) = outcome.id {
                         record_promoted(&mut state, action, &written_id, None, &mut alias_to_id, &self.state_path)?;
+                    } else {
+                        record_unexpected_response(&mut report, &harness_key, action, "quarantined-without-id");
                     }
                 }
                 GovernanceStatus::Refused => {
@@ -577,7 +591,14 @@ fn groundable_source_ref(source_path: &Path) -> String {
     let absolute = if source_path.is_absolute() {
         source_path.to_path_buf()
     } else {
-        std::fs::canonicalize(source_path).unwrap_or_else(|_| source_path.to_path_buf())
+        // Prefer canonicalization (resolves symlinks and `..`), but if the file
+        // is missing/inaccessible at import time, fall back to joining against
+        // the current working directory so the ref stays *absolute*. A bare
+        // relative `file:` ref is `Unsupported` to the grounding resolver and
+        // would silently drop the candidate, so never emit one.
+        std::fs::canonicalize(source_path).unwrap_or_else(|_| {
+            std::env::current_dir().map(|cwd| cwd.join(source_path)).unwrap_or_else(|_| source_path.to_path_buf())
+        })
     };
     format!("file:{}", absolute.display())
 }
@@ -1360,6 +1381,33 @@ mod tests {
             parse_errors: Vec::new(),
             state: ImportState::default(),
         }
+    }
+
+    /// A dry-run session must not acquire the import lock, so it never creates
+    /// the `.memorum/` substrate dir, the `<state>.json.lock`, or `import.pid`.
+    #[tokio::test]
+    async fn dry_run_session_creates_no_lock_or_substrate() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let repo = tmp.path().join("repo");
+        let mut client = MockDaemonClient::default();
+        let mut prompts = NoPrompts;
+
+        let result = run_import_session(
+            &repo,
+            ImportOptions { from_claude: None, from_codex: None, harness_filter: None, state: ImportState::default() },
+            &mut prompts,
+            &mut client,
+            ExecuteOptions { dry_run: true, verbose_progress: false },
+        )
+        .await
+        .expect("dry-run session succeeds");
+
+        assert!(result.report.refusals.is_empty(), "no corpus, no refusals");
+        assert!(client.write_calls.is_empty(), "dry-run issues no daemon writes");
+        assert!(!repo.join(".memorum").exists(), "dry-run must not create the .memorum substrate dir");
+        let state_path = ImportEngine::new(&repo).state_path;
+        assert!(!state_path.with_extension("json.lock").exists(), "dry-run must not create the lock file");
+        assert!(!repo.join(".memorum").join("import.pid").exists(), "dry-run must not create the pid file");
     }
 
     #[tokio::test]

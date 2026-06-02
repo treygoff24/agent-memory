@@ -4,8 +4,8 @@
 //!
 //! - [`agent`] — non-interactive / machine path. Drives the engine from flags
 //!   and emits a JSON `SetupReport` on stdout (diagnostics on stderr).
-//! - [`interactive`] — TTY path. STUB until T05; today it short-circuits via
-//!   `InteractiveIo` (`SetupError::Unsupported`).
+//! - [`interactive`] — TTY path. Drives the shared engine through `DialoguerIo`,
+//!   presenting `dialoguer` prompts for each setup decision.
 //! - `detect_and_advise` — the legacy detect-and-advise advisory output kept
 //!   for backward compatibility on a bare interactive `memoryd init`.
 //!
@@ -49,9 +49,8 @@ pub async fn run(args: InitArgs) -> anyhow::Result<()> {
 
     if std::io::stdin().is_terminal() {
         if requests_engine_action(&args) {
-            // TTY + action flags: hand off to the interactive frontend. T05
-            // implements the prompts; until then `InteractiveIo` rejects the
-            // decision prompts with `SetupError::Unsupported`.
+            // TTY + action flags: hand off to the interactive frontend, which
+            // drives the engine via `DialoguerIo` prompts.
             return interactive::run(args).await;
         }
         // Bare interactive invocation keeps the legacy advisory output. The
@@ -81,8 +80,10 @@ fn requests_engine_action(args: &InitArgs) -> bool {
 /// On a bare interactive `memoryd init`, the advisory path neither provisions a
 /// daemon nor wires MCP. A user who passes `--daemon background` or `--wire-mcp
 /// all` expecting those to take effect would otherwise get no signal that the
-/// flag was ignored. Until the interactive frontend (T05) drives the engine,
-/// surface a clear note that these selectors require `--non-interactive`.
+/// flag was ignored. The interactive path (`DialoguerIo`) is only reached via
+/// `--import`/`--print-only` and presents prompts rather than honoring these mode
+/// selectors as flags, so on the bare advisory path surface a clear note that
+/// they require `--non-interactive` (or `--json`).
 fn warn_ignored_mutating_selectors(args: &InitArgs) {
     let ignored = ignored_mutating_selectors(args);
     if ignored.is_empty() {

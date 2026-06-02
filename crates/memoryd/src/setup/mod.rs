@@ -18,7 +18,7 @@ pub use decide::{DaemonStrategy, HarnessSelection, NonGitCwdDecision, SetupDecis
 pub use detect::{
     DaemonDetection, HarnessDetection, SetupDetection, SetupDetectionOptions, SetupDiscoverySource, SetupSocketState,
 };
-pub use io::{collect_setup_decisions, FlagDrivenIo, InteractiveIo, SetupIo};
+pub use io::{collect_setup_decisions, FlagDrivenIo, SetupIo};
 pub use mcp_wire::{wire, HarnessTarget, McpServerSpec, WireError, WireMode, WireOutcome, WireStatus};
 pub use report::{SetupReport, SetupStep, SetupStepReport, SetupStepStatus, VerifyDetail};
 

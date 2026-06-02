@@ -6,14 +6,74 @@
 //! test file uses only a subset.
 
 use std::path::{Path, PathBuf};
+use std::process::Output;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use memory_substrate::Substrate;
 use memoryd::server::{serve_substrate_with, ServerOptions};
+use memoryd::setup::{SetupReport, SetupStep, SetupStepStatus};
 use tokio::net::UnixStream;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
+
+// ── CLI subprocess output helpers ───────────────────────────────────────────
+//
+// Shared by the `init` integration tests that drive the real `memoryd` binary
+// and read its stdout/stderr split. The stdout-purity contract (stdout is pure
+// JSON, diagnostics go to stderr) lives here so a change to the report-parsing
+// helpers is edited once.
+
+/// Assert the command exited zero, printing both captured streams on failure.
+#[allow(dead_code)]
+pub fn assert_success(output: &Output) {
+    assert!(
+        output.status.success(),
+        "command failed with status {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status.code(),
+        stdout(output),
+        stderr(output)
+    );
+}
+
+/// Decode the command's stdout as UTF-8.
+#[allow(dead_code)]
+pub fn stdout(output: &Output) -> String {
+    String::from_utf8(output.stdout.clone()).expect("stdout utf8")
+}
+
+/// Decode the command's stderr as UTF-8.
+#[allow(dead_code)]
+pub fn stderr(output: &Output) -> String {
+    String::from_utf8(output.stderr.clone()).expect("stderr utf8")
+}
+
+/// Render a path as a `&str` CLI argument (test paths are always UTF-8).
+#[allow(dead_code)]
+pub fn path_arg(path: &Path) -> &str {
+    path.to_str().expect("test paths are utf8")
+}
+
+/// Parse stdout as JSON of type `T`. Panics with the captured streams if stdout
+/// is not pure, parseable JSON — this is the stdout-purity assertion.
+#[allow(dead_code)]
+pub fn parse_stdout<T: serde::de::DeserializeOwned>(output: &Output) -> T {
+    let raw = stdout(output);
+    serde_json::from_str(&raw).unwrap_or_else(|error| {
+        panic!("stdout must be pure JSON ({error})\nstdout:\n{raw}\nstderr:\n{}", stderr(output))
+    })
+}
+
+/// Assert a `SetupReport` contains `step` with the expected status.
+#[allow(dead_code)]
+pub fn assert_step(report: &SetupReport, step: SetupStep, status: SetupStepStatus) {
+    let entry = report
+        .steps
+        .iter()
+        .find(|entry| entry.step == step)
+        .unwrap_or_else(|| panic!("setup report missing step {step:?}; steps: {:?}", report.steps));
+    assert_eq!(entry.status, status, "step {step:?} status; message: {:?}", entry.message);
+}
 
 /// Spawn the daemon's `serve_substrate_with` on the given socket with a tight
 /// idle-frame timeout (5s) and return the shutdown sender + server handle.

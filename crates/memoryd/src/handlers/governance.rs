@@ -1223,9 +1223,20 @@ impl GovernanceWriteInput {
         // Luhn-valid and trip the credit-card detector, refusing an otherwise-clean
         // import for privacy. Body, title, summary, and tags are still scanned, so
         // genuine secret *content* is still caught.
+        //
+        // The exclusion is gated on the trusted provenance *source_kind*
+        // (`Import`/`File`/`WebCapture`), not on any `file:`-prefixed
+        // source_ref. A caller-authored write (e.g. `User`) cannot launder a
+        // secret past the field scan by stuffing it into a `file:`-prefixed
+        // source_ref, because its source_kind is still scanned.
         if let Some(source_ref) = &self.meta.source_ref {
-            let is_provenance_locator = matches!(self.meta.source_kind, GovernanceSourceKindMeta::WebCapture)
-                || source_ref.starts_with("file:");
+            let is_provenance_locator = match self.meta.source_kind {
+                GovernanceSourceKindMeta::WebCapture => true,
+                GovernanceSourceKindMeta::Import | GovernanceSourceKindMeta::File => source_ref.starts_with("file:"),
+                GovernanceSourceKindMeta::User
+                | GovernanceSourceKindMeta::AgentPrimary
+                | GovernanceSourceKindMeta::Subagent => false,
+            };
             if !is_provenance_locator {
                 fields.push(source_ref.as_str());
             }
@@ -1724,6 +1735,24 @@ mod tests {
             classify_input_privacy(&body_input).expect("classify body input").storage_action,
             PrivacyStorageAction::Refuse,
             "a Luhn-valid number in the body is genuine secret content and must still be refused"
+        );
+    }
+
+    #[test]
+    fn privacy_scan_includes_file_source_ref_for_untrusted_source_kind() {
+        // The `file:` exclusion is gated on a trusted provenance source_kind
+        // (import/file/web_capture). A caller-authored write (`source_kind:
+        // user`) must NOT be able to launder a secret-shaped value past the
+        // field scan by stuffing it into a `file:`-prefixed source_ref.
+        let luhn = "4111111111111111";
+        let file_ref = format!("file:/tmp/{luhn}/note.md");
+        let input = write_input(serde_json::json!({
+            "source_kind": "user",
+            "source_ref": file_ref,
+        }));
+        assert!(
+            input.privacy_scan_text().contains(luhn),
+            "a user-authored file: source_ref must still be privacy-scanned"
         );
     }
 

@@ -24,34 +24,30 @@
 //!   - re-runs `init` and asserts the second run is idempotent — it neither
 //!     corrupts the substrate nor double-imports the same sources.
 //!
-//! IMPORTANT — observed import outcome (discovered by this test):
-//! Through the real daemon, every imported memory is currently *refused for
-//! grounding* and therefore does **not** land in the substrate. Root cause: the
-//! importer tags writes `source_kind = "import"`, which the governance handler
-//! maps to a grounding source of kind `AgentPrimary`
-//! (`handlers::governance::governance_sources`). That source kind grounds only
-//! when its `source_ref` resolves to a local file via `FileSourceResolver`,
-//! which requires a `file:`-prefixed absolute path. The importer instead emits a
-//! *bare* path (`import::pipeline::build_write_meta` sets `source_ref =
-//! candidate.source_path.display()`), so `FileSourceResolver::resolve` returns
-//! `Unsupported` and the built-in `*-strict` policies (all `requires_grounding =
-//! true`) refuse the write. No existing test caught this because every prior
-//! import path ran dry-run / print-only or against a mocked daemon client that
-//! bypasses governance entirely.
+//! Import outcome (asserted against the real governance engine):
+//! Through the real daemon, both imported memories *land* in the substrate as
+//! governance candidates. The importer tags writes `source_kind = "import"`,
+//! which the governance handler maps to a grounding source of kind
+//! `AgentPrimary`. That source kind grounds only when its `source_ref` resolves
+//! to a local file via `FileSourceResolver`, which requires a `file:`-prefixed
+//! absolute path. The importer emits exactly that via
+//! `import::pipeline::groundable_source_ref`, so the built-in `*-strict`
+//! policies (all `requires_grounding = true`) accept the write. Setup also
+//! provisions the local privacy key, so the writes are not refused for privacy.
 //!
-//! This test therefore asserts the *true, current* behavior (import refused,
-//! zero memories land, substrate stays clean and idempotent) and documents the
-//! gap. When the importer is fixed to emit a groundable `source_ref` (e.g.
-//! `file://<abs-path>`), flip [`EXPECTED_IMPORT_LANDS`] to `true`: the test then
-//! asserts that both fixture memories land on disk and become queryable. The
-//! daemon lifecycle, doctor, stdout-purity, report-shape, and idempotency
-//! assertions hold either way.
+//! This test asserts that landing-as-candidate behavior end-to-end: both
+//! fixture memories land on disk and become queryable, with zero grounding or
+//! privacy refusals, and a re-run skips them idempotently. The daemon
+//! lifecycle, doctor, stdout-purity, report-shape, and idempotency assertions
+//! all hold against the real effects. See [`FIXTURE_MEMORY_COUNT`].
 //!
 //! Determinism and offline guarantees: `--wire-mcp none` means no harness CLI is
 //! invoked; there is no network; every path is an ephemeral `/tmp` directory
 //! (kept short so the Unix-domain socket stays under the macOS UDS path cap);
 //! and the spawned daemon is reliably reaped by a teardown guard that runs even
 //! when an assertion panics.
+
+mod common;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -65,16 +61,13 @@ use memoryd::setup::{SetupReport, SetupStep, SetupStepStatus};
 use memoryd::socket::{probe_live_socket, SocketProbe};
 use serial_test::serial;
 
-/// Whether a real-daemon import is expected to *land* memories in the substrate.
-/// True since the importer emits a governance-groundable `file:`-prefixed
-/// `source_ref` (`import::pipeline::groundable_source_ref`): both fixture
-/// memories pass the `*-strict` grounding policies, land on disk, and become
-/// queryable. The assertions below assert that landing and the idempotent skip
-/// on re-run.
-const EXPECTED_IMPORT_LANDS: bool = true;
+use common::{assert_step, assert_success, parse_stdout, path_arg};
 
 /// Number of importable memories the fixture corpus contains: one Claude topic
-/// file plus one Codex Task Group.
+/// file plus one Codex Task Group. The importer emits a governance-groundable
+/// `file:`-prefixed `source_ref` (`import::pipeline::groundable_source_ref`), so
+/// both fixture memories pass the `*-strict` grounding policies, land on disk,
+/// and become queryable; a re-run skips them idempotently.
 const FIXTURE_MEMORY_COUNT: usize = 2;
 
 /// Headline acceptance: a real background-daemon onboarding run brings up a live
@@ -133,7 +126,7 @@ fn background_onboarding_is_clean_idempotent_and_governance_truthful() {
     drop(daemon);
     wait_for_socket_gone(&socket);
 
-    let expected_landed = if EXPECTED_IMPORT_LANDS { FIXTURE_MEMORY_COUNT } else { 0 };
+    let expected_landed = FIXTURE_MEMORY_COUNT;
 
     // Raw on-disk proof: count canonical memory `.md` files under the repo tree.
     let canonical = count_canonical_memory_files(&env.repo, &env.runtime);
@@ -185,50 +178,31 @@ fn background_onboarding_is_clean_idempotent_and_governance_truthful() {
 // ---------------------------------------------------------------------------
 
 /// Assert the first-run import disposition for each fixture harness against the
-/// real governance engine. Branches on [`EXPECTED_IMPORT_LANDS`] so the test
-/// documents the current refusal *and* is ready to assert landing once the
-/// importer emits a groundable `source_ref`.
+/// real governance engine: both fixture memories land as governance candidates
+/// with zero grounding/privacy refusals.
 fn assert_first_run_disposition(claude: &HarnessCounters, codex: &HarnessCounters) {
-    if EXPECTED_IMPORT_LANDS {
-        // Imports land as governance *candidates* (confidence 0.7, above the
-        // Reality Check review threshold but below hand-written memories), not as
-        // directly-promoted `written_new`. See import::pipeline build_write_meta.
-        assert_eq!(claude.written_candidate, 1, "claude memory written as candidate");
-        assert_eq!(codex.written_candidate, 1, "codex memory written as candidate");
-        assert_eq!(claude.written_new, 0, "imports are candidates, not direct promotions");
-        assert_eq!(codex.written_new, 0, "imports are candidates, not direct promotions");
-        assert_eq!(claude.refused_grounding, 0, "no grounding refusal once the importer grounds writes");
-        assert_eq!(codex.refused_grounding, 0, "no grounding refusal once the importer grounds writes");
-        assert_eq!(claude.refused_privacy, 0, "no privacy refusal once the key is provisioned");
-        assert_eq!(codex.refused_privacy, 0, "no privacy refusal once the key is provisioned");
-    } else {
-        // Current reality: the importer's bare `source_ref` fails grounding, so
-        // every `*-strict` policy refuses the write. See the module docs.
-        assert_eq!(claude.written_new, 0, "claude write refused: nothing lands");
-        assert_eq!(codex.written_new, 0, "codex write refused: nothing lands");
-        assert_eq!(claude.refused_grounding, 1, "claude memory refused for grounding (bare source_ref)");
-        assert_eq!(codex.refused_grounding, 1, "codex memory refused for grounding (bare source_ref)");
-    }
+    // Imports land as governance *candidates* (confidence 0.7, above the Reality
+    // Check review threshold but below hand-written memories), not as
+    // directly-promoted `written_new`. See import::pipeline::build_write_meta.
+    assert_eq!(claude.written_candidate, 1, "claude memory written as candidate");
+    assert_eq!(codex.written_candidate, 1, "codex memory written as candidate");
+    assert_eq!(claude.written_new, 0, "imports are candidates, not direct promotions");
+    assert_eq!(codex.written_new, 0, "imports are candidates, not direct promotions");
+    assert_eq!(claude.refused_grounding, 0, "no grounding refusal: the importer grounds writes via file: source_ref");
+    assert_eq!(codex.refused_grounding, 0, "no grounding refusal: the importer grounds writes via file: source_ref");
+    assert_eq!(claude.refused_privacy, 0, "no privacy refusal: setup provisions the privacy key");
+    assert_eq!(codex.refused_privacy, 0, "no privacy refusal: setup provisions the privacy key");
 }
 
-/// Assert the second-run (idempotent) import disposition.
+/// Assert the second-run (idempotent) import disposition: both sources already
+/// landed, so the importer's state file marks them seen and the re-run skips
+/// them as idempotent.
 fn assert_second_run_disposition(claude: &HarnessCounters, codex: &HarnessCounters) {
-    if EXPECTED_IMPORT_LANDS {
-        // Both sources already landed; the importer's state file marks them as
-        // seen and the re-run skips them as idempotent.
-        assert_eq!(
-            claude.skipped_idempotent + codex.skipped_idempotent,
-            FIXTURE_MEMORY_COUNT,
-            "re-run must skip both prior sources as idempotent"
-        );
-    } else {
-        // Refused writes are not recorded in import state, so the re-run
-        // re-attempts and is refused again — deterministically, with nothing
-        // landing either time. The key idempotency property still holds: no
-        // double-write, no corruption.
-        assert_eq!(claude.refused_grounding, 1, "re-run re-refuses the claude memory (not laundered)");
-        assert_eq!(codex.refused_grounding, 1, "re-run re-refuses the codex memory (not laundered)");
-    }
+    assert_eq!(
+        claude.skipped_idempotent + codex.skipped_idempotent,
+        FIXTURE_MEMORY_COUNT,
+        "re-run must skip both prior sources as idempotent"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -519,46 +493,6 @@ impl Drop for TestEnv {
     }
 }
 
-// ---------------------------------------------------------------------------
-// stdout/stderr + JSON helpers (mirrors cli_init_agent.rs)
-// ---------------------------------------------------------------------------
-
-fn assert_success(output: &Output) {
-    assert!(
-        output.status.success(),
-        "command failed with status {:?}\nstdout:\n{}\nstderr:\n{}",
-        output.status.code(),
-        stdout(output),
-        stderr(output)
-    );
-}
-
-fn stdout(output: &Output) -> String {
-    String::from_utf8(output.stdout.clone()).expect("stdout utf8")
-}
-
-fn stderr(output: &Output) -> String {
-    String::from_utf8(output.stderr.clone()).expect("stderr utf8")
-}
-
-fn path_arg(path: &Path) -> &str {
-    path.to_str().expect("test paths are utf8")
-}
-
-/// Parse stdout as JSON of type `T`. Panics with the captured streams if stdout
-/// is not pure, parseable JSON — this is the stdout-purity assertion.
-fn parse_stdout<T: serde::de::DeserializeOwned>(output: &Output) -> T {
-    let raw = stdout(output);
-    serde_json::from_str(&raw).unwrap_or_else(|error| {
-        panic!("stdout must be pure JSON ({error})\nstdout:\n{raw}\nstderr:\n{}", stderr(output))
-    })
-}
-
-fn assert_step(report: &SetupReport, step: SetupStep, status: SetupStepStatus) {
-    let entry = report
-        .steps
-        .iter()
-        .find(|entry| entry.step == step)
-        .unwrap_or_else(|| panic!("setup report missing step {step:?}; steps: {:?}", report.steps));
-    assert_eq!(entry.status, status, "step {step:?} status; message: {:?}", entry.message);
-}
+// stdout/stderr + JSON helpers (`assert_success`, `stdout`, `stderr`,
+// `path_arg`, `parse_stdout`, `assert_step`) live in `tests/common/mod.rs` and
+// are shared with `cli_init_agent.rs`.

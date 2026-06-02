@@ -6,12 +6,16 @@
 //! The hard invariant under test: stdout carries valid JSON and nothing else;
 //! every diagnostic lands on stderr.
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use memoryd::import::report::ImportReport;
 use memoryd::setup::{SetupDetection, SetupReport, SetupStep, SetupStepStatus};
 use serial_test::serial;
+
+use common::{assert_step, assert_success, parse_stdout, path_arg, stderr};
 
 /// `init --detect-only --json` against an empty environment must produce a
 /// parseable detection summary, write nothing to stderr, exit zero, and leave
@@ -267,36 +271,9 @@ impl TestEnv {
     }
 }
 
-fn assert_success(output: &Output) {
-    assert!(
-        output.status.success(),
-        "command failed with status {:?}\nstdout:\n{}\nstderr:\n{}",
-        output.status.code(),
-        stdout(output),
-        stderr(output)
-    );
-}
-
-fn stdout(output: &Output) -> String {
-    String::from_utf8(output.stdout.clone()).expect("stdout utf8")
-}
-
-fn stderr(output: &Output) -> String {
-    String::from_utf8(output.stderr.clone()).expect("stderr utf8")
-}
-
-fn path_arg(path: &Path) -> &str {
-    path.to_str().expect("test paths are utf8")
-}
-
-/// Parse stdout as JSON of type `T`. Panics with the captured streams if stdout
-/// is not pure, parseable JSON — this is the stdout-purity assertion.
-fn parse_stdout<T: serde::de::DeserializeOwned>(output: &Output) -> T {
-    let raw = stdout(output);
-    serde_json::from_str(&raw).unwrap_or_else(|error| {
-        panic!("stdout must be pure JSON ({error})\nstdout:\n{raw}\nstderr:\n{}", stderr(output))
-    })
-}
+// stdout/stderr + JSON + step helpers (`assert_success`, `stdout`, `stderr`,
+// `path_arg`, `parse_stdout`, `assert_step`) live in `tests/common/mod.rs` and
+// are shared with `setup_end_to_end.rs`.
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> T {
     let raw = std::fs::read_to_string(path).expect("read json file");
@@ -305,13 +282,4 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> T {
 
 fn canonical_json<T: serde::Serialize>(value: &T) -> String {
     serde_json::to_string(&serde_json::to_value(value).expect("to value")).expect("to string")
-}
-
-fn assert_step(report: &SetupReport, step: SetupStep, status: SetupStepStatus) {
-    let entry = report
-        .steps
-        .iter()
-        .find(|entry| entry.step == step)
-        .unwrap_or_else(|| panic!("setup report missing step {step:?}; steps: {:?}", report.steps));
-    assert_eq!(entry.status, status, "step {step:?} status; message: {:?}", entry.message);
 }

@@ -81,9 +81,15 @@ The JSON has one entry per step under `steps[]` (`detect`, `ensure_repo`, `ensur
 
 ### Expected import behavior (read this before judging the import step)
 
-As of this runbook's writing, importing through a live daemon does **not** land memories: the importer tags writes with a bare filesystem `source_ref`, the governance grounding check cannot resolve it, and the built-in `*-strict` policies refuse the write. So with `--import`, expect the `import` step itself to be `succeeded` (it ran) while the per-harness counters show `parsed >= 1` and `refused_grounding >= 1` with `written_new = 0`. This is the same gap `setup_end_to_end.rs` documents. **Do not fail the gate on this** unless the importer has since been fixed — if it has, you should instead see `written_new >= 1` and `refused_grounding = 0`, and Step 5 will show imported memories in recall.
+Importing through a live daemon **lands** memories as governance candidates. The importer tags writes with a groundable `file:`-prefixed absolute `source_ref`, setup provisions the local privacy key, and the built-in `*-strict` policies accept the write. So with `--import`, expect the `import` step to be `succeeded` and the per-harness counters to show:
 
-If you only want to validate the onboarding spine (repo + daemon + MCP wiring + verify) without the import noise, drop `--import` for this gate.
+- `parsed >= 1` — the source corpus was read,
+- `written_candidate >= 1` — each memory landed as a governance candidate (not `written_new`; imports land below hand-written confidence),
+- `refused_grounding = 0` and `refused_privacy = 0` — no refusals.
+
+**Fail the gate if you see `refused_grounding >= 1`** (or any `refused_privacy`): that is the regression `setup_end_to_end.rs` exists to catch (a non-groundable `source_ref` or a missing privacy key). On a clean re-run over the unchanged corpus the same sources show as `skipped_idempotent` rather than re-written. Step 5 should then show the imported memories in recall / a substrate query.
+
+If you only want to validate the onboarding spine (repo + daemon + MCP wiring + verify) without the import, drop `--import` for this gate.
 
 ## Step 4 — confirm the harness actually talks to the daemon
 
@@ -109,7 +115,7 @@ memoryd doctor --repo "$SMOKE_REPO" --runtime "$SMOKE_RUNTIME"
 
 `memoryd doctor` should report a healthy substrate. It may also emit a `harness_cli_warning` if a harness CLI on your machine is unauthenticated — that is an environment advisory about dreaming harness availability, not a substrate problem, and does not fail this gate.
 
-If you ran the import and the importer has been fixed to ground its writes, also confirm the imported memories are queryable (e.g. via a `memory_search` from the harness, or the TUI/web dashboard). With the current importer, expect zero imported memories — see Step 3.
+If you ran the import, confirm the imported memories are queryable (e.g. via a `memory_search` from the harness, or the TUI/web dashboard). The importer grounds its writes, so the imported memories land as governance candidates and become queryable — see Step 3.
 
 ## Step 6 — tear down
 

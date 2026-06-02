@@ -2,7 +2,7 @@
 
 use super::decide::{DaemonStrategy, HarnessSelection, NonGitCwdDecision, SetupDecisions, WireMcpSelection};
 use super::detect::SetupDetection;
-use super::{SetupError, SetupResult};
+use super::SetupResult;
 
 /// Decision I/O used by both interactive and flag-driven setup frontends.
 pub trait SetupIo {
@@ -75,40 +75,6 @@ impl SetupIo for FlagDrivenIo {
 
     fn note(&mut self, message: &str) -> SetupResult<()> {
         self.notes.push(message.to_string());
-        Ok(())
-    }
-}
-
-/// Placeholder interactive setup I/O. T05 wires this to dialoguer prompts.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct InteractiveIo;
-
-impl SetupIo for InteractiveIo {
-    fn confirm_import(&mut self, _detection: &SetupDetection) -> SetupResult<bool> {
-        Err(SetupError::Unsupported("interactive import prompt"))
-    }
-
-    fn choose_harnesses(&mut self, _detection: &SetupDetection) -> SetupResult<HarnessSelection> {
-        Err(SetupError::Unsupported("interactive harness prompt"))
-    }
-
-    fn choose_non_git_cwd_default(&mut self, _detection: &SetupDetection) -> SetupResult<NonGitCwdDecision> {
-        Err(SetupError::Unsupported("interactive non-git cwd prompt"))
-    }
-
-    fn choose_mcp_wiring(&mut self, _detection: &SetupDetection) -> SetupResult<WireMcpSelection> {
-        Err(SetupError::Unsupported("interactive MCP wiring prompt"))
-    }
-
-    fn choose_daemon_strategy(&mut self, _detection: &SetupDetection) -> SetupResult<DaemonStrategy> {
-        Err(SetupError::Unsupported("interactive daemon prompt"))
-    }
-
-    fn print_only(&mut self) -> SetupResult<bool> {
-        Ok(false)
-    }
-
-    fn note(&mut self, _message: &str) -> SetupResult<()> {
         Ok(())
     }
 }

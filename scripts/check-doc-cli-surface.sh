@@ -8,6 +8,10 @@ set -euo pipefail
 # Rationale: docs-command-validity.sh is grep-only and cannot catch an invented
 # flag. This script builds and runs the real binary so invented flags fail hard.
 # Deterministic and offline — no network required.
+#
+# Portability: written for Bash 3.2 (the frozen system bash on macOS). Avoids
+# Bash 4 features (`mapfile`, associative arrays) so it runs under `/bin/bash`,
+# not just a Homebrew bash that happens to be first on PATH.
 
 WORKTREE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 GUIDE="$WORKTREE_ROOT/docs/agent-onboarding.md"
@@ -53,34 +57,39 @@ for f in sorted(flags):
 '
 }
 
+# Bash 3.2 has no associative arrays, so hold each subcommand's flag set in a
+# plain variable named SUBFLAGS_<subcmd> and look it up indirectly.
 echo "Fetching real flag sets..." >&2
-declare -A SUBCOMMAND_FLAGS
-for subcmd in init doctor status serve import; do
-  SUBCOMMAND_FLAGS["$subcmd"]="$(get_flags "$subcmd")"
-  echo "  memoryd $subcmd: $(echo "${SUBCOMMAND_FLAGS[$subcmd]}" | tr '\n' ' ')" >&2
+SUBCOMMANDS="init doctor status serve import"
+for subcmd in $SUBCOMMANDS; do
+  # `get_flags` emits one flag per line; collapse to a single-space-separated
+  # set so the native `flag_in_set` glob match is an exact token test.
+  flags="$(get_flags "$subcmd" | tr '\n' ' ')"
+  eval "SUBFLAGS_${subcmd}=\$flags"
+  echo "  memoryd $subcmd: $flags" >&2
 done
 
-# ---------------------------------------------------------------------------
-# Parse the guide: track subcommand scope per line, extract flags, check.
-# ---------------------------------------------------------------------------
+# Echo the recorded flag set for a subcommand (empty if none recorded).
+subcommand_flags() {
+  eval "printf '%s' \"\${SUBFLAGS_$1:-}\""
+}
 
-failed=0
-
-mapfile -t guide_lines < "$GUIDE"
-
-declare -a LINE_SUBCMD
-current_subcmd=""
-for i in "${!guide_lines[@]}"; do
-  line="${guide_lines[$i]}"
-  # Detect subcommand attribution: "memoryd init", "memoryd doctor", etc.
-  if [[ "$line" =~ memoryd[[:space:]]+(init|doctor|status|serve|import) ]]; then
-    current_subcmd="${BASH_REMATCH[1]}"
-  fi
-  LINE_SUBCMD[$i]="$current_subcmd"
-done
+# Native (no-subprocess) whitespace-set membership test. `flagset` is stored
+# space-separated (see normalization at fetch time), so a space-padded glob
+# match is an exact token test. `$flag` carries no glob metacharacters. This
+# replaces a per-flag python3 spawn.
+flag_in_set() {
+  local flag="$1"
+  local flagset="$2"
+  case " $flagset " in
+    *" $flag "*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 # Extract all --flag tokens from a line using python3 (avoids passing --flag
-# tokens to grep/fgrep which may interpret them as options).
+# tokens to grep/fgrep which may interpret them as options). The regex
+# tokenization is the justified python3 use; set membership is native (above).
 extract_flags_from_line() {
   python3 -c '
 import sys, re
@@ -95,47 +104,79 @@ for f in sorted(flags):
 ' <<< "$1"
 }
 
-flag_in_set() {
-  local flag="$1"
-  local flagset="$2"
-  python3 -c '
-import sys
-flag = sys.argv[1]
-flagset = sys.argv[2]
-print("yes" if flag in flagset.split() else "no")
-' "$flag" "$flagset"
-}
+# ---------------------------------------------------------------------------
+# Parse the guide: scope each flag to the subcommand of its own command block,
+# extract flags, check. Read line-by-line (no `mapfile`) so this runs under
+# Bash 3.2.
+#
+# Scope discipline: `current_subcmd` resets at every code-fence boundary so a
+# flag inside a fenced example is only ever attributed to a `memoryd <subcmd>`
+# *within that same fence* — never carried across an unrelated earlier block,
+# which was the mis-attribution risk. Outside fences it also resets at Markdown
+# section headers.
+#
+# Unattributed flags (prose mentions with no `memoryd <subcmd>` in their block,
+# e.g. a flag-reference table or a "map their answer to --flag" instruction) are
+# *skipped*, not errored: this gate validates flags shown in real command
+# examples and deliberately does not police flag tokens in narrative prose,
+# where there is no command to scope them to.
+# ---------------------------------------------------------------------------
 
-declare -A checked_pairs
+failed=0
+current_subcmd=""
+in_fence=0
+checked_pairs=""
 
-lineno=0
-for line in "${guide_lines[@]}"; do
-  subcmd_at_line="${LINE_SUBCMD[$lineno]:-}"
-  lineno=$((lineno + 1))
+while IFS= read -r line; do
+  # Code-fence boundary: entering or leaving a fenced block resets scope so
+  # flags in a new block are not attributed to the previous block's subcommand.
+  case "$line" in
+    '```'*)
+      if [[ $in_fence -eq 0 ]]; then in_fence=1; else in_fence=0; fi
+      current_subcmd=""
+      continue
+      ;;
+  esac
 
-  [[ -z "$subcmd_at_line" ]] && continue
+  # Markdown header (outside fences): a new section starts a fresh scope. Gated
+  # on `in_fence` so a `# ...` shell comment inside a fenced example does not
+  # reset the in-block subcommand scope.
+  if [[ $in_fence -eq 0 ]]; then
+    case "$line" in
+      '#'*) current_subcmd="" ;;
+    esac
+  fi
+
+  # Detect subcommand attribution on this line: "memoryd init", etc.
+  if [[ "$line" =~ memoryd[[:space:]]+(init|doctor|status|serve|import) ]]; then
+    current_subcmd="${BASH_REMATCH[1]}"
+  fi
+
+  # Skip flags that have no command in scope (narrative prose / tables).
+  [[ -z "$current_subcmd" ]] && continue
 
   flags_on_line="$(extract_flags_from_line "$line")"
   [[ -z "$flags_on_line" ]] && continue
 
   while IFS= read -r flag; do
     [[ -z "$flag" ]] && continue
-    pair="${subcmd_at_line}:${flag}"
-    [[ -n "${checked_pairs[$pair]+set}" ]] && continue
-    checked_pairs["$pair"]=1
 
-    subflags="${SUBCOMMAND_FLAGS[$subcmd_at_line]:-}"
-    result="$(flag_in_set "$flag" "$subflags")"
-    if [[ "$result" == "yes" ]]; then
-      echo "  OK: $flag is valid for memoryd $subcmd_at_line" >&2
+    pair="${current_subcmd}:${flag}"
+    case " $checked_pairs " in
+      *" $pair "*) continue ;;
+    esac
+    checked_pairs="$checked_pairs $pair"
+
+    subflags="$(subcommand_flags "$current_subcmd")"
+    if flag_in_set "$flag" "$subflags"; then
+      echo "  OK: $flag is valid for memoryd $current_subcmd" >&2
     else
-      echo "ERROR: flag '$flag' appears near 'memoryd $subcmd_at_line' in $GUIDE but is NOT in 'memoryd $subcmd_at_line --help'" >&2
-      echo "  Real flags for 'memoryd $subcmd_at_line':" >&2
-      echo "$subflags" | sed 's/^/    /' >&2
+      echo "ERROR: flag '$flag' appears near 'memoryd $current_subcmd' in $GUIDE but is NOT in 'memoryd $current_subcmd --help'" >&2
+      echo "  Real flags for 'memoryd $current_subcmd': $subflags" >&2
       failed=1
     fi
   done <<< "$flags_on_line"
-done
+done < "$GUIDE"
 
 if [[ $failed -ne 0 ]]; then
   echo "" >&2

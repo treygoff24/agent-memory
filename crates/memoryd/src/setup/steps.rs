@@ -79,6 +79,7 @@ struct DaemonStepRequest<'a> {
 
 struct ImportStepRequest<'a> {
     repo: &'a Path,
+    runtime: &'a Path,
     options: ImportOptions,
     socket: &'a Path,
     execute_options: ExecuteOptions,
@@ -104,6 +105,18 @@ impl SetupStepRuntime for SystemSetupRuntime {
         request: ImportStepRequest<'_>,
         prompts: &mut dyn PromptBackend,
     ) -> Result<ExecuteResult, String> {
+        // The importer writes through a live daemon socket. Under the default
+        // on-demand (and `none`) daemon strategies no background service was
+        // started, so the socket is dead and every write would abort with a
+        // socket-transport error — landing zero memories. Start a transient
+        // daemon for the duration of the import and reap it on the way out so
+        // `init --import` lands memories regardless of the daemon strategy. A
+        // dry-run issues no writes, so it needs no daemon.
+        let _transient = if request.execute_options.dry_run {
+            None
+        } else {
+            Some(TransientImportDaemon::ensure(request.repo, request.runtime, request.socket).await?)
+        };
         let mut client = SocketDaemonClient::new(request.socket.to_path_buf());
         run_import_session(request.repo, request.options, prompts, &mut client, request.execute_options)
             .await
@@ -198,6 +211,7 @@ async fn run_import_step<R: SetupStepRuntime>(
     let mut prompts = prompt_backend(plan.decisions.non_git_cwd_default);
     let request = ImportStepRequest {
         repo: engine.repo(),
+        runtime: engine.runtime(),
         options: ImportOptions {
             from_claude: plan.detection.claude.root.clone(),
             from_codex: plan.detection.codex.root.clone(),
@@ -378,6 +392,66 @@ async fn start_background_daemon(request: DaemonStepRequest<'_>) -> Result<Strin
     }
 
     Err(format!("background daemon did not become ready within 10s at {}", request.socket.display()))
+}
+
+/// A daemon spawned for the lifetime of an import when none is already live.
+///
+/// `init --import` writes through the daemon socket, but the default on-demand
+/// (and `none`) daemon strategies never start a service, so the socket is dead
+/// and every write aborts — landing nothing. This guard brings up a `memoryd
+/// serve` child bound to the import socket, then SIGKILLs it on drop. When a
+/// daemon is already live (e.g. `--daemon background` started one), no child is
+/// spawned and drop is a no-op, so we never reap a daemon we did not start.
+struct TransientImportDaemon {
+    child: Option<std::process::Child>,
+}
+
+impl TransientImportDaemon {
+    async fn ensure(repo: &Path, runtime: &Path, socket: &Path) -> Result<Self, String> {
+        if matches!(probe_live_socket(socket), SocketProbe::Live) {
+            return Ok(Self { child: None });
+        }
+
+        let exe = std::env::current_exe().map_err(|error| error.to_string())?;
+        let mut child = Command::new(exe)
+            .arg("serve")
+            .arg("--repo")
+            .arg(repo)
+            .arg("--runtime")
+            .arg(runtime)
+            .arg("--init")
+            .arg("--socket")
+            .arg(socket)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| error.to_string())?;
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if matches!(probe_live_socket(socket), SocketProbe::Live) {
+                return Ok(Self { child: Some(child) });
+            }
+            if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
+                return Err(format!("transient import daemon exited before readiness: {status}"));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        let _ = child.kill();
+        let _ = child.wait();
+        Err(format!("transient import daemon did not become ready within 10s at {}", socket.display()))
+    }
+}
+
+impl Drop for TransientImportDaemon {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
 }
 
 fn install_launchd(request: DaemonStepRequest<'_>) -> Result<String, String> {
@@ -789,6 +863,12 @@ mod tests {
         assert!(report.restart_required);
     }
 
+    /// `--print-only --import` forwards `dry_run = true` to the import runner so
+    /// the import is planned and counted, but no daemon write is issued. The real
+    /// runner (`run_import_session`) skips lock acquisition under `dry_run`, so no
+    /// `.memorum/` substrate is created; this test pins the dry-run forwarding via
+    /// the scripted runtime (the no-disk-mutation guarantee is exercised by the
+    /// `run_import_session` unit tests and the agent e2e).
     #[tokio::test]
     async fn print_only_import_forwards_dry_run_to_import_runner() {
         let fixture = SetupFixture::new("print-only-import");

@@ -6,12 +6,20 @@ If something goes wrong along the way, see [`docs/troubleshooting.md`](troublesh
 
 ## 0. Unified onboarding entrypoint (release-target; not current alpha bootstrap)
 
-`memoryd init` is the release-target unified first-run entrypoint — **not current alpha bootstrap**. It detects your existing harness memory, provisions the daemon, wires MCP config, and (optionally) imports prior Claude Code and Codex CLI memory — all in one command. The current alpha bootstrap remains `memoryd serve --init` plus `scripts/install-memorum.sh` (steps 1–2 below).
+`memoryd init` is the release-target unified first-run entrypoint — **not current alpha bootstrap**. It can detect your existing harness memory, provision the daemon, wire MCP config, and (optionally) import prior Claude Code and Codex CLI memory. The current alpha bootstrap remains `memoryd serve --init` plus `scripts/install-memorum.sh` (steps 1–2 below).
 
-**Human interactive mode** (prompts guide you through each decision):
+How much it does depends on how you invoke it:
+
+**Bare `memoryd init` (advisory; release-target)** — a bare interactive invocation prints detection and guidance only. It reports what harness memory it found and the exact commands to run next; it does **not** provision the daemon or wire MCP on its own.
 
 ```bash
-memoryd init   # release-target wizard; not current alpha bootstrap
+memoryd init   # release-target advisory: detects + prints next-step commands; does not provision
+```
+
+**Interactive provisioning** — pass an action flag (`--import` or `--print-only`) to drive the prompt-based wizard that guides you through each decision and applies them:
+
+```bash
+memoryd init --import   # release-target wizard; prompts then provisions
 ```
 
 **Agent/CI non-interactive mode** (all decisions via flags, JSON report on stdout):
