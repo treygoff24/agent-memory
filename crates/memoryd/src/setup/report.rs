@@ -51,17 +51,42 @@ pub struct SetupStepReport {
     pub step: SetupStep,
     pub status: SetupStepStatus,
     pub message: Option<String>,
+    /// Per-probe breakdown for the [`SetupStep::Verify`] step. `None` for every
+    /// other step. Lets fatality logic distinguish an expected absent-socket
+    /// status probe (non-fatal under daemon-less modes) from a genuine doctor
+    /// failure (fatal regardless of daemon mode).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify: Option<VerifyDetail>,
 }
 
 impl SetupStepReport {
     pub fn new(step: SetupStep, status: SetupStepStatus) -> Self {
-        Self { step, status, message: None }
+        Self { step, status, message: None, verify: None }
     }
 
     pub fn with_message(mut self, message: impl Into<String>) -> Self {
         self.message = Some(message.into());
         self
     }
+
+    pub fn with_verify(mut self, verify: VerifyDetail) -> Self {
+        self.verify = Some(verify);
+        self
+    }
+}
+
+/// Per-probe statuses captured for the `Verify` step.
+///
+/// The `Verify` step combines a daemon-socket status probe with an in-process
+/// doctor check. The status probe is expected to be unreachable when no daemon
+/// is running, but the doctor check runs in-process and a failure there always
+/// signals real trouble. Carrying both statuses lets callers treat a failed
+/// doctor as fatal even when the overall step is downgraded for an absent
+/// socket.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct VerifyDetail {
+    pub status_probe: SetupStepStatus,
+    pub doctor_probe: SetupStepStatus,
 }
 
 /// Known setup steps. Future tasks attach behavior to these names.

@@ -7,11 +7,20 @@
 //! engine notes, detection summaries, errors — goes to stderr. This is the
 //! `stdout-JSON-purity` contract that lets an orchestrating agent pipe stdout
 //! straight into a JSON parser.
+//!
+//! One contract edge: a *pre-report* fatal error — one that aborts detection or
+//! decision collection before any [`SetupReport`] exists — produces an empty
+//! stdout, a human-readable message on stderr, and a non-zero exit. Once the
+//! report has been emitted, a fatal setup step is signaled by exit code alone;
+//! stdout still carries the full parseable report. So orchestrators should read
+//! the exit code first: a non-zero exit with empty stdout means the run failed
+//! before producing a report (reason on stderr), while a non-zero exit with a
+//! JSON body on stdout means a setup step failed fatally (details in the body).
 
 use crate::cli::{DaemonMode, InitArgs, InitHarness, NonGitCwdDefault, WireMcpMode};
 use crate::setup::{
     DaemonStrategy, FlagDrivenIo, HarnessSelection, NonGitCwdDecision, SetupDecisions, SetupDetection, SetupEngine,
-    SetupReport, SetupStep, SetupStepStatus, WireMcpSelection,
+    SetupReport, SetupStep, SetupStepReport, SetupStepStatus, WireMcpSelection,
 };
 
 use super::resolve_repo_runtime;
@@ -57,7 +66,7 @@ async fn run_setup(args: InitArgs) -> anyhow::Result<()> {
 
     print_json(&report)?;
 
-    if has_fatal_step(&report, args.daemon) {
+    if has_fatal_step(&report) {
         // stdout already carries the full JSON report; exit non-zero so callers
         // see the failure without parsing the body.
         std::process::exit(1);
@@ -69,71 +78,106 @@ async fn run_setup(args: InitArgs) -> anyhow::Result<()> {
 fn decisions_from_args(args: &InitArgs) -> SetupDecisions {
     SetupDecisions {
         import_memories: args.import,
-        harnesses: harness_selection(args.harness),
-        non_git_cwd_default: non_git_cwd_decision(args.non_git_cwd_default),
-        wire_mcp: wire_mcp_selection(args.wire_mcp),
-        daemon: daemon_strategy(args.daemon),
+        harnesses: args.harness.into(),
+        non_git_cwd_default: args.non_git_cwd_default.into(),
+        wire_mcp: args.wire_mcp.into(),
+        daemon: args.daemon.into(),
         print_only: args.print_only,
     }
 }
 
-fn harness_selection(harness: InitHarness) -> HarnessSelection {
-    match harness {
-        InitHarness::Current => HarnessSelection::Current,
-        InitHarness::Claude => HarnessSelection::Claude,
-        InitHarness::Codex => HarnessSelection::Codex,
-        InitHarness::All => HarnessSelection::All,
-        InitHarness::None => HarnessSelection::None,
+// CLI selector enums are 1:1 with their engine counterparts (same variants, same
+// order). The `From` impls keep the mapping at the type boundary and stay
+// total-match, so adding a variant on either side without updating the other is
+// a compile error.
+
+impl From<InitHarness> for HarnessSelection {
+    fn from(harness: InitHarness) -> Self {
+        match harness {
+            InitHarness::Current => Self::Current,
+            InitHarness::Claude => Self::Claude,
+            InitHarness::Codex => Self::Codex,
+            InitHarness::All => Self::All,
+            InitHarness::None => Self::None,
+        }
     }
 }
 
-fn non_git_cwd_decision(default: NonGitCwdDefault) -> NonGitCwdDecision {
-    match default {
-        NonGitCwdDefault::Skip => NonGitCwdDecision::Skip,
-        NonGitCwdDefault::Me => NonGitCwdDecision::Me,
-        NonGitCwdDefault::Generate => NonGitCwdDecision::Generate,
+impl From<NonGitCwdDefault> for NonGitCwdDecision {
+    fn from(default: NonGitCwdDefault) -> Self {
+        match default {
+            NonGitCwdDefault::Skip => Self::Skip,
+            NonGitCwdDefault::Me => Self::Me,
+            NonGitCwdDefault::Generate => Self::Generate,
+        }
     }
 }
 
-fn wire_mcp_selection(mode: WireMcpMode) -> WireMcpSelection {
-    match mode {
-        WireMcpMode::Current => WireMcpSelection::Current,
-        WireMcpMode::Claude => WireMcpSelection::Claude,
-        WireMcpMode::Codex => WireMcpSelection::Codex,
-        WireMcpMode::All => WireMcpSelection::All,
-        WireMcpMode::None => WireMcpSelection::None,
+impl From<WireMcpMode> for WireMcpSelection {
+    fn from(mode: WireMcpMode) -> Self {
+        match mode {
+            WireMcpMode::Current => Self::Current,
+            WireMcpMode::Claude => Self::Claude,
+            WireMcpMode::Codex => Self::Codex,
+            WireMcpMode::All => Self::All,
+            WireMcpMode::None => Self::None,
+        }
     }
 }
 
-fn daemon_strategy(mode: DaemonMode) -> DaemonStrategy {
-    match mode {
-        DaemonMode::OnDemand => DaemonStrategy::OnDemand,
-        DaemonMode::Background => DaemonStrategy::Background,
-        DaemonMode::Launchd => DaemonStrategy::Launchd,
-        DaemonMode::None => DaemonStrategy::None,
+impl From<DaemonMode> for DaemonStrategy {
+    fn from(mode: DaemonMode) -> Self {
+        match mode {
+            DaemonMode::OnDemand => Self::OnDemand,
+            DaemonMode::Background => Self::Background,
+            DaemonMode::Launchd => Self::Launchd,
+            DaemonMode::None => Self::None,
+        }
     }
 }
 
 /// Whether the report contains a step failure that should fail the process.
 ///
-/// Any `Failed` step is fatal, with one carve-out: a `Verify` failure when the
-/// user did not ask for a running daemon (`--daemon none`). In that mode the
-/// substrate is created and import runs, but the daemon socket is intentionally
-/// absent, so the status probe inside `Verify` cannot succeed by design. (The
-/// `on-demand` strategy already downgrades that probe to `Expected` upstream.)
-/// Treating this verify failure as fatal would punish a correct, daemon-less
-/// bootstrap; a genuinely broken `background`/`launchd` daemon still surfaces a
-/// fatal `Verify`.
-fn has_fatal_step(report: &SetupReport, daemon: DaemonMode) -> bool {
+/// Any `Failed` step is fatal, with one narrow carve-out for the `Verify` step.
+/// `Verify` combines two probes: a daemon-socket status check and an in-process
+/// doctor check. When the user did not ask for a running daemon (`--daemon
+/// none`) the socket is intentionally absent, so the status probe fails by
+/// design — that alone should not fail a correct, daemon-less bootstrap. (The
+/// `on-demand` strategy downgrades the same socket-transport probe to `Expected`
+/// upstream, so it never reaches this branch.)
+///
+/// The carve-out is scoped to the *status* probe only. The doctor check runs
+/// in-process and is independent of the daemon socket, so a failed doctor probe
+/// (substrate corruption, repair-required, a doctor transport error) stays fatal
+/// regardless of daemon mode. A genuinely broken `background`/`launchd` daemon
+/// likewise still surfaces a fatal `Verify` via its status probe.
+fn has_fatal_step(report: &SetupReport) -> bool {
+    let daemon = report.decisions.daemon;
     report.steps.iter().any(|step| {
         if step.status != SetupStepStatus::Failed {
             return false;
         }
-        if step.step == SetupStep::Verify && daemon == DaemonMode::None {
-            return false;
+        if step.step == SetupStep::Verify {
+            return verify_failure_is_fatal(step, daemon);
         }
         true
     })
+}
+
+/// Decide whether a `Failed` `Verify` step is fatal.
+///
+/// A daemon-less bootstrap (`--daemon none`) is excused only when the failure is
+/// confined to the status probe; a failed doctor probe is always fatal. When the
+/// per-probe breakdown is missing (older reports) we conservatively treat the
+/// failure as fatal except under `none`, preserving prior behavior.
+fn verify_failure_is_fatal(step: &SetupStepReport, daemon: DaemonStrategy) -> bool {
+    if daemon != DaemonStrategy::None {
+        return true;
+    }
+    match &step.verify {
+        Some(detail) => detail.doctor_probe == SetupStepStatus::Failed,
+        None => false,
+    }
 }
 
 /// Serialize `value` as pretty JSON to stdout. This is the only writer to

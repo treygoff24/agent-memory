@@ -20,7 +20,7 @@ pub use detect::{
 };
 pub use io::{collect_setup_decisions, FlagDrivenIo, InteractiveIo, SetupIo};
 pub use mcp_wire::{wire, HarnessTarget, McpServerSpec, WireError, WireMode, WireOutcome, WireStatus};
-pub use report::{SetupReport, SetupStep, SetupStepReport, SetupStepStatus};
+pub use report::{SetupReport, SetupStep, SetupStepReport, SetupStepStatus, VerifyDetail};
 
 /// Result alias for setup orchestration.
 pub type SetupResult<T> = Result<T, SetupError>;

@@ -145,6 +145,44 @@ fn non_interactive_without_import_skips_and_stays_json() {
     assert!(report.import_report.is_none(), "no import means no import section");
 }
 
+/// A fatal non-`Verify` step must fail the process (exit code 1) while stdout
+/// still carries the full, parseable `SetupReport`. This locks in the agent
+/// frontend's core failure-signaling contract.
+///
+/// The fatal step is induced deterministically: `--repo` points under a regular
+/// file, so the substrate cannot be created and `EnsureRepo` reports `Failed`.
+#[test]
+#[serial]
+fn fatal_step_exits_nonzero_with_parseable_report() {
+    let env = TestEnv::new();
+    // A regular file cannot host a child directory, so `ensure_repo` fails on
+    // every platform without relying on permission bits.
+    let blocker = env.temp.path().join("blocker");
+    std::fs::write(&blocker, b"not a directory").expect("write blocker file");
+    let repo = blocker.join("repo");
+
+    let output = env.run_init([
+        "init",
+        "--non-interactive",
+        "--harness",
+        "none",
+        "--wire-mcp",
+        "none",
+        "--daemon",
+        "none",
+        "--repo",
+        path_arg(&repo),
+        "--runtime",
+        path_arg(&repo.join(".memoryd")),
+    ]);
+
+    assert_eq!(output.status.code(), Some(1), "fatal step must exit non-zero\nstderr:\n{}", stderr(&output));
+
+    // stdout stays pure, parseable JSON even on the failure path.
+    let report: SetupReport = parse_stdout(&output);
+    assert_step(&report, SetupStep::EnsureRepo, SetupStepStatus::Failed);
+}
+
 /// A non-TTY invocation with no machine flags still routes to the agent path
 /// (deterministic JSON) rather than blocking on prompts.
 #[test]

@@ -16,8 +16,8 @@ use crate::socket::{probe_live_socket, SocketProbe};
 
 use super::{
     DaemonStrategy, HarnessDetection, HarnessSelection, HarnessTarget, McpServerSpec, NonGitCwdDecision, SetupEngine,
-    SetupIo, SetupPlan, SetupReport, SetupStep, SetupStepReport, SetupStepStatus, WireMcpSelection, WireMode,
-    WireOutcome, WireStatus,
+    SetupIo, SetupPlan, SetupReport, SetupStep, SetupStepReport, SetupStepStatus, VerifyDetail, WireMcpSelection,
+    WireMode, WireOutcome, WireStatus,
 };
 
 pub(crate) async fn run_all(engine: &SetupEngine, plan: &SetupPlan, io: &mut dyn SetupIo, report: &mut SetupReport) {
@@ -33,7 +33,7 @@ async fn run_all_with_runtime<R: SetupStepRuntime>(
     report: &mut SetupReport,
     runtime: &mut R,
 ) {
-    push_completion(report, ensure_repo_step(engine, runtime).await, io);
+    push_completion(report, ensure_repo_step(engine, plan, runtime).await, io);
     push_completion(report, ensure_daemon_step(engine, plan, runtime).await, io);
 
     let import = run_import_step(engine, plan, runtime).await;
@@ -126,7 +126,17 @@ impl SetupStepRuntime for SystemSetupRuntime {
     }
 }
 
-async fn ensure_repo_step<R: SetupStepRuntime>(engine: &SetupEngine, runtime: &mut R) -> StepCompletion {
+async fn ensure_repo_step<R: SetupStepRuntime>(
+    engine: &SetupEngine,
+    plan: &SetupPlan,
+    runtime: &mut R,
+) -> StepCompletion {
+    if plan.decisions.print_only {
+        return StepCompletion::expected(
+            SetupStep::EnsureRepo,
+            format!("[dry-run] would initialize Memorum repo at {}", engine.repo().display()),
+        );
+    }
     match runtime.ensure_repo(engine.repo(), engine.runtime()).await {
         Ok(message) => StepCompletion::succeeded(SetupStep::EnsureRepo, message),
         Err(message) => StepCompletion::failed(SetupStep::EnsureRepo, message),
@@ -140,6 +150,17 @@ async fn ensure_daemon_step<R: SetupStepRuntime>(
 ) -> StepCompletion {
     let socket = &plan.detection.daemon.socket_path;
     let request = DaemonStepRequest { repo: engine.repo(), runtime: engine.runtime(), socket };
+    if plan.decisions.print_only {
+        let action = match plan.decisions.daemon {
+            DaemonStrategy::OnDemand => "leave the daemon on-demand (no background service)".to_string(),
+            DaemonStrategy::Background => {
+                format!("start a background daemon bound to {}", socket.display())
+            }
+            DaemonStrategy::Launchd => "install a launchd daemon".to_string(),
+            DaemonStrategy::None => "skip daemon setup".to_string(),
+        };
+        return StepCompletion::expected(SetupStep::EnsureDaemon, format!("[dry-run] would {action}"));
+    }
     match plan.decisions.daemon {
         DaemonStrategy::OnDemand => StepCompletion::expected(
             SetupStep::EnsureDaemon,
@@ -214,6 +235,19 @@ fn wire_mcp_step<R: SetupStepRuntime>(engine: &SetupEngine, plan: &SetupPlan, ru
 }
 
 async fn verify_step<R: SetupStepRuntime>(engine: &SetupEngine, plan: &SetupPlan, runtime: &mut R) -> StepCompletion {
+    if plan.decisions.print_only {
+        // A dry-run created no substrate and started no daemon, so the live
+        // probes have nothing to verify. Report the step as expected rather than
+        // failing on the deliberately-absent substrate/socket.
+        return StepCompletion::expected(
+            SetupStep::Verify,
+            "[dry-run] would probe daemon status and run the in-process doctor check".to_string(),
+        )
+        .with_verify(VerifyDetail {
+            status_probe: SetupStepStatus::Expected,
+            doctor_probe: SetupStepStatus::Expected,
+        });
+    }
     let status = verify_status(plan, runtime).await;
     let doctor = verify_doctor(engine, runtime).await;
     combine_verification(status, doctor)
@@ -264,13 +298,15 @@ fn doctor_response_signal(response: ResponseEnvelope) -> VerificationSignal {
 
 fn combine_verification(status: VerificationSignal, doctor: VerificationSignal) -> StepCompletion {
     let message = format!("{}; {}", status.message, doctor.message);
-    if status.status == SetupStepStatus::Failed || doctor.status == SetupStepStatus::Failed {
-        return StepCompletion::failed(SetupStep::Verify, message);
-    }
-    if status.status == SetupStepStatus::Expected || doctor.status == SetupStepStatus::Expected {
-        return StepCompletion::expected(SetupStep::Verify, message);
-    }
-    StepCompletion::succeeded(SetupStep::Verify, message)
+    let detail = VerifyDetail { status_probe: status.status, doctor_probe: doctor.status };
+    let completion = if status.status == SetupStepStatus::Failed || doctor.status == SetupStepStatus::Failed {
+        StepCompletion::failed(SetupStep::Verify, message)
+    } else if status.status == SetupStepStatus::Expected || doctor.status == SetupStepStatus::Expected {
+        StepCompletion::expected(SetupStep::Verify, message)
+    } else {
+        StepCompletion::succeeded(SetupStep::Verify, message)
+    };
+    completion.with_verify(detail)
 }
 
 async fn ensure_substrate(repo: &Path, runtime: &Path, force_unsafe_durability: bool) -> Result<String, String> {
@@ -458,7 +494,11 @@ fn push_completion(report: &mut SetupReport, completion: StepCompletion, io: &mu
     if matches!(completion.status, SetupStepStatus::Expected | SetupStepStatus::Failed) {
         let _ = io.note(&completion.message);
     }
-    report.push_step(SetupStepReport::new(completion.step, completion.status).with_message(completion.message));
+    let mut entry = SetupStepReport::new(completion.step, completion.status).with_message(completion.message);
+    if let Some(verify) = completion.verify {
+        entry = entry.with_verify(verify);
+    }
+    report.push_step(entry);
 }
 
 struct ImportStepOutcome {
@@ -487,23 +527,29 @@ struct StepCompletion {
     step: SetupStep,
     status: SetupStepStatus,
     message: String,
+    verify: Option<VerifyDetail>,
 }
 
 impl StepCompletion {
     fn succeeded(step: SetupStep, message: impl Into<String>) -> Self {
-        Self { step, status: SetupStepStatus::Succeeded, message: message.into() }
+        Self { step, status: SetupStepStatus::Succeeded, message: message.into(), verify: None }
     }
 
     fn failed(step: SetupStep, message: impl Into<String>) -> Self {
-        Self { step, status: SetupStepStatus::Failed, message: message.into() }
+        Self { step, status: SetupStepStatus::Failed, message: message.into(), verify: None }
     }
 
     fn skipped(step: SetupStep, message: impl Into<String>) -> Self {
-        Self { step, status: SetupStepStatus::Skipped, message: message.into() }
+        Self { step, status: SetupStepStatus::Skipped, message: message.into(), verify: None }
     }
 
     fn expected(step: SetupStep, message: impl Into<String>) -> Self {
-        Self { step, status: SetupStepStatus::Expected, message: message.into() }
+        Self { step, status: SetupStepStatus::Expected, message: message.into(), verify: None }
+    }
+
+    fn with_verify(mut self, verify: VerifyDetail) -> Self {
+        self.verify = Some(verify);
+        self
     }
 }
 
@@ -593,6 +639,64 @@ mod tests {
         assert_step(&report, SetupStep::EnsureDaemon, SetupStepStatus::Expected);
         assert_step(&report, SetupStep::Verify, SetupStepStatus::Expected);
         assert!(!report.restart_required);
+    }
+
+    /// Under `--daemon none` the absent socket downgrades the status probe, but a
+    /// failing doctor probe must still mark the `Verify` step `Failed` and carry
+    /// `doctor_probe == Failed` so the agent frontend can treat it as fatal.
+    #[tokio::test]
+    async fn daemon_none_doctor_failure_is_recorded_as_failed_verify() {
+        let fixture = SetupFixture::new("daemon-none-doctor-failure");
+        let decisions =
+            SetupDecisions { daemon: DaemonStrategy::None, wire_mcp: WireMcpSelection::None, ..Default::default() };
+        let mut io = FlagDrivenIo::new(decisions);
+        let mut runtime =
+            ScriptedRuntime { doctor_error: Some("substrate repair required".to_string()), ..Default::default() };
+        let detection = crate::setup::SetupDetection::run_with_options(fixture.detection_options()).expect("detect");
+        let decisions = crate::setup::collect_setup_decisions(&mut io, &detection).expect("decisions");
+        let plan = SetupPlan { detection: detection.clone(), decisions: decisions.clone() };
+        let mut report = SetupReport::new(detection, decisions);
+        report.push_step(SetupStepReport::new(SetupStep::Detect, SetupStepStatus::Succeeded));
+
+        run_all_with_runtime(&fixture.engine(), &plan, &mut io, &mut report, &mut runtime).await;
+
+        assert_step(&report, SetupStep::Verify, SetupStepStatus::Failed);
+        let verify = report
+            .steps
+            .iter()
+            .find(|entry| entry.step == SetupStep::Verify)
+            .and_then(|entry| entry.verify)
+            .expect("verify step carries a per-probe breakdown");
+        assert_eq!(verify.doctor_probe, SetupStepStatus::Failed);
+    }
+
+    /// `--print-only` must not touch disk or spawn a daemon: `EnsureRepo`,
+    /// `EnsureDaemon`, and `Verify` all report as `Expected` dry-run steps and
+    /// the substrate is never created.
+    #[tokio::test]
+    async fn print_only_does_not_initialize_repo_or_start_daemon() {
+        let fixture = SetupFixture::new("print-only-no-side-effects");
+        let decisions = SetupDecisions {
+            daemon: DaemonStrategy::Background,
+            wire_mcp: WireMcpSelection::None,
+            print_only: true,
+            ..Default::default()
+        };
+        let mut io = FlagDrivenIo::new(decisions);
+        let mut runtime = ScriptedRuntime::default();
+        let detection = crate::setup::SetupDetection::run_with_options(fixture.detection_options()).expect("detect");
+        let decisions = crate::setup::collect_setup_decisions(&mut io, &detection).expect("decisions");
+        let plan = SetupPlan { detection: detection.clone(), decisions: decisions.clone() };
+        let mut report = SetupReport::new(detection, decisions);
+        report.push_step(SetupStepReport::new(SetupStep::Detect, SetupStepStatus::Succeeded));
+
+        run_all_with_runtime(&fixture.engine(), &plan, &mut io, &mut report, &mut runtime).await;
+
+        assert_step(&report, SetupStep::EnsureRepo, SetupStepStatus::Expected);
+        assert_step(&report, SetupStep::EnsureDaemon, SetupStepStatus::Expected);
+        assert_step(&report, SetupStep::Verify, SetupStepStatus::Expected);
+        assert_eq!(runtime.background_calls, 0, "print-only must not spawn a daemon");
+        assert!(!fixture.repo.join(".memorum").exists(), "print-only must not initialize the substrate");
     }
 
     #[test]
@@ -781,6 +885,7 @@ mod tests {
         background_calls: usize,
         launchd_calls: usize,
         import_error: Option<String>,
+        doctor_error: Option<String>,
         last_import_dry_run: Option<bool>,
         start_live_server_on_background: bool,
         background_server: Option<(watch::Sender<bool>, JoinHandle<anyhow::Result<()>>, PathBuf)>,
@@ -862,6 +967,9 @@ mod tests {
         }
 
         async fn doctor_request(&mut self, repo: &Path, runtime: &Path) -> Result<ResponseEnvelope, String> {
+            if let Some(error) = self.doctor_error.take() {
+                return Err(error);
+            }
             let substrate = Substrate::open(Roots::new(repo.to_path_buf(), runtime.to_path_buf()))
                 .await
                 .map_err(|error| error.to_string())?;
