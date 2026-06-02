@@ -13,6 +13,7 @@ docs/agent-onboarding.md
 llms-install.md
 docs/importer.md
 docs/runbooks/init-wizard.md
+docs/runbooks/agent-onboarding-smoke.md
 docs/explainers/*.html
 docs/reviews/2026-05-28-main-rs-refactor-review.md
 
