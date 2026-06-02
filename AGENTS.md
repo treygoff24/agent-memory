@@ -21,6 +21,14 @@
 - For docs, launch materials, and non-code artifacts, ground claims in live repo docs rather than stale rollout memory.
 - For Rust gates, prefer: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and targeted `cargo test` before broader gates.
 
+## Installing Memorum for a user
+
+When a user asks you to install or onboard Memorum, read and follow the canonical agent onboarding guide:
+
+**`docs/agent-onboarding.md`**
+
+That guide covers the detect → propose → consent → run → verify → restart loop, all flags grounded against the real CLI surface, how to interpret `SetupReport` JSON, and the mandatory restart instruction.
+
 ## Durable product facts
 
 - The canonical MCP bridge shape is `memoryd mcp --socket <PATH>`.

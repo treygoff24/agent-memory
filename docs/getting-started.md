@@ -4,17 +4,27 @@ This guide starts a local memory daemon, verifies it, and wires an MCP client to
 
 If something goes wrong along the way, see [`docs/troubleshooting.md`](troubleshooting.md) — it covers `dream_disabled`, socket errors, MCP listing empty, and the other first-run failure modes.
 
-## 0. (Optional) Import detection wizard
+## 0. Unified onboarding entrypoint
 
-If you'd like an on-ramp that detects existing harness memory and offers to import it before starting the daemon, you can run the optional wizard. This is not current alpha bootstrap; it does not start or configure the daemon. The daemon starts with `memoryd serve --init` in step 2.
+`memoryd init` is the unified first-run entrypoint. It detects your existing harness memory, provisions the daemon, wires MCP config, and (optionally) imports prior Claude Code and Codex CLI memory — all in one command.
+
+**Human interactive mode** (prompts guide you through each decision):
 
 ```bash
-memoryd init  # optional import wizard; not current alpha bootstrap
+memoryd init
 ```
 
-The wizard inspects `~/.claude/projects/` and `~/.codex/memories/`, reports counts, and offers to invoke `memoryd import` so your prior Claude Code and Codex CLI memory carries over into Memorum. See [`docs/importer.md`](importer.md) for the full importer story and [`docs/runbooks/init-wizard.md`](runbooks/init-wizard.md) for the wizard's flow.
+**Agent/CI non-interactive mode** (all decisions via flags, JSON report on stdout):
 
-You can skip the wizard and run the steps below manually; `memoryd init` is an optional importer convenience, not current alpha bootstrap.
+```bash
+memoryd init --non-interactive --json \
+  --wire-mcp current \
+  --daemon on-demand
+```
+
+Add `--import --harness current` to bring in prior harness memory. Use `--detect-only` to inspect what is present without mutating anything. See [`docs/agent-onboarding.md`](agent-onboarding.md) for the full agent-driven onboarding guide including flag reference and SetupReport JSON shape.
+
+If you prefer to run the steps below manually, you can skip `memoryd init`. The daemon starts with `memoryd serve --init` in step 2.
 
 ## 1. Build or install
 

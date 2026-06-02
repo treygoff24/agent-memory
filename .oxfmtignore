@@ -9,6 +9,8 @@ target/
 GAPS.md
 handoff.md
 docs/plans/2026-06-01-agent-driven-onboarding-handoff.md
+docs/agent-onboarding.md
+llms-install.md
 docs/importer.md
 docs/runbooks/init-wizard.md
 docs/explainers/*.html
