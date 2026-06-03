@@ -1637,12 +1637,10 @@ impl GovernanceWriteInput {
 mod tests {
     use super::*;
 
-    // -----------------------------------------------------------------------------------
     // T00: importer-provenance fields on GovernanceMeta. The tests below lock the
     // additive-extension contract — new optional fields round-trip, defaults stay
     // None, `deny_unknown_fields` still rejects unknown keys, and `source_kind:
     // "import"` maps to a file-source agent-author with the `memoryd-import` harness.
-    // -----------------------------------------------------------------------------------
 
     fn write_input(meta: Value) -> GovernanceWriteInput {
         GovernanceWriteInput::parse(GovernanceWriteInputParts {

@@ -4,6 +4,7 @@ import type { InspectorAction, InspectorItem } from '../inspector';
 import type { InboxFilterId, InboxItem, InboxKind, InboxLayout, InboxViewItem } from './inboxView';
 
 import { useReviewActionMutation, useReviewQueueQuery, type ReviewQueueItem } from '../api';
+import { isTextInputTarget } from '../keyboard/useKeymap';
 import { filterItems, inboxFilters, inspectorItemFromInbox, toInboxViewItem } from './inboxView/adapter';
 import { DrawerLayout, ModalSheetLayout, ThreePaneLayout, TwoPaneLayout } from './inboxView/layouts';
 import { QueryErrorBanner, QueryLoadingBanner } from './QueryFeedback';
@@ -20,12 +21,6 @@ const layouts = ['two-pane', 'three-pane', 'drawer', 'modal'] as const;
 function layoutFromUrl(): InboxLayout {
     const raw = new URLSearchParams(window.location.search).get('layout');
     return layouts.find((candidate) => candidate === raw) ?? 'two-pane';
-}
-
-function isTextInputTarget(target: unknown): boolean {
-    if (!(target instanceof HTMLElement)) return false;
-    const tagName = target.tagName.toLowerCase();
-    return tagName === 'input' || tagName === 'textarea' || target.isContentEditable;
 }
 
 function clampIndex(index: number, length: number) {

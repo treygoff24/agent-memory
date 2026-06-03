@@ -1,9 +1,7 @@
-use std::future::Future;
 use std::path::Path;
-use std::pin::pin;
 use std::process::Command;
-use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
+use memorum_eval::block_on;
 use memorum_eval::daemon_scaffold::DaemonScaffold;
 
 #[test]
@@ -58,37 +56,4 @@ fn git_output<const N: usize>(repo: &Path, args: [&str; N]) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8(output.stdout).expect("git stdout is utf8").trim().to_owned()
-}
-
-fn block_on<T>(future: impl Future<Output = T>) -> T {
-    let waker = noop_waker();
-    let mut context = Context::from_waker(&waker);
-    let mut future = pin!(future);
-
-    loop {
-        match future.as_mut().poll(&mut context) {
-            Poll::Ready(output) => return output,
-            Poll::Pending => std::thread::yield_now(),
-        }
-    }
-}
-
-fn noop_waker() -> Waker {
-    unsafe fn clone(_: *const ()) -> RawWaker {
-        raw_waker()
-    }
-
-    unsafe fn wake(_: *const ()) {}
-    unsafe fn wake_by_ref(_: *const ()) {}
-    unsafe fn drop(_: *const ()) {}
-
-    fn raw_waker() -> RawWaker {
-        RawWaker::new(std::ptr::null(), &RawWakerVTable::new(clone, wake, wake_by_ref, drop))
-    }
-
-    // SAFETY: the no-op raw waker does not dereference its data pointer and its
-    // vtable functions are valid for the null data pointer for this synchronous
-    // test executor. The futures under test do blocking work and never rely on
-    // external wakeups.
-    unsafe { Waker::from_raw(raw_waker()) }
 }

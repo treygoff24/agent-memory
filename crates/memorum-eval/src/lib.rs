@@ -54,6 +54,49 @@ macro_rules! eval_assert_eq {
     }};
 }
 
+/// Drive a future to completion on a minimal synchronous executor.
+///
+/// Eval smoke tests exercise futures that perform blocking work and never rely
+/// on external wakeups, so a no-op waker plus a busy-poll loop is sufficient and
+/// avoids pulling a full async runtime into every test binary.
+pub fn block_on<T>(future: impl std::future::Future<Output = T>) -> T {
+    use std::pin::pin;
+    use std::task::{Context, Poll};
+
+    let waker = noop_waker();
+    let mut context = Context::from_waker(&waker);
+    let mut future = pin!(future);
+
+    loop {
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(output) => return output,
+            Poll::Pending => std::thread::yield_now(),
+        }
+    }
+}
+
+fn noop_waker() -> std::task::Waker {
+    use std::task::{RawWaker, RawWakerVTable, Waker};
+
+    unsafe fn clone(_: *const ()) -> RawWaker {
+        raw_waker()
+    }
+
+    unsafe fn wake(_: *const ()) {}
+    unsafe fn wake_by_ref(_: *const ()) {}
+    unsafe fn drop(_: *const ()) {}
+
+    fn raw_waker() -> RawWaker {
+        RawWaker::new(std::ptr::null(), &RawWakerVTable::new(clone, wake, wake_by_ref, drop))
+    }
+
+    // SAFETY: the no-op raw waker does not dereference its data pointer and its
+    // vtable functions are valid for the null data pointer for this synchronous
+    // test executor. The futures under test do blocking work and never rely on
+    // external wakeups.
+    unsafe { Waker::from_raw(raw_waker()) }
+}
+
 use std::path::PathBuf;
 
 use clap::Parser;

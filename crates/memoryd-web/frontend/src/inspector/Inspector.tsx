@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 
 import type { InspectorAction, InspectorItem, InspectorLayout } from './types';
 
+import { isTextInputTarget } from '../keyboard/useKeymap';
 import { DreamOutputInspector } from './kinds/dreamOutput';
 import { EntityDetailInspector } from './kinds/entityDetail';
 import { GovernanceDecisionInspector } from './kinds/governanceDecision';
@@ -25,12 +26,6 @@ const inboxReviewKeys: Record<string, InspectorAction> = {
     e: 'edit',
     f: 'forget',
 };
-
-function isTextInputTarget(target: unknown): boolean {
-    if (!(target instanceof HTMLElement)) return false;
-    const tagName = target.tagName.toLowerCase();
-    return tagName === 'input' || tagName === 'textarea' || target.isContentEditable;
-}
 
 export function Inspector({ item, layout = 'wide', onAction }: InspectorProps) {
     useEffect(() => {

@@ -173,10 +173,6 @@ fn background_onboarding_is_clean_idempotent_and_governance_truthful() {
     assert_doctor_clean(&env.repo, &env.runtime);
 }
 
-// ---------------------------------------------------------------------------
-// Import-disposition assertions (the governance-truthful part)
-// ---------------------------------------------------------------------------
-
 /// Assert the first-run import disposition for each fixture harness against the
 /// real governance engine: both fixture memories land as governance candidates
 /// with zero grounding/privacy refusals.
@@ -205,10 +201,6 @@ fn assert_second_run_disposition(claude: &HarnessCounters, codex: &HarnessCounte
     );
 }
 
-// ---------------------------------------------------------------------------
-// Report-shape assertions
-// ---------------------------------------------------------------------------
-
 /// Validate the `SetupReport` envelope independent of step outcomes. Locks the
 /// schema version, the presence of every expected step exactly once, the
 /// `restart_required` flag (must be `false` whenever no MCP config was rewritten
@@ -233,10 +225,6 @@ fn assert_report_shape(report: &SetupReport) {
     assert_eq!(detail.status_probe, SetupStepStatus::Succeeded, "live daemon => status probe succeeds");
     assert_eq!(detail.doctor_probe, SetupStepStatus::Succeeded, "healthy substrate => doctor probe succeeds");
 }
-
-// ---------------------------------------------------------------------------
-// On-disk + in-process substrate inspection
-// ---------------------------------------------------------------------------
 
 /// Count canonical memory `.md` files written under the repo tree, skipping the
 /// runtime directory (nested under the repo here) and git internals. This is the
@@ -325,10 +313,6 @@ fn block_on<F: std::future::Future>(future: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread().enable_all().build().expect("build tokio runtime").block_on(future)
 }
 
-// ---------------------------------------------------------------------------
-// Daemon lifecycle / teardown
-// ---------------------------------------------------------------------------
-
 /// RAII guard that reaps the background daemon spawned by `memoryd init --daemon
 /// background`. The daemon is a detached grandchild of this test (the `init`
 /// subprocess spawns it and exits), so it is not reachable via a `Child` handle.
@@ -387,10 +371,6 @@ fn wait_for_socket_gone(socket: &Path) {
     // Not fatal on its own — the in-process opener may still succeed — but the
     // follow-on substrate query/doctor would surface any real contention.
 }
-
-// ---------------------------------------------------------------------------
-// Test environment
-// ---------------------------------------------------------------------------
 
 /// Ephemeral environment for one end-to-end run.
 ///

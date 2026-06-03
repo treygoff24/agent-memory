@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { useRealityCheckQuery, useRealityCheckRespondMutation, type RealityCheckApiItem } from '../api';
+import { isTextInputTarget } from '../keyboard/useKeymap';
 import { QueryErrorBanner, QueryLoadingBanner } from './QueryFeedback';
 import {
     CompletionCard,
@@ -27,12 +28,6 @@ const variants = ['default', 'encrypted', 'refused', 'score-open', 'complete'] a
 function variantFromUrl(): RealityCheckVariant {
     const raw = new URLSearchParams(window.location.search).get('variant');
     return variants.find((candidate) => candidate === raw) ?? 'default';
-}
-
-function isTextInputTarget(target: unknown): boolean {
-    if (!(target instanceof HTMLElement)) return false;
-    const tagName = target.tagName.toLowerCase();
-    return tagName === 'input' || tagName === 'textarea' || target.isContentEditable;
 }
 
 function daysSince(iso: string): number {

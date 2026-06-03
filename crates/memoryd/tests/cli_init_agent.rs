@@ -214,10 +214,6 @@ fn piped_bare_invocation_routes_to_agent_json() {
     let _report: SetupReport = parse_stdout(&output);
 }
 
-// ---------------------------------------------------------------------------
-// Test harness
-// ---------------------------------------------------------------------------
-
 struct TestEnv {
     temp: tempfile::TempDir,
     home: PathBuf,

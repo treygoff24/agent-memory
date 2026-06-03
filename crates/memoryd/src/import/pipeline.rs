@@ -1292,12 +1292,10 @@ mod tests {
         assert!(plan.source_discovery_summary.claude_root.is_none());
     }
 
-    // -----------------------------------------------------------------------------------
     // T06: execute-phase tests. The MockDaemonClient lets each test script the
     // daemon's response per request, so we can exercise the branching matrix
     // (status × existing_id × next_actions) and assert the importer's bookkeeping
     // without spinning up a real daemon.
-    // -----------------------------------------------------------------------------------
 
     #[derive(Debug, Default)]
     struct MockDaemonClient {
