@@ -1,8 +1,7 @@
 //! Executable setup-engine steps.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::process::Command;
 
 use memory_privacy::FileKeyProvider;
 use memory_substrate::{InitOptions, OpenError, Roots, Substrate};
@@ -13,7 +12,9 @@ use crate::import::pipeline::{
 use crate::import::project_map::{FixedDispositionBackend, PromptBackend, PromptedDisposition};
 use crate::import::state::ImportState;
 use crate::protocol::{RequestEnvelope, RequestPayload, ResponseEnvelope, ResponsePayload, ResponseResult};
-use crate::socket::{probe_live_socket, SocketProbe};
+use crate::socket::{
+    await_socket_ready, probe_live_socket, spawn_serve_child, DaemonReadiness, SocketProbe, DAEMON_READY_TIMEOUT,
+};
 
 use super::{
     DaemonStrategy, HarnessDetection, HarnessSelection, HarnessTarget, McpServerSpec, NonGitCwdDecision, SetupEngine,
@@ -363,35 +364,19 @@ async fn start_background_daemon(request: DaemonStepRequest<'_>) -> Result<Strin
         return Ok(format!("daemon already live at {}", request.socket.display()));
     }
 
-    let exe = std::env::current_exe().map_err(|error| error.to_string())?;
-    let mut child = Command::new(exe)
-        .arg("serve")
-        .arg("--repo")
-        .arg(request.repo)
-        .arg("--runtime")
-        .arg(request.runtime)
-        .arg("--init")
-        .arg("--socket")
-        .arg(request.socket)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|error| error.to_string())?;
+    let mut child = spawn_serve_child(request.repo, request.runtime, request.socket).map_err(|error| error.to_string())?;
     let pid = child.id();
 
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < deadline {
-        if matches!(probe_live_socket(request.socket), SocketProbe::Live) {
-            return Ok(format!("started background daemon pid {pid} at {}", request.socket.display()));
+    match await_socket_ready(&mut child, request.socket, DAEMON_READY_TIMEOUT).await {
+        DaemonReadiness::Ready => {
+            Ok(format!("started background daemon pid {pid} at {}", request.socket.display()))
         }
-        if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
-            return Err(format!("background daemon exited before readiness: {status}"));
+        DaemonReadiness::ExitedEarly(status) => Err(format!("background daemon exited before readiness: {status}")),
+        DaemonReadiness::PollFailed(error) => Err(error.to_string()),
+        DaemonReadiness::TimedOut => {
+            Err(format!("background daemon did not become ready within 10s at {}", request.socket.display()))
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
     }
-
-    Err(format!("background daemon did not become ready within 10s at {}", request.socket.display()))
 }
 
 /// A daemon spawned for the lifetime of an import when none is already live.
@@ -412,36 +397,20 @@ impl TransientImportDaemon {
             return Ok(Self { child: None });
         }
 
-        let exe = std::env::current_exe().map_err(|error| error.to_string())?;
-        let mut child = Command::new(exe)
-            .arg("serve")
-            .arg("--repo")
-            .arg(repo)
-            .arg("--runtime")
-            .arg(runtime)
-            .arg("--init")
-            .arg("--socket")
-            .arg(socket)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|error| error.to_string())?;
+        let mut child = spawn_serve_child(repo, runtime, socket).map_err(|error| error.to_string())?;
 
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while Instant::now() < deadline {
-            if matches!(probe_live_socket(socket), SocketProbe::Live) {
-                return Ok(Self { child: Some(child) });
+        match await_socket_ready(&mut child, socket, DAEMON_READY_TIMEOUT).await {
+            DaemonReadiness::Ready => Ok(Self { child: Some(child) }),
+            DaemonReadiness::ExitedEarly(status) => {
+                Err(format!("transient import daemon exited before readiness: {status}"))
             }
-            if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
-                return Err(format!("transient import daemon exited before readiness: {status}"));
+            DaemonReadiness::PollFailed(error) => Err(error.to_string()),
+            DaemonReadiness::TimedOut => {
+                let _ = child.kill();
+                let _ = child.wait();
+                Err(format!("transient import daemon did not become ready within 10s at {}", socket.display()))
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
         }
-
-        let _ = child.kill();
-        let _ = child.wait();
-        Err(format!("transient import daemon did not become ready within 10s at {}", socket.display()))
     }
 }
 
@@ -695,7 +664,7 @@ impl VerificationSignal {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use memory_substrate::{Roots, Substrate};
     use tokio::net::UnixStream;

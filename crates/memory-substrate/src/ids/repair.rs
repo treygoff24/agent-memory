@@ -51,7 +51,7 @@ struct RepairEntry {
 /// which point another repair run should be safe to re-run (it is idempotent
 /// for IDs that were already successfully reminted).
 pub fn repair_duplicate_ids(repo: &Path, runtime: &Path, device_id: &str) -> Result<RepairReport, IdError> {
-    // --- Phase 1: scan for duplicates and build candidate groups ---
+    // Phase 1: scan for duplicates and build candidate groups.
     let records = read_memory_records(repo).map_err(|err| IdError::InvalidState(err.to_string()))?;
 
     // Build id -> all (path, created_at) tuples.
@@ -72,7 +72,7 @@ pub fn repair_duplicate_ids(repo: &Path, runtime: &Path, device_id: &str) -> Res
         return Ok(RepairReport::default());
     }
 
-    // --- Phase 2: select survivors and plan remints ---
+    // Phase 2: select survivors and plan remints.
     let all_existing_ids: HashSet<MemoryId> = records.iter().map(|(_, m)| m.frontmatter.id.clone()).collect();
 
     let mut entries: Vec<RepairEntry> = Vec::new();
@@ -99,7 +99,7 @@ pub fn repair_duplicate_ids(repo: &Path, runtime: &Path, device_id: &str) -> Res
         }
     }
 
-    // --- Phase 3: stage and validate ---
+    // Phase 3: stage and validate.
     // Build rename map: old_id -> new_id.
     let rename_map: HashMap<MemoryId, MemoryId> =
         entries.iter().map(|e| (e.old_id.clone(), e.new_id.clone())).collect();
@@ -145,7 +145,7 @@ pub fn repair_duplicate_ids(repo: &Path, runtime: &Path, device_id: &str) -> Res
     // Validate the staged future state: all IDs unique, all refs present.
     validate_staged_state(&staged, &records, &entries).map_err(|err| IdError::InvalidState(err.to_string()))?;
 
-    // --- Phase 4: commit to disk ---
+    // Phase 4: commit to disk.
     let mut rollback_stack: Vec<(PathBuf, Option<Vec<u8>>)> = Vec::new();
     let commit_result = commit_staged(repo, &staged, &entries, &mut rollback_stack);
     if let Err(err) = commit_result {

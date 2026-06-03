@@ -432,8 +432,6 @@ fn v0_2_registry_declares_no_argv_prompt_transport() {
     assert_eq!(gemini.prompt_transport, PromptTransport::Stdin, "disabled Gemini must not introduce argv fallback");
 }
 
-// ── Auth probe behavior tests (Task 1) ─────────────────────────────────
-
 #[test]
 fn codex_auth_probe_prefers_login_status() {
     let _guard = lock_subprocess_test();

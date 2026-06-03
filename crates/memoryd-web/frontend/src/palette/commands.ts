@@ -1,4 +1,4 @@
-import type { ViewId } from '../views';
+import type { ViewId } from '../views/registry';
 
 import { themes, type Theme } from '../theme';
 

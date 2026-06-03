@@ -1,4 +1,4 @@
-import type { ViewId } from '../views';
+import type { ViewId } from '../views/registry';
 export interface KeyCommand {
     key: string;
     label: string;

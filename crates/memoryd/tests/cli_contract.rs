@@ -379,8 +379,6 @@ fn test_memoryd_reality_check_snooze_invalid_date_exits_1() {
     assert_eq!(validate_snooze_until(Some("next-week")), Err(1));
 }
 
-// ── Doctor auth probe regression tests (Task 3) ─────────────────────────
-
 #[cfg(unix)]
 fn write_executable(path: impl AsRef<std::path::Path>, contents: &str) {
     use std::os::unix::fs::PermissionsExt;

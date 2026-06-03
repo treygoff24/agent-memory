@@ -1,3 +1,7 @@
+import type { ComponentType } from 'react';
+
+import type { ViewId } from './views/registry';
+
 import { Dreams } from './views/Dreams';
 import { Entities } from './views/Entities';
 import { Governance } from './views/Governance';
@@ -6,6 +10,8 @@ import { Peers } from './views/Peers';
 import { RealityCheck } from './views/RealityCheck';
 import { Recall } from './views/Recall';
 import { Settings } from './views/Settings';
+
+export type { ViewId } from './views/registry';
 
 const views = [
     { id: 'inbox', label: 'Inbox', component: Inbox },
@@ -16,8 +22,7 @@ const views = [
     { id: 'governance', label: 'Governance', component: Governance },
     { id: 'entities', label: 'Entities', component: Entities },
     { id: 'settings', label: 'Settings', component: Settings },
-] as const;
-export type ViewId = (typeof views)[number]['id'];
+] as const satisfies ReadonlyArray<{ id: ViewId; label: string; component: ComponentType }>;
 export function viewFor(id: ViewId) {
     return views.find((view) => view.id === id) ?? views[0];
 }

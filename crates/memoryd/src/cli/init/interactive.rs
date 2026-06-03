@@ -17,8 +17,6 @@ use crate::setup::{
 
 use super::resolve_repo_runtime;
 
-// ── Public entry points ────────────────────────────────────────────────────
-
 /// Drive interactive setup against a real TTY using `dialoguer` prompts.
 pub async fn run(args: InitArgs) -> anyhow::Result<()> {
     run_with_io(args, InteractiveIo::default()).await
@@ -34,8 +32,6 @@ pub async fn run_with_io<I: SetupIo>(args: InitArgs, mut io: I) -> anyhow::Resul
     let _report = engine.run(&mut io).await?;
     Ok(())
 }
-
-// ── InteractiveIo ────────────────────────────────────────────────────────────
 
 /// Dialoguer-backed interactive I/O for `memoryd init`.
 ///
@@ -193,14 +189,10 @@ impl SetupIo for InteractiveIo {
     }
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::setup::{SetupDetection, SetupDetectionOptions};
-
-    // ── ScriptedIo ─────────────────────────────────────────────────────────
 
     /// Canned-answer `SetupIo` for unit tests. All fields are public so each
     /// test can set only the decisions it cares about.
@@ -259,8 +251,6 @@ mod tests {
         }
     }
 
-    // ── Helpers ────────────────────────────────────────────────────────────
-
     fn scratch_args(repo: &std::path::Path) -> InitArgs {
         InitArgs {
             repo: Some(repo.to_path_buf()),
@@ -287,8 +277,6 @@ mod tests {
         };
         SetupDetection::run_with_options(options).expect("detection")
     }
-
-    // ── Test: decline-everything is a safe no-op ───────────────────────────
 
     /// The shipped `InteractiveIo` must make declining every prompt a genuine
     /// no-op: when the user opts into nothing, `print_only()` returns `true`,
@@ -333,8 +321,6 @@ mod tests {
         // No substrate directory must have been created.
         assert!(!repo.join(".memorum").exists(), "declining everything must not create the substrate directory");
     }
-
-    // ── Test: scripted io drives a real arranged setup that mutates disk ───
 
     /// A scripted io that opts into provisioning (import requested) with
     /// `print_only = false` must drive the real engine steps and create the
@@ -381,8 +367,6 @@ mod tests {
         assert!(repo.join(".memorum").exists(), "a real (non-dry-run) setup must create the substrate directory");
     }
 
-    // ── Test: SetupIo trait smoke-check on InteractiveIo ─────────────────────
-
     /// Verify that `InteractiveIo`'s `note` method succeeds without a real TTY.
     #[test]
     fn dialoguer_io_note_succeeds() {
@@ -390,8 +374,6 @@ mod tests {
         let note_result = io.note("test diagnostic message");
         assert!(note_result.is_ok(), "InteractiveIo::note must succeed");
     }
-
-    // ── Test: ScriptedIo unsupported variant produces SetupError ──────────
 
     /// Verify the ScriptedIo returns expected values for all methods.
     #[test]

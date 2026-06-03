@@ -81,7 +81,7 @@ fn background_onboarding_is_clean_idempotent_and_governance_truthful() {
     env.seed_claude_fixture();
     env.seed_codex_fixture();
 
-    // --- First run: full onboarding against a live daemon --------------------
+    // First run: full onboarding against a live daemon.
     let first = env.run_init_background();
     assert_success(&first);
 
@@ -119,7 +119,7 @@ fn background_onboarding_is_clean_idempotent_and_governance_truthful() {
     // The import *disposition* is the governance-truthful assertion.
     assert_first_run_disposition(claude, codex);
 
-    // --- On-disk + in-process substrate inspection ---------------------------
+    // On-disk + in-process substrate inspection.
     // Stop the daemon first so the in-process opener owns the substrate cleanly
     // and the doctor probe mirrors exactly what the engine's verify step does
     // (open Substrate, dispatch a Doctor request in-process).
@@ -140,7 +140,7 @@ fn background_onboarding_is_clean_idempotent_and_governance_truthful() {
     // a valid repo and the daemon left it clean.
     assert_doctor_clean(&env.repo, &env.runtime);
 
-    // --- Idempotent re-run ---------------------------------------------------
+    // Idempotent re-run.
     // A second onboarding over the unchanged corpus must not corrupt the repo
     // and must not double-import.
     let second = env.run_init_background();

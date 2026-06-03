@@ -203,30 +203,27 @@ fn extract_field(body: &str, key: &str) -> Option<String> {
     None
 }
 
-fn parse_applies_to_cwd(applies_to: &str) -> Option<PathBuf> {
+/// First `<key>=<value>` entry in a `;`-separated `applies_to` line whose
+/// trimmed value passes `accept`. Scans past entries that fail the predicate so
+/// callers can reject sentinels (e.g. `cwd=unknown`) without short-circuiting.
+fn applies_to_field(applies_to: &str, key: &str, accept: impl Fn(&str) -> bool) -> Option<String> {
     for part in applies_to.split(';') {
-        let part = part.trim();
-        if let Some(value) = part.strip_prefix("cwd=") {
+        if let Some(value) = part.trim().strip_prefix(key) {
             let value = value.trim();
-            if !value.is_empty() && value != "unknown" {
-                return Some(PathBuf::from(value));
+            if accept(value) {
+                return Some(value.to_string());
             }
         }
     }
     None
 }
 
+fn parse_applies_to_cwd(applies_to: &str) -> Option<PathBuf> {
+    applies_to_field(applies_to, "cwd=", |value| !value.is_empty() && value != "unknown").map(PathBuf::from)
+}
+
 fn parse_applies_to_reuse_rule(applies_to: &str) -> Option<String> {
-    for part in applies_to.split(';') {
-        let part = part.trim();
-        if let Some(value) = part.strip_prefix("reuse_rule=") {
-            let value = value.trim();
-            if !value.is_empty() {
-                return Some(value.to_string());
-            }
-        }
-    }
-    None
+    applies_to_field(applies_to, "reuse_rule=", |value| !value.is_empty())
 }
 
 fn collect_keywords(body: &str) -> Vec<String> {
@@ -244,19 +241,14 @@ fn collect_keywords(body: &str) -> Vec<String> {
                 continue;
             }
             // The template allows either `- k1, k2, k3` or one bullet per keyword.
-            if let Some(rest) = trimmed.strip_prefix('-') {
-                for chunk in rest.split(',') {
-                    let chunk = chunk.trim();
-                    if !chunk.is_empty() && !keywords.iter().any(|k| k == chunk) {
-                        keywords.push(chunk.to_string());
-                    }
-                }
-            } else if !trimmed.is_empty() {
-                for chunk in trimmed.split(',') {
-                    let chunk = chunk.trim();
-                    if !chunk.is_empty() && !keywords.iter().any(|k| k == chunk) {
-                        keywords.push(chunk.to_string());
-                    }
+            let line = trimmed.strip_prefix('-').unwrap_or(trimmed);
+            if line.trim().is_empty() {
+                continue;
+            }
+            for chunk in line.split(',') {
+                let chunk = chunk.trim();
+                if !chunk.is_empty() && !keywords.iter().any(|k| k == chunk) {
+                    keywords.push(chunk.to_string());
                 }
             }
         }

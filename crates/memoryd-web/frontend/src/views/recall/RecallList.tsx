@@ -1,7 +1,7 @@
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useRef, type CSSProperties } from 'react';
 
-import type { RecallLedgerEvent } from '../Recall';
+import type { RecallLedgerEvent } from './types';
 
 interface RecallListProps {
     events: RecallLedgerEvent[];

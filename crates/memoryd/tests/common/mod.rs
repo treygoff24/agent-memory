@@ -17,12 +17,10 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
 
-// ── CLI subprocess output helpers ───────────────────────────────────────────
-//
-// Shared by the `init` integration tests that drive the real `memoryd` binary
-// and read its stdout/stderr split. The stdout-purity contract (stdout is pure
-// JSON, diagnostics go to stderr) lives here so a change to the report-parsing
-// helpers is edited once.
+// CLI subprocess output helpers shared by the `init` integration tests that
+// drive the real `memoryd` binary and read its stdout/stderr split. The
+// stdout-purity contract (stdout is pure JSON, diagnostics go to stderr) is
+// enforced here so the report-parsing helpers are edited once.
 
 /// Assert the command exited zero, printing both captured streams on failure.
 #[allow(dead_code)]

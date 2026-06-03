@@ -1,24 +1,14 @@
 import { useMemo, useState } from 'react';
 
+import type { RecallLedgerEvent } from './recall/types';
+
 import { useRecallHitsQuery, type RecallHitSummary } from '../api';
 import { Inspector, type InspectorItem } from '../inspector';
 import { QueryErrorBanner, QueryLoadingBanner } from './QueryFeedback';
 import { RecallList } from './recall/RecallList';
 import { TimelineStrip, type TimelineBucket } from './recall/TimelineStrip';
 
-export interface RecallLedgerEvent {
-    id: string;
-    seq: number;
-    isoTime: string;
-    time: string;
-    device: string;
-    agent: string;
-    memory: string;
-    namespace: string;
-    score: number | null;
-    latencyMs: number | null;
-    session: string;
-}
+export type { RecallLedgerEvent } from './recall/types';
 
 interface RecallProps {
     events?: RecallLedgerEvent[];

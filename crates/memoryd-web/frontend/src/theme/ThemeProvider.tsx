@@ -1,7 +1,16 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 
 import { loadPreferences, resolveReducedMotion, savePreferences } from './storage';
-import { defaultThemePreferences, type Density, type ReducedMotion, type Theme, type ThemePreferences } from './types';
+import {
+    defaultThemePreferences,
+    densities,
+    reducedMotionModes,
+    themes,
+    type Density,
+    type ReducedMotion,
+    type Theme,
+    type ThemePreferences,
+} from './types';
 
 interface ThemeContextValue {
     preferences: ThemePreferences;
@@ -26,17 +35,9 @@ function initialPreferences(): ThemePreferences {
     const stored = loadPreferences();
     const queryFontSize = Number(new URLSearchParams(window.location.search).get('fontSize'));
     return {
-        theme:
-            queryPreference('theme', [
-                'warm-dark',
-                'warm-light',
-                'cool-dark',
-                'cool-light',
-                'monochrome',
-                'high-contrast',
-            ]) ?? stored.theme,
-        density: queryPreference('density', ['comfortable', 'compact']) ?? stored.density,
-        reducedMotion: queryPreference('reducedMotion', ['os', 'on', 'off']) ?? stored.reducedMotion,
+        theme: queryPreference('theme', themes) ?? stored.theme,
+        density: queryPreference('density', densities) ?? stored.density,
+        reducedMotion: queryPreference('reducedMotion', reducedMotionModes) ?? stored.reducedMotion,
         fontSize: Number.isFinite(queryFontSize) ? Math.min(18, Math.max(12, queryFontSize)) : stored.fontSize,
     };
 }

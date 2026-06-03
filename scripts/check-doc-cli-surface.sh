@@ -37,10 +37,7 @@ if [[ ! -x "$MEMORYD_BIN" ]]; then
   exit 1
 fi
 
-# ---------------------------------------------------------------------------
 # Fetch the real flag set for each subcommand the guide references.
-# ---------------------------------------------------------------------------
-
 get_flags() {
   local subcmd="$1"
   # Use python3 to extract --flag tokens so we avoid grep receiving a flag
@@ -104,7 +101,6 @@ for f in sorted(flags):
 ' <<< "$1"
 }
 
-# ---------------------------------------------------------------------------
 # Parse the guide: scope each flag to the subcommand of its own command block,
 # extract flags, check. Read line-by-line (no `mapfile`) so this runs under
 # Bash 3.2.
@@ -120,7 +116,6 @@ for f in sorted(flags):
 # *skipped*, not errored: this gate validates flags shown in real command
 # examples and deliberately does not police flag tokens in narrative prose,
 # where there is no command to scope them to.
-# ---------------------------------------------------------------------------
 
 failed=0
 current_subcmd=""
