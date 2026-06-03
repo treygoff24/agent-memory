@@ -1,9 +1,10 @@
 import { useMemo, useState } from 'react';
 
+import type { DreamStatus, DreamViewItem } from './dreams/types';
+
 import { useReviewQueueQuery, type ReviewQueueItem } from '../api';
 import { Inspector, type InspectorItem } from '../inspector';
 import { DreamList } from './dreams/DreamList';
-import type { DreamStatus, DreamViewItem } from './dreams/types';
 import { QueryErrorBanner, QueryLoadingBanner } from './QueryFeedback';
 
 export type { DreamStatus, DreamViewItem } from './dreams/types';

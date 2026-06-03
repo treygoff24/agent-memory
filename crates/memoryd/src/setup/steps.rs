@@ -364,13 +364,12 @@ async fn start_background_daemon(request: DaemonStepRequest<'_>) -> Result<Strin
         return Ok(format!("daemon already live at {}", request.socket.display()));
     }
 
-    let mut child = spawn_serve_child(request.repo, request.runtime, request.socket).map_err(|error| error.to_string())?;
+    let mut child =
+        spawn_serve_child(request.repo, request.runtime, request.socket).map_err(|error| error.to_string())?;
     let pid = child.id();
 
     match await_socket_ready(&mut child, request.socket, DAEMON_READY_TIMEOUT).await {
-        DaemonReadiness::Ready => {
-            Ok(format!("started background daemon pid {pid} at {}", request.socket.display()))
-        }
+        DaemonReadiness::Ready => Ok(format!("started background daemon pid {pid} at {}", request.socket.display())),
         DaemonReadiness::ExitedEarly(status) => Err(format!("background daemon exited before readiness: {status}")),
         DaemonReadiness::PollFailed(error) => Err(error.to_string()),
         DaemonReadiness::TimedOut => {

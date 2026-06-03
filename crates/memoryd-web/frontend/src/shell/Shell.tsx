@@ -1,12 +1,12 @@
 import type { ReactNode } from 'react';
 
 import type { ViewId } from '../views';
+import type { ShellStatus } from './types';
 
 import { useStatusQuery } from '../api';
 import { Footer } from './Footer';
 import { Sidebar } from './Sidebar';
 import { TopBar } from './TopBar';
-import type { ShellStatus } from './types';
 
 export type { ShellStatus } from './types';
 

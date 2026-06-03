@@ -1,9 +1,10 @@
 import { useMemo, useState } from 'react';
 
+import type { PeerSortKey, PeerSync, PeerTrust, PeerViewItem } from './peersView/types';
+
 import { useSyncDashboardQuery, type ClaimLockInfo, type PeerSessionStatus } from '../api';
 import { Inspector, type InspectorItem } from '../inspector';
 import { TrustLedger } from './peersView';
-import type { PeerSortKey, PeerSync, PeerTrust, PeerViewItem } from './peersView/types';
 import { QueryErrorBanner, QueryLoadingBanner } from './QueryFeedback';
 
 export type { PeerSortKey, PeerSync, PeerTrust, PeerViewItem } from './peersView/types';

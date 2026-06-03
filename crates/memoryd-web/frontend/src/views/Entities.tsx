@@ -1,9 +1,10 @@
 import { useMemo, useState } from 'react';
 
+import type { EntityKind, EntitySortKey, EntityViewItem } from './entitiesView/types';
+
 import { useEntityDetailQuery, useEntityGraphQuery, type EntityDetailResponse, type EntityNode } from '../api';
 import { Inspector, type InspectorItem } from '../inspector';
 import { EntityTable } from './entitiesView';
-import type { EntityKind, EntitySortKey, EntityViewItem } from './entitiesView/types';
 import { QueryErrorBanner, QueryLoadingBanner } from './QueryFeedback';
 
 export type { EntityKind, EntitySortKey, EntityViewItem } from './entitiesView/types';

@@ -1,9 +1,10 @@
 import { useMemo, useState } from 'react';
 
+import type { GovernanceDecision, GovernanceViewItem } from './governanceView/types';
+
 import { useReviewActionMutation, useReviewQueueQuery, type ReviewQueueItem } from '../api';
 import { Inspector, type InspectorItem } from '../inspector';
 import { ReviewQueue } from './governanceView';
-import type { GovernanceDecision, GovernanceViewItem } from './governanceView/types';
 import { QueryErrorBanner, QueryLoadingBanner } from './QueryFeedback';
 
 export type { GovernanceDecision, GovernanceViewItem, PolicyTraceStep } from './governanceView/types';
