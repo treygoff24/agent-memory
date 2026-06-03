@@ -179,8 +179,13 @@ delegate's "done"; verify on disk).
   `RUSTDOCFLAGS=-D warnings cargo doc`. Exits at the first failing phase.
 - **`GATE_EXIT` trap:** a compound `bash check.sh; echo X` reports the *echo's* exit to the
   background notifier (always 0). ALWAYS read the `GATE_EXIT=` line written into the log.
-- **Custom `git diff`:** `git diff` here routes through a custom "--- Changes ---" formatter,
-  NOT raw unified diff. Use `git --no-pager diff HEAD --no-ext-diff` for real unified diff.
+- **`git diff` is raw again:** earlier this session `git diff`/`grep` output was being
+  compacted by `rtk` (a CLI-proxy output summarizer) wired in as a `PreToolUse` Bash hook in
+  `~/.claude-shared/settings.json` (which `~/.claude` and `~/.claude-personal` symlink to).
+  Trey asked for it gone — `rtk` is now `brew uninstall`ed and the hook block removed, so
+  `git diff` returns normal unified diff with no workaround. (Settings backups:
+  `~/.claude*/settings.json.bak-rtk-20260603-185610`.) The separate Code Briefcase `Read`
+  hook (the "[Code Briefcase orientation]" blocks) was intentionally left in place.
 - **`rust_boundary_check`** (`crates/memory-test-support/src/bin/rust_boundary_check.rs`, run
   by `scripts/two-clone-convergence.sh`): forbids raw `.unwrap()`/`.expect(` in
   `crates/memory-substrate/src/**` (incl. `#[cfg(test)]` modules) unless the same or next line
