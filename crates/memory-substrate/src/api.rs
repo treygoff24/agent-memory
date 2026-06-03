@@ -18,8 +18,8 @@ use crate::error::{
     OpenError, ReadError, SubstrateError, SubstrateResult, ValidationError, VectorError, WriteFailure, WriteFailureKind,
 };
 use crate::events::{
-    append_event, append_event_best_effort, decode_line, read_events, reserve_event_sequence,
-    sync_event_sequence_state, Event, EventKind,
+    append_event, append_event_best_effort, decode_line, ensure_event_sequence_state, read_events,
+    reserve_event_sequence, sync_event_sequence_state, Event, EventKind,
 };
 use crate::frontmatter::validate_frontmatter;
 use crate::git;
@@ -119,13 +119,27 @@ impl Substrate {
     /// Read a memory by id (legacy `Memory` shape; prefer
     /// [`Self::read_memory_envelope`] for the spec §16.2 shape).
     ///
-    /// B-API-7 (resolve via index) is staged behind the envelope API; the legacy
-    /// path keeps its O(n) walk to avoid breaking existing callers in this pass.
+    /// Resolution is index-first (B-API-7): the id is resolved to its path via a
+    /// PK lookup on `memories.id`, and only that single file is read. The full
+    /// tree-walk is retained solely as the empty-index fallback so a fresh open
+    /// before any index hydration still finds plaintext memories on disk.
     pub async fn read_memory(&self, id: &MemoryId) -> Result<Memory, ReadError> {
         self.read_memory_with_hash(id).await.map(|(memory, _hash)| memory)
     }
 
     async fn read_memory_with_hash(&self, id: &MemoryId) -> Result<(Memory, Sha256), ReadError> {
+        // Index-first: resolve the id to a single path via PK lookup and read
+        // only that file. Encrypted records are not returned by the legacy
+        // `Memory` shape, so skip an index hit that resolves under `encrypted/`
+        // and fall through to the disk-walk's plaintext-only semantics.
+        if let Some(path) = self.resolve_memory_id_to_path_opt(id) {
+            if !path.as_str().starts_with("encrypted/") {
+                return read_memory_file(&self.roots.repo, &path);
+            }
+        }
+        // Disk-walk fallback for the empty/unindexed case. Preserves the legacy
+        // plaintext-only "found-on-disk" semantics: encrypted paths are skipped
+        // and a missing id yields `NotFound`.
         let paths = crate::tree::relative_memory_paths(&self.roots.repo);
         for path in paths {
             let repo_path = RepoPath::new(path.to_string_lossy().replace('\\', "/"));
@@ -227,15 +241,24 @@ impl Substrate {
         Ok(MemoryEnvelope { metadata, content: MemoryContent::Ciphertext { bytes, encryption: envelope } })
     }
 
+    /// Resolve an id to its path via a single PK lookup on `memories.id`.
+    /// Returns `None` when the index is empty/unavailable or the id is absent,
+    /// so callers with their own disk-walk fallback can branch on it.
+    fn resolve_memory_id_to_path_opt(&self, id: &MemoryId) -> Option<RepoPath> {
+        let query = MemoryQuery { id: Some(id.clone()), include_metadata_only: true, ..MemoryQuery::default() };
+        self.index
+            .lock()
+            .ok()
+            .and_then(|guard| guard.query_memory(&query).ok())
+            .and_then(|rows| rows.into_iter().next())
+            .map(|hit| hit.path)
+    }
+
     fn resolve_memory_id_to_path(&self, id: &MemoryId) -> Result<RepoPath, ReadError> {
         // Prefer index lookup; fall back to disk walk if the index is empty
         // (e.g. fresh open before any read paths through it).
-        let query = MemoryQuery { id: Some(id.clone()), include_metadata_only: true, ..MemoryQuery::default() };
-        let from_index = self.index.lock().ok().and_then(|guard| guard.query_memory(&query).ok());
-        if let Some(rows) = from_index {
-            if let Some(hit) = rows.into_iter().next() {
-                return Ok(hit.path);
-            }
+        if let Some(path) = self.resolve_memory_id_to_path_opt(id) {
+            return Ok(path);
         }
         // Disk-walk fallback (Phase 5 retains it pending B-API-7's index
         // hydration of `frontmatter_json`).
@@ -1203,6 +1226,26 @@ impl Substrate {
         self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.query_recall_index(&query)
     }
 
+    /// Count recall-index rows matching `query` via an index-only `COUNT(*)`,
+    /// without marshalling rows or hydrating auxiliary tables. The predicate is
+    /// identical to [`Self::query_recall_index`], so this returns the same value
+    /// as that call's `rows.len()` for the same query.
+    pub async fn count_recall_index(&self, query: RecallIndexQuery) -> SubstrateResult<usize> {
+        self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.count_recall_index(&query)
+    }
+
+    /// Project the entities (with aliases) for a set of memory ids in one
+    /// batched index query, without reading or parsing canonical files.
+    ///
+    /// Stream I uses this for claim-lock entity-intersection checks on the
+    /// peer-heartbeat path. Ids absent from the index are omitted from the map.
+    pub async fn entities_for_memories(
+        &self,
+        ids: &[String],
+    ) -> SubstrateResult<BTreeMap<String, Vec<crate::model::Entity>>> {
+        self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.entities_for_memories(ids)
+    }
+
     /// Query recall-index rows, including encrypted metadata-only rows.
     pub async fn query_recall_index_including_metadata_only(
         &self,
@@ -1212,6 +1255,76 @@ impl Substrate {
             .lock()
             .map_err(|err| OpenError::InvalidRoots(err.to_string()))?
             .query_recall_index_including_metadata_only(&query)
+    }
+
+    /// Count memories grouped by lifecycle status via a single index-only scan
+    /// on the derived index, instead of materializing rows per status. Returns
+    /// one `(status, count)` pair per distinct status present.
+    pub fn count_memories_by_status(&self) -> SubstrateResult<Vec<(MemoryStatus, u64)>> {
+        self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.count_by_status()
+    }
+
+    /// Count memories grouped by `(scope, canonical_namespace_id)` for namespace
+    /// aggregation, without hydrating per-row entities/tags/aliases.
+    pub fn namespace_counts(&self) -> SubstrateResult<Vec<(Scope, Option<String>, u64)>> {
+        self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.namespace_counts()
+    }
+
+    /// Stream every indexed entity (with aliases) as `(memory_id, Entity)`
+    /// pairs for entity-graph aggregation, reading only the entity tables.
+    pub fn entity_index_rows(&self) -> SubstrateResult<Vec<(MemoryId, crate::model::Entity)>> {
+        self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.entity_index_rows()
+    }
+
+    /// Recent `recall_hit` events joined to memory summaries, newest-first,
+    /// served from the existing long-lived index connection (no per-call
+    /// `Connection::open`). Each tuple is
+    /// `(event_id, device, seq, memory_id, recalled_at, summary)`.
+    #[allow(clippy::type_complexity)]
+    pub fn recent_recall_hits(
+        &self,
+        since: Option<DateTime<Utc>>,
+        limit: usize,
+    ) -> SubstrateResult<Vec<(String, String, i64, String, String, Option<String>)>> {
+        self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.recent_recall_hits(since, limit)
+    }
+
+    /// Read a bounded, kind-filtered page of events from the derived SQLite
+    /// mirror (newest-first), instead of parsing the entire canonical JSONL log.
+    ///
+    /// The mirror is derived; the canonical JSONL log remains the source of
+    /// truth. `kind_labels` filters on the stored kind column; `since_event_id`
+    /// returns only rows whose event id sorts strictly after the cursor.
+    pub fn events_log_page(
+        &self,
+        kind_labels: Option<&[&str]>,
+        since_event_id: Option<&str>,
+        limit: usize,
+    ) -> SubstrateResult<Vec<crate::index::MirrorEvent>> {
+        self.index
+            .lock()
+            .map_err(|err| OpenError::InvalidRoots(err.to_string()))?
+            .events_log_page(kind_labels, since_event_id, limit)
+    }
+
+    /// Read events from the derived SQLite mirror within a time window, optionally
+    /// kind-restricted, instead of parsing and filtering the whole JSONL log.
+    pub fn events_log_window(
+        &self,
+        kind_labels: Option<&[&str]>,
+        since: DateTime<Utc>,
+    ) -> SubstrateResult<Vec<crate::index::MirrorEvent>> {
+        self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.events_log_window(kind_labels, since)
+    }
+
+    /// Most recent event timestamp for a given kind label from the derived mirror.
+    pub fn latest_event_ts_for_kind(&self, kind_label: &str) -> SubstrateResult<Option<DateTime<Utc>>> {
+        self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.latest_event_ts_for_kind(kind_label)
+    }
+
+    /// Timestamp of a single event looked up by canonical event id in the mirror.
+    pub fn event_ts_by_id(&self, event_id: &str) -> SubstrateResult<Option<DateTime<Utc>>> {
+        self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.event_ts_by_id(event_id)
     }
 
     /// Query chunks.
@@ -1354,7 +1467,11 @@ impl Substrate {
     pub fn record_event_best_effort(&self, kind: EventKind) -> std::io::Result<()> {
         let device = DeviceId::try_new(&self.device_id)
             .map_err(|err| std::io::Error::other(format!("invalid device_id in Substrate: {err}")))?;
-        sync_event_sequence_state(&self.roots.runtime, &self.event_log, &device)?;
+        // Steady-state guard: only materializes/recovers `event-seq.json`; the
+        // authoritative high-water reconcile happened at substrate open. The
+        // prior `sync_event_sequence_state` here re-parsed the entire JSONL log
+        // on every append (a full-log scan on the hottest path in the system).
+        ensure_event_sequence_state(&self.roots.runtime, &self.event_log, &device)?;
         let event = self.build_recorded_event(kind, &new_operation_id())?;
         self.best_effort_event_seq.fetch_max(event.seq.saturating_add(1), Ordering::Relaxed);
         self.append_event_and_mirror(&event, true)
@@ -1363,6 +1480,54 @@ impl Substrate {
     /// Record that a memory was included in a rendered recall response.
     pub fn record_recall_hit(&self, id: MemoryId) -> std::io::Result<()> {
         self.record_event_best_effort(EventKind::RecallHit { id, recalled_at: Utc::now() })
+    }
+
+    /// Record recall hits for many memories in one pass.
+    ///
+    /// The sequence-state guard runs once for the whole batch instead of once
+    /// per id (the prior `emit_recall_hits` loop drove `record_recall_hit` —
+    /// hence the full sequence-sync — once per recalled memory). Each id still
+    /// reserves its own sequence number and appends one canonical event; errors
+    /// are returned per id so callers can log without aborting the batch.
+    pub fn record_recall_hits(&self, ids: &[MemoryId]) -> Vec<(MemoryId, std::io::Error)> {
+        if ids.is_empty() {
+            return Vec::new();
+        }
+        let device = match DeviceId::try_new(&self.device_id) {
+            Ok(device) => device,
+            Err(err) => {
+                let error = std::io::Error::other(format!("invalid device_id in Substrate: {err}"));
+                // Surface the same failure once per id so the caller's logging is
+                // unchanged versus the prior per-id loop.
+                return ids
+                    .iter()
+                    .map(|id| {
+                        (id.clone(), std::io::Error::new(error.kind(), error.to_string()))
+                    })
+                    .collect();
+            }
+        };
+        if let Err(err) = ensure_event_sequence_state(&self.roots.runtime, &self.event_log, &device) {
+            return ids
+                .iter()
+                .map(|id| (id.clone(), std::io::Error::new(err.kind(), err.to_string())))
+                .collect();
+        }
+        let mut failures = Vec::new();
+        let recalled_at = Utc::now();
+        for id in ids {
+            let kind = EventKind::RecallHit { id: id.clone(), recalled_at };
+            match self.build_recorded_event(kind, &new_operation_id()) {
+                Ok(event) => {
+                    self.best_effort_event_seq.fetch_max(event.seq.saturating_add(1), Ordering::Relaxed);
+                    if let Err(err) = self.append_event_and_mirror(&event, true) {
+                        failures.push((id.clone(), err));
+                    }
+                }
+                Err(err) => failures.push((id.clone(), err)),
+            }
+        }
+        failures
     }
 
     /// Record that encrypted content was intentionally revealed without

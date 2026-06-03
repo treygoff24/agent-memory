@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::Path;
 
 use memory_substrate::{Roots, Substrate};
 
@@ -47,7 +47,7 @@ pub async fn run_doctor(args: DoctorArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn auto_start_daemon(repo: &PathBuf, runtime: &PathBuf, socket: &PathBuf) -> anyhow::Result<()> {
+async fn auto_start_daemon(repo: &Path, runtime: &Path, socket: &Path) -> anyhow::Result<()> {
     let mut child = spawn_serve_child(repo, runtime, socket)?;
     match await_socket_ready(&mut child, socket, DAEMON_READY_TIMEOUT).await {
         DaemonReadiness::Ready => Ok(()),
