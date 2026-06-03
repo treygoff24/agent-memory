@@ -134,7 +134,10 @@ fn target_file_name(raw_yaml: &str, file_name: Option<&str>) -> Result<String, S
     }
 }
 
-fn is_safe_yaml_file_name(file_name: &str) -> bool {
+/// Whether `file_name` is a safe policy YAML filename: non-empty, `.yaml`
+/// extension, no path separators or dotfile/traversal tricks, alphanumerics
+/// plus `-_.` only. Shared with the web policy-editor route.
+pub fn is_safe_yaml_file_name(file_name: &str) -> bool {
     !file_name.is_empty()
         && file_name.ends_with(".yaml")
         && !file_name.contains('/')
@@ -255,7 +258,11 @@ fn builtin_snapshot(writable: bool) -> Result<GovernancePolicySnapshot, String> 
     })
 }
 
-fn summarize_policy_set(policies: &PolicySet, source: &str) -> Vec<GovernancePolicySummary> {
+/// Summarize a [`PolicySet`] into the per-scope [`GovernancePolicySummary`]
+/// rows used by the governance snapshot API. `source` tags where the policies
+/// came from (e.g. `"disk"` or `"built_in_fallback"`). Shared with the web
+/// policy-editor route.
+pub fn summarize_policy_set(policies: &PolicySet, source: &str) -> Vec<GovernancePolicySummary> {
     [Scope::Me, Scope::Project, Scope::Agent, Scope::Dreaming]
         .into_iter()
         .filter_map(|scope| {

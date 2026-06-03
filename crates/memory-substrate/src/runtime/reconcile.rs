@@ -1,6 +1,6 @@
 //! Startup reconciliation and durable repair queues.
 //!
-//! Newspaper layout: `reconcile_startup` orchestrator at top, nine phase
+//! Newspaper layout: `reconcile_all_phases` orchestrator at top, nine phase
 //! helpers in spec §13.5.1 order below, private helpers at the bottom.
 
 use std::path::Path;
@@ -109,17 +109,6 @@ pub struct ReconcileReport {
     pub blocking_conflicts: Vec<String>,
 }
 
-/// Startup reconciliation phase counts (legacy compat alias; prefer ReconcileReport).
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ReconcileCounts {
-    /// Reindexed paths.
-    pub reindexed: usize,
-    /// Repaired event log frames.
-    pub repaired_events: usize,
-    /// Replayed pending events.
-    pub replayed_pending_events: usize,
-}
-
 /// Append a durable pending index operation.
 pub fn enqueue_pending_index(runtime: &Path, op: &PendingIndexOp) -> std::io::Result<()> {
     append_framed_jsonl(&runtime.join("pending/index-ops.jsonl"), op)
@@ -153,10 +142,6 @@ pub fn write_startup_marker(runtime: &Path, reason: &str) -> std::io::Result<()>
 /// The single `StartupReconciliationCompleted` event is emitted in phase 9,
 /// after all other phases, so its counts reflect reality.
 /// The startup-reconcile marker is cleared only on full success.
-///
-/// Note: Phase 5 (B-API-3 actor pattern) may refactor `api.rs` to call this
-/// directly; for now the two-step `reconcile_startup` + `replay_pending_repairs`
-/// wrappers below bridge the existing call sites.
 #[allow(clippy::too_many_arguments)]
 pub fn reconcile_all_phases(
     repo: &Path,
@@ -356,25 +341,6 @@ fn phase_9_emit_completion(
     Ok(())
 }
 
-/// Pre-index startup reconciliation (phases 1–2).
-///
-/// Called from `api.rs` before the `Index` handle is constructed.
-/// 2-arg signature preserved for api.rs compatibility (Phase 5 owns that file).
-pub fn reconcile_startup(runtime: &Path, event_log: &Path) -> std::io::Result<ReconcileCounts> {
-    std::fs::create_dir_all(runtime.join("pending"))?;
-    let repaired_events = recover_event_log(event_log)? as usize;
-    Ok(ReconcileCounts { reindexed: 0, repaired_events, replayed_pending_events: 0 })
-}
-
-/// Extended pre-index startup reconciliation with repo for crash scan (phases 1–2).
-///
-/// Useful when the repo root is available at call time. Phase 5 may migrate
-/// `api.rs` to call this instead of `reconcile_startup` to enable phase 1.
-pub fn reconcile_startup_pre_index(runtime: &Path, event_log: &Path, repo: &Path) -> std::io::Result<ReconcileCounts> {
-    let report = reconcile_startup_pre_index_report(runtime, event_log, repo)?;
-    Ok(ReconcileCounts { reindexed: 0, repaired_events: report.event_repairs as usize, replayed_pending_events: 0 })
-}
-
 /// Extended pre-index startup reconciliation with a full report.
 pub fn reconcile_startup_pre_index_report(
     runtime: &Path,
@@ -387,26 +353,6 @@ pub fn reconcile_startup_pre_index_report(
     report.event_repairs = recover_event_log(event_log)? as u32;
     report.phases_run.push("event_log_recovery");
     Ok(report)
-}
-
-/// Replay durable pending repairs after the index handle exists (phases 3–6 + 9).
-///
-/// Called from `api.rs` after the Index is constructed.
-/// Deferred: phase 7 (auto-commit) pending `git::auto_commit` wire-up.
-#[allow(clippy::too_many_arguments)]
-pub fn replay_pending_repairs(
-    repo: &Path,
-    runtime: &Path,
-    event_log: &Path,
-    device_id: &crate::model::DeviceId,
-    index: &mut Index,
-) -> std::io::Result<ReconcileCounts> {
-    let report = replay_pending_repairs_report(repo, runtime, event_log, device_id, index)?;
-    Ok(ReconcileCounts {
-        reindexed: report.reindexed_memories as usize,
-        repaired_events: report.event_repairs as usize,
-        replayed_pending_events: report.event_repairs as usize,
-    })
 }
 
 /// Replay durable pending repairs and return the full reconciliation report.

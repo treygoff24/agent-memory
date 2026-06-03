@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use chrono::{DateTime, Utc};
 use memory_substrate::{MemoryId, Substrate};
 use rusqlite::{params, Connection};
@@ -83,9 +81,6 @@ fn query_recent_recall_hits(
 fn parse_time(value: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(value).map(|value| value.with_timezone(&Utc)).unwrap_or(DateTime::<Utc>::UNIX_EPOCH)
 }
-
-#[allow(dead_code)]
-fn _assert_index_path_is_path(_: &Path) {}
 
 #[cfg(test)]
 mod tests {

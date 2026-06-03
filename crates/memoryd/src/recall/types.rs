@@ -8,6 +8,14 @@ pub const MAX_SERIALIZED_OMISSIONS: usize = 64;
 pub const DEFAULT_STARTUP_BUDGET_TOKENS: usize = 3_600;
 pub const DEFAULT_DELTA_BUDGET_TOKENS: usize = 400;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntityMatchKind {
+    None,
+    Tag,
+    ExactLabelOrAlias,
+    ExactId,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StartupRequest {

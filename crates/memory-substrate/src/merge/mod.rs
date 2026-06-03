@@ -17,3 +17,13 @@ pub use crate::error::{MergeError, MergeSide};
 /// canonical [`crate::SUBSTRATE_SCHEMA_VERSION`] so the driver and substrate
 /// stay in lockstep — see CLAUDE.md invariant 5.
 pub use crate::SUBSTRATE_SCHEMA_VERSION as MERGE_DRIVER_SUPPORTED_SCHEMA_VERSION;
+
+/// Return `text` with a single guaranteed trailing newline. Shared by the body
+/// and three-way merge paths, which normalize line endings before diffing.
+fn ensure_trailing_newline(text: &str) -> String {
+    if text.ends_with('\n') {
+        text.to_string()
+    } else {
+        format!("{text}\n")
+    }
+}

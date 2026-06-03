@@ -11,9 +11,9 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use regex::Regex;
 use serde_json::Value;
 
+use super::{extract_wiki_links, slugify};
 use crate::import::candidate::{Harness, ParsedMemory};
 use crate::import::{ImportError, ImportResult};
 
@@ -345,34 +345,6 @@ fn parse_rollout_summary_bullet(text: &str) -> Option<EvidenceRef> {
     }
     let rollout_path = rollout_path?;
     Some(EvidenceRef { rollout_path, thread_id, updated_at, cwd, outcome })
-}
-
-fn extract_wiki_links(body: &str) -> Vec<String> {
-    let pattern = Regex::new(r"\[\[([^\]\n]+?)\]\]").expect("static regex compiles");
-    let mut seen = std::collections::BTreeSet::new();
-    let mut links = Vec::new();
-    for capture in pattern.captures_iter(body) {
-        let alias = capture[1].trim().to_string();
-        if alias.is_empty() {
-            continue;
-        }
-        if seen.insert(alias.clone()) {
-            links.push(alias);
-        }
-    }
-    links
-}
-
-fn slugify(value: &str) -> String {
-    let mut slug = String::with_capacity(value.len());
-    for ch in value.chars() {
-        if ch.is_ascii_alphanumeric() {
-            slug.push(ch.to_ascii_lowercase());
-        } else if !slug.ends_with('-') {
-            slug.push('-');
-        }
-    }
-    slug.trim_matches('-').to_string()
 }
 
 #[cfg(test)]

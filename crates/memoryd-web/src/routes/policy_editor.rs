@@ -4,7 +4,8 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use memory_governance::{CandidateContext, Policy, PolicySet, Scope};
+use memory_governance::{Policy, PolicySet};
+use memoryd::policy_editor::{is_safe_yaml_file_name, summarize_policy_set};
 use memoryd::protocol::{
     GovernancePolicySnapshot, GovernancePolicySummary, RequestPayload, ResponsePayload, ResponseResult,
 };
@@ -191,33 +192,6 @@ fn target_file_name(payload: &PolicyEditorPostRequest) -> Result<String, String>
 
 fn parse_single_policy(raw_yaml: &str) -> Result<(), String> {
     serde_yaml::from_str::<Policy>(raw_yaml).map(|_| ()).map_err(|error| error.to_string())
-}
-
-fn is_safe_yaml_file_name(file_name: &str) -> bool {
-    !file_name.is_empty()
-        && file_name.ends_with(".yaml")
-        && !file_name.contains('/')
-        && !file_name.contains('\\')
-        && !file_name.starts_with('.')
-        && file_name.chars().all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.'))
-}
-
-fn summarize_policy_set(policies: &PolicySet, source: &str) -> Vec<GovernancePolicySummary> {
-    [Scope::Me, Scope::Project, Scope::Agent, Scope::Dreaming]
-        .into_iter()
-        .filter_map(|scope| {
-            let policy = policies.policy_for_scope(scope).ok()?;
-            let preview = policy.dry_run(&CandidateContext::new(scope).with_confidence(0.0).with_grounding(false));
-            Some(GovernancePolicySummary {
-                scope: format!("{scope:?}").to_ascii_lowercase(),
-                selected_policy: preview.selected_policy,
-                policy_source: source.to_owned(),
-                confidence_floor: preview.confidence_floor,
-                review_gates: preview.triggered_review_gates,
-                requires_grounding: preview.requires_grounding,
-            })
-        })
-        .collect()
 }
 
 fn invalid_policy_response(error: impl Into<String>) -> (StatusCode, Json<serde_json::Value>) {

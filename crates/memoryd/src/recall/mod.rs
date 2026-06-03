@@ -24,7 +24,7 @@ pub use delta::{
     build_delta_response, build_delta_response_with_coordination, DeltaCoordinationContext, DeltaPeerCooldownStore,
     DeltaPeerDeliveryRecorder,
 };
-pub use entity::{resolve_entity_matches, EntityMatchKind, EntityResolution};
+pub use entity::{resolve_entity_matches, EntityResolution};
 pub use error::RecallError;
 pub use rank::{
     rank_recall_candidates, select_ranked_candidates, RankedRecallCandidate, RankedSelection, RankingContext,
@@ -40,6 +40,7 @@ pub use startup::{
 };
 pub use types::{
     bounded_omissions, BoundedOmissions, ConcurrentSessionMode, DeltaPeerDelivery, DeltaRequest, DeltaResponse,
-    OmissionReason, ProjectBinding, ProjectBindingSource, RecallExplanation, RecallOmission, RecallSectionExplanation,
-    RecallSectionName, SessionBinding, StartupRequest, StartupResponse, MAX_SERIALIZED_OMISSIONS, STREAM_E_POLICY,
+    EntityMatchKind, OmissionReason, ProjectBinding, ProjectBindingSource, RecallExplanation, RecallOmission,
+    RecallSectionExplanation, RecallSectionName, SessionBinding, StartupRequest, StartupResponse,
+    MAX_SERIALIZED_OMISSIONS, STREAM_E_POLICY,
 };

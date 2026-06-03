@@ -8,6 +8,7 @@ use crate::model::{Memory, MemoryStatus, TrustLevel};
 use serde_json::Value;
 
 use super::body_diff3::{merge_body_diff3, BodyMergeOutcome};
+use super::ensure_trailing_newline;
 use super::field_rules::{merge_frontmatter_scalars, QuarantineReason, ScalarMergeReport};
 use super::lifecycle::{apply_lifecycle_take, merge_lifecycle, LifecycleOutcome};
 use super::quarantine::{
@@ -302,14 +303,6 @@ fn cleanup_device_date_from_path(path: &str) -> (String, String) {
 
 fn file_stem(file: &str) -> &str {
     file.rsplit_once('.').map_or(file, |(stem, _)| stem)
-}
-
-fn ensure_trailing_newline(text: &str) -> String {
-    if text.ends_with('\n') {
-        text.to_string()
-    } else {
-        format!("{text}\n")
-    }
 }
 
 /// Reject any side that carries `sensitivity: secret` per Q9.

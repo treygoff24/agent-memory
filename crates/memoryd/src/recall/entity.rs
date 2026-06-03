@@ -1,15 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::recall::candidates::RecallCandidate;
-use crate::recall::types::{OmissionReason, RecallOmission, RecallSectionName};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EntityMatchKind {
-    None,
-    Tag,
-    ExactLabelOrAlias,
-    ExactId,
-}
+use crate::recall::types::{EntityMatchKind, OmissionReason, RecallOmission, RecallSectionName};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct EntityResolution {

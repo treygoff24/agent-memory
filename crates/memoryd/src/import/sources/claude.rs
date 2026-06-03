@@ -21,9 +21,9 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use regex::Regex;
 use serde_json::Value;
 
+use super::{extract_wiki_links, slugify};
 use crate::import::candidate::{Harness, ParsedMemory};
 use crate::import::{ImportError, ImportResult};
 
@@ -255,22 +255,6 @@ fn flush_section(sections: &mut Vec<Section>, heading: String, lines: Vec<&str>)
     sections.push(Section { heading, body: trimmed.to_string() });
 }
 
-fn extract_wiki_links(body: &str) -> Vec<String> {
-    let pattern = Regex::new(r"\[\[([^\]\n]+?)\]\]").expect("static regex compiles");
-    let mut seen = std::collections::BTreeSet::new();
-    let mut links = Vec::new();
-    for capture in pattern.captures_iter(body) {
-        let alias = capture[1].trim().to_string();
-        if alias.is_empty() {
-            continue;
-        }
-        if seen.insert(alias.clone()) {
-            links.push(alias);
-        }
-    }
-    links
-}
-
 /// Claude's per-project directories are named like
 /// `-Users-treygoff-Code-atlasos` for `/Users/treygoff/Code/atlasos`. The
 /// transformation is: leading `-` plus separator-`-` for `/`. We reverse it for
@@ -287,18 +271,6 @@ fn cwd_from_encoded_path(path: &Path, root: &Path) -> Option<PathBuf> {
     let path = encoded.replace('-', "/");
     let path = path.strip_prefix('/').unwrap_or(&path);
     Some(PathBuf::from(format!("/{path}")))
-}
-
-fn slugify(value: &str) -> String {
-    let mut slug = String::with_capacity(value.len());
-    for ch in value.chars() {
-        if ch.is_ascii_alphanumeric() {
-            slug.push(ch.to_ascii_lowercase());
-        } else if !slug.ends_with('-') {
-            slug.push('-');
-        }
-    }
-    slug.trim_matches('-').to_string()
 }
 
 #[cfg(test)]

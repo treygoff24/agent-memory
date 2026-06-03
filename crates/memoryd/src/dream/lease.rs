@@ -9,9 +9,12 @@ use chrono::{DateTime, Duration, NaiveDate, Utc};
 use memory_substrate::config::load_local_device_config;
 use memory_substrate::git::LeaseCommitAction;
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 
 use crate::dream::git::{LeaseGit, NativeLeaseGit};
+// `LeaseCommit` and `LeaseError` are defined alongside the `LeaseGit` trait in
+// `crate::dream::git` (the git layer is their producer). Re-exported here so the
+// historical `crate::dream::lease::{LeaseCommit, LeaseError}` paths keep resolving.
+pub use crate::dream::git::{LeaseCommit, LeaseError};
 use crate::dream::scope::DreamScope;
 use crate::protocol::{CandidateWriteResult, DreamRunReport, LeaseRecord, PassOutcome, PassStatus};
 
@@ -28,51 +31,10 @@ pub struct LeaseAcquireRequest {
     pub cli_used: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct LeaseCommit<'a> {
-    pub action: LeaseCommitAction,
-    pub scope: &'a str,
-    pub device_id: &'a str,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeaseAcquired {
     pub record: LeaseRecord,
     pub report: DreamRunReport,
-}
-
-#[derive(Debug, Clone, Error, PartialEq, Eq)]
-pub enum LeaseError {
-    #[error("lease_held: active lease for {scope} is held by {by_device}")]
-    Held { scope: String, by_device: String },
-    #[error("lease_unavailable: {message}")]
-    Unavailable { message: String },
-    #[error("lease_dirty_tree: {message}")]
-    DirtyTree { message: String },
-    #[error("invalid_request: {message}")]
-    InvalidRequest { message: String },
-}
-
-impl LeaseError {
-    pub fn code(&self) -> &'static str {
-        match self {
-            Self::Held { .. } => "lease_held",
-            Self::Unavailable { .. } => "lease_unavailable",
-            Self::DirtyTree { .. } => "lease_dirty_tree",
-            Self::InvalidRequest { .. } => "invalid_request",
-        }
-    }
-
-    pub fn unavailable(message: impl Into<String>) -> Self {
-        Self::Unavailable { message: message.into() }
-    }
-
-    pub fn cli_exit_code(&self) -> i32 {
-        match self {
-            Self::Held { .. } | Self::Unavailable { .. } | Self::DirtyTree { .. } => 5,
-            Self::InvalidRequest { .. } => 1,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

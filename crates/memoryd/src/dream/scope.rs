@@ -1,3 +1,6 @@
+use std::fs;
+use std::path::{Path, PathBuf};
+
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
@@ -81,4 +84,38 @@ fn invalid_scope(raw_scope: &str) -> DreamError {
     DreamError::invalid_request(format!(
         "invalid dream scope `{raw_scope}`; expected me, agent, project:<id>, or org:<id>"
     ))
+}
+
+/// Recursively collect every file under `path` into `files`. Missing paths are
+/// treated as empty (no error). Shared by the dream review and status surfaces,
+/// which both walk a dream journal/questions tree.
+pub(super) fn collect_files(path: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(path).map_err(|err| err.to_string())? {
+        let entry = entry.map_err(|err| err.to_string())?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_files(&path, files)?;
+        } else {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
+/// Map a dream artifact path (relative to `root`) back to its scope string
+/// (`me`, `agent`, `project:<id>`, `org:<id>`), or `None` if the layout does
+/// not match. Shared by the dream review and status surfaces.
+pub(super) fn scope_from_dream_path(root: &Path, path: &Path) -> Option<String> {
+    let relative = path.strip_prefix(root).ok()?;
+    let pieces = relative.iter().map(|piece| piece.to_str()).collect::<Option<Vec<_>>>()?;
+    match pieces.as_slice() {
+        ["me", _file] => Some("me".to_string()),
+        ["agent", _file] => Some("agent".to_string()),
+        ["project", id, _file] => Some(format!("project:{id}")),
+        ["org", id, _file] => Some(format!("org:{id}")),
+        _ => None,
+    }
 }

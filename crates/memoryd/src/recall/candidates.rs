@@ -7,8 +7,7 @@ use memory_substrate::{
     MemoryStatus, RecallIndexQuery, RecallIndexRow, Scope, Sensitivity, Substrate, SubstrateResult,
 };
 
-use crate::recall::entity::EntityMatchKind;
-use crate::recall::types::{OmissionReason, RecallOmission, RecallSectionName};
+use crate::recall::types::{EntityMatchKind, OmissionReason, RecallOmission, RecallSectionName};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RecallCandidate {

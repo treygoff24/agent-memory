@@ -2,6 +2,8 @@
 
 use imara_diff::{Algorithm, Diff, Hunk, InternedInput, Token};
 
+use super::ensure_trailing_newline;
+
 /// Outcome of body diff3 merge.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum BodyMergeOutcome {
@@ -126,14 +128,6 @@ fn format_conflict_markers(ours: &str, theirs: &str) -> String {
         ensure_trailing_newline(ours),
         ensure_trailing_newline(theirs),
     )
-}
-
-fn ensure_trailing_newline(text: &str) -> String {
-    if text.ends_with('\n') {
-        text.to_string()
-    } else {
-        format!("{text}\n")
-    }
 }
 
 #[cfg(test)]

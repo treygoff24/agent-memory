@@ -1,9 +1,55 @@
 use std::collections::VecDeque;
 use std::path::Path;
 
-use memory_substrate::git::{commit_lease_file, push, run_git, CommitOutcome};
+use memory_substrate::git::{commit_lease_file, push, run_git, CommitOutcome, LeaseCommitAction};
+use thiserror::Error;
 
-use crate::dream::lease::{LeaseCommit, LeaseError};
+/// A single lease commit to apply to the journal. Lives next to the
+/// [`LeaseGit`] trait that consumes it so the git layer carries its own
+/// contract types without depending on the lease orchestration module.
+#[derive(Debug, Clone, Copy)]
+pub struct LeaseCommit<'a> {
+    pub action: LeaseCommitAction,
+    pub scope: &'a str,
+    pub device_id: &'a str,
+}
+
+/// Error surface for lease election. Shared between the git layer (which
+/// produces it) and the lease orchestration layer (which maps it to CLI and
+/// protocol surfaces).
+#[derive(Debug, Clone, Error, PartialEq, Eq)]
+pub enum LeaseError {
+    #[error("lease_held: active lease for {scope} is held by {by_device}")]
+    Held { scope: String, by_device: String },
+    #[error("lease_unavailable: {message}")]
+    Unavailable { message: String },
+    #[error("lease_dirty_tree: {message}")]
+    DirtyTree { message: String },
+    #[error("invalid_request: {message}")]
+    InvalidRequest { message: String },
+}
+
+impl LeaseError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Held { .. } => "lease_held",
+            Self::Unavailable { .. } => "lease_unavailable",
+            Self::DirtyTree { .. } => "lease_dirty_tree",
+            Self::InvalidRequest { .. } => "invalid_request",
+        }
+    }
+
+    pub fn unavailable(message: impl Into<String>) -> Self {
+        Self::Unavailable { message: message.into() }
+    }
+
+    pub fn cli_exit_code(&self) -> i32 {
+        match self {
+            Self::Held { .. } | Self::Unavailable { .. } | Self::DirtyTree { .. } => 5,
+            Self::InvalidRequest { .. } => 1,
+        }
+    }
+}
 
 /// Git operations needed for lease election.
 ///

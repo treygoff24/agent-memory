@@ -8,6 +8,7 @@ use memory_substrate::config::load_config;
 use serde_json::Value;
 
 use crate::dream::registry::HarnessCliRegistry;
+use crate::dream::scope::{collect_files, scope_from_dream_path};
 use crate::protocol::{
     DreamStatusCounters, DreamStatusReport, HarnessCliStatus, LeaseRecord, PassStatus, ScopeRunSummary,
 };
@@ -192,32 +193,4 @@ fn files_under(root: &Path) -> Result<Vec<PathBuf>, String> {
     collect_files(root, &mut files)?;
     files.sort();
     Ok(files)
-}
-
-fn collect_files(path: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
-    if !path.exists() {
-        return Ok(());
-    }
-    for entry in fs::read_dir(path).map_err(|err| err.to_string())? {
-        let entry = entry.map_err(|err| err.to_string())?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect_files(&path, files)?;
-        } else {
-            files.push(path);
-        }
-    }
-    Ok(())
-}
-
-fn scope_from_dream_path(root: &Path, path: &Path) -> Option<String> {
-    let relative = path.strip_prefix(root).ok()?;
-    let pieces = relative.iter().map(|piece| piece.to_str()).collect::<Option<Vec<_>>>()?;
-    match pieces.as_slice() {
-        ["me", _file] => Some("me".to_string()),
-        ["agent", _file] => Some("agent".to_string()),
-        ["project", id, _file] => Some(format!("project:{id}")),
-        ["org", id, _file] => Some(format!("org:{id}")),
-        _ => None,
-    }
 }

@@ -8,15 +8,16 @@ use memorum_coordination::{
     PeerWriteCandidate, PresenceRegistry, RelevanceGate, SessionContext,
 };
 use memory_privacy::{safe_plaintext_fragment, DeterministicPrivacyClassifier, SafeFragmentDecision};
-use memory_substrate::config::load_local_device_config;
-use memory_substrate::{ChunkQuery, MemoryStatus, RecallIndexQuery, RecallIndexRow, Scope, SourceKind, Substrate};
+use memory_substrate::{ChunkQuery, MemoryStatus, RecallIndexQuery, RecallIndexRow, Scope, Substrate};
 
 use crate::recall::error::RecallError;
 use crate::recall::render::escape_xml_text;
 use crate::recall::render::{emit_recall_hits, render_delta_frame, DeltaRecallItem};
-use crate::recall::source_identity::peer_source_identity;
+use crate::recall::source_identity::{
+    effective_coordination_level, is_peer_write_row, local_device_id, peer_source_identity,
+};
 use crate::recall::types::{
-    ConcurrentSessionMode, DeltaPeerDelivery, DeltaRequest, DeltaResponse, SessionBinding, DEFAULT_DELTA_BUDGET_TOKENS,
+    DeltaPeerDelivery, DeltaRequest, DeltaResponse, SessionBinding, DEFAULT_DELTA_BUDGET_TOKENS,
 };
 
 const DELTA_PEER_PRESENCE_CAP: usize = 4;
@@ -143,15 +144,6 @@ async fn build_delta_coordination(
     Ok(DeltaCoordination { insertion: insertion.has_entries().then_some(insertion) })
 }
 
-fn effective_coordination_level(session_binding: &SessionBinding, default_coordination_level: u8) -> u8 {
-    match session_binding.project.as_ref().and_then(|project| project.concurrent_session_mode) {
-        Some(ConcurrentSessionMode::Minimal) => 1,
-        Some(ConcurrentSessionMode::Default) => 2,
-        Some(ConcurrentSessionMode::Collaborative) => 3,
-        None => default_coordination_level,
-    }
-}
-
 async fn delta_peer_candidate_rows(
     substrate: &Substrate,
     session_binding: &SessionBinding,
@@ -178,17 +170,6 @@ async fn delta_peer_candidate_rows(
     rows.sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
     rows.dedup_by(|left, right| left.id == right.id);
     Ok(rows)
-}
-
-fn local_device_id(substrate: &Substrate) -> Result<String, RecallError> {
-    load_local_device_config(&substrate.roots().runtime)
-        .map_err(RecallError::substrate_error)?
-        .map(|config| config.device.id)
-        .ok_or_else(|| RecallError::substrate_error("local device identity missing"))
-}
-
-fn is_peer_write_row(row: &RecallIndexRow) -> bool {
-    matches!(row.source_kind, SourceKind::AgentPrimary | SourceKind::AgentSubagent)
 }
 
 fn delta_session_context(session_binding: &SessionBinding, message: &str) -> SessionContext {

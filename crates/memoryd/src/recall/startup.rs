@@ -7,8 +7,7 @@ use chrono::{DateTime, Duration, Utc};
 use memorum_coordination::{
     CoordinationConfig, CoordinationInsertion, PeerUpdateEntry, PeerWriteCandidate, RelevanceGate, SessionContext,
 };
-use memory_substrate::config::load_local_device_config;
-use memory_substrate::{MemoryStatus, RecallIndexQuery, RecallIndexRow, Scope, SourceKind, Substrate, SubstrateError};
+use memory_substrate::{MemoryStatus, RecallIndexQuery, RecallIndexRow, Scope, Substrate, SubstrateError};
 
 use crate::reality_check::RcScheduler;
 use crate::recall::budget::estimated_tokens;
@@ -21,10 +20,12 @@ use crate::recall::render::{
     render_startup_frame_with_cross_device_updates, CrossDeviceStartupUpdates, RecallEntry, RenderedRecallSection,
     StartupCoordinationRender,
 };
-use crate::recall::source_identity::peer_source_identity;
+use crate::recall::source_identity::{
+    effective_coordination_level, is_peer_write_row, local_device_id, peer_source_identity,
+};
 use crate::recall::types::{
-    bounded_omissions, ConcurrentSessionMode, RecallExplanation, RecallSectionExplanation, RecallSectionName,
-    SessionBinding, StartupRequest, StartupResponse, DEFAULT_STARTUP_BUDGET_TOKENS,
+    bounded_omissions, RecallExplanation, RecallSectionExplanation, RecallSectionName, SessionBinding, StartupRequest,
+    StartupResponse, DEFAULT_STARTUP_BUDGET_TOKENS,
 };
 use crate::recall::validate_startup_request;
 use crate::state::DaemonState;
@@ -260,15 +261,6 @@ fn surfaced_peer_update_references(insertion: Option<&CoordinationInsertion>) ->
         .unwrap_or_default()
 }
 
-fn effective_coordination_level(session_binding: &SessionBinding, default_coordination_level: u8) -> u8 {
-    match session_binding.project.as_ref().and_then(|project| project.concurrent_session_mode) {
-        Some(ConcurrentSessionMode::Minimal) => 1,
-        Some(ConcurrentSessionMode::Default) => 2,
-        Some(ConcurrentSessionMode::Collaborative) => 3,
-        None => default_coordination_level,
-    }
-}
-
 async fn startup_peer_candidate_rows(
     substrate: &Substrate,
     session_binding: &SessionBinding,
@@ -481,17 +473,6 @@ fn from_sync_date(rows: &[RecallIndexRow], peer_updates: &[PeerUpdateEntry]) -> 
         .unwrap_or_else(Utc::now)
         .date_naive()
         .to_string()
-}
-
-fn is_peer_write_row(row: &RecallIndexRow) -> bool {
-    matches!(row.source_kind, SourceKind::AgentPrimary | SourceKind::AgentSubagent)
-}
-
-fn local_device_id(substrate: &Substrate) -> Result<String, RecallError> {
-    load_local_device_config(&substrate.roots().runtime)
-        .map_err(RecallError::substrate_error)?
-        .map(|config| config.device.id)
-        .ok_or_else(|| RecallError::substrate_error("local device identity missing"))
 }
 
 fn should_offer_reality_check(substrate: &Substrate, now: DateTime<Utc>) -> bool {
