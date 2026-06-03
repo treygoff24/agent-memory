@@ -1,4 +1,4 @@
-import type { PeerSortKey, PeerViewItem } from '../Peers';
+import type { PeerSortKey, PeerViewItem } from './types';
 
 interface TrustLedgerProps {
     peers: PeerViewItem[];

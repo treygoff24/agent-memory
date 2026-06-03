@@ -7,7 +7,7 @@ import { RealityCheck } from './views/RealityCheck';
 import { Recall } from './views/Recall';
 import { Settings } from './views/Settings';
 
-export const views = [
+const views = [
     { id: 'inbox', label: 'Inbox', component: Inbox },
     { id: 'reality', label: 'Reality Check', component: RealityCheck },
     { id: 'recall', label: 'Recall', component: Recall },

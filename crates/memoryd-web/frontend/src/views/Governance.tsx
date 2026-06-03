@@ -3,32 +3,12 @@ import { useMemo, useState } from 'react';
 import { useReviewActionMutation, useReviewQueueQuery, type ReviewQueueItem } from '../api';
 import { Inspector, type InspectorItem } from '../inspector';
 import { ReviewQueue } from './governanceView';
+import type { GovernanceDecision, GovernanceViewItem } from './governanceView/types';
 import { QueryErrorBanner, QueryLoadingBanner } from './QueryFeedback';
 
+export type { GovernanceDecision, GovernanceViewItem, PolicyTraceStep } from './governanceView/types';
+
 export type GovernanceFilter = 'all' | 'block' | 'warn' | 'info' | 'consent_required' | 'redact_proposed';
-export type GovernanceDecision = 'redact_proposed' | 'review_required' | 'auto_approve' | 'consent_required';
-
-export interface PolicyTraceStep {
-    rule: string;
-    action: 'allow' | 'match' | 'deny' | 'quarantine';
-    outcome: string;
-    ms: number;
-}
-
-export interface GovernanceViewItem {
-    id: string;
-    title: string;
-    severity: 'block' | 'warn' | 'info';
-    decision: GovernanceDecision;
-    namespace: string;
-    sub: string[];
-    meta: string;
-    reason: string;
-    rulePath: string;
-    sensitivity: 'sensitive' | 'plain';
-    encrypted: boolean;
-    trace: PolicyTraceStep[];
-}
 
 const filters: Array<{ id: GovernanceFilter; label: string }> = [
     { id: 'all', label: 'all' },

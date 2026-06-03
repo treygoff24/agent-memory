@@ -3,24 +3,12 @@ import { useMemo, useState } from 'react';
 import { useEntityDetailQuery, useEntityGraphQuery, type EntityDetailResponse, type EntityNode } from '../api';
 import { Inspector, type InspectorItem } from '../inspector';
 import { EntityTable } from './entitiesView';
+import type { EntityKind, EntitySortKey, EntityViewItem } from './entitiesView/types';
 import { QueryErrorBanner, QueryLoadingBanner } from './QueryFeedback';
 
-export type EntityKind = 'person' | 'org' | 'project' | 'place' | 'tool' | 'language' | 'unknown';
-export type EntityFilter = 'all' | EntityKind;
-export type EntitySortKey = 'name' | 'kind' | 'mentions' | 'namespaces' | 'lastSeen' | 'firstSeen' | 'confidence';
+export type { EntityKind, EntitySortKey, EntityViewItem } from './entitiesView/types';
 
-export interface EntityViewItem {
-    id: string;
-    name: string;
-    kind: EntityKind;
-    mentions: number;
-    namespaces: string[];
-    firstSeen: string;
-    lastSeen: string;
-    confidence: number | null;
-    sensitive?: boolean;
-    recent: Array<{ id: string; title: string; weight: number }>;
-}
+export type EntityFilter = 'all' | EntityKind;
 
 interface SortState {
     key: EntitySortKey;

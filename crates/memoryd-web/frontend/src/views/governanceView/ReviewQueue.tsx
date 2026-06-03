@@ -1,4 +1,4 @@
-import type { GovernanceViewItem } from '../Governance';
+import type { GovernanceViewItem } from './types';
 
 interface ReviewQueueProps {
     items: GovernanceViewItem[];

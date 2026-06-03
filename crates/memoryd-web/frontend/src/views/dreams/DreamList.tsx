@@ -1,4 +1,4 @@
-import type { DreamViewItem } from '../Dreams';
+import type { DreamViewItem } from './types';
 
 export function DreamList({
     items,

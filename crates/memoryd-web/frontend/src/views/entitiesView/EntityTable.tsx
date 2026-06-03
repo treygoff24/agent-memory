@@ -1,4 +1,4 @@
-import type { EntitySortKey, EntityViewItem } from '../Entities';
+import type { EntitySortKey, EntityViewItem } from './types';
 
 interface EntityTableProps {
     entities: EntityViewItem[];

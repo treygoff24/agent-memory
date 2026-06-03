@@ -19,17 +19,17 @@ import type {
 
 import { apiJson } from './client';
 
-export interface ReviewQueueParams {
+export type ReviewQueueParams = {
     status?: string;
     namespace?: string;
     limit?: number;
     offset?: number;
-}
+};
 
-export interface RecallHitsParams {
+export type RecallHitsParams = {
     since?: string;
     limit?: number;
-}
+};
 
 export const queryKeys = {
     status: ['status'] as const,
@@ -49,7 +49,9 @@ export const queryKeys = {
     sync: ['sync'] as const,
 };
 
-function withParams(path: string, params: object): string {
+type QueryParamValue = string | number | boolean | undefined;
+
+function withParams(path: string, params: Record<string, QueryParamValue>): string {
     const search = new URLSearchParams();
     for (const [key, value] of Object.entries(params)) {
         if (value !== undefined) search.set(key, String(value));

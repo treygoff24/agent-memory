@@ -3,22 +3,10 @@ import { useMemo, useState } from 'react';
 import { useReviewQueueQuery, type ReviewQueueItem } from '../api';
 import { Inspector, type InspectorItem } from '../inspector';
 import { DreamList } from './dreams/DreamList';
+import type { DreamStatus, DreamViewItem } from './dreams/types';
 import { QueryErrorBanner, QueryLoadingBanner } from './QueryFeedback';
 
-export type DreamStatus = 'all' | 'proposed' | 'queued' | 'accepted' | 'completed' | 'dismissed' | 'running';
-
-export interface DreamViewItem {
-    id: string;
-    status: Exclude<DreamStatus, 'all'>;
-    title: string;
-    confidence: number;
-    namespace: string;
-    sub: string[];
-    meta: string;
-    pass: string;
-    evidence: Array<{ id: string; title: string; score: number }>;
-    kind: 'pattern' | 'question' | 'cleanup' | 'dream-run';
-}
+export type { DreamStatus, DreamViewItem } from './dreams/types';
 
 const statuses: DreamStatus[] = ['all', 'proposed', 'queued', 'accepted', 'completed', 'dismissed', 'running'];
 

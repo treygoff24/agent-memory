@@ -6,12 +6,9 @@ import { useStatusQuery } from '../api';
 import { Footer } from './Footer';
 import { Sidebar } from './Sidebar';
 import { TopBar } from './TopBar';
+import type { ShellStatus } from './types';
 
-export interface ShellStatus {
-    daemon: 'ok' | 'warn' | 'bad' | 'idle';
-    syncLabel: string;
-    peerLabel: string;
-}
+export type { ShellStatus } from './types';
 
 function formatPendingChanges(ahead: number, behind: number): string {
     const count = ahead + behind;

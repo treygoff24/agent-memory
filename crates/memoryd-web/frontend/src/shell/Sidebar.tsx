@@ -1,5 +1,5 @@
 import type { ViewId } from '../views';
-export const navItems: Array<{ id: ViewId; label: string; key: string }> = [
+const navItems: Array<{ id: ViewId; label: string; key: string }> = [
     { id: 'inbox', label: 'Inbox', key: 'i' },
     { id: 'reality', label: 'Reality Check', key: 'r' },
     { id: 'recall', label: 'Recall', key: 'l' },

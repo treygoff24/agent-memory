@@ -1,13 +1,17 @@
+import type { RealityCheckRespondRequest } from '../../api';
+
 export type RealityCheckVariant = 'default' | 'encrypted' | 'refused' | 'score-open' | 'complete';
 
 export type RealityCheckActionName = 'confirm' | 'correct' | 'forget' | 'not_relevant' | 'skip_this_week';
 
-export interface RealityCheckRespondPayload {
-    session_id: string;
-    memory_id: string;
+/**
+ * Same wire shape as the API's {@link RealityCheckRespondRequest} (the payload is
+ * submitted directly to the respond mutation), but narrows `action` to the known
+ * action names the UI emits.
+ */
+export type RealityCheckRespondPayload = Omit<RealityCheckRespondRequest, 'action'> & {
     action: RealityCheckActionName;
-    correction?: string;
-}
+};
 
 export interface RealityCheckMemory {
     id: string;

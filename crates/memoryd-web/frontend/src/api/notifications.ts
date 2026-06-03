@@ -79,7 +79,7 @@ export function startNotificationsStream(): () => void {
     };
 }
 
-export function subscribeNotifications(listener: () => void): () => void {
+function subscribeNotifications(listener: () => void): () => void {
     listeners.add(listener);
     return () => listeners.delete(listener);
 }

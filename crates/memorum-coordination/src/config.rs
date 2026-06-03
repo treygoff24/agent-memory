@@ -26,6 +26,30 @@ impl Default for CoordinationConfig {
     }
 }
 
+/// Validate that an integer setting falls within an inclusive `[min, max]`
+/// range, returning the spec-standard `must be in [min, max], got <value>`
+/// diagnostic on failure. `label` is the fully-qualified config key.
+fn validate_inclusive_range<T: PartialOrd + std::fmt::Display>(
+    label: &str,
+    value: T,
+    min: T,
+    max: T,
+) -> Result<(), String> {
+    if value < min || value > max {
+        return Err(format!("{label} must be in [{min}, {max}], got {value}"));
+    }
+    Ok(())
+}
+
+/// Validate that a probability/threshold setting falls within the half-open
+/// `(0.0, 1.0]` range, returning the spec-standard diagnostic on failure.
+fn validate_unit_threshold(label: &str, value: f64) -> Result<(), String> {
+    if !(value > 0.0 && value <= 1.0) {
+        return Err(format!("{label} must be in (0.0, 1.0], got {value}"));
+    }
+    Ok(())
+}
+
 impl CoordinationConfig {
     pub fn validate(&self) -> Result<(), String> {
         if !(1..=3).contains(&self.level) {
@@ -74,33 +98,24 @@ impl RelevanceGateConfig {
     }
 
     fn validate(&self) -> Result<(), String> {
-        if !(self.threshold > 0.0 && self.threshold <= 1.0) {
-            return Err(format!("coordination.relevance_gate.threshold must be in (0.0, 1.0], got {}", self.threshold));
-        }
-        if !(60..=3_600).contains(&self.recency_window_seconds) {
-            return Err(format!(
-                "coordination.relevance_gate.recency_window_seconds must be in [60, 3600], got {}",
-                self.recency_window_seconds
-            ));
-        }
-        if !(1..=5).contains(&self.per_turn_cap) {
-            return Err(format!(
-                "coordination.relevance_gate.per_turn_cap must be in [1, 5], got {}",
-                self.per_turn_cap
-            ));
-        }
+        validate_unit_threshold("coordination.relevance_gate.threshold", self.threshold)?;
+        validate_inclusive_range(
+            "coordination.relevance_gate.recency_window_seconds",
+            self.recency_window_seconds,
+            60,
+            3_600,
+        )?;
+        validate_inclusive_range("coordination.relevance_gate.per_turn_cap", self.per_turn_cap, 1, 5)?;
         if self.cross_device_startup_window_seconds < self.recency_window_seconds {
             return Err(
                 "coordination.relevance_gate.cross_device_startup_window_seconds must be >= recency_window_seconds"
                     .to_owned(),
             );
         }
-        if !(self.cross_device_startup_threshold > 0.0 && self.cross_device_startup_threshold <= 1.0) {
-            return Err(format!(
-                "coordination.relevance_gate.cross_device_startup_threshold must be in (0.0, 1.0], got {}",
-                self.cross_device_startup_threshold
-            ));
-        }
+        validate_unit_threshold(
+            "coordination.relevance_gate.cross_device_startup_threshold",
+            self.cross_device_startup_threshold,
+        )?;
         Ok(())
     }
 }
@@ -126,13 +141,7 @@ impl PresenceConfig {
     }
 
     fn validate(&self) -> Result<(), String> {
-        if !(10..=300).contains(&self.heartbeat_seconds) {
-            return Err(format!(
-                "coordination.presence.heartbeat_seconds must be in [10, 300], got {}",
-                self.heartbeat_seconds
-            ));
-        }
-        Ok(())
+        validate_inclusive_range("coordination.presence.heartbeat_seconds", self.heartbeat_seconds, 10, 300)
     }
 }
 
@@ -155,10 +164,7 @@ impl ClaimLockConfig {
     }
 
     fn validate(&self) -> Result<(), String> {
-        if !(60..=3_600).contains(&self.ttl_seconds) {
-            return Err(format!("coordination.claim_lock.ttl_seconds must be in [60, 3600], got {}", self.ttl_seconds));
-        }
-        Ok(())
+        validate_inclusive_range("coordination.claim_lock.ttl_seconds", self.ttl_seconds, 60, 3_600)
     }
 }
 

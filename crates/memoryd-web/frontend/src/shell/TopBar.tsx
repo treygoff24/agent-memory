@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 
-import type { ShellStatus } from './Shell';
+import type { ShellStatus } from './types';
 
 import { searchMemories, type SearchHitSummary } from '../api';
 import { StatusDot } from '../ui';

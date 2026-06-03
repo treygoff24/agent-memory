@@ -130,7 +130,7 @@ fn should_suppress(root: &Path, path: &Path, suppression: Option<&Arc<Mutex<Supp
     let Ok(bytes) = std::fs::read(path) else {
         return false;
     };
-    let hash = crate::markdown::hash_bytes(&bytes);
+    let hash = crate::cas::hash_bytes(&bytes);
     // Propagate mutex poisoning rather than silently failing open (R-RT-5).
     let Ok(mut ledger) = suppression.lock() else {
         panic!("suppression ledger mutex not poisoned");

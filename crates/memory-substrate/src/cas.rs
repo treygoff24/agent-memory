@@ -1,4 +1,6 @@
-//! Hash helpers for CAS preconditions.
+//! Content-addressed hashing helpers shared by the markdown writer and the
+//! filesystem watcher. Kept as a leaf module so neither `markdown` nor
+//! `watcher` has to depend on the other purely to compute a CAS hash.
 
 use sha2::{Digest, Sha256 as Sha256Hasher};
 

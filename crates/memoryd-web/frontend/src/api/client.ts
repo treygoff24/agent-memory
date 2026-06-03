@@ -10,7 +10,7 @@ export class ApiError extends Error {
     }
 }
 
-export function csrfToken(): string {
+function csrfToken(): string {
     return document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content ?? '';
 }
 

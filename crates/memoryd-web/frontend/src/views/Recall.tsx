@@ -45,7 +45,7 @@ function normalizeAgent(agent: string): string {
     return agent;
 }
 
-export function toRecallLedgerEvent(event: RawRecallEvent, index: number): RecallLedgerEvent {
+function toRecallLedgerEvent(event: RawRecallEvent, index: number): RecallLedgerEvent {
     const date = new Date(event.time);
     const hh = String(date.getUTCHours()).padStart(2, '0');
     const mm = String(date.getUTCMinutes()).padStart(2, '0');

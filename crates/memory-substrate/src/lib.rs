@@ -2,6 +2,7 @@
 //! Stream A core memory substrate.
 
 pub mod api;
+pub mod cas;
 pub mod config;
 pub mod error;
 pub mod events;

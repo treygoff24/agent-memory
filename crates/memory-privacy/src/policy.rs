@@ -105,15 +105,6 @@ impl PrivacyPolicy {
         }
         Ok(ResolvedPrivacyPolicy { tier, storage_action })
     }
-
-    /// Resolve only the final tier for legacy callers.
-    pub fn resolve_tier(
-        namespace: PrivacyNamespace,
-        caller: Option<CallerSensitivity>,
-        spans: &[PrivacySpan],
-    ) -> PrivacyResult<PrivacyTier> {
-        Self::resolve(namespace, caller, spans).map(|decision| decision.tier)
-    }
 }
 
 fn storage_action_for_tier(tier: PrivacyTier) -> PrivacyStorageAction {

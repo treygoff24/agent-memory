@@ -5,9 +5,9 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+use crate::cas::hash_bytes;
 use crate::error::{ValidationError, WriteFailure, WriteFailureKind};
 use crate::frontmatter::{parse_document, serialize_document};
-use crate::markdown::cas::hash_bytes;
 use crate::model::{DurabilityTier, Memory, OperationId, RepoPath, Sha256, WriteMode, WriteOutcome};
 use crate::watcher::SuppressionLedger;
 

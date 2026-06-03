@@ -1,4 +1,4 @@
-import type { ShellStatus } from './Shell';
+import type { ShellStatus } from './types';
 
 import { StatusDot } from '../ui';
 
