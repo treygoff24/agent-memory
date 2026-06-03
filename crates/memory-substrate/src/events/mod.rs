@@ -11,4 +11,6 @@ pub use log::{
     rewrite_events, CommitOutcome, Event, EventKind, EventLogError, EVENT_SCHEMA_VERSION,
 };
 pub use recovery::recover_event_log;
-pub(crate) use sequence::{reserve_event_sequence, stamp_event_sequence, sync_event_sequence_state};
+pub(crate) use sequence::{
+    ensure_event_sequence_state, reserve_event_sequence, stamp_event_sequence, sync_event_sequence_state,
+};

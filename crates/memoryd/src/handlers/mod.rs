@@ -32,10 +32,10 @@ use memory_source::{capture_web_source, ArtifactStore, CaptureMode, CaptureWebSo
 use memory_substrate::{
     events::EventKind, Author, AuthorKind, ChunkQuery, ClassificationOutcome, EncryptedSubstrateDescriptor,
     EncryptedWriteRequest, Entity, EventContext, Evidence, Frontmatter, IndexProjection, Memory, MemoryContent,
-    MemoryId, MemoryQuery, MemoryStatus, MemoryType, ObserveKind, PrivacySpanRecord, RecallIndexQuery, RepoPath,
-    RetrievalPolicy, Scope, Sensitivity, Source, SourceKind, Substrate, SubstrateFragmentAppendRequest,
-    SubstrateFragmentEncryption, SubstrateFragmentPayload, SupersedeRequest as SubstrateSupersedeRequest,
-    TombstoneRequest, TrustLevel, WriteMode, WritePolicy, WriteRequest as SubstrateWriteRequest,
+    MemoryId, MemoryQuery, MemoryStatus, MemoryType, ObserveKind, PrivacySpanRecord, RepoPath, RetrievalPolicy, Scope,
+    Sensitivity, Source, SourceKind, Substrate, SubstrateFragmentAppendRequest, SubstrateFragmentEncryption,
+    SubstrateFragmentPayload, SupersedeRequest as SubstrateSupersedeRequest, TombstoneRequest, TrustLevel, WriteMode,
+    WritePolicy, WriteRequest as SubstrateWriteRequest,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -345,30 +345,28 @@ async fn inspect_entities_response(
     limit: Option<usize>,
     prefix: Option<String>,
 ) -> Result<ResponsePayload, HandlerError> {
-    let rows = substrate
-        .query_recall_index_including_metadata_only(RecallIndexQuery::default())
-        .await
-        .map_err(HandlerError::substrate)?;
+    // Read only the entity tables (id-ordered), instead of loading and fully
+    // hydrating every recall-index row. Same iteration order as the prior
+    // `for row { for entity in row.entities }`, so aggregation is identical.
+    let entity_rows = substrate.entity_index_rows().map_err(HandlerError::substrate)?;
     let prefix = prefix.map(|value| value.to_ascii_lowercase());
     let mut by_id: BTreeMap<String, EntitySummary> = BTreeMap::new();
-    for row in rows {
-        for entity in row.entities {
-            if prefix.as_ref().is_some_and(|prefix| !entity_matches_prefix(&entity, prefix)) {
-                continue;
-            }
-            let entry = by_id.entry(entity.id.clone()).or_insert_with(|| EntitySummary {
-                entity_id: entity.id.clone(),
-                label: entity.label.clone(),
-                aliases: Vec::new(),
-                memory_count: 0,
-                recent_memory_ids: Vec::new(),
-            });
-            entry.memory_count += 1;
-            entry.recent_memory_ids.push(row.id.clone());
-            for alias in entity.aliases {
-                if !entry.aliases.contains(&alias) {
-                    entry.aliases.push(alias);
-                }
+    for (memory_id, entity) in entity_rows {
+        if prefix.as_ref().is_some_and(|prefix| !entity_matches_prefix(&entity, prefix)) {
+            continue;
+        }
+        let entry = by_id.entry(entity.id.clone()).or_insert_with(|| EntitySummary {
+            entity_id: entity.id.clone(),
+            label: entity.label.clone(),
+            aliases: Vec::new(),
+            memory_count: 0,
+            recent_memory_ids: Vec::new(),
+        });
+        entry.memory_count += 1;
+        entry.recent_memory_ids.push(memory_id);
+        for alias in entity.aliases {
+            if !entry.aliases.contains(&alias) {
+                entry.aliases.push(alias);
             }
         }
     }
@@ -392,25 +390,24 @@ fn events_log_page_response(
     limit: usize,
     kind_filter: Option<Vec<EventKind>>,
 ) -> Result<ResponsePayload, HandlerError> {
-    let filter_labels = kind_filter.map(|kinds| kinds.iter().map(event_kind_label).collect::<HashSet<_>>());
-    let mut entries = substrate
-        .events()
+    // Push the kind filter, cursor, ORDER BY, and LIMIT into the events_log
+    // mirror so a page costs an index seek + <=200 rows, not a full JSONL parse.
+    let limit = limit.min(200);
+    let filter_labels = kind_filter.map(|kinds| kinds.iter().map(|kind| event_kind_label(kind)).collect::<Vec<_>>());
+    let entries = substrate
+        .events_log_page(filter_labels.as_deref(), since.as_ref().map(|cursor| cursor.as_str()), limit)
         .map_err(HandlerError::substrate)?
         .into_iter()
-        .filter(|event| since.as_ref().is_none_or(|cursor| event.id.as_str() > cursor.as_str()))
-        .filter(|event| filter_labels.as_ref().is_none_or(|labels| labels.contains(event_kind_label(&event.kind))))
         .map(|event| EventLogEntry {
-            event_id: event.id,
+            event_id: event.event_id,
             ts: event.at,
-            device: event.device.to_string(),
+            device: event.device,
             seq: event.seq,
             memory_id: memory_id_from_event_kind(&event.kind),
             summary: event_kind_summary(&event.kind),
             kind: event.kind,
         })
         .collect::<Vec<_>>();
-    entries.sort_by(|left, right| right.ts.cmp(&left.ts).then_with(|| right.seq.cmp(&left.seq)));
-    entries.truncate(limit.min(200));
     let next_since = entries.last().map(|entry| entry.event_id.clone());
     Ok(ResponsePayload::EventsLogPage(EventsLogPageResponse { entries, next_since }))
 }
@@ -422,17 +419,16 @@ async fn namespace_tree_response(
 ) -> Result<ResponsePayload, HandlerError> {
     let root = root.unwrap_or_else(|| "all".to_string());
     let include_children = depth.unwrap_or(1) > 0;
-    let rows = substrate
-        .query_recall_index_including_metadata_only(RecallIndexQuery::default())
-        .await
-        .map_err(HandlerError::substrate)?;
+    // Aggregate scope/namespace counts in SQL (GROUP BY) instead of loading and
+    // fully hydrating every recall-index row only to count namespaces in Rust.
+    let namespace_counts = substrate.namespace_counts().map_err(HandlerError::substrate)?;
     let mut counts = BTreeMap::<String, usize>::new();
-    for row in rows {
-        let namespace = namespace_for_row(&row);
+    for (scope, canonical_namespace_id, count) in namespace_counts {
+        let namespace = namespace_label(scope, canonical_namespace_id.as_deref());
         if root != "all" && !namespace.starts_with(&root) {
             continue;
         }
-        *counts.entry(namespace).or_default() += 1;
+        *counts.entry(namespace).or_default() += count as usize;
     }
     let children = if include_children {
         counts
@@ -517,13 +513,13 @@ async fn conflicts_list_response(substrate: &Substrate, limit: Option<usize>) ->
     Ok(ResponsePayload::ConflictsList(ConflictsListResponse { conflicts }))
 }
 
-fn namespace_for_row(row: &memory_substrate::RecallIndexRow) -> String {
-    match row.scope {
+fn namespace_label(scope: Scope, canonical_namespace_id: Option<&str>) -> String {
+    match scope {
         Scope::User => "me".to_string(),
         Scope::Agent => "agent".to_string(),
         Scope::Subagent => "subagent".to_string(),
-        Scope::Project => format!("project:{}", row.canonical_namespace_id.as_deref().unwrap_or("unknown")),
-        Scope::Org => format!("org:{}", row.canonical_namespace_id.as_deref().unwrap_or("unknown")),
+        Scope::Project => format!("project:{}", canonical_namespace_id.unwrap_or("unknown")),
+        Scope::Org => format!("org:{}", canonical_namespace_id.unwrap_or("unknown")),
     }
 }
 

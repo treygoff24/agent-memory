@@ -132,9 +132,21 @@ impl Substrate {
         // only that file. Encrypted records are not returned by the legacy
         // `Memory` shape, so skip an index hit that resolves under `encrypted/`
         // and fall through to the disk-walk's plaintext-only semantics.
+        //
+        // A stale index must not change the answer: if the resolved path is gone
+        // (`NotFound`) or holds a *different* id than requested (the index row is
+        // stale relative to disk), fall through to the disk-walk so the id is
+        // still found at its current path and a truly absent id yields
+        // `NotFound` — identical to the pre-index-first disk-walk semantics. Only
+        // a genuine read error (not a stale-index signal) propagates.
         if let Some(path) = self.resolve_memory_id_to_path_opt(id) {
             if !path.as_str().starts_with("encrypted/") {
-                return read_memory_file(&self.roots.repo, &path);
+                match read_memory_file(&self.roots.repo, &path) {
+                    Ok((memory, hash)) if &memory.frontmatter.id == id => return Ok((memory, hash)),
+                    Ok(_) => {} // stale index: path holds a different id — fall through to the disk-walk
+                    Err(ReadError::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {} // stale index: file gone
+                    Err(other) => return Err(other),
+                }
             }
         }
         // Disk-walk fallback for the empty/unindexed case. Preserves the legacy
@@ -246,12 +258,24 @@ impl Substrate {
     /// so callers with their own disk-walk fallback can branch on it.
     fn resolve_memory_id_to_path_opt(&self, id: &MemoryId) -> Option<RepoPath> {
         let query = MemoryQuery { id: Some(id.clone()), include_metadata_only: true, ..MemoryQuery::default() };
-        self.index
-            .lock()
-            .ok()
-            .and_then(|guard| guard.query_memory(&query).ok())
-            .and_then(|rows| rows.into_iter().next())
-            .map(|hit| hit.path)
+        // A poisoned lock or a failed lookup is index *unavailability*, not "id
+        // absent": both degrade the read to the O(n) disk-walk fallback. That is
+        // correct but a silent perf cliff, so log it. A successful lookup that
+        // returns no row is the normal "not indexed yet" case and stays quiet.
+        let guard = match self.index.lock() {
+            Ok(guard) => guard,
+            Err(_poisoned) => {
+                tracing::warn!(memory_id = id.as_str(), "index mutex poisoned; degrading read to disk-walk");
+                return None;
+            }
+        };
+        match guard.query_memory(&query) {
+            Ok(rows) => rows.into_iter().next().map(|hit| hit.path),
+            Err(err) => {
+                tracing::warn!(memory_id = id.as_str(), error = %err, "index lookup failed; degrading read to disk-walk");
+                None
+            }
+        }
     }
 
     fn resolve_memory_id_to_path(&self, id: &MemoryId) -> Result<RepoPath, ReadError> {
@@ -1301,10 +1325,11 @@ impl Substrate {
         since_event_id: Option<&str>,
         limit: usize,
     ) -> SubstrateResult<Vec<crate::index::MirrorEvent>> {
-        self.index
-            .lock()
-            .map_err(|err| OpenError::InvalidRoots(err.to_string()))?
-            .events_log_page(kind_labels, since_event_id, limit)
+        self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.events_log_page(
+            kind_labels,
+            since_event_id,
+            limit,
+        )
     }
 
     /// Read events from the derived SQLite mirror within a time window, optionally
@@ -1462,16 +1487,36 @@ impl Substrate {
             .map_err(Into::into)
     }
 
+    /// Guard the persisted event-sequence state before a best-effort append.
+    ///
+    /// In the durable tiers every event is allocated through
+    /// [`reserve_event_sequence`], so a cheap "state file exists/valid" guard
+    /// ([`ensure_event_sequence_state`]) is sufficient — the authoritative
+    /// high-water reconcile happened at substrate open and `reserve` keeps
+    /// `event-seq.json` monotonic thereafter.
+    ///
+    /// `DurabilityTier::BestEffort` is the exception: there [`Self::record_event`]
+    /// allocates from the in-memory `best_effort_event_seq` counter and appends
+    /// seqs that `event-seq.json` does not track, so a cheap guard would let a
+    /// later `reserve` reuse a seq the atomic-counter path already wrote. In that
+    /// tier we keep the pre-refactor full-log high-water reconcile
+    /// ([`sync_event_sequence_state`]) so the two allocators stay disjoint. The
+    /// full-log scan is confined to this degraded tier; the hot path in the
+    /// durable tiers stays scan-free.
+    fn guard_event_sequence_state(&self, device: &DeviceId) -> std::io::Result<()> {
+        if matches!(self.durability, DurabilityTier::BestEffort) {
+            sync_event_sequence_state(&self.roots.runtime, &self.event_log, device)
+        } else {
+            ensure_event_sequence_state(&self.roots.runtime, &self.event_log, device)
+        }
+    }
+
     /// Record a best-effort observability event through Stream A's central
     /// sequence allocator and incremental SQLite mirror path.
     pub fn record_event_best_effort(&self, kind: EventKind) -> std::io::Result<()> {
         let device = DeviceId::try_new(&self.device_id)
             .map_err(|err| std::io::Error::other(format!("invalid device_id in Substrate: {err}")))?;
-        // Steady-state guard: only materializes/recovers `event-seq.json`; the
-        // authoritative high-water reconcile happened at substrate open. The
-        // prior `sync_event_sequence_state` here re-parsed the entire JSONL log
-        // on every append (a full-log scan on the hottest path in the system).
-        ensure_event_sequence_state(&self.roots.runtime, &self.event_log, &device)?;
+        self.guard_event_sequence_state(&device)?;
         let event = self.build_recorded_event(kind, &new_operation_id())?;
         self.best_effort_event_seq.fetch_max(event.seq.saturating_add(1), Ordering::Relaxed);
         self.append_event_and_mirror(&event, true)
@@ -1501,17 +1546,12 @@ impl Substrate {
                 // unchanged versus the prior per-id loop.
                 return ids
                     .iter()
-                    .map(|id| {
-                        (id.clone(), std::io::Error::new(error.kind(), error.to_string()))
-                    })
+                    .map(|id| (id.clone(), std::io::Error::new(error.kind(), error.to_string())))
                     .collect();
             }
         };
-        if let Err(err) = ensure_event_sequence_state(&self.roots.runtime, &self.event_log, &device) {
-            return ids
-                .iter()
-                .map(|id| (id.clone(), std::io::Error::new(err.kind(), err.to_string())))
-                .collect();
+        if let Err(err) = self.guard_event_sequence_state(&device) {
+            return ids.iter().map(|id| (id.clone(), std::io::Error::new(err.kind(), err.to_string()))).collect();
         }
         let mut failures = Vec::new();
         let recalled_at = Utc::now();

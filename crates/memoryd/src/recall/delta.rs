@@ -8,13 +8,14 @@ use memorum_coordination::{
     PeerWriteCandidate, PresenceRegistry, RelevanceGate, SessionContext,
 };
 use memory_privacy::{safe_plaintext_fragment, DeterministicPrivacyClassifier, SafeFragmentDecision};
-use memory_substrate::{ChunkQuery, MemoryStatus, RecallIndexQuery, RecallIndexRow, Scope, Substrate};
+use memory_substrate::{AuxScope, ChunkQuery, MemoryStatus, RecallIndexQuery, RecallIndexRow, Scope, Substrate};
 
 use crate::recall::error::RecallError;
 use crate::recall::render::escape_xml_text;
 use crate::recall::render::{emit_recall_hits, render_delta_frame, DeltaRecallItem};
 use crate::recall::source_identity::{
-    effective_coordination_level, is_peer_write_row, local_device_id, peer_source_identity,
+    effective_coordination_level, hydrate_peer_candidate_entities, is_peer_write_row, local_device_id,
+    peer_source_identity,
 };
 use crate::recall::types::{
     DeltaPeerDelivery, DeltaRequest, DeltaResponse, SessionBinding, DEFAULT_DELTA_BUDGET_TOKENS,
@@ -129,7 +130,7 @@ async fn build_delta_coordination(
     }
     let mut insertion = RelevanceGate::new(context.config.clone()).evaluate(
         &mut session,
-        &peer_write_candidates(substrate, session_binding, &rows).await,
+        &peer_write_candidates(session_binding, rows),
         now,
     );
     attach_claim_locks(&mut insertion.peer_updates, context.claim_locks);
@@ -151,6 +152,10 @@ async fn delta_peer_candidate_rows(
     let local_device_id = local_device_id(substrate)?;
     let mut rows = Vec::new();
     for namespace_prefix in &session_binding.namespaces_in_scope {
+        // Fetch scalar-only: the device + `is_peer_write_row` filters key on
+        // base-row fields, and only the surviving peer-write subset feeds the
+        // relevance gate that reads `row.entities`. Entities are hydrated below
+        // over just the survivors instead of every fetched row.
         rows.extend(
             substrate
                 .query_recall_index(RecallIndexQuery {
@@ -159,6 +164,7 @@ async fn delta_peer_candidate_rows(
                     passive_recall_only: true,
                     updated_since: None,
                     match_terms: Vec::new(),
+                    hydrate: AuxScope::None,
                 })
                 .await
                 .map_err(|error| RecallError::substrate_error(error.to_string()))?
@@ -169,6 +175,7 @@ async fn delta_peer_candidate_rows(
     }
     rows.sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
     rows.dedup_by(|left, right| left.id == right.id);
+    hydrate_peer_candidate_entities(substrate, &mut rows).await?;
     Ok(rows)
 }
 
@@ -224,24 +231,22 @@ fn normalized_non_empty(value: &str) -> Option<String> {
     (!trimmed.is_empty()).then_some(trimmed)
 }
 
-async fn peer_write_candidates(
-    substrate: &Substrate,
-    session_binding: &SessionBinding,
-    rows: &[RecallIndexRow],
-) -> Vec<PeerWriteCandidate> {
+fn peer_write_candidates(session_binding: &SessionBinding, rows: Vec<RecallIndexRow>) -> Vec<PeerWriteCandidate> {
     let mut candidates = Vec::new();
+    // Consume the already-filtered rows by value so each surviving row moves
+    // into its `PeerWriteCandidate` rather than being deep-cloned.
     for row in rows {
-        let identity = peer_source_identity(substrate, row).await;
+        let identity = peer_source_identity(&row);
         if identity.matches_session(session_binding) {
             continue;
         }
         candidates.push(PeerWriteCandidate {
             memory_id: row.id.clone(),
-            row: row.clone(),
             paths: vec![row.path.as_str().to_owned()],
             harness: identity.harness,
             session_id: identity.session_id,
-            namespace: namespace_for_row(row),
+            namespace: namespace_for_row(&row),
+            row,
             embedding: None,
         });
     }

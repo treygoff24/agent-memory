@@ -1225,6 +1225,28 @@ pub struct QueryResult {
     pub summary: String,
 }
 
+/// Which auxiliary-table fields a recall-index query hydrates onto each row.
+///
+/// Hydration costs one batched `IN (...)` scan per category (tags, aliases,
+/// entities, entity-aliases). Most callers read only the scalar projection from
+/// the `memories` row and pay for hydration they discard, so the query carries
+/// an explicit scope. Variants are cumulative in cost: `Entities` reads the two
+/// entity tables, `All` additionally reads tags and aliases. `All` is the
+/// default so unset queries keep the historical fully-hydrated behavior.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuxScope {
+    /// Hydrate no auxiliary tables. `tags`/`aliases`/`entities` stay empty.
+    None,
+    /// Hydrate only `entities` (with their aliases); leave tags/aliases empty.
+    Entities,
+    /// Hydrate only `tags`; leave aliases/entities empty.
+    Tags,
+    /// Hydrate tags, aliases, and entities (the historical default).
+    #[default]
+    All,
+}
+
 /// Read-only query over Stream A's derived recall index.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RecallIndexQuery {
@@ -1238,6 +1260,8 @@ pub struct RecallIndexQuery {
     pub updated_since: Option<DateTime<Utc>>,
     /// Optional exact/case-insensitive terms matched against tags, aliases, entities, and entity aliases.
     pub match_terms: Vec<String>,
+    /// Which auxiliary-table fields to hydrate onto each returned row.
+    pub hydrate: AuxScope,
 }
 
 /// Stream E recall-index row projected from SQLite index and auxiliary tables.
@@ -1267,6 +1291,17 @@ pub struct RecallIndexRow {
     pub source_kind: SourceKind,
     /// Device id that authored the most recent write, when known.
     pub source_device: Option<String>,
+    /// `source.harness` projected from indexed frontmatter, when present.
+    ///
+    /// Stream I peer-write attribution reads harness/session identity directly
+    /// from the recall index instead of re-reading the canonical file.
+    pub source_harness: Option<String>,
+    /// `source.session_id` projected from indexed frontmatter, when present.
+    pub source_session_id: Option<String>,
+    /// `author.harness` projected from indexed frontmatter, when present.
+    pub author_harness: Option<String>,
+    /// `author.session_id` projected from indexed frontmatter, when present.
+    pub author_session_id: Option<String>,
     /// Sensitivity classification.
     pub sensitivity: Sensitivity,
     /// Indexed retrieval_policy.passive_recall value.

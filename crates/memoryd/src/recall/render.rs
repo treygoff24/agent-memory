@@ -121,11 +121,11 @@ pub(crate) fn emit_recall_hits<'a>(substrate: &Substrate, included_memory_ids: i
         return;
     }
 
-    for id in ids {
-        let memory_id = id.to_string();
-        if let Err(error) = substrate.record_recall_hit(id) {
-            warn_recall_hit(format_args!("RecallHit event append failed for {memory_id}: {error}"));
-        }
+    // One batch append: the sequence-state guard runs once for the whole set
+    // instead of once per id. Per-id failures are returned and logged exactly as
+    // the prior loop did.
+    for (memory_id, error) in substrate.record_recall_hits(&ids) {
+        warn_recall_hit(format_args!("RecallHit event append failed for {memory_id}: {error}"));
     }
 }
 

@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{Duration, Utc};
-use memory_substrate::{events::EventKind, MemoryStatus, RecallIndexQuery, RecallIndexRow, Substrate};
+use memory_substrate::{
+    events::EventKind, AuxScope, MemoryStatus, MirrorEvent, RecallIndexQuery, RecallIndexRow, Substrate,
+};
 
 use crate::protocol::{DashboardRoiResponse, DreamingRoiSummary, RealityCheckAdherenceSummary};
 
@@ -10,12 +12,25 @@ pub async fn dashboard_roi(substrate: &Substrate, window_days: u16) -> Result<Da
     let rows = substrate
         .query_recall_index_including_metadata_only(RecallIndexQuery {
             updated_since: Some(since),
+            // ROI aggregation reads only scalar fields plus `row.tags` (to flag
+            // dreaming rows); aliases and entities are never read, so skip them.
+            hydrate: AuxScope::Tags,
             ..RecallIndexQuery::default()
         })
         .await
         .map_err(|error| error.to_string())?;
-    let events = substrate.events().map_err(|error| error.to_string())?;
-    let events = events.into_iter().filter(|event| event.at >= since).collect::<Vec<_>>();
+    // Only these kinds feed the ROI aggregates; pushing the kind set + time
+    // window into the events_log mirror avoids materializing every event
+    // (including payloads) and the full JSONL parse.
+    const ROI_EVENT_KINDS: &[&str] = &[
+        "write_committed",
+        "encrypted_write_committed",
+        "write_refused",
+        "reality_check_confirmed",
+        "reality_check_forgotten",
+        "reality_check_not_relevant",
+    ];
+    let events = substrate.events_log_window(Some(ROI_EVENT_KINDS), since).map_err(|error| error.to_string())?;
 
     let promoted_memories = count_rows_with_status(&rows, &[MemoryStatus::Active, MemoryStatus::Pinned]);
     let review_memories = count_rows_with_status(&rows, &[MemoryStatus::Candidate, MemoryStatus::Quarantined]);
@@ -61,7 +76,7 @@ fn write_event_memory_id(kind: &EventKind) -> Option<&memory_substrate::MemoryId
     }
 }
 
-fn refusal_breakdown(events: &[memory_substrate::events::Event]) -> BTreeMap<String, u32> {
+fn refusal_breakdown(events: &[MirrorEvent]) -> BTreeMap<String, u32> {
     let mut breakdown = BTreeMap::new();
     for event in events {
         if let EventKind::WriteRefused { reason, .. } = &event.kind {
@@ -95,7 +110,7 @@ fn is_dreaming_row(row: &RecallIndexRow) -> bool {
     row.tags.iter().any(|tag| tag == "dreaming") || row.path.as_str().starts_with("dreams/")
 }
 
-fn reality_check_adherence(events: &[memory_substrate::events::Event]) -> RealityCheckAdherenceSummary {
+fn reality_check_adherence(events: &[MirrorEvent]) -> RealityCheckAdherenceSummary {
     let mut completed_sessions = BTreeSet::new();
     for event in events {
         match &event.kind {

@@ -7,7 +7,7 @@ use chrono::{DateTime, Duration, Utc};
 use memorum_coordination::{
     CoordinationConfig, CoordinationInsertion, PeerUpdateEntry, PeerWriteCandidate, RelevanceGate, SessionContext,
 };
-use memory_substrate::{MemoryStatus, RecallIndexQuery, RecallIndexRow, Scope, Substrate, SubstrateError};
+use memory_substrate::{AuxScope, MemoryStatus, RecallIndexQuery, RecallIndexRow, Scope, Substrate, SubstrateError};
 
 use crate::reality_check::RcScheduler;
 use crate::recall::budget::estimated_tokens;
@@ -21,7 +21,8 @@ use crate::recall::render::{
     StartupCoordinationRender,
 };
 use crate::recall::source_identity::{
-    effective_coordination_level, is_peer_write_row, local_device_id, peer_source_identity,
+    effective_coordination_level, hydrate_peer_candidate_entities, is_peer_write_row, local_device_id,
+    peer_source_identity,
 };
 use crate::recall::types::{
     bounded_omissions, RecallExplanation, RecallSectionExplanation, RecallSectionName, SessionBinding, StartupRequest,
@@ -192,16 +193,17 @@ fn startup_updated_since_from_event(substrate: &Substrate, since_event_id: Optio
     if since_event_id.is_empty() {
         return None;
     }
-    match substrate.events() {
-        Ok(events) => match events.into_iter().find(|event| event.id.as_str() == since_event_id) {
-            Some(event) => Some(event.at),
-            None => {
-                tracing::warn!(since_event_id, "startup since_event_id not found; falling back to full startup recall");
-                None
-            }
-        },
+    // Look the cursor up by primary key in the SQLite events_log mirror instead
+    // of parsing the entire canonical JSONL log to recover one timestamp. Misses
+    // fall back to a full startup recall exactly as before.
+    match substrate.event_ts_by_id(since_event_id) {
+        Ok(Some(at)) => Some(at),
+        Ok(None) => {
+            tracing::warn!(since_event_id, "startup since_event_id not found; falling back to full startup recall");
+            None
+        }
         Err(error) => {
-            tracing::warn!(since_event_id, %error, "failed to read startup event log; falling back to full startup recall");
+            tracing::warn!(since_event_id, %error, "failed to read startup event mirror; falling back to full startup recall");
             None
         }
     }
@@ -234,14 +236,9 @@ async fn startup_peer_updates(
         .partition(|row| row.source_device.as_deref().is_none_or(|device_id| device_id == local_device_id));
 
     let now = Utc::now();
-    let evaluation = PeerUpdateEvaluation {
-        substrate,
-        session_binding,
-        now,
-        base_config: config,
-        startup_context: &startup_context,
-    };
-    let same_device = same_device_updates(&evaluation, &same_device_rows).await;
+    let evaluation =
+        PeerUpdateEvaluation { session_binding, now, base_config: config, startup_context: &startup_context };
+    let same_device = same_device_updates(&evaluation, same_device_rows).await;
 
     // I-R5: share the cool-down set across both passes. Peer-write ids surfaced
     // in the same-device pass must not be surfaced again in the cross-device
@@ -250,7 +247,7 @@ async fn startup_peer_updates(
     // startup_context clone used by the cross-device pass with them, so the
     // relevance gate's cool-down check suppresses duplicates.
     let same_device_surfaced = surfaced_peer_update_references(same_device.as_ref());
-    let cross_device = cross_device_updates(&evaluation, &cross_device_rows, same_device_surfaced).await;
+    let cross_device = cross_device_updates(&evaluation, cross_device_rows, same_device_surfaced).await;
 
     Ok(StartupPeerUpdates { same_device, cross_device })
 }
@@ -265,6 +262,10 @@ async fn startup_peer_candidate_rows(
     substrate: &Substrate,
     session_binding: &SessionBinding,
 ) -> Result<Vec<RecallIndexRow>, RecallError> {
+    // Fetch scalar-only: `is_peer_write_row`/scope filters key on base-row
+    // fields, and only the surviving peer-write subset feeds the relevance gate
+    // that reads `row.entities`. Hydrate entities afterward over just the
+    // survivors instead of every Active row.
     let mut rows = substrate
         .query_recall_index(RecallIndexQuery {
             namespace_prefix: None,
@@ -272,6 +273,7 @@ async fn startup_peer_candidate_rows(
             passive_recall_only: false,
             updated_since: None,
             match_terms: Vec::new(),
+            hydrate: AuxScope::None,
         })
         .await
         .map_err(map_substrate_error)?
@@ -281,6 +283,7 @@ async fn startup_peer_candidate_rows(
         .collect::<Vec<_>>();
     rows.sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
     rows.dedup_by(|left, right| left.id == right.id);
+    hydrate_peer_candidate_entities(substrate, &mut rows).await?;
     Ok(rows)
 }
 
@@ -298,7 +301,6 @@ fn row_is_in_startup_scope(row: &RecallIndexRow, session_binding: &SessionBindin
 }
 
 struct PeerUpdateEvaluation<'a> {
-    substrate: &'a Substrate,
     session_binding: &'a SessionBinding,
     now: DateTime<Utc>,
     base_config: &'a CoordinationConfig,
@@ -307,21 +309,21 @@ struct PeerUpdateEvaluation<'a> {
 
 async fn same_device_updates(
     evaluation: &PeerUpdateEvaluation<'_>,
-    rows: &[RecallIndexRow],
+    rows: Vec<RecallIndexRow>,
 ) -> Option<CoordinationInsertion> {
     let mut config = evaluation.base_config.clone();
     config.relevance_gate.per_turn_cap = STARTUP_PEER_UPDATE_CAP;
     let recency_cutoff = recency_cutoff(evaluation.now, config.relevance_gate.recency_window_seconds);
-    let rows = rows.iter().filter(|row| row.indexed_at >= recency_cutoff).cloned().collect::<Vec<_>>();
+    let rows = rows.into_iter().filter(|row| row.indexed_at >= recency_cutoff).collect::<Vec<_>>();
     let mut session = evaluation.startup_context.clone();
-    let candidates = peer_write_candidates(evaluation.substrate, evaluation.session_binding, &rows).await;
+    let candidates = peer_write_candidates(evaluation.session_binding, rows);
     let insertion = RelevanceGate::new(config).evaluate(&mut session, &candidates, evaluation.now);
     non_empty_insertion(insertion)
 }
 
 async fn cross_device_updates(
     evaluation: &PeerUpdateEvaluation<'_>,
-    rows: &[RecallIndexRow],
+    rows: Vec<RecallIndexRow>,
     // I-R5: peer-write ids already surfaced in the same-device pass. These are
     // pre-seeded into the session clone's `surfaced_peer_writes` set so the
     // relevance gate's cool-down check suppresses any id that already appeared
@@ -338,13 +340,13 @@ async fn cross_device_updates(
     config.relevance_gate.per_turn_cap = STARTUP_PEER_UPDATE_CAP;
 
     let recency_cutoff = recency_cutoff(evaluation.now, config.relevance_gate.recency_window_seconds);
-    let rows = rows.iter().filter(|row| row.indexed_at >= recency_cutoff).cloned().collect::<Vec<_>>();
+    let rows = rows.into_iter().filter(|row| row.indexed_at >= recency_cutoff).collect::<Vec<_>>();
     let mut session = evaluation.startup_context.clone();
     // Seed the cool-down set with ids surfaced in the same-device pass.
     for id in already_surfaced {
         session.record_surfaced_peer_write(id);
     }
-    let candidates = peer_write_candidates(evaluation.substrate, evaluation.session_binding, &rows).await;
+    let candidates = peer_write_candidates(evaluation.session_binding, rows);
     let insertion = RelevanceGate::new(config).evaluate(&mut session, &candidates, evaluation.now);
     let mut peer_updates = insertion.peer_updates;
     if peer_updates.is_empty() {
@@ -354,7 +356,7 @@ async fn cross_device_updates(
         update.device = Some("other".to_owned());
     }
 
-    Some(CrossDeviceStartupUpdates { from_sync_date: from_sync_date(&rows, &peer_updates), peer_updates })
+    Some(CrossDeviceStartupUpdates { from_sync_date: from_sync_date(&candidates, &peer_updates), peer_updates })
 }
 
 fn recency_cutoff(now: DateTime<Utc>, seconds: u64) -> DateTime<Utc> {
@@ -412,18 +414,16 @@ fn startup_salient_entities(
     entities
 }
 
-async fn peer_write_candidates(
-    substrate: &Substrate,
-    session_binding: &SessionBinding,
-    rows: &[RecallIndexRow],
-) -> Vec<PeerWriteCandidate> {
+fn peer_write_candidates(session_binding: &SessionBinding, rows: Vec<RecallIndexRow>) -> Vec<PeerWriteCandidate> {
     let mut candidates = Vec::new();
+    // Consume the already-filtered rows by value: each surviving row moves into
+    // its `PeerWriteCandidate` rather than being deep-cloned (including its
+    // `Vec<Entity>`) a second time.
     for row in rows {
-        let identity = peer_source_identity(substrate, row).await;
+        let identity = peer_source_identity(&row);
         if identity.matches_session(session_binding) {
             continue;
         }
-        let row = row.clone();
         candidates.push(PeerWriteCandidate {
             memory_id: row.id.clone(),
             paths: candidate_paths(&row),
@@ -464,11 +464,12 @@ fn namespace_for_row(row: &RecallIndexRow) -> String {
     }
 }
 
-fn from_sync_date(rows: &[RecallIndexRow], peer_updates: &[PeerUpdateEntry]) -> String {
+fn from_sync_date(candidates: &[PeerWriteCandidate], peer_updates: &[PeerUpdateEntry]) -> String {
     let selected_ids = peer_updates.iter().map(|update| update.reference.as_str()).collect::<BTreeSet<_>>();
-    rows.iter()
-        .filter(|row| selected_ids.contains(row.id.as_str()))
-        .map(|row| row.indexed_at)
+    candidates
+        .iter()
+        .filter(|candidate| selected_ids.contains(candidate.memory_id.as_str()))
+        .map(|candidate| candidate.row.indexed_at)
         .max()
         .unwrap_or_else(Utc::now)
         .date_naive()
@@ -542,17 +543,20 @@ fn active_entity_ids(selected: &crate::recall::rank::RankedSelection) -> BTreeSe
 async fn count_candidate_attention(substrate: &Substrate, namespace_prefixes: &[String]) -> Result<usize, RecallError> {
     let mut total = 0usize;
     for namespace_prefix in namespace_prefixes {
-        let rows = substrate
-            .query_recall_index(RecallIndexQuery {
+        // This caller needs only the count, not the rows. Use the index-only
+        // `COUNT(*)` entrypoint instead of materializing + aux-hydrating every
+        // matching row just to read `rows.len()`.
+        total += substrate
+            .count_recall_index(RecallIndexQuery {
                 namespace_prefix: Some(namespace_prefix.clone()),
                 statuses: vec![MemoryStatus::Candidate, MemoryStatus::Quarantined],
                 passive_recall_only: true,
                 updated_since: None,
                 match_terms: Vec::new(),
+                hydrate: AuxScope::None,
             })
             .await
             .map_err(map_substrate_error)?;
-        total += rows.len();
     }
     Ok(total)
 }

@@ -20,12 +20,44 @@ struct EventSeqState {
     next: u64,
 }
 
-/// Sync the persisted sequence state to the current log high-water mark.
+/// Reconcile the persisted sequence state against the canonical log's high-water
+/// mark. Used at substrate open, where a persisted `event-seq.json` may be stale
+/// relative to the JSONL log (fresh clone, post-merge log, post-compaction log),
+/// so the full-log high-water read is the authoritative recovery step.
 pub(crate) fn sync_event_sequence_state(runtime: &Path, event_log: &Path, device_id: &DeviceId) -> std::io::Result<()> {
     let _lock = lock_sequence_file(runtime)?;
     let path = runtime.join("event-seq.json");
     let mut state = read_state(&path, device_id).unwrap_or_else(|_| fresh_state(device_id));
     state.next = state.next.max(event_seq_high_water(event_log, device_id)?);
+    write_state_atomic(runtime, &path, &state)
+}
+
+/// Ensure the persisted sequence state exists, trusting its `next` on the
+/// steady-state path and only re-deriving the high-water mark from the canonical
+/// log when the persisted state is missing or corrupt.
+///
+/// This is the hot-path counterpart to [`sync_event_sequence_state`]. The
+/// persisted `event-seq.json` is maintained atomically under a file lock by
+/// [`reserve_event_sequence`], so once a substrate has reconciled at open its
+/// `next` is already correct for every subsequent append. Re-reading and
+/// serde-parsing the entire JSONL event log on each append (the
+/// `max(event_seq_high_water(...))` form) is a full-log scan on the hottest path
+/// in the system; here the high-water read is taken only when [`read_state`]
+/// fails (missing/corrupt/wrong-device file).
+pub(crate) fn ensure_event_sequence_state(
+    runtime: &Path,
+    event_log: &Path,
+    device_id: &DeviceId,
+) -> std::io::Result<()> {
+    let _lock = lock_sequence_file(runtime)?;
+    let path = runtime.join("event-seq.json");
+    if read_state(&path, device_id).is_ok() {
+        // Persisted state is present and valid; the file lock + atomic writes in
+        // `reserve_event_sequence` keep its `next` authoritative. No full-log
+        // scan needed.
+        return Ok(());
+    }
+    let state = load_or_recover_state(event_log, &path, device_id)?;
     write_state_atomic(runtime, &path, &state)
 }
 
@@ -101,4 +133,73 @@ fn lock_sequence_file(runtime: &Path) -> std::io::Result<File> {
         OpenOptions::new().create(true).read(true).truncate(false).write(true).open(runtime.join("event-seq.lock"))?;
     lock.lock_exclusive()?;
     Ok(lock)
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::Utc;
+
+    use super::*;
+    use crate::events::{append_event, EventKind};
+    use crate::model::EventId;
+
+    fn event(device: &DeviceId, seq: u64) -> Event {
+        Event {
+            schema: crate::SUBSTRATE_SCHEMA_VERSION,
+            id: EventId::new(format!("evt_{seq}")),
+            at: Utc::now(),
+            device: device.clone(),
+            seq,
+            operation_id: None,
+            kind: EventKind::OperatorRepairRequired { reason: "test".to_string() },
+            crc32c: 0,
+        }
+    }
+
+    fn must<T, E: std::fmt::Display>(result: Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(err) => panic!("{context}: {err}"),
+        }
+    }
+
+    fn write_stale_state(runtime: &Path, device: &DeviceId, next: u64) {
+        let state = EventSeqState { device_id: device.as_str().to_string(), next };
+        let bytes = must(serde_json::to_vec_pretty(&state), "serialize state");
+        must(std::fs::write(runtime.join("event-seq.json"), bytes), "write stale state");
+    }
+
+    // Regression guard for the index-first refactor's BestEffort seq-reuse hazard.
+    // When the canonical per-device log has advanced past a persisted
+    // `event-seq.json` (e.g. BestEffort-tier appends allocated from the in-memory
+    // counter, which `event-seq.json` does not track), `ensure_*` trusts the
+    // stale state, so a later `reserve` would hand back a seq already in the log.
+    // `sync_*` reconciles against the high-water and prevents the reuse — which is
+    // exactly why `Substrate::guard_event_sequence_state` must use `sync_*` in the
+    // BestEffort tier rather than `ensure_*`.
+    #[test]
+    fn sync_reconciles_stale_state_but_ensure_trusts_it() {
+        let temp = must(tempfile::tempdir(), "tempdir");
+        let runtime = temp.path().join("runtime");
+        must(std::fs::create_dir_all(&runtime), "mkdir runtime");
+        let event_log = temp.path().join("events").join("dev_test.jsonl");
+        let device = must(DeviceId::try_new("dev_test"), "device id");
+        let state_path = runtime.join("event-seq.json");
+
+        // Log high-water is 10; persisted state is stale at next=5.
+        for seq in 1..=10 {
+            must(append_event(&event_log, &event(&device, seq)), "append event");
+        }
+        write_stale_state(&runtime, &device, 5);
+
+        // ensure trusts the stale state: next stays 5 (the reuse hazard).
+        must(ensure_event_sequence_state(&runtime, &event_log, &device), "ensure");
+        assert_eq!(must(read_state(&state_path, &device), "read state").next, 5);
+
+        // sync reconciles to high_water + 1 = 11, so the next reserved seq is past
+        // every seq already in the log — no reuse.
+        must(sync_event_sequence_state(&runtime, &event_log, &device), "sync");
+        assert_eq!(must(read_state(&state_path, &device), "read state").next, 11);
+        assert_eq!(must(reserve_event_sequence(&runtime, &event_log, &device), "reserve"), 11);
+    }
 }

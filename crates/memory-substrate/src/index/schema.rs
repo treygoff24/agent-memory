@@ -71,6 +71,13 @@ CREATE TABLE IF NOT EXISTS events_log(
 );
 CREATE INDEX IF NOT EXISTS idx_events_log_kind_memory_ts
   ON events_log(kind, memory_id, ts);
+-- Serves `WHERE kind = ? [AND ts > ?] ORDER BY ts DESC` (recent_recall_hits) and
+-- `MAX(ts) WHERE kind = ?` (latest_ts_for_kind): the (kind, memory_id, ts) index
+-- above cannot order/range on `ts` without a `memory_id` predicate.
+CREATE INDEX IF NOT EXISTS idx_events_log_kind_ts
+  ON events_log(kind, ts);
+CREATE INDEX IF NOT EXISTS idx_events_log_ts
+  ON events_log(ts);
 
 CREATE TABLE IF NOT EXISTS memory_chunks(
   chunk_rowid INTEGER PRIMARY KEY AUTOINCREMENT,

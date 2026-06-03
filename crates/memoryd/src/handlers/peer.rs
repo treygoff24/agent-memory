@@ -156,18 +156,39 @@ async fn conflicting_claim_locks_for_heartbeat(
         return Vec::new();
     }
 
-    let mut locks = Vec::new();
-    for lock in state.claim_locks().active_locks() {
-        if lock.holder_harness == heartbeat.harness && lock.holder_session_id == heartbeat.session_id {
-            continue;
+    // Candidate locks held by *other* sessions; same-session locks never
+    // conflict and are dropped before any index work.
+    let candidate_locks = state
+        .claim_locks()
+        .active_locks()
+        .into_iter()
+        .filter(|lock| !(lock.holder_harness == heartbeat.harness && lock.holder_session_id == heartbeat.session_id))
+        .filter(|lock| MemoryId::try_new(lock.memory_id.clone()).is_ok())
+        .collect::<Vec<_>>();
+    if candidate_locks.is_empty() {
+        return Vec::new();
+    }
+
+    // Resolve the entity/alias sets for every candidate lock in one batched
+    // index query instead of an O(locks x total_memories) file tree-walk.
+    let memory_ids = candidate_locks.iter().map(|lock| lock.memory_id.clone()).collect::<Vec<_>>();
+    let entities_by_memory = match substrate.entities_for_memories(&memory_ids).await {
+        Ok(entities) => entities,
+        Err(err) => {
+            // Index unavailable: entity intersections can't be computed. Reporting
+            // "no conflicts" is fail-open (the peer proceeds unwarned), so surface
+            // the degradation instead of swallowing it silently.
+            tracing::warn!(error = %err, "claim-lock conflict check skipped: entity index unavailable");
+            return Vec::new();
         }
-        let Ok(memory_id) = MemoryId::try_new(lock.memory_id.clone()) else {
+    };
+
+    let mut locks = Vec::new();
+    for lock in candidate_locks {
+        let Some(entities) = entities_by_memory.get(&lock.memory_id) else {
             continue;
         };
-        let Ok(memory) = substrate.read_memory(&memory_id).await else {
-            continue;
-        };
-        let intersects = memory.frontmatter.entities.iter().any(|entity| {
+        let intersects = entities.iter().any(|entity| {
             heartbeat_entities.contains(entity.id.trim().to_ascii_lowercase().as_str())
                 || entity
                     .aliases

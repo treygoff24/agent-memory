@@ -1,8 +1,8 @@
 use memory_substrate::tree::{bootstrap_repo_tree, validate_tree, TreeValidationMode};
 use memory_substrate::{
-    ChunkQuery, ClassificationOutcome, Entity, InitOptions, Memory, MemoryId, MemoryQuery, MemoryStatus, MemoryType,
-    ReadError, RecallIndexQuery, RepoPath, RetrievalPolicy, Roots, Scope, Sensitivity, Source, SourceKind, Substrate,
-    TrustLevel, ValidationError, WriteMode, WriteRequest,
+    AuxScope, ChunkQuery, ClassificationOutcome, Entity, InitOptions, Memory, MemoryId, MemoryQuery, MemoryStatus,
+    MemoryType, ReadError, RecallIndexQuery, RepoPath, RetrievalPolicy, Roots, Scope, Sensitivity, Source, SourceKind,
+    Substrate, TrustLevel, ValidationError, WriteMode, WriteRequest,
 };
 
 #[test]
@@ -72,6 +72,7 @@ async fn daemon_visible_substrate_api_refuses_noncanonical_path_reads_and_query_
             passive_recall_only: true,
             updated_since: None,
             match_terms: vec!["stream-f-isolation".to_string()],
+            hydrate: AuxScope::All,
         })
         .await
         .expect("recall query");

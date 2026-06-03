@@ -41,6 +41,10 @@ fn apply_pragmas(connection: &Connection) -> rusqlite::Result<()> {
     connection.pragma_update(None, "journal_mode", "WAL")?;
     connection.pragma_update(None, "synchronous", "NORMAL")?;
     connection.pragma_update(None, "foreign_keys", "ON")?;
+    // Under WAL, a writer that races the startup reconciler, merge driver, or a
+    // second connection would otherwise hit SQLITE_BUSY and fail immediately.
+    // Wait up to 5s for the lock to clear before erroring.
+    connection.pragma_update(None, "busy_timeout", 5000)?;
     Ok(())
 }
 

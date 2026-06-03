@@ -12,9 +12,9 @@ use memory_privacy::{
     PrivacyStorageAction,
 };
 use memory_substrate::{
-    config::PromptVersion, Author, AuthorKind, ClassificationOutcome, Entity, EventContext, Evidence, Frontmatter,
-    Memory, MemoryStatus, MemoryType, RecallIndexQuery, RepoPath, RetrievalPolicy, Scope, Sensitivity, Source,
-    SourceKind, Substrate, TrustLevel, WriteMode, WritePolicy, WriteRequest,
+    config::PromptVersion, Author, AuthorKind, AuxScope, ClassificationOutcome, Entity, EventContext, Evidence,
+    Frontmatter, Memory, MemoryStatus, MemoryType, RecallIndexQuery, RepoPath, RetrievalPolicy, Scope, Sensitivity,
+    Source, SourceKind, Substrate, TrustLevel, WriteMode, WritePolicy, WriteRequest,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -458,6 +458,9 @@ async fn load_active_memories(
                     passive_recall_only: true,
                     updated_since: None,
                     match_terms: Vec::new(),
+                    // Dream input reads `row.entities` (plus scalar id/summary);
+                    // tags and aliases are never read, so hydrate entities only.
+                    hydrate: AuxScope::Entities,
                 })
                 .await
                 .map_err(|err| DreamError::invalid_request(format!("failed to load active dream memories: {err}")))?,

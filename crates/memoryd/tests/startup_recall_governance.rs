@@ -106,21 +106,18 @@ async fn collection_queries_stream_a_recall_index_without_envelope_hydration() {
 
     assert_eq!(index.envelope_reads, 0, "collection must not hydrate envelopes while enumerating candidates");
     let queries = index.queries.lock().expect("recorded queries lock not poisoned");
-    assert_eq!(queries.len(), 4);
+    // One merged query per namespace prefix: Active+Pinned are passed together
+    // in a single `statuses` list rather than split across two queries.
+    assert_eq!(queries.len(), 2);
     assert_eq!(
         queries.iter().map(|query| query.namespace_prefix.as_deref()).collect::<Vec<_>>(),
-        vec![Some("me"), Some("me"), Some("project:proj_agent_memory"), Some("project:proj_agent_memory")]
+        vec![Some("me"), Some("project:proj_agent_memory")]
     );
     assert!(queries.iter().all(|query| query.passive_recall_only));
     assert!(queries.iter().all(|query| query.updated_since == Some(updated_since)));
     assert_eq!(
         queries.iter().map(|query| query.statuses.as_slice()).collect::<Vec<_>>(),
-        vec![
-            &[MemoryStatus::Active][..],
-            &[MemoryStatus::Pinned][..],
-            &[MemoryStatus::Active][..],
-            &[MemoryStatus::Pinned][..],
-        ]
+        vec![&[MemoryStatus::Active, MemoryStatus::Pinned][..], &[MemoryStatus::Active, MemoryStatus::Pinned][..],]
     );
     assert_eq!(
         collected.facts.iter().map(|candidate| candidate.id.as_str()).collect::<Vec<_>>(),
@@ -192,6 +189,10 @@ fn row(id: &str, status: MemoryStatus) -> RecallIndexRow {
         confidence: 0.7,
         source_kind: SourceKind::User,
         source_device: None,
+        source_harness: None,
+        source_session_id: None,
+        author_harness: None,
+        author_session_id: None,
         sensitivity: Sensitivity::Internal,
         passive_recall: true,
         index_body: true,

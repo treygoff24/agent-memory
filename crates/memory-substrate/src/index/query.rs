@@ -14,8 +14,9 @@ use crate::events::{Event, EventKind};
 use crate::index::chunking::chunk_memory;
 use crate::markdown::hash_bytes;
 use crate::model::{
-    ChunkResult, EmbeddingTriple, EmbeddingUpdate, Entity, EventsLogMirrorHealth, Memory, MemoryId, MemoryQuery,
-    MemoryStatus, QueryResult, RecallIndexQuery, RecallIndexRow, RepoPath, Scope, Sensitivity, Sha256, SourceKind,
+    AuxScope, ChunkResult, EmbeddingTriple, EmbeddingUpdate, Entity, EventsLogMirrorHealth, Memory, MemoryId,
+    MemoryQuery, MemoryStatus, QueryResult, RecallIndexQuery, RecallIndexRow, RepoPath, Scope, Sensitivity, Sha256,
+    SourceKind,
 };
 
 /// Index handle.  Owns a single SQLite connection; all mutating methods take
@@ -329,6 +330,144 @@ impl Index {
         self.query_recall_index_inner(query, true)
     }
 
+    /// Project the entities (with aliases) attached to a set of memory ids in a
+    /// single batched query against `memory_entities`/`memory_entity_aliases`.
+    ///
+    /// Stream I uses this for claim-lock entity-intersection checks without
+    /// re-reading canonical files. Returns a map keyed by memory id; ids absent
+    /// from the index are simply omitted.
+    pub fn entities_for_memories(&self, ids: &[String]) -> SubstrateResult<BTreeMap<String, Vec<Entity>>> {
+        if ids.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        read_entities_by_memory(&self.connection, ids).map_err(Into::into)
+    }
+
+    /// Count memories grouped by lifecycle status in a single index-only scan.
+    ///
+    /// Replaces N separate `query_memory(status=…)` calls that each materialized
+    /// every matching row only to discard all but `rows.len()`. Counts every
+    /// memory regardless of `metadata_only` (matching the prior callers, which
+    /// passed `include_metadata_only: true`). One pair per distinct status.
+    pub fn count_by_status(&self) -> SubstrateResult<Vec<(MemoryStatus, u64)>> {
+        let mut stmt = self.connection.prepare_cached("SELECT status, COUNT(*) FROM memories GROUP BY status")?;
+        let mut rows = stmt.query([])?;
+        let mut counts = Vec::new();
+        while let Some(row) = rows.next()? {
+            let status_text: String = row.get(0)?;
+            let count: i64 = row.get(1)?;
+            counts.push((memory_status_from_str(&status_text)?, count.max(0) as u64));
+        }
+        Ok(counts)
+    }
+
+    /// Recent `recall_hit` events joined to their memory summaries, newest-first.
+    ///
+    /// `since` is applied with a dynamically-appended `AND e.ts > ?` (not the
+    /// index-defeating `(? IS NULL OR …)` form) so the `kind = ? AND ts > ?
+    /// ORDER BY ts DESC` shape rides `idx_events_log_kind_ts` as an ordered range
+    /// seek. Each tuple is `(event_id, device, seq, memory_id, recalled_at, summary)`.
+    #[allow(clippy::type_complexity)]
+    pub fn recent_recall_hits(
+        &self,
+        since: Option<DateTime<Utc>>,
+        limit: usize,
+    ) -> SubstrateResult<Vec<(String, String, i64, String, String, Option<String>)>> {
+        let mut sql = String::from(
+            "SELECT e.event_id, e.device, e.seq, e.memory_id, e.ts, m.summary
+             FROM events_log e
+             LEFT JOIN memories m ON m.id = e.memory_id
+             WHERE e.kind = 'recall_hit'",
+        );
+        let mut bindings: Vec<rusqlite::types::Value> = Vec::new();
+        if let Some(since) = since {
+            sql.push_str(" AND e.ts > ?");
+            bindings.push(rusqlite::types::Value::Text(since.to_rfc3339()));
+        }
+        sql.push_str(" ORDER BY e.ts DESC, e.event_id DESC LIMIT ?");
+        bindings.push(rusqlite::types::Value::Integer(limit as i64));
+
+        let mut stmt = self.connection.prepare_cached(&sql)?;
+        let mut rows = stmt.query(params_from_iter(bindings.iter()))?;
+        let mut hits = Vec::new();
+        while let Some(row) = rows.next()? {
+            hits.push((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, Option<String>>(5)?,
+            ));
+        }
+        Ok(hits)
+    }
+
+    /// Stream every indexed entity (with its aliases) as `(memory_id, Entity)`
+    /// pairs, ordered by `memory_id` then `entity_id`.
+    ///
+    /// Reads only `memory_entities`/`memory_entity_aliases` — no `memories`
+    /// scan, no `json_extract`, no recall-index hydration — for entity-graph
+    /// aggregation that needs nothing from the memory envelope. The ordering
+    /// matches the per-memory hydration the recall index used, so callers that
+    /// aggregate in id order are unaffected.
+    pub fn entity_index_rows(&self) -> SubstrateResult<Vec<(MemoryId, Entity)>> {
+        read_all_entity_rows(&self.connection).map_err(Into::into)
+    }
+
+    /// Count memories grouped by `(scope, canonical_namespace_id)` in a single
+    /// index-only scan, for namespace-tree aggregation.
+    ///
+    /// Counts every memory regardless of `metadata_only` (matching the prior
+    /// `query_recall_index_including_metadata_only(default)` caller) but skips
+    /// all entity/tag/alias hydration, which the namespace tree never reads.
+    pub fn namespace_counts(&self) -> SubstrateResult<Vec<(Scope, Option<String>, u64)>> {
+        let mut stmt = self.connection.prepare_cached(
+            "SELECT scope, canonical_namespace_id, COUNT(*)
+             FROM memories
+             GROUP BY scope, canonical_namespace_id",
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut counts = Vec::new();
+        while let Some(row) = rows.next()? {
+            let scope_text: String = row.get(0)?;
+            let canonical_namespace_id: Option<String> = row.get(1)?;
+            let count: i64 = row.get(2)?;
+            counts.push((scope_from_str(&scope_text)?, canonical_namespace_id, count.max(0) as u64));
+        }
+        Ok(counts)
+    }
+
+    /// Read a bounded, kind-filtered page of mirror events (newest-first).
+    pub fn events_log_page(
+        &self,
+        kind_labels: Option<&[&str]>,
+        since_event_id: Option<&str>,
+        limit: usize,
+    ) -> SubstrateResult<Vec<crate::index::MirrorEvent>> {
+        crate::index::events_read::query_events_log_page(&self.connection, kind_labels, since_event_id, limit)
+            .map_err(Into::into)
+    }
+
+    /// Read mirror events within a time window, optionally kind-restricted.
+    pub fn events_log_window(
+        &self,
+        kind_labels: Option<&[&str]>,
+        since: DateTime<Utc>,
+    ) -> SubstrateResult<Vec<crate::index::MirrorEvent>> {
+        crate::index::events_read::query_events_log_window(&self.connection, kind_labels, since).map_err(Into::into)
+    }
+
+    /// Most recent mirror-event timestamp for a given kind label.
+    pub fn latest_event_ts_for_kind(&self, kind_label: &str) -> SubstrateResult<Option<DateTime<Utc>>> {
+        crate::index::events_read::latest_ts_for_kind(&self.connection, kind_label).map_err(Into::into)
+    }
+
+    /// Timestamp of a single mirror event looked up by canonical event id.
+    pub fn event_ts_by_id(&self, event_id: &str) -> SubstrateResult<Option<DateTime<Utc>>> {
+        crate::index::events_read::ts_for_event_id(&self.connection, event_id).map_err(Into::into)
+    }
+
     fn query_recall_index_inner(
         &self,
         query: &RecallIndexQuery,
@@ -339,7 +478,11 @@ impl Index {
                     memories.canonical_namespace_id,memories.updated_at,memories.indexed_at,memories.confidence,
                     memories.source_kind,memories.source_device,memories.sensitivity,memories.passive_recall,memories.index_body,
                     memories.requires_user_confirmation,memories.review_state,
-                    memories.human_review_required,memories.max_scope
+                    memories.human_review_required,memories.max_scope,
+                    json_extract(memories.frontmatter_json, '$.source.harness'),
+                    json_extract(memories.frontmatter_json, '$.source.session_id'),
+                    json_extract(memories.frontmatter_json, '$.author.harness'),
+                    json_extract(memories.frontmatter_json, '$.author.session_id')
              FROM memories",
         );
         let mut filters = Vec::new();
@@ -354,8 +497,38 @@ impl Index {
         while let Some(row) = rows.next()? {
             results.push(row_to_recall_index_row(row)?);
         }
-        hydrate_recall_index_auxiliary(&self.connection, &mut results)?;
+        hydrate_recall_index_auxiliary(&self.connection, &mut results, query.hydrate)?;
         Ok(results)
+    }
+
+    /// Count recall-index rows matching `query` via an index-only `COUNT(*)`,
+    /// without marshalling rows or hydrating auxiliary tables.
+    ///
+    /// Shares `append_recall_index_filters`/`append_match_term_filters` with
+    /// [`Self::query_recall_index`] so the predicate (and therefore which rows
+    /// are counted) is identical to fetching and calling `rows.len()` on the
+    /// result. `query.hydrate` is irrelevant to a count and is ignored.
+    pub fn count_recall_index(&self, query: &RecallIndexQuery) -> SubstrateResult<usize> {
+        self.count_recall_index_inner(query, false)
+    }
+
+    fn count_recall_index_inner(
+        &self,
+        query: &RecallIndexQuery,
+        include_metadata_only: bool,
+    ) -> SubstrateResult<usize> {
+        let mut sql = String::from("SELECT COUNT(*) FROM memories");
+        let mut filters = Vec::new();
+        let mut bindings = Vec::new();
+        append_recall_index_filters(query, include_metadata_only, &mut filters, &mut bindings)?;
+        append_match_term_filters(query, &mut filters, &mut bindings);
+        if !filters.is_empty() {
+            sql.push_str(" WHERE ");
+            sql.push_str(&filters.join(" AND "));
+        }
+        let mut stmt = self.connection.prepare_cached(&sql)?;
+        let count: i64 = stmt.query_row(params_from_iter(bindings.iter()), |row| row.get(0))?;
+        Ok(count.max(0) as usize)
     }
 }
 
@@ -400,15 +573,19 @@ fn mirror_event_row(connection: &Connection, event: &Event) -> rusqlite::Result<
 }
 
 fn count_missing_events_log_rows(connection: &Connection, canonical_events: &[Event]) -> rusqlite::Result<u64> {
-    let mut stmt = connection.prepare("SELECT EXISTS(SELECT 1 FROM events_log WHERE event_id = ?1)")?;
-    let mut missing = 0_u64;
-    for event in canonical_events {
-        let exists: i64 = stmt.query_row([event.id.as_str()], |row| row.get(0))?;
-        if exists == 0 {
-            missing = missing.saturating_add(1);
-        }
+    if canonical_events.is_empty() {
+        return Ok(0);
     }
-    Ok(missing)
+    // One scan of `events_log` into an in-memory set, then a membership check
+    // per canonical event — O(1) queries instead of one round trip per event.
+    let mut stmt = connection.prepare("SELECT event_id FROM events_log")?;
+    let mut existing = std::collections::HashSet::new();
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        existing.insert(row.get::<_, String>(0)?);
+    }
+    let missing = canonical_events.iter().filter(|event| !existing.contains(event.id.as_str())).count();
+    Ok(missing as u64)
 }
 
 fn event_kind_name(kind: &EventKind) -> &'static str {
@@ -1065,42 +1242,70 @@ fn row_to_recall_index_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RecallIn
         review_state: row.get(15)?,
         human_review_required: row.get::<_, i64>(16)? != 0,
         max_scope: scope_from_str(row.get::<_, String>(17)?.as_str())?,
+        source_harness: row.get(18)?,
+        source_session_id: row.get(19)?,
+        author_harness: row.get(20)?,
+        author_session_id: row.get(21)?,
         tags: Vec::new(),
         aliases: Vec::new(),
         entities: Vec::new(),
     })
 }
 
-fn hydrate_recall_index_auxiliary(conn: &Connection, rows: &mut [RecallIndexRow]) -> rusqlite::Result<()> {
-    if rows.is_empty() {
+fn hydrate_recall_index_auxiliary(
+    conn: &Connection,
+    rows: &mut [RecallIndexRow],
+    scope: AuxScope,
+) -> rusqlite::Result<()> {
+    if rows.is_empty() || scope == AuxScope::None {
         return Ok(());
     }
 
     let ids = rows.iter().map(|row| row.id.as_str().to_owned()).collect::<Vec<_>>();
-    let mut tags_by_memory = read_strings_by_memory(
-        conn,
-        AuxiliaryStringTable {
-            table: "memory_tags",
-            column: "tag",
-            order_by: "ORDER BY memory_id, tag COLLATE NOCASE, tag",
-        },
-        &ids,
-    )?;
-    let mut aliases_by_memory = read_strings_by_memory(
-        conn,
-        AuxiliaryStringTable {
-            table: "memory_aliases",
-            column: "alias",
-            order_by: "ORDER BY memory_id, alias COLLATE NOCASE, alias",
-        },
-        &ids,
-    )?;
-    let mut entities_by_memory = read_entities_by_memory(conn, &ids)?;
+
+    // Tags are needed by `All` and `Tags`; aliases/entities only by `All`/`Entities`.
+    let want_tags = matches!(scope, AuxScope::All | AuxScope::Tags);
+    let want_aliases = scope == AuxScope::All;
+    let want_entities = matches!(scope, AuxScope::All | AuxScope::Entities);
+
+    let mut tags_by_memory = if want_tags {
+        read_strings_by_memory(
+            conn,
+            AuxiliaryStringTable {
+                table: "memory_tags",
+                column: "tag",
+                order_by: "ORDER BY memory_id, tag COLLATE NOCASE, tag",
+            },
+            &ids,
+        )?
+    } else {
+        BTreeMap::new()
+    };
+    let mut aliases_by_memory = if want_aliases {
+        read_strings_by_memory(
+            conn,
+            AuxiliaryStringTable {
+                table: "memory_aliases",
+                column: "alias",
+                order_by: "ORDER BY memory_id, alias COLLATE NOCASE, alias",
+            },
+            &ids,
+        )?
+    } else {
+        BTreeMap::new()
+    };
+    let mut entities_by_memory = if want_entities { read_entities_by_memory(conn, &ids)? } else { BTreeMap::new() };
 
     for row in rows {
-        row.tags = tags_by_memory.remove(row.id.as_str()).unwrap_or_default();
-        row.aliases = aliases_by_memory.remove(row.id.as_str()).unwrap_or_default();
-        row.entities = entities_by_memory.remove(row.id.as_str()).unwrap_or_default();
+        if want_tags {
+            row.tags = tags_by_memory.remove(row.id.as_str()).unwrap_or_default();
+        }
+        if want_aliases {
+            row.aliases = aliases_by_memory.remove(row.id.as_str()).unwrap_or_default();
+        }
+        if want_entities {
+            row.entities = entities_by_memory.remove(row.id.as_str()).unwrap_or_default();
+        }
     }
     Ok(())
 }
@@ -1149,6 +1354,40 @@ fn read_entities_by_memory(conn: &Connection, ids: &[String]) -> rusqlite::Resul
         entities.entry(memory_id).or_default().push(Entity { id: entity_id, label, aliases });
     }
     Ok(entities)
+}
+
+/// Read every indexed entity (with aliases) as ordered `(memory_id, Entity)`
+/// pairs. Unfiltered sibling of [`read_entities_by_memory`]; reads only the two
+/// entity tables.
+fn read_all_entity_rows(conn: &Connection) -> rusqlite::Result<Vec<(MemoryId, Entity)>> {
+    let aliases_by_entity = read_all_entity_aliases(conn)?;
+    let mut stmt = conn.prepare_cached(
+        "SELECT memory_id,entity_id,label FROM memory_entities
+         ORDER BY memory_id, entity_id COLLATE NOCASE, entity_id",
+    )?;
+    let mut rows = stmt.query([])?;
+    let mut entities = Vec::new();
+    while let Some(row) = rows.next()? {
+        let memory_id = row.get::<_, String>(0)?;
+        let entity_id = row.get::<_, String>(1)?;
+        let label = row.get::<_, String>(2)?;
+        let aliases = aliases_by_entity.get(&(memory_id.clone(), entity_id.clone())).cloned().unwrap_or_default();
+        entities.push((MemoryId::new(memory_id), Entity { id: entity_id, label, aliases }));
+    }
+    Ok(entities)
+}
+
+fn read_all_entity_aliases(conn: &Connection) -> rusqlite::Result<BTreeMap<(String, String), Vec<String>>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT memory_id,entity_id,alias FROM memory_entity_aliases
+         ORDER BY memory_id, entity_id COLLATE NOCASE, entity_id, alias COLLATE NOCASE, alias",
+    )?;
+    let mut rows = stmt.query([])?;
+    let mut aliases = BTreeMap::<(String, String), Vec<String>>::new();
+    while let Some(row) = rows.next()? {
+        aliases.entry((row.get(0)?, row.get(1)?)).or_default().push(row.get(2)?);
+    }
+    Ok(aliases)
 }
 
 fn read_entity_aliases_by_memory(

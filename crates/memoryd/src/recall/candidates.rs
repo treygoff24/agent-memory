@@ -4,7 +4,7 @@ use std::pin::Pin;
 
 use chrono::{DateTime, Utc};
 use memory_substrate::{
-    MemoryStatus, RecallIndexQuery, RecallIndexRow, Scope, Sensitivity, Substrate, SubstrateResult,
+    AuxScope, MemoryStatus, RecallIndexQuery, RecallIndexRow, Scope, Sensitivity, Substrate, SubstrateResult,
 };
 
 use crate::recall::types::{EntityMatchKind, OmissionReason, RecallOmission, RecallSectionName};
@@ -65,18 +65,25 @@ pub async fn collect_recall_candidates_from_index(
 ) -> SubstrateResult<CandidateCollection> {
     let mut rows = BTreeMap::new();
 
+    // `statuses` accepts both lifecycle states in a single query, so merge
+    // Active+Pinned into one call per prefix rather than issuing two queries
+    // (each of which fans out 3-4 auxiliary hydration queries). Dedup by id
+    // keeps the merge behavior-preserving.
     for namespace_prefix in &request.namespace_prefixes {
-        for status in [MemoryStatus::Active, MemoryStatus::Pinned] {
-            let query = RecallIndexQuery {
-                namespace_prefix: Some(namespace_prefix.clone()),
-                statuses: vec![status],
-                passive_recall_only: true,
-                updated_since: request.updated_since,
-                match_terms: Vec::new(),
-            };
-            for row in reader.query_recall_index(query).await? {
-                rows.entry(row.id.to_string()).or_insert(row);
-            }
+        let query = RecallIndexQuery {
+            namespace_prefix: Some(namespace_prefix.clone()),
+            statuses: vec![MemoryStatus::Active, MemoryStatus::Pinned],
+            passive_recall_only: true,
+            updated_since: request.updated_since,
+            match_terms: Vec::new(),
+            // Omission/recall scoring is scalar-only, but these recalled rows
+            // also feed `active_entity_ids`/`startup_salient_entities`, which
+            // read `row.entities` to match dream-question pending-attention and
+            // seed the relevance gate. Hydrate entities; tags/aliases stay unused.
+            hydrate: AuxScope::Entities,
+        };
+        for row in reader.query_recall_index(query).await? {
+            rows.entry(row.id.to_string()).or_insert(row);
         }
     }
 

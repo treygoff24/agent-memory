@@ -1,5 +1,5 @@
 use memory_substrate::config::load_local_device_config;
-use memory_substrate::{Memory, RecallIndexRow, SourceKind, Substrate};
+use memory_substrate::{RecallIndexRow, SourceKind, Substrate};
 
 use crate::recall::error::RecallError;
 use crate::recall::types::{ConcurrentSessionMode, SessionBinding};
@@ -11,21 +11,14 @@ pub(crate) struct PeerSourceIdentity {
 }
 
 impl PeerSourceIdentity {
-    fn from_memory(memory: &Memory) -> Self {
+    /// Resolve peer harness/session identity directly from the recall-index
+    /// row. The `source.*`/`author.*` identity fields are projected into the
+    /// index, so this needs zero file reads on the per-turn delta-recall path.
+    fn from_row(row: &RecallIndexRow) -> Self {
         Self {
-            harness: first_present([
-                memory.frontmatter.source.harness.as_deref(),
-                memory.frontmatter.author.harness.as_deref(),
-            ]),
-            session_id: first_present([
-                memory.frontmatter.source.session_id.as_deref(),
-                memory.frontmatter.author.session_id.as_deref(),
-            ]),
+            harness: first_present([row.source_harness.as_deref(), row.author_harness.as_deref()]),
+            session_id: first_present([row.source_session_id.as_deref(), row.author_session_id.as_deref()]),
         }
-    }
-
-    fn unknown() -> Self {
-        Self { harness: "unknown".to_owned(), session_id: "unknown".to_owned() }
     }
 
     pub(crate) fn matches_session(&self, session_binding: &SessionBinding) -> bool {
@@ -33,11 +26,8 @@ impl PeerSourceIdentity {
     }
 }
 
-pub(crate) async fn peer_source_identity(substrate: &Substrate, row: &RecallIndexRow) -> PeerSourceIdentity {
-    match substrate.read_memory(&row.id).await {
-        Ok(memory) => PeerSourceIdentity::from_memory(&memory),
-        Err(_) => PeerSourceIdentity::unknown(),
-    }
+pub(crate) fn peer_source_identity(row: &RecallIndexRow) -> PeerSourceIdentity {
+    PeerSourceIdentity::from_row(row)
 }
 
 fn first_present<const N: usize>(values: [Option<&str>; N]) -> String {
@@ -60,6 +50,30 @@ pub(crate) fn effective_coordination_level(session_binding: &SessionBinding, def
 /// i.e. a peer write rather than a user/source write.
 pub(crate) fn is_peer_write_row(row: &RecallIndexRow) -> bool {
     matches!(row.source_kind, SourceKind::AgentPrimary | SourceKind::AgentSubagent)
+}
+
+/// Hydrate `row.entities` for an already-filtered set of peer-candidate rows in
+/// one batched index query.
+///
+/// Peer candidates are fetched scalar-only (`AuxScope::None`) and narrowed by
+/// `is_peer_write_row`/scope/device before the relevance gate, which is the
+/// only consumer of `row.entities`. Hydrating entities here — over just the
+/// surviving ids — avoids the per-Active-row entity fan-out that the gate would
+/// otherwise pay for rows it immediately discards.
+pub(crate) async fn hydrate_peer_candidate_entities(
+    substrate: &Substrate,
+    rows: &mut [RecallIndexRow],
+) -> Result<(), RecallError> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let ids = rows.iter().map(|row| row.id.as_str().to_owned()).collect::<Vec<_>>();
+    let mut entities_by_memory =
+        substrate.entities_for_memories(&ids).await.map_err(|error| RecallError::substrate_error(error.to_string()))?;
+    for row in rows {
+        row.entities = entities_by_memory.remove(row.id.as_str()).unwrap_or_default();
+    }
+    Ok(())
 }
 
 /// Read this device's identity id from local runtime state. Errors if the

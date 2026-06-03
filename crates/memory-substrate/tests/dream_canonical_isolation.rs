@@ -1,9 +1,9 @@
 use memory_substrate::tree::{bootstrap_repo_tree, validate_tree, TreeValidationMode};
 use memory_substrate::{
-    ChunkQuery, ClassificationOutcome, Entity, EventContext, Evidence, InitOptions, Memory, MemoryId, MemoryQuery,
-    MemoryStatus, MemoryType, ReadError, RecallIndexQuery, RepoPath, RetrievalPolicy, Roots, Scope, Sensitivity,
-    Source, SourceKind, Substrate, SupersedeRequest, TrustLevel, ValidationError, WriteFailureKind, WriteMode,
-    WriteRequest,
+    AuxScope, ChunkQuery, ClassificationOutcome, Entity, EventContext, Evidence, InitOptions, Memory, MemoryId,
+    MemoryQuery, MemoryStatus, MemoryType, ReadError, RecallIndexQuery, RepoPath, RetrievalPolicy, Roots, Scope,
+    Sensitivity, Source, SourceKind, Substrate, SupersedeRequest, TrustLevel, ValidationError, WriteFailureKind,
+    WriteMode, WriteRequest,
 };
 use std::process::Command;
 
@@ -215,6 +215,7 @@ async fn stream_f_noncanonical_files_are_never_indexed_or_returned_by_queries() 
             passive_recall_only: true,
             updated_since: None,
             match_terms: vec!["stream-f-isolation".to_string()],
+            hydrate: AuxScope::All,
         })
         .await
         .expect("recall query");

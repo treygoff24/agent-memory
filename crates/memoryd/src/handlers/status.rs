@@ -61,38 +61,29 @@ pub(crate) async fn status_response(substrate: &Substrate, state: &HandlerState)
 }
 
 async fn live_index_stats(substrate: &Substrate) -> Result<IndexStats, HandlerError> {
-    let active = count_memories_by_status(substrate, MemoryStatus::Active).await?;
-    let pinned = count_memories_by_status(substrate, MemoryStatus::Pinned).await?;
+    let counts = substrate.count_memories_by_status().map_err(HandlerError::substrate)?;
+    let active = status_count(&counts, MemoryStatus::Active);
+    let pinned = status_count(&counts, MemoryStatus::Pinned);
+    // Seek the latest reindex event in the SQLite mirror (kind-indexed MAX(ts))
+    // instead of parsing the entire canonical JSONL log and scanning in Rust.
     let last_reindex = substrate
-        .events()
-        .map_err(HandlerError::substrate)?
-        .into_iter()
-        .filter(|event| matches!(event.kind, EventKind::StartupReconciliationCompleted { .. }))
-        .max_by_key(|event| event.at)
-        .map(|event| event.at);
+        .latest_event_ts_for_kind(event_kind_label(&EventKind::StartupReconciliationCompleted {
+            reindexed: 0,
+            repaired_events: 0,
+        }))
+        .map_err(HandlerError::substrate)?;
     Ok(IndexStats { active_memories: active + pinned, last_reindex })
 }
 
 async fn live_review_queue_counts(substrate: &Substrate) -> Result<ReviewQueueCounts, HandlerError> {
-    let candidate = count_memories_by_status(substrate, MemoryStatus::Candidate).await?;
-    let quarantined = count_memories_by_status(substrate, MemoryStatus::Quarantined).await?;
+    let counts = substrate.count_memories_by_status().map_err(HandlerError::substrate)?;
+    let candidate = status_count(&counts, MemoryStatus::Candidate);
+    let quarantined = status_count(&counts, MemoryStatus::Quarantined);
     Ok(ReviewQueueCounts { candidate, quarantined, dream_low_confidence: 0 })
 }
 
-async fn count_memories_by_status(substrate: &Substrate, status: MemoryStatus) -> Result<u64, HandlerError> {
-    let rows = substrate
-        .query_memory(MemoryQuery {
-            id: None,
-            tag: None,
-            status: Some(status),
-            include_metadata_only: true,
-            namespace_prefix: None,
-            passive_recall_only: false,
-            updated_since: None,
-        })
-        .await
-        .map_err(HandlerError::substrate)?;
-    Ok(rows.len() as u64)
+fn status_count(counts: &[(MemoryStatus, u64)], status: MemoryStatus) -> u64 {
+    counts.iter().find(|(candidate, _)| *candidate == status).map(|(_, count)| *count).unwrap_or(0)
 }
 
 fn live_conflicts_count(substrate: &Substrate) -> Result<u32, HandlerError> {

@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use memory_substrate::{MemoryId, MemoryStatus, RecallIndexQuery, Scope, Substrate, SubstrateResult};
+use memory_substrate::{AuxScope, MemoryId, MemoryStatus, RecallIndexQuery, Scope, Substrate, SubstrateResult};
 
 use crate::protocol::{RealityCheckCompletion, RealityCheckItem, RealityCheckResponse, RespondRefusalKind};
 use crate::reality_check::{score_memories_at, ScoredMemory, ScoringConfig, DEFAULT_TOP_N};
@@ -224,6 +224,9 @@ impl<'a> RcSessionHandler<'a> {
                 namespace_prefix: namespace,
                 statuses: vec![MemoryStatus::Active, MemoryStatus::Pinned],
                 passive_recall_only: true,
+                // Reality-check scoring reads only scalar row fields; it never
+                // touches tags/aliases/entities, so skip all hydration.
+                hydrate: AuxScope::None,
                 ..RecallIndexQuery::default()
             })
             .await?;

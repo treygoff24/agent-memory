@@ -22,6 +22,18 @@ fn open_index_sets_synchronous_normal() {
     assert_eq!(synchronous, 1, "expected synchronous=NORMAL (1), got {synchronous}");
 }
 
+/// A `busy_timeout` keeps writers waiting (rather than failing immediately with
+/// SQLITE_BUSY) when they race the startup reconciler, merge driver, or a second
+/// connection under WAL.
+#[test]
+fn open_index_sets_busy_timeout() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let connection = open_index(&temp.path().join("index.sqlite")).expect("open index");
+    let busy_timeout: i64 =
+        connection.query_row("PRAGMA busy_timeout", [], |row| row.get(0)).expect("query busy_timeout");
+    assert_eq!(busy_timeout, 5000, "expected busy_timeout=5000ms, got {busy_timeout}");
+}
+
 /// Schema-version gate must reject databases above the supported version.
 #[test]
 fn open_index_rejects_unsupported_schema_version() {

@@ -20,6 +20,7 @@ pub mod watcher;
 pub use api::Substrate;
 pub use config::PromptVersion;
 pub use error::*;
+pub use index::MirrorEvent;
 pub use model::*;
 
 /// Stream A spec version implemented by this crate.
