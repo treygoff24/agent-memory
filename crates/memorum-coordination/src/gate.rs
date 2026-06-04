@@ -65,10 +65,14 @@ impl RelevanceGate {
             .collect::<Vec<_>>();
 
         scored_candidates.sort_by(|(left_candidate, left_score), (right_candidate, right_score)| {
+            // Sort highest relevance first; break ties by most recent, then by
+            // memory id (lexicographic) for deterministic ordering. Compare
+            // memory ids via `as_str()` to avoid a String allocation per
+            // tiebreaker comparison (called O(N log N) times during sort).
             right_score
                 .total_cmp(left_score)
                 .then_with(|| right_candidate.row.updated_at.cmp(&left_candidate.row.updated_at))
-                .then_with(|| left_candidate.memory_id.to_string().cmp(&right_candidate.memory_id.to_string()))
+                .then_with(|| left_candidate.memory_id.as_str().cmp(right_candidate.memory_id.as_str()))
         });
 
         let selected_count = scored_candidates.len().min(self.config.relevance_gate.per_turn_cap);
@@ -185,7 +189,7 @@ fn peer_update_entry(candidate: &PeerWriteCandidate, relevance: f64) -> PeerUpda
         timestamp: candidate.row.updated_at,
         relevance,
         summary: candidate.row.summary.clone(),
-        reference: candidate.memory_id.to_string(),
+        reference: candidate.memory_id.as_str().to_owned(),
         namespace: candidate.namespace.clone(),
         claim_locked: None,
         device: None,

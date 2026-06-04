@@ -37,7 +37,9 @@ pub trait StaleSessionClaimLockReleaser: Send + Sync + 'static {
 
 impl StaleSessionClaimLockReleaser for ClaimLockRegistry {
     fn release_all_held_by(&self, harness: &str, session_id: &str) {
-        let _released_locks = ClaimLockRegistry::release_all_held_by(self, harness, session_id);
+        // Returned lock infos are intentionally discarded: the cleanup path
+        // only needs the release side-effect, not the released-lock inventory.
+        let _released = ClaimLockRegistry::release_all_held_by(self, harness, session_id);
     }
 
     fn sweep_expired_at(&self, now: Instant) -> Vec<ClaimLockInfo> {
@@ -358,6 +360,10 @@ impl From<PresenceRecord> for ActivePeer {
 }
 
 fn renew_held_claim_locks(heartbeat: &ValidatedHeartbeat, renewal: Option<ClaimLockHeartbeatRenewal<'_>>) {
+    // Renewals are best-effort: the registry returns a typed result we
+    // intentionally discard. A failure here means the lock was already
+    // released, expired, or transferred — none of which should block the
+    // heartbeat path. The next heartbeat will retry.
     let Some(renewal) = renewal else {
         return;
     };
