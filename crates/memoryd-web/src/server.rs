@@ -101,7 +101,10 @@ pub async fn run_with_state(
 async fn index(State(state): State<WebState>) -> impl IntoResponse {
     match embedded_text(INDEX_HTML) {
         Some(template) => Html(template.replace(CSRF_PLACEHOLDER, state.csrf_token().as_str())).into_response(),
-        None => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        None => {
+            tracing::error!("embedded dashboard asset {INDEX_HTML} is missing or not valid UTF-8");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
     }
 }
 

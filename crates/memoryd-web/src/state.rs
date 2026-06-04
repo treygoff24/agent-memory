@@ -49,27 +49,11 @@ impl WebState {
     }
 
     pub fn unconfigured() -> Self {
-        Self {
-            csrf_token: CsrfToken::generate(),
-            review_actions: Arc::new(ReviewActionTracker::default()),
-            dashboard_data: None,
-            daemon_socket: None,
-            policy_dir: None,
-            recorded_review_actions: Arc::new(Mutex::new(Vec::new())),
-            recorded_reality_check_actions: Arc::new(Mutex::new(Vec::new())),
-        }
+        Self::fresh(None, None, None)
     }
 
     pub fn daemon(socket_path: impl Into<PathBuf>) -> Self {
-        Self {
-            csrf_token: CsrfToken::generate(),
-            review_actions: Arc::new(ReviewActionTracker::default()),
-            dashboard_data: None,
-            daemon_socket: Some(Arc::new(socket_path.into())),
-            policy_dir: None,
-            recorded_review_actions: Arc::new(Mutex::new(Vec::new())),
-            recorded_reality_check_actions: Arc::new(Mutex::new(Vec::new())),
-        }
+        Self::fresh(None, Some(Arc::new(socket_path.into())), None)
     }
 
     pub fn fixture() -> Self {
@@ -77,12 +61,20 @@ impl WebState {
     }
 
     pub fn with_dashboard_data(dashboard_data: DashboardData) -> Self {
+        Self::fresh(Some(Arc::new(dashboard_data)), None, None)
+    }
+
+    fn fresh(
+        dashboard_data: Option<Arc<DashboardData>>,
+        daemon_socket: Option<Arc<PathBuf>>,
+        policy_dir: Option<Arc<PathBuf>>,
+    ) -> Self {
         Self {
             csrf_token: CsrfToken::generate(),
             review_actions: Arc::new(ReviewActionTracker::default()),
-            dashboard_data: Some(Arc::new(dashboard_data)),
-            daemon_socket: None,
-            policy_dir: None,
+            dashboard_data,
+            daemon_socket,
+            policy_dir,
             recorded_review_actions: Arc::new(Mutex::new(Vec::new())),
             recorded_reality_check_actions: Arc::new(Mutex::new(Vec::new())),
         }

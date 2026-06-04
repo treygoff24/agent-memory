@@ -252,14 +252,21 @@ async fn detail_from_entities(
 }
 
 async fn memory_summary_from_daemon(socket_path: &std::path::Path, id: &str) -> Option<EntityMemorySummary> {
-    let response = memoryd::client::request(
+    let response = match memoryd::client::request(
         socket_path,
         format!("web-entity-detail-memory-{id}"),
         RequestPayload::TrustArtifact { id: id.to_owned() },
     )
     .await
-    .ok()?;
+    {
+        Ok(response) => response,
+        Err(error) => {
+            tracing::debug!(memory_id = id, %error, "entity detail trust artifact request failed");
+            return None;
+        }
+    };
     let ResponseResult::Success(ResponsePayload::TrustArtifact(artifact)) = response.result else {
+        tracing::debug!(memory_id = id, ?response.result, "entity detail trust artifact response was unexpected");
         return None;
     };
     Some(EntityMemorySummary {
