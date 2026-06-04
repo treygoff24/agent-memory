@@ -60,6 +60,9 @@ fn spawn_notify_watcher(path: PathBuf, event_tx: mpsc::Sender<()>, last_error: A
         let mut watcher = match RecommendedWatcher::new(
             move |event: notify::Result<Event>| match event {
                 Ok(_event) => {
+                    // Send errors when the watch_loop has dropped its receiver
+                    // (HotReload was dropped). The watcher thread terminates
+                    // shortly after, so the missed event is irrelevant.
                     let _ = event_tx.send(());
                 }
                 Err(error) => {
@@ -109,6 +112,9 @@ fn reload_if_changed(
             *last_error.lock().expect("hot-reload error lock poisoned") = None;
             if &theme != last_theme {
                 *last_theme = theme.clone();
+                // Send errors when every watch::Receiver has been dropped;
+                // the watcher thread continues running but no one is
+                // listening, which is fine.
                 let _ = theme_tx.send(theme);
             }
         }
