@@ -304,7 +304,7 @@ impl DaemonClient {
     ) -> Result<()> {
         let memory_id = MemoryId::try_new(memory_id.to_owned())
             .with_context(|| format!("invalid Reality Check memory id {memory_id}"))?;
-        let action = protocol_reality_check_action(action)?;
+        let action = protocol_reality_check_action(action);
         let request = RequestPayload::RealityCheck(RealityCheckRequest::Respond {
             session_id: session_id.to_owned(),
             memory_id,
@@ -359,17 +359,15 @@ where
     }
 }
 
-fn protocol_reality_check_action(action: &RealityCheckAction) -> Result<ProtocolRealityCheckAction> {
+fn protocol_reality_check_action(action: &RealityCheckAction) -> ProtocolRealityCheckAction {
     match action {
-        RealityCheckAction::Confirm => Ok(ProtocolRealityCheckAction::Confirm),
+        RealityCheckAction::Confirm => ProtocolRealityCheckAction::Confirm,
         RealityCheckAction::Forget => {
-            Ok(ProtocolRealityCheckAction::Forget { reason: "forgotten from memoryd-tui Reality Check".to_owned() })
+            ProtocolRealityCheckAction::Forget { reason: "forgotten from memoryd-tui Reality Check".to_owned() }
         }
-        RealityCheckAction::NotRelevant => Ok(ProtocolRealityCheckAction::NotRelevant),
-        RealityCheckAction::SkipWeek => Ok(ProtocolRealityCheckAction::SkipThisWeek),
-        RealityCheckAction::Correct { new_body } => {
-            Ok(ProtocolRealityCheckAction::Correct { new_body: new_body.clone() })
-        }
+        RealityCheckAction::NotRelevant => ProtocolRealityCheckAction::NotRelevant,
+        RealityCheckAction::SkipWeek => ProtocolRealityCheckAction::SkipThisWeek,
+        RealityCheckAction::Correct { new_body } => ProtocolRealityCheckAction::Correct { new_body: new_body.clone() },
     }
 }
 

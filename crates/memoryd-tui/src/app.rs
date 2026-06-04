@@ -313,7 +313,12 @@ impl App {
     }
 
     pub async fn dispatch_queued_daemon_calls(&mut self, client: &DaemonClient) {
-        let mut remaining = Vec::new();
+        // Drain queued calls one at a time, bailing on the first failure.
+        // Successful calls may push new items back into the queue via
+        // `after_successful_daemon_call`, so we take+rebuild rather than
+        // iterating in place. The explicit `into_iter()` lets us hand the
+        // unconsumed tail to `remaining.extend(...)` on the failure path.
+        let mut remaining: Vec<DaemonCall> = Vec::new();
         let mut calls = std::mem::take(&mut self.queued_daemon_calls).into_iter();
         while let Some(call) = calls.next() {
             match client.dispatch_daemon_call(&call).await {
@@ -322,6 +327,9 @@ impl App {
                     self.after_successful_daemon_call(&call);
                 }
                 Err(error) => {
+                    // Preserve this and all subsequent (not-yet-consumed)
+                    // calls so they can retry next tick once the socket
+                    // recovers.
                     remaining.push(call);
                     remaining.extend(calls);
                     self.mark_socket_unreachable(client.socket_path(), error.to_string());
