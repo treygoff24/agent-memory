@@ -49,6 +49,23 @@ pub enum GovernanceRefusalReason {
     ReviewRequired,
 }
 
+impl GovernanceRefusalReason {
+    /// Stable snake_case code for this reason. This is the single source of
+    /// truth for the wire spelling; `FromStr` is its exact inverse and the
+    /// `#[serde(rename_all = "snake_case")]` derive produces the same strings.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Grounding => "grounding",
+            Self::Policy => "policy",
+            Self::Tombstone => "tombstone",
+            Self::Contradiction => "contradiction",
+            Self::Privacy => "privacy",
+            Self::Superseded => "superseded",
+            Self::ReviewRequired => "review_required",
+        }
+    }
+}
+
 impl FromStr for GovernanceRefusalReason {
     type Err = GovernanceError;
 

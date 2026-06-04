@@ -213,7 +213,6 @@ if [ "$ready" -ne 1 ]; then
 fi
 echo "    daemon pid=$daemon_pid log=$log_file"
 
-# ----- grounding fixtures ------------------------------------------------
 # Built-in policies require_grounding for all four scopes. Every governed
 # write below references a real on-disk file via source_ref=file:<path>#<anchor>.
 make_grounding() {
@@ -223,7 +222,6 @@ make_grounding() {
   printf 'file:%s#%s' "$path" "$label"
 }
 
-# ----- helpers -----------------------------------------------------------
 meta_json() {
   # $1=namespace $2=type $3=confidence $4=source_kind $5=source_ref|"" $6=explicit_user_context(true|false)
   local ns="$1" t="$2" conf="$3" src_kind="$4" src_ref="$5" explicit="$6"
@@ -323,7 +321,6 @@ remember() {
   if [ -n "$id" ]; then eval "$arr+=(\"$id\")"; fi
 }
 
-# ----- bucket A: healthy recall mix -------------------------------------
 echo "==> bucket A: healthy recall mix"
 
 # Project memories (namespace=project, floor 0.70, requires_grounding).
@@ -400,7 +397,6 @@ done
 
 echo "    bucket A: ${#A_PROJECT[@]} project + ${#A_ME[@]} me + ${#A_AGENT[@]} agent + ${#A_NOTES[@]} notes"
 
-# ----- bucket B: governance edges ---------------------------------------
 echo "==> bucket B: governance edges (review queue + supersession + tombstones)"
 
 # Below-floor confidence in me ns (floor 0.85) → review queue.
@@ -476,7 +472,6 @@ seed_tombstone me claim \
   "switched away from this keyboard years ago" \
   old-keyboard
 
-# ----- bucket C: contradictions + Reality Check candidates --------------
 echo "==> bucket C: contradictions + Reality Check candidates"
 # Pairs of conflicting facts in the same scope — contradiction policy decides
 # supersede vs quarantine on the second write.
@@ -500,7 +495,6 @@ for entry in "${C_CONTRADICT[@]}"; do
   fi
 done
 
-# ----- bucket D: privacy samples ----------------------------------------
 echo "==> bucket D: privacy + dreaming"
 # PII content triggers the Stream D classifier to encrypt at rest.
 D_PRIVACY=(
@@ -527,7 +521,6 @@ done
 echo "    skipping dreaming (requires git remote + harness CLI; dev substrate has neither)"
 echo "    to populate dream surfaces later: memoryd dream now --repo $repo --runtime $runtime --scope project:agent-memory"
 
-# ----- web dashboard ----------------------------------------------------
 dashboard_url=""
 if [ "$enable_web" -eq 1 ]; then
   echo "==> enabling web dashboard on port $port"
@@ -539,7 +532,6 @@ if [ "$enable_web" -eq 1 ]; then
   fi
 fi
 
-# ----- summary ----------------------------------------------------------
 cat <<SUMMARY
 
 ==============================================================

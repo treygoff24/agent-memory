@@ -460,7 +460,8 @@ impl ImportEngine {
                                 )?;
                             }
                             GovernanceStatus::Refused => {
-                                let reason = supersede.reason.map_or("refused".to_string(), refusal_label);
+                                let reason =
+                                    supersede.reason.map_or("refused".to_string(), |reason| reason.as_str().to_string());
                                 bump_refusal(counters_mut(&mut report, &harness_key), &reason);
                                 report.refusals.push(RefusalEntry {
                                     source_key: action.source_key.clone(),
@@ -498,7 +499,7 @@ impl ImportEngine {
                     }
                 }
                 GovernanceStatus::Refused => {
-                    let reason = outcome.reason.map_or("refused".to_string(), refusal_label);
+                    let reason = outcome.reason.map_or("refused".to_string(), |reason| reason.as_str().to_string());
                     bump_refusal(counters_mut(&mut report, &harness_key), &reason);
                     report.refusals.push(RefusalEntry {
                         source_key: action.source_key.clone(),
@@ -723,18 +724,6 @@ fn record_unexpected_response(report: &mut ImportReport, harness_key: &str, acti
 
 fn counters_mut<'a>(report: &'a mut ImportReport, harness_key: &str) -> &'a mut HarnessCounters {
     report.harnesses.entry(harness_key.to_string()).or_default()
-}
-
-fn refusal_label(reason: GovernanceRefusalReason) -> String {
-    match reason {
-        GovernanceRefusalReason::Privacy => "privacy".to_string(),
-        GovernanceRefusalReason::Contradiction => "contradiction".to_string(),
-        GovernanceRefusalReason::Tombstone => "tombstone".to_string(),
-        GovernanceRefusalReason::Grounding => "grounding".to_string(),
-        GovernanceRefusalReason::Policy => "policy".to_string(),
-        GovernanceRefusalReason::Superseded => "superseded".to_string(),
-        GovernanceRefusalReason::ReviewRequired => "review_required".to_string(),
-    }
 }
 
 impl ImportEngine {

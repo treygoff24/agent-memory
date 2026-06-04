@@ -177,14 +177,9 @@ impl EventKind {
     }
 }
 
-/// Outcome returned by git commit helpers.
-#[derive(Debug, Eq, PartialEq)]
-pub enum CommitOutcome {
-    /// Nothing to commit; index was clean.
-    NoChanges,
-    /// Commit succeeded with this SHA.
-    Committed { sha: String },
-}
+/// Outcome returned by git commit helpers. Canonical definition lives in
+/// `crate::git::commit`; re-exported here for the historical `events`-module path.
+pub use crate::git::CommitOutcome;
 
 /// Error variants for event-log operations.
 #[derive(Debug, thiserror::Error)]

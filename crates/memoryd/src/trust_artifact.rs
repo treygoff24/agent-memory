@@ -11,6 +11,8 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::handlers::memory_ops::serialized_enum_value as enum_value;
+
 const ENCRYPTED_REDACTION: &str = "[encrypted - use memoryd reveal <id> to decrypt]";
 const NO_POLICY_VALUE: &str = "not recorded";
 
@@ -572,12 +574,6 @@ fn event_evidence(payload: &Value) -> String {
         .and_then(Value::as_str)
         .map(|operation| format!("operation:{operation}"))
         .unwrap_or_else(|| "event-log".to_owned())
-}
-
-fn enum_value<T: Serialize>(value: &T) -> String {
-    let json = serde_json::to_value(value)
-        .expect("invariant: caller passes a unit-variant enum that serde always serializes infallibly");
-    json.as_str().expect("invariant: callers pass unit-variant enums that serialize to JSON strings").to_owned()
 }
 
 fn format_confidence(value: f64) -> String {

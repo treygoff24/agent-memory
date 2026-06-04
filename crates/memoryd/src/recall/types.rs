@@ -90,13 +90,9 @@ pub struct ProjectBinding {
     pub resolved_via: ProjectBindingSource,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ConcurrentSessionMode {
-    Collaborative,
-    Minimal,
-    Default,
-}
+// Canonical definition lives in `memorum_coordination`; re-exported here so the
+// long-standing `memoryd::recall::ConcurrentSessionMode` path keeps resolving.
+pub use memorum_coordination::ConcurrentSessionMode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
