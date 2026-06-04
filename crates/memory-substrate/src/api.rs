@@ -1,5 +1,4 @@
 #![allow(unknown_lints, file_too_long)]
-//! Public API orchestration remains centralized until Task 10 seam split.
 //! Public Stream A API.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};

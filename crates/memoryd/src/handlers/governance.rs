@@ -1,11 +1,11 @@
 //! Governance write / supersede / forget request handlers and the meta model.
 //!
-//! Extracted from `handlers/mod.rs` (D1.9). Owns the governance write pipeline
-//! (`governance_write_response`, `_supersede_`, `_forget_`), the claim-lock supersede
-//! machinery, privacy-classification glue, policy/tombstone loading, the contradiction
-//! engine adapters, and the `GovernanceMeta` deserialization model. Shared helpers
-//! (`serialized_payload_len`, `sanitize_forget_reason`, the `*_meta` accessors, the
-//! `candidate_memory` cluster) remain in `mod.rs` and are reached via `use super::*`.
+//! Owns the governance write pipeline (`governance_write_response`, `_supersede_`,
+//! `_forget_`), the claim-lock supersede machinery, privacy-classification glue,
+//! policy/tombstone loading, the contradiction engine adapters, and the
+//! `GovernanceMeta` deserialization model. Shared helpers (`serialized_payload_len`,
+//! `sanitize_forget_reason`, the `*_meta` accessors, the `candidate_memory` cluster)
+//! remain in `mod.rs` and are reached via `use super::*`.
 
 use super::*;
 

@@ -2,6 +2,8 @@
 //! observe pipeline with its field validators and encrypted-payload helpers, and
 //! the delta/startup recall responses.
 
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+
 use super::governance::{classify_privacy, write_privacy_memory};
 use super::*;
 
@@ -445,7 +447,7 @@ fn encrypted_observe_payload(
     Ok(SubstrateFragmentPayload::Encrypted {
         encryption: SubstrateFragmentEncryption {
             recipient: encrypted.envelope.get("recipient").and_then(Value::as_str).unwrap_or("age-x25519").to_string(),
-            ciphertext_b64: base64_encode(&encrypted.ciphertext),
+            ciphertext_b64: BASE64_STANDARD.encode(&encrypted.ciphertext),
         },
         descriptor: content_aware_encrypted_observe_descriptor(text, kind),
     })
@@ -474,27 +476,4 @@ fn privacy_span_records(privacy: &PrivacyDecision) -> Vec<PrivacySpanRecord> {
         .iter()
         .map(|span| PrivacySpanRecord { label: serialized_enum_value(&span.label), start: span.start, end: span.end })
         .collect()
-}
-
-fn base64_encode(bytes: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let b0 = chunk[0];
-        let b1 = chunk.get(1).copied().unwrap_or(0);
-        let b2 = chunk.get(2).copied().unwrap_or(0);
-        encoded.push(TABLE[(b0 >> 2) as usize] as char);
-        encoded.push(TABLE[(((b0 & 0b0000_0011) << 4) | (b1 >> 4)) as usize] as char);
-        if chunk.len() > 1 {
-            encoded.push(TABLE[(((b1 & 0b0000_1111) << 2) | (b2 >> 6)) as usize] as char);
-        } else {
-            encoded.push('=');
-        }
-        if chunk.len() > 2 {
-            encoded.push(TABLE[(b2 & 0b0011_1111) as usize] as char);
-        } else {
-            encoded.push('=');
-        }
-    }
-    encoded
 }
