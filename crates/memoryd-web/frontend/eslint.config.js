@@ -18,6 +18,7 @@ export default [
                 localStorage: 'readonly',
                 matchMedia: 'readonly',
                 HTMLElement: 'readonly',
+                EventTarget: 'readonly',
                 HTMLAnchorElement: 'readonly',
                 HTMLDivElement: 'readonly',
                 HTMLFormElement: 'readonly',

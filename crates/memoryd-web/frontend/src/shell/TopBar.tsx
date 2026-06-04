@@ -3,12 +3,14 @@ import { useState, type FormEvent } from 'react';
 import type { ShellStatus } from './types';
 
 import { searchMemories, type SearchHitSummary } from '../api';
+import { apiErrorBody } from '../api/errorPresentation';
 import { StatusDot } from '../ui';
 
 export function TopBar({ onPalette, onBell, status }: { onPalette(): void; onBell(): void; status: ShellStatus }) {
     const [query, setQuery] = useState('');
     const [hits, setHits] = useState<SearchHitSummary[]>([]);
     const [searchState, setSearchState] = useState<'idle' | 'searching' | 'error'>('idle');
+    const [searchError, setSearchError] = useState<string | null>(null);
 
     async function submitSearch(event: FormEvent<HTMLFormElement>) {
         event.preventDefault();
@@ -16,16 +18,19 @@ export function TopBar({ onPalette, onBell, status }: { onPalette(): void; onBel
         if (!trimmed) {
             setHits([]);
             setSearchState('idle');
+            setSearchError(null);
             return;
         }
         setSearchState('searching');
+        setSearchError(null);
         try {
             const response = await searchMemories(trimmed);
             setHits(response.hits);
             setSearchState('idle');
-        } catch {
+        } catch (error) {
             setHits([]);
             setSearchState('error');
+            setSearchError(apiErrorBody(error));
         }
     }
 
@@ -63,10 +68,10 @@ export function TopBar({ onPalette, onBell, status }: { onPalette(): void; onBel
                         {searchState === 'error' ? (
                             <div
                                 className="search-result"
-                                role="option"
-                                aria-selected="false"
+                                role="alert"
+                                aria-live="polite"
                             >
-                                Search unavailable
+                                {searchError ?? 'Search unavailable'}
                             </div>
                         ) : (
                             hits.map((hit) => (

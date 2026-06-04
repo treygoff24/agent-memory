@@ -27,6 +27,31 @@ describe('Shell readiness states', () => {
         expect(screen.queryByText('sync · 2 peers')).not.toBeInTheDocument();
     });
 
+    it('surfaces search API failures in the search panel', async () => {
+        server.use(
+            http.get('/api/search', () =>
+                HttpResponse.json({ error: 'daemon_unavailable', message: 'memoryd socket closed' }, { status: 503 }),
+            ),
+        );
+
+        renderWithProviders(
+            <Shell
+                active="inbox"
+                onNav={() => undefined}
+                onPalette={() => undefined}
+                onBell={() => undefined}
+            >
+                <div />
+            </Shell>,
+        );
+
+        const search = screen.getByRole('textbox', { name: 'Search memories' });
+        fireEvent.change(search, { target: { value: 'pnpm' } });
+        fireEvent.submit(search.closest('form')!);
+
+        expect(await screen.findByRole('alert')).toHaveTextContent('memoryd socket closed');
+    });
+
     it('submits global memory search and renders results from /api/search', async () => {
         renderWithProviders(
             <Shell

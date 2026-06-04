@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 
+import { apiErrorBody } from '../../api/errorPresentation';
 import { usePolicyEditorMutation } from '../../api/mutations';
 import { usePolicyEditorQuery } from '../../api/queries';
+import { QueryErrorBanner } from '../QueryFeedback';
 
 export function PolicyEditorTab() {
     const policyQuery = usePolicyEditorQuery();
@@ -31,7 +33,7 @@ export function PolicyEditorTab() {
             await policyMutation.mutateAsync({ raw_yaml: rawYaml, file_name: fileName });
             setMessage('Policy saved.');
         } catch (error) {
-            setMessage(error instanceof Error ? error.message : 'Policy save failed.');
+            setMessage(apiErrorBody(error));
         }
     }
 
@@ -47,7 +49,10 @@ export function PolicyEditorTab() {
             <p className="muted">
                 Edit daemon-owned governance YAML. Saves validate the complete policy set before replacing a file.
             </p>
-            {policyQuery.isError && <p role="alert">Policy editor unavailable.</p>}
+            <QueryErrorBanner
+                error={policyQuery.error}
+                label="Policy editor"
+            />
             <div className="settings-form-grid">
                 <label className="settings-field">
                     <span>Policy file</span>
