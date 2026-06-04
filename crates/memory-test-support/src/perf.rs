@@ -103,6 +103,11 @@ fn synthetic_vector_inner(seed: u64, dimension: usize, index: usize) -> Vec<f32>
 ///
 /// Walks the directory deterministically (sorted), hashes all file bytes.
 /// Called by `stream_a_bench` to record `corpus_sha256` in results (spec §17.6).
+///
+/// Panics if any file under `corpus_dir` cannot be read: a bench corpus is
+/// author-controlled, so an unreadable file is a setup bug, not a runtime
+/// condition to swallow. The previous `if let Ok(...)` form silently produced
+/// incorrect hashes when reads failed, which corrupted baseline fingerprints.
 pub fn corpus_sha256(corpus_dir: &std::path::Path) -> String {
     let mut hasher = Sha256::new();
     let mut paths: Vec<_> = walkdir::WalkDir::new(corpus_dir)
@@ -114,9 +119,9 @@ pub fn corpus_sha256(corpus_dir: &std::path::Path) -> String {
         .collect();
     paths.sort();
     for path in paths {
-        if let Ok(bytes) = std::fs::read(&path) {
-            hasher.update(&bytes);
-        }
+        let bytes = std::fs::read(&path)
+            .unwrap_or_else(|err| panic!("corpus_sha256: failed to read {}: {err}", path.display()));
+        hasher.update(&bytes);
     }
     format!("sha256:{}", hex::encode(hasher.finalize()))
 }
@@ -135,4 +140,45 @@ fn allocate_proportional(total: usize, placements: &[(&str, f64)]) -> Vec<usize>
         allocated[largest] += remainder;
     }
     allocated
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allocate_proportional_sums_to_total() {
+        let placements = &[("a", 0.5), ("b", 0.3), ("c", 0.2)];
+        for total in [0usize, 1, 7, 100, 1000] {
+            let allocated = allocate_proportional(total, placements);
+            assert_eq!(allocated.iter().sum::<usize>(), total, "total={total}");
+            assert_eq!(allocated.len(), placements.len());
+        }
+    }
+
+    #[test]
+    fn allocate_proportional_zero_total_yields_zeros() {
+        let placements = &[("a", 0.5), ("b", 0.5)];
+        let allocated = allocate_proportional(0, placements);
+        assert_eq!(allocated, vec![0, 0]);
+    }
+
+    #[test]
+    fn allocate_proportional_single_bucket_takes_all() {
+        let placements = &[("only", 1.0)];
+        let allocated = allocate_proportional(42, placements);
+        assert_eq!(allocated, vec![42]);
+    }
+
+    #[test]
+    fn allocate_proportional_remainder_added_to_largest() {
+        // 10 items, weights 0.6 / 0.4 -> floors to 6 + 4 = 10, no remainder.
+        let placements = &[("big", 0.6), ("small", 0.4)];
+        let allocated = allocate_proportional(10, placements);
+        assert_eq!(allocated.iter().sum::<usize>(), 10);
+        // 7 items, weights 0.6 / 0.4 -> floors to 4 + 2 = 6, remainder 1 to "big".
+        let allocated = allocate_proportional(7, placements);
+        assert_eq!(allocated.iter().sum::<usize>(), 7);
+        assert!(allocated[0] >= allocated[1]);
+    }
 }
