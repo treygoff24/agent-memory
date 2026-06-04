@@ -216,7 +216,18 @@ fn fragment_contains_sensitive_key(fragment: &str) -> bool {
 
 fn is_sensitive_url_key(key: &str) -> bool {
     let key = key.trim().trim_start_matches('#').to_ascii_lowercase();
-    SENSITIVE_URL_KEYS.iter().any(|sensitive| key == *sensitive || key.ends_with(&format!("_{sensitive}")))
+    SENSITIVE_URL_KEYS.iter().any(|sensitive| {
+        if key == *sensitive {
+            return true;
+        }
+        // Suffix match: key ends with `_<sensitive>` (e.g. `user_token` matches `token`).
+        // Avoids the per-iteration `format!("_{sensitive}")` allocation from the
+        // previous form by checking the underscore boundary explicitly.
+        match key.strip_suffix(sensitive) {
+            Some(prefix) => prefix.ends_with('_'),
+            None => false,
+        }
+    })
 }
 
 pub fn is_allowed_ip(ip: IpAddr, policy: AddressPolicy) -> bool {
