@@ -30,7 +30,9 @@ pub fn eval_assertion_tick() -> usize {
 /// `assertions` / `assertions_passed` fields.
 pub fn eval_flush_assertion_count() {
     let count = EVAL_ASSERTION_COUNTER.with(Cell::get);
-    println!("{}={count}", orchestrator::EVAL_ASSERTION_COUNT_MARKER.trim_end_matches('='));
+    // EVAL_ASSERTION_COUNT_MARKER already ends with "=", so this prints
+    // MEMORUM_EVAL_ASSERTIONS=<count> as a complete marker line.
+    println!("{}{count}", orchestrator::EVAL_ASSERTION_COUNT_MARKER);
 }
 
 /// Assert a condition and increment the eval assertion counter.
