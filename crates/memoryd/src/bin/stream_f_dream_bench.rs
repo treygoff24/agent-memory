@@ -6,7 +6,7 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Context};
+use anyhow::{anyhow, bail, Context};
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use memory_privacy::{DeterministicPrivacyClassifier, PrivacyClassifier, PrivacyNamespace, PrivacySpan};
@@ -134,6 +134,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     if let Some(output_path) = args.write_output.as_ref() {
+        guard_immutable_baseline_path(output_path)?;
         enforce_budgets(&report).context("refusing to write failing Stream F benchmark baseline")?;
         write_report(output_path, &report)?;
     }
@@ -477,6 +478,17 @@ fn write_report(path: &Path, report: &BenchReport) -> anyhow::Result<()> {
     }
     fs::write(path, format!("{}\n", serde_json::to_string_pretty(report)?))
         .with_context(|| format!("write {}", path.display()))
+}
+
+fn guard_immutable_baseline_path(path: &Path) -> anyhow::Result<()> {
+    if path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("baseline.") && name.ends_with(".json"))
+    {
+        bail!("refusing to write Stream F output to immutable baseline path {}", path.display());
+    }
+    Ok(())
 }
 
 fn validate_baseline_contract(baseline: &BenchReport, current: &BenchReport, path: &Path) -> anyhow::Result<()> {

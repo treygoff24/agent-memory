@@ -128,7 +128,7 @@ pub(crate) async fn governance_supersede_response(
         new_id.clone(),
         GovernedLifecycle::new(MemoryStatus::Active, TrustLevel::Trusted, policy_applied.clone()),
         &privacy,
-    );
+    )?;
     replacement.frontmatter.supersedes.push(old_memory_id.clone());
 
     let claim_lock = match state {
@@ -446,7 +446,7 @@ async fn execute_write_decision(
                 id.clone(),
                 GovernedLifecycle::new(MemoryStatus::Active, TrustLevel::Trusted, policy_applied.clone()),
                 &privacy,
-            );
+            )?;
             write_governed_memory(substrate, memory, &privacy).await?;
             Ok(GovernanceWriteResponse {
                 status: GovernanceStatus::Promoted,
@@ -464,7 +464,7 @@ async fn execute_write_decision(
                 id.clone(),
                 GovernedLifecycle::new(MemoryStatus::Candidate, TrustLevel::Candidate, policy_applied.clone()),
                 &privacy,
-            );
+            )?;
             write_governed_memory(substrate, memory, &privacy).await?;
             Ok(GovernanceWriteResponse {
                 status: GovernanceStatus::Candidate,
@@ -482,7 +482,7 @@ async fn execute_write_decision(
                 id.clone(),
                 GovernedLifecycle::new(MemoryStatus::Quarantined, TrustLevel::Quarantined, policy_applied.clone()),
                 &privacy,
-            );
+            )?;
             write_governed_memory(substrate, memory, &privacy).await?;
             Ok(GovernanceWriteResponse {
                 status: GovernanceStatus::Quarantined,
@@ -1293,7 +1293,12 @@ impl GovernanceWriteInput {
     ///
     /// Evidence ids and `quote_norm_hash` are minted here from the caller-supplied
     /// `EvidenceMeta` surface form so the importer never has to invent identifiers.
-    fn to_memory(&self, id: MemoryId, lifecycle: GovernedLifecycle, privacy: &PrivacyDecision) -> Memory {
+    fn to_memory(
+        &self,
+        id: MemoryId,
+        lifecycle: GovernedLifecycle,
+        privacy: &PrivacyDecision,
+    ) -> Result<Memory, HandlerError> {
         let now = chrono::Utc::now();
         let summary = self.summary(privacy.storage_action);
         let requires_review = matches!(lifecycle.status, MemoryStatus::Candidate | MemoryStatus::Quarantined);
@@ -1315,8 +1320,8 @@ impl GovernanceWriteInput {
         }
         let entities = self.entities_for_persist();
         let aliases = self.aliases_for_persist();
-        let related = self.related_for_persist();
-        let supersedes = self.supersedes_for_persist();
+        let related = self.related_for_persist()?;
+        let supersedes = self.supersedes_for_persist()?;
         let evidence = self.evidence_for_persist();
         let canonical_namespace_id = self.meta.canonical_namespace_id.clone().or_else(|| self.substrate_namespace());
         // Importer writes carry already-vetted content from prior harness sessions and
@@ -1326,7 +1331,7 @@ impl GovernanceWriteInput {
         // governance.
         let requires_user_confirmation =
             self.meta.requires_user_confirmation.map_or(requires_review, |caller| requires_review || caller);
-        Memory {
+        Ok(Memory {
             frontmatter: Frontmatter {
                 schema_version: memory_substrate::SUBSTRATE_SCHEMA_VERSION,
                 id: id.clone(),
@@ -1379,7 +1384,7 @@ impl GovernanceWriteInput {
             },
             body: self.body.clone(),
             path: Some(self.repo_path(id.as_str())),
-        }
+        })
     }
 
     fn entities_for_persist(&self) -> Vec<Entity> {
@@ -1403,12 +1408,30 @@ impl GovernanceWriteInput {
         self.meta.aliases.clone().unwrap_or_default()
     }
 
-    fn related_for_persist(&self) -> Vec<MemoryId> {
-        self.meta.related.as_ref().map(|ids| ids.iter().cloned().map(MemoryId::new).collect()).unwrap_or_default()
+    fn related_for_persist(&self) -> Result<Vec<MemoryId>, HandlerError> {
+        let Some(ids) = self.meta.related.as_ref() else {
+            return Ok(Vec::new());
+        };
+        ids.iter()
+            .map(|id| {
+                MemoryId::try_new(id.clone()).map_err(|err| {
+                    HandlerError::invalid_request(format!("invalid meta.related memory id `{id}`: {err}"))
+                })
+            })
+            .collect()
     }
 
-    fn supersedes_for_persist(&self) -> Vec<MemoryId> {
-        self.meta.supersedes.as_ref().map(|ids| ids.iter().cloned().map(MemoryId::new).collect()).unwrap_or_default()
+    fn supersedes_for_persist(&self) -> Result<Vec<MemoryId>, HandlerError> {
+        let Some(ids) = self.meta.supersedes.as_ref() else {
+            return Ok(Vec::new());
+        };
+        ids.iter()
+            .map(|id| {
+                MemoryId::try_new(id.clone()).map_err(|err| {
+                    HandlerError::invalid_request(format!("invalid meta.supersedes memory id `{id}`: {err}"))
+                })
+            })
+            .collect()
     }
 
     fn evidence_for_persist(&self) -> Vec<Evidence> {
@@ -1681,11 +1704,13 @@ mod tests {
         // as before the additive extension — empty entities/aliases/related/evidence/supersedes
         // and canonical_namespace_id falling back to the default project namespace.
         let input = write_input(Value::Null);
-        let memory = input.to_memory(
-            MemoryId::new("mem_20260527_a1b2c3d4e5f60718_000001"),
-            promoted_lifecycle(),
-            &plaintext_privacy_decision(),
-        );
+        let memory = input
+            .to_memory(
+                MemoryId::new("mem_20260527_a1b2c3d4e5f60718_000001"),
+                promoted_lifecycle(),
+                &plaintext_privacy_decision(),
+            )
+            .expect("empty meta converts to memory");
         assert!(memory.frontmatter.entities.is_empty());
         assert!(memory.frontmatter.aliases.is_empty());
         assert!(memory.frontmatter.related.is_empty());
@@ -1778,11 +1803,13 @@ mod tests {
             ]
         });
         let input = write_input(payload);
-        let memory = input.to_memory(
-            MemoryId::new("mem_20260527_a1b2c3d4e5f60718_000042"),
-            promoted_lifecycle(),
-            &plaintext_privacy_decision(),
-        );
+        let memory = input
+            .to_memory(
+                MemoryId::new("mem_20260527_a1b2c3d4e5f60718_000042"),
+                promoted_lifecycle(),
+                &plaintext_privacy_decision(),
+            )
+            .expect("importer meta converts to memory");
 
         assert_eq!(memory.frontmatter.entities.len(), 1);
         assert_eq!(memory.frontmatter.entities[0].id, "ent_acme");
@@ -1814,11 +1841,13 @@ mod tests {
         let input = write_input(payload);
         assert!(matches!(input.meta.source_kind, GovernanceSourceKindMeta::Import));
 
-        let memory = input.to_memory(
-            MemoryId::new("mem_20260527_a1b2c3d4e5f60718_000007"),
-            promoted_lifecycle(),
-            &plaintext_privacy_decision(),
-        );
+        let memory = input
+            .to_memory(
+                MemoryId::new("mem_20260527_a1b2c3d4e5f60718_000007"),
+                promoted_lifecycle(),
+                &plaintext_privacy_decision(),
+            )
+            .expect("import source meta converts to memory");
 
         // Author records the agent-authored import with the dedicated harness tag so
         // dashboards and recall ranking can identify backfilled content.

@@ -88,10 +88,17 @@ pub(crate) async fn search_response(
     let mut hits = Vec::new();
     for chunk in chunks.into_iter().take(limit) {
         let body = if include_body {
-            substrate.read_memory_envelope(&chunk.memory_id).await.ok().and_then(|envelope| match envelope.content {
-                MemoryContent::Plaintext(body) => Some(body),
-                MemoryContent::Ciphertext { .. } | MemoryContent::MetadataOnly => None,
-            })
+            match substrate.read_memory_envelope(&chunk.memory_id).await {
+                Ok(envelope) => match envelope.content {
+                    MemoryContent::Plaintext(body) => Some(body),
+                    MemoryContent::Ciphertext { .. } | MemoryContent::MetadataOnly => None,
+                },
+                Err(memory_substrate::ReadError::NotACanonicalMemory { .. }) => None,
+                Err(err) => {
+                    tracing::warn!(memory_id = %chunk.memory_id, "search read failed: {err}");
+                    None
+                }
+            }
         } else {
             None
         };

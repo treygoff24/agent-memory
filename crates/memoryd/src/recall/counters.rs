@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use serde::{Deserialize, Serialize};
 
@@ -24,34 +24,34 @@ pub struct SharedRecallCounters {
 
 impl SharedRecallCounters {
     pub fn snapshot(&self) -> RecallStatusCounters {
-        self.inner.lock().expect("recall counters lock not poisoned").clone()
+        self.inner.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
     pub fn record_startup_success(&self) {
-        self.inner.lock().expect("recall counters lock not poisoned").startup_invoked_total += 1;
+        self.inner.lock().unwrap_or_else(PoisonError::into_inner).startup_invoked_total += 1;
     }
 
     pub fn record_startup_failure(&self, code: &str) {
-        let mut counters = self.inner.lock().expect("recall counters lock not poisoned");
+        let mut counters = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         *counters.startup_failed_total.entry(code.to_owned()).or_default() += 1;
     }
 
     pub fn record_delta_success(&self) {
-        self.inner.lock().expect("recall counters lock not poisoned").delta_invoked_total += 1;
+        self.inner.lock().unwrap_or_else(PoisonError::into_inner).delta_invoked_total += 1;
     }
 
     pub fn record_delta_failure(&self, code: &str) {
-        let mut counters = self.inner.lock().expect("recall counters lock not poisoned");
+        let mut counters = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         *counters.delta_failed_total.entry(code.to_owned()).or_default() += 1;
     }
 
     pub fn record_budget_exhausted(&self, section: &str) {
-        let mut counters = self.inner.lock().expect("recall counters lock not poisoned");
+        let mut counters = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         *counters.budget_exhausted_total.entry(section.to_owned()).or_default() += 1;
     }
 
     pub fn record_dream_question_omissions(&self, omissions: &BTreeMap<String, u64>) {
-        let mut counters = self.inner.lock().expect("recall counters lock not poisoned");
+        let mut counters = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         for (reason, count) in omissions {
             *counters.dream_question_omitted_total.entry(reason.clone()).or_default() += count;
         }

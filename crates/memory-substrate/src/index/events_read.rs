@@ -36,24 +36,35 @@ pub struct MirrorEvent {
     pub kind: EventKind,
 }
 
+/// Parameters for one bounded page of mirror events from the `events_log` mirror.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EventsLogPage<'a> {
+    /// Filter on the stored `kind` column: `None` = all kinds, `Some(&[])` = none.
+    pub kind_labels: Option<&'a [&'a str]>,
+    /// Restrict to one authoring device (`None` = all devices).
+    pub device: Option<&'a str>,
+    /// Chronological cursor: return rows strictly OLDER than this event id.
+    pub since_event_id: Option<&'a str>,
+    /// Maximum rows to return.
+    pub limit: usize,
+}
+
 /// Query a bounded, kind-filtered page of mirror events ordered newest-first.
 ///
-/// `kind_labels` filters on the stored `kind` column (the same labels written by
-/// the mirror writer). `since_event_id` is the JSONL/dashboard cursor: only rows
-/// whose `event_id` sorts strictly after it are returned, matching the prior
-/// in-Rust `event.id.as_str() > cursor` filter. Ordering is `ts DESC, seq DESC`
-/// to match the previous in-Rust sort, then truncated to `limit`.
-pub fn query_events_log_page(
-    connection: &Connection,
-    kind_labels: Option<&[&str]>,
-    since_event_id: Option<&str>,
-    limit: usize,
-) -> rusqlite::Result<Vec<MirrorEvent>> {
+/// `page.kind_labels` filters on the stored `kind` column (the same labels written
+/// by the mirror writer). `page.device`, when `Some`, restricts the page to one
+/// authoring device (the local device for the dashboard/ROI views).
+/// `page.since_event_id` is the dashboard cursor: the page returns rows strictly
+/// OLDER than that event in canonical `(ts, seq, event_id)` order, so successive
+/// pages walk history without gaps or repeats. (A bare `event_id` comparison cannot
+/// do this — event ids are random UUIDs, so lexical order is unrelated to time.)
+/// Ordering is `ts DESC, seq DESC, event_id DESC`, then truncated to `page.limit`.
+pub fn query_events_log_page(connection: &Connection, page: &EventsLogPage) -> rusqlite::Result<Vec<MirrorEvent>> {
     let mut sql = String::from("SELECT event_id, device, seq, kind, ts, payload_json FROM events_log");
     let mut filters: Vec<String> = Vec::new();
     let mut bindings: Vec<Value> = Vec::new();
 
-    if let Some(labels) = kind_labels {
+    if let Some(labels) = page.kind_labels {
         if labels.is_empty() {
             // An explicit empty kind filter matches nothing, mirroring the prior
             // `HashSet::contains` semantics on an empty set.
@@ -65,9 +76,26 @@ pub fn query_events_log_page(
             bindings.push(Value::Text((*label).to_string()));
         }
     }
-    if let Some(cursor) = since_event_id {
-        filters.push("event_id > ?".to_string());
-        bindings.push(Value::Text(cursor.to_string()));
+    if let Some(device) = page.device {
+        filters.push("device = ?".to_string());
+        bindings.push(Value::Text(device.to_string()));
+    }
+    if let Some(cursor) = page.since_event_id {
+        // Resolve the cursor to its canonical (ts, seq) key and page strictly older
+        // via a row-value keyset, so pagination follows time, not random UUID order.
+        // A cursor that is not in the mirror (evicted / never mirrored) degrades to
+        // the newest page rather than erroring.
+        match key_for_event_id(connection, cursor)? {
+            Some((cursor_ts, cursor_seq)) => {
+                filters.push("(ts, seq, event_id) < (?, ?, ?)".to_string());
+                bindings.push(Value::Text(cursor_ts));
+                bindings.push(Value::Integer(cursor_seq));
+                bindings.push(Value::Text(cursor.to_string()));
+            }
+            None => {
+                tracing::warn!(cursor, "events_log page cursor not found in mirror; returning newest page");
+            }
+        }
     }
     if !filters.is_empty() {
         sql.push_str(" WHERE ");
@@ -76,7 +104,7 @@ pub fn query_events_log_page(
     // `event_id` tiebreaker keeps ordering deterministic when the mirror holds
     // multiple devices with identical (ts, seq).
     sql.push_str(" ORDER BY ts DESC, seq DESC, event_id DESC LIMIT ?");
-    bindings.push(Value::Integer(limit as i64));
+    bindings.push(Value::Integer(page.limit as i64));
 
     let mut stmt = connection.prepare_cached(&sql)?;
     let mut rows = stmt.query(params_from_iter(bindings.iter()))?;
@@ -84,15 +112,21 @@ pub fn query_events_log_page(
 }
 
 /// Query mirror events within a time window, optionally restricted to a kind
-/// set, ordered newest-first. Used by ROI windowed aggregates.
+/// set and/or a single authoring `device`, ordered newest-first. Used by ROI
+/// windowed aggregates (which scope to the local device).
 pub fn query_events_log_window(
     connection: &Connection,
     kind_labels: Option<&[&str]>,
+    device: Option<&str>,
     since: DateTime<Utc>,
 ) -> rusqlite::Result<Vec<MirrorEvent>> {
     let mut sql = String::from("SELECT event_id, device, seq, kind, ts, payload_json FROM events_log WHERE ts >= ?");
     let mut bindings: Vec<Value> = vec![Value::Text(since.to_rfc3339())];
 
+    if let Some(device) = device {
+        sql.push_str(" AND device = ?");
+        bindings.push(Value::Text(device.to_string()));
+    }
     if let Some(labels) = kind_labels {
         if labels.is_empty() {
             return Ok(Vec::new());
@@ -134,6 +168,21 @@ pub fn ts_for_event_id(connection: &Connection, event_id: &str) -> rusqlite::Res
             other => Err(other),
         })?;
     Ok(value.and_then(|text| parse_ts(&text)))
+}
+
+/// Resolve an event id to its canonical `(ts, seq)` paging key, or `None` if the
+/// mirror has no such row. Used to turn the dashboard's `event_id` cursor into a
+/// chronological keyset bound.
+fn key_for_event_id(connection: &Connection, event_id: &str) -> rusqlite::Result<Option<(String, i64)>> {
+    connection
+        .query_row("SELECT ts, seq FROM events_log WHERE event_id = ?1", [event_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })
+        .map(Some)
+        .or_else(|err| match err {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other),
+        })
 }
 
 /// Collect mirror rows into `MirrorEvent`s, skipping (with a warning) any single
@@ -252,7 +301,8 @@ mod tests {
         insert_row(&conn, ("evt_neg_seq", -1, "2026-01-03T00:00:00Z", good.as_str()));
         insert_row(&conn, ("evt_b", 4, "2026-01-04T00:00:00Z", good.as_str()));
 
-        let events = must(query_events_log_page(&conn, None, None, 100), "query page");
+        let events =
+            must(query_events_log_page(&conn, &EventsLogPage { limit: 100, ..Default::default() }), "query page");
         let ids: Vec<&str> = events.iter().map(|event| event.event_id.as_str()).collect();
         // Newest-first by ts; only the two well-formed rows survive.
         assert_eq!(ids, vec!["evt_b", "evt_a"]);
@@ -265,7 +315,85 @@ mod tests {
         insert_row(&conn, ("evt_a", 1, "2026-01-01T00:00:00Z", good.as_str()));
         insert_row(&conn, ("evt_b", 2, "2026-01-02T00:00:00Z", good.as_str()));
 
-        let events = must(query_events_log_page(&conn, None, None, 100), "query page");
+        let events =
+            must(query_events_log_page(&conn, &EventsLogPage { limit: 100, ..Default::default() }), "query page");
         assert_eq!(events.len(), 2);
+    }
+
+    /// Insert one mirror row for an explicit device. `row` is `(event_id, seq, ts, payload_json)`.
+    fn insert_row_dev(conn: &Connection, device: &str, row: (&str, i64, &str, &str)) {
+        let (event_id, seq, ts, payload_json) = row;
+        must(
+            conn.execute(
+                "INSERT INTO events_log(event_id, device, seq, kind, memory_id, ts, payload_json)
+                 VALUES (?1, ?2, ?3, 'operator_repair_required', NULL, ?4, ?5)",
+                rusqlite::params![event_id, device, seq, ts, payload_json],
+            ),
+            "insert row dev",
+        );
+    }
+
+    // The cursor must page through history in canonical (ts, seq, event_id) order,
+    // NOT by lexical event_id. Here event-id lexical order deliberately disagrees
+    // with ts order, so a `event_id > cursor` cursor would duplicate the newest row
+    // and skip the oldest across pages.
+    #[test]
+    fn page_cursor_walks_history_chronologically_not_by_uuid() {
+        let conn = test_db();
+        let good = good_payload();
+        insert_row(&conn, ("evt_bbb", 1, "2026-01-01T00:00:00Z", good.as_str())); // oldest
+        insert_row(&conn, ("evt_yyy", 2, "2026-01-02T00:00:00Z", good.as_str()));
+        insert_row(&conn, ("evt_aaa", 3, "2026-01-03T00:00:00Z", good.as_str()));
+        insert_row(&conn, ("evt_zzz", 4, "2026-01-04T00:00:00Z", good.as_str())); // newest
+
+        let page1 = must(query_events_log_page(&conn, &EventsLogPage { limit: 2, ..Default::default() }), "page1");
+        let ids1: Vec<&str> = page1.iter().map(|event| event.event_id.as_str()).collect();
+        assert_eq!(ids1, vec!["evt_zzz", "evt_aaa"], "newest-first page");
+
+        let cursor = ids1[1]; // "evt_aaa", the oldest row on page 1
+        let page2 = must(
+            query_events_log_page(
+                &conn,
+                &EventsLogPage { since_event_id: Some(cursor), limit: 2, ..Default::default() },
+            ),
+            "page2",
+        );
+        let ids2: Vec<&str> = page2.iter().map(|event| event.event_id.as_str()).collect();
+        assert_eq!(ids2, vec!["evt_yyy", "evt_bbb"], "older page in chronological keyset order");
+
+        // Across both pages: every row exactly once, none duplicated or skipped.
+        let mut all: Vec<&str> = ids1.iter().chain(ids2.iter()).copied().collect();
+        all.sort_unstable();
+        assert_eq!(all, vec!["evt_aaa", "evt_bbb", "evt_yyy", "evt_zzz"]);
+    }
+
+    // Page and window scope to a single device when one is given; `None` returns all.
+    #[test]
+    fn page_and_window_filter_by_device() {
+        let conn = test_db();
+        let good = good_payload();
+        insert_row_dev(&conn, "dev_local", ("evt_l1", 1, "2026-02-01T00:00:00Z", good.as_str()));
+        insert_row_dev(&conn, "dev_peer", ("evt_p1", 1, "2026-02-02T00:00:00Z", good.as_str()));
+        insert_row_dev(&conn, "dev_local", ("evt_l2", 2, "2026-02-03T00:00:00Z", good.as_str()));
+
+        let local_page = must(
+            query_events_log_page(
+                &conn,
+                &EventsLogPage { device: Some("dev_local"), limit: 100, ..Default::default() },
+            ),
+            "local page",
+        );
+        let ids: Vec<&str> = local_page.iter().map(|event| event.event_id.as_str()).collect();
+        assert_eq!(ids, vec!["evt_l2", "evt_l1"], "device-scoped page omits the peer row");
+
+        let all_page =
+            must(query_events_log_page(&conn, &EventsLogPage { limit: 100, ..Default::default() }), "all page");
+        assert_eq!(all_page.len(), 3, "None device scope returns every device");
+
+        let since = must(DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z"), "since ts").with_timezone(&Utc);
+        let local_window = must(query_events_log_window(&conn, None, Some("dev_local"), since), "local window");
+        assert_eq!(local_window.len(), 2, "device-scoped window omits the peer row");
+        let all_window = must(query_events_log_window(&conn, None, None, since), "all window");
+        assert_eq!(all_window.len(), 3, "None device scope window returns every device");
     }
 }

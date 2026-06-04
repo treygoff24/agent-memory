@@ -33,7 +33,7 @@ pub fn configure_merge_driver(repo: &Path, merge_driver_binary: &Path) -> Result
         &[
             "config",
             "merge.memory-merge-driver.driver",
-            &format!("{} --base %O --ours %A --theirs %B --path %P", merge_driver_binary.display()),
+            &format!("\"{}\" --base %O --ours %A --theirs %B --path %P", merge_driver_binary.display()),
         ],
     )
     .map(|_| ())

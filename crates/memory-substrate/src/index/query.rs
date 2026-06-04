@@ -438,24 +438,25 @@ impl Index {
         Ok(counts)
     }
 
-    /// Read a bounded, kind-filtered page of mirror events (newest-first).
+    /// Read a bounded, kind-filtered page of mirror events (newest-first); see
+    /// [`crate::index::EventsLogPage`] for the device/cursor/limit parameters.
     pub fn events_log_page(
         &self,
-        kind_labels: Option<&[&str]>,
-        since_event_id: Option<&str>,
-        limit: usize,
+        page: &crate::index::EventsLogPage,
     ) -> SubstrateResult<Vec<crate::index::MirrorEvent>> {
-        crate::index::events_read::query_events_log_page(&self.connection, kind_labels, since_event_id, limit)
-            .map_err(Into::into)
+        crate::index::events_read::query_events_log_page(&self.connection, page).map_err(Into::into)
     }
 
-    /// Read mirror events within a time window, optionally kind-restricted.
+    /// Read mirror events within a time window, optionally kind-restricted and/or
+    /// scoped to one authoring `device`.
     pub fn events_log_window(
         &self,
         kind_labels: Option<&[&str]>,
+        device: Option<&str>,
         since: DateTime<Utc>,
     ) -> SubstrateResult<Vec<crate::index::MirrorEvent>> {
-        crate::index::events_read::query_events_log_window(&self.connection, kind_labels, since).map_err(Into::into)
+        crate::index::events_read::query_events_log_window(&self.connection, kind_labels, device, since)
+            .map_err(Into::into)
     }
 
     /// Most recent mirror-event timestamp for a given kind label.

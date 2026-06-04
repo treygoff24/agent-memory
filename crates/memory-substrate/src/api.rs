@@ -1317,29 +1317,35 @@ impl Substrate {
     /// mirror (newest-first), instead of parsing the entire canonical JSONL log.
     ///
     /// The mirror is derived; the canonical JSONL log remains the source of
-    /// truth. `kind_labels` filters on the stored kind column; `since_event_id`
-    /// returns only rows whose event id sorts strictly after the cursor.
+    /// truth. `kind_labels` filters on the stored kind column. The page is scoped
+    /// to the local device (peer-device events arrive via sync but are not part of
+    /// this device's dashboard/ROI views). `since_event_id` is a chronological
+    /// cursor: the page returns rows strictly older than that event in canonical
+    /// `(ts, seq, event_id)` order.
     pub fn events_log_page(
         &self,
         kind_labels: Option<&[&str]>,
         since_event_id: Option<&str>,
         limit: usize,
     ) -> SubstrateResult<Vec<crate::index::MirrorEvent>> {
-        self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.events_log_page(
-            kind_labels,
-            since_event_id,
-            limit,
-        )
+        let page =
+            crate::index::EventsLogPage { kind_labels, device: Some(self.device_id.as_str()), since_event_id, limit };
+        self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.events_log_page(&page)
     }
 
     /// Read events from the derived SQLite mirror within a time window, optionally
     /// kind-restricted, instead of parsing and filtering the whole JSONL log.
+    /// Scoped to the local device (see [`Substrate::events_log_page`]).
     pub fn events_log_window(
         &self,
         kind_labels: Option<&[&str]>,
         since: DateTime<Utc>,
     ) -> SubstrateResult<Vec<crate::index::MirrorEvent>> {
-        self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.events_log_window(kind_labels, since)
+        self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.events_log_window(
+            kind_labels,
+            Some(self.device_id.as_str()),
+            since,
+        )
     }
 
     /// Most recent event timestamp for a given kind label from the derived mirror.
@@ -1708,7 +1714,11 @@ impl Substrate {
             Ok(()) => Ok(()),
             Err(failure) => {
                 let event = EventKind::write_refused(Some(id), path, classification, &failure.kind);
-                let _ = self.record_event(event, operation_id);
+                // The refusal is the caller-observed outcome regardless, but the audit-event
+                // append failure must not be fully silent (spec §8.7 step 6 audit trail).
+                if let Err(err) = self.record_event(event, operation_id) {
+                    tracing::warn!("failed to append WriteRefused audit event for refused write: {err}");
+                }
                 Err(failure)
             }
         }

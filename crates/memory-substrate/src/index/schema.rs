@@ -78,6 +78,11 @@ CREATE INDEX IF NOT EXISTS idx_events_log_kind_ts
   ON events_log(kind, ts);
 CREATE INDEX IF NOT EXISTS idx_events_log_ts
   ON events_log(ts);
+-- Serves the device-scoped dashboard page and ROI window: the keyset predicate
+-- `(ts, seq, event_id) < (?, ?, ?)` plus `ORDER BY ts DESC, seq DESC, event_id DESC`
+-- is satisfied by an index scan (no temp B-tree sort) within one device partition.
+CREATE INDEX IF NOT EXISTS idx_events_log_device_ts
+  ON events_log(device, ts, seq, event_id);
 
 CREATE TABLE IF NOT EXISTS memory_chunks(
   chunk_rowid INTEGER PRIMARY KEY AUTOINCREMENT,

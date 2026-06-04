@@ -34,7 +34,7 @@ pub(crate) fn sync_event_sequence_state(runtime: &Path, event_log: &Path, device
 
 /// Ensure the persisted sequence state exists, trusting its `next` on the
 /// steady-state path and only re-deriving the high-water mark from the canonical
-/// log when the persisted state is missing or corrupt.
+/// log when the persisted state is missing or unreadable.
 ///
 /// This is the hot-path counterpart to [`sync_event_sequence_state`]. The
 /// persisted `event-seq.json` is maintained atomically under a file lock by
@@ -42,8 +42,15 @@ pub(crate) fn sync_event_sequence_state(runtime: &Path, event_log: &Path, device
 /// `next` is already correct for every subsequent append. Re-reading and
 /// serde-parsing the entire JSONL event log on each append (the
 /// `max(event_seq_high_water(...))` form) is a full-log scan on the hottest path
-/// in the system; here the high-water read is taken only when [`read_state`]
-/// fails (missing/corrupt/wrong-device file).
+/// in the system; here the high-water read is taken only when the state file is
+/// missing or could not be read.
+///
+/// `event-seq.json` is a derived cache — the canonical JSONL log is the source of
+/// truth — so a corrupt or transiently-unreadable file is rebuilt from the log
+/// rather than failing the write path. A genuinely unrecoverable condition (the
+/// log is unreadable, or the rebuilt state cannot be written) still surfaces from
+/// `load_or_recover_state`/`write_state_atomic` below. The read error is logged
+/// rather than silently swallowed so a recurring cause is visible.
 pub(crate) fn ensure_event_sequence_state(
     runtime: &Path,
     event_log: &Path,
@@ -51,11 +58,15 @@ pub(crate) fn ensure_event_sequence_state(
 ) -> std::io::Result<()> {
     let _lock = lock_sequence_file(runtime)?;
     let path = runtime.join("event-seq.json");
-    if read_state(&path, device_id).is_ok() {
+    match read_state(&path, device_id) {
         // Persisted state is present and valid; the file lock + atomic writes in
         // `reserve_event_sequence` keep its `next` authoritative. No full-log
         // scan needed.
-        return Ok(());
+        Ok(_) => return Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            tracing::warn!("event-seq.json unreadable ({err}); rebuilding sequence state from the canonical log");
+        }
     }
     let state = load_or_recover_state(event_log, &path, device_id)?;
     write_state_atomic(runtime, &path, &state)
