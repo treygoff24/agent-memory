@@ -112,6 +112,22 @@ pub(crate) async fn review_decision_response(
         let response = ReviewDecisionResponse { id: id.to_string(), status: "quarantined".to_string(), summary };
         return Ok(ResponsePayload::ReviewApprove(response));
     }
+    if let ReviewDecision::Reject { reason } = &decision {
+        // The rejection reason is caller-supplied free text persisted into the canonical
+        // file. Classify it (strictest namespace) so a secret/sensitive reason is refused
+        // rather than written unclassified under a hardcoded Trusted outcome.
+        let privacy = super::governance::classify_privacy(reason, PrivacyNamespace::Me, None)?;
+        if privacy.storage_action.refuses_storage() {
+            return Err(HandlerError::invalid_request(
+                "review rejection reason contains secret content and cannot be persisted",
+            ));
+        }
+        if privacy.storage_action.requires_encryption() {
+            return Err(HandlerError::invalid_request(
+                "review rejection reason contains sensitive content that cannot be stored in plaintext review metadata",
+            ));
+        }
+    }
     let status = decision.apply(&mut memory);
     let summary = bounded(&memory.frontmatter.summary, REVIEW_DECISION_SUMMARY_MAX);
 
