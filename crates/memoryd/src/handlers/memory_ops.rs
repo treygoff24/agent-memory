@@ -90,7 +90,9 @@ pub(crate) async fn search_response(
         let body = if include_body {
             match substrate.read_memory_envelope(&chunk.memory_id).await {
                 Ok(envelope) => match envelope.content {
-                    MemoryContent::Plaintext(body) => Some(body),
+                    // Bound the body to the same cap memory_get applies; search must return a
+                    // bounded preview, never a bulk dump of full plaintext bodies (SEC-03).
+                    MemoryContent::Plaintext(body) => Some(bounded(&body, GET_BODY_MAX)),
                     MemoryContent::Ciphertext { .. } | MemoryContent::MetadataOnly => None,
                 },
                 Err(memory_substrate::ReadError::NotACanonicalMemory { .. }) => None,
@@ -195,8 +197,12 @@ pub(crate) async fn reveal_response(
             }),
         })
         .map_err(HandlerError::privacy)?;
+    // The reveal reason is caller-supplied free text persisted verbatim into the canonical
+    // event log (EncryptedContentRevealed) and surfaced in event summaries. Redact any
+    // secret/PII content to "[redacted]" before persistence — same policy as a forget
+    // reason — so the audit trail can never leak a secret to disk (invariant 1).
     substrate
-        .record_encrypted_content_revealed(memory_id, bounded(reason, REVEAL_REASON_MAX_CHARS))
+        .record_encrypted_content_revealed(memory_id, super::sanitize_reason(reason, REVEAL_REASON_MAX_CHARS))
         .map_err(|err| HandlerError::substrate(format!("record encrypted reveal audit event: {err}")))?;
     let (body, truncated) = bounded_with_truncation(&body, GET_BODY_MAX);
     Ok(ResponsePayload::Reveal(RevealResponse {

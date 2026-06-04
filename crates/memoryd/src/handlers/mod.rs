@@ -103,7 +103,7 @@ const REVIEW_DECISION_SUMMARY_MAX: usize = 512;
 const REVIEW_RESPONSE_FRAME_BUDGET: usize = MAX_FRAME_BYTES - 1024;
 const DEFAULT_PROJECT_NAMESPACE: &str = "agent-memory";
 const REVEAL_REASON_MAX_CHARS: usize = 512;
-const REDACTED_FORGET_REASON: &str = "[redacted]";
+const REDACTED_REASON: &str = "[redacted]";
 const FORGET_REASON_MAX_CHARS: usize = 160;
 const DEFAULT_SUPERSEDE_SESSION_ID: &str = "synthetic-memory-supersede";
 const DEFAULT_SUPERSEDE_HARNESS: &str = "unknown";
@@ -653,15 +653,23 @@ fn sensitivity_meta(sensitivity: Sensitivity) -> &'static str {
     }
 }
 
-fn sanitize_forget_reason(reason: &str) -> String {
+/// Redact a caller-supplied reason field (forget, reveal, …) to `[redacted]` when it is
+/// empty or carries secret/PII content; otherwise return it trimmed and bounded to
+/// `max_chars`. Reason fields are persisted verbatim into the canonical event log, so this
+/// is the single policy that keeps a secret out of the plaintext audit trail (invariant 1).
+fn sanitize_reason(reason: &str, max_chars: usize) -> String {
     let trimmed = reason.trim();
     if trimmed.is_empty() {
-        return REDACTED_FORGET_REASON.to_owned();
+        return REDACTED_REASON.to_owned();
     }
     if !is_safe_plaintext_for_indexing(trimmed) || contains_secret_or_pii_marker(trimmed) {
-        return REDACTED_FORGET_REASON.to_owned();
+        return REDACTED_REASON.to_owned();
     }
-    trimmed.chars().take(FORGET_REASON_MAX_CHARS).collect()
+    trimmed.chars().take(max_chars).collect()
+}
+
+fn sanitize_forget_reason(reason: &str) -> String {
+    sanitize_reason(reason, FORGET_REASON_MAX_CHARS)
 }
 
 fn contains_secret_or_pii_marker(text: &str) -> bool {
@@ -1015,8 +1023,8 @@ mod tests {
     #[test]
     fn forget_reason_sanitizer_bounds_and_redacts_sensitive_text() {
         assert_eq!(sanitize_forget_reason("  stale memory  "), "stale memory");
-        assert_eq!(sanitize_forget_reason(""), REDACTED_FORGET_REASON);
-        assert_eq!(sanitize_forget_reason("SSN 123-45-6789"), REDACTED_FORGET_REASON);
+        assert_eq!(sanitize_forget_reason(""), REDACTED_REASON);
+        assert_eq!(sanitize_forget_reason("SSN 123-45-6789"), REDACTED_REASON);
         assert_eq!(sanitize_forget_reason(&"a".repeat(FORGET_REASON_MAX_CHARS + 10)).len(), FORGET_REASON_MAX_CHARS);
     }
 

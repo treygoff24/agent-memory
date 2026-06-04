@@ -135,6 +135,51 @@ async fn search_and_get_return_bounded_protocol_responses_from_substrate() {
 }
 
 #[tokio::test]
+async fn search_include_body_is_bounded_to_the_get_cap() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let substrate = init_substrate(roots).await;
+    // A plaintext body well over the 4 KiB get cap, with a unique term to retrieve it.
+    let long_body = format!("oversize disclosure canary {}", "x".repeat(8_192));
+    let memory = sample_memory("mem_20260428_a1b2c3d4e5f60718_300002", &long_body);
+    substrate
+        .write_memory(WriteRequest {
+            operation_id: None,
+            memory: memory.clone(),
+            expected_base_hash: None,
+            write_mode: WriteMode::CreateNew,
+            index_projection: None,
+            event_context: EventContext::default(),
+            allow_best_effort_durability: true,
+            classification: ClassificationOutcome::Trusted,
+        })
+        .await
+        .expect("write oversize memory through Stream A");
+
+    let search = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "req-search-oversize",
+            RequestPayload::Search {
+                query: "oversize disclosure canary".to_string(),
+                limit: Some(1),
+                include_body: true,
+            },
+        ),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::Search(search)) = search.result else {
+        panic!("expected search success, got {:?}", search.result);
+    };
+    let body = search.hits[0].body.as_deref().expect("plaintext body included");
+    assert!(
+        body.chars().count() <= 4_096,
+        "search include_body must be bounded to the get cap, got {} chars",
+        body.chars().count()
+    );
+}
+
+#[tokio::test]
 async fn write_note_creates_candidate_safe_record_through_substrate() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));

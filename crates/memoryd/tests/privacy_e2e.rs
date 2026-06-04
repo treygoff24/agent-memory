@@ -309,11 +309,14 @@ async fn privacy_e2e_phone_contact_is_encrypted_findable_and_revealable() {
         .iter()
         .any(|event| matches!(&event.kind, EventKind::EncryptedContentRevealed { id: event_id, .. } if event_id.as_str() == id)));
 
+    // A reveal reason carrying PII (an email) is still accepted — revealing a contact and
+    // explaining why is legitimate — but the reason is redacted before it is persisted to
+    // the plaintext event log, so the PII never lands on disk.
     let sensitive_reason = handle_request(
         &substrate,
         RequestEnvelope::new(
             "reveal-sensitive-reason",
-            RequestPayload::Reveal { id, reason: "send to reviewer@example.com".to_string() },
+            RequestPayload::Reveal { id: id.clone(), reason: "send to reviewer@example.com".to_string() },
         ),
     )
     .await;
@@ -321,6 +324,38 @@ async fn privacy_e2e_phone_contact_is_encrypted_findable_and_revealable() {
         panic!("expected reveal reason with contact context to be accepted, got {:?}", sensitive_reason.result);
     };
     assert!(reveal_with_sensitive_reason.body.contains(raw_phone));
+    assert!(
+        !repo_contains(temp.path(), "reviewer@example.com"),
+        "PII reveal reason must be redacted before persistence"
+    );
+
+    // A secret in the reveal reason is likewise accepted but redacted — invariant 1: a
+    // secret must never reach disk, including via the audit trail.
+    let secret_reason = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "reveal-secret-reason",
+            RequestPayload::Reveal { id: id.clone(), reason: "exfil via sk-test-9f8e7d6c5b4a3210".to_string() },
+        ),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::Reveal(reveal_with_secret_reason)) = secret_reason.result else {
+        panic!("expected reveal with secret reason to be accepted (redacted), got {:?}", secret_reason.result);
+    };
+    assert!(reveal_with_secret_reason.body.contains(raw_phone));
+    assert!(!repo_contains(temp.path(), "sk-test-9f8e7d6c5b4a3210"), "secret reveal reason must never reach disk");
+
+    // Both unsafe reasons were persisted as the redaction sentinel, not verbatim.
+    let redacted_reveals = substrate
+        .events()
+        .expect("events")
+        .into_iter()
+        .filter(|event| {
+            matches!(&event.kind, EventKind::EncryptedContentRevealed { id: event_id, reason }
+                if event_id.as_str() == id && reason == "[redacted]")
+        })
+        .count();
+    assert!(redacted_reveals >= 2, "both the PII and secret reveal reasons must be redacted in the event log");
 }
 
 #[tokio::test]
