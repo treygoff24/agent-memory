@@ -1,5 +1,3 @@
-use std::error::Error;
-use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -89,20 +87,12 @@ pub struct PeerHeartbeatOptions<'a> {
 }
 
 /// Validation error for malformed heartbeat requests.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum PeerHeartbeatError {
+    /// Request field failed a syntactic or size bound check.
+    #[error("invalid heartbeat request: {message}")]
     InvalidRequest { message: String },
 }
-
-impl fmt::Display for PeerHeartbeatError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidRequest { message } => write!(formatter, "invalid heartbeat request: {message}"),
-        }
-    }
-}
-
-impl Error for PeerHeartbeatError {}
 
 /// Concurrent in-memory presence registry keyed by session id.
 #[derive(Debug, Default)]

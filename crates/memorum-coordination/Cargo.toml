@@ -13,6 +13,7 @@ dashmap.workspace = true
 memory-substrate = { path = "../memory-substrate" }
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 tokio.workspace = true
 
 [[bin]]
