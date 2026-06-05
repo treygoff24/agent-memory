@@ -644,15 +644,6 @@ fn governance_type_meta(memory_type: MemoryType) -> &'static str {
     }
 }
 
-fn sensitivity_meta(sensitivity: Sensitivity) -> &'static str {
-    match sensitivity {
-        Sensitivity::Public => "public",
-        Sensitivity::Internal => "internal",
-        Sensitivity::Confidential => "confidential",
-        Sensitivity::Personal => "personal",
-    }
-}
-
 /// Redact a caller-supplied reason field (forget, reveal, …) to `[redacted]` when it is
 /// empty or carries secret/PII content; otherwise return it trimmed and bounded to
 /// `max_chars`. Reason fields are persisted verbatim into the canonical event log, so this

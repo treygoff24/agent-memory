@@ -10,7 +10,7 @@
 //! would from the canonical log for the rows the query selected.
 
 use chrono::{DateTime, Utc};
-use rusqlite::{params_from_iter, types::Value, Connection};
+use rusqlite::{params_from_iter, types::Value, Connection, OptionalExtension as _};
 
 use crate::events::EventKind;
 use crate::model::EventId;
@@ -162,11 +162,7 @@ pub fn latest_ts_for_kind(connection: &Connection, kind_label: &str) -> rusqlite
 pub fn ts_for_event_id(connection: &Connection, event_id: &str) -> rusqlite::Result<Option<DateTime<Utc>>> {
     let value: Option<String> = connection
         .query_row("SELECT ts FROM events_log WHERE event_id = ?1", [event_id], |row| row.get::<_, String>(0))
-        .map(Some)
-        .or_else(|err| match err {
-            rusqlite::Error::QueryReturnedNoRows => Ok(None),
-            other => Err(other),
-        })?;
+        .optional()?;
     Ok(value.and_then(|text| parse_ts(&text)))
 }
 
@@ -178,11 +174,7 @@ fn key_for_event_id(connection: &Connection, event_id: &str) -> rusqlite::Result
         .query_row("SELECT ts, seq FROM events_log WHERE event_id = ?1", [event_id], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
         })
-        .map(Some)
-        .or_else(|err| match err {
-            rusqlite::Error::QueryReturnedNoRows => Ok(None),
-            other => Err(other),
-        })
+        .optional()
 }
 
 /// Collect mirror rows into `MirrorEvent`s, skipping (with a warning) any single
