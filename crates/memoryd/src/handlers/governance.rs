@@ -9,10 +9,26 @@
 
 use super::*;
 
+/// Serializes governance mutations (write / supersede / forget) so each one
+/// observes a consistent active-memory snapshot for its duplicate- and
+/// contradiction-detection step.
+///
+/// Duplicate/contradiction detection is a read-active-set → evaluate → write
+/// sequence spanning several `.await`s. Without serialization, two concurrent
+/// writes of the same claim can each read the active set before either commits,
+/// both conclude "no duplicate", and both persist — a duplicate neither
+/// detected. This window is reachable on any multi-threaded runtime and widened
+/// by the index-backed active-set read. The mutation paths are low-frequency
+/// relative to recall/reads, so coarse serialization is an acceptable cost;
+/// this mirrors `HandlerState::reality_check_lock`. Acquired before any
+/// active-set read and released when the handler returns.
+static GOVERNANCE_MUTATION_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 pub(crate) async fn governance_write_response(
     substrate: &Substrate,
     request: GovernanceWriteRequest,
 ) -> Result<ResponsePayload, HandlerError> {
+    let _governance_guard = GOVERNANCE_MUTATION_LOCK.lock().await;
     let input = GovernanceWriteInput::parse(GovernanceWriteInputParts {
         body: request.body,
         title: request.title,
@@ -63,6 +79,7 @@ pub(crate) async fn governance_supersede_response(
     state: Option<&HandlerState>,
     request: GovernanceSupersedeRequest,
 ) -> Result<ResponsePayload, HandlerError> {
+    let _governance_guard = GOVERNANCE_MUTATION_LOCK.lock().await;
     let GovernanceSupersedeRequest { old_id, content, reason, meta } = request;
     let old_memory_id = HandlerError::parse_memory_id(old_id.clone())?;
     let input = GovernanceWriteInput::parse(GovernanceWriteInputParts {
@@ -409,6 +426,7 @@ pub(crate) async fn governance_forget_response(
     id: String,
     reason: String,
 ) -> Result<ResponsePayload, HandlerError> {
+    let _governance_guard = GOVERNANCE_MUTATION_LOCK.lock().await;
     if reason.trim().is_empty() {
         return Err(HandlerError::invalid_request("forget reason must not be empty"));
     }
