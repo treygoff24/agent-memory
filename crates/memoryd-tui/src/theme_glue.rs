@@ -1,9 +1,7 @@
 #![allow(clippy::disallowed_types, clippy::disallowed_methods)]
 
 use memorum_theme::resolver::AnsiColor;
-use memorum_theme::{
-    BorderGlyphs, ColorCapability, Glyphs, ResolvedColor, ResolvedTheme, Theme,
-};
+use memorum_theme::{BorderGlyphs, ColorCapability, Glyphs, ResolvedColor, ResolvedTheme, Theme};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols::border;
 

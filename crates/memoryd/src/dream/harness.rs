@@ -308,6 +308,10 @@ impl ClaudeCodeCli {
             auth_probe_candidate("claude", &["config", "get", "auth.user"]),
         ]
     }
+
+    fn adapter_env(&self) -> AdapterEnv {
+        AdapterEnv { installed: self.is_installed(), path_env: self.path_env.clone(), allowlist: CLAUDE_ENV_ALLOWLIST }
+    }
 }
 
 impl HarnessCli for ClaudeCodeCli {
@@ -324,13 +328,7 @@ impl HarnessCli for ClaudeCodeCli {
     }
 
     fn auth_probe(&self) -> HarnessFuture<'_, AuthProbeResult> {
-        Box::pin(probe_external_auth(
-            "claude",
-            self.is_installed(),
-            self.auth_probe_candidates(),
-            self.path_env.clone(),
-            CLAUDE_ENV_ALLOWLIST,
-        ))
+        Box::pin(probe_external_auth("claude", self.adapter_env(), self.auth_probe_candidates()))
     }
 
     fn complete<'a>(
@@ -340,10 +338,8 @@ impl HarnessCli for ClaudeCodeCli {
         timeout: Duration,
     ) -> HarnessFuture<'a, Result<String, HarnessCliError>> {
         Box::pin(complete_for_adapter(
-            self.is_installed(),
+            self.adapter_env(),
             self.command(expect_json),
-            self.path_env.clone(),
-            CLAUDE_ENV_ALLOWLIST,
             prompt,
             PassRunOptions { expect_json, timeout },
         ))
@@ -377,6 +373,10 @@ impl CodexCli {
     fn auth_probe_candidates(&self) -> Vec<AuthProbeCandidate> {
         vec![auth_probe_candidate("codex", &["login", "status"]), auth_probe_candidate("codex", &["auth", "status"])]
     }
+
+    fn adapter_env(&self) -> AdapterEnv {
+        AdapterEnv { installed: self.is_installed(), path_env: self.path_env.clone(), allowlist: CODEX_ENV_ALLOWLIST }
+    }
 }
 
 impl HarnessCli for CodexCli {
@@ -393,13 +393,7 @@ impl HarnessCli for CodexCli {
     }
 
     fn auth_probe(&self) -> HarnessFuture<'_, AuthProbeResult> {
-        Box::pin(probe_external_auth(
-            "codex",
-            self.is_installed(),
-            self.auth_probe_candidates(),
-            self.path_env.clone(),
-            CODEX_ENV_ALLOWLIST,
-        ))
+        Box::pin(probe_external_auth("codex", self.adapter_env(), self.auth_probe_candidates()))
     }
 
     fn complete<'a>(
@@ -409,10 +403,8 @@ impl HarnessCli for CodexCli {
         timeout: Duration,
     ) -> HarnessFuture<'a, Result<String, HarnessCliError>> {
         Box::pin(complete_for_adapter(
-            self.is_installed(),
+            self.adapter_env(),
             self.command(expect_json),
-            self.path_env.clone(),
-            CODEX_ENV_ALLOWLIST,
             prompt,
             PassRunOptions { expect_json, timeout },
         ))
@@ -425,21 +417,28 @@ struct PassRunOptions {
     timeout: Duration,
 }
 
+/// External-adapter execution context shared by the real CLI harnesses: whether
+/// the binary is present, the PATH override used to find and run it, and the
+/// environment-variable allowlist scoping its hardened subprocess.
+struct AdapterEnv {
+    installed: bool,
+    path_env: Option<OsString>,
+    allowlist: &'static [&'static str],
+}
+
 /// Shared `HarnessCli::complete` body for real external adapters: refuse with
 /// `NotInstalled` when the binary is absent, otherwise run the adapter's command
-/// under a minimal environment scoped to `allowlist`.
+/// under a minimal environment scoped to the adapter's allowlist.
 async fn complete_for_adapter(
-    installed: bool,
+    env: AdapterEnv,
     plan: HarnessCommandPlan,
-    path_env: Option<OsString>,
-    allowlist: &[&str],
     prompt: &str,
     options: PassRunOptions,
 ) -> Result<String, HarnessCliError> {
-    if !installed {
+    if !env.installed {
         return Err(HarnessCliError::NotInstalled);
     }
-    complete_external(plan, MinimalEnvironment::for_adapter(path_env, allowlist), prompt, options).await
+    complete_external(plan, MinimalEnvironment::for_adapter(env.path_env, env.allowlist), prompt, options).await
 }
 
 async fn complete_external(
@@ -499,15 +498,13 @@ async fn auth_probe(plan: HarnessCommandPlan, path_env: Option<OsString>, env_al
 /// candidates. `which` is the binary name surfaced in the missing diagnostic.
 async fn probe_external_auth(
     which: &'static str,
-    installed: bool,
+    env: AdapterEnv,
     candidates: Vec<AuthProbeCandidate>,
-    path_env: Option<OsString>,
-    env_allowlist: &'static [&'static str],
 ) -> AuthProbeResult {
-    if !installed {
-        return AuthProbeResult::CliMissing { which, path: path_display(path_env.as_deref()) };
+    if !env.installed {
+        return AuthProbeResult::CliMissing { which, path: path_display(env.path_env.as_deref()) };
     }
-    auth_probe_any(candidates, path_env, env_allowlist).await
+    auth_probe_any(candidates, env.path_env, env.allowlist).await
 }
 
 async fn auth_probe_any(

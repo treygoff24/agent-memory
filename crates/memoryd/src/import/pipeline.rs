@@ -20,8 +20,8 @@ use crate::import::project_map::{
     write_generated_project_yaml, ProjectMapper, ProjectYamlAction, PromptBackend, ResolutionKind, ScopeBinding,
 };
 use crate::import::report::{
-    BackEdgeEntry, CwdDispositionEntry, CwdProjectYamlEntry, DedupEntry, HarnessCounters, ImportReport, ParseErrorEntry,
-    RefusalEntry,
+    BackEdgeEntry, CwdDispositionEntry, CwdProjectYamlEntry, DedupEntry, HarnessCounters, ImportReport,
+    ParseErrorEntry, RefusalEntry,
 };
 use crate::import::sources::{claude, codex};
 use crate::import::state::{ImportLockGuard, ImportRecord, ImportState, SupersededRecord};
@@ -463,8 +463,9 @@ impl ImportEngine {
                                 )?;
                             }
                             GovernanceStatus::Refused => {
-                                let reason =
-                                    supersede.reason.map_or("refused".to_string(), |reason| reason.as_str().to_string());
+                                let reason = supersede
+                                    .reason
+                                    .map_or("refused".to_string(), |reason| reason.as_str().to_string());
                                 bump_refusal(counters_mut(&mut report, &harness_key), &reason);
                                 report.refusals.push(RefusalEntry {
                                     source_key: action.source_key.clone(),
