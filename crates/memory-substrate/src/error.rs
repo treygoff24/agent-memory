@@ -325,11 +325,11 @@ pub enum VectorError {
     /// SQLite operation failed.
     #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
-    /// Vector storage failure (legacy stringly-typed variant).
-    ///
-    /// Deferred: remaining call sites should migrate to the `Sqlite` variant above.
-    #[error("vector storage failure: {0}")]
-    Storage(String),
+    /// JSON serialization of a chunk vector failed before the shadow-table
+    /// write. Distinct from `Sqlite` (the row write itself) — this is the
+    /// `serde_json` step that precedes it.
+    #[error("vector serialization failed: {0}")]
+    Serialize(#[from] serde_json::Error),
 }
 
 /// Git errors.
@@ -375,9 +375,10 @@ pub enum MergeError {
     /// Schema is unsupported.
     #[error("schema_version={found} exceeds supported={supported}; upgrade required")]
     UnsupportedSchema { found: u32, supported: u32 },
-    /// Parse failed (legacy stringly-typed variant).
-    ///
-    /// Deferred: callers should switch to `ParseSide` below.
+    /// Document input failed to parse before any side could be selected as the
+    /// merge carrier (the ours → theirs → base fallback all failed). Distinct
+    /// from `ParseSide`, which attributes a parse failure to one specific side;
+    /// this is the all-sides-unparseable case, so it is not replaceable by it.
     #[error("merge parse failed: {0}")]
     Parse(String),
     /// Parse failed for a specific side of a three-way merge.

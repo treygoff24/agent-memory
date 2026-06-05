@@ -33,19 +33,31 @@ residue, not rot — every sub-5 dimension has an identified, bounded refactor b
 
 ### Implemented in this campaign (Phase 7)
 
-- **D3** — type `RepoPath::try_new`'s `Result<_, String>` (model.rs); reuse `ValidationError`.
-  2/3 corroborated. Compiler-enforced ripple, behavior-preserving.
-- **M1** — retire the deferred stringly-typed `VectorError::Storage(String)` and
-  `MergeError::Parse(String)` variants (error.rs); typed replacements (`Sqlite`, `ParseSide`)
-  already exist.
-- **M2** — collapse `write_memory`'s 5× `guard_with_refusal_audit` boilerplate (api.rs),
-  preserving the spec §8.7 `WriteRefused` audit-event ordering exactly.
-- **D2** — replace the 3-way merge `(base, ours, theirs, merged, diagnostics)` argument
-  threading with a `ThreeWaySides` context struct (merge/field_rules.rs, merge/three_way.rs);
-  drop the `#[allow(too_many_arguments)]`s. Guarded by the two-clone convergence tests
-  (invariants 5–6). 2/3 corroborated, highest-value design item.
+- **M1 (partial)** — `VectorError::Storage(String)` is genuinely a `serde_json` serialization
+  failure (not a SQLite error), so it became a typed `Serialize(#[from] serde_json::Error)`
+  variant rather than collapsing into `Sqlite`; the call site now uses `?`. `MergeError::Parse`
+  turned out to be a *live* variant (the all-sides-unparseable carrier-selection failure, which
+  the single-side `ParseSide` cannot model), so it was kept and its misleading "deferred /
+  switch to ParseSide" doc corrected. The audit's "convert to existing typed replacements"
+  premise only held for the vector half — a coordinator-review correction.
 - **D6** — convert `memorum-coordination`'s hand-rolled `PeerHeartbeatError` and
-  `Result<(), String>` config errors to thiserror / a typed `ConfigValidationError`.
+  `Result<(), String>` config errors to thiserror / a typed `ConfigValidationError` (delegate
+  lane, isolated worktree, integrated by cherry-pick after review).
+
+### Deferred — design nuance found on inspection; better with a focused session or Trey's eyes
+
+- **D3 — type `RepoPath::try_new`'s `Result<_, String>`.** Safe and compiler-enforced, but the
+  return-type change ripples across three crates (substrate `api.rs`/`tree`/`ids`, the
+  coordination bench, and memoryd `trust_artifact`/`dream/*`), each with its own `map_err`
+  boundary (`ValidationError::Other`, `CleanupError::Serialization`, …). A clean, bounded
+  follow-up — deferred only to avoid a broad cross-crate sweep in an unattended pass.
+- **D2 — 3-way merge `ThreeWaySides` context struct.** Highest-value design item (2/3
+  corroborated), behavior-preserving, but it edits the merge driver — invariants 5–6 (merge
+  schema gate, two-clone convergence). Worth doing with full attention + a deliberate
+  convergence-test validation, not a 5am autonomous pass.
+- **M2 — collapse `write_memory`'s 5× `guard_with_refusal_audit` boilerplate.** Sensitive to
+  the spec §8.7 step-6 `WriteRefused` audit-event ordering; a closure extraction must not
+  reorder or drop a gate. Bounded but ordering-critical — left for a focused pass.
 
 ### Deferred — need Trey's call
 

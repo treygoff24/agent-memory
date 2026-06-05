@@ -772,7 +772,7 @@ fn upsert_vector_payload(
         &format!("INSERT OR REPLACE INTO {table}(rowid, embedding) VALUES (?1, ?2)"),
         params![chunk_rowid, blob],
     )?;
-    let vector_json = serde_json::to_string(vector).map_err(|e| VectorError::Storage(e.to_string()))?;
+    let vector_json = serde_json::to_string(vector)?;
     conn.execute(
         "INSERT INTO chunk_vectors(chunk_id,provider,model_ref,dimension,vector_json) VALUES (?1,?2,?3,?4,?5)
          ON CONFLICT(chunk_id,provider,model_ref,dimension) DO UPDATE SET vector_json=excluded.vector_json",
