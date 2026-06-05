@@ -16,6 +16,7 @@ docs/runbooks/init-wizard.md
 docs/runbooks/agent-onboarding-smoke.md
 docs/explainers/*.html
 docs/reviews/2026-05-28-main-rs-refactor-review.md
+docs/reviews/2026-06-05-elegance-audit.md
 
 # Local agent/tooling output directories. `--ignore-path .oxfmtignore`
 # overrides .gitignore, so these need their own entries even when ignored
