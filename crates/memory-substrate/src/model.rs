@@ -1316,12 +1316,55 @@ pub struct RecallIndexRow {
     pub human_review_required: bool,
     /// Indexed retrieval_policy.max_scope value.
     pub max_scope: Scope,
+    /// `_merge_diagnostics` projected from indexed frontmatter, when present.
+    ///
+    /// Carried as the raw stored JSON string so conflict-list callers can serve
+    /// the merge-diagnostics field straight from the index without re-reading
+    /// and re-parsing the canonical file.
+    pub merge_diagnostics_json: Option<String>,
     /// Tags from `memory_tags`, sorted deterministically.
     pub tags: Vec<String>,
     /// Memory aliases from `memory_aliases`, sorted deterministically.
     pub aliases: Vec<String>,
     /// Entities with aliases from `memory_entities` / `memory_entity_aliases`, sorted deterministically by id.
     pub entities: Vec<Entity>,
+}
+
+/// A single review-queue candidate projected entirely from the derived index.
+///
+/// Carries exactly the fields the review-queue response needs so the daemon can
+/// build the queue without reading and parsing every canonical memory file.
+/// `policy_applied` and `governance_reason` are projected from `frontmatter_json`
+/// via `json_extract`, mirroring `RecallIndexRow::merge_diagnostics_json`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewQueueRow {
+    /// Memory id.
+    pub id: String,
+    /// Frontmatter summary.
+    pub summary: String,
+    /// Lifecycle status, serialized as the canonical lowercase string.
+    pub status: String,
+    /// Indexed `frontmatter.requires_user_confirmation` value.
+    pub requires_user_confirmation: bool,
+    /// Indexed `frontmatter.review_state` value.
+    pub review_state: Option<String>,
+    /// `write_policy.policy_applied` projected from indexed frontmatter.
+    pub policy_applied: String,
+    /// `extras.governance_reason` projected from indexed frontmatter, when present.
+    pub governance_reason: Option<String>,
+}
+
+/// Result of an index-served review-queue query.
+///
+/// `total` counts every memory matching the review-queue membership predicate
+/// (used for the over-threshold notification), while `rows` is the bounded,
+/// deterministically-ordered slice the response actually renders.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewQueuePage {
+    /// Total number of memories matching the review-queue predicate.
+    pub total: usize,
+    /// Bounded set of candidate rows, ordered newest-first by `updated_at`.
+    pub rows: Vec<ReviewQueueRow>,
 }
 
 /// Chunk query.

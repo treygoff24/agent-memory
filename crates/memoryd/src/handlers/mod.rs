@@ -15,7 +15,7 @@ use memorum_coordination::{
     handle_peer_heartbeat as coordination_handle_peer_heartbeat, ClaimLockInfo, CoordinationConfig, PeerHeartbeatError,
     PeerHeartbeatOptions, PresenceConfig, PresenceRegistry,
 };
-use memory_governance::review::{over_threshold, REVIEW_QUEUE_DOGFOOD_THRESHOLD};
+use memory_governance::review::REVIEW_QUEUE_DOGFOOD_THRESHOLD;
 use memory_governance::{
     CandidateContext, CandidateMemory, ContradictionTiebreaker, ExistingMemorySummary, FileSourceResolver,
     GovernanceEngine, GovernanceProviders, GovernanceRefusalReason, GovernanceWriteDecision, GroundingVerifier,
@@ -30,10 +30,10 @@ use memory_privacy::{
 };
 use memory_source::{capture_web_source, ArtifactStore, CaptureMode, CaptureWebSourceRequest, SourceError};
 use memory_substrate::{
-    events::EventKind, Author, AuthorKind, ChunkQuery, ClassificationOutcome, EncryptedSubstrateDescriptor,
+    events::EventKind, Author, AuthorKind, AuxScope, ChunkQuery, ClassificationOutcome, EncryptedSubstrateDescriptor,
     EncryptedWriteRequest, Entity, EventContext, Evidence, Frontmatter, IndexProjection, Memory, MemoryContent,
-    MemoryId, MemoryQuery, MemoryStatus, MemoryType, ObserveKind, PrivacySpanRecord, RepoPath, RetrievalPolicy, Scope,
-    Sensitivity, Source, SourceKind, Substrate, SubstrateFragmentAppendRequest, SubstrateFragmentEncryption,
+    MemoryId, MemoryStatus, MemoryType, ObserveKind, PrivacySpanRecord, RecallIndexQuery, RepoPath, RetrievalPolicy,
+    Scope, Sensitivity, Source, SourceKind, Substrate, SubstrateFragmentAppendRequest, SubstrateFragmentEncryption,
     SubstrateFragmentPayload, SupersedeRequest as SubstrateSupersedeRequest, TombstoneRequest, TrustLevel, WriteMode,
     WritePolicy, WriteRequest as SubstrateWriteRequest,
 };
@@ -487,29 +487,32 @@ fn summarize_governance_policy_set(policies: &PolicySet) -> Result<Vec<Governanc
 }
 
 async fn conflicts_list_response(substrate: &Substrate, limit: Option<usize>) -> Result<ResponsePayload, HandlerError> {
+    // Served entirely from the SQLite recall index: `summary`, `updated_at`, and
+    // `_merge_diagnostics` are all projected from indexed columns / frontmatter
+    // JSON, so no per-row canonical-file read+parse is needed (avoids the prior
+    // N+1 over up to 200 quarantined rows). Metadata-only/encrypted quarantined
+    // rows are included to match the historical `include_metadata_only: true`.
     let rows = substrate
-        .query_memory(MemoryQuery {
-            id: None,
-            tag: None,
-            status: Some(MemoryStatus::Quarantined),
-            include_metadata_only: true,
-            namespace_prefix: None,
-            passive_recall_only: false,
-            updated_since: None,
+        .query_recall_index_including_metadata_only(RecallIndexQuery {
+            statuses: vec![MemoryStatus::Quarantined],
+            hydrate: AuxScope::None,
+            ..RecallIndexQuery::default()
         })
         .await
         .map_err(HandlerError::substrate)?;
-    let mut conflicts = Vec::new();
-    for row in rows.into_iter().take(limit.unwrap_or(50).min(200)) {
-        let envelope = substrate.read_memory_envelope(&row.id).await.map_err(HandlerError::substrate)?;
-        conflicts.push(ConflictSummary {
+    let conflicts = rows
+        .into_iter()
+        .take(limit.unwrap_or(50).min(200))
+        .map(|row| ConflictSummary {
             id: row.id,
             path: row.path.to_string(),
-            summary: bounded(&envelope.metadata.frontmatter.summary, REVIEW_QUEUE_SUMMARY_MAX),
-            reason: envelope.metadata.frontmatter.merge_diagnostics.map(|value| bounded(&value.to_string(), 240)),
-            updated_at: envelope.metadata.frontmatter.updated_at,
-        });
-    }
+            summary: bounded(&row.summary, REVIEW_QUEUE_SUMMARY_MAX),
+            // `merge_diagnostics_json` is the raw stored JSON for `_merge_diagnostics`;
+            // bounding it matches the prior `Value::to_string()` rendering.
+            reason: row.merge_diagnostics_json.map(|value| bounded(&value, 240)),
+            updated_at: row.updated_at,
+        })
+        .collect();
     Ok(ResponsePayload::ConflictsList(ConflictsListResponse { conflicts }))
 }
 

@@ -181,7 +181,27 @@ impl Substrate {
     }
 
     /// Read by repository path; returns the spec §16.2 `MemoryEnvelope` (B-API-1).
+    ///
+    /// Blocking note: despite the `async` signature this performs a synchronous
+    /// `std::fs` read + Markdown/frontmatter parse inline (no `spawn_blocking`),
+    /// so it occupies the calling worker thread for the duration. Callers that
+    /// read many memories should either fan these out concurrently
+    /// (`JoinSet`/`join_all`) or, to keep the disk work off the async worker
+    /// pool entirely, call [`Self::read_path_envelope_blocking`] from
+    /// `spawn_blocking` — see `attach_search_bodies` and the governance
+    /// active-memory candidate path.
     pub async fn read_path_envelope(&self, path: &RepoPath) -> Result<MemoryEnvelope, ReadError> {
+        self.read_path_envelope_blocking(path)
+    }
+
+    /// Synchronous core of [`Self::read_path_envelope`].
+    ///
+    /// The read is entirely synchronous (`std::fs` + Markdown/frontmatter parse,
+    /// no `.await`), so this exposes it as a plain `fn` for callers that want to
+    /// run it on a blocking thread (`tokio::task::spawn_blocking`) without
+    /// re-entering the async runtime. The async method above is a thin wrapper
+    /// over this, so both paths produce an identical `MemoryEnvelope`.
+    pub fn read_path_envelope_blocking(&self, path: &RepoPath) -> Result<MemoryEnvelope, ReadError> {
         if is_noncanonical_stream_f_repo_path(path.as_str()) {
             return Err(ReadError::NotACanonicalMemory { path: path.clone() });
         }
@@ -1285,6 +1305,14 @@ impl Substrate {
     /// one `(status, count)` pair per distinct status present.
     pub fn count_memories_by_status(&self) -> SubstrateResult<Vec<(MemoryStatus, u64)>> {
         self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.count_by_status()
+    }
+
+    /// Serve the review queue from the derived index: the total count of
+    /// review-queue members plus a bounded, newest-first slice carrying exactly
+    /// the fields the response renders. Replaces the prior full repo walk +
+    /// per-file frontmatter parse on this repeatedly-polled inbox surface.
+    pub fn review_queue(&self, limit: usize) -> SubstrateResult<crate::model::ReviewQueuePage> {
+        self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.review_queue(limit)
     }
 
     /// Count memories grouped by `(scope, canonical_namespace_id)` for namespace

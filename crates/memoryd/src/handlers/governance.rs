@@ -832,24 +832,93 @@ fn governance_engine(
         ),
         input.tombstones,
         GovernanceProviders::new(
-            MemorydSimilaritySearch { active: input.active, allow_top_k: input.allow_top_k },
+            MemorydSimilaritySearch::new(input.active, input.allow_top_k),
             MemorydTiebreaker { tiebreak_mode: input.tiebreak_mode },
         ),
     )
 }
 
+/// Upper bound on active-memory envelope reads in flight at once.
+///
+/// `active_memory_summaries` reads one canonical file per active memory, and
+/// each read is a synchronous `std::fs` read + Markdown parse moved onto the
+/// blocking pool. Spawning one task per memory with no cap would flood the
+/// runtime (the active set is unbounded, unlike search hits which are capped at
+/// `SEARCH_LIMIT_MAX`); a fixed window keeps the fan-out wide enough to hide
+/// per-read latency while bounding blocking-pool and file-descriptor pressure
+/// regardless of corpus size.
+const ACTIVE_SUMMARY_READ_CONCURRENCY: usize = 16;
+
+/// Build the active-memory candidate set for governance contradiction / claim-hash
+/// matching.
+///
+/// Index-first: the derived index already knows which memories are `Active` and
+/// plaintext, so we ask it for exactly those paths instead of reading and
+/// frontmatter-parsing *every* canonical file just to discard non-active /
+/// encrypted ones. The candidate set the engine actually needs (claim hash,
+/// entity hash, namespace) still requires each memory's body to hash, so we read
+/// only the active-plaintext envelopes.
+///
+/// Each read is a synchronous disk read + Markdown parse, so we move the reads
+/// onto the blocking pool via `spawn_blocking` (calling the synchronous
+/// `read_path_envelope_blocking`) rather than occupying async worker threads,
+/// and gate the fan-out with a semaphore at `ACTIVE_SUMMARY_READ_CONCURRENCY` so
+/// a large active set cannot saturate the runtime. Results are reassembled by
+/// position so the candidate set order still matches the index query.
+///
+/// Per-memory derivation (namespace, entity ids, body) is computed from the read
+/// envelope's frontmatter exactly as before, so the engine sees an identical
+/// candidate set; only its construction moved off the full repo walk.
 async fn active_memory_summaries(substrate: &Substrate) -> Result<Vec<ExistingMemorySummary>, HandlerError> {
-    let mut summaries = Vec::new();
-    for path in memory_substrate::tree::relative_memory_paths(substrate.roots().repo.as_path()) {
-        let repo_path = RepoPath::new(path.to_string_lossy().replace('\\', "/"));
-        let envelope = substrate.read_path_envelope(&repo_path).await.map_err(HandlerError::substrate)?;
+    let active_rows = substrate
+        .query_recall_index(RecallIndexQuery {
+            statuses: vec![MemoryStatus::Active],
+            hydrate: AuxScope::None,
+            ..RecallIndexQuery::default()
+        })
+        .await
+        .map_err(HandlerError::substrate)?;
+
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(ACTIVE_SUMMARY_READ_CONCURRENCY));
+    let mut reads = tokio::task::JoinSet::new();
+    for (position, row) in active_rows.iter().enumerate() {
+        let substrate = substrate.clone();
+        let path = row.path.clone();
+        let semaphore = Arc::clone(&semaphore);
+        reads.spawn(async move {
+            // Acquire before touching disk so at most
+            // `ACTIVE_SUMMARY_READ_CONCURRENCY` reads run at once. The semaphore
+            // is never closed, so `acquire_owned` cannot fail.
+            let _permit = semaphore.acquire_owned().await.expect("active-summary semaphore is open");
+            // The read is a synchronous `std::fs` read + Markdown parse; run it
+            // on the blocking pool via the dedicated sync method so it never
+            // occupies an async worker thread (works on both the multi-thread
+            // daemon runtime and the current-thread test/bench runtimes).
+            let envelope = tokio::task::spawn_blocking(move || substrate.read_path_envelope_blocking(&path)).await;
+            (position, envelope)
+        });
+    }
+
+    // Collect into a position-indexed buffer so the candidate set order matches
+    // the index query (deterministic by `memories.id`), independent of task
+    // completion order.
+    let mut buffered: Vec<Option<ExistingMemorySummary>> = (0..active_rows.len()).map(|_| None).collect();
+    while let Some(joined) = reads.join_next().await {
+        let (position, blocking_result) =
+            joined.map_err(|err| HandlerError::substrate(format!("active-memory read task: {err}")))?;
+        let envelope =
+            blocking_result.map_err(|err| HandlerError::substrate(format!("active-memory read task: {err}")))?;
+        let envelope = envelope.map_err(HandlerError::substrate)?;
+        // The index row was `Active`; re-confirm against the read envelope and
+        // require plaintext content (the encrypted body cannot be hashed), which
+        // preserves the prior walk's exact membership filter.
         if !matches!(envelope.metadata.frontmatter.status, MemoryStatus::Active) {
             continue;
         }
         let MemoryContent::Plaintext(body) = envelope.content else {
             continue;
         };
-        summaries.push(
+        buffered[position] = Some(
             ExistingMemorySummary::new(
                 envelope.metadata.frontmatter.id.as_str().to_string(),
                 namespace_for_frontmatter(&envelope.metadata.frontmatter),
@@ -859,25 +928,47 @@ async fn active_memory_summaries(substrate: &Substrate) -> Result<Vec<ExistingMe
             .with_entity_ids(entity_ids(&envelope.metadata.frontmatter)),
         );
     }
-    Ok(summaries)
+
+    Ok(buffered.into_iter().flatten().collect())
 }
 
 #[derive(Clone, Debug)]
 struct MemorydSimilaritySearch {
     active: Vec<ExistingMemorySummary>,
+    /// Index of the active set keyed by the exact-duplicate match key
+    /// `(namespace, claim_hash, entity_hash)`, pointing at the position of the
+    /// first occurrence in `active`. Turns `find_active_by_claim_hash` into an
+    /// O(1) lookup instead of a linear scan over the whole active set per call,
+    /// while preserving the prior "first match by candidate-set order" result.
+    by_claim_key: std::collections::HashMap<(String, String, String), usize>,
     allow_top_k: bool,
+}
+
+impl MemorydSimilaritySearch {
+    fn new(active: Vec<ExistingMemorySummary>, allow_top_k: bool) -> Self {
+        let mut by_claim_key = std::collections::HashMap::with_capacity(active.len());
+        for (position, memory) in active.iter().enumerate() {
+            // First occurrence wins, matching the prior `Iterator::find` semantics.
+            by_claim_key
+                .entry((
+                    memory.namespace().to_string(),
+                    memory.canonical_claim_hash().to_string(),
+                    memory.entity_hash().to_string(),
+                ))
+                .or_insert(position);
+        }
+        Self { active, by_claim_key, allow_top_k }
+    }
 }
 
 impl SimilaritySearch for MemorydSimilaritySearch {
     fn find_active_by_claim_hash(&self, candidate: &CandidateMemory) -> Option<ExistingMemorySummary> {
-        self.active
-            .iter()
-            .find(|memory| {
-                memory.canonical_claim_hash() == candidate.canonical_claim_hash()
-                    && memory.entity_hash() == candidate.entity_hash()
-                    && memory.namespace() == candidate.namespace()
-            })
-            .cloned()
+        let key = (
+            candidate.namespace().to_string(),
+            candidate.canonical_claim_hash().to_string(),
+            candidate.entity_hash().to_string(),
+        );
+        self.by_claim_key.get(&key).and_then(|&position| self.active.get(position)).cloned()
     }
 
     fn top_k(&self, _candidate: &CandidateMemory, limit: usize) -> Vec<ExistingMemorySummary> {

@@ -2,7 +2,8 @@ use axum::extract::{Path, State};
 use axum::response::IntoResponse;
 use axum::Json;
 use memoryd::protocol::{EntitySummary, RequestPayload, ResponsePayload, ResponseResult};
-use serde::Serialize;
+use serde::ser::SerializeStruct;
+use serde::{Serialize, Serializer};
 use std::collections::BTreeSet;
 
 use crate::routes::status::daemon_error;
@@ -33,7 +34,7 @@ pub struct EntityEdge {
     pub temporal_to: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug)]
 pub struct EntityDetailResponse {
     pub entity_id: String,
     pub label: String,
@@ -41,9 +42,33 @@ pub struct EntityDetailResponse {
     pub related_memories: Vec<EntityMemorySummary>,
     pub first_seen: Option<String>,
     pub last_seen: Option<String>,
-    pub memories: Vec<EntityMemorySummary>,
     pub supersession_chain: Vec<String>,
     pub recall_history: Vec<RecallHistoryPoint>,
+}
+
+// The response carries `related_memories` and a `memories` alias holding the
+// identical list (the frontend reads `related_memories`; `memories` is kept for
+// the published JSON contract — see frontend `api/types.ts` and the MSW
+// fixture). Storing one owned `Vec` and emitting both names at serialization
+// time avoids materializing the list twice per entity-detail request while
+// keeping the wire shape byte-for-byte identical.
+impl Serialize for EntityDetailResponse {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("EntityDetailResponse", 9)?;
+        state.serialize_field("entity_id", &self.entity_id)?;
+        state.serialize_field("label", &self.label)?;
+        state.serialize_field("mentions", &self.mentions)?;
+        state.serialize_field("related_memories", &self.related_memories)?;
+        state.serialize_field("first_seen", &self.first_seen)?;
+        state.serialize_field("last_seen", &self.last_seen)?;
+        state.serialize_field("memories", &self.related_memories)?;
+        state.serialize_field("supersession_chain", &self.supersession_chain)?;
+        state.serialize_field("recall_history", &self.recall_history)?;
+        state.end()
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -115,12 +140,6 @@ impl EntityDetailResponse {
             }],
             first_seen: Some("2026-05-01T11:02:00Z".to_owned()),
             last_seen: Some("2026-05-01T11:02:00Z".to_owned()),
-            memories: vec![EntityMemorySummary {
-                id: "mem_20260501_a1b2c3d4e5f60718_000010".to_owned(),
-                namespace: "project:agent-memory".to_owned(),
-                status: "active".to_owned(),
-                confidence: Some(0.95),
-            }],
             supersession_chain: vec![
                 "mem_20260430_a1b2c3d4e5f60718_000004".to_owned(),
                 "mem_20260501_a1b2c3d4e5f60718_000010".to_owned(),
@@ -227,25 +246,38 @@ async fn detail_from_entities(
         }
         None => (entity_id.to_owned(), Vec::new()),
     };
-    let mut related_memories = Vec::new();
-    for id in &mentions {
-        related_memories.push(memory_summary_from_daemon(socket_path, id).await.unwrap_or_else(|| {
-            EntityMemorySummary {
-                id: id.clone(),
+    // Fan the per-mention trust-artifact round-trips out concurrently rather than
+    // awaiting them one at a time: each is an independent Unix-socket request, so
+    // the page render latency becomes one round-trip wide instead of N deep.
+    // Results are reassembled in `mentions` order so the response is unchanged.
+    let mut tasks = tokio::task::JoinSet::new();
+    for (position, id) in mentions.iter().enumerate() {
+        let socket_path = socket_path.to_path_buf();
+        let id = id.clone();
+        tasks.spawn(async move {
+            let summary = memory_summary_from_daemon(&socket_path, &id).await.unwrap_or(EntityMemorySummary {
+                id,
                 namespace: "unknown".to_owned(),
                 status: "unknown".to_owned(),
                 confidence: None,
-            }
-        }));
+            });
+            (position, summary)
+        });
     }
+    let mut ordered: Vec<Option<EntityMemorySummary>> = (0..mentions.len()).map(|_| None).collect();
+    while let Some(joined) = tasks.join_next().await {
+        if let Ok((position, summary)) = joined {
+            ordered[position] = Some(summary);
+        }
+    }
+    let related_memories = ordered.into_iter().flatten().collect::<Vec<_>>();
     EntityDetailResponse {
         entity_id: entity_id.to_owned(),
         label,
         mentions,
-        related_memories: related_memories.clone(),
+        related_memories,
         first_seen: None,
         last_seen: None,
-        memories: related_memories,
         supersession_chain: Vec::new(),
         recall_history: Vec::new(),
     }

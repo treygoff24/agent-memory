@@ -38,21 +38,25 @@ pub(crate) async fn review_queue_response(
     state: &HandlerState,
     limit: Option<usize>,
 ) -> Result<ResponsePayload, HandlerError> {
-    let mut envelopes = Vec::new();
-    for path in memory_substrate::tree::relative_memory_paths(substrate.roots().repo.as_path()) {
-        let repo_path = RepoPath::new(path.to_string_lossy().replace('\\', "/"));
-        let envelope = substrate.read_path_envelope(&repo_path).await.map_err(HandlerError::substrate)?;
-        envelopes.push(review_envelope_from_memory(envelope.metadata));
-    }
+    // Serve the queue from the derived index: the membership predicate rides
+    // `idx_memories_review` and the bounded row fetch returns only what the
+    // response renders, instead of reading and re-parsing every canonical memory
+    // file on each (repeatedly-polled) inbox request.
+    let bounded_limit = limit.unwrap_or(REVIEW_QUEUE_LIMIT_DEFAULT).min(REVIEW_QUEUE_LIMIT_MAX);
+    let page = substrate.review_queue(bounded_limit).map_err(HandlerError::substrate)?;
 
-    let mut queue = ReviewQueue::from_memory_envelopes(envelopes);
-    if over_threshold(&queue) {
+    if page.total >= REVIEW_QUEUE_DOGFOOD_THRESHOLD {
         state.emit_notification(NotificationEvent::ReviewQueueOverThreshold {
-            count: queue.items.len(),
+            count: page.total,
             threshold: REVIEW_QUEUE_DOGFOOD_THRESHOLD,
         });
     }
-    queue.items.truncate(limit.unwrap_or(REVIEW_QUEUE_LIMIT_DEFAULT).min(REVIEW_QUEUE_LIMIT_MAX));
+
+    // Reuse the exact governance membership/classification logic so the rendered
+    // items are byte-for-byte identical to the prior full-walk path. The SQL
+    // predicate already restricts to qualifying rows, so each row maps to an
+    // item; `from_memory_envelopes` re-applies the same filter as a safety net.
+    let queue = ReviewQueue::from_memory_envelopes(page.rows.into_iter().map(review_envelope_from_row));
 
     let mut items = queue
         .items
@@ -71,15 +75,44 @@ pub(crate) async fn review_queue_response(
                 .collect(),
         })
         .collect::<Vec<_>>();
-    while serialized_payload_len(&ResponsePayload::ReviewQueue(ReviewQueueResponse { items: items.clone() }))
-        > REVIEW_RESPONSE_FRAME_BUDGET
-    {
-        if items.pop().is_none() {
-            break;
-        }
-    }
+    trim_items_to_frame_budget(&mut items);
 
     Ok(ResponsePayload::ReviewQueue(ReviewQueueResponse { items }))
+}
+
+/// Drop review-queue items from the tail until the serialized response fits
+/// within [`REVIEW_RESPONSE_FRAME_BUDGET`], preserving the prior "trim the tail"
+/// semantics without re-serializing the whole payload once per popped item.
+///
+/// `serde_json`'s compact output joins array elements with a single `,` byte and
+/// adds no whitespace, so the exact frame length for any prefix of `items`
+/// equals the empty-items framing overhead plus the sum of the kept items'
+/// individual lengths plus one comma between adjacent kept items. Each item is
+/// serialized exactly once and the surviving prefix is found by a single linear
+/// scan — O(n) total — instead of the previous clone-and-reserialize loop that
+/// was O(n^2) in the number of items trimmed. The empty result (budget too small
+/// for even one item) matches the prior loop's `items.pop().is_none()` break.
+fn trim_items_to_frame_budget(items: &mut Vec<ReviewQueueItemResponse>) {
+    // Framing overhead = the serialized envelope with an empty `items` array.
+    let overhead = serialized_payload_len(&ResponsePayload::ReviewQueue(ReviewQueueResponse { items: Vec::new() }));
+
+    // Grow the surviving prefix one item at a time, stopping before the running
+    // total would exceed the budget. `running` tracks the exact frame length for
+    // the current prefix: overhead, plus each kept item's length, plus one comma
+    // between adjacent kept items. Each item is serialized at most once.
+    let mut kept = 0usize;
+    let mut running = overhead;
+    for (index, item) in items.iter().enumerate() {
+        let item_len = serde_json::to_vec(item).map_or(MAX_FRAME_BYTES, |bytes| bytes.len());
+        let separator = usize::from(index > 0);
+        let next = running + separator + item_len;
+        if next > REVIEW_RESPONSE_FRAME_BUDGET {
+            break;
+        }
+        running = next;
+        kept = index + 1;
+    }
+    items.truncate(kept);
 }
 
 pub(crate) async fn review_decision_response(
@@ -206,10 +239,83 @@ fn review_envelope_from_memory(memory: Memory) -> ReviewMemoryEnvelope {
     }
 }
 
+/// Build a review envelope from an index-projected row. Mirrors
+/// [`review_envelope_from_memory`] field-for-field; `status` already arrives as
+/// the canonical lowercase string from the index, and `policy_applied` /
+/// `governance_reason` are projected from `frontmatter_json`.
+fn review_envelope_from_row(row: memory_substrate::model::ReviewQueueRow) -> ReviewMemoryEnvelope {
+    ReviewMemoryEnvelope {
+        id: row.id,
+        summary: row.summary,
+        status: row.status,
+        requires_user_confirmation: row.requires_user_confirmation,
+        review_state: row.review_state,
+        policy_applied: row.policy_applied,
+        reason: row.governance_reason,
+    }
+}
+
 fn review_queue_contains(memory: &Memory) -> bool {
     let envelope = review_envelope_from_memory(memory.clone());
     ReviewQueue::from_memory_envelopes(vec![envelope])
         .items
         .iter()
         .any(|item| item.id == memory.frontmatter.id.as_str())
+}
+
+#[cfg(test)]
+mod trim_tests {
+    use super::*;
+
+    fn sample_item(index: usize, summary_chars: usize) -> ReviewQueueItemResponse {
+        ReviewQueueItemResponse {
+            id: format!("mem-{index:08}"),
+            summary: "x".repeat(summary_chars),
+            status: "candidate".to_string(),
+            policy_applied: "default".to_string(),
+            reason: Some("review".to_string()),
+            next_actions: vec!["approve".to_string(), "reject".to_string()],
+        }
+    }
+
+    /// Reference implementation: the prior clone-and-pop loop. Drops items from
+    /// the tail until the full serialized payload fits the budget.
+    fn reference_trim(mut items: Vec<ReviewQueueItemResponse>) -> Vec<ReviewQueueItemResponse> {
+        while serialized_payload_len(&ResponsePayload::ReviewQueue(ReviewQueueResponse { items: items.clone() }))
+            > REVIEW_RESPONSE_FRAME_BUDGET
+        {
+            if items.pop().is_none() {
+                break;
+            }
+        }
+        items
+    }
+
+    #[test]
+    fn matches_reference_loop_across_sizes() {
+        // Each case is sized so the serialized payload straddles the budget,
+        // exercising the no-trim, partial-trim, and trim-to-empty branches.
+        for (count, summary_chars) in [(0, 0), (1, 10), (10, 100), (60, 1024), (100, 1024), (1, 70_000)] {
+            let items: Vec<_> = (0..count).map(|index| sample_item(index, summary_chars)).collect();
+            let mut actual = items.clone();
+            trim_items_to_frame_budget(&mut actual);
+            let expected = reference_trim(items);
+            assert_eq!(actual, expected, "count={count} summary_chars={summary_chars}");
+            // The kept payload must always be within budget.
+            assert!(
+                serialized_payload_len(&ResponsePayload::ReviewQueue(ReviewQueueResponse { items: actual.clone() }))
+                    <= REVIEW_RESPONSE_FRAME_BUDGET
+                    || actual.is_empty(),
+                "kept payload exceeds budget: count={count} summary_chars={summary_chars}"
+            );
+        }
+    }
+
+    #[test]
+    fn keeps_everything_when_under_budget() {
+        let items: Vec<_> = (0..5).map(|index| sample_item(index, 32)).collect();
+        let mut trimmed = items.clone();
+        trim_items_to_frame_budget(&mut trimmed);
+        assert_eq!(trimmed, items);
+    }
 }

@@ -446,6 +446,7 @@ fn row(n: usize) -> RecallIndexRow {
         review_state: None,
         human_review_required: false,
         max_scope: Scope::User,
+        merge_diagnostics_json: None,
         tags: Vec::new(),
         aliases: Vec::new(),
         entities: Vec::new(),

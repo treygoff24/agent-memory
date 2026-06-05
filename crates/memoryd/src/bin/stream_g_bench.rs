@@ -848,6 +848,7 @@ fn recall_row(index: usize, now: DateTime<Utc>) -> RecallIndexRow {
         review_state: None,
         human_review_required: false,
         max_scope: scope,
+        merge_diagnostics_json: None,
         tags: vec!["stream-g".to_owned(), format!("bucket-{}", index % 32)],
         aliases: vec![format!("stream-g-bench-{index}")],
         entities: vec![memory_substrate::Entity {

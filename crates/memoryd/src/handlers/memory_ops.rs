@@ -87,32 +87,20 @@ pub(crate) async fn search_response(
         .await
         .map_err(HandlerError::substrate)?;
     let total = chunks.len();
-    let mut hits = Vec::new();
-    for chunk in chunks.into_iter().take(limit) {
-        let body = if include_body {
-            match substrate.read_memory_envelope(&chunk.memory_id).await {
-                Ok(envelope) => match envelope.content {
-                    // Bound the body to the same cap memory_get applies; search must return a
-                    // bounded preview, never a bulk dump of full plaintext bodies (SEC-03).
-                    MemoryContent::Plaintext(body) => Some(bounded(&body, GET_BODY_MAX)),
-                    MemoryContent::Ciphertext { .. } | MemoryContent::MetadataOnly => None,
-                },
-                Err(memory_substrate::ReadError::NotACanonicalMemory { .. }) => None,
-                Err(err) => {
-                    tracing::warn!(memory_id = %chunk.memory_id, "search read failed: {err}");
-                    None
-                }
-            }
-        } else {
-            None
-        };
-        hits.push(SearchHit {
+    let mut hits = chunks
+        .into_iter()
+        .take(limit)
+        .map(|chunk| SearchHit {
             id: chunk.memory_id.as_str().to_string(),
             summary: bounded(&chunk.text, SEARCH_SNIPPET_MAX),
             snippet: bounded(&chunk.text, SEARCH_SNIPPET_MAX),
-            body,
+            body: None,
             score: chunk.score,
-        });
+        })
+        .collect::<Vec<_>>();
+
+    if include_body {
+        attach_search_bodies(substrate, &mut hits).await?;
     }
 
     let guidance = if include_body {
@@ -121,6 +109,50 @@ pub(crate) async fn search_response(
         "Bounded snippets only; call memory_get for full body access when policy allows.".to_string()
     };
     Ok(ResponsePayload::Search(SearchResponse { hits, total, guidance }))
+}
+
+/// Populate the bounded body preview for each search hit, overlapping the
+/// per-hit canonical-file reads instead of awaiting them one at a time.
+///
+/// Each read is a synchronous disk-read + Markdown parse inside an `async fn`;
+/// run serially they serialize end to end (and, on a single-threaded runtime,
+/// stall the executor). Cloning `Substrate` is cheap — all state is behind
+/// `Arc` — so we fan the bounded reads (capped at `SEARCH_LIMIT_MAX`) onto
+/// separate tasks that the multi-threaded runtime can run concurrently, then
+/// assign bodies back by hit index to preserve output order and content. The
+/// bounding cap and the plaintext-only/ciphertext-skip rules are unchanged from
+/// the prior serial path (SEC-03: never a bulk dump of full plaintext bodies).
+async fn attach_search_bodies(substrate: &Substrate, hits: &mut [SearchHit]) -> Result<(), HandlerError> {
+    let mut reads = tokio::task::JoinSet::new();
+    for (position, hit) in hits.iter().enumerate() {
+        let substrate = substrate.clone();
+        let memory_id = MemoryId::new(hit.id.clone());
+        reads.spawn(async move {
+            let body = match substrate.read_memory_envelope(&memory_id).await {
+                Ok(envelope) => match envelope.content {
+                    MemoryContent::Plaintext(body) => Some(bounded(&body, GET_BODY_MAX)),
+                    MemoryContent::Ciphertext { .. } | MemoryContent::MetadataOnly => None,
+                },
+                Err(memory_substrate::ReadError::NotACanonicalMemory { .. }) => None,
+                Err(err) => {
+                    tracing::warn!(memory_id = %memory_id, "search read failed: {err}");
+                    None
+                }
+            };
+            (position, body)
+        });
+    }
+
+    while let Some(joined) = reads.join_next().await {
+        // A panic in a read task is a daemon-internal fault, not a search miss;
+        // surface it (retryable) rather than silently dropping the hit's body.
+        let (position, body) =
+            joined.map_err(|err| HandlerError::substrate(format!("search body read task: {err}")))?;
+        if let Some(hit) = hits.get_mut(position) {
+            hit.body = body;
+        }
+    }
+    Ok(())
 }
 
 pub(crate) async fn get_response(

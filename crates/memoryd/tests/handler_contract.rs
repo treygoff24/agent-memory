@@ -135,6 +135,61 @@ async fn search_and_get_return_bounded_protocol_responses_from_substrate() {
 }
 
 #[tokio::test]
+async fn conflicts_list_is_served_from_the_index_with_summary_reason_and_updated_at() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let substrate = init_substrate(roots).await;
+
+    // A quarantined memory carries the fields the conflicts list surfaces: a
+    // distinct summary, a distinct updated_at, and _merge_diagnostics. After the
+    // index-first rewrite these must round-trip from the index projection, not a
+    // per-row canonical-file read.
+    let mut memory = sample_memory("mem_20260428_a1b2c3d4e5f60718_300003", "conflicting fact body");
+    memory.frontmatter.summary = "quarantined conflict summary".to_string();
+    memory.frontmatter.status = MemoryStatus::Quarantined;
+    // Quarantined requires the Quarantined trust level (validate.rs lifecycle pair).
+    memory.frontmatter.trust_level = TrustLevel::Quarantined;
+    memory.frontmatter.updated_at = chrono::DateTime::parse_from_rfc3339("2026-05-02T09:30:00Z")
+        .expect("fixed updated_at")
+        .with_timezone(&chrono::Utc);
+    memory.frontmatter.merge_diagnostics = Some(serde_json::json!({ "conflict": "both-edited", "winner": "remote" }));
+
+    substrate
+        .write_memory(WriteRequest {
+            operation_id: None,
+            memory: memory.clone(),
+            expected_base_hash: None,
+            write_mode: WriteMode::CreateNew,
+            index_projection: None,
+            event_context: EventContext::default(),
+            allow_best_effort_durability: true,
+            classification: ClassificationOutcome::Trusted,
+        })
+        .await
+        .expect("write quarantined memory through Stream A");
+
+    let conflicts = handle_request(
+        &substrate,
+        RequestEnvelope::new("req-conflicts", RequestPayload::ConflictsList { limit: None }),
+    )
+    .await;
+
+    let ResponseResult::Success(ResponsePayload::ConflictsList(conflicts)) = conflicts.result else {
+        panic!("expected conflicts-list success, got {:?}", conflicts.result);
+    };
+    assert_eq!(conflicts.conflicts.len(), 1, "the single quarantined memory is listed");
+    let conflict = &conflicts.conflicts[0];
+    assert_eq!(conflict.id, memory.frontmatter.id);
+    assert_eq!(conflict.summary, memory.frontmatter.summary, "summary comes from the index projection");
+    assert_eq!(conflict.updated_at, memory.frontmatter.updated_at, "updated_at comes from the index column");
+    // reason is the rendered _merge_diagnostics JSON; assert on its content, not
+    // exact whitespace, since it is the stored JSON string.
+    let reason = conflict.reason.as_deref().expect("merge diagnostics surface as a reason");
+    assert!(reason.contains("both-edited"), "reason carries merge_diagnostics: {reason}");
+    assert!(reason.contains("remote"), "reason carries merge_diagnostics: {reason}");
+}
+
+#[tokio::test]
 async fn search_include_body_is_bounded_to_the_get_cap() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));

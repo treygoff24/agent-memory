@@ -2,7 +2,13 @@ use clap::Parser;
 
 use memoryd::cli::{self, Cli, Command};
 
-#[tokio::main(flavor = "current_thread")]
+// Multi-threaded runtime so a slow synchronous substrate call (a large vector
+// ANN scan, a reindex, or — once SyncManager wires real git — a network push)
+// runs on a worker thread instead of blocking the single executor that also
+// drives the accept/dispatch loop and every other in-flight connection. The
+// `rt-multi-thread` feature is already enabled workspace-wide; tokio defaults
+// the worker count to the available parallelism.
+#[tokio::main(flavor = "multi_thread")]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {

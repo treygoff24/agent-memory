@@ -15,11 +15,11 @@ use crate::index::chunking::chunk_memory;
 use crate::markdown::hash_bytes;
 use crate::model::{
     AuxScope, ChunkResult, EmbeddingTriple, EmbeddingUpdate, Entity, EventsLogMirrorHealth, Memory, MemoryId,
-    MemoryQuery, MemoryStatus, QueryResult, RecallIndexQuery, RecallIndexRow, RepoPath, Scope, Sensitivity, Sha256,
-    SourceKind,
+    MemoryQuery, MemoryStatus, QueryResult, RecallIndexQuery, RecallIndexRow, RepoPath, ReviewQueuePage,
+    ReviewQueueRow, Scope, Sensitivity, Sha256, SourceKind,
 };
 
-use super::sql_placeholders;
+use super::{bucketed_in_clause_width, pad_in_clause_bindings, sql_placeholders};
 
 /// Index handle.  Owns a single SQLite connection; all mutating methods take
 /// `&mut self` so the borrow checker prevents concurrent transactions.
@@ -246,7 +246,10 @@ impl Index {
 
     /// Query chunks through sqlite-vec nearest-neighbor search.
     ///
-    /// R-IX-1 defense-in-depth: filters out encrypted-memory chunks.
+    /// R-IX-1 defense-in-depth: the join against `memories` filters out
+    /// encrypted-memory chunks (`metadata_only = 1`) and rows disabled for
+    /// passive recall (`passive_recall = 0`), matching [`Self::query_chunks`]
+    /// so both retrieval paths apply the identical row-exclusion contract.
     pub fn query_vector_chunks(
         &self,
         triple: &EmbeddingTriple,
@@ -266,6 +269,7 @@ impl Index {
              WHERE embedding MATCH ?1
                AND k = ?2
                AND memories.metadata_only = 0
+               AND memories.passive_recall = 1
              ORDER BY {table}.distance"
         );
         let blob = crate::index::sqlite_vec::serialize_f32(vector);
@@ -485,7 +489,8 @@ impl Index {
                     json_extract(memories.frontmatter_json, '$.source.harness'),
                     json_extract(memories.frontmatter_json, '$.source.session_id'),
                     json_extract(memories.frontmatter_json, '$.author.harness'),
-                    json_extract(memories.frontmatter_json, '$.author.session_id')
+                    json_extract(memories.frontmatter_json, '$.author.session_id'),
+                    json_extract(memories.frontmatter_json, '$._merge_diagnostics')
              FROM memories",
         );
         let mut filters = Vec::new();
@@ -533,7 +538,61 @@ impl Index {
         let count: i64 = stmt.query_row(params_from_iter(bindings.iter()), |row| row.get(0))?;
         Ok(count.max(0) as usize)
     }
+
+    /// Serve the review queue from the derived index instead of walking and
+    /// re-parsing every canonical memory file (the prior O(total) disk+parse
+    /// hot path on a repeatedly-polled inbox surface).
+    ///
+    /// The membership predicate rides `idx_memories_review(review_state,
+    /// requires_user_confirmation)` and is byte-for-byte the SQL equivalent of
+    /// `ReviewStatus::from_review_metadata`: a row qualifies when its status is
+    /// `quarantined`, when it is a `candidate` requiring user confirmation, or
+    /// when its `review_state` is one of the pending spellings. `total` counts
+    /// every qualifying row (for the over-threshold notification) while `rows`
+    /// is bounded by `limit` and ordered newest-first by `updated_at` so callers
+    /// hydrate only what the response renders. `policy_applied` and
+    /// `governance_reason` are projected from `frontmatter_json` via
+    /// `json_extract`, matching `RecallIndexRow::merge_diagnostics_json`.
+    pub fn review_queue(&self, limit: usize) -> SubstrateResult<ReviewQueuePage> {
+        let total: i64 = self
+            .connection
+            .prepare_cached(&format!("SELECT COUNT(*) FROM memories WHERE {REVIEW_QUEUE_PREDICATE}"))?
+            .query_row([], |row| row.get(0))?;
+
+        let mut stmt = self.connection.prepare_cached(&format!(
+            "SELECT memories.id, memories.summary, memories.status,
+                    memories.requires_user_confirmation, memories.review_state,
+                    json_extract(memories.frontmatter_json, '$.write_policy.policy_applied'),
+                    json_extract(memories.frontmatter_json, '$.governance_reason')
+             FROM memories
+             WHERE {REVIEW_QUEUE_PREDICATE}
+             ORDER BY memories.updated_at DESC, memories.id
+             LIMIT ?1"
+        ))?;
+        let mut query_rows = stmt.query(params![limit as i64])?;
+        let mut rows = Vec::new();
+        while let Some(row) = query_rows.next()? {
+            rows.push(ReviewQueueRow {
+                id: row.get(0)?,
+                summary: row.get(1)?,
+                status: row.get(2)?,
+                requires_user_confirmation: row.get::<_, i64>(3)? != 0,
+                review_state: row.get(4)?,
+                policy_applied: row.get::<_, Option<String>>(5)?.unwrap_or_default(),
+                governance_reason: row.get(6)?,
+            });
+        }
+        Ok(ReviewQueuePage { total: total.max(0) as usize, rows })
+    }
 }
+
+/// SQL membership predicate mirroring `ReviewStatus::from_review_metadata`.
+///
+/// Kept as a single shared constant so the `COUNT(*)` total and the bounded row
+/// fetch can never drift apart on which memories qualify for the queue.
+const REVIEW_QUEUE_PREDICATE: &str = "memories.status = 'quarantined' \
+     OR (memories.status = 'candidate' AND memories.requires_user_confirmation = 1) \
+     OR memories.review_state IN ('pending', 'pending_review', 'pending-review')";
 
 /// Health helper for the derived events-log mirror.
 pub fn query_events_log_mirror_health(
@@ -575,19 +634,43 @@ fn mirror_event_row(connection: &Connection, event: &Event) -> rusqlite::Result<
     Ok(())
 }
 
+/// Batch size for the chunked `event_id IN (...)` presence scan below.
+///
+/// Bounds memory and scan cost to the input (canonical-event) size rather than
+/// the whole `events_log`, and keeps the full-batch prepared statement at a
+/// fixed width so the chunked scans reuse one cached plan.
+const MIRROR_HEALTH_PRESENCE_BATCH: usize = 256;
+
 fn count_missing_events_log_rows(connection: &Connection, canonical_events: &[Event]) -> rusqlite::Result<u64> {
     if canonical_events.is_empty() {
         return Ok(0);
     }
-    // One scan of `events_log` into an in-memory set, then a membership check
-    // per canonical event — O(1) queries instead of one round trip per event.
-    let mut stmt = connection.prepare("SELECT event_id FROM events_log")?;
-    let mut existing = std::collections::HashSet::new();
-    let mut rows = stmt.query([])?;
-    while let Some(row) = rows.next()? {
-        existing.insert(row.get::<_, String>(0)?);
+    // Probe which canonical ids exist in `events_log` via chunked
+    // `event_id IN (...)` scans riding the PK index, then apply the same
+    // per-event "absent from the mirror" membership test the prior full-column
+    // scan used. Memory and scan cost track the canonical-event count, not the
+    // entire (unbounded, lifetime-growing) `events_log`. Using a presence set
+    // (rather than summing match counts) keeps the result identical even if the
+    // canonical list ever repeated an id.
+    let full_batch_sql = format!(
+        "SELECT event_id FROM events_log WHERE event_id IN ({})",
+        sql_placeholders(MIRROR_HEALTH_PRESENCE_BATCH)
+    );
+    let mut present = std::collections::HashSet::with_capacity(canonical_events.len());
+    for chunk in canonical_events.chunks(MIRROR_HEALTH_PRESENCE_BATCH) {
+        let ids = chunk.iter().map(|event| event.id.as_str());
+        let mut stmt = if chunk.len() == MIRROR_HEALTH_PRESENCE_BATCH {
+            connection.prepare_cached(&full_batch_sql)?
+        } else {
+            let sql = format!("SELECT event_id FROM events_log WHERE event_id IN ({})", sql_placeholders(chunk.len()));
+            connection.prepare_cached(&sql)?
+        };
+        let mut rows = stmt.query(params_from_iter(ids))?;
+        while let Some(row) = rows.next()? {
+            present.insert(row.get::<_, String>(0)?);
+        }
     }
-    let missing = canonical_events.iter().filter(|event| !existing.contains(event.id.as_str())).count();
+    let missing = canonical_events.iter().filter(|event| !present.contains(event.id.as_str())).count();
     Ok(missing as u64)
 }
 
@@ -712,7 +795,7 @@ fn upsert_chunk_embedding_meta(txn: &Transaction<'_>, update: &EmbeddingUpdate) 
             update.triple.provider,
             update.triple.model_ref,
             i64::from(update.triple.dimension),
-            vector_table,
+            vector_table.as_ref(),
             embedded_at,
             update.expected_chunk_hash.as_str()
         ],
@@ -1242,6 +1325,7 @@ fn row_to_recall_index_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RecallIn
         source_session_id: row.get(19)?,
         author_harness: row.get(20)?,
         author_session_id: row.get(21)?,
+        merge_diagnostics_json: row.get(22)?,
         tags: Vec::new(),
         aliases: Vec::new(),
         entities: Vec::new(),
@@ -1317,13 +1401,14 @@ fn read_strings_by_memory(
     table: AuxiliaryStringTable,
     ids: &[String],
 ) -> rusqlite::Result<BTreeMap<String, Vec<String>>> {
-    let placeholders = sql_placeholders(ids.len());
+    let width = bucketed_in_clause_width(ids.len());
+    let placeholders = sql_placeholders(width);
     let sql = format!(
         "SELECT memory_id,{} FROM {} WHERE memory_id IN ({placeholders}) {}",
         table.column, table.table, table.order_by
     );
     let mut stmt = conn.prepare_cached(&sql)?;
-    let mut rows = stmt.query(params_from_iter(ids.iter()))?;
+    let mut rows = stmt.query(params_from_iter(pad_in_clause_bindings(ids, width)))?;
     let mut values = BTreeMap::<String, Vec<String>>::new();
     while let Some(row) = rows.next()? {
         values.entry(row.get::<_, String>(0)?).or_default().push(row.get(1)?);
@@ -1332,14 +1417,15 @@ fn read_strings_by_memory(
 }
 
 fn read_entities_by_memory(conn: &Connection, ids: &[String]) -> rusqlite::Result<BTreeMap<String, Vec<Entity>>> {
-    let placeholders = sql_placeholders(ids.len());
+    let width = bucketed_in_clause_width(ids.len());
+    let placeholders = sql_placeholders(width);
     let sql = format!(
         "SELECT memory_id,entity_id,label FROM memory_entities
          WHERE memory_id IN ({placeholders})
          ORDER BY memory_id, entity_id COLLATE NOCASE, entity_id"
     );
     let mut stmt = conn.prepare_cached(&sql)?;
-    let mut rows = stmt.query(params_from_iter(ids.iter()))?;
+    let mut rows = stmt.query(params_from_iter(pad_in_clause_bindings(ids, width)))?;
     let aliases_by_entity = read_entity_aliases_by_memory(conn, ids)?;
     let mut entities = BTreeMap::<String, Vec<Entity>>::new();
     while let Some(row) = rows.next()? {
@@ -1390,14 +1476,15 @@ fn read_entity_aliases_by_memory(
     conn: &Connection,
     ids: &[String],
 ) -> rusqlite::Result<BTreeMap<(String, String), Vec<String>>> {
-    let placeholders = sql_placeholders(ids.len());
+    let width = bucketed_in_clause_width(ids.len());
+    let placeholders = sql_placeholders(width);
     let sql = format!(
         "SELECT memory_id,entity_id,alias FROM memory_entity_aliases
          WHERE memory_id IN ({placeholders})
          ORDER BY memory_id, entity_id COLLATE NOCASE, entity_id, alias COLLATE NOCASE, alias"
     );
     let mut stmt = conn.prepare_cached(&sql)?;
-    let mut rows = stmt.query(params_from_iter(ids.iter()))?;
+    let mut rows = stmt.query(params_from_iter(pad_in_clause_bindings(ids, width)))?;
     let mut aliases = BTreeMap::<(String, String), Vec<String>>::new();
     while let Some(row) = rows.next()? {
         aliases.entry((row.get(0)?, row.get(1)?)).or_default().push(row.get(2)?);

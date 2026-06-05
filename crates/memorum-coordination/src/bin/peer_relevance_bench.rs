@@ -438,6 +438,7 @@ fn recall_row(
         review_state: None,
         human_review_required: false,
         max_scope: Scope::Project,
+        merge_diagnostics_json: None,
         tags: vec!["stream-i".to_owned(), "bench".to_owned()],
         aliases: Vec::new(),
         entities: candidate_entities(index),
