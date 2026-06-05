@@ -19,6 +19,8 @@ use crate::model::{
     SourceKind,
 };
 
+use super::sql_placeholders;
+
 /// Index handle.  Owns a single SQLite connection; all mutating methods take
 /// `&mut self` so the borrow checker prevents concurrent transactions.
 pub struct Index {
@@ -1401,10 +1403,6 @@ fn read_entity_aliases_by_memory(
         aliases.entry((row.get(0)?, row.get(1)?)).or_default().push(row.get(2)?);
     }
     Ok(aliases)
-}
-
-fn sql_placeholders(count: usize) -> String {
-    std::iter::repeat_n("?", count).collect::<Vec<_>>().join(",")
 }
 
 fn row_to_result(row: &rusqlite::Row<'_>) -> rusqlite::Result<QueryResult> {

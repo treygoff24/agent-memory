@@ -47,7 +47,11 @@ pub trait HarnessCli: Send + Sync {
 
     fn auth_probe(&self) -> HarnessFuture<'_, AuthProbeResult>;
 
-    fn is_authenticated(&self) -> HarnessFuture<'_, Result<bool, HarnessCliError>>;
+    /// Default: authenticated iff the auth probe succeeds. Implementors with a
+    /// cheaper or fixed answer (test fixtures, the unselected placeholder) override.
+    fn is_authenticated(&self) -> HarnessFuture<'_, Result<bool, HarnessCliError>> {
+        Box::pin(async move { Ok(self.auth_probe().await.is_ok()) })
+    }
 
     fn complete<'a>(
         &'a self,
@@ -320,17 +324,13 @@ impl HarnessCli for ClaudeCodeCli {
     }
 
     fn auth_probe(&self) -> HarnessFuture<'_, AuthProbeResult> {
-        Box::pin(async move {
-            if !self.is_installed() {
-                return AuthProbeResult::CliMissing { which: "claude", path: path_display(self.path_env.as_deref()) };
-            }
-
-            auth_probe_any(self.auth_probe_candidates(), self.path_env.clone(), CLAUDE_ENV_ALLOWLIST).await
-        })
-    }
-
-    fn is_authenticated(&self) -> HarnessFuture<'_, Result<bool, HarnessCliError>> {
-        Box::pin(async move { Ok(self.auth_probe().await.is_ok()) })
+        Box::pin(probe_external_auth(
+            "claude",
+            self.is_installed(),
+            self.auth_probe_candidates(),
+            self.path_env.clone(),
+            CLAUDE_ENV_ALLOWLIST,
+        ))
     }
 
     fn complete<'a>(
@@ -339,18 +339,14 @@ impl HarnessCli for ClaudeCodeCli {
         expect_json: bool,
         timeout: Duration,
     ) -> HarnessFuture<'a, Result<String, HarnessCliError>> {
-        Box::pin(async move {
-            if !self.is_installed() {
-                return Err(HarnessCliError::NotInstalled);
-            }
-            complete_external(
-                self.command(expect_json),
-                MinimalEnvironment::for_adapter(self.path_env.clone(), CLAUDE_ENV_ALLOWLIST),
-                prompt,
-                PassRunOptions { expect_json, timeout },
-            )
-            .await
-        })
+        Box::pin(complete_for_adapter(
+            self.is_installed(),
+            self.command(expect_json),
+            self.path_env.clone(),
+            CLAUDE_ENV_ALLOWLIST,
+            prompt,
+            PassRunOptions { expect_json, timeout },
+        ))
     }
 }
 
@@ -397,17 +393,13 @@ impl HarnessCli for CodexCli {
     }
 
     fn auth_probe(&self) -> HarnessFuture<'_, AuthProbeResult> {
-        Box::pin(async move {
-            if !self.is_installed() {
-                return AuthProbeResult::CliMissing { which: "codex", path: path_display(self.path_env.as_deref()) };
-            }
-
-            auth_probe_any(self.auth_probe_candidates(), self.path_env.clone(), CODEX_ENV_ALLOWLIST).await
-        })
-    }
-
-    fn is_authenticated(&self) -> HarnessFuture<'_, Result<bool, HarnessCliError>> {
-        Box::pin(async move { Ok(self.auth_probe().await.is_ok()) })
+        Box::pin(probe_external_auth(
+            "codex",
+            self.is_installed(),
+            self.auth_probe_candidates(),
+            self.path_env.clone(),
+            CODEX_ENV_ALLOWLIST,
+        ))
     }
 
     fn complete<'a>(
@@ -416,18 +408,14 @@ impl HarnessCli for CodexCli {
         expect_json: bool,
         timeout: Duration,
     ) -> HarnessFuture<'a, Result<String, HarnessCliError>> {
-        Box::pin(async move {
-            if !self.is_installed() {
-                return Err(HarnessCliError::NotInstalled);
-            }
-            complete_external(
-                self.command(expect_json),
-                MinimalEnvironment::for_adapter(self.path_env.clone(), CODEX_ENV_ALLOWLIST),
-                prompt,
-                PassRunOptions { expect_json, timeout },
-            )
-            .await
-        })
+        Box::pin(complete_for_adapter(
+            self.is_installed(),
+            self.command(expect_json),
+            self.path_env.clone(),
+            CODEX_ENV_ALLOWLIST,
+            prompt,
+            PassRunOptions { expect_json, timeout },
+        ))
     }
 }
 
@@ -435,6 +423,23 @@ impl HarnessCli for CodexCli {
 struct PassRunOptions {
     expect_json: bool,
     timeout: Duration,
+}
+
+/// Shared `HarnessCli::complete` body for real external adapters: refuse with
+/// `NotInstalled` when the binary is absent, otherwise run the adapter's command
+/// under a minimal environment scoped to `allowlist`.
+async fn complete_for_adapter(
+    installed: bool,
+    plan: HarnessCommandPlan,
+    path_env: Option<OsString>,
+    allowlist: &[&str],
+    prompt: &str,
+    options: PassRunOptions,
+) -> Result<String, HarnessCliError> {
+    if !installed {
+        return Err(HarnessCliError::NotInstalled);
+    }
+    complete_external(plan, MinimalEnvironment::for_adapter(path_env, allowlist), prompt, options).await
 }
 
 async fn complete_external(
@@ -487,6 +492,22 @@ async fn auth_probe(plan: HarnessCommandPlan, path_env: Option<OsString>, env_al
         Err(HarnessCliError::Timeout { .. }) => AuthProbeResult::Timeout,
         Err(error) => AuthProbeResult::Error { message: error.to_string() },
     }
+}
+
+/// Shared `HarnessCli::auth_probe` body for real external adapters: short-circuit
+/// with `CliMissing` when the binary is absent, otherwise race the adapter's auth
+/// candidates. `which` is the binary name surfaced in the missing diagnostic.
+async fn probe_external_auth(
+    which: &'static str,
+    installed: bool,
+    candidates: Vec<AuthProbeCandidate>,
+    path_env: Option<OsString>,
+    env_allowlist: &'static [&'static str],
+) -> AuthProbeResult {
+    if !installed {
+        return AuthProbeResult::CliMissing { which, path: path_display(path_env.as_deref()) };
+    }
+    auth_probe_any(candidates, path_env, env_allowlist).await
 }
 
 async fn auth_probe_any(

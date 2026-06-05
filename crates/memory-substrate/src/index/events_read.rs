@@ -12,6 +12,7 @@
 use chrono::{DateTime, Utc};
 use rusqlite::{params_from_iter, types::Value, Connection, OptionalExtension as _};
 
+use super::sql_placeholders;
 use crate::events::EventKind;
 use crate::model::EventId;
 
@@ -70,7 +71,7 @@ pub fn query_events_log_page(connection: &Connection, page: &EventsLogPage) -> r
             // `HashSet::contains` semantics on an empty set.
             return Ok(Vec::new());
         }
-        let placeholders = labels.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let placeholders = sql_placeholders(labels.len());
         filters.push(format!("kind IN ({placeholders})"));
         for label in labels {
             bindings.push(Value::Text((*label).to_string()));
@@ -131,7 +132,7 @@ pub fn query_events_log_window(
         if labels.is_empty() {
             return Ok(Vec::new());
         }
-        let placeholders = labels.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let placeholders = sql_placeholders(labels.len());
         sql.push_str(&format!(" AND kind IN ({placeholders})"));
         for label in labels {
             bindings.push(Value::Text((*label).to_string()));
