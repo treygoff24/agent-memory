@@ -8,7 +8,7 @@ pub(crate) async fn trust_artifact_response(
     state: &HandlerState,
     id: &str,
 ) -> Result<ResponsePayload, HandlerError> {
-    let memory_id = MemoryId::try_new(id.to_owned()).map_err(|err| HandlerError::invalid_request(err.to_string()))?;
+    let memory_id = HandlerError::parse_memory_id(id)?;
     let artifact = crate::trust_artifact::TrustArtifactBuilder::new(substrate)
         .with_claim_locks(state.claim_locks())
         .build(&memory_id)

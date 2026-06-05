@@ -1022,14 +1022,7 @@ fn reconcile_active_embedding_jobs_impl(
 
 /// Check if a triple is in the dropped set.  Returns `VectorError`.
 fn is_dropped_triple(conn: &Connection, triple: &EmbeddingTriple) -> Result<bool, VectorError> {
-    conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM dropped_embedding_triples
-         WHERE provider=?1 AND model_ref=?2 AND dimension=?3)",
-        params![triple.provider, triple.model_ref, i64::from(triple.dimension)],
-        |row| row.get::<_, i64>(0),
-    )
-    .map(|v| v != 0)
-    .map_err(Into::into)
+    is_dropped_triple_rusqlite(conn, triple).map_err(Into::into)
 }
 
 /// Same check but returns `rusqlite::Result` for callers already in that error domain.

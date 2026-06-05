@@ -1,9 +1,8 @@
 #![allow(clippy::disallowed_types, clippy::disallowed_methods)]
 
-use crossterm::event::{KeyCode as CrosstermKeyCode, KeyEvent, KeyModifiers as CrosstermKeyModifiers};
 use memorum_theme::resolver::AnsiColor;
 use memorum_theme::{
-    BorderGlyphs, ColorCapability, Glyphs, KeyChord, KeyCode, KeyModifiers, ResolvedColor, ResolvedTheme, Theme,
+    BorderGlyphs, ColorCapability, Glyphs, ResolvedColor, ResolvedTheme, Theme,
 };
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols::border;
@@ -142,27 +141,4 @@ fn glyph_to_static(glyph: char) -> &'static str {
         '╏' => "╏",
         _ => "?",
     }
-}
-
-pub fn key_chord_from_crossterm(event: KeyEvent) -> Option<KeyChord> {
-    let key = match event.code {
-        CrosstermKeyCode::Char(ch) => KeyCode::Char(ch),
-        CrosstermKeyCode::Enter => KeyCode::Enter,
-        CrosstermKeyCode::Esc => KeyCode::Esc,
-        CrosstermKeyCode::Up => KeyCode::Up,
-        CrosstermKeyCode::Down => KeyCode::Down,
-        CrosstermKeyCode::Left => KeyCode::Left,
-        CrosstermKeyCode::Right => KeyCode::Right,
-        CrosstermKeyCode::Tab => KeyCode::Tab,
-        CrosstermKeyCode::BackTab => KeyCode::BackTab,
-        _ => return None,
-    };
-    Some(KeyChord {
-        key,
-        mods: KeyModifiers {
-            ctrl: event.modifiers.contains(CrosstermKeyModifiers::CONTROL),
-            alt: event.modifiers.contains(CrosstermKeyModifiers::ALT),
-            shift: event.modifiers.contains(CrosstermKeyModifiers::SHIFT),
-        },
-    })
 }

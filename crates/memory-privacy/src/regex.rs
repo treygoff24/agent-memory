@@ -79,14 +79,6 @@ static LABEL_RULES: Lazy<Vec<Rule>> = Lazy::new(|| {
     ]
 });
 
-/// Deterministic regex privacy spans.
-pub fn regex_spans(text: &str) -> Vec<PrivacySpan> {
-    let mut spans = rule_spans(SECRET_RULES.iter().chain(LABEL_RULES.iter()), text);
-    spans.extend(credit_card_spans(text));
-    spans.sort_by_key(|span| (span.start, span.end));
-    spans
-}
-
 /// Regex spans that imply secret/refuse handling.
 pub fn secret_regex_spans(text: &str) -> Vec<PrivacySpan> {
     let mut spans = rule_spans(SECRET_RULES.iter(), text);

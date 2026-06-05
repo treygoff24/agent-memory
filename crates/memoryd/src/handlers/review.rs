@@ -87,7 +87,7 @@ pub(crate) async fn review_decision_response(
     id: &str,
     decision: ReviewDecision,
 ) -> Result<ResponsePayload, HandlerError> {
-    let memory_id = MemoryId::try_new(id.to_string()).map_err(|err| HandlerError::invalid_request(err.to_string()))?;
+    let memory_id = HandlerError::parse_memory_id(id)?;
     let envelope = substrate.read_memory_envelope(&memory_id).await.map_err(HandlerError::substrate)?;
     if !matches!(envelope.content, MemoryContent::Plaintext(_)) {
         return Err(HandlerError::invalid_request(

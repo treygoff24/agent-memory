@@ -64,8 +64,7 @@ pub(crate) async fn governance_supersede_response(
     request: GovernanceSupersedeRequest,
 ) -> Result<ResponsePayload, HandlerError> {
     let GovernanceSupersedeRequest { old_id, content, reason, meta } = request;
-    let old_memory_id =
-        MemoryId::try_new(old_id.clone()).map_err(|err| HandlerError::invalid_request(err.to_string()))?;
+    let old_memory_id = HandlerError::parse_memory_id(old_id.clone())?;
     let input = GovernanceWriteInput::parse(GovernanceWriteInputParts {
         body: content,
         title: None,
@@ -414,7 +413,7 @@ pub(crate) async fn governance_forget_response(
         return Err(HandlerError::invalid_request("forget reason must not be empty"));
     }
     let reason = sanitize_forget_reason(&reason);
-    let memory_id = MemoryId::try_new(id.clone()).map_err(|err| HandlerError::invalid_request(err.to_string()))?;
+    let memory_id = HandlerError::parse_memory_id(id.clone())?;
     let envelope = substrate.read_memory_envelope(&memory_id).await.map_err(HandlerError::substrate)?;
     let tombstone_claim = match &envelope.content {
         MemoryContent::Plaintext(body) if !body.is_empty() => body.clone(),

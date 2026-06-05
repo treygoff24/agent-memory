@@ -355,18 +355,6 @@ pub fn reconcile_startup_pre_index_report(
     Ok(report)
 }
 
-/// Replay durable pending repairs and return the full reconciliation report.
-#[allow(clippy::too_many_arguments)]
-pub fn replay_pending_repairs_report(
-    repo: &Path,
-    runtime: &Path,
-    event_log: &Path,
-    device_id: &crate::model::DeviceId,
-    index: &mut Index,
-) -> std::io::Result<ReconcileReport> {
-    replay_pending_repairs_into_report(repo, runtime, event_log, device_id, index, ReconcileReport::default())
-}
-
 /// Replay durable pending repairs, appending phase results into an existing report.
 #[allow(clippy::too_many_arguments)]
 pub fn replay_pending_repairs_into_report(

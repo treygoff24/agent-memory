@@ -219,8 +219,8 @@ fn seed_drift_inputs(socket_path: &Path, tree_dir: &Path, memories: &DriftFixtur
     // 2. Insert a superseded corroborating source for Memory A to set cross_source_corroboration = 1.
     insert_corroborating_source(&database_path, &memories.fresh_recalled_correlated, &corroborating_id);
 
-    // 3. Inject recall-hit events through the daemon's TestInjectEvent protocol surface.
-    //    This replaces the previous raw `events_log` INSERT via sqlite3 CLI. (H-R1)
+    // 3. Inject recall-hit events through the daemon's TestInjectEvent protocol
+    //    surface rather than a raw `events_log` INSERT. (H-R1)
     //
     //    Note: inject_recall_hits returns Some(skip_reason) when the daemon lacks the
     //    test-utils feature, and None on success. We must NOT use the `?` operator

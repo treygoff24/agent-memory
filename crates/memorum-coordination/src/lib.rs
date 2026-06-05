@@ -9,7 +9,7 @@ pub mod presence;
 pub mod protocol;
 pub mod session;
 
-pub use claim_lock::{ClaimLock, ClaimLockAcquireResult, ClaimLockRegistry, ClaimLockRenewResult};
+pub use claim_lock::{ClaimLockAcquireResult, ClaimLockRegistry, ClaimLockRenewResult};
 pub use config::{ClaimLockConfig, CoordinationConfig, PresenceConfig, RelevanceGateConfig};
 pub use gate::{PeerWriteCandidate, RelevanceGate};
 pub use presence::{

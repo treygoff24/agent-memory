@@ -7,7 +7,6 @@ use memoryd::trust_artifact::{
     PolicyDecision, PrivacyScan, ProvenanceEvent, RecallStats, SafeContent, SupersessionLink, SyncState, TrustArtifact,
 };
 use serde::Serialize;
-use serde_json::json;
 
 pub mod audit;
 pub mod entity_graph;
@@ -110,17 +109,6 @@ impl DashboardData {
         artifact.id = MemoryId::try_new(id).unwrap_or_else(|_| memory_id(AUDIT_MEMORY_ID));
         artifact
     }
-}
-
-pub fn deferred_response(route: &'static str) -> (axum::http::StatusCode, axum::Json<serde_json::Value>) {
-    (
-        axum::http::StatusCode::NOT_IMPLEMENTED,
-        axum::Json(json!({
-            "status": "not_implemented",
-            "route": route,
-            "note": "deferred Stream G future section; policy editor and sync dashboard are not part of Task 14"
-        })),
-    )
 }
 
 fn trust_artifact_fixture(id: MemoryId, now: DateTime<Utc>) -> TrustArtifact {

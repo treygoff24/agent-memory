@@ -24,10 +24,6 @@ impl ClaimLockClock {
     }
 }
 
-/// Public compatibility alias for callers that still refer to claim locks by
-/// the registry's protocol projection.
-pub type ClaimLock = ClaimLockInfo;
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClaimLockAcquireRequest {
     pub memory_id: String,

@@ -185,21 +185,6 @@ pub fn request_from_args(name: ToolName, args: Value) -> Result<ToolRequest, ser
     }
 }
 
-pub fn args_from_request(request: &ToolRequest) -> Result<Value, serde_json::Error> {
-    match request {
-        ToolRequest::MemorySearch(args) => serde_json::to_value(args),
-        ToolRequest::MemoryGet(args) => serde_json::to_value(args),
-        ToolRequest::MemoryWrite(args) => serde_json::to_value(args),
-        ToolRequest::MemorySupersede(args) => serde_json::to_value(args),
-        ToolRequest::MemoryForget(args) => serde_json::to_value(args),
-        ToolRequest::MemoryReveal(args) => serde_json::to_value(args),
-        ToolRequest::MemoryStartup(args) => serde_json::to_value(args),
-        ToolRequest::MemoryNote(args) => serde_json::to_value(args),
-        ToolRequest::MemoryObserve(args) => serde_json::to_value(args),
-        ToolRequest::MemoryCaptureSource(args) => serde_json::to_value(args),
-    }
-}
-
 /// Forward an MCP `ToolRequest` to the memoryd daemon.
 ///
 /// Implemented mappings:

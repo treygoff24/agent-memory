@@ -933,6 +933,12 @@ impl HandlerError {
         Self { code: "invalid_request".to_string(), message: message.into(), retryable: false }
     }
 
+    /// Parse a caller-supplied id string into a canonical [`MemoryId`], mapping
+    /// the validation error to an `invalid_request` handler error.
+    fn parse_memory_id(id: impl Into<String>) -> Result<MemoryId, Self> {
+        MemoryId::try_new(id.into()).map_err(|err| Self::invalid_request(err.to_string()))
+    }
+
     fn dream_unavailable(message: impl Into<String>) -> Self {
         Self { code: "dream_unavailable".to_string(), message: message.into(), retryable: true }
     }
