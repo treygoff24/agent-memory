@@ -10,7 +10,7 @@ pub mod protocol;
 pub mod session;
 
 pub use claim_lock::{ClaimLockAcquireResult, ClaimLockRegistry, ClaimLockRenewResult};
-pub use config::{ClaimLockConfig, CoordinationConfig, PresenceConfig, RelevanceGateConfig};
+pub use config::{ClaimLockConfig, ConfigValidationError, CoordinationConfig, PresenceConfig, RelevanceGateConfig};
 pub use gate::{PeerWriteCandidate, RelevanceGate};
 pub use presence::{
     cleanup_stale_sessions, handle_peer_heartbeat, spawn_stale_session_cleanup_task, PeerHeartbeatError,
