@@ -50,9 +50,12 @@ pub enum GovernanceRefusalReason {
 }
 
 impl GovernanceRefusalReason {
-    /// Stable snake_case code for this reason. This is the single source of
-    /// truth for the wire spelling; `FromStr` is its exact inverse and the
-    /// `#[serde(rename_all = "snake_case")]` derive produces the same strings.
+    /// Stable snake_case code for this reason: the canonical `as_str` spelling,
+    /// kept in sync by hand with two other copies of the same mapping — `FromStr`
+    /// (its exact inverse) and the `#[serde(rename_all = "snake_case")]` derive.
+    /// Adding a variant means editing both this match and `FromStr`; keep them
+    /// aligned (a future `strum`/table-driven consolidation could make one of
+    /// them the literal single source).
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Grounding => "grounding",

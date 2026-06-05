@@ -180,6 +180,20 @@ impl Substrate {
         self.read_path_envelope(&path).await
     }
 
+    /// Synchronous, blocking-pool variant of [`Self::read_memory_envelope`].
+    ///
+    /// Resolves the id to a path and reads the canonical envelope entirely
+    /// synchronously (`std::fs` + Markdown/frontmatter parse, plus the index-lock
+    /// resolution), so callers that read many memories can run it on the blocking
+    /// pool via `tokio::task::spawn_blocking` to keep the disk work off the async
+    /// worker threads — see `attach_search_bodies` and the governance
+    /// active-memory candidate path. Produces an identical `MemoryEnvelope` to the
+    /// async method above.
+    pub fn read_memory_envelope_blocking(&self, id: &MemoryId) -> Result<MemoryEnvelope, ReadError> {
+        let path = self.resolve_memory_id_to_path(id)?;
+        self.read_path_envelope_blocking(&path)
+    }
+
     /// Read by repository path; returns the spec §16.2 `MemoryEnvelope` (B-API-1).
     ///
     /// Blocking note: despite the `async` signature this performs a synchronous

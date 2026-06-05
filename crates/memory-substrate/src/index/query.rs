@@ -549,8 +549,14 @@ impl Index {
     /// `quarantined`, when it is a `candidate` requiring user confirmation, or
     /// when its `review_state` is one of the pending spellings. `total` counts
     /// every qualifying row (for the over-threshold notification) while `rows`
-    /// is bounded by `limit` and ordered newest-first by `updated_at` so callers
-    /// hydrate only what the response renders. `policy_applied` and
+    /// is bounded by `limit` and ordered by the stable canonical `memories.id`
+    /// key so callers hydrate only what the response renders. Ordering by id
+    /// (rather than `updated_at`) keeps the bounded page a deterministic prefix
+    /// that does not reshuffle as memories are touched: the prior full-walk path
+    /// this replaces collected qualifying rows in filesystem-walk order and
+    /// truncated, so a fixed oldest-first-ish prefix — not a newest-first window
+    /// that can starve persistently-pending items off the page — is the
+    /// behavior-preserving choice. `policy_applied` and
     /// `governance_reason` are projected from `frontmatter_json` via
     /// `json_extract`, matching `RecallIndexRow::merge_diagnostics_json`.
     pub fn review_queue(&self, limit: usize) -> SubstrateResult<ReviewQueuePage> {
@@ -566,7 +572,7 @@ impl Index {
                     json_extract(memories.frontmatter_json, '$.governance_reason')
              FROM memories
              WHERE {REVIEW_QUEUE_PREDICATE}
-             ORDER BY memories.updated_at DESC, memories.id
+             ORDER BY memories.id
              LIMIT ?1"
         ))?;
         let mut query_rows = stmt.query(params![limit as i64])?;
@@ -634,12 +640,14 @@ fn mirror_event_row(connection: &Connection, event: &Event) -> rusqlite::Result<
     Ok(())
 }
 
-/// Batch size for the chunked `event_id IN (...)` presence scan below.
+/// Largest chunk size for the `event_id IN (...)` presence scan below.
 ///
 /// Bounds memory and scan cost to the input (canonical-event) size rather than
-/// the whole `events_log`, and keeps the full-batch prepared statement at a
-/// fixed width so the chunked scans reuse one cached plan.
-const MIRROR_HEALTH_PRESENCE_BATCH: usize = 256;
+/// the whole `events_log`. Equal to the largest [`super::IN_CLAUSE_BUCKETS`]
+/// width so a full chunk maps to the widest cached `IN (...)` plan; partial tail
+/// chunks pad up to a bucket via [`pad_in_clause_bindings`] so they reuse a
+/// cached plan too instead of minting one per distinct tail size.
+const MIRROR_HEALTH_PRESENCE_CHUNK: usize = 256;
 
 fn count_missing_events_log_rows(connection: &Connection, canonical_events: &[Event]) -> rusqlite::Result<u64> {
     if canonical_events.is_empty() {
@@ -649,23 +657,18 @@ fn count_missing_events_log_rows(connection: &Connection, canonical_events: &[Ev
     // `event_id IN (...)` scans riding the PK index, then apply the same
     // per-event "absent from the mirror" membership test the prior full-column
     // scan used. Memory and scan cost track the canonical-event count, not the
-    // entire (unbounded, lifetime-growing) `events_log`. Using a presence set
-    // (rather than summing match counts) keeps the result identical even if the
-    // canonical list ever repeated an id.
-    let full_batch_sql = format!(
-        "SELECT event_id FROM events_log WHERE event_id IN ({})",
-        sql_placeholders(MIRROR_HEALTH_PRESENCE_BATCH)
-    );
+    // entire (unbounded, lifetime-growing) `events_log`. Each chunk's placeholder
+    // width is bucketed (and its bindings padded) via the shared helpers, so even
+    // the final partial chunk reuses one of a handful of cached `IN (...)` plans.
+    // Using a presence set (rather than summing match counts) keeps the result
+    // identical even if the canonical list ever repeated an id.
     let mut present = std::collections::HashSet::with_capacity(canonical_events.len());
-    for chunk in canonical_events.chunks(MIRROR_HEALTH_PRESENCE_BATCH) {
-        let ids = chunk.iter().map(|event| event.id.as_str());
-        let mut stmt = if chunk.len() == MIRROR_HEALTH_PRESENCE_BATCH {
-            connection.prepare_cached(&full_batch_sql)?
-        } else {
-            let sql = format!("SELECT event_id FROM events_log WHERE event_id IN ({})", sql_placeholders(chunk.len()));
-            connection.prepare_cached(&sql)?
-        };
-        let mut rows = stmt.query(params_from_iter(ids))?;
+    for chunk in canonical_events.chunks(MIRROR_HEALTH_PRESENCE_CHUNK) {
+        let ids: Vec<String> = chunk.iter().map(|event| event.id.as_str().to_owned()).collect();
+        let width = bucketed_in_clause_width(ids.len());
+        let sql = format!("SELECT event_id FROM events_log WHERE event_id IN ({})", sql_placeholders(width));
+        let mut stmt = connection.prepare_cached(&sql)?;
+        let mut rows = stmt.query(params_from_iter(pad_in_clause_bindings(&ids, width)))?;
         while let Some(row) = rows.next()? {
             present.insert(row.get::<_, String>(0)?);
         }

@@ -114,21 +114,28 @@ pub(crate) async fn search_response(
 /// Populate the bounded body preview for each search hit, overlapping the
 /// per-hit canonical-file reads instead of awaiting them one at a time.
 ///
-/// Each read is a synchronous disk-read + Markdown parse inside an `async fn`;
-/// run serially they serialize end to end (and, on a single-threaded runtime,
-/// stall the executor). Cloning `Substrate` is cheap — all state is behind
-/// `Arc` — so we fan the bounded reads (capped at `SEARCH_LIMIT_MAX`) onto
-/// separate tasks that the multi-threaded runtime can run concurrently, then
-/// assign bodies back by hit index to preserve output order and content. The
-/// bounding cap and the plaintext-only/ciphertext-skip rules are unchanged from
-/// the prior serial path (SEC-03: never a bulk dump of full plaintext bodies).
+/// Each read is a synchronous disk-read + Markdown parse; run serially they
+/// serialize end to end (and, on a single-threaded runtime, stall the executor).
+/// Cloning `Substrate` is cheap — all state is behind `Arc` — so we fan the
+/// bounded reads (capped at `SEARCH_LIMIT_MAX`) onto the blocking pool via
+/// `spawn_blocking` + `read_memory_envelope_blocking`, keeping the disk work off
+/// the async worker threads exactly as the sibling governance active-memory fan
+/// out does, then assign bodies back by hit index to preserve output order and
+/// content. The bounding cap and the plaintext-only/ciphertext-skip rules are
+/// unchanged from the prior serial path (SEC-03: never a bulk dump of full
+/// plaintext bodies).
 async fn attach_search_bodies(substrate: &Substrate, hits: &mut [SearchHit]) -> Result<(), HandlerError> {
     let mut reads = tokio::task::JoinSet::new();
     for (position, hit) in hits.iter().enumerate() {
         let substrate = substrate.clone();
         let memory_id = MemoryId::new(hit.id.clone());
-        reads.spawn(async move {
-            let body = match substrate.read_memory_envelope(&memory_id).await {
+        // One blocking-pool task per hit (capped at SEARCH_LIMIT_MAX): the read is
+        // a synchronous disk-read + Markdown parse, so `spawn_blocking` keeps it
+        // off the async worker threads, matching the governance active-memory
+        // fan-out. The whole closure is synchronous, so `memory_id` stays in scope
+        // for the failure log.
+        reads.spawn_blocking(move || {
+            let body = match substrate.read_memory_envelope_blocking(&memory_id) {
                 Ok(envelope) => match envelope.content {
                     MemoryContent::Plaintext(body) => Some(bounded(&body, GET_BODY_MAX)),
                     MemoryContent::Ciphertext { .. } | MemoryContent::MetadataOnly => None,

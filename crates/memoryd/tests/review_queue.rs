@@ -48,6 +48,58 @@ async fn review_queue_returns_quarantined_memories_from_substrate() {
 }
 
 #[tokio::test]
+async fn review_queue_bounded_page_is_a_stable_id_prefix_not_a_newest_first_window() {
+    // Regression guard for the index-backed `review_queue` ordering. The path it
+    // replaced built the full queue from a filesystem walk (id/path order, not
+    // `updated_at`) and truncated, so the bounded page is a stable prefix that
+    // does not reshuffle as memories are touched. Seed more qualifying items than
+    // `limit`, deliberately making the highest-id items the *most recently
+    // updated*, so a `ORDER BY updated_at DESC` page would return a different
+    // (newer) subset and starve the oldest-id pending items off the page.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let substrate = init_substrate(roots).await;
+
+    const SEEDED: usize = 6;
+    const LIMIT: usize = 3;
+    let base = chrono::DateTime::parse_from_rfc3339("2026-04-29T12:00:00Z")
+        .expect("fixed test date")
+        .with_timezone(&chrono::Utc);
+
+    let mut ids: Vec<String> = Vec::new();
+    for index in 0..SEEDED {
+        // Distinct, lexicographically ascending ids. Higher-id memories get a
+        // newer `updated_at`, so id-ascending and updated_at-descending orders
+        // are maximally divergent on the bounded page.
+        let id = format!("mem_20260429_a1b2c3d4e5f60718_80{:04}", 1000 + index);
+        let updated_at = base + chrono::Duration::minutes(index as i64);
+        let mut memory = review_memory();
+        memory.frontmatter.id = MemoryId::new(&id);
+        memory.frontmatter.updated_at = updated_at;
+        memory.path =
+            Some(memory_substrate::RepoPath::new(format!("agent/patterns/{}.md", memory.frontmatter.id.as_str())));
+        write_test_memory(&substrate, memory).await;
+        ids.push(id);
+    }
+    ids.sort();
+
+    let response = handle_request(
+        &substrate,
+        RequestEnvelope::new("req-review-queue-prefix", RequestPayload::ReviewQueue { limit: Some(LIMIT) }),
+    )
+    .await;
+
+    let ResponseResult::Success(ResponsePayload::ReviewQueue(queue)) = response.result else {
+        panic!("expected review queue success, got {:?}", response.result);
+    };
+
+    let page_ids: Vec<String> = queue.items.iter().map(|item| item.id.clone()).collect();
+    // The page must be the first `LIMIT` ids in stable ascending-id order — the
+    // oldest-id pending items, not the newest-updated ones.
+    assert_eq!(page_ids, ids[..LIMIT].to_vec(), "bounded page must be the stable ascending-id prefix");
+}
+
+#[tokio::test]
 async fn review_decision_rejects_active_memory_without_mutating_it() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));

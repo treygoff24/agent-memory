@@ -957,7 +957,16 @@ struct MemorydSimilaritySearch {
     /// `(namespace, claim_hash, entity_hash)`, pointing at the position of the
     /// first occurrence in `active`. Turns `find_active_by_claim_hash` into an
     /// O(1) lookup instead of a linear scan over the whole active set per call,
-    /// while preserving the prior "first match by candidate-set order" result.
+    /// while preserving the prior "first match by candidate-set order" result —
+    /// up to exact-duplicate ties. The candidate-set order itself moved from the
+    /// filesystem walk to the index query (deterministic by `memories.id`), so
+    /// when more than one active memory shares the exact full triple the *winning
+    /// record* may differ from the old walk's pick. That is observationally safe
+    /// today: a full-triple collision means the records are true exact duplicates
+    /// (the dedup/contradiction decision is the same whichever wins), and the
+    /// only surfaced field is `existing_id`, which names a genuine duplicate
+    /// either way. A future change that reads order-sensitive *non-key* fields off
+    /// the returned summary would need a stable secondary sort (e.g. by id) here.
     by_claim_key: std::collections::HashMap<(String, String, String), usize>,
     allow_top_k: bool,
 }
