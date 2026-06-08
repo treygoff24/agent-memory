@@ -58,6 +58,14 @@ pub enum Command {
     PrivacyFilter(PrivacyFilterArgs),
     /// Local encrypted-tier device key commands.
     Device(DeviceArgs),
+    /// Export a portable JSON snapshot of substrate contents.
+    ///
+    /// Opening the substrate triggers standard runtime-initialization side
+    /// effects even though export does not write memory content, including
+    /// runtime-dir creation, index-repair replay, and event-log mirror rebuild.
+    /// Stop any running `memoryd serve` daemon before exporting against the
+    /// same `--repo` / `--runtime` pair.
+    Export(crate::export::ExportArgs),
     /// Backfill prior Claude Code and Codex CLI memory into Memorum.
     ///
     /// Non-destructive and idempotent: source files are never modified, and

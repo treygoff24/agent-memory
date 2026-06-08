@@ -33,6 +33,12 @@ async fn main() -> anyhow::Result<()> {
         Command::Privacy(args) => cli::privacy::run_privacy(args).await?,
         Command::PrivacyFilter(args) => cli::privacy::run_privacy_filter(args).await?,
         Command::Device(args) => cli::privacy::run_device(args).await?,
+        Command::Export(args) => {
+            if let Err(err) = memoryd::export::run_export(args).await {
+                eprintln!("error: {err}");
+                std::process::exit(err.exit_code());
+            }
+        }
         Command::Import(args) => cli::import::run(args).await?,
         Command::Init(args) => cli::init::run(args).await?,
     }
