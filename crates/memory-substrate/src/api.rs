@@ -1420,22 +1420,10 @@ impl Substrate {
             .update_embedding(&update)
     }
 
-    /// Drop embedding model (legacy: returns vector count for backward compat).
-    ///
-    /// New code should call [`Self::drop_embedding_model_report`] (B-API-4) for
-    /// the spec §16.4 `DropTripleReport` shape.
-    pub async fn drop_embedding_model(&self, triple: EmbeddingTriple) -> Result<usize, VectorError> {
-        self.index
-            .lock()
-            .map_err(|err| VectorError::IndexUnavailable(format!("index mutex poisoned: {err}")))?
-            .drop_embedding_model(&triple)
-    }
-
     /// Drop embedding model and return the structured report (spec §16.4, B-API-4).
     ///
     /// Phase 5 surface: returns counts for each derived table affected so callers
-    /// can confirm the drop matched their expectation. The legacy `usize` return
-    /// from [`Self::drop_embedding_model`] only carried `vectors_removed`.
+    /// can confirm the drop matched their expectation.
     ///
     /// Delegates to [`crate::index::query::Index::drop_embedding_model_report`] which executes
     /// all three DELETEs and the `table_exists` check atomically on the same connection, avoiding

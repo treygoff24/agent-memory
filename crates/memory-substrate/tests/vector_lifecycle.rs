@@ -48,7 +48,7 @@ async fn update_embedding_persists_and_drop_triple_removes_vectors() {
         .await
         .expect("update");
     assert_eq!(substrate.vector_count(triple.clone()).await.expect("count"), 1);
-    assert_eq!(substrate.drop_embedding_model(triple.clone()).await.expect("drop"), 1);
+    assert_eq!(substrate.drop_embedding_model_report(triple.clone()).await.expect("drop").vectors_removed, 1);
     assert_eq!(substrate.vector_count(triple).await.expect("count"), 0);
 }
 
@@ -68,7 +68,7 @@ async fn dropped_triple_returns_unknown_and_cannot_be_recreated_by_stale_worker(
         })
         .await
         .expect("update");
-    assert_eq!(substrate.drop_embedding_model(triple.clone()).await.expect("drop"), 1);
+    assert_eq!(substrate.drop_embedding_model_report(triple.clone()).await.expect("drop").vectors_removed, 1);
 
     let query_err = substrate
         .query_chunks(ChunkQuery { text: None, triple: Some(triple.clone()), vector: Some(vec![1.0, 0.0, 0.0]) })

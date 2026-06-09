@@ -155,11 +155,6 @@ impl Index {
         Ok(())
     }
 
-    /// Drop an embedding triple's vector and metadata rows.
-    pub fn drop_embedding_model(&mut self, triple: &EmbeddingTriple) -> Result<usize, VectorError> {
-        Ok(self.drop_embedding_model_report(triple)?.vectors_removed as usize)
-    }
-
     /// Drop an embedding triple and return the removal report.
     pub fn drop_embedding_model_report(
         &mut self,
