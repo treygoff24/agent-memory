@@ -102,6 +102,11 @@ async fn since_filter_is_inclusive_and_rejects_bare_dates() {
         bare_exit, 2,
         "bare-date --since must exit 2 (argparse failure); got {bare_exit}\nstderr: {bare_stderr}"
     );
+    assert!(
+        bare.stdout.is_empty(),
+        "bare-date --since failure must leave stdout empty; got:\n{}",
+        String::from_utf8_lossy(&bare.stdout)
+    );
     // The error message must point at the canonical RFC3339 form. The
     // spec allows wording flexibility — the test asserts the canonical
     // example token appears so an operator pasting a bare date sees the
@@ -109,6 +114,50 @@ async fn since_filter_is_inclusive_and_rejects_bare_dates() {
     assert!(
         bare_stderr.contains("2026-05-01T00:00:00Z"),
         "bare-date error must mention the canonical RFC3339 form; got:\n{bare_stderr}"
+    );
+}
+
+#[tokio::test]
+async fn since_rejects_nonzero_offsets_with_empty_stdout() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let substrate = init_substrate(&temp, DEVICE_ID).await;
+
+    write_plaintext(
+        &substrate,
+        make_plaintext_memory("mem_20260503_cccc00000000cccc_000001", "body", "2026-05-03T00:00:00Z"),
+    )
+    .await;
+
+    let repo = temp.path().join("repo");
+    let runtime = temp.path().join("runtime");
+    let output = Command::new(env!("CARGO_BIN_EXE_memoryd"))
+        .args([
+            "export",
+            "--repo",
+            repo.to_str().expect("repo utf8"),
+            "--runtime",
+            runtime.to_str().expect("runtime utf8"),
+            "--since",
+            "2026-05-03T00:00:00-05:00",
+        ])
+        .output()
+        .expect("spawn memoryd export with nonzero offset --since");
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "nonzero-offset --since must exit 2; stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "nonzero-offset --since failure must leave stdout empty; got:\n{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("UTC") && stderr.contains("non-UTC"),
+        "stderr must explain UTC-only --since contract; got:\n{stderr}"
     );
 }
 

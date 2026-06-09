@@ -21,6 +21,11 @@ fn format_yaml_rejected_at_argparse_with_exit_2() {
         "--format yaml must exit 2 (clap argparse rejection); stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    assert!(
+        output.stdout.is_empty(),
+        "--format errors must not emit partial JSON on stdout; got:\n{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
 
     let stderr = String::from_utf8(output.stderr).expect("stderr utf-8");
     assert!(stderr.contains("yaml"), "stderr must name the offending value 'yaml': {stderr}");

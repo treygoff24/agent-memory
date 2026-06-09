@@ -7,12 +7,14 @@
 //! missing parent directory exits 1 with stderr naming the missing
 //! parent and no partial file in the grandparent.
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt as _;
 use std::process::Command;
 
 #[path = "export_fixture/mod.rs"]
 mod export_fixture;
 
-use export_fixture::{init_substrate, make_plaintext_memory, write_plaintext};
+use export_fixture::{init_substrate, make_plaintext_memory, normalize_exported_at_bytes, write_plaintext};
 
 const DEVICE_ID: &str = "dev_exportatomic04";
 
@@ -90,9 +92,17 @@ async fn out_writes_atomically_and_matches_stdout() {
         &file_bytes[file_bytes.len().saturating_sub(10)..]
     );
 
-    // Compare stdout bytes with file bytes, masking the volatile
-    // `exported_at` field so we're actually pinning the schema/format,
-    // not asserting on the wall-clock-stamped element.
+    // Compare raw bytes with only the volatile `exported_at` string masked.
+    // This catches key-order, indentation, and trailing-newline regressions
+    // that parse/re-serialize comparisons can hide.
+    assert_eq!(
+        normalize_exported_at_bytes(&stdout_run.stdout),
+        normalize_exported_at_bytes(&file_bytes),
+        "stdout-mode and --out-mode bytes must match exactly modulo exported_at"
+    );
+
+    // Also parse the JSON for a clearer semantic diff if the raw-byte assertion
+    // above fails in a future edit.
     let stdout_value: serde_json::Value = serde_json::from_slice(&stdout_run.stdout).expect("stdout json");
     let file_value: serde_json::Value = serde_json::from_slice(&file_bytes).expect("file json");
     let mut stdout_norm = stdout_value;
@@ -104,11 +114,12 @@ async fn out_writes_atomically_and_matches_stdout() {
         "stdout-mode and --out-mode output JSON must be identical (modulo `exported_at`)"
     );
 
-    // The serialized form must also be the same modulo `exported_at`:
-    // same key order, same two-space indent, same trailing newline.
-    let stdout_pretty = serde_json::to_string_pretty(&stdout_norm).unwrap() + "\n";
-    let file_pretty = serde_json::to_string_pretty(&file_norm).unwrap() + "\n";
-    assert_eq!(stdout_pretty, file_pretty, "serialized form must be byte-identical");
+    #[cfg(unix)]
+    assert_eq!(
+        std::fs::metadata(&out_path).expect("out metadata").permissions().mode() & 0o777,
+        0o600,
+        "--out file must be private on Unix"
+    );
 
     // ------------------------------------------------------------------
     // Sub-case B: no `.tmp` sidecars left in the output directory.
@@ -130,7 +141,72 @@ async fn out_writes_atomically_and_matches_stdout() {
     );
 
     // ------------------------------------------------------------------
-    // Sub-case C: missing parent directory -> exit 1, stderr names
+    // Sub-case C: basename output path resolves against current_dir.
+    // ------------------------------------------------------------------
+    let basename_temp = tempfile::tempdir().expect("basename tempdir");
+    let basename_run = Command::new(bin)
+        .current_dir(basename_temp.path())
+        .args(&common_args)
+        .args(["--out", "export.json"])
+        .output()
+        .expect("spawn basename --out export");
+    assert!(
+        basename_run.status.success(),
+        "basename --out export failed\nstderr: {}",
+        String::from_utf8_lossy(&basename_run.stderr)
+    );
+    let basename_bytes = std::fs::read(basename_temp.path().join("export.json")).expect("read basename export");
+    assert_eq!(
+        normalize_exported_at_bytes(&stdout_run.stdout),
+        normalize_exported_at_bytes(&basename_bytes),
+        "basename --out bytes must match stdout modulo exported_at"
+    );
+    let basename_names: Vec<String> = std::fs::read_dir(basename_temp.path())
+        .expect("read basename output dir")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        basename_names.iter().all(|name| !name.contains(".tmp")),
+        "basename --out must not leave temp sidecars; saw {basename_names:?}"
+    );
+
+    // ------------------------------------------------------------------
+    // Sub-case D: symlink target refusal.
+    // ------------------------------------------------------------------
+    #[cfg(unix)]
+    {
+        let symlink_temp = tempfile::tempdir().expect("symlink tempdir");
+        let link_path = symlink_temp.path().join("export-link.json");
+        let real_path = symlink_temp.path().join("real-export.json");
+        std::os::unix::fs::symlink(&real_path, &link_path).expect("create symlink target");
+
+        let symlink_run = Command::new(bin)
+            .args(&common_args)
+            .args(["--out", link_path.to_str().expect("link utf8")])
+            .output()
+            .expect("spawn symlink --out export");
+        assert_eq!(
+            symlink_run.status.code(),
+            Some(1),
+            "symlink --out must exit 1; stderr:\n{}",
+            String::from_utf8_lossy(&symlink_run.stderr)
+        );
+        assert!(
+            symlink_run.stdout.is_empty(),
+            "symlink --out failure must leave stdout empty; got:\n{}",
+            String::from_utf8_lossy(&symlink_run.stdout)
+        );
+        let symlink_stderr = String::from_utf8(symlink_run.stderr).expect("symlink stderr utf8");
+        assert!(
+            symlink_stderr.contains("symlink") || symlink_stderr.contains("refusing"),
+            "symlink stderr must explain refusal; got:\n{symlink_stderr}"
+        );
+        assert!(!real_path.exists(), "symlink refusal must not create the symlink target");
+    }
+
+    // ------------------------------------------------------------------
+    // Sub-case E: missing parent directory -> exit 1, stderr names
     // the missing parent, no partial file left in the grandparent.
     // ------------------------------------------------------------------
     let grandparent = tempfile::tempdir().expect("grandparent tempdir");
@@ -151,6 +227,11 @@ async fn out_writes_atomically_and_matches_stdout() {
     assert!(
         bad_stderr.contains(missing_parent_name),
         "stderr must name the missing parent directory; got:\n{bad_stderr}"
+    );
+    assert!(
+        bad_run.stdout.is_empty(),
+        "missing-parent --out failure must leave stdout empty; got:\n{}",
+        String::from_utf8_lossy(&bad_run.stdout)
     );
 
     // No partial file left in the grandparent. The grandparent only

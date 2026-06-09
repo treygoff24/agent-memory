@@ -82,21 +82,15 @@ fn validate_unit_threshold(label: &'static str, value: f64) -> Result<(), Config
 impl CoordinationConfig {
     /// Validate the full coordination configuration.
     ///
-    /// Returns `Result<(), String>` for back-compat with the cross-crate caller
-    /// in `memoryd::coordination_config::load_coordination_config`. Internally
-    /// routes through `ConfigValidationError` and stringifies at the boundary
-    /// via `Display`, preserving the byte-for-byte diagnostic text.
-    //
-    // CAMPAIGN-NOTE: cross-crate caller `memoryd/src/coordination_config.rs`
-    // depends on the `Result<_, String>` signature. Migrating the public
-    // surface to `Result<_, ConfigValidationError>` requires updating that
-    // caller plus any other out-of-crate consumers (not yet enumerated) and
-    // is deferred to a follow-up that can coordinate the cross-crate change.
+    /// This compatibility boundary returns `String` diagnostics for existing
+    /// callers. New Rust callers should prefer [`Self::validate_typed`] so
+    /// they can match on [`ConfigValidationError`] directly.
     pub fn validate(&self) -> Result<(), String> {
         self.validate_typed().map_err(|error| error.to_string())
     }
 
-    fn validate_typed(&self) -> Result<(), ConfigValidationError> {
+    /// Validate the full coordination configuration with typed errors.
+    pub fn validate_typed(&self) -> Result<(), ConfigValidationError> {
         if !(1..=3).contains(&self.level) {
             return Err(ConfigValidationError::InvalidLevel { level: self.level });
         }

@@ -56,7 +56,56 @@ async fn missing_device_config_fails_export_with_exit_1() {
 
     // Must not emit any JSON to stdout (the error path must exit before writing output).
     assert!(
-        stdout.trim().is_empty() || !stdout.contains("source_device_id"),
+        stdout.is_empty(),
         "stdout must not contain a partial export when device config is missing; got:\n{stdout}"
+    );
+}
+
+#[tokio::test]
+async fn whitespace_device_id_fails_export_with_empty_stdout() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let substrate = init_substrate(&temp, DEVICE_ID).await;
+
+    write_plaintext(
+        &substrate,
+        make_plaintext_memory("mem_20260501_ffff00000000ffff_000001", "body", "2026-05-01T10:00:00Z"),
+    )
+    .await;
+
+    let runtime = temp.path().join("runtime");
+    let device_config = runtime.join("local-device.yaml");
+    std::fs::write(
+        &device_config,
+        "schema_version: 1\ndevice:\n  id: \" dev_whitespace \"\n  name: \"dev whitespace\"\n  shard: \"devwhite\"\n",
+    )
+    .expect("write whitespace device config");
+
+    let repo = temp.path().join("repo");
+    let output = Command::new(env!("CARGO_BIN_EXE_memoryd"))
+        .args([
+            "export",
+            "--repo",
+            repo.to_str().expect("repo utf8"),
+            "--runtime",
+            runtime.to_str().expect("runtime utf8"),
+        ])
+        .output()
+        .expect("spawn memoryd export");
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "whitespace source_device_id must exit 1; stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "whitespace source_device_id error must leave stdout empty; got:\n{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("source_device_id") && stderr.contains("non-empty"),
+        "stderr must name the source_device_id validation failure; got:\n{stderr}"
     );
 }

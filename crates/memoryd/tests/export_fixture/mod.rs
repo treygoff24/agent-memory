@@ -100,3 +100,21 @@ pub async fn write_plaintext(substrate: &Substrate, memory: Memory) {
         .await
         .expect("write plaintext memory");
 }
+
+#[allow(dead_code)]
+pub fn normalize_exported_at_bytes(bytes: &[u8]) -> Vec<u8> {
+    const KEY: &[u8] = br#""exported_at": ""#;
+    const SENTINEL: &[u8] = b"0000-00-00T00:00:00.000Z";
+
+    let start = find_bytes(bytes, KEY).expect("exported_at key") + KEY.len();
+    let end = start + bytes[start..].iter().position(|byte| *byte == b'"').expect("exported_at closing quote");
+
+    let mut normalized = bytes.to_vec();
+    normalized.splice(start..end, SENTINEL.iter().copied());
+    normalized
+}
+
+#[allow(dead_code)]
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|window| window == needle)
+}

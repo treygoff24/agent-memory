@@ -1,12 +1,19 @@
-# Handoff — 2026-06-05 — codebase-excellence campaign COMPLETE
+# Historical handoff — 2026-06-05 — codebase-excellence campaign COMPLETE
+
+> **Historical snapshot, not current checkout state.** This document records the
+> repo state at the end of the 2026-06-05 codebase-excellence campaign. The
+> `HEAD b43e668` / "nothing uncommitted" wording below was true for that
+> snapshot only. Do not treat `b43e668` as the current HEAD; always verify live
+> state with `git status --short` and `git rev-parse --short HEAD` before using
+> this handoff operationally.
 
 ## TL;DR
 
 The autonomous codebase-excellence campaign ("the best codebase we've ever made") ran to
-completion overnight. **All workflow phases done; final `scripts/check.sh` is fully green**
+completion overnight. **At that historical snapshot, all workflow phases were done and final `scripts/check.sh` was fully green**
 (fmt, oxfmt, oxlint, docs, installer, baseline, specgate ×3, workspace clippy `-D warnings`,
 full nextest, two-clone convergence, bench regression). Branch `onboarding/agent-driven-onboarding`,
-HEAD `b43e668`, 66 commits ahead of `main` (campaign added 11 this run). Nothing uncommitted.
+HEAD `b43e668`, 66 commits ahead of `main` (campaign added 11 this run). Nothing uncommitted at that snapshot.
 `main` is ff-only — not pushed/merged; that's Trey's call.
 
 ## What shipped this run (11 commits, `4ce012b`..`b43e668`)

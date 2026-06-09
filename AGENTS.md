@@ -10,9 +10,8 @@
 ## Project skills
 
 - Use the project-local `rust-engineer` skill for Rust/Cargo work in this repository.
-- For implementation, review, QA, security, or performance work that touches Rust, daemon behavior, MCP protocol surfaces, storage, recall, privacy, governance, or eval behavior, use or instruct subagents to use: `Mandatory skills: clean-code, tdd, rust-engineer`.
+- For implementation, review, QA, security, or performance work that touches Rust, daemon behavior, MCP protocol surfaces, storage, recall, privacy, governance, or eval behavior, use or instruct subagents to use: `Mandatory skills: clean-code, rust-engineer`.
 - If a subagent has a narrower specialty, keep `rust-engineer` in addition to that specialty when Rust or repo implementation is in scope.
-- Prefer vertical TDD for behavior changes: one failing behavior test, minimal implementation, green test, then refactor while green.
 
 ## Repo workflow
 
