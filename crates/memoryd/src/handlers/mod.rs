@@ -1,15 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
-use memorum_coordination::claim_lock::{
-    ClaimLockAcquireRequest, ClaimLockAcquireResult, ClaimLockClock, ClaimLockRegistry,
-};
+use memorum_coordination::claim_lock::{ClaimLockClock, ClaimLockRegistry};
 use memorum_coordination::presence::ClaimLockHeartbeatRenewal;
 use memorum_coordination::{
     handle_peer_heartbeat as coordination_handle_peer_heartbeat, ClaimLockInfo, CoordinationConfig, PeerHeartbeatError,
@@ -17,43 +13,37 @@ use memorum_coordination::{
 };
 use memory_governance::review::REVIEW_QUEUE_DOGFOOD_THRESHOLD;
 use memory_governance::{
-    CandidateContext, CandidateMemory, ContradictionTiebreaker, ExistingMemorySummary, FileSourceResolver,
-    GovernanceEngine, GovernanceProviders, GovernanceRefusalReason, GovernanceWriteDecision, GroundingVerifier,
-    PolicySet, PolicySource, ReviewMemoryEnvelope, ReviewQueue, Scope as GovernanceScope, SessionSpawnResolver,
-    SimilaritySearch, Source as GovernanceSource, SourceKind as GovernanceSourceKind, TiebreakOutcome, TombstoneIndex,
-    TombstoneKind, TombstoneRule,
+    CandidateContext, GovernanceRefusalReason, PolicySet, PolicySource, ReviewMemoryEnvelope, ReviewQueue,
+    Scope as GovernanceScope,
 };
 use memory_privacy::{
-    safe_descriptor_projection, safe_plaintext_fragment, CallerSensitivity, DeterministicPrivacyClassifier,
-    EncryptedPayload, FileKeyProvider, PrivacyClassifier, PrivacyDecision, PrivacyEncryptor, PrivacyNamespace,
-    PrivacyStorageAction, SafeFragmentDecision,
+    safe_descriptor_projection, safe_plaintext_fragment, DeterministicPrivacyClassifier, EncryptedPayload,
+    FileKeyProvider, PrivacyDecision, PrivacyEncryptor, PrivacyNamespace, PrivacyStorageAction, SafeFragmentDecision,
 };
-use memory_source::{capture_web_source, ArtifactStore, CaptureMode, CaptureWebSourceRequest, SourceError};
+use memory_source::{capture_web_source, CaptureMode, CaptureWebSourceRequest, SourceError};
 use memory_substrate::{
     events::EventKind, Author, AuthorKind, AuxScope, ChunkQuery, ClassificationOutcome, EncryptedSubstrateDescriptor,
-    EncryptedWriteRequest, Entity, EventContext, Evidence, Frontmatter, IndexProjection, Memory, MemoryContent,
-    MemoryId, MemoryStatus, MemoryType, ObserveKind, PrivacySpanRecord, RecallIndexQuery, RepoPath, RetrievalPolicy,
-    Scope, Sensitivity, Source, SourceKind, Substrate, SubstrateFragmentAppendRequest, SubstrateFragmentEncryption,
-    SubstrateFragmentPayload, SupersedeRequest as SubstrateSupersedeRequest, TombstoneRequest, TrustLevel, WriteMode,
+    EventContext, Frontmatter, IndexProjection, Memory, MemoryContent, MemoryId, MemoryStatus, MemoryType, ObserveKind,
+    PrivacySpanRecord, RecallIndexQuery, RepoPath, RetrievalPolicy, Scope, Sensitivity, Source, SourceKind, Substrate,
+    SubstrateFragmentAppendRequest, SubstrateFragmentEncryption, SubstrateFragmentPayload, TrustLevel, WriteMode,
     WritePolicy, WriteRequest as SubstrateWriteRequest,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::{broadcast, Mutex};
 
 use crate::dream::rehydration;
 use crate::protocol::{
-    CaptureSourceMode, CaptureSourceResponse, ClaimLockWarning, CompactDreamStatus, ConflictSummary,
-    ConflictsListResponse, DaemonProcessStatus, EntitySummary, EventLogEntry, EventsLogPageResponse, GetProvenance,
-    GetResponse, GovernanceForgetResponse, GovernancePolicySnapshot, GovernancePolicySummary, GovernanceStatus,
-    GovernanceSupersedeResponse, GovernanceWriteResponse, IndexStats, InjectableEventKind, InspectEntitiesResponse,
-    NamespaceNode, NamespaceTreeResponse, NotificationEvent, NotificationsRecentResponse, ObserveResponse,
-    ObserveTarget, PassiveNotificationStatus, PeerActivityResponse, PeerDeliveryAuditEntry, PeerReleaseLockResponse,
-    PeerReleaseLockStatus, PeerSessionStatus, PeerStatusResponse, RealityCheckAction, RealityCheckHistorySession,
-    RealityCheckRequest, RealityCheckResponse, RequestEnvelope, RequestPayload, RespondRefusalKind, ResponseEnvelope,
-    ResponsePayload, RevealResponse, ReviewDecisionResponse, ReviewQueueCounts, ReviewQueueItemResponse,
-    ReviewQueueResponse, SearchHit, SearchResponse, SourceCapturePayload, StatusResponse, WebDashboardStatus,
-    WriteNoteResponse, MAX_FRAME_BYTES, NOTIFICATION_CHANNEL_CAPACITY,
+    CaptureSourceMode, CaptureSourceResponse, CompactDreamStatus, ConflictSummary, ConflictsListResponse,
+    DaemonProcessStatus, EntitySummary, EventLogEntry, EventsLogPageResponse, GetProvenance, GetResponse,
+    GovernancePolicySnapshot, GovernancePolicySummary, GovernanceStatus, IndexStats, InjectableEventKind,
+    InspectEntitiesResponse, NamespaceNode, NamespaceTreeResponse, NotificationEvent, NotificationsRecentResponse,
+    ObserveResponse, ObserveTarget, PassiveNotificationStatus, PeerActivityResponse, PeerDeliveryAuditEntry,
+    PeerReleaseLockResponse, PeerReleaseLockStatus, PeerSessionStatus, PeerStatusResponse, RealityCheckAction,
+    RealityCheckHistorySession, RealityCheckRequest, RealityCheckResponse, RequestEnvelope, RequestPayload,
+    RespondRefusalKind, ResponseEnvelope, ResponsePayload, RevealResponse, ReviewDecisionResponse, ReviewQueueCounts,
+    ReviewQueueItemResponse, ReviewQueueResponse, SearchHit, SearchResponse, SourceCapturePayload, StatusResponse,
+    WebDashboardStatus, WriteNoteResponse, MAX_FRAME_BYTES, NOTIFICATION_CHANNEL_CAPACITY,
 };
 use crate::reality_check::{RcAdvanceRequest, RcRunRequest, RcSessionAdvance, RcSessionHandler};
 use crate::recall::{
@@ -81,7 +71,7 @@ use governance::{
 };
 use memory_ops::{
     delta_response, get_response, observe_response, reveal_response, search_response, startup_response,
-    validated_claim_lock_identity_field, write_note_response, ObserveRequestFields,
+    write_note_response, ObserveRequestFields,
 };
 use peer::{
     peer_activity_response, peer_heartbeat_response, peer_release_lock_response, peer_status_response,
