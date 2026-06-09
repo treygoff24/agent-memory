@@ -298,7 +298,6 @@ where
             duration_ms: started_at.elapsed().as_millis() as u64,
         };
         emit_dream_completion(&self.options, &report);
-        drop(masking);
         Ok(report)
     }
 }

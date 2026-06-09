@@ -406,13 +406,15 @@ async fn pass_2_malformed_json_retries_once_then_fails_pass_2_while_pass_3_still
     let pass_3_output = r#"{"entities":["ent_auth_flow"],"question":"What pattern is Person_A under-testing?"}
 "#;
     let pass_2_attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let pass_2_prompts_seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     let harness = Arc::new(CountingMalformedPass2Harness {
         pass_1_prompt,
         pass_1_output: pass_1_output.to_string(),
-        pass_2_prompt,
+        pass_2_prompt: pass_2_prompt.clone(),
         pass_3_prompt,
         pass_3_output: pass_3_output.to_string(),
         pass_2_attempts: pass_2_attempts.clone(),
+        pass_2_prompts_seen: pass_2_prompts_seen.clone(),
     });
     let writer = RecordingCandidateWriter::default();
     let writes = writer.writes.clone();
@@ -423,6 +425,17 @@ async fn pass_2_malformed_json_retries_once_then_fails_pass_2_while_pass_3_still
     assert_eq!(report.pass_2.status, memoryd::protocol::PassStatus::Failed);
     assert_eq!(report.pass_2.error_code.as_deref(), Some("malformed_pass_2_json"));
     assert_eq!(pass_2_attempts.load(std::sync::atomic::Ordering::SeqCst), 2, "Pass 2 should retry malformed JSON once");
+    {
+        let prompts = pass_2_prompts_seen.lock().expect("pass 2 prompts lock");
+        assert_eq!(prompts.len(), 2);
+        assert_eq!(prompts[0], pass_2_prompt, "first attempt must send the original prompt unchanged");
+        assert_ne!(prompts[1], prompts[0], "retry must not resend the identical prompt");
+        assert_eq!(
+            prompts[1],
+            format!("{pass_2_prompt}{PASS_2_RETRY_CORRECTIVE_PREAMBLE}"),
+            "retry must append the spec's corrective preamble"
+        );
+    }
     assert!(report.pass_2.candidate_results.is_empty());
     assert!(writes.lock().expect("writes lock").is_empty());
     assert_eq!(report.pass_3.status, memoryd::protocol::PassStatus::Success);
@@ -432,6 +445,12 @@ async fn pass_2_malformed_json_retries_once_then_fails_pass_2_while_pass_3_still
     assert!(!questions.contains("Alice"));
 }
 
+/// Spec §"Pass 2 parsing": the one-shot retry must append this corrective
+/// preamble to the original prompt. Hardcoded here (rather than imported) so
+/// the test independently verifies the spec wording.
+const PASS_2_RETRY_CORRECTIVE_PREAMBLE: &str =
+    "\n\nYour previous response was not valid JSON. Please return only a JSON array conforming to the schema above.";
+
 struct CountingMalformedPass2Harness {
     pass_1_prompt: String,
     pass_1_output: String,
@@ -439,6 +458,7 @@ struct CountingMalformedPass2Harness {
     pass_3_prompt: String,
     pass_3_output: String,
     pass_2_attempts: Arc<std::sync::atomic::AtomicUsize>,
+    pass_2_prompts_seen: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 impl memoryd::dream::harness::HarnessCli for CountingMalformedPass2Harness {
@@ -474,8 +494,9 @@ impl memoryd::dream::harness::HarnessCli for CountingMalformedPass2Harness {
             if prompt == self.pass_1_prompt {
                 return Ok(self.pass_1_output.clone());
             }
-            if prompt == self.pass_2_prompt {
+            if prompt.starts_with(self.pass_2_prompt.as_str()) {
                 self.pass_2_attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                self.pass_2_prompts_seen.lock().expect("pass 2 prompts lock").push(prompt.to_string());
                 return Err(memoryd::dream::error::HarnessCliError::MalformedJson {
                     stage: memoryd::dream::error::JsonStage::Parse,
                     raw: "{not valid json".to_string(),

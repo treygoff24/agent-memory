@@ -77,13 +77,23 @@ enum Pass2Parse {
     MalformedAfterRetry,
 }
 
+const PASS2_RETRY_PREAMBLE: &str =
+    "\n\nYour previous response was not valid JSON. Please return only a JSON array conforming to the schema above.";
+
 async fn complete_and_parse_with_retry(
     cli: &dyn HarnessCli,
     prompt: &str,
     timeout: Duration,
 ) -> Result<Pass2Parse, DreamError> {
     for attempt in 0..=1 {
-        match cli.complete(prompt, true, timeout).await {
+        let effective_prompt;
+        let prompt_for_attempt = if attempt == 0 {
+            prompt
+        } else {
+            effective_prompt = format!("{prompt}{PASS2_RETRY_PREAMBLE}");
+            &effective_prompt
+        };
+        match cli.complete(prompt_for_attempt, true, timeout).await {
             Ok(output) => match parse_candidates(&output) {
                 Ok(candidates) => return Ok(Pass2Parse::Candidates(candidates)),
                 Err(_) if attempt == 0 => continue,
@@ -190,5 +200,103 @@ impl EvidenceCatalog {
             (!self.refs.contains(&(source.kind.clone(), source.reference.clone())))
                 .then(|| format!("{}:{}", source.kind, source.reference))
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use crate::{
+        dream::harness::{AuthProbeResult, HarnessFuture},
+        protocol::PromptTransport,
+    };
+
+    /// A test harness that plays back a fixed sequence of outputs and records
+    /// each prompt it receives, so tests can assert on what was sent per attempt.
+    struct SequentialCli {
+        outputs: Mutex<Vec<Result<String, HarnessCliError>>>,
+        captured_prompts: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl SequentialCli {
+        fn new(outputs: Vec<Result<String, HarnessCliError>>, captured_prompts: Arc<Mutex<Vec<String>>>) -> Self {
+            Self { outputs: Mutex::new(outputs), captured_prompts }
+        }
+    }
+
+    impl HarnessCli for SequentialCli {
+        fn name(&self) -> &'static str {
+            "sequential-test"
+        }
+
+        fn prompt_transport(&self) -> PromptTransport {
+            PromptTransport::Stdin
+        }
+
+        fn is_installed(&self) -> bool {
+            true
+        }
+
+        fn auth_probe(&self) -> HarnessFuture<'_, AuthProbeResult> {
+            Box::pin(async { AuthProbeResult::Ok })
+        }
+
+        fn complete<'a>(
+            &'a self,
+            prompt: &'a str,
+            _expect_json: bool,
+            _timeout: Duration,
+        ) -> HarnessFuture<'a, Result<String, HarnessCliError>> {
+            self.captured_prompts.lock().expect("captured_prompts lock").push(prompt.to_owned());
+            let output = self.outputs.lock().expect("outputs lock").remove(0);
+            Box::pin(async move { output })
+        }
+    }
+
+    #[tokio::test]
+    async fn retry_appends_corrective_preamble_to_second_attempt_prompt() {
+        let captured_prompts = Arc::new(Mutex::new(Vec::<String>::new()));
+        // First attempt returns bad JSON; second attempt returns valid JSON.
+        let cli = SequentialCli::new(
+            vec![Ok("not valid json at all".to_string()), Ok("[]".to_string())],
+            Arc::clone(&captured_prompts),
+        );
+
+        let base_prompt = "Generate candidates now.";
+        let result =
+            complete_and_parse_with_retry(&cli, base_prompt, Duration::from_secs(1)).await.expect("no fatal error");
+
+        assert!(
+            matches!(result, Pass2Parse::Candidates(ref v) if v.is_empty()),
+            "second attempt should yield empty candidate list"
+        );
+
+        let prompts = captured_prompts.lock().expect("prompts lock");
+        assert_eq!(prompts.len(), 2, "exactly two attempts should be made");
+        assert_eq!(prompts[0], base_prompt, "first attempt must use the prompt unchanged");
+        assert_ne!(prompts[1], base_prompt, "second attempt prompt must differ from the first");
+        assert!(
+            prompts[1].ends_with(PASS2_RETRY_PREAMBLE),
+            "second attempt must append the corrective preamble; got: {:?}",
+            prompts[1]
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_on_both_attempts_returns_malformed_after_retry() {
+        let captured_prompts = Arc::new(Mutex::new(Vec::<String>::new()));
+        let cli = SequentialCli::new(
+            vec![Ok("not valid json".to_string()), Ok("still not valid json".to_string())],
+            Arc::clone(&captured_prompts),
+        );
+
+        let result =
+            complete_and_parse_with_retry(&cli, "prompt", Duration::from_secs(1)).await.expect("no fatal error");
+
+        assert!(matches!(result, Pass2Parse::MalformedAfterRetry));
+        let prompts = captured_prompts.lock().expect("prompts lock");
+        assert_ne!(prompts[0], prompts[1], "second attempt prompt must differ from first");
     }
 }
