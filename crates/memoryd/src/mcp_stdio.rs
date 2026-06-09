@@ -1,9 +1,9 @@
-use std::io::{self, BufRead as _, Write as _};
 use std::path::Path;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 
 use crate::mcp::{self, ToolDescriptor, ToolName};
 use crate::protocol::{ProtocolError, ResponsePayload, ResponseResult};
@@ -75,11 +75,18 @@ pub async fn serve_stdio(socket_path: &Path) -> Result<()> {
 }
 
 pub async fn serve_stdio_with_options(socket_path: &Path, options: StdioOptions) -> Result<()> {
-    let stdin = io::stdin();
-    let mut stdout = io::stdout().lock();
+    let mut reader = BufReader::new(tokio::io::stdin());
+    let mut stdout = tokio::io::stdout();
+    let mut line = String::new();
 
-    for line in stdin.lock().lines() {
-        let line = line.context("read MCP stdio frame")?;
+    loop {
+        line.clear();
+        let read = reader.read_line(&mut line).await.context("read MCP stdio frame")?;
+        if read == 0 {
+            // EOF on stdin: client closed the pipe. Exit cleanly, matching the
+            // blocking `lines()` loop which terminated on the same condition.
+            break;
+        }
         if line.trim().is_empty() {
             continue;
         }
@@ -94,8 +101,8 @@ pub async fn serve_stdio_with_options(socket_path: &Path, options: StdioOptions)
         if let Some(response) = response {
             let mut frame = serde_json::to_string(&response).context("serialize MCP stdio response")?;
             frame.push('\n');
-            stdout.write_all(frame.as_bytes()).context("write MCP stdio response")?;
-            stdout.flush().context("flush MCP stdio response")?;
+            stdout.write_all(frame.as_bytes()).await.context("write MCP stdio response")?;
+            stdout.flush().await.context("flush MCP stdio response")?;
         }
     }
 
