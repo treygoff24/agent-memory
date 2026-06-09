@@ -97,3 +97,36 @@ fn masking_off_is_preserved_in_runtime_enforcement_for_callers() {
     assert_eq!(decision.storage_action, PrivacyStorageAction::EncryptAtRest);
     assert!(!enforcement(true, true, false).masking);
 }
+
+#[test]
+fn encryption_off_downgrade_returns_plaintext_and_sets_flag() {
+    // When encryption enforcement is disabled, spans that would require
+    // EncryptAtRest must be routed to Plaintext (behavior preserved) and
+    // the `downgraded_by_enforcement` audit flag must be set so callers
+    // can surface the misconfiguration without re-classifying.
+    let classifier = DeterministicPrivacyClassifier::with_enforcement(enforcement(true, false, true));
+
+    let decision = classifier
+        .classify("Email trey@example.com before launch.", PrivacyNamespace::Project, None)
+        .expect("classify");
+
+    assert_eq!(decision.storage_action, PrivacyStorageAction::Plaintext, "downgraded action must be Plaintext");
+    assert!(
+        decision.downgraded_by_enforcement,
+        "downgraded_by_enforcement flag must be set when encryption is suppressed"
+    );
+}
+
+#[test]
+fn encryption_on_does_not_set_downgrade_flag() {
+    // When encryption enforcement is active the flag must stay false even
+    // for content that requires encryption.
+    let classifier = DeterministicPrivacyClassifier::with_enforcement(enforcement(true, true, true));
+
+    let decision = classifier
+        .classify("Email trey@example.com before launch.", PrivacyNamespace::Project, None)
+        .expect("classify");
+
+    assert_eq!(decision.storage_action, PrivacyStorageAction::EncryptAtRest);
+    assert!(!decision.downgraded_by_enforcement, "downgraded_by_enforcement must be false when encryption is enforced");
+}

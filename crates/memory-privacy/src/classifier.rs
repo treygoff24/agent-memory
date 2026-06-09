@@ -9,6 +9,7 @@ use crate::policy::{current_enforcement, CallerSensitivity, PrivacyPolicy};
 use crate::privacy_filter::PrivacyFilterProvider;
 use crate::regex::label_regex_spans;
 use crate::secret_only_scan::SecretOnlyScan;
+use tracing::warn;
 
 /// Privacy classifier boundary.
 pub trait PrivacyClassifier: Send + Sync {
@@ -87,14 +88,26 @@ impl PrivacyClassifier for DeterministicPrivacyClassifier {
         }
         spans.sort_by_key(|span| (span.start, span.end));
         let resolved = PrivacyPolicy::resolve(namespace, caller, &spans)?;
-        let storage_action = if enforcement.encryption {
-            resolved.storage_action
-        } else if resolved.storage_action.requires_encryption() {
+        let enforcement_downgrade = !enforcement.encryption && resolved.storage_action.requires_encryption();
+        let storage_action = if enforcement_downgrade {
+            let encryption_span_count = spans.iter().filter(|s| s.label.storage_action().requires_encryption()).count();
+            let encryption_labels: Vec<_> =
+                spans.iter().filter(|s| s.label.storage_action().requires_encryption()).map(|s| s.label).collect();
+            warn!(
+                namespace = ?namespace,
+                tier = ?resolved.tier,
+                encryption_span_count,
+                encryption_labels = ?encryption_labels,
+                "enforcement.encryption=false: span(s) requiring encryption downgraded to Plaintext; \
+                 set enforcement.encryption=true to protect this content at rest",
+            );
             PrivacyStorageAction::Plaintext
         } else {
             resolved.storage_action
         };
-        Ok(PrivacyDecision::new(resolved.tier, storage_action, spans, model))
+        let mut decision = PrivacyDecision::new(resolved.tier, storage_action, spans, model);
+        decision.downgraded_by_enforcement = enforcement_downgrade;
+        Ok(decision)
     }
 }
 

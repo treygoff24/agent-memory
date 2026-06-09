@@ -187,6 +187,10 @@ pub struct PrivacyDecision {
     pub spans: Vec<PrivacySpan>,
     /// Audit metadata.
     pub scan: PrivacyScanMetadata,
+    /// `true` when an encryption-required action was downgraded to `Plaintext` because
+    /// `enforcement.encryption == false`.  Consumers and audit surfaces can surface this
+    /// as a configuration warning without re-classifying.
+    pub downgraded_by_enforcement: bool,
 }
 
 impl PrivacyDecision {
@@ -203,6 +207,7 @@ impl PrivacyDecision {
             storage_action,
             spans,
             scan: PrivacyScanMetadata { model: model.into(), ran_at: Utc::now(), spans_detected: labels.len(), labels },
+            downgraded_by_enforcement: false,
         }
     }
 }
