@@ -423,7 +423,7 @@ const SPEC_COVERAGE: &[SpecCoverageEntry] = &[
     SpecCoverageEntry::covered(
         "17.7 Overall acceptance",
         "ab949d77703c2367",
-        "release_gate_contracts::fuzz_workflow_runs_merge_driver_for_ten_minutes",
+        "release_gate_contracts::fuzz_workflow_runs_both_targets_for_ten_minutes",
     ),
     SpecCoverageEntry::covered(
         "17.7 Overall acceptance",
