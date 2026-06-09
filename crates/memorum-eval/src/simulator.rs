@@ -41,10 +41,19 @@ pub struct GovernanceMeta {
     pub source_ref: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AssertionSpec {
-    LastWriteStatusIsNotRefused,
-}
+/// The single condition a simulator script can assert: that the last
+/// `Write`/`Supersede` recorded an outcome other than `"refused"`.
+///
+/// Modeled as a unit struct rather than a single-variant enum — there is one
+/// assertion kind today and the spec (§4.2) enumerates no others. If a second
+/// kind is ever introduced, promote this back to an enum and re-introduce a
+/// discriminant; the `Assert { condition: AssertionSpec }` action shape already
+/// carries the value, so that change stays local to this module.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LastWriteNotRefused;
+
+/// Condition evaluated by [`SimulatorAction::Assert`].
+pub type AssertionSpec = LastWriteNotRefused;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct SimulatorObservations {
@@ -198,15 +207,13 @@ impl SimulatorAgent {
             Some(self.request(format!(r#"{{"review_queue":{{"limit":{limit_json}}}}}"#)));
     }
 
-    fn assert(&self, condition: AssertionSpec) {
-        match condition {
-            AssertionSpec::LastWriteStatusIsNotRefused => assert_ne!(
-                self.observations.last_write_outcome.as_deref(),
-                Some("refused"),
-                "expected last write not to be refused: {:#?}",
-                self.observations
-            ),
-        }
+    fn assert(&self, LastWriteNotRefused: AssertionSpec) {
+        assert_ne!(
+            self.observations.last_write_outcome.as_deref(),
+            Some("refused"),
+            "expected last write not to be refused: {:#?}",
+            self.observations
+        );
     }
 
     fn new_session(&mut self, cwd: Option<PathBuf>, harness: Option<String>) {

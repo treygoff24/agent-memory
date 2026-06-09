@@ -6,8 +6,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use chrono::SecondsFormat;
 use clap::ValueEnum;
-use tokio::runtime::Builder as TokioBuilder;
 
+use crate::block_on;
 use crate::daemon_scaffold::DaemonScaffold;
 use crate::harness_runner::{HarnessRunner, MockHarness, RealHarness, TestOutcome};
 
@@ -872,20 +872,6 @@ fn skip_kind_for_reason(reason: &str) -> SkipKind {
     } else {
         SkipKind::RuntimeSelfSkip
     }
-}
-
-/// Run an async future to completion from a synchronous context.
-///
-/// Uses a per-call single-threaded tokio runtime. The orchestrator worker threads
-/// are OS threads with no ambient runtime, so `Handle::block_on` is not
-/// available. A `current_thread` runtime is lightweight and avoids the
-/// busy-spin + `yield_now()` of the prior home-rolled implementation. (H-R2)
-fn block_on<F: std::future::Future>(future: F) -> F::Output {
-    TokioBuilder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("orchestrator block_on: failed to build single-threaded tokio runtime")
-        .block_on(future)
 }
 
 fn matches_filter(entry: CatalogEntry, pattern: &str) -> bool {

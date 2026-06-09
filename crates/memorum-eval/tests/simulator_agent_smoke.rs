@@ -1,6 +1,6 @@
 use memorum_eval::block_on;
 use memorum_eval::daemon_scaffold::DaemonScaffold;
-use memorum_eval::simulator::{AssertionSpec, GovernanceMeta, SimulatorAction, SimulatorAgent, SimulatorConfig};
+use memorum_eval::simulator::{GovernanceMeta, LastWriteNotRefused, SimulatorAction, SimulatorAgent, SimulatorConfig};
 
 #[test]
 fn simulator_agent_runs_startup_search_write_script_against_daemon() {
@@ -21,7 +21,7 @@ fn simulator_agent_runs_startup_search_write_script_against_daemon() {
                         source_ref: Some("eval_test_1".to_owned()),
                     },
                 },
-                SimulatorAction::Assert { condition: AssertionSpec::LastWriteStatusIsNotRefused },
+                SimulatorAction::Assert { condition: LastWriteNotRefused },
             ])
             .await;
 
