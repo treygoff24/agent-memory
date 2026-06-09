@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::PathBuf;
 
 use crate::recall::error::RecallError;
@@ -24,7 +23,7 @@ pub(crate) async fn validate_session_fields(
     session_id: &str,
     harness: &str,
 ) -> Result<SessionBinding, RecallError> {
-    let cwd = validate_cwd(cwd)?;
+    let cwd = validate_cwd(cwd).await?;
     let session_id = validate_required_field("session_id", session_id)?;
     let harness = validate_required_field("harness", harness)?;
 
@@ -41,12 +40,13 @@ pub(crate) async fn validate_session_fields(
     })
 }
 
-fn validate_cwd(cwd: &str) -> Result<PathBuf, RecallError> {
+async fn validate_cwd(cwd: &str) -> Result<PathBuf, RecallError> {
     let path = PathBuf::from(cwd.trim());
     if !path.is_absolute() {
         return Err(RecallError::invalid_request("cwd must be absolute"));
     }
-    fs::canonicalize(&path)
+    tokio::fs::canonicalize(&path)
+        .await
         .map_err(|error| RecallError::invalid_request(format!("cwd must exist and canonicalize cleanly: {error}")))
 }
 

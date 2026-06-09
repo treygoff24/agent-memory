@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
@@ -118,16 +117,25 @@ pub async fn build_startup_response_with_coordination_config(
     let review_attention_line = (pending_attention_count > 0)
         .then(|| format!("- {pending_attention_count} memory item(s) require review before factual recall."));
     let active_entity_ids = active_entity_ids(&selected);
-    let dream_questions = select_pending_attention_questions(
-        &substrate.roots().repo,
-        &session_binding.namespaces_in_scope,
-        &active_entity_ids,
-    );
+    // `select_pending_attention_questions` reads `dreams/questions/**` from disk
+    // (read_dir + per-file read_to_string) and touches a process-global mutex.
+    // Run the whole sync routine on the blocking pool so it never stalls a tokio
+    // worker on the per-prompt recall hot path. Inputs are cloned to satisfy the
+    // 'static bound; the original `namespaces_in_scope` stays borrowable below.
+    let dream_questions = {
+        let repo = substrate.roots().repo.clone();
+        let namespaces_in_scope = session_binding.namespaces_in_scope.clone();
+        tokio::task::spawn_blocking(move || {
+            select_pending_attention_questions(&repo, &namespaces_in_scope, &active_entity_ids)
+        })
+        .await
+        .expect("select_pending_attention_questions blocking task panicked")
+    };
     let pending_attention_items = review_attention_line.into_iter().chain(dream_questions.lines).collect::<Vec<_>>();
-    let include_reality_check_due = should_offer_reality_check(substrate, Utc::now());
+    let include_reality_check_due = should_offer_reality_check(substrate, Utc::now()).await;
     let rendered_pending_attention = render_pending_attention_body(pending_attention_items, include_reality_check_due);
     if rendered_pending_attention.reality_check_due_emitted {
-        record_reality_check_surface(&substrate.roots().runtime, Utc::now());
+        record_reality_check_surface(&substrate.roots().runtime, Utc::now()).await;
     }
     let mut pending_attention_omissions = dream_questions.omitted_total;
     if rendered_pending_attention.omitted_count > 0 {
@@ -476,28 +484,33 @@ fn from_sync_date(candidates: &[PeerWriteCandidate], peer_updates: &[PeerUpdateE
         .to_string()
 }
 
-fn should_offer_reality_check(substrate: &Substrate, now: DateTime<Utc>) -> bool {
-    let state = DaemonState::load(&substrate.roots().runtime);
+async fn should_offer_reality_check(substrate: &Substrate, now: DateTime<Utc>) -> bool {
+    // DaemonState::load is sync file IO with many sync callers; hop to the
+    // blocking pool here rather than async-ifying it crate-wide.
+    let runtime_root = substrate.roots().runtime.clone();
+    let state = tokio::task::spawn_blocking(move || DaemonState::load(&runtime_root))
+        .await
+        .expect("DaemonState::load blocking task panicked");
     state.reality_check.last_completed_at.is_some()
         && RcScheduler::default().is_due(&state.reality_check, now)
-        && !recently_surfaced_reality_check(&substrate.roots().runtime, now)
+        && !recently_surfaced_reality_check(&substrate.roots().runtime, now).await
 }
 
-fn recently_surfaced_reality_check(runtime_root: &Path, now: DateTime<Utc>) -> bool {
+async fn recently_surfaced_reality_check(runtime_root: &Path, now: DateTime<Utc>) -> bool {
     let in_process = reality_check_surfaced_at()
         .lock()
         .expect("reality check pending-attention surface lock not poisoned")
         .get(runtime_root)
         .is_some_and(|surfaced_at| is_inside_reality_check_surface_window(surfaced_at, now));
-    in_process || persisted_reality_check_surface_is_recent(runtime_root, now)
+    in_process || persisted_reality_check_surface_is_recent(runtime_root, now).await
 }
 
-fn record_reality_check_surface(runtime_root: &Path, now: DateTime<Utc>) {
+async fn record_reality_check_surface(runtime_root: &Path, now: DateTime<Utc>) {
     reality_check_surfaced_at()
         .lock()
         .expect("reality check pending-attention surface lock not poisoned")
         .insert(runtime_root.to_path_buf(), now);
-    if let Err(error) = write_reality_check_surface_marker(runtime_root, now) {
+    if let Err(error) = write_reality_check_surface_marker(runtime_root, now).await {
         eprintln!("WARN failed to persist reality_check_due pending-attention marker: {error}");
     }
 }
@@ -506,22 +519,23 @@ fn reality_check_surfaced_at() -> &'static Mutex<BTreeMap<PathBuf, DateTime<Utc>
     REALITY_CHECK_SURFACED_AT.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
-fn persisted_reality_check_surface_is_recent(runtime_root: &Path, now: DateTime<Utc>) -> bool {
-    fs::read_to_string(reality_check_surface_marker_path(runtime_root))
+async fn persisted_reality_check_surface_is_recent(runtime_root: &Path, now: DateTime<Utc>) -> bool {
+    tokio::fs::read_to_string(reality_check_surface_marker_path(runtime_root))
+        .await
         .ok()
         .and_then(|value| DateTime::parse_from_rfc3339(value.trim()).ok())
         .map(|surfaced_at| is_inside_reality_check_surface_window(&surfaced_at.with_timezone(&Utc), now))
         .unwrap_or(false)
 }
 
-fn write_reality_check_surface_marker(runtime_root: &Path, now: DateTime<Utc>) -> std::io::Result<()> {
+async fn write_reality_check_surface_marker(runtime_root: &Path, now: DateTime<Utc>) -> std::io::Result<()> {
     let path = reality_check_surface_marker_path(runtime_root);
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+        tokio::fs::create_dir_all(parent).await?;
     }
     let temp_path = path.with_extension("tmp");
-    fs::write(&temp_path, now.to_rfc3339())?;
-    fs::rename(temp_path, path)
+    tokio::fs::write(&temp_path, now.to_rfc3339()).await?;
+    tokio::fs::rename(temp_path, path).await
 }
 
 fn reality_check_surface_marker_path(runtime_root: &Path) -> PathBuf {
