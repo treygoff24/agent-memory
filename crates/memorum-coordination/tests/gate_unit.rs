@@ -1,5 +1,5 @@
 use chrono::{DateTime, Duration, TimeZone, Utc};
-use memorum_coordination::gate::{score, CandidateEmbedding, PeerWriteCandidate};
+use memorum_coordination::gate::{path_fraction, score, CandidateEmbedding, PeerWriteCandidate};
 use memorum_coordination::{
     CoordinationConfig, CoordinationInsertion, PeerUpdateEntry, QueryEmbedding, RelevanceGate, SessionContext,
 };
@@ -265,6 +265,59 @@ fn test_embedding_triple_mismatch_yields_zero() {
 
     assert_eq!(score(&candidate, &session), 0.5);
     assert!(gate().evaluate(&mut session, &[candidate], fixture_now()).peer_updates.is_empty());
+}
+
+// ── path_fraction prefix-matching tests ──────────────────────────────────────
+
+/// Session directory covers a file inside it (session prefix → candidate file).
+#[test]
+fn path_fraction_directory_prefix_covers_file_inside() {
+    let session_paths = set(["/src/auth"]);
+    let candidate_paths = ["/src/auth/service.rs".to_string()];
+    assert_eq!(path_fraction(&candidate_paths, &session_paths), 1.0);
+}
+
+/// Non-boundary prefix must NOT match: `/src/auth` must not cover
+/// `/src/authentication.rs` even though the string starts with `/src/auth`.
+#[test]
+fn path_fraction_non_boundary_prefix_does_not_match() {
+    let session_paths = set(["/src/auth"]);
+    let candidate_paths = ["/src/authentication.rs".to_string()];
+    assert_eq!(path_fraction(&candidate_paths, &session_paths), 0.0);
+}
+
+/// Exact match still works after the refactor.
+#[test]
+fn path_fraction_exact_match_still_works() {
+    let session_paths = set(["/src/auth/service.rs"]);
+    let candidate_paths = ["/src/auth/service.rs".to_string()];
+    assert_eq!(path_fraction(&candidate_paths, &session_paths), 1.0);
+}
+
+/// Reverse direction: session is focused on a specific file, candidate path is
+/// the parent directory. Bidirectional prefix matching: the candidate directory
+/// is an ancestor of (i.e. a prefix of) the session file path, so they
+/// intersect.
+#[test]
+fn path_fraction_reverse_direction_candidate_parent_of_session_file() {
+    let session_paths = set(["/src/auth/service.rs"]);
+    let candidate_paths = ["/src/auth".to_string()];
+    assert_eq!(path_fraction(&candidate_paths, &session_paths), 1.0);
+}
+
+/// Only the covered fraction counts when not all paths match.
+#[test]
+fn path_fraction_partial_coverage() {
+    let session_paths = set(["/src/auth"]);
+    let candidate_paths = ["/src/auth/service.rs".to_string(), "/src/payments/handler.rs".to_string()];
+    assert_eq!(path_fraction(&candidate_paths, &session_paths), 0.5);
+}
+
+/// Empty candidate paths returns 0.0 (unchanged baseline).
+#[test]
+fn path_fraction_empty_candidates_returns_zero() {
+    let session_paths = set(["/src/auth"]);
+    assert_eq!(path_fraction(&[], &session_paths), 0.0);
 }
 
 fn session_with_entities<const N: usize>(entities: [&str; N]) -> SessionContext {

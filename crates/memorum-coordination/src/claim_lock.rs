@@ -324,7 +324,7 @@ fn contention(
     ClaimLockContention {
         warning_code: CLAIM_LOCK_CONTENTION_CODE,
         message: format!(
-            "Memory {memory_id} has an active claim lock held by {holder_label}. Your supersession proceeded; coordinate with that session if needed."
+            "Memory {memory_id} has an active claim lock held by {holder_label}. This lock is advisory; your write has not been blocked, but you should coordinate with that session before proceeding."
         ),
         memory_id,
         holder,

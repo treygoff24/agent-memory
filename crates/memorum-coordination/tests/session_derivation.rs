@@ -123,10 +123,16 @@ fn test_salient_paths_tier3_no_startup_empty() {
 }
 
 #[test]
-fn test_path_matching_exact_string() {
+fn test_path_matching_component_boundary_semantics() {
+    // Trailing slash is a formatting artifact, not a distinct path: same
+    // components ⇒ intersects (paths_intersect upgrade, 2026-06-09).
     let session_paths = set(["project:proj/decision.md/"]);
     let candidate_paths = vec!["project:proj/decision.md".to_string()];
+    assert_eq!(path_fraction(&candidate_paths, &session_paths), 1.0);
 
+    // Component boundaries still protect against lookalike prefixes.
+    let session_paths = set(["project:proj/decision.md"]);
+    let candidate_paths = vec!["project:proj/decision.md.bak".to_string()];
     assert_eq!(path_fraction(&candidate_paths, &session_paths), 0.0);
 }
 

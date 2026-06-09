@@ -121,14 +121,38 @@ pub fn entity_jaccard(candidate_entities: &HashSet<String>, session_entities: &H
     intersection_count / union_count
 }
 
-/// Fraction of candidate paths exactly covered by the session's salient paths.
+/// Fraction of candidate paths covered by the session's salient paths.
+///
+/// A candidate path is "covered" if any session path intersects it via
+/// path-component-boundary prefix semantics:
+/// - exact match (`/src/auth` == `/src/auth`),
+/// - session path is a prefix of the candidate path (`/src/auth` covers
+///   `/src/auth/service.rs`), or
+/// - candidate path is a prefix of the session path (`/src/auth/service.rs`
+///   covers `/src/auth` — e.g. session is focused on a specific file but the
+///   peer write touched its parent directory).
+///
+/// The check uses [`std::path::Path::starts_with`], which operates on whole
+/// path components, so `/src/auth` does NOT cover `/src/authentication.rs`.
 pub fn path_fraction(candidate_paths: &[String], session_paths: &HashSet<String>) -> f64 {
     if candidate_paths.is_empty() {
         return 0.0;
     }
 
-    let covered_count = candidate_paths.iter().filter(|path| session_paths.contains(path.as_str())).count() as f64;
+    let covered_count = candidate_paths
+        .iter()
+        .filter(|candidate| session_paths.iter().any(|session| paths_intersect(candidate.as_str(), session.as_str())))
+        .count() as f64;
     covered_count / candidate_paths.len() as f64
+}
+
+/// Returns true if `a` and `b` intersect by path-component-boundary prefix
+/// semantics: exact match, `a` is a prefix of `b`, or `b` is a prefix of `a`.
+fn paths_intersect(a: &str, b: &str) -> bool {
+    use std::path::Path;
+    let a = Path::new(a);
+    let b = Path::new(b);
+    a == b || b.starts_with(a) || a.starts_with(b)
 }
 
 /// Cosine topic similarity. Missing or mismatched embedding triples score as no topic match.
