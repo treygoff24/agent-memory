@@ -1,9 +1,20 @@
 # Installing Memorum
 
-This page covers bootstrap paths for a fresh machine or a fresh agent session.
-Use the installer when you want Memorum built, a local memory repo/runtime
-prepared, the daemon started, lifecycle commands printed, and MCP wiring snippets
-shown in one pass.
+This page covers build and install paths for a fresh machine or a fresh agent
+session: getting the `memoryd` binaries onto the box. Use the installer when you
+want Memorum built, a local memory repo/runtime prepared, the daemon started,
+lifecycle commands printed, and MCP wiring snippets shown in one pass.
+
+Once the binaries are installed, bootstrap the substrate and wire MCP with
+`memoryd init` (the unified first-run entrypoint):
+
+- **Human operator:** [`docs/getting-started.md`](getting-started.md) — interactive `memoryd init` plus verify and MCP wiring.
+- **AI agent installing for a user:** [`docs/agent-onboarding.md`](agent-onboarding.md) — the scripted `memoryd init --non-interactive --json` loop.
+- **Something broke:** [`docs/troubleshooting.md`](troubleshooting.md).
+
+The `scripts/install-memorum.sh` path below also starts the daemon for you
+(via `memoryd serve --init` internally), so it doubles as a one-shot
+install-and-bootstrap for the local repo.
 
 ## Option 1: cargo install from Git
 

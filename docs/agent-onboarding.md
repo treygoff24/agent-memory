@@ -2,6 +2,14 @@
 
 This guide is written to you — the AI agent — not the user. Follow it in order. Every command here is grounded in the real `memoryd` CLI surface; do not invent flags.
 
+Related guides:
+
+- A **human operator** setting up by hand should follow [`docs/getting-started.md`](getting-started.md), which uses the same `memoryd init` bootstrap interactively.
+- For **build/install on a fresh machine** (`cargo install`, `scripts/install-memorum.sh`), see [`docs/install.md`](install.md).
+- When something breaks, [`docs/troubleshooting.md`](troubleshooting.md) maps first-run symptoms to fixes.
+
+`memoryd init` is the unified bootstrap entrypoint for all of these; this guide drives its non-interactive (`--non-interactive --json`) path.
+
 ## What you are doing
 
 You are helping a user install Memorum: a local-first daemon that creates one shared memory layer across Claude Code, Codex CLI, and any other MCP-capable harness. You will detect what they already have, get their consent, run setup, verify it, and tell them to restart their session.

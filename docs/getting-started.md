@@ -1,36 +1,36 @@
 # Getting started with Memorum
 
-This guide starts a local memory daemon, verifies it, and wires an MCP client to the stdio bridge.
+This guide is for a human operator setting Memorum up by hand. It uses `memoryd init` to bootstrap, verifies the daemon, and wires an MCP client to the stdio bridge.
 
-If something goes wrong along the way, see [`docs/troubleshooting.md`](troubleshooting.md) — it covers `dream_disabled`, socket errors, MCP listing empty, and the other first-run failure modes.
+Related guides — each says who it is for:
 
-## 0. Unified onboarding entrypoint (release-target; not current alpha bootstrap)
+- **You are an AI agent installing Memorum for a user?** Follow [`docs/agent-onboarding.md`](agent-onboarding.md) instead — the scripted detect → consent → run → verify → restart loop built on `memoryd init --non-interactive --json`. ([`llms-install.md`](../llms-install.md) is the short pointer to it.)
+- **Installing on a fresh machine from Git, or want the full binary set built in one pass?** See [`docs/install.md`](install.md) for `cargo install` and `scripts/install-memorum.sh`.
+- **Something went wrong?** [`docs/troubleshooting.md`](troubleshooting.md) covers `dream_disabled`, socket errors, MCP listing empty, and the other first-run failure modes.
 
-`memoryd init` is the release-target unified first-run entrypoint — **not current alpha bootstrap**. It can detect your existing harness memory, provision the daemon, wire MCP config, and (optionally) import prior Claude Code and Codex CLI memory. The current alpha bootstrap remains `memoryd serve --init` plus `scripts/install-memorum.sh` (steps 1–2 below).
+## 0. Bootstrap with `memoryd init`
+
+`memoryd init` is the unified first-run entrypoint. It detects your existing harness memory, provisions the daemon, wires MCP config, and (optionally) imports prior Claude Code and Codex CLI memory — all from one command. This guide uses it as the bootstrap path; steps 1–4 below also work as a fully manual alternative if you would rather drive each piece yourself.
 
 How much it does depends on how you invoke it:
 
-**Bare `memoryd init` (advisory; release-target)** — a bare interactive invocation prints detection and guidance only. It reports what harness memory it found and the exact commands to run next; it does **not** provision the daemon or wire MCP on its own.
+**Interactive provisioning** — pass an action flag (`--import` or `--print-only`) to drive the prompt-based wizard that walks you through each decision and applies it:
 
 ```bash
-memoryd init   # release-target advisory: detects + prints next-step commands; does not provision
+memoryd init --import   # interactive wizard: prompts then provisions
 ```
 
-**Interactive provisioning** — pass an action flag (`--import` or `--print-only`) to drive the prompt-based wizard that guides you through each decision and applies them:
+**Agent/CI non-interactive mode** — all decisions via flags, machine-readable JSON report (`SetupReport`) on stdout:
 
 ```bash
-memoryd init --import   # release-target wizard; prompts then provisions
+memoryd init --non-interactive --json --wire-mcp current --daemon on-demand
 ```
 
-**Agent/CI non-interactive mode** (all decisions via flags, JSON report on stdout):
+Add `--import --harness current` to bring in prior harness memory. Use `--detect-only` to inspect what is present without mutating anything. The full flag reference and the `SetupReport` JSON shape live in [`docs/agent-onboarding.md`](agent-onboarding.md).
 
-```bash
-memoryd init --non-interactive --json --wire-mcp current --daemon on-demand   # release-target; not current alpha
-```
+**Note on a bare `memoryd init`:** with no action flag on an interactive terminal, `memoryd init` runs in advisory mode — it prints detection and the next commands to run but does **not** provision the daemon or wire MCP. Pass `--import`/`--print-only` (or `--non-interactive`) when you want it to act.
 
-Add `--import --harness current` to bring in prior harness memory. Use `--detect-only` to inspect what is present without mutating anything. See [`docs/agent-onboarding.md`](agent-onboarding.md) for the full agent-driven onboarding guide including flag reference and SetupReport JSON shape.
-
-If you prefer to run the steps below manually, you can skip `memoryd init` (not current alpha bootstrap). The daemon starts with `memoryd serve --init` in step 2.
+When `memoryd init` has provisioned the daemon and wired MCP for you, skip ahead to [step 3 (verify)](#3-verify-daemon-health) and [step 4 (wire MCP)](#4-wire-mcp) to confirm — then continue from there. The manual steps below are the alternative path if you are not using `memoryd init`.
 
 ## 1. Build or install
 
@@ -56,7 +56,9 @@ are running evals or release validation.
 
 For checkout-only development, prefix commands with `cargo run --bin memoryd --` instead of installing.
 
-## 2. Initialize and start the daemon
+## 2. Initialize and start the daemon (manual alternative)
+
+If you bootstrapped with `memoryd init` in step 0, the daemon is already provisioned — skip to step 3. This section is the manual path for operators who want to start the daemon directly or run a custom arrangement.
 
 Define the private runtime and socket once per shell:
 
@@ -71,7 +73,7 @@ mkdir -p "$MEMORUM_REPO"
 memoryd serve --init --repo "$MEMORUM_REPO" --runtime "$MEMORUM_RUNTIME" --socket "$MEMORUM_SOCKET"
 ```
 
-Keep this process running. The socket path is what CLIs, the web dashboard, TUI, and MCP bridge use.
+`memoryd serve --init` runs the daemon directly and initializes the substrate on first start. It is the low-level start command — `scripts/install-memorum.sh` uses it under the hood, and you can use it for manual or custom arrangements. Keep this process running. The socket path is what CLIs, the web dashboard, TUI, and MCP bridge use.
 
 ## 3. Verify daemon health
 
