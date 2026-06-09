@@ -132,6 +132,55 @@ impl Index {
         txn.commit()
     }
 
+    /// Drop plaintext index rows whose canonical file no longer exists on disk.
+    ///
+    /// Startup orphan sweep (spec §13.5.1 phase-6 companion): the index can
+    /// retain rows for memories that were deleted or moved out of band (e.g. a
+    /// tombstone landed via merge, or an operator removed a file). Incremental
+    /// reindex only visits files that *exist*, so without this sweep those rows
+    /// would linger.
+    ///
+    /// Stats each indexed plaintext `repo_path` against `repo`; rows whose path
+    /// no longer stats are removed. Encrypted-tier rows (`encrypted/%`) are left
+    /// untouched. This deletes **derived index rows only** — never canonical
+    /// files; tombstones remain the sole delete path for memories. Returns the
+    /// number of orphaned memory rows removed.
+    ///
+    /// Cost is O(n_index_rows) stat calls, not O(n) file reads.
+    pub fn prune_orphaned_plaintext_rows(&mut self, repo: &std::path::Path) -> rusqlite::Result<usize> {
+        let orphan_paths: Vec<String> = {
+            let mut stmt = self.connection.prepare("SELECT path FROM memories WHERE path NOT LIKE 'encrypted/%'")?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+            let mut orphans = Vec::new();
+            for path in rows {
+                let path = path?;
+                if !repo.join(&path).exists() {
+                    orphans.push(path);
+                }
+            }
+            orphans
+        };
+        if orphan_paths.is_empty() {
+            return Ok(0);
+        }
+
+        let txn = self.connection.transaction()?;
+        let mut removed = 0usize;
+        for path in &orphan_paths {
+            // FK cascade (memory_chunks, memory_tags/aliases/entities/evidence/
+            // supersession, chunk_embedding_meta) fires off this delete; the two
+            // FK-less projection tables are swept by chunk-id below.
+            removed += txn.execute("DELETE FROM memories WHERE path = ?1", [path])?;
+        }
+        txn.execute("DELETE FROM chunk_vectors WHERE chunk_id NOT IN (SELECT chunk_id FROM memory_chunks)", [])?;
+        txn.execute(
+            "DELETE FROM pending_embedding_jobs WHERE chunk_id NOT IN (SELECT chunk_id FROM memory_chunks)",
+            [],
+        )?;
+        txn.commit()?;
+        Ok(removed)
+    }
+
     /// Update a chunk embedding.
     ///
     /// Spec §10.2.1 step 4 ordering: vector upsert FIRST (outside any txn),

@@ -1256,21 +1256,16 @@ impl Substrate {
         next_memory_id(&self.roots.runtime, &self.device_id, &HashSet::new())
     }
 
-    /// Rebuild derived index from files.
+    /// Rebuild the derived index from files (backs the public `memoryd reindex`).
+    ///
+    /// Unconditional full reindex: clears all plaintext rows and rebuilds from
+    /// every Markdown file. Startup uses the cheaper incremental sweep instead
+    /// (see [`incremental_reindex_at_open`]); this is the explicit operator
+    /// "rebuild everything" path.
     pub async fn reindex(&self) -> SubstrateResult<usize> {
-        let mut count = 0usize;
-        let entries = collect_reindex_paths(&self.roots.repo).map_err(OpenError::OperatorRepairRequired)?;
-        self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.clear_plaintext_memory_index()?;
-        for entry in entries {
-            self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.upsert_memory_with_file_hash(
-                &entry.memory,
-                entry.metadata_only,
-                Some(&entry.file_hash),
-            )?;
-            count += 1;
-        }
-        self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.reconcile_active_embedding_jobs()?;
-        Ok(count)
+        let mut index = self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?;
+        full_reindex_from_repo(&self.roots.repo, &mut index)
+            .map_err(|err| SubstrateError::from(OpenError::OperatorRepairRequired(err.to_string())))
     }
 
     /// Query memories.
@@ -1637,7 +1632,12 @@ impl Substrate {
             startup_reconcile_report,
         )
         .map_err(|err| OpenError::OperatorRepairRequired(err.to_string()))?;
-        full_reindex_from_repo(&roots.repo, &mut index)
+        // Plaintext freshness is handled by phase-6 stale detection
+        // (`reindex_stale_memories`), which already ran inside
+        // `replay_pending_repairs_into_report` above. Here we only run the
+        // incremental open sweep: orphan-row cleanup, encrypted-tier reindex,
+        // and embedding-job reconciliation — not an O(n) full reindex.
+        incremental_reindex_at_open(&roots.repo, &mut index)
             .map_err(|err| OpenError::OperatorRepairRequired(err.to_string()))?;
         match read_all_event_logs_from_repo(&roots.repo).and_then(|events| {
             index.rebuild_events_log_mirror(&events).map_err(|err| std::io::Error::other(err.to_string()))
@@ -2280,8 +2280,14 @@ fn placeholder_frontmatter(id: &MemoryId) -> Frontmatter {
     }
 }
 
+/// Full reindex backing the public `memoryd reindex` command: clear all
+/// plaintext rows and rebuild from every Markdown file on disk.
+///
+/// Startup (`open_with_options`) does **not** call this; it runs the
+/// incremental [`incremental_reindex_at_open`] sweep instead. Kept because
+/// `reindex()` and the CLI need an unconditional rebuild.
 fn full_reindex_from_repo(repo: &std::path::Path, index: &mut Index) -> std::io::Result<usize> {
-    let entries = collect_reindex_paths(repo).map_err(std::io::Error::other)?;
+    let entries = collect_reindex_paths(repo, ReindexScope::All).map_err(std::io::Error::other)?;
     index.clear_plaintext_memory_index().map_err(|err| std::io::Error::other(err.to_string()))?;
     let mut count = 0usize;
     for entry in entries {
@@ -2294,13 +2300,65 @@ fn full_reindex_from_repo(repo: &std::path::Path, index: &mut Index) -> std::io:
     Ok(count)
 }
 
+/// Incremental open-time index reconciliation (spec §13.5.1 phase-6 companion).
+///
+/// Replaces the unconditional [`full_reindex_from_repo`] at startup. Plaintext
+/// freshness is left to phase 6 (`reindex_stale_memories`), which has already
+/// run by the time `open` reaches here. This sweep covers the three things
+/// phase 6 does not:
+///
+/// 1. **Orphan-row cleanup** — drop index rows whose plaintext file no longer
+///    stats (memory deleted/moved on disk). Phase 6 only visits files that
+///    exist. Derived rows only; never canonical files.
+/// 2. **Encrypted-tier indexing** — phase 6 skips `encrypted/`. Re-index only
+///    encrypted files whose ciphertext hash drifted from the index row, using
+///    the same `metadata_only` + `safe_body` projection as a full reindex.
+/// 3. **Embedding-job reconciliation** — `reconcile_active_embedding_jobs` runs
+///    last, exactly as the full reindex did.
+fn incremental_reindex_at_open(repo: &std::path::Path, index: &mut Index) -> std::io::Result<usize> {
+    // (1) Orphan sweep — O(n_index_rows) stat calls, not O(n) file reads.
+    index.prune_orphaned_plaintext_rows(repo).map_err(|err| std::io::Error::other(err.to_string()))?;
+
+    // (2) Encrypted-tier incremental reindex — hash-compare like phase 6.
+    let mut count = 0usize;
+    let entries = collect_reindex_paths(repo, ReindexScope::EncryptedOnly).map_err(std::io::Error::other)?;
+    for entry in entries {
+        let stale = entry
+            .memory
+            .path
+            .as_ref()
+            .and_then(|path| index.file_hash_for(path))
+            .map(|indexed| indexed != entry.file_hash)
+            .unwrap_or(true);
+        if stale {
+            index
+                .upsert_memory_with_file_hash(&entry.memory, entry.metadata_only, Some(&entry.file_hash))
+                .map_err(|err| std::io::Error::other(err.to_string()))?;
+            count += 1;
+        }
+    }
+
+    // (3) Embedding-job reconciliation — must keep running at open.
+    index.reconcile_active_embedding_jobs().map_err(|err| std::io::Error::other(err.to_string()))?;
+    Ok(count)
+}
+
 struct ReindexEntry {
     memory: Memory,
     metadata_only: bool,
     file_hash: Sha256,
 }
 
-fn collect_reindex_paths(repo: &std::path::Path) -> Result<Vec<ReindexEntry>, String> {
+/// Which repo tier `collect_reindex_paths` should gather.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReindexScope {
+    /// Every Markdown file (plaintext + encrypted projections).
+    All,
+    /// Only the `encrypted/` tier.
+    EncryptedOnly,
+}
+
+fn collect_reindex_paths(repo: &std::path::Path, scope: ReindexScope) -> Result<Vec<ReindexEntry>, String> {
     let mut acc = Vec::new();
     for raw in crate::tree::relative_memory_paths(repo) {
         let rel = raw.to_string_lossy().replace('\\', "/");
@@ -2333,7 +2391,7 @@ fn collect_reindex_paths(repo: &std::path::Path) -> Result<Vec<ReindexEntry>, St
                 }
                 Err(_) => continue, // legacy raw ciphertext: not a Markdown file; skip from plaintext reindex
             }
-        } else {
+        } else if scope == ReindexScope::All {
             acc.push(
                 read_memory_file(repo, &path)
                     .map(|(memory, hash)| ReindexEntry { memory, metadata_only: false, file_hash: hash })
