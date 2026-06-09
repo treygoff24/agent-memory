@@ -10,4 +10,4 @@ pub use defaults::{default_retrieval_policy, default_source, default_write_polic
 pub use parse::{parse_document, parse_frontmatter_yaml, ParsedMemory};
 pub use schema::SUPPORTED_SCHEMA_VERSION;
 pub use serialize::{serialize_document, serialize_frontmatter};
-pub use validate::{validate_frontmatter, validate_memory_id};
+pub use validate::validate_frontmatter;

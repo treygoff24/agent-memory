@@ -1436,26 +1436,18 @@ impl Substrate {
     /// Phase 5 surface: returns counts for each derived table affected so callers
     /// can confirm the drop matched their expectation. The legacy `usize` return
     /// from [`Self::drop_embedding_model`] only carried `vectors_removed`.
+    ///
+    /// Delegates to [`crate::index::query::Index::drop_embedding_model_report`] which executes
+    /// all three DELETEs and the `table_exists` check atomically on the same connection, avoiding
+    /// the TOCTOU window that existed when pre-counts were fetched as separate SELECT queries
+    /// before the DELETE. The `table_dropped` field now correctly reflects whether the
+    /// per-triple vector table existed (not whether rows were deleted), matching the
+    /// semantics callers should expect.
     pub async fn drop_embedding_model_report(&self, triple: EmbeddingTriple) -> Result<DropTripleReport, VectorError> {
-        let mut index =
-            self.index.lock().map_err(|err| VectorError::IndexUnavailable(format!("index mutex poisoned: {err}")))?;
-        let meta_rows_removed = index.connection().query_row(
-            "SELECT COUNT(*) FROM chunk_embedding_meta WHERE provider=?1 AND model_ref=?2 AND dimension=?3",
-            (&triple.provider, &triple.model_ref, i64::from(triple.dimension)),
-            |row| row.get::<_, i64>(0),
-        )? as u64;
-        let pending_jobs_dropped = index.connection().query_row(
-            "SELECT COUNT(*) FROM pending_embedding_jobs WHERE provider=?1 AND model_ref=?2 AND dimension=?3",
-            (&triple.provider, &triple.model_ref, i64::from(triple.dimension)),
-            |row| row.get::<_, i64>(0),
-        )? as u64;
-        let vectors_removed = index.drop_embedding_model(&triple)? as u64;
-        Ok(DropTripleReport {
-            vectors_removed,
-            meta_rows_removed,
-            pending_jobs_dropped,
-            table_dropped: vectors_removed > 0,
-        })
+        self.index
+            .lock()
+            .map_err(|err| VectorError::IndexUnavailable(format!("index mutex poisoned: {err}")))?
+            .drop_embedding_model_report(&triple)
     }
 
     /// Count vectors for a triple.

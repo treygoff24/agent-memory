@@ -8,24 +8,17 @@ use crate::frontmatter::schema::SUPPORTED_SCHEMA_VERSION;
 use crate::model::{AuthorKind, Frontmatter, MemoryStatus, MemoryType, Scope, Sensitivity, TrustLevel};
 
 #[allow(clippy::expect_used)]
-static MEMORY_ID_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"^mem_\d{8}_[0-9a-f]{16}_\d{6}$").expect("valid regex") // expect-justified: static regex is tested at startup
-});
-#[allow(clippy::expect_used)]
 static SLUG_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"^[a-z0-9][a-z0-9._-]{0,62}$").expect("valid regex") // expect-justified: static regex is tested at startup
 });
 
-/// Validate a memory id.
-pub fn validate_memory_id(id: &str) -> Result<(), ValidationError> {
-    if MEMORY_ID_RE.is_match(id) {
-        Ok(())
-    } else {
-        Err(ValidationError::InvalidMemoryId(id.to_string()))
-    }
-}
-
 /// Validate typed frontmatter.
+///
+/// Note: `frontmatter.id` is a [`crate::model::MemoryId`] newtype whose `TryFrom<String>` /
+/// `serde(try_from)` impl validates the spec regex at construction time. A second regex check
+/// here is redundant — if an invalid string somehow bypassed `MemoryId::try_new` it would
+/// already be unreachable, and adding the check again just duplicates the regex literal and
+/// the error path. The id is therefore accepted as-is.
 pub fn validate_frontmatter(frontmatter: &Frontmatter) -> Result<(), ValidationError> {
     if frontmatter.schema_version > SUPPORTED_SCHEMA_VERSION {
         return Err(ValidationError::UnsupportedSchemaVersion {
@@ -33,7 +26,6 @@ pub fn validate_frontmatter(frontmatter: &Frontmatter) -> Result<(), ValidationE
             supported: SUPPORTED_SCHEMA_VERSION,
         });
     }
-    validate_memory_id(frontmatter.id.as_str())?;
     if frontmatter.summary.is_empty() || frontmatter.summary.chars().count() > 280 {
         return Err(ValidationError::BadShape("summary".to_string()));
     }
