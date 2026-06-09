@@ -23,4 +23,3 @@ pub mod slash_commands;
 pub mod socket;
 pub mod state;
 pub mod trust_artifact;
-pub mod workers;
