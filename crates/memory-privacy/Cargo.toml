@@ -9,7 +9,6 @@ license.workspace = true
 age.workspace = true
 chrono.workspace = true
 memory-substrate = { path = "../memory-substrate" }
-once_cell.workspace = true
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true

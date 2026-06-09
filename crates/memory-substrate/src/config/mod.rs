@@ -224,7 +224,7 @@ pub fn load_synced_config(repo: &Path) -> Result<Option<SyncedConfig>, String> {
         return Ok(None);
     }
     let text = std::fs::read_to_string(path).map_err(|err| err.to_string())?;
-    let config: SyncedConfig = yaml_serde::from_str(&text).map_err(|err| err.to_string())?;
+    let config: SyncedConfig = serde_yaml::from_str(&text).map_err(|err| err.to_string())?;
     validate_synced_config(&config)?;
     Ok(Some(config))
 }
@@ -246,7 +246,7 @@ pub fn load_local_device_config(runtime: &Path) -> Result<Option<LocalDeviceConf
         return Ok(None);
     }
     let text = std::fs::read_to_string(path).map_err(|err| err.to_string())?;
-    yaml_serde::from_str(&text).map(Some).map_err(|err| err.to_string())
+    serde_yaml::from_str(&text).map(Some).map_err(|err| err.to_string())
 }
 
 /// Load config and apply roots precedence: explicit, environment, local, synced defaults.

@@ -1,9 +1,9 @@
 use memory_substrate::config::{load_config, load_local_device_config, PrivacyEnforcement};
 use memory_substrate::tree::bootstrap_repo_tree;
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use std::sync::Mutex;
 
-static ENV_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 #[test]
 fn privacy_enforcement_defaults_to_safe_when_local_config_missing() {

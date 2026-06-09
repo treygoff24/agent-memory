@@ -7,28 +7,28 @@ use std::fmt::{Display, Formatter};
 use std::path::{Component, Path, PathBuf};
 
 use chrono::{DateTime, Utc};
-use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::sync::LazyLock;
 
 use crate::error::ValidationError;
 
 /// Memory ID format. Mirrors spec §7.1.
 #[allow(clippy::expect_used)]
-static MEMORY_ID_REGEX: Lazy<Regex> = Lazy::new(|| {
+static MEMORY_ID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^mem_\d{8}_[0-9a-f]{16}_\d{6}$").expect("memory-id regex literal")
     // expect-justified: compile-time regex literal cannot fail
 });
 
 /// Device ID format. Mirrors spec §7.4: `dev_<lowercase hex/alnum>`.
 #[allow(clippy::expect_used)]
-static DEVICE_ID_REGEX: Lazy<Regex> = Lazy::new(|| {
+static DEVICE_ID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^dev_[a-z0-9]+$").expect("device-id regex literal") // expect-justified: compile-time regex literal cannot fail
 });
 
 /// Substrate fragment id format. Stream F uses `sub_<ULID>`.
 #[allow(clippy::expect_used)]
-static SUBSTRATE_FRAGMENT_ID_REGEX: Lazy<Regex> = Lazy::new(|| {
+static SUBSTRATE_FRAGMENT_ID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^sub_[0-9A-HJKMNP-TV-Z]{26}$").expect("substrate-fragment-id regex literal")
     // expect-justified: compile-time regex literal cannot fail
 });

@@ -31,7 +31,7 @@ pub fn parse_document(input: &str, path: Option<RepoPath>) -> Result<ParsedMemor
 /// absorbed by serde during deserialization. We still emit
 /// `UnknownFieldPreserved` warnings here so downstream callers can audit them.
 pub fn parse_frontmatter_yaml(yaml: &str) -> Result<(Frontmatter, Vec<ValidationWarning>), ValidationError> {
-    let mut value: Value = yaml_serde::from_str(yaml).map_err(|err| ValidationError::Other(err.to_string()))?;
+    let mut value: Value = serde_yaml::from_str(yaml).map_err(|err| ValidationError::Other(err.to_string()))?;
     let map = value.as_object_mut().ok_or_else(|| ValidationError::BadShape("frontmatter root".to_string()))?;
     let mut warnings = Vec::new();
     materialize_defaults(map, &mut warnings)?;

@@ -1,10 +1,10 @@
 use memory_substrate::config::{load_config, load_local_device_config, load_synced_config, DreamsConfig, SyncedConfig};
 use memory_substrate::tree::bootstrap_repo_tree;
 use memory_substrate::Roots;
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use std::sync::Mutex;
 
-static ENV_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 #[test]
 fn fresh_clone_has_synced_config_but_no_local_device_until_adoption() {

@@ -1,5 +1,5 @@
-use once_cell::sync::Lazy;
 use regex::Regex;
+use std::sync::LazyLock;
 
 use crate::decision::{PrivacyLabel, PrivacySpan};
 
@@ -10,7 +10,7 @@ struct Rule {
 }
 
 #[allow(clippy::expect_used)]
-static SECRET_RULES: Lazy<Vec<Rule>> = Lazy::new(|| {
+static SECRET_RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
     vec![
         Rule {
             label: PrivacyLabel::Secret,
@@ -47,7 +47,7 @@ static SECRET_RULES: Lazy<Vec<Rule>> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
-static LABEL_RULES: Lazy<Vec<Rule>> = Lazy::new(|| {
+static LABEL_RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
     vec![
         Rule {
             label: PrivacyLabel::PrivateEmail,
@@ -105,8 +105,8 @@ fn rule_spans<'a>(rules: impl Iterator<Item = &'a Rule>, text: &str) -> Vec<Priv
 }
 
 #[allow(clippy::expect_used)]
-static CARD_CANDIDATE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"\b(?:\d[ -]?){13,19}\b").expect("credit card candidate regex literal"));
+static CARD_CANDIDATE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b(?:\d[ -]?){13,19}\b").expect("credit card candidate regex literal"));
 
 fn credit_card_spans(text: &str) -> Vec<PrivacySpan> {
     CARD_CANDIDATE

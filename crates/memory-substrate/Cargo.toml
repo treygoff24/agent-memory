@@ -13,7 +13,6 @@ fs2.workspace = true
 hex.workspace = true
 imara-diff.workspace = true
 notify.workspace = true
-once_cell.workspace = true
 regex.workspace = true
 rusqlite.workspace = true
 serde.workspace = true
@@ -29,7 +28,6 @@ ulid.workspace = true
 uuid.workspace = true
 walkdir.workspace = true
 which.workspace = true
-yaml_serde.workspace = true
 
 [dependencies.memory-test-support]
 path = "../memory-test-support"

@@ -3,8 +3,8 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use once_cell::sync::Lazy;
 use regex::Regex;
+use std::sync::LazyLock;
 
 use crate::error::{ValidationError, ValidationWarning};
 use crate::frontmatter::parse_document;
@@ -15,15 +15,18 @@ use crate::tree::layout::relative_memory_paths;
 
 /// Slug pattern per spec §5.1: `[a-z0-9][a-z0-9-]{0,62}`.
 #[allow(clippy::expect_used)]
-static SLUG_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[a-z0-9][a-z0-9-]{0,62}$").expect("slug regex literal")); // expect-justified: compile-time regex
+static SLUG_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[a-z0-9][a-z0-9-]{0,62}$").expect("slug regex literal")); // expect-justified: compile-time regex
 
 /// ISO date pattern for path segments like `2026-04-24`.
 #[allow(clippy::expect_used)]
-static ISO_DATE_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\d{4}-\d{2}-\d{2}$").expect("iso-date regex literal")); // expect-justified: compile-time regex
+static ISO_DATE_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\d{4}-\d{2}-\d{2}$").expect("iso-date regex literal")); // expect-justified: compile-time regex
 
 /// Year-month pattern for Stream F archive files like `2026-04`.
 #[allow(clippy::expect_used)]
-static YEAR_MONTH_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\d{4}-\d{2}$").expect("year-month regex literal")); // expect-justified: compile-time regex
+static YEAR_MONTH_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\d{4}-\d{2}$").expect("year-month regex literal")); // expect-justified: compile-time regex
 
 /// ID-based filename prefix; these are validated separately.
 const MEM_PREFIX: &str = "mem_";

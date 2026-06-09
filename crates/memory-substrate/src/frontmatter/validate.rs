@@ -1,14 +1,14 @@
 //! Frontmatter validation.
 
-use once_cell::sync::Lazy;
 use regex::Regex;
+use std::sync::LazyLock;
 
 use crate::error::ValidationError;
 use crate::frontmatter::schema::SUPPORTED_SCHEMA_VERSION;
 use crate::model::{AuthorKind, Frontmatter, MemoryStatus, MemoryType, Scope, Sensitivity, TrustLevel};
 
 #[allow(clippy::expect_used)]
-static SLUG_RE: Lazy<Regex> = Lazy::new(|| {
+static SLUG_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^[a-z0-9][a-z0-9._-]{0,62}$").expect("valid regex") // expect-justified: static regex is tested at startup
 });
 
