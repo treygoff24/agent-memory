@@ -4,6 +4,74 @@ pub mod harness_runner;
 pub mod orchestrator;
 pub mod simulator;
 
+/// Escape a string for embedding inside a JSON double-quoted string value.
+///
+/// Handles the mandatory JSON escapes (`"`, `\`, `\n`, `\r`, `\t`) and escapes
+/// every other ASCII control character as `\uXXXX`. Non-ASCII printable Unicode
+/// passes through unchanged.
+///
+/// This is the single canonical implementation for the crate. The previously
+/// scattered copies in harness_runner, simulator, and orchestrator had a subtle
+/// divergence: harness_runner and simulator passed control characters other than
+/// `\n`/`\r`/`\t` through verbatim, while orchestrator correctly escaped them as
+/// `\uXXXX`. The orchestrator variant (most complete) was kept here.
+pub(crate) fn json_escape(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            character if character.is_control() => {
+                escaped.push_str(&format!("\\u{:04x}", character as u32));
+            }
+            character => escaped.push(character),
+        }
+    }
+    escaped
+}
+
+#[cfg(test)]
+mod json_escape_tests {
+    use super::json_escape;
+
+    #[test]
+    fn escapes_double_quote() {
+        assert_eq!(json_escape(r#"say "hi""#), r#"say \"hi\""#);
+    }
+
+    #[test]
+    fn escapes_backslash() {
+        assert_eq!(json_escape(r"a\b"), r"a\\b");
+    }
+
+    #[test]
+    fn escapes_newline_cr_tab() {
+        assert_eq!(json_escape("a\nb\rc\td"), r"a\nb\rc\td");
+    }
+
+    #[test]
+    fn escapes_other_control_chars() {
+        // NUL (U+0000), BEL (U+0007), ESC (U+001B) must become \uXXXX
+        assert_eq!(json_escape("\x00"), "\\u0000");
+        assert_eq!(json_escape("\x07"), "\\u0007");
+        assert_eq!(json_escape("\x1b"), "\\u001b");
+    }
+
+    #[test]
+    fn preserves_plain_ascii_and_unicode() {
+        assert_eq!(json_escape("hello world"), "hello world");
+        assert_eq!(json_escape("café ñoño"), "café ñoño");
+    }
+
+    #[test]
+    fn combined_sequence() {
+        assert_eq!(json_escape("line1\nline2\t\"end\"\\done\x01"), "line1\\nline2\\t\\\"end\\\"\\\\done\\u0001",);
+    }
+}
+
 use std::cell::Cell;
 
 thread_local! {

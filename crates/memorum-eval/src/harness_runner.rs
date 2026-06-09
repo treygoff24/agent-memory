@@ -175,8 +175,8 @@ impl HarnessRunner {
                 "  }}\n",
                 "}}\n"
             ),
-            server = json_escape(MCP_SERVER_NAME),
-            socket = json_escape(&self.socket_path.to_string_lossy())
+            server = crate::json_escape(MCP_SERVER_NAME),
+            socket = crate::json_escape(&self.socket_path.to_string_lossy())
         )
     }
 
@@ -392,20 +392,6 @@ fn is_executable(path: &Path) -> bool {
 #[cfg(not(unix))]
 fn is_executable(path: &Path) -> bool {
     path.is_file()
-}
-
-fn json_escape(value: &str) -> String {
-    value.chars().fold(String::new(), |mut escaped, character| {
-        match character {
-            '\\' => escaped.push_str("\\\\"),
-            '"' => escaped.push_str("\\\""),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            _ => escaped.push(character),
-        }
-        escaped
-    })
 }
 
 fn toml_escape(value: &str) -> String {

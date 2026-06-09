@@ -122,9 +122,9 @@ impl SimulatorAgent {
         let budget_tokens = budget_tokens.map_or_else(|| "null".to_owned(), |budget| budget.to_string());
         let request = format!(
             r#"{{"startup":{{"cwd":"{}","session_id":"{}","harness":"{}","harness_version":null,"include_recent":true,"since_event_id":{},"budget_tokens":{budget_tokens}}}}}"#,
-            json_escape(&self.cwd()),
-            json_escape(&self.session_id()),
-            json_escape(&self.harness()),
+            crate::json_escape(&self.cwd()),
+            crate::json_escape(&self.session_id()),
+            crate::json_escape(&self.harness()),
             optional_string_json(since_event_id.as_deref())
         );
         let response = self.request(request);
@@ -134,8 +134,10 @@ impl SimulatorAgent {
 
     fn search(&mut self, query: &str, namespace: Option<&str>) {
         let query = namespace.map_or_else(|| query.to_owned(), |ns| format!("{query} namespace:{ns}"));
-        let response = self
-            .request(format!(r#"{{"search":{{"query":"{}","limit":null,"include_body":true}}}}"#, json_escape(&query)));
+        let response = self.request(format!(
+            r#"{{"search":{{"query":"{}","limit":null,"include_body":true}}}}"#,
+            crate::json_escape(&query)
+        ));
         self.observations.last_search_result_count = extract_usize_field(&response, "total");
         self.observations.last_search_json = Some(response);
     }
@@ -147,7 +149,7 @@ impl SimulatorAgent {
     fn write_memory_with_meta_json(&mut self, body: &str, title: Option<&str>, meta_json: &str) {
         let response = self.request(format!(
             r#"{{"write_memory":{{"body":"{}","title":{},"tags":[],"meta":{}}}}}"#,
-            json_escape(body),
+            crate::json_escape(body),
             optional_string_json(title),
             meta_json
         ));
@@ -158,9 +160,9 @@ impl SimulatorAgent {
     fn supersede(&mut self, request: SupersedeRequest<'_>) {
         let response = self.request(format!(
             r#"{{"supersede":{{"old_id":"{}","content":"{}","reason":"{}","meta":{}}}}}"#,
-            json_escape(request.old_id),
-            json_escape(request.new_body),
-            json_escape(request.reason),
+            crate::json_escape(request.old_id),
+            crate::json_escape(request.new_body),
+            crate::json_escape(request.reason),
             request.meta.to_json(request.new_body)
         ));
         self.observations.last_supersede_outcome = extract_string_field(&response, "status");
@@ -168,22 +170,25 @@ impl SimulatorAgent {
     }
 
     fn forget(&mut self, id: &str, reason: &str) {
-        let response =
-            self.request(format!(r#"{{"forget":{{"id":"{}","reason":"{}"}}}}"#, json_escape(id), json_escape(reason)));
+        let response = self.request(format!(
+            r#"{{"forget":{{"id":"{}","reason":"{}"}}}}"#,
+            crate::json_escape(id),
+            crate::json_escape(reason)
+        ));
         self.observations.last_forget_outcome = extract_string_field(&response, "status");
         self.observations.last_forget_json = Some(response);
     }
 
     fn get(&mut self, id: &str) {
         self.observations.last_get_json =
-            Some(self.request(format!(r#"{{"get":{{"id":"{}","include_provenance":true}}}}"#, json_escape(id))));
+            Some(self.request(format!(r#"{{"get":{{"id":"{}","include_provenance":true}}}}"#, crate::json_escape(id))));
     }
 
     fn reveal(&mut self, id: &str, reason: &str) {
         self.observations.last_reveal_json = Some(self.request(format!(
             r#"{{"reveal":{{"id":"{}","reason":"{}"}}}}"#,
-            json_escape(id),
-            json_escape(reason)
+            crate::json_escape(id),
+            crate::json_escape(reason)
         )));
     }
 
@@ -250,7 +255,7 @@ impl GovernanceMeta {
         format!(
             r#"{{"namespace":"project","type":"project","confidence":{},"source_kind":"{}","source_ref":{},"explicit_user_context":true}}"#,
             self.confidence,
-            json_escape(&self.source_kind),
+            crate::json_escape(&self.source_kind),
             optional_string_json(self.daemon_source_ref(grounding_body).as_deref())
         )
     }
@@ -306,16 +311,7 @@ fn extract_usize_field(json: &str, field: &str) -> Option<usize> {
 }
 
 fn optional_string_json(value: Option<&str>) -> String {
-    value.map_or_else(|| "null".to_owned(), |value| format!(r#""{}""#, json_escape(value)))
-}
-
-fn json_escape(value: &str) -> String {
-    value
-        .replace('\\', r#"\\"#)
-        .replace('"', r#"\""#)
-        .replace('\n', r#"\n"#)
-        .replace('\r', r#"\r"#)
-        .replace('\t', r#"\t"#)
+    value.map_or_else(|| "null".to_owned(), |value| format!(r#""{}""#, crate::json_escape(value)))
 }
 
 struct SupersedeRequest<'a> {

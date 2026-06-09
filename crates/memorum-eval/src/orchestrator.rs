@@ -429,9 +429,9 @@ pub fn report_to_json(report: &EvalReport) -> String {
             "  \"tests\": [\n{}\n  ]\n",
             "}}\n"
         ),
-        json_escape(&report.run_id),
-        json_escape(&report.started_at),
-        json_escape(&report.finished_at),
+        crate::json_escape(&report.run_id),
+        crate::json_escape(&report.started_at),
+        crate::json_escape(&report.finished_at),
         report.harness_mode,
         report.total,
         report.passed,
@@ -956,7 +956,7 @@ fn test_result_to_json(test: &EvalTestResult) -> String {
             "    }}"
         ),
         test.number,
-        json_escape(test.name),
+        crate::json_escape(test.name),
         test.group,
         test.mode,
         test.deferred,
@@ -972,12 +972,12 @@ fn test_result_to_json(test: &EvalTestResult) -> String {
 }
 
 fn string_array_to_json(values: &[String]) -> String {
-    let body = values.iter().map(|value| format!("\"{}\"", json_escape(value))).collect::<Vec<_>>().join(", ");
+    let body = values.iter().map(|value| format!("\"{}\"", crate::json_escape(value))).collect::<Vec<_>>().join(", ");
     format!("[{body}]")
 }
 
 fn optional_string_to_json(value: Option<&str>) -> String {
-    value.map_or_else(|| "null".to_owned(), |value| format!("\"{}\"", json_escape(value)))
+    value.map_or_else(|| "null".to_owned(), |value| format!("\"{}\"", crate::json_escape(value)))
 }
 
 fn optional_skip_kind_to_json(value: Option<SkipKind>) -> String {
@@ -986,22 +986,6 @@ fn optional_skip_kind_to_json(value: Option<SkipKind>) -> String {
 
 fn optional_release_set_to_json(value: Option<RequiredReleaseSet>) -> String {
     value.map_or_else(|| "null".to_owned(), |value| format!("\"{}\"", value))
-}
-
-fn json_escape(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-    for character in value.chars() {
-        match character {
-            '"' => escaped.push_str("\\\""),
-            '\\' => escaped.push_str("\\\\"),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            character if character.is_control() => escaped.push_str(&format!("\\u{:04x}", character as u32)),
-            character => escaped.push(character),
-        }
-    }
-    escaped
 }
 
 fn new_run_id() -> String {
