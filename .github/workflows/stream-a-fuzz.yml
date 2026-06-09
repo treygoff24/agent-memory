@@ -8,10 +8,22 @@ on:
 jobs:
   fuzz:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # merge_driver: fuzz the merge driver's schema gate and conflict resolution
+        # merge_swap_convergence: asserts spec §13.6.1 — swap-order convergence
+        # Matrix jobs run on separate runners in parallel, so each target keeps
+        # the full 600 s budget with no wall-clock cost vs the original single job.
+        target:
+          - name: merge_driver
+            time: 600
+          - name: merge_swap_convergence
+            time: 600
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: nightly-2025-09-18
       - run: cargo install --locked cargo-fuzz
-      - run: cargo +nightly-2025-09-18 fuzz run merge_driver -- -max_total_time=600
+      - run: cargo +nightly-2025-09-18 fuzz run ${{ matrix.target.name }} -- -max_total_time=${{ matrix.target.time }}

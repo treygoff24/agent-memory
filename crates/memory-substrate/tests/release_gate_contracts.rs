@@ -114,12 +114,19 @@ fn task_integration_script_refuses_untracked_dirty_main_before_merge() {
 }
 
 #[test]
-fn fuzz_workflow_runs_merge_driver_for_ten_minutes() {
+fn fuzz_workflow_runs_both_targets_for_ten_minutes() {
     let workflow =
         std::fs::read_to_string(repo_root().join(".github/workflows/stream-a-fuzz.yml")).expect("fuzz workflow");
 
-    assert!(workflow.contains("fuzz run merge_driver"));
-    assert!(workflow.contains("-max_total_time=600"));
+    // Matrix-shaped since 2026-06-09: both fuzz targets run as parallel jobs,
+    // each with the full 600 s budget (spec §13.6.1 swap convergence included).
+    assert!(workflow.contains("name: merge_driver"), "merge_driver target missing from fuzz matrix");
+    assert!(
+        workflow.contains("name: merge_swap_convergence"),
+        "merge_swap_convergence target missing from fuzz matrix"
+    );
+    assert!(workflow.contains("fuzz run ${{ matrix.target.name }}"), "matrix-driven fuzz run step missing");
+    assert!(workflow.contains("time: 600"), "per-target 600 s budget missing");
 }
 
 fn run(repo: &std::path::Path, args: &[&str]) {
