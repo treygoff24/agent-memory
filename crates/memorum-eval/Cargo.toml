@@ -28,10 +28,16 @@ memory-source = { path = "../memory-source" }
 memoryd = { path = "../memoryd" }
 memory-substrate = { path = "../memory-substrate" }
 rusqlite.workspace = true
+serde = { workspace = true }
 serde_json.workspace = true
+serde_yaml.workspace = true
 serial_test.workspace = true
 tempfile.workspace = true
 
 [[test]]
 name = "t19_peer_update_framing"
 path = "tests/eval/regression/t19_peer_update_framing.rs"
+
+[[test]]
+name = "golden_fixtures_lint"
+path = "tests/golden_fixtures_lint.rs"
