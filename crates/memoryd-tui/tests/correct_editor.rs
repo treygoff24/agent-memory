@@ -3,8 +3,9 @@ use memoryd::protocol::{
     RealityCheckAction, RealityCheckCompletion, RealityCheckResponse, RequestEnvelope, RequestPayload,
     ResponseEnvelope, ResponsePayload,
 };
-use memoryd_tui::app::{App, DaemonSnapshot};
+use memoryd_tui::app::{App, DaemonCall, DaemonSnapshot, RealityCheckAction as AppRealityCheckAction};
 use memoryd_tui::client::DaemonClient;
+use memoryd_tui::inbox::InboxFilter;
 use memoryd_tui::state::FocusKind;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
@@ -21,6 +22,81 @@ fn focused_app() -> App {
     let mut app = App::with_snapshot(DaemonSnapshot::sample());
     app.enter_reality_check_focus("session-1", 0, 7);
     app
+}
+
+/// Reality Check focus pinned to the sample's due item, so the queued response
+/// carries a deterministic memory id.
+const DUE_MEMORY_ID: &str = "mem_20260501_0123456789abcdef_000004";
+
+fn focused_on_due_item() -> App {
+    let mut app = App::with_snapshot(DaemonSnapshot::sample());
+    app.set_filter(InboxFilter::Due);
+    app.set_selected(0);
+    app.enter_reality_check_focus("session-1", 0, 7);
+    app
+}
+
+#[test]
+fn pressing_n_queues_not_relevant_for_focused_item() {
+    let mut app = focused_on_due_item();
+    app.handle_event(key(KeyCode::Char('n')), std::time::Instant::now());
+
+    assert_eq!(
+        app.queued_daemon_calls(),
+        &[DaemonCall::RealityCheck {
+            action: AppRealityCheckAction::NotRelevant,
+            session_id: "session-1".into(),
+            memory_id: DUE_MEMORY_ID.into(),
+        }],
+        "pressing n should queue a NotRelevant response for the focused memory",
+    );
+    // The focus stays in Reality Check so the operator keeps reviewing.
+    assert!(matches!(app.focus(), FocusKind::RealityCheck { .. }));
+}
+
+#[test]
+fn pressing_y_queues_confirm_for_focused_item() {
+    let mut app = focused_on_due_item();
+    app.handle_event(key(KeyCode::Char('y')), std::time::Instant::now());
+
+    assert_eq!(
+        app.queued_daemon_calls(),
+        &[DaemonCall::RealityCheck {
+            action: AppRealityCheckAction::Confirm,
+            session_id: "session-1".into(),
+            memory_id: DUE_MEMORY_ID.into(),
+        }],
+    );
+}
+
+#[test]
+fn pressing_f_queues_forget_for_focused_item() {
+    let mut app = focused_on_due_item();
+    app.handle_event(key(KeyCode::Char('f')), std::time::Instant::now());
+
+    assert_eq!(
+        app.queued_daemon_calls(),
+        &[DaemonCall::RealityCheck {
+            action: AppRealityCheckAction::Forget,
+            session_id: "session-1".into(),
+            memory_id: DUE_MEMORY_ID.into(),
+        }],
+    );
+}
+
+#[test]
+fn pressing_s_queues_skip_for_focused_item() {
+    let mut app = focused_on_due_item();
+    app.handle_event(key(KeyCode::Char('s')), std::time::Instant::now());
+
+    assert_eq!(
+        app.queued_daemon_calls(),
+        &[DaemonCall::RealityCheck {
+            action: AppRealityCheckAction::SkipWeek,
+            session_id: "session-1".into(),
+            memory_id: DUE_MEMORY_ID.into(),
+        }],
+    );
 }
 
 #[test]

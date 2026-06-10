@@ -243,7 +243,15 @@ impl App {
         self.reality_check.active_session_id = Some(session.clone());
         self.reality_check.items_reviewed = reviewed;
         self.reality_check.items_total = total;
-        self.reality_check.current_title = self.selected_item().map(|item| item.title().to_string());
+        let selected = self.selected_item();
+        let selected_title = selected.map(|item| item.title().to_string());
+        let selected_id = selected.map(|item| item.id().to_string());
+        self.reality_check.current_title = selected_title;
+        self.reality_check.current_memory_id = selected_id.clone();
+        let due = selected_id.as_deref().and_then(|id| self.snapshot.due.iter().find(|row| row.id == id));
+        self.reality_check.current_breakdown = due.map(|row| row.breakdown);
+        self.reality_check.current_score = due.and_then(|row| row.score.parse::<f64>().ok());
+        self.reality_check.current_encrypted = due.is_some_and(|row| row.namespace.starts_with("encrypted/"));
         self.reality_check.transition_start_tick = Some(self.tick_counter);
         self.focus = FocusKind::RealityCheck { session };
         self.modal = None;
@@ -341,8 +349,18 @@ impl App {
     }
 
     fn after_successful_daemon_call(&mut self, call: &DaemonCall) {
-        if let DaemonCall::RealityCheck { action: RealityCheckAction::Correct { .. }, session_id, .. } = call {
-            self.reality_check.items_reviewed = self.reality_check.items_reviewed.saturating_add(1);
+        if let DaemonCall::RealityCheck { action, session_id, .. } = call {
+            // `SkipWeek` defers rather than reviews — count it as deferred so the
+            // remaining-items math stays honest; every other response advances
+            // the reviewed counter.
+            match action {
+                RealityCheckAction::SkipWeek => {
+                    self.reality_check.deferred = self.reality_check.deferred.saturating_add(1);
+                }
+                _ => {
+                    self.reality_check.items_reviewed = self.reality_check.items_reviewed.saturating_add(1);
+                }
+            }
             self.focus = FocusKind::RealityCheck { session: session_id.clone() };
         }
     }
@@ -429,8 +447,39 @@ impl App {
                 self.open_correct_editor();
                 true
             }
+            KeyCode::Char('y') => {
+                self.stage_reality_check_action(RealityCheckAction::Confirm);
+                true
+            }
+            KeyCode::Char('f') => {
+                self.stage_reality_check_action(RealityCheckAction::Forget);
+                true
+            }
+            KeyCode::Char('n') => {
+                self.stage_reality_check_action(RealityCheckAction::NotRelevant);
+                true
+            }
+            KeyCode::Char('s') => {
+                self.stage_reality_check_action(RealityCheckAction::SkipWeek);
+                true
+            }
             _ => false,
         }
+    }
+
+    /// Queue a Reality Check response (other than `Correct`, which routes through
+    /// the editor) for the currently-focused item. Advances `items_reviewed`
+    /// optimistically once the daemon acknowledges the call.
+    fn stage_reality_check_action(&mut self, action: RealityCheckAction) {
+        let Some(session_id) = self.reality_check.active_session_id.clone() else {
+            self.snapshot.footer_hint = "Reality Check session missing; cannot respond".to_string();
+            return;
+        };
+        let Some(memory_id) = self.reality_check.current_memory_id.clone() else {
+            self.snapshot.footer_hint = "no Reality Check item selected".to_string();
+            return;
+        };
+        self.queued_daemon_calls.push(DaemonCall::RealityCheck { action, session_id, memory_id });
     }
 
     fn handle_correct_editor_key(&mut self, key: &KeyEvent, item_id: MemoryId) -> bool {
@@ -628,7 +677,7 @@ impl App {
             .snapshot
             .trust_artifact
             .as_ref()
-            .map(|artifact| TrustArtifactWidget::new(artifact).render_lines())
+            .map(|artifact| TrustArtifactWidget::new(artifact).render_lines(styles))
             .unwrap_or_else(|| vec![Line::from("No trust artifact loaded."), Line::from("Esc: close")]);
         frame.render_widget(Clear, area);
         frame.render_widget(
@@ -740,9 +789,11 @@ fn render_inbox_shell(frame: &mut Frame<'_>, area: Rect, app: &App, styles: &The
 fn render_text_modal(frame: &mut Frame<'_>, area: Rect, modal: &Modal, styles: &ThemeStyles) {
     let (title, body) = match modal {
         Modal::MemoryDetail => ("Memory Detail", "No trust artifact loaded.\n\nEsc: close"),
-        Modal::HelpOverlay => {
-            ("Help", "j/k move · tab filters · enter detail · a/r/f review · Ctrl-r refresh · q quit")
-        }
+        Modal::HelpOverlay => (
+            "Help",
+            "j/k move · tab filters · enter detail · a/r/f review · Ctrl-r refresh · q quit\n\
+             Reality Check: y confirm · k correct · f forget · n not-relevant · s skip · Esc inbox",
+        ),
         Modal::ConfirmQuit => ("Confirm quit", "A review action is still undoable. Quit anyway? [y/N]"),
         Modal::CommandPrompt => ("Command", ":q quit\n:reload force refresh\nTask 11B adds fuzzy dispatch."),
     };
@@ -907,6 +958,13 @@ impl DaemonSnapshot {
                 title: "SSH key rotation every 90d".to_string(),
                 namespace: "me".to_string(),
                 score: "0.82".to_string(),
+                breakdown: crate::state::ScoreBreakdown {
+                    recency: 0.91,
+                    recall_frequency: 0.20,
+                    corroboration: 0.0,
+                    confidence_decay: 0.65,
+                    sensitivity: 1.0,
+                },
             }],
             memories: vec![MemoryRow {
                 id: "mem_20260501_0123456789abcdef_000010".to_string(),
@@ -1009,12 +1067,13 @@ pub struct DreamRow {
     pub title: String,
     pub namespace: String,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RealityCheckRow {
     pub id: String,
     pub title: String,
     pub namespace: String,
     pub score: String,
+    pub breakdown: crate::state::ScoreBreakdown,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MemoryRow {

@@ -123,6 +123,7 @@ impl DaemonClient {
                         title: item.title,
                         namespace: item.namespace,
                         score: format!("{:.2}", item.score),
+                        breakdown: crate::state::ScoreBreakdown::from_protocol(&item.component_scores),
                     })
                     .collect();
             }
@@ -135,6 +136,7 @@ impl DaemonClient {
                     title: "Reality Check unavailable".to_string(),
                     namespace: "daemon".to_string(),
                     score: error.to_string(),
+                    breakdown: crate::state::ScoreBreakdown::default(),
                 });
             }
         }

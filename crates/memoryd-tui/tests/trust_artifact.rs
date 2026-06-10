@@ -1,5 +1,12 @@
+use memorum_theme::{ColorCapability, Theme};
 use memoryd::trust_artifact::{SafeContent, TrustArtifact};
+use memoryd_tui::theme_glue::ThemeStyles;
 use memoryd_tui::widgets::trust_artifact::TrustArtifactWidget;
+use ratatui::text::Line;
+
+fn styles() -> ThemeStyles {
+    ThemeStyles::from_theme(&Theme::default_warm_dark(), ColorCapability::TrueColor)
+}
 
 fn full_plaintext_artifact() -> TrustArtifact {
     serde_json::from_value(serde_json::json!({
@@ -76,13 +83,28 @@ fn full_plaintext_artifact() -> TrustArtifact {
     .expect("test trust artifact fixture matches daemon DTO")
 }
 
+fn rendered_lines(artifact: &TrustArtifact) -> Vec<Line<'static>> {
+    TrustArtifactWidget::new(artifact).render_lines(&styles())
+}
+
 fn rendered_text(artifact: &TrustArtifact) -> String {
-    TrustArtifactWidget::new(artifact)
-        .render_lines()
-        .into_iter()
-        .map(|line| line.to_string())
-        .collect::<Vec<_>>()
-        .join("\n")
+    rendered_lines(artifact).into_iter().map(|line| line.to_string()).collect::<Vec<_>>().join("\n")
+}
+
+/// Find the first rendered line whose flattened text contains `needle`, then
+/// return the `Style` of the first span within that line whose content contains
+/// `fragment`. Lets tests assert per-fragment severity coloring.
+fn span_style_for(artifact: &TrustArtifact, needle: &str, fragment: &str) -> ratatui::style::Style {
+    let lines = rendered_lines(artifact);
+    let line = lines
+        .iter()
+        .find(|line| line.to_string().contains(needle))
+        .unwrap_or_else(|| panic!("no rendered line containing {needle:?}"));
+    line.spans
+        .iter()
+        .find(|span| span.content.contains(fragment))
+        .unwrap_or_else(|| panic!("no span containing {fragment:?} in line {:?}", line.to_string()))
+        .style
 }
 
 #[test]
@@ -151,4 +173,56 @@ fn test_policy_decision_expands_all_governance_fields() {
     for field in ["conf_floor:", "grounding:", "contradiction:", "tombstone:", "sensitivity_gate:"] {
         assert!(text.contains(field), "missing policy field {field} in:\n{text}");
     }
+}
+
+#[test]
+fn quarantined_status_renders_with_bad_severity_color() {
+    let mut artifact = full_plaintext_artifact();
+    artifact.status = "quarantined".to_owned();
+
+    let style = span_style_for(&artifact, "status: quarantined", "quarantined");
+    assert_eq!(style, styles().bad, "quarantined status should use the theme bad/error color");
+}
+
+#[test]
+fn active_status_renders_with_ok_severity_color() {
+    let style = span_style_for(&full_plaintext_artifact(), "status: active", "active");
+    assert_eq!(style, styles().ok, "active status should use the theme ok color");
+}
+
+#[test]
+fn high_confidence_drift_renders_current_as_bad() {
+    let mut artifact = full_plaintext_artifact();
+    artifact.original_confidence = "0.90".to_owned();
+    artifact.current_confidence = "0.30".to_owned();
+
+    let style = span_style_for(&artifact, "Current: 0.30", "0.30");
+    assert_eq!(style, styles().bad, "a >50% confidence drop should color current confidence bad");
+}
+
+#[test]
+fn conflicted_merge_status_renders_with_warn_color() {
+    let mut artifact = full_plaintext_artifact();
+    artifact.sync_state.merge_status = "modified".to_owned();
+
+    let style = span_style_for(&artifact, "Merge status: modified", "modified");
+    assert_eq!(style, styles().warn, "a non-clean merge status should color as warn drift");
+}
+
+#[test]
+fn failing_policy_gate_renders_with_bad_color() {
+    let mut artifact = full_plaintext_artifact();
+    artifact.policy_decisions[0].grounding_satisfied = "fail (0 source refs)".to_owned();
+
+    let style = span_style_for(&artifact, "fail (0 source refs)", "fail");
+    assert_eq!(style, styles().bad, "a failing governance gate should color bad");
+}
+
+#[test]
+fn detected_privacy_labels_render_with_warn_color() {
+    let mut artifact = full_plaintext_artifact();
+    artifact.privacy_scan.labels_detected = vec!["pii.email".to_owned()];
+
+    let style = span_style_for(&artifact, "Labels detected: pii.email", "pii.email");
+    assert_eq!(style, styles().warn, "detected privacy labels should color as warn");
 }
