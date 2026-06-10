@@ -2,7 +2,7 @@ use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
 use flate2::write::GzEncoder;
 use flate2::Compression;
-use memoryd_web::{embedded_asset_names, fixture_router};
+use memoryd_web::{embedded_asset_names, router};
 use std::io::Write;
 use tower::ServiceExt;
 
@@ -18,7 +18,7 @@ async fn embedded_frontend_serves_vite_index_and_hashed_assets() {
     assert!(assets.iter().any(|path| path.starts_with("assets/") && path.ends_with(".js")), "assets: {assets:#?}");
     assert!(assets.iter().any(|path| path.starts_with("assets/") && path.ends_with(".css")), "assets: {assets:#?}");
 
-    let response = fixture_router()
+    let response = router()
         .oneshot(Request::builder().uri("/").body(Body::empty()).expect("request builds"))
         .await
         .expect("request succeeds");
@@ -48,7 +48,7 @@ async fn embedded_frontend_serves_vite_index_and_hashed_assets() {
 }
 
 async fn fetch_asset(asset: &str) -> Vec<u8> {
-    let response = fixture_router()
+    let response = router()
         .oneshot(Request::builder().uri(format!("/{asset}")).body(Body::empty()).expect("request builds"))
         .await
         .expect("request succeeds");

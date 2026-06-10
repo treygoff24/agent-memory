@@ -1,3 +1,7 @@
+// CSRF round-trip coverage exercises the fixture router (correct-token success
+// needs the reviewable fixture memory), so this suite gates on `dev-fixtures`.
+#![cfg(feature = "dev-fixtures")]
+
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Request, StatusCode};
 use memoryd_web::config::{WebConfig, WebConfigError};

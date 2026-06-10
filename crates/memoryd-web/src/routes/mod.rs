@@ -1,12 +1,17 @@
 use std::collections::BTreeSet;
 
 use chrono::{DateTime, TimeZone, Utc};
-use memoryd::protocol::{ComponentScores, RealityCheckItem};
-use memoryd::protocol::{MemoryId, MemoryStatus};
-use memoryd::trust_artifact::{
-    PolicyDecision, PrivacyScan, ProvenanceEvent, RecallStats, SafeContent, SupersessionLink, SyncState, TrustArtifact,
-};
+use memoryd::protocol::MemoryId;
+use memoryd::protocol::RealityCheckItem;
+use memoryd::trust_artifact::TrustArtifact;
 use serde::Serialize;
+
+#[cfg(feature = "dev-fixtures")]
+use memoryd::protocol::{ComponentScores, MemoryStatus};
+#[cfg(feature = "dev-fixtures")]
+use memoryd::trust_artifact::{
+    PolicyDecision, PrivacyScan, ProvenanceEvent, RecallStats, SafeContent, SupersessionLink, SyncState,
+};
 
 pub mod audit;
 pub mod entity_graph;
@@ -62,6 +67,7 @@ pub struct NotificationSnapshot {
     pub created_at: DateTime<Utc>,
 }
 
+#[cfg(feature = "dev-fixtures")]
 impl Default for DashboardData {
     fn default() -> Self {
         let now = fixed_time((2026, 5, 1, 12, 0, 0));
@@ -111,6 +117,7 @@ impl DashboardData {
     }
 }
 
+#[cfg(feature = "dev-fixtures")]
 fn trust_artifact_fixture(id: MemoryId, now: DateTime<Utc>) -> TrustArtifact {
     TrustArtifact {
         id,
@@ -166,6 +173,7 @@ fn trust_artifact_fixture(id: MemoryId, now: DateTime<Utc>) -> TrustArtifact {
     }
 }
 
+#[cfg(feature = "dev-fixtures")]
 fn reality_check_item(memory_id_value: &str, now: DateTime<Utc>) -> RealityCheckItem {
     RealityCheckItem {
         memory_id: memory_id(memory_id_value),

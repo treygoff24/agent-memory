@@ -12,7 +12,10 @@ use memoryd::protocol::{
 };
 use memoryd::recall::StartupRequest;
 use memoryd::server::{serve_substrate_with, ServerOptions};
-use memoryd_web::{fixture_router, router, router_with_state, WebState};
+use memoryd_web::{router, router_with_state, WebState};
+
+#[cfg(feature = "dev-fixtures")]
+use memoryd_web::fixture_router;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -22,11 +25,16 @@ use tokio::time::{sleep, timeout, Duration};
 use tower::ServiceExt;
 
 const RESPONSE_LIMIT: usize = 64 * 1024;
+#[cfg(feature = "dev-fixtures")]
 const REVIEWABLE_MEMORY_ID: &str = "mem_20260501_a1b2c3d4e5f60718_000001";
+#[cfg(feature = "dev-fixtures")]
 const NON_REVIEW_MEMORY_ID: &str = "mem_20260501_a1b2c3d4e5f60718_000099";
+#[cfg(feature = "dev-fixtures")]
 const AUDIT_MEMORY_ID: &str = "mem_20260501_a1b2c3d4e5f60718_000010";
+#[cfg(feature = "dev-fixtures")]
 const AUDIT_BODY: &str = "Task 14 audit-only fixture body";
 
+#[cfg(feature = "dev-fixtures")]
 #[tokio::test]
 async fn test_get_status_returns_correct_shape() {
     let response = get_json("/api/status").await;
@@ -295,6 +303,7 @@ async fn test_notifications_stream_returns_daemon_notifications() {
     daemon.await.expect("fake daemon joins").expect("fake daemon succeeds");
 }
 
+#[cfg(feature = "dev-fixtures")]
 #[tokio::test]
 async fn test_get_entity_graph_returns_nodes_and_edges() {
     let response = get_json("/api/entity-graph?namespace=project:agent-memory&depth=2").await;
@@ -308,6 +317,7 @@ async fn test_get_entity_graph_returns_nodes_and_edges() {
     assert_eq!(edges[0]["kind"], "co_mentioned");
 }
 
+#[cfg(feature = "dev-fixtures")]
 #[tokio::test]
 async fn test_post_review_action_approve_calls_daemon() {
     let state = WebState::fixture();
@@ -329,6 +339,7 @@ async fn test_post_review_action_approve_calls_daemon() {
     assert_eq!(recorded[0].action, "approve");
 }
 
+#[cfg(feature = "dev-fixtures")]
 #[tokio::test]
 async fn test_post_review_action_returns_409_on_wrong_state() {
     let app = fixture_router();
@@ -342,6 +353,7 @@ async fn test_post_review_action_returns_409_on_wrong_state() {
     assert_eq!(body, json!({ "error": "memory_not_in_review_state" }));
 }
 
+#[cfg(feature = "dev-fixtures")]
 #[tokio::test]
 async fn test_get_audit_returns_full_trust_artifact() {
     let response = get_json(&format!("/api/audit/{AUDIT_MEMORY_ID}")).await;
@@ -364,6 +376,7 @@ async fn test_get_audit_returns_full_trust_artifact() {
     assert!(response.get("sections").is_none());
 }
 
+#[cfg(feature = "dev-fixtures")]
 #[tokio::test]
 async fn test_get_audit_temporal_returns_historical_state() {
     let response = get_json(&format!("/api/audit/{AUDIT_MEMORY_ID}/temporal?at=2026-04-30T12:00:00Z")).await;
@@ -374,6 +387,7 @@ async fn test_get_audit_temporal_returns_historical_state() {
     assert_eq!(response["artifact"]["id"], AUDIT_MEMORY_ID);
 }
 
+#[cfg(feature = "dev-fixtures")]
 #[tokio::test]
 async fn test_get_audit_walk_returns_provenance_graph_not_deferred_stub() {
     let response = fixture_router()
@@ -395,6 +409,7 @@ async fn test_get_audit_walk_returns_provenance_graph_not_deferred_stub() {
     assert_ne!(body["status"], "not_implemented");
 }
 
+#[cfg(feature = "dev-fixtures")]
 #[tokio::test]
 async fn test_get_audit_walk_rejects_invalid_direction() {
     let response = fixture_router()
@@ -413,6 +428,7 @@ async fn test_get_audit_walk_rejects_invalid_direction() {
     assert_eq!(body["route"], "audit_walk");
 }
 
+#[cfg(feature = "dev-fixtures")]
 #[tokio::test]
 async fn test_get_audit_walk_accepts_down_direction() {
     let response = get_json(&format!("/api/audit/{AUDIT_MEMORY_ID}/walk?direction=down&depth=2")).await;
@@ -422,6 +438,7 @@ async fn test_get_audit_walk_accepts_down_direction() {
     assert!(response["edges"].as_array().expect("edges array").iter().any(|edge| edge["kind"] == "supersedes"));
 }
 
+#[cfg(feature = "dev-fixtures")]
 #[tokio::test]
 async fn test_get_recall_hits_returns_recent_recall_hit_surface() {
     let response = get_json("/api/recall-hits?limit=1").await;
@@ -434,6 +451,7 @@ async fn test_get_recall_hits_returns_recent_recall_hit_surface() {
     assert_eq!(hits[0]["summary"], "Review Stream G dashboard contract");
 }
 
+#[cfg(feature = "dev-fixtures")]
 #[tokio::test]
 async fn test_get_roi_30d_returns_correct_window() {
     let response = get_json("/api/roi?window=30").await;
@@ -444,6 +462,7 @@ async fn test_get_roi_30d_returns_correct_window() {
     assert!(response["dreaming"].is_object());
 }
 
+#[cfg(feature = "dev-fixtures")]
 #[tokio::test]
 async fn test_get_roi_365d_returns_correct_window() {
     let response = get_json("/api/roi?window=365").await;
@@ -451,6 +470,7 @@ async fn test_get_roi_365d_returns_correct_window() {
     assert_eq!(response["window_days"], 365);
 }
 
+#[cfg(feature = "dev-fixtures")]
 #[tokio::test]
 async fn test_get_reality_check_returns_pending_list() {
     let response = get_json("/api/reality-check").await;
@@ -461,6 +481,7 @@ async fn test_get_reality_check_returns_pending_list() {
     assert_eq!(response["items"][0]["memory_id"], REVIEWABLE_MEMORY_ID);
 }
 
+#[cfg(feature = "dev-fixtures")]
 #[tokio::test]
 async fn test_post_reality_check_respond_dispatches_to_daemon() {
     let state = WebState::fixture();
@@ -496,6 +517,7 @@ async fn test_post_reality_check_respond_dispatches_to_daemon() {
     assert_eq!(recorded[0].action, "confirm");
 }
 
+#[cfg(feature = "dev-fixtures")]
 #[tokio::test]
 async fn test_notifications_stream_returns_sse_heartbeat_snapshot() {
     let response = fixture_router()
@@ -529,6 +551,7 @@ async fn test_daemon_configured_notifications_stream_returns_empty_heartbeat() {
     assert!(body.contains(r#""notifications":[]"#));
 }
 
+#[cfg(feature = "dev-fixtures")]
 #[tokio::test]
 async fn test_dashboard_future_sections_are_real_json_routes() {
     for route in ["/api/policy-editor", "/api/sync-dashboard"] {
@@ -544,6 +567,7 @@ async fn test_dashboard_future_sections_are_real_json_routes() {
     }
 }
 
+#[cfg(feature = "dev-fixtures")]
 #[tokio::test]
 async fn test_non_audit_routes_do_not_leak_audit_body() {
     for route in [
@@ -567,6 +591,7 @@ async fn test_non_audit_routes_do_not_leak_audit_body() {
     }
 }
 
+#[cfg(feature = "dev-fixtures")]
 async fn get_json(route: &str) -> Value {
     let response = fixture_router()
         .oneshot(Request::builder().uri(route).body(Body::empty()).expect("request builds"))
@@ -578,6 +603,7 @@ async fn get_json(route: &str) -> Value {
     json_body(response).await
 }
 
+#[cfg(feature = "dev-fixtures")]
 fn review_action_request(csrf_token: &str, id: &str, action: &str) -> Request<Body> {
     Request::builder()
         .method("POST")
@@ -606,6 +632,7 @@ async fn response_body(response: axum::response::Response) -> String {
     String::from_utf8(bytes.to_vec()).expect("response is utf8")
 }
 
+#[cfg(feature = "dev-fixtures")]
 fn assert_json_content_type(response: &axum::response::Response, route: &str) {
     let content_type =
         response.headers().get(header::CONTENT_TYPE).and_then(|value| value.to_str().ok()).unwrap_or_default();

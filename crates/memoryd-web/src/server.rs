@@ -33,6 +33,7 @@ pub fn router() -> Router {
     router_with_state(WebState::new())
 }
 
+#[cfg(feature = "dev-fixtures")]
 pub fn fixture_router() -> Router {
     router_with_state(WebState::fixture())
 }

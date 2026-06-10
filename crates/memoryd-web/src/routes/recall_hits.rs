@@ -3,7 +3,10 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use chrono::{DateTime, Utc};
-use memoryd::protocol::{RecallHitSummary, RequestPayload, ResponsePayload, ResponseResult};
+use memoryd::protocol::{RequestPayload, ResponsePayload, ResponseResult};
+
+#[cfg(feature = "dev-fixtures")]
+use memoryd::protocol::RecallHitSummary;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -50,6 +53,7 @@ pub async fn recall_hits(State(state): State<WebState>, Query(query): Query<Reca
     }
 }
 
+#[cfg(feature = "dev-fixtures")]
 pub fn fixture_recall_hit(memory_id: &str, recalled_at: DateTime<Utc>, summary: &str) -> RecallHitSummary {
     RecallHitSummary {
         event_id: format!("evt_fixture_recall_{memory_id}"),

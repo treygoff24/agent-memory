@@ -39,6 +39,7 @@ pub struct RealityCheckHistoryResponse {
     pub sessions: Vec<RealityCheckHistorySession>,
 }
 
+#[cfg(feature = "dev-fixtures")]
 impl RealityCheckHistoryResponse {
     pub fn fixture(now: chrono::DateTime<chrono::Utc>) -> Self {
         Self {

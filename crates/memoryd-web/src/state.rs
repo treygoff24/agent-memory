@@ -36,6 +36,7 @@ impl CsrfToken {
 pub struct WebState {
     csrf_token: CsrfToken,
     review_actions: Arc<ReviewActionTracker>,
+    #[cfg(feature = "dev-fixtures")]
     dashboard_data: Option<Arc<DashboardData>>,
     daemon_socket: Option<Arc<PathBuf>>,
     policy_dir: Option<Arc<PathBuf>>,
@@ -49,30 +50,31 @@ impl WebState {
     }
 
     pub fn unconfigured() -> Self {
-        Self::fresh(None, None, None)
+        Self::fresh(None, None)
     }
 
     pub fn daemon(socket_path: impl Into<PathBuf>) -> Self {
-        Self::fresh(None, Some(Arc::new(socket_path.into())), None)
+        Self::fresh(Some(Arc::new(socket_path.into())), None)
     }
 
+    #[cfg(feature = "dev-fixtures")]
     pub fn fixture() -> Self {
         Self::with_dashboard_data(DashboardData::default())
     }
 
+    #[cfg(feature = "dev-fixtures")]
     pub fn with_dashboard_data(dashboard_data: DashboardData) -> Self {
-        Self::fresh(Some(Arc::new(dashboard_data)), None, None)
+        let mut state = Self::fresh(None, None);
+        state.dashboard_data = Some(Arc::new(dashboard_data));
+        state
     }
 
-    fn fresh(
-        dashboard_data: Option<Arc<DashboardData>>,
-        daemon_socket: Option<Arc<PathBuf>>,
-        policy_dir: Option<Arc<PathBuf>>,
-    ) -> Self {
+    fn fresh(daemon_socket: Option<Arc<PathBuf>>, policy_dir: Option<Arc<PathBuf>>) -> Self {
         Self {
             csrf_token: CsrfToken::generate(),
             review_actions: Arc::new(ReviewActionTracker::default()),
-            dashboard_data,
+            #[cfg(feature = "dev-fixtures")]
+            dashboard_data: None,
             daemon_socket,
             policy_dir,
             recorded_review_actions: Arc::new(Mutex::new(Vec::new())),
@@ -90,7 +92,17 @@ impl WebState {
     }
 
     pub fn dashboard_data(&self) -> Option<Arc<DashboardData>> {
-        self.dashboard_data.clone()
+        #[cfg(feature = "dev-fixtures")]
+        {
+            self.dashboard_data.clone()
+        }
+        // Production builds never carry dashboard fixtures: dashboard routes must
+        // fall through to the daemon backend (or fail loudly) rather than serve
+        // plausible fake numbers.
+        #[cfg(not(feature = "dev-fixtures"))]
+        {
+            None
+        }
     }
 
     pub fn daemon_socket(&self) -> Option<&FsPath> {
@@ -102,7 +114,7 @@ impl WebState {
     }
 
     pub fn is_reviewable(&self, id: &str) -> bool {
-        self.dashboard_data.as_ref().is_some_and(|data| data.reviewable_memory_ids.contains(id))
+        self.dashboard_data().is_some_and(|data| data.reviewable_memory_ids.contains(id))
     }
 
     pub async fn claim_review_action(&self, id: &str) -> bool {

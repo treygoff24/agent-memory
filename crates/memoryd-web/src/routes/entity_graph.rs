@@ -85,6 +85,7 @@ pub struct RecallHistoryPoint {
     pub count: u32,
 }
 
+#[cfg(feature = "dev-fixtures")]
 impl EntityGraphResponse {
     pub fn fixture() -> Self {
         Self {
@@ -126,6 +127,7 @@ impl EntityGraphResponse {
     }
 }
 
+#[cfg(feature = "dev-fixtures")]
 impl EntityDetailResponse {
     pub fn fixture() -> Self {
         Self {

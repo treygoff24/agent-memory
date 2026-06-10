@@ -1,8 +1,8 @@
 use axum::body::{to_bytes, Body};
-use axum::http::{header, Request, StatusCode};
+use axum::http::{Request, StatusCode};
 use memory_substrate::{InitOptions, Roots, Substrate};
 use memoryd::server::{serve_substrate_with, ServerOptions};
-use memoryd_web::{fixture_router, router_with_state, WebState};
+use memoryd_web::{router_with_state, WebState};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -11,8 +11,14 @@ use tokio::sync::watch;
 use tokio::time::{sleep, timeout};
 use tower::ServiceExt;
 
+#[cfg(feature = "dev-fixtures")]
+use axum::http::header;
+#[cfg(feature = "dev-fixtures")]
+use memoryd_web::fixture_router;
+
 const RESPONSE_LIMIT: usize = 64 * 1024;
 
+#[cfg(feature = "dev-fixtures")]
 const PROJECT_POLICY: &str = r#"name: project-standard
 version: 2
 scope: project
@@ -48,6 +54,7 @@ async fn test_get_roi_daemon_returns_live_metrics_not_deferred_stub() {
     shutdown(shutdown_tx, server, &socket).await;
 }
 
+#[cfg(feature = "dev-fixtures")]
 #[tokio::test]
 async fn test_get_policy_editor_returns_current_policy_yaml_not_deferred_stub() {
     let body = get_json(fixture_router(), "/api/policy-editor").await;
@@ -62,6 +69,7 @@ async fn test_get_policy_editor_returns_current_policy_yaml_not_deferred_stub() 
     assert_ne!(body["status"], "not_implemented");
 }
 
+#[cfg(feature = "dev-fixtures")]
 #[tokio::test]
 async fn test_get_sync_dashboard_returns_sync_state_not_deferred_stub() {
     let body = get_json(fixture_router(), "/api/sync-dashboard").await;
@@ -73,6 +81,7 @@ async fn test_get_sync_dashboard_returns_sync_state_not_deferred_stub() {
     assert_ne!(body["status"], "not_implemented");
 }
 
+#[cfg(feature = "dev-fixtures")]
 #[tokio::test]
 async fn test_post_policy_editor_validates_yaml_and_atomically_writes_policy_file() {
     let temp = tempfile::tempdir().expect("temp policy dir");
@@ -111,6 +120,7 @@ async fn test_post_policy_editor_validates_yaml_and_atomically_writes_policy_fil
     assert!(!temp.path().join("project-standard.yaml.tmp").exists());
 }
 
+#[cfg(feature = "dev-fixtures")]
 #[tokio::test]
 async fn test_post_policy_editor_rejects_invalid_yaml_before_write() {
     let temp = tempfile::tempdir().expect("temp policy dir");
@@ -145,6 +155,7 @@ async fn test_post_policy_editor_rejects_invalid_yaml_before_write() {
     assert_eq!(written, PROJECT_POLICY);
 }
 
+#[cfg(feature = "dev-fixtures")]
 async fn get_json(app: axum::Router, route: &str) -> Value {
     let response = app
         .oneshot(Request::builder().uri(route).body(Body::empty()).expect("request builds"))
@@ -155,6 +166,7 @@ async fn get_json(app: axum::Router, route: &str) -> Value {
     json_body(response).await
 }
 
+#[cfg(feature = "dev-fixtures")]
 async fn fetch_csrf_token(app: axum::Router) -> String {
     let response = app
         .oneshot(Request::builder().uri("/").body(Body::empty()).expect("request builds"))
@@ -173,6 +185,7 @@ async fn response_body(response: axum::response::Response) -> String {
     String::from_utf8(bytes.to_vec()).expect("response is utf8")
 }
 
+#[cfg(feature = "dev-fixtures")]
 fn csrf_token_from_html(html: &str) -> &str {
     let name_at = html.find(r#"name="csrf-token""#).expect("csrf meta tag exists");
     let tag_start = html[..name_at].rfind("<meta").expect("csrf tag starts with meta");
@@ -185,6 +198,7 @@ fn csrf_token_from_html(html: &str) -> &str {
     &tail[..end]
 }
 
+#[cfg(feature = "dev-fixtures")]
 fn seed_policy_dir(path: &std::path::Path) {
     std::fs::write(
         path.join("agent-strict.yaml"),

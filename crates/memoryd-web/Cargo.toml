@@ -10,6 +10,14 @@ build = "build.rs"
 [lib]
 path = "src/main.rs"
 
+[features]
+# Compiles the in-memory dashboard fixtures (WebState::fixture / fixture_router /
+# DashboardData and every *::fixture() builder). OFF by default so production
+# `cargo install`/`cargo build` can never embed plausible fake dashboard numbers.
+# The test gate and any local dev loop that needs fixtures must opt in explicitly
+# via `--features dev-fixtures` (see scripts/check.sh).
+dev-fixtures = []
+
 [[bin]]
 name = "memoryd-web"
 path = "src/bin/memoryd-web.rs"

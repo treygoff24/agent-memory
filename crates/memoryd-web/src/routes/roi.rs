@@ -39,6 +39,7 @@ pub struct RealityCheckAdherence {
     pub weeks_skipped: u32,
 }
 
+#[cfg(feature = "dev-fixtures")]
 impl RoiResponse {
     pub fn fixture(window_days: u16) -> Self {
         Self {

@@ -80,6 +80,7 @@ pub struct RecallStatus {
     pub peer_update_snapshot_count: u32,
 }
 
+#[cfg(feature = "dev-fixtures")]
 impl StatusDashboardResponse {
     pub fn fixture(now: DateTime<Utc>) -> Self {
         Self {

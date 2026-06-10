@@ -1,3 +1,7 @@
+// The concurrent-claim path needs the reviewable fixture memory to exist, so this
+// suite only compiles/runs with `--features dev-fixtures`.
+#![cfg(feature = "dev-fixtures")]
+
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Request, StatusCode};
 use memoryd_web::fixture_router;

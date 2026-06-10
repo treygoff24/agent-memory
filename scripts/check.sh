@@ -95,14 +95,20 @@ wait_parallel
 
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+# memoryd-web gates its dashboard fixtures behind the non-default `dev-fixtures`
+# feature so production builds can never embed fake numbers. The test suite needs
+# those fixtures, so enable the feature for the workspace test runs (production
+# `cargo install`/`cargo build` stays feature-off and fixture-free).
+WEB_FIXTURE_FEATURE="memoryd-web/dev-fixtures"
+
 if [[ "$USE_NEXTEST" -eq 1 ]]; then
-  cargo nextest run --workspace
-  cargo nextest run --workspace --release
+  cargo nextest run --workspace --features "$WEB_FIXTURE_FEATURE"
+  cargo nextest run --workspace --release --features "$WEB_FIXTURE_FEATURE"
   # nextest doesn't run doctests; cover them so we don't lose coverage vs `cargo test`.
-  cargo test --workspace --doc
+  cargo test --workspace --doc --features "$WEB_FIXTURE_FEATURE"
 else
-  cargo test --workspace
-  cargo test --workspace --release
+  cargo test --workspace --features "$WEB_FIXTURE_FEATURE"
+  cargo test --workspace --release --features "$WEB_FIXTURE_FEATURE"
 fi
 
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps

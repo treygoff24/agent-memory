@@ -5,5 +5,7 @@ pub mod server;
 pub mod state;
 
 pub use config::WebConfig;
-pub use server::{embedded_asset_names, fixture_router, router, router_with_state, run, run_with_state};
+#[cfg(feature = "dev-fixtures")]
+pub use server::fixture_router;
+pub use server::{embedded_asset_names, router, router_with_state, run, run_with_state};
 pub use state::WebState;
