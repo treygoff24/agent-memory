@@ -386,30 +386,47 @@ impl Substrate {
             suppression: Some(&self.suppression),
             allow_encrypted_namespace: false,
         })?;
-        let upsert_res = {
+        let pending_index_op = || PendingIndexOp {
+            op_id: operation_id.clone(),
+            kind: PendingIndexKind::UpsertPath,
+            path: request.memory.path.clone().unwrap_or_else(|| {
+                RepoPath::new(format!("agent/patterns/{}.md", request.memory.frontmatter.id.as_str()))
+            }),
+            memory_id: Some(request.memory.frontmatter.id.clone()),
+            expected_file_hash: Some(final_hash.clone()),
+            enqueued_at: Utc::now(),
+            attempts: 0,
+            last_error: None,
+        };
+        let missing_supersession_targets = {
             let mut index_guard = self.index.lock().map_err(|err| WriteFailure {
                 outcome: outcome.clone(),
                 kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
             })?;
-            index_guard.upsert_memory_with_file_hash(&request.memory, false, Some(&final_hash))
+            match index_guard.upsert_memory_with_file_hash(&request.memory, false, Some(&final_hash)) {
+                Ok(()) => index_guard.missing_supersession_targets(&request.memory.frontmatter.supersedes),
+                Err(err) => Err(err),
+            }
         };
-        if let Err(_idx_err) = upsert_res {
-            let pending = PendingIndexOp {
-                op_id: operation_id.clone(),
-                kind: PendingIndexKind::UpsertPath,
-                path: request.memory.path.clone().unwrap_or_else(|| {
-                    RepoPath::new(format!("agent/patterns/{}.md", request.memory.frontmatter.id.as_str()))
-                }),
-                memory_id: Some(request.memory.frontmatter.id.clone()),
-                expected_file_hash: Some(final_hash.clone()),
-                enqueued_at: Utc::now(),
-                attempts: 0,
-                last_error: None,
-            };
+        let missing_supersession_targets = match missing_supersession_targets {
+            Ok(targets) => targets,
+            Err(_idx_err) => {
+                return Err(RepairCascade {
+                    runtime: &self.roots.runtime,
+                    op: IndexRepairOp::Plain(pending_index_op()),
+                    marker_reason: "pending index enqueue failed",
+                    failure_kinds: CascadeFailureKinds::AlwaysIndexAfterCommit,
+                    durability: self.durability,
+                    operation_id: operation_id.clone(),
+                }
+                .into_failure());
+            }
+        };
+        if !missing_supersession_targets.is_empty() {
             return Err(RepairCascade {
                 runtime: &self.roots.runtime,
-                op: IndexRepairOp::Plain(pending),
-                marker_reason: "pending index enqueue failed",
+                op: IndexRepairOp::Plain(pending_index_op()),
+                marker_reason: "pending supersession index enqueue failed",
                 failure_kinds: CascadeFailureKinds::AlwaysIndexAfterCommit,
                 durability: self.durability,
                 operation_id: operation_id.clone(),
@@ -1647,9 +1664,10 @@ impl Substrate {
         .map_err(|err| OpenError::OperatorRepairRequired(err.to_string()))?;
         // Plaintext freshness is handled by phase-6 stale detection
         // (`reindex_stale_memories`), which already ran inside
-        // `replay_pending_repairs_into_report` above. Here we only run the
-        // incremental open sweep: orphan-row cleanup, encrypted-tier reindex,
-        // and embedding-job reconciliation — not an O(n) full reindex.
+        // `replay_pending_repairs_into_report` above and still reads+hashes each
+        // plaintext `.md` once. Here we only run the remaining incremental open
+        // sweep: orphan-row cleanup, encrypted-tier reindex, and embedding-job
+        // reconciliation — avoiding the old duplicate clear+rebuild pass.
         incremental_reindex_at_open(&roots.repo, &mut index)
             .map_err(|err| OpenError::OperatorRepairRequired(err.to_string()))?;
         match read_all_event_logs_from_repo(&roots.repo).and_then(|events| {
@@ -2296,9 +2314,10 @@ fn placeholder_frontmatter(id: &MemoryId) -> Frontmatter {
 /// Full reindex backing the public `memoryd reindex` command: clear all
 /// plaintext rows and rebuild from every Markdown file on disk.
 ///
-/// Startup (`open_with_options`) does **not** call this; it runs the
-/// incremental [`incremental_reindex_at_open`] sweep instead. Kept because
-/// `reindex()` and the CLI need an unconditional rebuild.
+/// Startup (`open_with_options`) does **not** call this; phase 6 still
+/// reads+hashes plaintext files for stale detection, then
+/// [`incremental_reindex_at_open`] runs only the remaining sweeps. Kept because
+/// `reindex()` and the CLI need an unconditional clear+rebuild.
 fn full_reindex_from_repo(repo: &std::path::Path, index: &mut Index) -> std::io::Result<usize> {
     let entries = collect_reindex_paths(repo, ReindexScope::All).map_err(std::io::Error::other)?;
     index.clear_plaintext_memory_index().map_err(|err| std::io::Error::other(err.to_string()))?;
@@ -2319,10 +2338,10 @@ fn full_reindex_from_repo(repo: &std::path::Path, index: &mut Index) -> std::io:
 
 /// Incremental open-time index reconciliation (spec §13.5.1 phase-6 companion).
 ///
-/// Replaces the unconditional [`full_reindex_from_repo`] at startup. Plaintext
-/// freshness is left to phase 6 (`reindex_stale_memories`), which has already
-/// run by the time `open` reaches here. This sweep covers the three things
-/// phase 6 does not:
+/// Replaces the duplicate unconditional clear+rebuild pass at startup.
+/// Plaintext freshness is left to phase 6 (`reindex_stale_memories`), which
+/// still reads+hashes every plaintext `.md` and has already run by the time
+/// `open` reaches here. This sweep covers the three things phase 6 does not:
 ///
 /// 1. **Orphan-row cleanup** — drop index rows whose plaintext file no longer
 ///    stats (memory deleted/moved on disk). Phase 6 only visits files that

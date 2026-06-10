@@ -1,4 +1,4 @@
-//! Post-commit index-repair cascade (spec §8.7).
+//! Post-commit index-repair cascade (spec §8.3).
 //!
 //! When a write's canonical file is durably committed but the derived index
 //! upsert fails, the data is on disk but unsearchable. The cascade tries, in
@@ -55,10 +55,17 @@ impl IndexRepairOp {
 
 /// How a write site maps cascade outcomes to a [`WriteFailureKind`].
 ///
-/// The plaintext-write site reports a single kind regardless of how far the
-/// cascade degraded; the encrypted sites and the tombstone site report a
-/// distinct kind per cascade step. Both mappings are part of the public write
-/// contract and must survive verbatim.
+/// The mappings below preserve pre-extraction behavior; they are not a settled
+/// assertion that the implementation matches spec §8.3. Two known divergences
+/// are awaiting an operator ruling (spec fix vs behavior fix):
+///
+/// - failure-kind mapping: plaintext writes keep reporting
+///   [`WriteFailureKind::IndexAfterCommitFailed`] even when the cascade degrades
+///   to marker-only repair, while §8.3 says a failed pending-queue append returns
+///   [`WriteFailureKind::RepairQueueFailed`] for any write path;
+/// - marker-vs-pending-op: current fallback preserves the marker-only path that
+///   existed before extraction, while §8.3 step 13 describes both marker and
+///   pending-op durability for post-commit index failure.
 pub enum CascadeFailureKinds {
     /// Always [`WriteFailureKind::IndexAfterCommitFailed`] (plaintext write).
     AlwaysIndexAfterCommit,

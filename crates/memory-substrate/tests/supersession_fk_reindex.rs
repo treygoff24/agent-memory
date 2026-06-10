@@ -17,8 +17,8 @@ use chrono::Utc;
 use memory_substrate::index::{open_index, Index};
 use memory_substrate::{
     Author, AuthorKind, ClassificationOutcome, EventContext, Frontmatter, Memory, MemoryId, MemoryStatus, MemoryType,
-    RepoPath, RetrievalPolicy, Roots, Scope, Sensitivity, Source, SourceKind, Substrate, TrustLevel, WriteMode,
-    WritePolicy,
+    RepoPath, RetrievalPolicy, Roots, Scope, Sensitivity, Source, SourceKind, Substrate, TrustLevel, WriteFailureKind,
+    WriteMode, WritePolicy,
 };
 use rusqlite::Connection;
 
@@ -136,6 +136,65 @@ async fn full_reindex_with_cross_file_supersession_succeeds_and_keeps_edge() {
         supersedes_ids(&db, SUPERSESSOR_ID),
         vec![TARGET_ID.to_string()],
         "supersession edge present after bulk reindex"
+    );
+}
+
+/// Runtime writes must not silently drop a supersession edge when the target
+/// exists on disk but its index row is missing (for example, after a git pull
+/// before open-time reindex catches up). The write now leaves a durable pending
+/// index op, and the open-time repair path replays + resyncs the edge.
+#[tokio::test]
+async fn runtime_write_with_unindexed_on_disk_supersedes_target_enqueues_repair_and_recovers_edge() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let substrate = Substrate::init(
+        roots.clone(),
+        memory_substrate::InitOptions { force_unsafe_durability: true, device_id: Some("dev_test".to_string()) },
+    )
+    .await
+    .expect("init");
+
+    write_memory(&substrate, sample_memory(TARGET_ID, Vec::new())).await;
+    {
+        let db = Connection::open(roots.runtime.join("index.sqlite")).expect("open index");
+        db.execute("DELETE FROM memories WHERE id = ?1", [TARGET_ID]).expect("delete target index row");
+    }
+
+    let supersessor = sample_memory(SUPERSESSOR_ID, vec![MemoryId::new(TARGET_ID)]);
+    let failure = substrate
+        .write_memory(memory_substrate::WriteRequest {
+            operation_id: None,
+            memory: supersessor,
+            expected_base_hash: None,
+            write_mode: WriteMode::CreateNew,
+            index_projection: None,
+            event_context: EventContext::default(),
+            allow_best_effort_durability: true,
+            classification: ClassificationOutcome::Trusted,
+        })
+        .await
+        .expect_err("missing supersession target row must surface repair-required failure");
+    assert_eq!(failure.kind, WriteFailureKind::IndexAfterCommitFailed);
+
+    let pending_path = roots.runtime.join("pending/index-ops.jsonl");
+    let pending = std::fs::read_to_string(&pending_path).expect("pending index op exists immediately");
+    assert!(pending.contains(SUPERSESSOR_ID), "pending repair op should name the supersessor path/id, got {pending}");
+    {
+        let db = Connection::open(roots.runtime.join("index.sqlite")).expect("open index for skipped-edge assertion");
+        assert!(
+            supersedes_ids(&db, SUPERSESSOR_ID).is_empty(),
+            "edge is not materialized until repair indexes the missing target row and resyncs"
+        );
+    }
+
+    drop(substrate);
+    let _reopened = Substrate::open(roots.clone()).await.expect("open runs pending-index replay + phase-6 resync");
+
+    let db = Connection::open(roots.runtime.join("index.sqlite")).expect("open index after repair");
+    assert_eq!(
+        supersedes_ids(&db, SUPERSESSOR_ID),
+        vec![TARGET_ID.to_string()],
+        "repair path should restore the skipped supersession edge"
     );
 }
 

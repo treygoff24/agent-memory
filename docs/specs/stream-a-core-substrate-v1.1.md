@@ -2083,6 +2083,8 @@ The synthetic triple and `memory-test-support::perf::synthetic_vectors` (§20 #1
 
 **Spec-honesty note (§10.1 "hybrid keyword + vector"):** until Task 3.0, no production consumer wrote vectors, so production retrieval was FTS-only bm25 in practice despite the hybrid description. With the embedding worker shipped, the hybrid description now reflects production reality once the active-triple vector table is populated.
 
+**Correction 2026-06-10 (hybrid recall production status):** the final sentence above overclaimed. Production writes now populate active-triple vectors, and governance contradiction detection consumes those vectors through KNN, but no production recall handler embeds recall queries or passes `vector` into `ChunkQuery`. Production retrieval remains FTS-only bm25 today; hybrid keyword+vector recall is still future work.
+
 ---
 
 *End of Stream A — Core Substrate Spec v1.1.*

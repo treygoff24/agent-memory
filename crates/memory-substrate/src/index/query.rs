@@ -114,7 +114,12 @@ impl Index {
         txn.commit()
     }
 
-    /// Clear plaintext-derived rows before reindexing Markdown files, preserving encrypted metadata rows.
+    /// Clear plaintext-derived rows before reindexing Markdown files.
+    ///
+    /// Encrypted-tier rows (`encrypted/%`) are intentionally preserved here:
+    /// their safe projections are handled by the encrypted incremental/full
+    /// reindex paths, and out-of-band encrypted deletions are not pruned by this
+    /// plaintext clear.
     pub fn clear_plaintext_memory_index(&mut self) -> rusqlite::Result<()> {
         let txn = self.connection.transaction()?;
         txn.execute(
@@ -142,9 +147,11 @@ impl Index {
     ///
     /// Stats each indexed plaintext `repo_path` against `repo`; rows whose path
     /// no longer stats are removed. Encrypted-tier rows (`encrypted/%`) are left
-    /// untouched. This deletes **derived index rows only** — never canonical
-    /// files; tombstones remain the sole delete path for memories. Returns the
-    /// number of orphaned memory rows removed.
+    /// untouched, which means out-of-band encrypted deletions are a known gap in
+    /// this sweep rather than "fully handled" orphan cleanup. This deletes
+    /// **derived index rows only** — never canonical files; tombstones remain the
+    /// sole delete path for memories. Returns the number of orphaned memory rows
+    /// removed.
     ///
     /// Cost is O(n_index_rows) stat calls, not O(n) file reads.
     pub fn prune_orphaned_plaintext_rows(&mut self, repo: &std::path::Path) -> rusqlite::Result<usize> {
@@ -275,6 +282,25 @@ impl Index {
             [],
         )?;
         Ok(inserted)
+    }
+
+    /// Supersession targets absent from the current `memories` table.
+    ///
+    /// Bulk reindex callers intentionally ignore this and rely on
+    /// [`Self::resync_supersession_edges`] after all rows are present. Runtime
+    /// write callers use it to detect when the FK guard skipped a declared edge
+    /// and must leave a durable repair signal instead of silently dropping the
+    /// relation until the next open.
+    pub fn missing_supersession_targets(&self, supersedes: &[MemoryId]) -> rusqlite::Result<Vec<MemoryId>> {
+        let mut missing = Vec::new();
+        let mut stmt = self.connection.prepare_cached("SELECT EXISTS(SELECT 1 FROM memories WHERE id = ?1)")?;
+        for supersedes_id in supersedes {
+            let exists: i64 = stmt.query_row([supersedes_id.as_str()], |row| row.get(0))?;
+            if exists == 0 {
+                missing.push(supersedes_id.clone());
+            }
+        }
+        Ok(missing)
     }
 
     /// The active embedding triple this index was opened with.
@@ -419,10 +445,11 @@ impl Index {
     ///
     /// Only `status = 'active'` rows participate, and `metadata_only = 0`
     /// excludes encrypted-body memories (their bodies are never embedded). This
-    /// matches the membership filter [`Self::query_chunks`]/[`Self::query_vector_chunks`]
-    /// apply, plus the active-only restriction governance requires (superseded,
-    /// tombstoned, quarantined, and candidate rows must not trigger a
-    /// contradiction against a write).
+    /// intentionally differs from recall membership: rows with
+    /// `passive_recall = 0` still participate because contradiction detection is
+    /// write governance, not passive retrieval. Superseded, tombstoned,
+    /// quarantined, and candidate rows must not trigger a contradiction against a
+    /// write.
     ///
     /// ## Distance → similarity
     ///
@@ -484,7 +511,6 @@ impl Index {
                AND k = ?2
                AND memories.status = 'active'
                AND memories.metadata_only = 0
-               AND memories.passive_recall = 1
                AND memories.scope IN ({scope_placeholders})
              ORDER BY {table}.distance"
         );
@@ -534,10 +560,17 @@ impl Index {
     /// Used by phase 6 index-consistency check to avoid a full reindex on every
     /// startup. If the stored hash equals the on-disk hash, the memory is clean.
     pub fn file_hash_for(&self, path: &RepoPath) -> Option<crate::model::Sha256> {
-        self.connection
+        match self
+            .connection
             .query_row("SELECT file_hash FROM memories WHERE path = ?1", [path.as_str()], |row| row.get::<_, String>(0))
-            .ok()
-            .map(crate::model::Sha256::new)
+        {
+            Ok(hash) => Some(crate::model::Sha256::new(hash)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(error) => {
+                tracing::warn!(path = path.as_str(), %error, "index file-hash lookup failed; forcing safe reindex");
+                None
+            }
+        }
     }
 
     /// Query memories by structured filter.
@@ -1296,13 +1329,10 @@ fn sync_supersession(txn: &Transaction<'_>, memory_id: &str, supersedes: &[Memor
         // is a `REFERENCES memories(id)` FK with `PRAGMA foreign_keys = ON`,
         // so an unguarded insert against a not-yet-indexed target trips the
         // constraint and — during a *bulk* reindex that walks files in
-        // unsorted order — aborts the whole reconcile. The incremental write
-        // path always has the target present (the replaced memory was indexed
-        // before its replacement is written), so this guard is behavior-
-        // preserving there. Edges to a target that genuinely is not indexed
-        // yet are skipped here and re-added by the deferred resync pass
-        // ([`Index::resync_supersession_edges`]) once every `memories` row of
-        // the bulk pass exists.
+        // unsorted order — aborts the whole reconcile. Bulk callers keep this
+        // skip-then-resync behavior. Runtime write callers audit the skipped
+        // target set after upsert and enqueue durable §8.3 repair state instead
+        // of silently waiting for a restart.
         txn.execute(
             "INSERT OR IGNORE INTO memory_supersession(memory_id, supersedes_id)
              SELECT ?1, ?2 WHERE EXISTS (SELECT 1 FROM memories WHERE id = ?2)",

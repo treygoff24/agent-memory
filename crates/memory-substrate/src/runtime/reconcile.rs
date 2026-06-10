@@ -298,7 +298,9 @@ fn phase_5_replay_pending_events(
 /// Phase 6 — Index/file consistency.
 ///
 /// For each `.md` in the repo: compare the indexed file hash against what's on
-/// disk. Only reindex files whose bytes have drifted.
+/// disk. This still reads and hashes every plaintext Markdown file; the
+/// optimization is that clean files are not re-upserted and startup no longer
+/// performs a second unconditional clear+rebuild pass.
 fn phase_6_index_consistency(repo: &Path, index: &mut Index, report: &mut ReconcileReport) -> std::io::Result<()> {
     let reindexed = reindex_stale_memories(repo, index)
         .map_err(|err| std::io::Error::other(format!("index consistency: {err}")))?;
@@ -421,6 +423,9 @@ fn replay_encrypted_op(repo: &Path, index: &mut Index, op: &PendingEncryptedInde
 }
 
 /// Reindex only memories whose disk hash has drifted from the index row.
+///
+/// This is still an O(n_plaintext_files) read+hash sweep; it avoids rewriting
+/// clean index rows, not reading the files.
 ///
 /// Returns the count of memories reindexed. Falls back to full reindex when
 /// the index cannot answer hash queries (empty index, schema mismatch).
