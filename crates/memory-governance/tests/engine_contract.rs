@@ -104,6 +104,94 @@ fn engine(
     .with_similarity_threshold(0.82)
 }
 
+/// An engine wired to a caller-supplied `PolicySet` with *no* threshold
+/// override, so the contradiction threshold is read straight from the selected
+/// policy's `contradiction` block.
+fn engine_from_policies(
+    policies: PolicySet,
+    search: FakeSimilaritySearch,
+    tiebreaker: FakeTiebreaker,
+) -> GovernanceEngine<FakeSimilaritySearch, FakeTiebreaker, FakeSessionSpawnResolver> {
+    GovernanceEngine::new(
+        policies,
+        GroundingVerifier::new(FileSourceResolver, FakeSessionSpawnResolver),
+        TombstoneIndex::default(),
+        GovernanceProviders::new(search, tiebreaker),
+    )
+}
+
+/// Load a four-scope `PolicySet` from a temp dir where the `project` policy
+/// carries the given `contradiction.similarity_threshold`.
+fn policies_with_project_similarity_threshold(threshold: f32) -> PolicySet {
+    let dir = std::env::temp_dir().join(format!(
+        "memory-governance-engine-threshold-{}-{}",
+        (threshold * 1000.0) as i64,
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).expect("create temp policy dir");
+    let files = [
+        ("me-strict.yaml", "me-strict", 1, "me", "refuse", "quarantine"),
+        ("project-standard.yaml", "project-standard", 2, "project", "review", "supersede"),
+        ("agent-strict.yaml", "agent-strict", 3, "agent", "refuse", "quarantine"),
+        ("dreaming-strict.yaml", "dreaming-strict", 1, "dreaming", "refuse", "quarantine"),
+    ];
+    for (file, name, version, scope, tombstone, contradiction) in files {
+        let block = if scope == "project" {
+            format!("contradiction:\n  similarity_threshold: {threshold}\n")
+        } else {
+            String::new()
+        };
+        let yaml = format!(
+            "name: {name}\nversion: {version}\nscope: {scope}\nconfidence_floor: 0.7\nrequires_grounding: true\ntombstone_enforcement: {tombstone}\ncontradiction_policy: {contradiction}\nreview_gates: []\n{block}"
+        );
+        std::fs::write(dir.join(file), yaml).expect("write temp policy");
+    }
+    let policies = PolicySet::load_from_dir(&dir).expect("tuned policies parse");
+    std::fs::remove_dir_all(&dir).expect("remove temp policy dir");
+    policies
+}
+
+#[test]
+fn policy_similarity_threshold_changes_the_contradiction_decision() {
+    // One borderline hit at similarity 0.5: below the default 0.82 it is no
+    // conflict (promote); a policy that lowers the threshold to 0.4 turns the
+    // same hit into a tiebroken contradiction (supersession, for project scope).
+    let candidate = candidate(memory_governance::Scope::Project, 0.95);
+    let hit_id = "mem_borderline";
+
+    let default_engine = engine_from_policies(
+        policies_with_project_similarity_threshold(0.82),
+        FakeSimilaritySearch::new().with_hits(vec![similar_existing(&candidate, hit_id, 0.5)]),
+        FakeTiebreaker::new(TiebreakOutcome::Contradiction { existing_id: hit_id.to_owned() }),
+    );
+    let lowered_engine = engine_from_policies(
+        policies_with_project_similarity_threshold(0.4),
+        FakeSimilaritySearch::new().with_hits(vec![similar_existing(&candidate, hit_id, 0.5)]),
+        FakeTiebreaker::new(TiebreakOutcome::Contradiction { existing_id: hit_id.to_owned() }),
+    );
+
+    assert_eq!(
+        default_engine.evaluate_write(&candidate),
+        GovernanceWriteDecision::Promoted {
+            id: candidate.id().to_owned(),
+            namespace: candidate.namespace().to_owned(),
+            policy_applied: "project-standard@v2".to_owned(),
+            next_action: NextWriteAction::PromoteToSubstrate,
+        },
+        "0.5 hit is below the 0.82 policy threshold, so no contradiction",
+    );
+    assert_eq!(
+        lowered_engine.evaluate_write(&candidate),
+        GovernanceWriteDecision::Supersession {
+            existing_id: hit_id.to_owned(),
+            replacement_id: candidate.id().to_owned(),
+            policy_applied: "project-standard@v2".to_owned(),
+            next_action: NextWriteAction::SupersedeWithChain,
+        },
+        "lowering the policy threshold to 0.4 makes the same 0.5 hit a contradiction",
+    );
+}
+
 fn candidate(scope: memory_governance::Scope, confidence: f32) -> CandidateMemory {
     CandidateMemory::new(
         format!("candidate-{scope:?}-{confidence}"),

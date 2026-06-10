@@ -290,6 +290,30 @@ requirement/satisfaction, and tombstone enforcement mode. There is no public
 operator CLI for policy dry-run in Stream C; daemon responses expose the applied
 policy and source after evaluation.
 
+### Tunable contradiction thresholds
+
+Each policy file may carry an optional `contradiction` block tuning the
+similarity-based contradiction detector for that policy's scope:
+
+```yaml
+contradiction:
+  similarity_threshold: 0.82   # optional, defaults to 0.82, must be in [0.0, 1.0]
+  top_k: 5                     # optional, defaults to 5, must be >= 1
+```
+
+- `similarity_threshold` is the minimum cosine similarity a retrieved active
+  memory must reach before the candidate is escalated to the contradiction
+  tiebreaker. Below it, the write proceeds as `NoConflict`.
+- `top_k` is how many nearest active memories the detector pulls and gates
+  against per write. The write-path KNN over-fetch tracks this value (it asks the
+  substrate for `top_k + 3` neighbours, then re-truncates to `top_k`).
+
+Both fields, and the whole block, are optional. **Omitting them is byte-for-byte
+identical to the prior hardcoded behavior** (`0.82` / `5`). Validation runs at
+load time and fails closed: a `similarity_threshold` outside `[0.0, 1.0]` or a
+`top_k` below 1 is rejected with an `invalid governance policy` error before any
+write is evaluated, rather than surfacing deep in the pipeline.
+
 ## Stream E startup recall
 
 `memory_startup` is implemented by Stream E, not Stream C. Governance remains the authority for write/review lifecycle, while passive recall reads only governed Stream A index projections and excludes candidate/quarantine claims from factual output.

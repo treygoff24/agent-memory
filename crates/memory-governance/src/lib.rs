@@ -24,8 +24,9 @@ pub use grounding::{
     SourceKind, SourceRefResolver, SourceResolution, WebCaptureResolver,
 };
 pub use policy::{
-    CandidateContext, ContradictionPolicy, Policy, PolicyError, PolicyPreview, PolicyResult, PolicySet, PolicySource,
-    Scope, TombstoneEnforcementMode,
+    CandidateContext, ContradictionPolicy, ContradictionThresholds, Policy, PolicyError, PolicyPreview, PolicyResult,
+    PolicySet, PolicySource, Scope, TombstoneEnforcementMode, DEFAULT_CONTRADICTION_SIMILARITY_THRESHOLD,
+    DEFAULT_CONTRADICTION_TOP_K,
 };
 pub use review::{ReviewMemoryEnvelope, ReviewQueue, ReviewQueueItem, ReviewStatus};
 pub use supersession::{

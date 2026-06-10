@@ -4,8 +4,8 @@ mod policy;
 use std::path::Path;
 
 use policy::{
-    CandidateContext, ContradictionPolicy, Policy, PolicyError, PolicySet, PolicySource, Scope,
-    TombstoneEnforcementMode,
+    CandidateContext, ContradictionPolicy, ContradictionThresholds, Policy, PolicyError, PolicySet, PolicySource,
+    Scope, TombstoneEnforcementMode, DEFAULT_CONTRADICTION_SIMILARITY_THRESHOLD, DEFAULT_CONTRADICTION_TOP_K,
 };
 
 const FIXTURE_DIR: &str = "tests/fixtures/policies";
@@ -167,6 +167,154 @@ review_gates: []
         PolicySet::builtin().policy_for_scope(Scope::Project).expect("project policy").tombstone_enforcement(),
         TombstoneEnforcementMode::Review
     );
+}
+
+#[test]
+fn policy_contract_omitting_contradiction_block_defaults_to_hardcoded_values() {
+    // A policy with no `contradiction` block must behave exactly as before the
+    // field existed: 0.82 / 5. This is the behavior-preservation guarantee.
+    let yaml = r#"
+name: agent-strict
+version: 3
+scope: agent
+confidence_floor: 0.82
+requires_grounding: true
+tombstone_enforcement: refuse
+contradiction_policy: quarantine
+review_gates: []
+"#;
+    let policy = serde_yaml::from_str::<Policy>(yaml).expect("policy without contradiction block parses");
+    let thresholds = policy.contradiction_thresholds();
+    assert_eq!(thresholds.similarity_threshold, DEFAULT_CONTRADICTION_SIMILARITY_THRESHOLD);
+    assert_eq!(thresholds.top_k, DEFAULT_CONTRADICTION_TOP_K);
+    assert_eq!(ContradictionThresholds::default(), thresholds);
+
+    // Built-ins carry the same defaults.
+    let builtin = PolicySet::builtin();
+    assert_eq!(builtin.policy_for_scope(Scope::Agent).expect("agent").contradiction_thresholds(), thresholds);
+}
+
+#[test]
+fn policy_contract_contradiction_block_round_trips_set_values() {
+    let yaml = r#"
+name: agent-strict
+version: 3
+scope: agent
+confidence_floor: 0.82
+requires_grounding: true
+tombstone_enforcement: refuse
+contradiction_policy: quarantine
+review_gates: []
+contradiction:
+  similarity_threshold: 0.7
+  top_k: 12
+"#;
+    let policy = serde_yaml::from_str::<Policy>(yaml).expect("policy with contradiction block parses");
+    let thresholds = policy.contradiction_thresholds();
+    assert_eq!(thresholds.similarity_threshold, 0.7);
+    assert_eq!(thresholds.top_k, 12);
+}
+
+#[test]
+fn policy_contract_contradiction_block_partial_fields_fall_back_per_field() {
+    // Only one of the two fields set; the other must default.
+    let only_threshold = r#"
+name: agent-strict
+version: 3
+scope: agent
+confidence_floor: 0.82
+requires_grounding: true
+tombstone_enforcement: refuse
+contradiction_policy: quarantine
+review_gates: []
+contradiction:
+  similarity_threshold: 0.9
+"#;
+    let policy = serde_yaml::from_str::<Policy>(only_threshold).expect("partial block parses");
+    assert_eq!(policy.contradiction_thresholds().similarity_threshold, 0.9);
+    assert_eq!(policy.contradiction_thresholds().top_k, DEFAULT_CONTRADICTION_TOP_K);
+}
+
+#[test]
+fn policy_contract_contradiction_block_rejects_unknown_keys() {
+    let yaml = r#"
+name: agent-strict
+version: 3
+scope: agent
+confidence_floor: 0.82
+requires_grounding: true
+tombstone_enforcement: refuse
+contradiction_policy: quarantine
+review_gates: []
+contradiction:
+  similarity_threshold: 0.82
+  bogus: 3
+"#;
+    assert!(serde_yaml::from_str::<Policy>(yaml).is_err(), "unknown contradiction key must be rejected");
+}
+
+#[test]
+fn policy_contract_rejects_out_of_range_similarity_threshold() {
+    for bad in ["1.5", "-0.1"] {
+        let temp_dir = unique_temp_dir(&format!("bad-threshold-{}", bad.replace(['.', '-'], "_")));
+        write_required_policy_set_without(&temp_dir, "agent-strict.yaml");
+        write_policy(&temp_dir, "agent-strict.yaml", contradiction_threshold_yaml(bad, "5"));
+
+        let error =
+            PolicySet::load_from_dir(&temp_dir).expect_err("out-of-range similarity threshold must fail closed");
+
+        assert!(
+            matches!(error, PolicyError::InvalidContradictionThresholds { ref name, .. } if name == "agent-strict"),
+            "got {error:?}"
+        );
+        std::fs::remove_dir_all(temp_dir).expect("remove temp policy dir");
+    }
+}
+
+#[test]
+fn policy_contract_rejects_zero_top_k() {
+    let temp_dir = unique_temp_dir("zero-top-k");
+    write_required_policy_set_without(&temp_dir, "agent-strict.yaml");
+    write_policy(&temp_dir, "agent-strict.yaml", contradiction_threshold_yaml("0.82", "0"));
+
+    let error = PolicySet::load_from_dir(&temp_dir).expect_err("zero top_k must fail closed");
+
+    assert!(
+        matches!(error, PolicyError::InvalidContradictionThresholds { ref name, .. } if name == "agent-strict"),
+        "got {error:?}"
+    );
+    std::fs::remove_dir_all(temp_dir).expect("remove temp policy dir");
+}
+
+fn contradiction_threshold_yaml(similarity_threshold: &str, top_k: &str) -> String {
+    format!(
+        r#"
+name: agent-strict
+version: 3
+scope: agent
+confidence_floor: 0.82
+requires_grounding: true
+tombstone_enforcement: refuse
+contradiction_policy: quarantine
+review_gates: []
+contradiction:
+  similarity_threshold: {similarity_threshold}
+  top_k: {top_k}
+"#
+    )
+}
+
+fn write_required_policy_set_without(path: &Path, omit: &str) {
+    for (file, yaml) in [
+        ("me-strict.yaml", PolicyFixture::me().to_yaml()),
+        ("project-standard.yaml", PolicyFixture::project().to_yaml()),
+        ("agent-strict.yaml", PolicyFixture::agent().to_yaml()),
+        ("dreaming-strict.yaml", PolicyFixture::dreaming().to_yaml()),
+    ] {
+        if file != omit {
+            write_policy(path, file, yaml);
+        }
+    }
 }
 
 fn assert_policy_confidence_floor(confidence_floor: &str, should_parse: bool) {

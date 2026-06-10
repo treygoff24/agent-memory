@@ -31,6 +31,93 @@ pub enum PolicyError {
     /// More than one policy exists with the same name.
     #[error("duplicate governance policy named {name}")]
     DuplicatePolicyName { name: String },
+    /// A policy declared an out-of-range or internally inconsistent contradiction-threshold block.
+    #[error("invalid contradiction thresholds for policy {name}: {reason}")]
+    InvalidContradictionThresholds { name: String, reason: String },
+}
+
+/// Default cosine-similarity score a top-K hit must reach before the
+/// contradiction tiebreaker is consulted. Operators override this per policy via
+/// `contradiction.similarity_threshold`; absent, this value is used so behavior
+/// is unchanged from before the field existed.
+pub const DEFAULT_CONTRADICTION_SIMILARITY_THRESHOLD: f32 = 0.82;
+
+/// Default top-K retrieval width the contradiction detector gates on. Operators
+/// override this per policy via `contradiction.top_k`; absent, this value is
+/// used so behavior is unchanged from before the field existed.
+pub const DEFAULT_CONTRADICTION_TOP_K: usize = 5;
+
+/// Operator-tunable contradiction-detection thresholds for a single policy.
+///
+/// These are the numeric policy knobs of the contradiction path — not algorithm
+/// constants. They control *when* the deterministic detector escalates a write
+/// to the non-deterministic tiebreaker:
+///
+/// - [`similarity_threshold`](Self::similarity_threshold): the minimum cosine
+///   similarity a retrieved active memory must reach for the candidate to count
+///   as "close enough to possibly conflict". Below it, the write proceeds as
+///   `NoConflict`; at or above it, the tiebreaker adjudicates same / refinement /
+///   contradiction.
+/// - [`top_k`](Self::top_k): how many nearest active memories the detector pulls
+///   and gates against per write.
+///
+/// ## YAML
+///
+/// Declared under an optional `contradiction` block on a policy file. Absent
+/// fields fall back to the crate defaults, so a policy that omits the block (or
+/// the whole block) behaves exactly as it did before the block existed:
+///
+/// ```yaml
+/// contradiction:
+///   similarity_threshold: 0.82   # optional, defaults to 0.82, must be in [0, 1]
+///   top_k: 5                     # optional, defaults to 5, must be >= 1
+/// ```
+///
+/// ## Validation
+///
+/// [`validate`](Self::validate) runs at load time (fail-closed): the similarity
+/// threshold must lie in `[0.0, 1.0]` and `top_k` must be at least 1 (a zero
+/// width would gate against an empty hit set and silently never detect a
+/// contradiction). A bad block is rejected with
+/// [`PolicyError::InvalidContradictionThresholds`] rather than surfacing deep in
+/// the write pipeline.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContradictionThresholds {
+    /// Minimum cosine similarity (in `[0.0, 1.0]`) that triggers tiebreaking.
+    #[serde(default = "default_contradiction_similarity_threshold")]
+    pub similarity_threshold: f32,
+    /// Top-K retrieval width (at least 1) the detector gates against.
+    #[serde(default = "default_contradiction_top_k")]
+    pub top_k: usize,
+}
+
+impl Default for ContradictionThresholds {
+    fn default() -> Self {
+        Self { similarity_threshold: DEFAULT_CONTRADICTION_SIMILARITY_THRESHOLD, top_k: DEFAULT_CONTRADICTION_TOP_K }
+    }
+}
+
+impl ContradictionThresholds {
+    /// Validate ranges. The two knobs carry no ordering relation between them,
+    /// so range checks are the whole contract.
+    ///
+    /// `policy_name` is only used to build a precise error message.
+    fn validate(&self, policy_name: &str) -> PolicyResult<()> {
+        if !(0.0..=1.0).contains(&self.similarity_threshold) {
+            return Err(PolicyError::InvalidContradictionThresholds {
+                name: policy_name.to_owned(),
+                reason: format!("similarity_threshold must be between 0.0 and 1.0, got {}", self.similarity_threshold),
+            });
+        }
+        if self.top_k < 1 {
+            return Err(PolicyError::InvalidContradictionThresholds {
+                name: policy_name.to_owned(),
+                reason: "top_k must be at least 1".to_owned(),
+            });
+        }
+        Ok(())
+    }
 }
 
 /// Candidate scope used for policy selection.
@@ -91,6 +178,8 @@ pub struct Policy {
     contradiction_policy: ContradictionPolicy,
     #[serde(default)]
     review_gates: Vec<String>,
+    #[serde(default, rename = "contradiction")]
+    contradiction_thresholds: ContradictionThresholds,
     #[serde(skip, default = "default_policy_source")]
     source: PolicySource,
 }
@@ -142,6 +231,14 @@ struct BuiltInPolicySpec<'a> {
     tombstone_enforcement: TombstoneEnforcementMode,
     contradiction_policy: ContradictionPolicy,
     review_gates: &'a [&'a str],
+}
+
+fn default_contradiction_similarity_threshold() -> f32 {
+    DEFAULT_CONTRADICTION_SIMILARITY_THRESHOLD
+}
+
+fn default_contradiction_top_k() -> usize {
+    DEFAULT_CONTRADICTION_TOP_K
 }
 
 impl PolicySet {
@@ -297,6 +394,15 @@ impl Policy {
         self.tombstone_enforcement
     }
 
+    /// Operator-tunable contradiction-detection thresholds for this policy.
+    ///
+    /// Defaults to [`DEFAULT_CONTRADICTION_SIMILARITY_THRESHOLD`] /
+    /// [`DEFAULT_CONTRADICTION_TOP_K`] when the YAML omits the `contradiction`
+    /// block, so policies that never set it behave exactly as before.
+    pub fn contradiction_thresholds(&self) -> ContradictionThresholds {
+        self.contradiction_thresholds
+    }
+
     fn builtin(spec: BuiltInPolicySpec<'_>) -> Self {
         Self {
             name: spec.name.to_owned(),
@@ -307,6 +413,7 @@ impl Policy {
             tombstone_enforcement: spec.tombstone_enforcement,
             contradiction_policy: spec.contradiction_policy,
             review_gates: spec.review_gates.iter().map(ToString::to_string).collect(),
+            contradiction_thresholds: ContradictionThresholds::default(),
             source: PolicySource::BuiltInFallback,
         }
     }
@@ -345,6 +452,9 @@ fn read_policy_file(path: &Path) -> PolicyResult<Policy> {
     let yaml = fs::read_to_string(path).map_err(|source| PolicyError::ReadFile { path: display_path(path), source })?;
     let mut policy = serde_yaml::from_str::<Policy>(&yaml)
         .map_err(|source| PolicyError::InvalidYaml { path: display_path(path), source })?;
+    // Range / ordering validation runs at load time so a bad threshold block
+    // fails closed here rather than surfacing deep in the write pipeline.
+    policy.contradiction_thresholds.validate(&policy.name)?;
     policy.source = PolicySource::Disk;
     Ok(policy)
 }

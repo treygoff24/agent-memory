@@ -47,13 +47,15 @@ use crate::protocol::{
 /// active-set read and released when the handler returns.
 static GOVERNANCE_MUTATION_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// Over-fetch width for the write-path KNN similarity query.
+/// Extra neighbours fetched on top of the engine's effective top-K width for the
+/// write-path KNN similarity query.
 ///
-/// The contradiction engine's default top-K limit is 5; we ask the substrate for
-/// a few more neighbours so that after mapping KNN ids back to the active
-/// snapshot (skipping any not yet in it) the engine still sees enough candidates
-/// to gate on. The engine itself re-truncates to its configured width.
-const WRITE_PATH_SIMILARITY_LIMIT: usize = 8;
+/// We ask the substrate for a few more neighbours than the engine will gate on
+/// so that after mapping KNN ids back to the active snapshot (skipping any not
+/// yet in it) the engine still sees enough candidates. The engine itself
+/// re-truncates to its configured width. With the historical default top-K of 5,
+/// `5 + 3 = 8` reproduces the previous fixed over-fetch width exactly.
+const WRITE_PATH_SIMILARITY_HEADROOM: usize = 3;
 
 pub(crate) async fn governance_write_response(
     substrate: &Substrate,
@@ -102,6 +104,15 @@ pub(crate) async fn governance_write_response(
     // table is empty, or KNN/embedding fails), that degradation is surfaced in
     // the response's `similarity_degraded` decision-trace field below rather than
     // silently behaving as if nothing was similar (invariant 3).
+    // Over-fetch width tracks the *selected* policy's contradiction top-K so a
+    // policy that widens `top_k` still gets enough KNN neighbours to gate on
+    // (the engine re-truncates to exactly its width). Falls back to the crate
+    // default top-K when the candidate's scope has no resolvable policy.
+    let write_path_similarity_limit = policies
+        .policy_for_scope(candidate.scope())
+        .map(|policy| policy.contradiction_thresholds().top_k)
+        .unwrap_or(memory_governance::DEFAULT_CONTRADICTION_TOP_K)
+        .saturating_add(WRITE_PATH_SIMILARITY_HEADROOM);
     let similarity = match state {
         Some(state) => {
             resolve_similarity_candidates(
@@ -110,7 +121,7 @@ pub(crate) async fn governance_write_response(
                 candidate.claim(),
                 candidate.namespace(),
                 &active,
-                WRITE_PATH_SIMILARITY_LIMIT,
+                write_path_similarity_limit,
             )
             .await
         }

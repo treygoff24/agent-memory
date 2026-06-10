@@ -3,10 +3,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::hash::{canonical_claim_hash, canonical_entity_hash};
+use crate::policy::{DEFAULT_CONTRADICTION_SIMILARITY_THRESHOLD, DEFAULT_CONTRADICTION_TOP_K};
 use crate::{CandidateTombstoneKey, Scope, Source};
-
-const DEFAULT_TOP_K_LIMIT: usize = 5;
-const DEFAULT_SIMILARITY_THRESHOLD: f32 = 0.82;
 
 /// Candidate memory facts needed by deterministic governance checks.
 #[derive(Clone, Debug, PartialEq)]
@@ -317,8 +315,8 @@ where
         Self {
             search,
             tiebreaker,
-            top_k_limit: DEFAULT_TOP_K_LIMIT,
-            similarity_threshold: DEFAULT_SIMILARITY_THRESHOLD,
+            top_k_limit: DEFAULT_CONTRADICTION_TOP_K,
+            similarity_threshold: DEFAULT_CONTRADICTION_SIMILARITY_THRESHOLD,
         }
     }
 

@@ -139,6 +139,88 @@ async fn similar_contradicting_write_is_quarantined_by_contradiction_detection()
     assert_ne!(b.id.as_deref(), Some(a_id.as_str()), "B is its own quarantined record, not a merge into A");
 }
 
+/// Write a four-scope `policies/` dir into the substrate repo, with the
+/// `project-standard` policy carrying the given `contradiction.similarity_threshold`.
+/// All other policies omit the block (default behavior).
+fn seed_policies_with_project_threshold(repo: &std::path::Path, similarity_threshold: &str) {
+    let dir = repo.join("policies");
+    std::fs::create_dir_all(&dir).expect("policy dir");
+    let files = [
+        ("me-strict.yaml", "me-strict", 1, "me", "0.85", "refuse", "quarantine", String::new()),
+        (
+            "project-standard.yaml",
+            "project-standard",
+            2,
+            "project",
+            "0.7",
+            "review",
+            "supersede",
+            format!("contradiction:\n  similarity_threshold: {similarity_threshold}\n"),
+        ),
+        ("agent-strict.yaml", "agent-strict", 3, "agent", "0.82", "refuse", "quarantine", String::new()),
+        ("dreaming-strict.yaml", "dreaming-strict", 1, "dreaming", "0.95", "refuse", "quarantine", String::new()),
+    ];
+    for (file, name, version, scope, floor, tombstone, contradiction, block) in files {
+        let yaml = format!(
+            "name: {name}\nversion: {version}\nscope: {scope}\nconfidence_floor: {floor}\nrequires_grounding: true\ntombstone_enforcement: {tombstone}\ncontradiction_policy: {contradiction}\nreview_gates: []\n{block}"
+        );
+        std::fs::write(dir.join(file), yaml).expect("write policy");
+    }
+}
+
+#[tokio::test]
+async fn raising_policy_similarity_threshold_promotes_a_write_that_would_otherwise_quarantine() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let substrate = init_substrate(&temp).await;
+    let triple = substrate.active_embedding_triple().expect("active triple");
+
+    // A near-impossible similarity threshold (0.999): the fixture's bag-of-words
+    // cosine for two distinct sentences cannot clear it, so contradiction
+    // detection never fires for B even though it shares heavy token overlap with
+    // A — the same pair that gets quarantined under the default 0.82 threshold in
+    // the sibling test. This proves the YAML threshold changes the decision.
+    seed_policies_with_project_threshold(substrate.roots().repo.as_path(), "0.999");
+
+    let provider: Arc<dyn EmbeddingProvider> = Arc::new(FixtureProvider::new(triple.clone()));
+    let state = HandlerState::new();
+    state.embedding_provider_slot().set(Arc::clone(&provider));
+
+    let a = write_memory(
+        &substrate,
+        &state,
+        "billing service production database engine",
+        "The production database engine for the billing service in this project is PostgreSQL version 14.",
+    )
+    .await;
+    assert_eq!(a.status, GovernanceStatus::Promoted, "first write promotes");
+
+    drain_all(&substrate, &provider).await;
+    assert!(substrate.vector_count(triple.clone()).await.expect("count") >= 1, "A's vector present after drain");
+
+    let b = write_memory(
+        &substrate,
+        &state,
+        "billing service production database engine",
+        "The production database engine for the billing service in this project is MySQL version 8.",
+    )
+    .await;
+
+    // With the threshold raised so high that no hit clears it, B is promoted as
+    // its own active memory rather than quarantined for contradiction. The
+    // embedding backend was live, so there is no degradation marker either.
+    assert_eq!(
+        b.status,
+        GovernanceStatus::Promoted,
+        "raising the policy similarity threshold past any real similarity must let B promote (got next_actions {:?})",
+        b.next_actions,
+    );
+    assert_eq!(
+        b.similarity_degraded, None,
+        "backend was live; no degradation expected, got {:?}",
+        b.similarity_degraded
+    );
+}
+
 #[tokio::test]
 async fn write_without_embedding_provider_records_visible_degradation() {
     let temp = tempfile::tempdir().expect("tempdir");

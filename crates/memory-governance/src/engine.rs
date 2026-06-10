@@ -117,8 +117,15 @@ pub struct GovernanceEngine<S, T, R, W = NeverResolveWebCapture> {
     tombstones: TombstoneIndex,
     search: S,
     tiebreaker: T,
-    similarity_threshold: f32,
-    top_k_limit: usize,
+    /// Engine-level override for the contradiction similarity threshold. When
+    /// `None` (the production default), the threshold comes from the *selected*
+    /// policy's `contradiction` block (defaulting to the crate default when the
+    /// policy omits it). When `Some`, it overrides every policy — used by the
+    /// builder for tests and bespoke wiring.
+    similarity_threshold_override: Option<f32>,
+    /// Engine-level override for the contradiction top-K width; same semantics as
+    /// [`similarity_threshold_override`](Self::similarity_threshold_override).
+    top_k_limit_override: Option<usize>,
 }
 
 impl<S, T> GovernanceProviders<S, T> {
@@ -148,22 +155,29 @@ where
             tombstones,
             search: providers.search,
             tiebreaker: providers.tiebreaker,
-            similarity_threshold: 0.82,
-            top_k_limit: 5,
+            similarity_threshold_override: None,
+            top_k_limit_override: None,
         }
     }
 
-    /// Override contradiction similarity threshold.
+    /// Override the contradiction similarity threshold for every policy.
+    ///
+    /// Without this, the threshold is read from the selected policy's
+    /// `contradiction` block (see [`crate::ContradictionThresholds`]); this
+    /// builder forces a single value regardless of policy.
     #[must_use]
     pub fn with_similarity_threshold(mut self, similarity_threshold: f32) -> Self {
-        self.similarity_threshold = similarity_threshold;
+        self.similarity_threshold_override = Some(similarity_threshold);
         self
     }
 
-    /// Override top-K retrieval width.
+    /// Override the contradiction top-K retrieval width for every policy.
+    ///
+    /// Without this, the width is read from the selected policy's `contradiction`
+    /// block; this builder forces a single value regardless of policy.
     #[must_use]
     pub fn with_top_k_limit(mut self, top_k_limit: usize) -> Self {
-        self.top_k_limit = top_k_limit;
+        self.top_k_limit_override = Some(top_k_limit);
         self
     }
 
@@ -201,7 +215,7 @@ where
             };
         }
 
-        let contradiction_decision = self.detect_contradiction(candidate);
+        let contradiction_decision = self.detect_contradiction(candidate, policy);
         if !matches!(contradiction_decision, ContradictionDecision::NoConflict) {
             return self.map_contradiction(candidate, policy, contradiction_decision);
         }
@@ -244,10 +258,17 @@ where
         }
     }
 
-    fn detect_contradiction(&self, candidate: &CandidateMemory) -> ContradictionDecision {
+    fn detect_contradiction(&self, candidate: &CandidateMemory, policy: &crate::Policy) -> ContradictionDecision {
+        // Engine-level overrides win; otherwise the thresholds come from the
+        // selected policy's `contradiction` block (crate defaults when the policy
+        // omits it). Threading the selected policy through here is what makes the
+        // YAML-tunable thresholds per-scope.
+        let thresholds = policy.contradiction_thresholds();
+        let similarity_threshold = self.similarity_threshold_override.unwrap_or(thresholds.similarity_threshold);
+        let top_k_limit = self.top_k_limit_override.unwrap_or(thresholds.top_k);
         ContradictionDetector::new(&self.search, &self.tiebreaker)
-            .with_similarity_threshold(self.similarity_threshold)
-            .with_top_k_limit(self.top_k_limit)
+            .with_similarity_threshold(similarity_threshold)
+            .with_top_k_limit(top_k_limit)
             .detect(candidate)
     }
 
