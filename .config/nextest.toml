@@ -1,0 +1,21 @@
+# cargo-nextest configuration.
+#
+# The default gate (`scripts/check.sh`) runs `cargo test`; nextest is opt-in via
+# `MEMORUM_CHECK_USE_NEXTEST=1`. This file only takes effect on the nextest path,
+# so the `cargo test` path is covered separately by a generous in-test deadline
+# plus `#[serial]` on the affected test.
+
+# `mcp_stdio_tools_call_routes_through_daemon_forwarder` is the one memoryd test
+# that drives an in-process multi-thread tokio daemon AND a subprocess MCP bridge
+# over a Unix socket, then asserts the round-trip completes. Since the embedding
+# stack (candle/fastembed/Metal) shipped, each test binary is ~100 MB and the
+# full parallel test load starves the scheduler, so this timing-sensitive
+# round-trip occasionally missed its deadline under contention. The forwarding is
+# correct — this is a scheduling problem, not a logic bug. Reserving the full
+# thread budget makes nextest run it alone, off the shared scheduler. This
+# applies to both gate passes: `cargo nextest run` and `cargo nextest run
+# --release` both use `profile.default` (the `--release` flag selects cargo's
+# release build, not a separate nextest profile).
+[[profile.default.overrides]]
+filter = 'test(=mcp_stdio_tools_call_routes_through_daemon_forwarder)'
+threads-required = 'num-test-threads'

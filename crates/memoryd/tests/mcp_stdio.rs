@@ -7,6 +7,7 @@ use std::time::Duration;
 use memory_substrate::{InitOptions, Roots, Substrate};
 use memoryd::mcp::{manifest, stdio_manifest};
 use serde_json::{json, Value};
+use serial_test::serial;
 
 mod common;
 use common::{shutdown, spawn_daemon, unique_socket_path, wait_for_socket};
@@ -127,7 +128,16 @@ fn mcp_stdio_unknown_notifications_do_not_emit_responses() {
     );
 }
 
+// Serialize against this binary's other tests and keep this test off the shared
+// scheduler when run under nextest (see `.config/nextest.toml`, which reserves
+// the full thread budget for it). This is the only test in the file that runs an
+// in-process multi-thread tokio daemon AND a subprocess MCP bridge talking back
+// over a Unix socket; under full-suite parallel load — heavy now that the
+// embedding stack (candle/fastembed/Metal) makes each test binary ~100 MB — the
+// round-trip occasionally missed its completion deadline. The forwarding itself
+// is correct; the deadline is a "did it finish" bound, not a latency SLO.
 #[tokio::test(flavor = "multi_thread")]
+#[serial]
 async fn mcp_stdio_tools_call_routes_through_daemon_forwarder() {
     // Disable the production embedding worker for this in-process daemon: loading
     // the ~1.1 GB Qwen3 model would compete with socket bind under the
@@ -236,7 +246,12 @@ impl McpServerProcess {
 
     fn request(&mut self, request: Value) -> Value {
         self.notify(request);
-        let line = self.stdout.recv_timeout(Duration::from_secs(5)).expect("MCP server responds before timeout");
+        // Completion bound for the subprocess round-trip, not a latency SLO: a
+        // healthy reply lands in milliseconds, so a fast test never waits this
+        // long. The generous ceiling is purely headroom for the worst case under
+        // full-suite parallel load, where the ~100 MB embedding-linked test
+        // binaries starve the scheduler and a 5 s bound occasionally tripped.
+        let line = self.stdout.recv_timeout(Duration::from_secs(30)).expect("MCP server responds before timeout");
         serde_json::from_str(&line).unwrap_or_else(|error| panic!("MCP response is JSON ({error}): {line}"))
     }
 
