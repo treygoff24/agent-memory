@@ -54,3 +54,7 @@ Repair-cascade extraction with both divergence axes kept explicit (`5332645`); g
 - Three parallel subagents in one shared tree each running whole-crate cargo gates serialize on the build lock; the 600 s no-progress watchdog killed all three _after_ their edits landed but _before_ their reports. Their work was complete and correct on disk. Lesson: in a shared tree, agents implement; the coordinator runs gates sequentially.
 - The agents' disjoint file fences held perfectly across both parallel waves — fence discipline in the brief is what made stall recovery cheap (review diffs, gate once, commit per scope).
 - Per-crate gates lie by omission: only the integrated `scripts/check.sh` caught the oxfmt drift and the docs-guard staleness. Run it at every closeout, not just at the end of a phase.
+
+## Addendum (same day, post-record)
+
+The integrated gate went genuinely green (`scripts/check.sh` exit 0) six commits after this record was written; the chase is instructive. The gate surfaced, in order: oxfmt drift in 4 files (`1c31f0f`), the stale `memoryd init` docs guard (`3190303`), a TUI trust-artifact fixture missing the new `strength` field — widget now renders it (`4d89967`), a real test-isolation race in harness detection (nanos-named sandboxes colliding under load; fixed with `tempfile`, `235a5e3`), and nine rustdoc intra-link errors under `-D warnings` (`ff1acac`). Every one was introduced by this run and invisible to per-crate gates. Final span: `7c8ff81..ff1acac`, 46 commits.
