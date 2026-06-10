@@ -2,7 +2,6 @@ use serde_json::Value;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use memorum_eval::harness_runner::{HarnessRunner, RealHarness};
 
@@ -13,8 +12,7 @@ fn detects_absent_real_harness_clis_without_panicking() {
     let _guard = path_lock();
     let original_path = std::env::var_os("PATH");
     let path_dir = unique_temp_tree();
-    fs::create_dir_all(&path_dir).expect("empty PATH fixture directory should be created");
-    std::env::set_var("PATH", &path_dir);
+    std::env::set_var("PATH", path_dir.path());
 
     for harness in [RealHarness::Claude, RealHarness::Codex] {
         let detected = HarnessRunner::detect_cli(harness).expect("CLI detection should not fail when binary is absent");
@@ -22,7 +20,6 @@ fn detects_absent_real_harness_clis_without_panicking() {
     }
 
     restore_path(original_path);
-    let _ = fs::remove_dir_all(&path_dir);
 }
 
 #[test]
@@ -30,27 +27,25 @@ fn detects_present_real_harness_clis_and_validates_mcp_config_flag_against_help(
     let _guard = path_lock();
     let original_path = std::env::var_os("PATH");
     let path_dir = unique_temp_tree();
-    fs::create_dir_all(&path_dir).expect("fake PATH directory should be created");
-    write_fake_cli(&path_dir, "claude", "Claude help: --mcp-config <path>\n");
-    write_fake_cli(&path_dir, "codex", "Codex help: --mcp-config <path>\n");
-    std::env::set_var("PATH", &path_dir);
+    write_fake_cli(path_dir.path(), "claude", "Claude help: --mcp-config <path>\n");
+    write_fake_cli(path_dir.path(), "codex", "Codex help: --mcp-config <path>\n");
+    std::env::set_var("PATH", path_dir.path());
 
     for harness in [RealHarness::Claude, RealHarness::Codex] {
         let cli = HarnessRunner::detect_cli(harness)
             .expect("CLI detection should succeed")
             .expect("fake CLI should be detected");
-        assert_eq!(cli.path, path_dir.join(harness.binary_name()));
+        assert_eq!(cli.path, path_dir.path().join(harness.binary_name()));
         assert_eq!(cli.mcp_config_flag, "--mcp-config");
     }
 
     restore_path(original_path);
-    let _ = fs::remove_dir_all(&path_dir);
 }
 
 #[test]
 fn writes_harness_specific_mcp_config_files_without_extra_temp_files() {
-    let sandbox = unique_temp_tree();
-    fs::create_dir_all(&sandbox).expect("sandbox should be created");
+    let sandbox_dir = unique_temp_tree();
+    let sandbox = sandbox_dir.path().to_path_buf();
     let socket_path = sandbox.join("memoryd.sock");
 
     let claude_runner = HarnessRunner::new_with_socket(RealHarness::Claude, socket_path.clone());
@@ -81,8 +76,6 @@ fn writes_harness_specific_mcp_config_files_without_extra_temp_files() {
         .collect::<Vec<_>>();
     entries.sort();
     assert_eq!(entries, vec![claude_config, codex_config]);
-
-    fs::remove_dir_all(&sandbox).expect("sandbox should be cleaned up");
 }
 
 fn write_fake_cli(path_dir: &std::path::Path, name: &str, help_text: &str) {
@@ -113,8 +106,10 @@ fn restore_path(original_path: Option<std::ffi::OsString>) {
     }
 }
 
-fn unique_temp_tree() -> std::path::PathBuf {
-    let nanos =
-        SystemTime::now().duration_since(UNIX_EPOCH).expect("system time should be after Unix epoch").as_nanos();
-    std::env::temp_dir().join(format!("memorum-eval-harness-runner-{nanos}"))
+/// A genuinely unique, auto-cleaned sandbox per test. The previous
+/// nanos-since-epoch naming collided when two tests started within one macOS
+/// clock tick — the test that finished first `remove_dir_all`'d the shared dir
+/// out from under the other mid-exec.
+fn unique_temp_tree() -> tempfile::TempDir {
+    tempfile::Builder::new().prefix("memorum-eval-harness-runner-").tempdir().expect("test sandbox should be created")
 }
