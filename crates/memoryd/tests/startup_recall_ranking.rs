@@ -224,29 +224,35 @@ fn rank_ids(ranked: Vec<memoryd::recall::RankedRecallCandidate>) -> Vec<String> 
 
 // --- Memory-dynamics-v0.1 §3 bounded-influence invariant -------------------
 //
-// Structural gap is built from scope (User=25 vs Agent=15 → 10) plus confidence
-// (floor(conf*10) points). The leader (no strength) competes against a follower
-// carrying full strength (1.0). At alpha_points=12: a structural gap of 11 IS
-// flipped by +12 strength points; a gap of exactly 12 is NOT; a pinned-vs-active
-// gap (50) is NOT. Both directions, so any silent rescale of the strength term
-// breaks the test.
+// Structural gap is built from scope (User=25 vs Agent=15 → 10), recency (the
+// follower is deliberately newer), and confidence (floor(conf*10) points). The
+// leader (no strength) competes against a follower carrying full strength (1.0).
+// At alpha_points=12, the capped strength term is 11: a structural gap of 11 can
+// still be won by the follower via tie-breakers; a gap of exactly 12 is not tied
+// or flipped; a pinned-vs-active gap (50) is not. Both directions, so any silent
+// rescale of the strength term breaks the test.
 
 /// Leader structurally ahead by `gap` points (no strength) vs a follower that
 /// is `gap` points behind but carries full strength. Returns the winner id.
 fn winner_with_structural_gap(gap: i64, alpha_points: u32) -> String {
-    // Leader: User scope (25) + confidence points. Follower: Agent scope (15).
-    // gap = 10 (scope) + (leader_conf_points - follower_conf_points).
-    // Use confidence to top up the remaining (gap - 10) points on the leader.
-    let extra = gap - 10;
-    assert!((0..=10).contains(&extra), "gap must be in 10..=20 for this fixture");
+    // Leader: User scope (25), older recency bucket (5), confidence points.
+    // Follower: Agent scope (15), newer recency bucket (10), full strength, and
+    // tie-breaker advantage (newer updated_at + lexicographically smaller id).
+    // gap = 5 (net scope/recency) + leader_conf_points.
+    let extra = gap - 5;
+    assert!((0..=10).contains(&extra), "gap must be in 5..=15 for this fixture");
     let leader = candidate(
-        row("mem_20260430_000000000000aaaa_000001", MemoryStatus::Active)
+        row("mem_20260430_000000000000bbbb_000002", MemoryStatus::Active)
             .with_scope(Scope::User, None)
+            .with_updated_at("2026-04-20T12:00:00Z")
             .with_confidence(extra as f64 / 10.0),
     );
-    let follower =
-        candidate(row("mem_20260430_000000000000bbbb_000002", MemoryStatus::Active).with_scope(Scope::Agent, None))
-            .with_strength(Some(1.0));
+    let follower = candidate(
+        row("mem_20260430_000000000000aaaa_000001", MemoryStatus::Active)
+            .with_scope(Scope::Agent, None)
+            .with_updated_at("2026-04-30T11:00:00Z"),
+    )
+    .with_strength(Some(1.0));
 
     let ranked = rank_recall_candidates(vec![leader, follower], context_with_alpha(alpha_points));
     ranked[0].id.clone()
@@ -254,19 +260,20 @@ fn winner_with_structural_gap(gap: i64, alpha_points: u32) -> String {
 
 #[test]
 fn strength_flips_a_near_tie_below_alpha_points() {
-    // Gap 11 < alpha 12 → full strength (+12) flips it to the follower.
+    // Gap 11 < alpha 12 → full strength (+11 after capping) ties the score, then
+    // the adversarial follower wins on newer updated_at/lexicographic tie-breaks.
     let winner = winner_with_structural_gap(11, 12);
-    assert_eq!(winner, "mem_20260430_000000000000bbbb_000002", "strength should flip a sub-alpha structural gap");
+    assert_eq!(winner, "mem_20260430_000000000000aaaa_000001", "strength should flip a sub-alpha structural gap");
 }
 
 #[test]
 fn strength_cannot_overcome_a_gap_equal_to_alpha_points() {
-    // Gap 12 == alpha 12 → +12 strength ties the raw points; the leader keeps the
-    // win on the status/recency/lexicographic tie-breakers (it is structurally
-    // ahead before strength). The follower must NOT win.
+    // Gap 12 == alpha 12 → full strength is capped at +11. Even though the
+    // follower is strictly newer and lexicographically smaller, it never reaches
+    // a score tie. The follower must NOT win.
     let winner = winner_with_structural_gap(12, 12);
     assert_eq!(
-        winner, "mem_20260430_000000000000aaaa_000001",
+        winner, "mem_20260430_000000000000bbbb_000002",
         "strength must not overcome a structural gap >= alpha_points"
     );
 }
@@ -274,7 +281,7 @@ fn strength_cannot_overcome_a_gap_equal_to_alpha_points() {
 #[test]
 fn strength_cannot_overcome_a_pinned_vs_active_gap() {
     // Pinned (status 100) vs Active (status 50) is a 50-point gap. Even full
-    // strength on the active memory (+12 at alpha 12) cannot flip it; pins also
+    // strength on the active memory (+11 after cap at alpha 12) cannot flip it; pins also
     // sort first by status key regardless.
     let pinned = candidate(row("mem_20260430_000000000000cccc_000003", MemoryStatus::Pinned).with_confidence(0.0));
     let active = candidate(row("mem_20260430_000000000000dddd_000004", MemoryStatus::Active).with_confidence(0.0))
@@ -293,7 +300,7 @@ fn alpha_points_zero_disables_strength_entirely() {
     // With alpha_points = 0 (dynamics off), a full-strength follower behind by a
     // single structural point still loses — the term contributes nothing.
     let winner = winner_with_structural_gap(11, 0);
-    assert_eq!(winner, "mem_20260430_000000000000aaaa_000001", "alpha_points=0 must zero the strength term");
+    assert_eq!(winner, "mem_20260430_000000000000bbbb_000002", "alpha_points=0 must zero the strength term");
 }
 
 fn row(id: &str, status: MemoryStatus) -> RecallIndexRow {

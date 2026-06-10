@@ -11,8 +11,9 @@ pub struct RankingContext {
     pub exact_project_namespace: Option<String>,
     /// Strength-term ceiling (memory-dynamics-v0.1 §3). `0` disables the term
     /// (dynamics off → structural-only ranking, byte-identical to pre-dynamics
-    /// except the policy version string). At the default `12`, strength can flip
-    /// near-ties (structural gap `< 12`) but never a structural gap `>= 12`.
+    /// except the policy version string). At the default `12`, strength is capped
+    /// at `11`, so it can flip near-ties (structural gap `< 12`) but can never
+    /// tie or flip a structural gap `>= 12`.
     pub alpha_points: u32,
 }
 
@@ -84,10 +85,10 @@ fn score_candidate(candidate: &RecallCandidate, context: &RankingContext) -> i64
 
 /// Bounded additive strength term (memory-dynamics-v0.1 §3).
 ///
-/// `floor(strength × alpha_points)`, in `[0, alpha_points]`. When the candidate
-/// has no hydrated strength (dynamics off, or usage query soft-failed) or
-/// `alpha_points == 0`, the term is `0` — leaving the structural ranking exactly
-/// as it was before dynamics.
+/// `min(floor(strength × alpha_points), alpha_points - 1)`, in
+/// `[0, alpha_points - 1]`. When the candidate has no hydrated strength
+/// (dynamics off, or usage query soft-failed) or `alpha_points == 0`, the term is
+/// `0` — leaving the structural ranking exactly as it was before dynamics.
 fn strength_points_for(candidate: &RecallCandidate, context: &RankingContext) -> i64 {
     match candidate.strength {
         Some(strength) if context.alpha_points > 0 => {

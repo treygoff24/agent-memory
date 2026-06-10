@@ -9,9 +9,10 @@
 //! ## Deferral rule (spec §4)
 //!
 //! For each expired fragment (`ts + base_lifetime <= now`):
-//! - if it is cited `>= dynamics.citation_defer_threshold` times **and** has not
-//!   yet reached the immortality cap (`ts + max_fragment_lifetime_days > now`),
-//!   archival is deferred — the fragment stays in the active tree;
+//! - if it is cited by `>= dynamics.citation_defer_threshold` distinct live
+//!   memories **and** has not yet reached the immortality cap
+//!   (`ts + max_fragment_lifetime_days > now`), archival is deferred — the
+//!   fragment stays in the active tree;
 //! - otherwise it archives on schedule.
 //!
 //! At the cap, archival proceeds regardless of citations. Deferral changes *when*
@@ -21,10 +22,11 @@
 //!
 //! Citations are counted from `Evidence.reference` (`evidence: Vec<Evidence>`)
 //! entries in live memory frontmatter — the same refs grounding rehydration
-//! resolves. Each ref is normalized via `crate::dream::rehydration::normalize_reference`
-//! and kept only when it names a `sub_…` fragment. Dream-journal markdown is
-//! deliberately never scanned: it is prose, and grepping it for fragment ids is
-//! brittle by construction.
+//! resolves. Multiple references to the same fragment inside one memory count as
+//! one citing memory. Each ref is normalized via
+//! `crate::dream::rehydration::normalize_reference` and kept only when it names a
+//! `sub_…` fragment. Dream-journal markdown is deliberately never scanned: it is
+//! prose, and grepping it for fragment ids is brittle by construction.
 //!
 //! ## Gating (spec §7)
 //!
@@ -126,7 +128,7 @@ pub fn archive_with_deferral(
                     outcome.deferred_fragments.push(DeferredFragment {
                         fragment_id,
                         citations: count,
-                        deferred_until: ts + Duration::days(window.cap_days),
+                        cap_deadline: ts + Duration::days(window.cap_days),
                     });
                 }
                 FragmentDecision::Archive { id, ts } => {
@@ -216,15 +218,16 @@ impl DeferralWindow<'_> {
     }
 }
 
-/// Count `Evidence.reference` citations of substrate fragments across live
-/// memories (spec §4 citation source).
+/// Count distinct live memories citing substrate fragments via
+/// `Evidence.reference` (spec §4 citation source).
 ///
 /// Only memories in a live status are scanned — `Active`, `Pinned` (active
 /// canonical) and `Candidate` / `Quarantined` (queued for review, the "queued
 /// candidates" of the spec). Archived, superseded and tombstoned memories are no
-/// longer live citers and do not keep a fragment alive. Each evidence ref is
-/// normalized identically to grounding rehydration and counted only when it
-/// names a `sub_…` fragment.
+/// longer live citers and do not keep a fragment alive. Evidence refs are
+/// normalized identically to grounding rehydration and counted only when they
+/// name a `sub_…` fragment. Duplicate refs to the same fragment inside one
+/// memory count once.
 fn count_fragment_citations(repo: &Path) -> BTreeMap<String, u64> {
     let mut counts = BTreeMap::new();
     for relative in relative_memory_paths(repo) {
@@ -243,11 +246,15 @@ fn accumulate_citations(memory: &Memory, counts: &mut BTreeMap<String, u64>) {
     if !is_live_citer(memory.frontmatter.status) {
         return;
     }
+    let mut cited_fragments = BTreeSet::new();
     for evidence in &memory.frontmatter.evidence {
         let normalized = normalize_reference(&evidence.reference);
         if let Some(id) = normalized.strip_prefix("sub_") {
-            *counts.entry(format!("sub_{id}")).or_insert(0) += 1;
+            cited_fragments.insert(format!("sub_{id}"));
         }
+    }
+    for fragment_id in cited_fragments {
+        *counts.entry(fragment_id).or_insert(0) += 1;
     }
 }
 

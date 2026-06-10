@@ -1,7 +1,14 @@
+use chrono::{DateTime, Utc};
+use memory_substrate::events::{append_event, Event, EventKind, EVENT_SCHEMA_VERSION};
+use memory_substrate::{
+    Author, AuthorKind, ClassificationOutcome, DeviceId, EventContext, EventId, Frontmatter, InitOptions, Memory,
+    MemoryId, MemoryStatus, MemoryType, OperationId, RepoPath, RetrievalPolicy, Roots, Scope, Sensitivity, Source,
+    SourceKind, Substrate, TrustLevel, WriteMode, WritePolicy, WriteRequest,
+};
 use memoryd::recall::{
-    bounded_omissions, estimated_tokens, render_memory_entry, render_startup_frame, truncate_utf8_bytes,
-    OmissionReason, ProjectBinding, ProjectBindingSource, RecallEntry, RecallError, RecallExplanation, RecallOmission,
-    RecallSectionName, SessionBinding, STREAM_E_POLICY,
+    bounded_omissions, build_startup_response, estimated_tokens, render_memory_entry, render_startup_frame,
+    truncate_utf8_bytes, OmissionReason, ProjectBinding, ProjectBindingSource, RecallEntry, RecallError,
+    RecallExplanation, RecallOmission, RecallSectionName, SessionBinding, StartupRequest, STREAM_E_POLICY,
 };
 use serde_json::{json, Value};
 
@@ -253,38 +260,79 @@ fn recall_errors_map_to_protocol_retryability_and_cli_exit_codes() {
     }
 }
 
-/// memory-dynamics-v0.1 §9 #2c: with dynamics off (empty `strengths`,
-/// `dynamics_degraded == false` — the default `RecallExplanation`), the rendered
-/// block is byte-identical to pre-dynamics **except the `version=` / `policy=`
-/// attribute**. The masking test substitutes the version token in both the
-/// current (v0.6) frame and a synthetic pre-dynamics (v0.5) frame; once masked,
-/// the two must be byte-equal. If the strength term ever leaked extra bytes into
-/// the off-mode block (an attribute, an element), this fails.
-#[test]
-fn dynamics_off_block_is_byte_identical_to_pre_dynamics_modulo_version() {
-    let binding = session_binding();
-    // The default explanation is the dynamics-off shape: no strengths, not
-    // degraded. Rendering must not emit any dynamics-specific bytes.
-    let explanation = RecallExplanation::empty(3600);
+/// memory-dynamics-v0.1 §9 #2c: with dynamics off, a non-empty startup block with
+/// pre-existing recall usage stays byte-pinned to the committed pre-dynamics
+/// golden except for the stream policy token. This is intentionally an
+/// integration test: it builds the block through the production startup path and
+/// seeds recall events such that strengths would be non-zero if dynamics were on.
+#[tokio::test]
+async fn dynamics_off_block_is_byte_identical_to_pre_dynamics_golden() {
+    let fixture = StartupDynamicsFixture::new("dev_dynamicsoff").await;
+    fixture.write_dynamics_config(false);
+    fixture
+        .write_memory(fixture.memory(StartupMemorySpec {
+            id: "mem_20260501_aaaaaaaaaaaaaaaa_000001",
+            summary: "Pinned operational invariant remains in off mode.",
+            status: MemoryStatus::Pinned,
+            scope: Scope::User,
+            path: "me/mem_20260501_aaaaaaaaaaaaaaaa_000001.md",
+        }))
+        .await;
+    fixture
+        .write_memory(fixture.memory(StartupMemorySpec {
+            id: "mem_20260501_bbbbbbbbbbbbbbbb_000002",
+            summary: "Frequently recalled agent note is still structurally rendered.",
+            status: MemoryStatus::Active,
+            scope: Scope::Agent,
+            path: "agent/patterns/mem_20260501_bbbbbbbbbbbbbbbb_000002.md",
+        }))
+        .await;
+    fixture
+        .write_memory(fixture.memory(StartupMemorySpec {
+            id: "mem_20260501_cccccccccccccccc_000003",
+            summary: "Lightly recalled user note keeps the off-state fixture non-empty.",
+            status: MemoryStatus::Active,
+            scope: Scope::User,
+            path: "me/mem_20260501_cccccccccccccccc_000003.md",
+        }))
+        .await;
+    fixture.append_recall_hits("mem_20260501_bbbbbbbbbbbbbbbb_000002", 3);
+    fixture.append_recall_hits("mem_20260501_cccccccccccccccc_000003", 1);
+    fixture.reindex_events();
 
-    let current = render_startup_frame(&binding, &explanation, &[]);
-    assert!(current.contains("version=\"stream-e-v0.6\""));
-    assert!(current.contains("policy=\"stream-e-v0.6\""));
-    // No strength surface leaks into the off-mode rendered block.
-    assert!(!current.contains("strength"));
-    assert!(!current.contains("dynamics"));
+    let response = fixture.startup().await;
+    let selected_recent = response.recall_explanation.sections[3].selected_ids.clone();
+    assert_eq!(
+        selected_recent,
+        vec![
+            "mem_20260501_aaaaaaaaaaaaaaaa_000001",
+            "mem_20260501_cccccccccccccccc_000003",
+            "mem_20260501_bbbbbbbbbbbbbbbb_000002",
+        ],
+        "fixture must render a non-empty recent-memory block"
+    );
 
-    // Mask the version token in the current frame.
-    let masked_current = current.replace("stream-e-v0.6", "VERSION");
-    // Build the pre-dynamics expectation by masking the old version token in a
-    // copy of the current frame with the version string swapped back to v0.5.
-    let pre_dynamics = current.replace("stream-e-v0.6", "stream-e-v0.5");
-    let masked_pre = pre_dynamics.replace("stream-e-v0.5", "VERSION");
-
+    let masked_current = mask_startup_frame(&response.recall_block, fixture.repo_path());
+    if std::env::var_os("MEMORYD_UPDATE_DYNAMICS_OFF_GOLDEN").is_some() {
+        std::fs::write(golden_path(), &masked_current).expect("update dynamics-off golden");
+    }
+    let golden = include_str!("fixtures/startup_dynamics_off_golden.xml");
     assert_eq!(
         masked_current.as_bytes(),
-        masked_pre.as_bytes(),
-        "off-mode block differs from pre-dynamics by more than the version attribute"
+        golden.as_bytes(),
+        "dynamics-off block differs from committed pre-dynamics golden by more than the masked policy token"
+    );
+    assert_no_dynamics_markers(&response.recall_block);
+    assert!(response.recall_explanation.strengths.is_empty(), "dynamics-off explanation must not carry strengths");
+    assert!(!response.recall_explanation.dynamics_degraded);
+    let explanation_json = serde_json::to_string(&response.recall_explanation).expect("explanation serializes");
+    assert_no_dynamics_markers(&explanation_json);
+
+    fixture.write_dynamics_config(true);
+    let dynamics_on = fixture.startup().await;
+    assert!(
+        dynamics_on.recall_explanation.strengths.iter().any(|entry| entry.strength > 0.0),
+        "same fixture should hydrate non-zero strengths when dynamics is enabled"
     );
 }
 
@@ -329,4 +377,217 @@ fn assert_in_order(haystack: &str, needles: &[&str]) {
 
 fn assert_absent(value: &Value, key: &str) {
     assert!(value.get(key).is_none(), "expected key {key:?} to be absent in {value}");
+}
+
+fn mask_startup_frame(frame: &str, repo: &std::path::Path) -> String {
+    let mut masked = frame.replace(STREAM_E_POLICY, "STREAM_E_POLICY");
+    if let Ok(canonical) = std::fs::canonicalize(repo) {
+        masked = masked.replace(&canonical.to_string_lossy().into_owned(), "TEST_REPO");
+    }
+    masked.replace(&repo.to_string_lossy().into_owned(), "TEST_REPO")
+}
+
+fn assert_no_dynamics_markers(text: &str) {
+    assert!(!text.contains("strength"), "unexpected strength marker in {text}");
+    assert!(!text.contains("dynamics"), "unexpected dynamics marker in {text}");
+}
+
+fn golden_path() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/startup_dynamics_off_golden.xml")
+}
+
+struct StartupDynamicsFixture {
+    _temp: tempfile::TempDir,
+    roots: Roots,
+    substrate: Substrate,
+    device_id: String,
+}
+
+impl StartupDynamicsFixture {
+    async fn new(device_id: &str) -> Self {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+        let substrate = Substrate::init(
+            roots.clone(),
+            InitOptions { force_unsafe_durability: true, device_id: Some(device_id.to_owned()) },
+        )
+        .await
+        .expect("substrate init");
+        Self { _temp: temp, roots, substrate, device_id: device_id.to_owned() }
+    }
+
+    fn write_dynamics_config(&self, enabled: bool) {
+        let body = format!(
+            "schema_version: 1\ndynamics:\n  enabled: {enabled}\n  alpha_points: 12\n  weights:\n    frequency: 1.0\n    recency: 0.0\n    corroboration: 0.0\n"
+        );
+        std::fs::write(self.roots.repo.join("config.yaml"), body).expect("write dynamics config");
+    }
+
+    async fn startup(&self) -> memoryd::recall::StartupResponse {
+        build_startup_response(
+            &self.substrate,
+            StartupRequest {
+                cwd: self.roots.repo.to_string_lossy().into_owned(),
+                session_id: "sess_off_pin".to_owned(),
+                harness: "codex".to_owned(),
+                harness_version: None,
+                include_recent: true,
+                since_event_id: None,
+                budget_tokens: Some(1024),
+            },
+        )
+        .await
+        .expect("startup recall")
+    }
+
+    async fn write_memory(&self, memory: Memory) {
+        self.substrate
+            .write_memory(WriteRequest {
+                operation_id: None,
+                memory,
+                expected_base_hash: None,
+                write_mode: WriteMode::CreateNew,
+                index_projection: None,
+                event_context: EventContext::default(),
+                allow_best_effort_durability: true,
+                classification: ClassificationOutcome::Trusted,
+            })
+            .await
+            .expect("write memory");
+    }
+
+    fn append_recall_hits(&self, memory_id: &str, count: u64) {
+        let path = self.roots.repo.join(format!("events/{}.jsonl", self.device_id));
+        for seq in 1..=count {
+            append_event(
+                &path,
+                &recall_event(RecallEventSpec {
+                    event_id: &format!("evt_{}_{}", memory_id, seq),
+                    device_id: &self.device_id,
+                    seq,
+                    memory_id,
+                    timestamp: instant(&format!("2026-05-01T12:00:0{seq}Z")),
+                }),
+            )
+            .expect("append recall hit");
+        }
+    }
+
+    fn reindex_events(&self) {
+        self.substrate.doctor_reindex_events_log().expect("reindex events");
+    }
+
+    fn repo_path(&self) -> &std::path::Path {
+        self.roots.repo.as_path()
+    }
+
+    fn memory(&self, spec: StartupMemorySpec<'_>) -> Memory {
+        let updated_at = instant("2026-05-01T12:00:00Z");
+        Memory {
+            frontmatter: Frontmatter {
+                schema_version: 1,
+                id: MemoryId::new(spec.id),
+                memory_type: MemoryType::Pattern,
+                scope: spec.scope,
+                summary: spec.summary.to_owned(),
+                confidence: 0.8,
+                original_confidence: None,
+                trust_level: trust_for_status(spec.status),
+                sensitivity: Sensitivity::Internal,
+                status: spec.status,
+                created_at: updated_at,
+                updated_at,
+                observed_at: None,
+                author: Author {
+                    kind: AuthorKind::Agent,
+                    user_handle: None,
+                    harness: Some("codex".to_owned()),
+                    harness_version: None,
+                    session_id: Some("sess_off_pin".to_owned()),
+                    subagent_id: None,
+                    phase: None,
+                    component: Some("startup-dynamics-off-test".to_owned()),
+                },
+                namespace: None,
+                canonical_namespace_id: None,
+                tags: Vec::new(),
+                entities: Vec::new(),
+                aliases: Vec::new(),
+                source: Source {
+                    kind: SourceKind::AgentPrimary,
+                    reference: None,
+                    harness: Some("codex".to_owned()),
+                    harness_version: None,
+                    session_id: Some("sess_off_pin".to_owned()),
+                    subagent_id: None,
+                    device: Some(self.device_id.clone()),
+                },
+                evidence: Vec::new(),
+                requires_user_confirmation: false,
+                review_state: None,
+                supersedes: Vec::new(),
+                superseded_by: Vec::new(),
+                related: Vec::new(),
+                tombstone_events: Vec::new(),
+                retrieval_policy: RetrievalPolicy {
+                    passive_recall: true,
+                    max_scope: spec.scope,
+                    mask_personal_for_synthesis: false,
+                    index_body: true,
+                    index_embeddings: false,
+                },
+                write_policy: WritePolicy {
+                    human_review_required: false,
+                    policy_applied: "startup-dynamics-off-test".to_owned(),
+                    expected_base_hash: None,
+                },
+                merge_diagnostics: None,
+                extras: Default::default(),
+            },
+            body: spec.summary.to_owned(),
+            path: Some(RepoPath::new(spec.path)),
+        }
+    }
+}
+
+struct StartupMemorySpec<'a> {
+    id: &'a str,
+    summary: &'a str,
+    status: MemoryStatus,
+    scope: Scope,
+    path: &'a str,
+}
+
+struct RecallEventSpec<'a> {
+    event_id: &'a str,
+    device_id: &'a str,
+    seq: u64,
+    memory_id: &'a str,
+    timestamp: DateTime<Utc>,
+}
+
+fn recall_event(spec: RecallEventSpec<'_>) -> Event {
+    Event {
+        schema: EVENT_SCHEMA_VERSION,
+        id: EventId::new(spec.event_id),
+        at: spec.timestamp,
+        device: DeviceId::new(spec.device_id),
+        seq: spec.seq,
+        operation_id: Some(OperationId::new(format!("op_{}", spec.event_id))),
+        kind: EventKind::RecallHit { id: MemoryId::new(spec.memory_id), recalled_at: spec.timestamp },
+        crc32c: 0,
+    }
+}
+
+fn instant(value: &str) -> DateTime<Utc> {
+    DateTime::parse_from_rfc3339(value).expect("fixture timestamp parses").with_timezone(&Utc)
+}
+
+fn trust_for_status(status: MemoryStatus) -> TrustLevel {
+    match status {
+        MemoryStatus::Pinned => TrustLevel::Pinned,
+        MemoryStatus::Candidate => TrustLevel::Candidate,
+        MemoryStatus::Quarantined => TrustLevel::Quarantined,
+        _ => TrustLevel::Trusted,
+    }
 }

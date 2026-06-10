@@ -26,10 +26,10 @@ pub use usage::{distinct_sources_for, recall_usage_for, UsageSummary};
 
 /// Default integer-points ceiling for the strength term (spec §3).
 ///
-/// `strength_points(m) = floor(strength(m) × alpha_points)`. The invariant: a
-/// structural ranking gap `>= alpha_points` can never be flipped by strength
-/// alone. Near-ties (`< alpha_points`) can flip — including across scopes — by
-/// design.
+/// `strength_points(m)` is capped at `alpha_points - 1`. The invariant: a
+/// structural ranking gap `>= alpha_points` can never be tied or flipped by
+/// strength alone. Near-ties (`< alpha_points`) can flip — including across
+/// scopes — by design.
 pub const DEFAULT_ALPHA_POINTS: u32 = 12;
 
 /// Default exponential recency time-constant in days (spec §2).
@@ -58,8 +58,9 @@ pub struct DynamicsConfig {
     /// validate-or-discard).
     #[serde(default)]
     pub weights: StrengthWeights,
-    /// A fragment cited at least this many times is eligible for archival
-    /// deferral (spec §4, default 2).
+    /// A fragment cited by at least this many distinct live memories is eligible
+    /// for archival deferral (spec §4, default 2). `0` disables deferral because
+    /// no fragment can satisfy the threshold gate.
     #[serde(default = "default_citation_defer_threshold")]
     pub citation_defer_threshold: u32,
     /// Immortality cap: total fragment lifetime in days, after which archival

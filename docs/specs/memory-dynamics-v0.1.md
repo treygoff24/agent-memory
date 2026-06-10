@@ -32,6 +32,8 @@ strength(m) = w_f · freq_norm(m) + w_r · recency(m) + w_c · corroboration(m)
 - Default weights `w_f = 0.45, w_r = 0.35, w_c = 0.20`. **True renormalization:** configured weights are divided by their sum (guard: all ≥ 0 and sum > 0, else fall back to defaults with a `tracing::warn!`). Note this is deliberately *not* RC `ScoreWeights::normalized_or_default`'s posture — that function validates sum≈1.0 and silently discards user weights on mismatch (types.rs:25-34), which is a footgun for a dogfood-tunable surface. Dynamics renormalizes; RC's behavior is unchanged.
 - Result clamped to `[0, 1]`.
 
+> **Amendment (2026-06-10):** For deterministic startup and eval behavior, strength recency and the 30-day recall-usage window are anchored to `ranking_now = max(candidate.updated_at)` for the candidate set being ranked, not wall clock. This intentionally keeps repeated runs stable. Known consequence: recency discrimination can flatten when usage timestamps are newer than the content timestamps that define `ranking_now`; tuning that tradeoff belongs in the dogfood loop.
+
 ### 2.1 Data sources (all shipped today)
 
 - `recall_count_30d` and `last_recalled_at`: `events_log WHERE kind='recall_hit'` — the exact query shipped in `reality_check/scoring.rs::recall_counts_30d` (chunked `IN`, covering index `idx_events_log_kind_memory_ts`).
@@ -52,12 +54,16 @@ Only `recall_hit` events (one per memory included in a rendered startup/delta bl
 strength_points(m) = floor(strength(m) × dynamics.alpha_points)    // default alpha_points = 12
 ```
 
+> **Amendment (2026-06-10):** The implementation caps the additive term at `alpha_points - 1` when `alpha_points > 0` (`0` when `alpha_points == 0`). The invariant is the contract: strength cannot tie or overcome a structural gap `>= alpha_points`. The formula above remains the base calculation before the cap.
+
 - **The invariant, stated precisely:** strength cannot overcome a structural gap ≥ `alpha_points`. It can and will flip *near-ties* — including across scopes — when the loser's total structural lead is < 12 points (e.g. an exact-project memory leading a user-scope memory by only 3 total points loses to a +12 full-strength bonus; that is intended behavior: heavily-used cross-scope memory beats barely-relevant in-scope memory in a close race). What strength can never flip at default: a pinned-vs-active gap (50), a full entity ExactId gap (40), or any combined structural lead ≥ 12. Operators tune the ceiling via `alpha_points`. Pinned memories dominate regardless (status 100).
 - **Hydration:** `candidates.rs` fetches strength inputs in one batched, chunked query over candidate ids (shared module, §5) and attaches `strength: Option<f64>` to `RecallCandidate`. `rank.rs` stays pure/sync.
 - **Soft failure:** if the usage query errors, all candidates get `strength = None` → 0 points, a `tracing::warn!`, and `dynamics_degraded: true` in the block's explanation metadata. Never a hard recall failure.
 - **Observability:** per-memory strength (2 decimals) appears in the recall block explanation metadata and in trust artifacts (Stream G additive surface), so an operator can always answer "why did this rank here."
 - **`recency_weight` (updated-at) is retained unchanged.** It measures content freshness; strength's recency measures use. Distinct signals.
 - **Cache stability (system-v0.2 §2.9):** strength is computed once per assembly; startup blocks are per-session stable. Delta blocks were already dynamic content in the suffix. No new cache-thrash surface.
+
+> **Amendment (2026-06-10):** Recall explanation strength is exact for the ranked candidate pool. Trust artifacts must not render strength when `dynamics.enabled == false`. When exact ranking parity is not available at artifact-render time, the artifact strength line must be explicitly labeled approximate and computed with the configured dynamics weights and `tau_days`, not defaults.
 
 ## 4. Substrate fragment archival deferral (Stream F amendment)
 
@@ -66,6 +72,8 @@ The cleanup layer currently archives substrate fragments at a hard lifetime cuto
 - At cleanup time, a fragment whose id is cited ≥ `dynamics.citation_defer_threshold` (default 2) times has its archival deferred by one base lifetime (14 days). **Citation source (the structured one, not journal prose):** `Evidence.reference` entries in candidate memory frontmatter (`evidence: Vec<Evidence>`, model.rs:371-381 — the same refs rehydration resolves at rehydration.rs:176), counted across active + queued candidates within the current lifetime window. Dream journal markdown is NOT scanned — it's prose, and grepping it for fragment ids is brittle by construction.
 - Deferral may repeat, but total fragment lifetime is capped at `dynamics.max_fragment_lifetime_days` (default 42 = 3× base). **Nothing becomes immortal by citation.** At the cap, archival proceeds normally (archived fragments remain on disk and grounding-resolvable; this changes *when*, not *whether*).
 - Cleanup run reports (`dreams/cleanup/<device_id>/<date>.json`) gain a `deferred_fragments: [{fragment_id, citations, deferred_until}]` array (additive).
+
+> **Amendment (2026-06-10):** Citation count means distinct live citing memories, not duplicate `Evidence.reference` entries within one memory. Citations from any live memory count regardless of citation age; the prior "within the current lifetime window" qualifier is not implemented and is superseded. `citation_defer_threshold: 0` disables deferral. Cleanup reports use `cap_deadline` rather than `deferred_until`, because deferred fragments are re-evaluated on every cleanup pass and can archive before the cap if citations drop below the threshold.
 
 ## 5. Shared usage module
 
@@ -94,6 +102,8 @@ New `crates/memoryd/src/dynamics/` owning the usage computation:
 }
 ```
 
+> **Amendment (2026-06-10):** `decision: "edit"` and `edit_distance_ratio` are schema-defined for future edited approvals, but the current daemon review protocol does not emit edit decisions; today it emits accept/reject records only.
+
 Ids and metadata only — **no memory content** crosses into this file (it syncs plaintext). Scope strings are not a new exposure: scope ids already sync in plaintext journal paths (`dreams/journal/project/<project_id>/...`, scope.rs:40-46).
 
 **Consumer:** `memoryd dream calibration` — buckets `self_reported_confidence` into deciles, reports accept-rate, edit-rate, and count per bucket, total N, and the spread between self-report and acceptance. This is the instrument that justifies or kills the system-v0.2 §12 v1.1 auto-promotion path. No automated behavior changes based on this data in v0.1 — report only.
@@ -109,6 +119,8 @@ dynamics:
   citation_defer_threshold: 2
   max_fragment_lifetime_days: 42
 ```
+
+> **Amendment (2026-06-10):** `citation_defer_threshold: 0` disables archival deferral. Positive thresholds count distinct live citing memories.
 
 All dogfood-tunable; final defaults lock before 1.0.0 (same policy as the §16.4 drift weights). The calibration log is **not** gated by `enabled` — review-outcome data collection should never silently stop.
 

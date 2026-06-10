@@ -27,12 +27,14 @@ pub struct CleanupReport {
 pub struct DeferredFragment {
     /// Deferred fragment id (`sub_…`).
     pub fragment_id: String,
-    /// Citation count (`Evidence.reference` hits across live memories) that
-    /// triggered the deferral.
+    /// Number of distinct live memories whose `Evidence.reference` entries cite
+    /// the fragment and triggered the deferral.
     pub citations: u64,
     /// Hard immortality-cap timestamp: when this fragment archives regardless of
-    /// further citations.
-    pub deferred_until: DateTime<Utc>,
+    /// further citations. The fragment is re-evaluated on every cleanup pass
+    /// before this cap and may archive sooner if distinct live citations drop
+    /// below the configured threshold.
+    pub cap_deadline: DateTime<Utc>,
 }
 
 impl CleanupReport {

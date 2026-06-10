@@ -11,9 +11,9 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::dynamics::strength::{strength, StrengthFacts, StrengthWeights};
+use crate::dynamics::strength::{strength, StrengthFacts};
 use crate::dynamics::usage::{distinct_sources_for_conn, UsageSummary};
-use crate::dynamics::DEFAULT_TAU_DAYS;
+use crate::dynamics::{load_dynamics_config, DynamicsConfig};
 use crate::handlers::memory_ops::serialized_enum_value as enum_value;
 
 const ENCRYPTED_REDACTION: &str = "[encrypted - use memoryd reveal <id> to decrypt]";
@@ -40,10 +40,11 @@ pub struct RecallStats {
     pub total: u32,
     pub last_30_days: u32,
     pub last_recalled_at: Option<DateTime<Utc>>,
-    /// Use-driven strength in `[0, 1]`, rendered to 2 decimals
-    /// (memory-dynamics-v0.1 §3 observability) so an operator can see why a
-    /// memory ranks. Computed over a single-memory pool, so frequency saturates
-    /// when the memory has any recalls (spec §2 single-memory-pool boundary).
+    /// Use-driven strength in `[0, 1]`, rendered to 2 decimals when dynamics is
+    /// enabled (memory-dynamics-v0.1 §3 observability). This is an approximate
+    /// single-memory render-time view; exact ranking strength depends on the
+    /// active recall candidate pool.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub strength: String,
 }
 
@@ -199,6 +200,10 @@ impl<'a> TrustArtifactBuilder<'a> {
             .unwrap_or_else(|| frontmatter.source.kind.to_string());
         let source_evidence = web_source_evidence(self.substrate, &frontmatter.source);
         let privacy_scan = build_privacy_scan(&frontmatter.extras, &body, privacy_namespace(&frontmatter.scope))?;
+        let dynamics = load_dynamics_config(self.substrate.roots().repo.as_path()).unwrap_or_else(|error| {
+            tracing::warn!(%error, "dynamics: failed to load config for trust artifact; using defaults");
+            DynamicsConfig::default()
+        });
         let supersedes_ids = query_supersession_ids(connection, id, SupersessionDirection::Supersedes)?;
         let superseded_by_ids = query_supersession_ids(connection, id, SupersessionDirection::SupersededBy)?;
 
@@ -224,7 +229,7 @@ impl<'a> TrustArtifactBuilder<'a> {
                     enum_value(&frontmatter.trust_level),
                     frontmatter.write_policy.policy_applied
                 ),
-                recall: query_recall_stats(connection, id, self.now)?,
+                recall: query_recall_stats(connection, id, self.now, &dynamics)?,
                 provenance_chain: query_provenance(connection, id)?,
                 policy_decisions: query_policy_decisions(connection, id)?,
                 privacy_scan,
@@ -259,6 +264,7 @@ fn query_recall_stats(
     connection: &Connection,
     id: &MemoryId,
     now: DateTime<Utc>,
+    dynamics: &DynamicsConfig,
 ) -> Result<RecallStats, TrustArtifactError> {
     let cutoff = (now - Duration::days(30)).to_rfc3339();
     let (total, last_30_days, last_recalled_at): (i64, i64, Option<String>) = connection
@@ -277,9 +283,12 @@ fn query_recall_stats(
     let last_recalled = last_recalled_at.as_deref().and_then(parse_time);
     let strength = render_strength(
         connection,
-        id,
-        UsageSummary { count: last_30_days as u32, last_recalled_at: last_recalled },
-        now,
+        StrengthRenderInput {
+            id,
+            usage: UsageSummary { count: last_30_days as u32, last_recalled_at: last_recalled },
+            now,
+            dynamics,
+        },
     );
 
     Ok(RecallStats {
@@ -295,9 +304,23 @@ fn query_recall_stats(
 /// Single-memory pool: the `freq_norm` denominator is the memory's own
 /// 30-day count, so frequency saturates to `1` whenever it has any recalls
 /// (spec §2 single-memory-pool boundary). Corroboration reads the same
-/// supersession-chain distinct-source query the ranking path uses. On a query
-/// error this falls back to `"not recorded"` rather than failing the artifact.
-fn render_strength(connection: &Connection, id: &MemoryId, usage: UsageSummary, now: DateTime<Utc>) -> String {
+/// supersession-chain distinct-source query the ranking path uses. This is still
+/// approximate because exact ranking strength normalizes frequency over the
+/// active recall candidate pool and anchors recency to ranking time, not artifact
+/// render time. On a query error this falls back to `"not recorded"` rather than
+/// failing the artifact.
+struct StrengthRenderInput<'a> {
+    id: &'a MemoryId,
+    usage: UsageSummary,
+    now: DateTime<Utc>,
+    dynamics: &'a DynamicsConfig,
+}
+
+fn render_strength(connection: &Connection, input: StrengthRenderInput<'_>) -> String {
+    let StrengthRenderInput { id, usage, now, dynamics } = input;
+    if !dynamics.enabled {
+        return String::new();
+    }
     let distinct_sources = match distinct_sources_for_conn(connection, &[id.as_str()]) {
         Ok(map) => map.get(id.as_str()).copied().unwrap_or(0),
         Err(_) => return "not recorded".to_owned(),
@@ -308,8 +331,8 @@ fn render_strength(connection: &Connection, id: &MemoryId, usage: UsageSummary, 
         max_recall_30d_active: usage.count,
         distinct_sources,
     };
-    let value = strength(facts, StrengthWeights::default(), DEFAULT_TAU_DAYS, now);
-    format!("{value:.2}")
+    let value = strength(facts, dynamics.weights, dynamics.tau_days, now);
+    format!("{value:.2} (approximate; computed at render time over this memory alone)")
 }
 
 fn web_source_evidence(substrate: &Substrate, source: &memory_substrate::Source) -> Option<WebSourceEvidence> {

@@ -14,8 +14,8 @@ use chrono::{DateTime, Duration, TimeZone, Utc};
 use memory_substrate::{
     Author, AuthorKind, ClassificationOutcome, EventContext, Evidence, Frontmatter, InitOptions, Memory, MemoryId,
     MemoryStatus, MemoryType, ObserveKind, RepoPath, RetrievalPolicy, Roots, Scope, Sensitivity, Source, SourceKind,
-    Substrate, SubstrateFragmentAppendRequest, SubstrateFragmentPayload, TrustLevel, WriteMode, WritePolicy,
-    WriteRequest,
+    Substrate, SubstrateFragmentAppendRequest, SubstrateFragmentPayload, TrustLevel, WriteFailureKind, WriteMode,
+    WritePolicy, WriteRequest,
 };
 use memoryd::dream::cleanup::{run_cleanup, CleanupConfig};
 use serde_json::Value;
@@ -27,12 +27,21 @@ async fn cited_under_cap_fragment_is_deferred_not_archived() {
     let fixture = Fixture::new().await;
     // 20 days old: expired at base (14) but under the cap (42).
     append_fragment(&fixture.substrate, "sub_01HZXJK7J7W0X4Q4KJ7A2R8C01", days_ago(20)).await;
-    // Two evidence refs from a live memory => citation count 2 (>= threshold 2).
+    // Two distinct live memories cite the fragment => citation count 2 (>=
+    // threshold 2). Duplicate refs inside a single memory intentionally do not
+    // count twice.
     write_citing_memory(
         &fixture,
         "mem_20260401_a1b2c3d4e5f60718_000001",
         MemoryStatus::Active,
-        &["sub_01HZXJK7J7W0X4Q4KJ7A2R8C01", "sub_01HZXJK7J7W0X4Q4KJ7A2R8C01"],
+        &["sub_01HZXJK7J7W0X4Q4KJ7A2R8C01"],
+    )
+    .await;
+    write_citing_memory(
+        &fixture,
+        "mem_20260401_a1b2c3d4e5f60718_000011",
+        MemoryStatus::Pinned,
+        &["sub_01HZXJK7J7W0X4Q4KJ7A2R8C01"],
     )
     .await;
 
@@ -43,6 +52,7 @@ async fn cited_under_cap_fragment_is_deferred_not_archived() {
     let deferred = &report.deferred_fragments[0];
     assert_eq!(deferred.fragment_id, "sub_01HZXJK7J7W0X4Q4KJ7A2R8C01");
     assert_eq!(deferred.citations, 2);
+    assert_eq!(deferred.cap_deadline, days_ago(20) + Duration::days(42));
     // The fragment is still in the active tree.
     assert!(fixture.active_fragment_ids().contains(&"sub_01HZXJK7J7W0X4Q4KJ7A2R8C01".to_string()));
     assert!(fixture.archive_fragment_ids().is_empty(), "nothing archived");
@@ -66,18 +76,19 @@ async fn uncited_expired_fragment_archives_on_schedule() {
 async fn under_threshold_citation_does_not_defer() {
     let fixture = Fixture::new().await;
     append_fragment(&fixture.substrate, "sub_01HZXJK7J7W0X4Q4KJ7A2R8C03", days_ago(20)).await;
-    // A single citation (< threshold 2) is not enough to defer.
+    // Duplicate refs inside one live memory still count as one citing memory,
+    // below the default threshold of two.
     write_citing_memory(
         &fixture,
         "mem_20260401_a1b2c3d4e5f60718_000003",
         MemoryStatus::Active,
-        &["sub_01HZXJK7J7W0X4Q4KJ7A2R8C03"],
+        &["sub_01HZXJK7J7W0X4Q4KJ7A2R8C03", "sub_01HZXJK7J7W0X4Q4KJ7A2R8C03"],
     )
     .await;
 
     let report = run_cleanup(&fixture.substrate, config()).await.expect("cleanup");
 
-    assert_eq!(report.operations.fragments_archived, 1, "one citation < threshold archives");
+    assert_eq!(report.operations.fragments_archived, 1, "one distinct citing memory < threshold archives");
     assert!(report.deferred_fragments.is_empty());
 }
 
@@ -90,13 +101,20 @@ async fn immortality_cap_forces_archival_despite_citations() {
         &fixture,
         "mem_20260401_a1b2c3d4e5f60718_000004",
         MemoryStatus::Active,
-        &["sub_01HZXJK7J7W0X4Q4KJ7A2R8C04", "sub_01HZXJK7J7W0X4Q4KJ7A2R8C04", "sub_01HZXJK7J7W0X4Q4KJ7A2R8C04"],
+        &["sub_01HZXJK7J7W0X4Q4KJ7A2R8C04"],
+    )
+    .await;
+    write_citing_memory(
+        &fixture,
+        "mem_20260401_a1b2c3d4e5f60718_000014",
+        MemoryStatus::Active,
+        &["sub_01HZXJK7J7W0X4Q4KJ7A2R8C04"],
     )
     .await;
 
     let report = run_cleanup(&fixture.substrate, config()).await.expect("cleanup");
 
-    assert_eq!(report.operations.fragments_archived, 1, "capped fragment archives despite 3 citations");
+    assert_eq!(report.operations.fragments_archived, 1, "capped fragment archives despite two distinct citations");
     assert!(report.deferred_fragments.is_empty(), "nothing deferred at the cap");
     assert!(fixture.archive_fragment_ids().contains(&"sub_01HZXJK7J7W0X4Q4KJ7A2R8C04".to_string()));
 }
@@ -149,7 +167,14 @@ async fn deferral_is_stable_across_repeated_runs_until_cap() {
         &fixture,
         "mem_20260401_a1b2c3d4e5f60718_000007",
         MemoryStatus::Active,
-        &["sub_01HZXJK7J7W0X4Q4KJ7A2R8C07", "sub_01HZXJK7J7W0X4Q4KJ7A2R8C07"],
+        &["sub_01HZXJK7J7W0X4Q4KJ7A2R8C07"],
+    )
+    .await;
+    write_citing_memory(
+        &fixture,
+        "mem_20260401_a1b2c3d4e5f60718_000017",
+        MemoryStatus::Active,
+        &["sub_01HZXJK7J7W0X4Q4KJ7A2R8C07"],
     )
     .await;
 
@@ -258,7 +283,7 @@ async fn append_fragment(substrate: &Substrate, id: &str, at: DateTime<Utc>) {
 
 async fn write_citing_memory(fixture: &Fixture, id: &str, status: MemoryStatus, fragment_refs: &[&str]) {
     let memory = citing_memory(id, status, fragment_refs);
-    fixture
+    let result = fixture
         .substrate
         .write_memory(WriteRequest {
             operation_id: None,
@@ -270,8 +295,12 @@ async fn write_citing_memory(fixture: &Fixture, id: &str, status: MemoryStatus, 
             allow_best_effort_durability: true,
             classification: ClassificationOutcome::Trusted,
         })
-        .await
-        .expect("write citing memory");
+        .await;
+    match result {
+        Ok(_) => {}
+        Err(error) if error.outcome.committed && error.kind == WriteFailureKind::IndexAfterCommitFailed => {}
+        Err(error) => panic!("write citing memory: {error:?}"),
+    }
 }
 
 fn citing_memory(id: &str, status: MemoryStatus, fragment_refs: &[&str]) -> Memory {
@@ -280,7 +309,7 @@ fn citing_memory(id: &str, status: MemoryStatus, fragment_refs: &[&str]) -> Memo
         .iter()
         .enumerate()
         .map(|(index, reference)| Evidence {
-            id: format!("ev_01HZXJK7J7W0X4Q4KJ7A2R8E{index:02}"),
+            id: format!("ev_{id}_{index:02}"),
             quote: "deferral observation".to_string(),
             quote_norm_hash: None,
             reference: reference.to_string(),

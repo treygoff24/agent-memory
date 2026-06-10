@@ -137,9 +137,8 @@ pub fn corroboration(distinct_sources: u32) -> f64 {
 
 /// Compute `strength(m) ∈ [0, 1]` from its inputs (spec §2).
 ///
-/// `weights` are renormalized before use; `tau_days` is the recency time-constant
-/// (defaults to [`crate::dynamics::DEFAULT_TAU_DAYS`] when non-positive is not desired, but a
-/// non-positive value simply zeroes the recency term).
+/// `weights` are renormalized before use. `tau_days` is the recency
+/// time-constant; a non-positive value simply zeroes the recency term.
 pub fn strength(facts: StrengthFacts, weights: StrengthWeights, tau_days: f64, now: DateTime<Utc>) -> f64 {
     let weights = weights.renormalized();
     let freq = frequency_norm(facts.recall_count_30d, facts.max_recall_30d_active);
@@ -148,13 +147,19 @@ pub fn strength(facts: StrengthFacts, weights: StrengthWeights, tau_days: f64, n
     (weights.frequency * freq + weights.recency * rec + weights.corroboration * corr).clamp(0.0, 1.0)
 }
 
-/// `strength_points(m) = floor(strength × alpha_points)` (spec §3).
+/// `strength_points(m) = min(floor(strength × alpha_points), alpha_points - 1)`
+/// (memory-dynamics-v0.1 §3 amended 2026-06-10).
 ///
 /// The bounded additive ranking component. Because `strength ∈ [0, 1]`, the result
-/// is in `[0, alpha_points]`, which is the invariant ceiling: strength can never
-/// overcome a structural ranking gap `>= alpha_points`.
+/// is in `[0, alpha_points - 1]` when `alpha_points > 0`, preserving the
+/// invariant that strength can never tie or overcome a structural ranking gap
+/// `>= alpha_points`.
 pub fn strength_points(strength: f64, alpha_points: u32) -> i64 {
-    (strength.clamp(0.0, 1.0) * f64::from(alpha_points)).floor() as i64
+    if alpha_points == 0 {
+        return 0;
+    }
+    let cap = alpha_points - 1;
+    ((strength.clamp(0.0, 1.0) * f64::from(alpha_points)).floor() as u32).min(cap) as i64
 }
 
 #[cfg(test)]
@@ -273,11 +278,13 @@ mod tests {
     #[test]
     fn strength_points_floor_and_ceiling() {
         assert_eq!(strength_points(0.0, 12), 0);
-        assert_eq!(strength_points(1.0, 12), 12);
+        assert_eq!(strength_points(1.0, 12), 11);
         assert_eq!(strength_points(0.99, 12), 11);
         assert_eq!(strength_points(0.5, 12), 6);
+        assert_eq!(strength_points(1.0, 1), 0);
+        assert_eq!(strength_points(1.0, 0), 0);
         // Out-of-range clamps.
-        assert_eq!(strength_points(1.5, 12), 12);
+        assert_eq!(strength_points(1.5, 12), 11);
         assert_eq!(strength_points(-0.2, 12), 0);
     }
 }
