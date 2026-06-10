@@ -696,6 +696,8 @@ If steps 6-11 fail, remove temp file if present, remove the in-flight suppressio
 
 If appending either pending repair record fails after the file is durable, Stream A fsyncs `~/.memoryd/startup-reconcile.required` with `repair_required: FullStartupScan` and returns `Err(WriteFailure { outcome: committed outcome, kind: RepairQueueFailed })`. If both the pending queue append and the marker write fail, Stream A returns `Err(WriteFailure { outcome: committed outcome, kind: RepairStateNotDurable })`; Stream B must stop accepting writes and surface operator repair. This is the only acknowledged state in which repair metadata may be incomplete, and it is covered by a fault-injection test.
 
+> **Amendment (2026-06-10, operator-approved):** The shipped implementation diverges from the failure-mapping sentences above on the plaintext write path, and the shipped behavior is hereby blessed as canonical. (a) When the pending-queue append fails after a committed plaintext write, the implementation returns `kind: IndexAfterCommitFailed` (not `RepairQueueFailed`) — the failure kind names the degraded pipeline stage, and `outcome.repair_required` carries the repair state. (b) The marker write is the durable *fallback* when the pending-op append fails, rather than marker-and-pending-op being written together. Both mappings predate the repair-cascade extraction (which preserved them verbatim) and are pinned by the write-contract tests; `RepairQueueFailed` remains in use on the cascade paths that already returned it. Operator ruling: Trey, 2026-06-10 — spec text bends to shipped behavior; no caller-visible change.
+
 Durable repair queue records:
 
 ```rust

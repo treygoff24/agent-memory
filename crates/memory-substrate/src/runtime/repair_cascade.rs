@@ -55,17 +55,12 @@ impl IndexRepairOp {
 
 /// How a write site maps cascade outcomes to a [`WriteFailureKind`].
 ///
-/// The mappings below preserve pre-extraction behavior; they are not a settled
-/// assertion that the implementation matches spec §8.3. Two known divergences
-/// are awaiting an operator ruling (spec fix vs behavior fix):
-///
-/// - failure-kind mapping: plaintext writes keep reporting
-///   [`WriteFailureKind::IndexAfterCommitFailed`] even when the cascade degrades
-///   to marker-only repair, while §8.3 says a failed pending-queue append returns
-///   [`WriteFailureKind::RepairQueueFailed`] for any write path;
-/// - marker-vs-pending-op: current fallback preserves the marker-only path that
-///   existed before extraction, while §8.3 step 13 describes both marker and
-///   pending-op durability for post-commit index failure.
+/// The mappings below preserve pre-extraction behavior and are canonical per
+/// the spec §8.3 amendment of 2026-06-10 (operator-approved): plaintext writes
+/// report [`WriteFailureKind::IndexAfterCommitFailed`] even when the cascade
+/// degrades to marker-only repair (the kind names the degraded pipeline stage;
+/// `outcome.repair_required` carries the repair state), and the marker write is
+/// the durable fallback when the pending-op append fails.
 pub enum CascadeFailureKinds {
     /// Always [`WriteFailureKind::IndexAfterCommitFailed`] (plaintext write).
     AlwaysIndexAfterCommit,
