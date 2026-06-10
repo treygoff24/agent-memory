@@ -27,10 +27,10 @@ use crate::index::{open_index, Index};
 use crate::markdown::{atomic_write, probe_durability, read_memory_file};
 use crate::model::*;
 use crate::runtime::reconcile::{
-    enqueue_pending_encrypted_index, enqueue_pending_event, enqueue_pending_index, reconcile_startup_pre_index_report,
-    replay_pending_repairs_into_report, write_startup_marker, PendingEncryptedIndexOp, PendingEventOp,
-    PendingIndexKind, PendingIndexOp, ReconcileReport,
+    enqueue_pending_event, reconcile_startup_pre_index_report, replay_pending_repairs_into_report,
+    write_startup_marker, PendingEncryptedIndexOp, PendingEventOp, PendingIndexKind, PendingIndexOp, ReconcileReport,
 };
+use crate::runtime::repair_cascade::{CascadeFailureKinds, IndexRepairOp, RepairCascade};
 use crate::tree::{has_substrate_marker, validate_tree, TreeValidationMode};
 use crate::watcher::{watch_root_with_suppression, SuppressionLedger, WatchSubscription};
 
@@ -406,24 +406,15 @@ impl Substrate {
                 attempts: 0,
                 last_error: None,
             };
-            let repair_kind = if enqueue_pending_index(&self.roots.runtime, &pending).is_ok() {
-                Some(RepairRequired::PendingIndex)
-            } else if write_startup_marker(&self.roots.runtime, "pending index enqueue failed").is_ok() {
-                Some(RepairRequired::FullStartupScan)
-            } else {
-                Some(RepairRequired::OperatorRequired("repair state not durable".to_string()))
-            };
-            return Err(WriteFailure {
-                outcome: WriteOutcome {
-                    committed: true,
-                    indexed: false,
-                    event_recorded: false,
-                    durability: self.durability,
-                    repair_required: repair_kind,
-                    operation_id: operation_id.clone(),
-                },
-                kind: WriteFailureKind::IndexAfterCommitFailed,
-            });
+            return Err(RepairCascade {
+                runtime: &self.roots.runtime,
+                op: IndexRepairOp::Plain(pending),
+                marker_reason: "pending index enqueue failed",
+                failure_kinds: CascadeFailureKinds::AlwaysIndexAfterCommit,
+                durability: self.durability,
+                operation_id: operation_id.clone(),
+            }
+            .into_failure());
         }
         let write_event_kind = EventKind::WriteCommitted {
             id: request.memory.frontmatter.id.clone(),
@@ -685,27 +676,15 @@ impl Substrate {
                     attempts: 0,
                     last_error: None,
                 };
-                let (repair_kind, kind) = if enqueue_pending_encrypted_index(&self.roots.runtime, &pending).is_ok() {
-                    (Some(RepairRequired::PendingIndex), WriteFailureKind::IndexAfterCommitFailed)
-                } else if write_startup_marker(&self.roots.runtime, "pending encrypted index enqueue failed").is_ok() {
-                    (Some(RepairRequired::FullStartupScan), WriteFailureKind::RepairQueueFailed)
-                } else {
-                    (
-                        Some(RepairRequired::OperatorRequired("repair state not durable".to_string())),
-                        WriteFailureKind::RepairStateNotDurable,
-                    )
-                };
-                WriteFailure {
-                    outcome: WriteOutcome {
-                        committed: true,
-                        indexed: false,
-                        event_recorded: false,
-                        durability: self.durability,
-                        repair_required: repair_kind,
-                        operation_id: operation_id.clone(),
-                    },
-                    kind,
+                RepairCascade {
+                    runtime: &self.roots.runtime,
+                    op: IndexRepairOp::Encrypted(Box::new(pending)),
+                    marker_reason: "pending encrypted index enqueue failed",
+                    failure_kinds: CascadeFailureKinds::Tiered,
+                    durability: self.durability,
+                    operation_id: operation_id.clone(),
                 }
+                .into_failure()
             })?;
         let encrypted_event_kind = EventKind::EncryptedWriteCommitted {
             id: request.metadata_memory.frontmatter.id.clone(),
@@ -864,30 +843,15 @@ impl Substrate {
                     attempts: 0,
                     last_error: None,
                 };
-                let (repair_required, kind) = if enqueue_pending_encrypted_index(&self.roots.runtime, &pending).is_ok()
-                {
-                    (Some(RepairRequired::PendingIndex), WriteFailureKind::IndexAfterCommitFailed)
-                } else if write_startup_marker(&self.roots.runtime, "pending encrypted metadata index enqueue failed")
-                    .is_ok()
-                {
-                    (Some(RepairRequired::FullStartupScan), WriteFailureKind::RepairQueueFailed)
-                } else {
-                    (
-                        Some(RepairRequired::OperatorRequired("repair state not durable".to_string())),
-                        WriteFailureKind::RepairStateNotDurable,
-                    )
-                };
-                WriteFailure {
-                    outcome: WriteOutcome {
-                        committed: true,
-                        indexed: false,
-                        event_recorded: false,
-                        durability: self.durability,
-                        repair_required,
-                        operation_id: operation_id.clone(),
-                    },
-                    kind,
+                RepairCascade {
+                    runtime: &self.roots.runtime,
+                    op: IndexRepairOp::Encrypted(Box::new(pending)),
+                    marker_reason: "pending encrypted metadata index enqueue failed",
+                    failure_kinds: CascadeFailureKinds::Tiered,
+                    durability: self.durability,
+                    operation_id: operation_id.clone(),
                 }
+                .into_failure()
             })?;
         Ok(())
     }
@@ -1156,27 +1120,15 @@ impl Substrate {
                     attempts: 0,
                     last_error: None,
                 };
-                let (repair_required, kind) = if enqueue_pending_index(&self.roots.runtime, &pending).is_ok() {
-                    (Some(RepairRequired::PendingIndex), WriteFailureKind::IndexAfterCommitFailed)
-                } else if write_startup_marker(&self.roots.runtime, "pending tombstone index enqueue failed").is_ok() {
-                    (Some(RepairRequired::FullStartupScan), WriteFailureKind::RepairQueueFailed)
-                } else {
-                    (
-                        Some(RepairRequired::OperatorRequired("repair state not durable".to_string())),
-                        WriteFailureKind::RepairStateNotDurable,
-                    )
-                };
-                WriteFailure {
-                    outcome: WriteOutcome {
-                        committed: true,
-                        indexed: false,
-                        event_recorded: false,
-                        durability: self.durability,
-                        repair_required,
-                        operation_id: operation_id.clone(),
-                    },
-                    kind,
+                RepairCascade {
+                    runtime: &self.roots.runtime,
+                    op: IndexRepairOp::Plain(pending),
+                    marker_reason: "pending tombstone index enqueue failed",
+                    failure_kinds: CascadeFailureKinds::Tiered,
+                    durability: self.durability,
+                    operation_id: operation_id.clone(),
                 }
+                .into_failure()
             })?;
         let device = DeviceId::try_new(&self.device_id).map_err(|err| WriteFailure {
             outcome: outcome.clone(),
