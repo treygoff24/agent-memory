@@ -22,9 +22,10 @@
 //!    drives them internally — only the namespace set comes from the labeled
 //!    case rather than a cwd-derived session binding.
 //!
-//! This is FTS + structural-points ranking only. The vector lane is unbuilt in
-//! production today (Task 3.0/3.2), so these numbers are the honest bm25 +
-//! points baseline; vector recall lands as a separate, later regression.
+//! This is FTS + structural-points ranking only. The production vector lane
+//! (Tasks 3.0/3.2) exists, but it serves write-path contradiction detection —
+//! recall ranking does not vector-search yet. So these numbers are the honest
+//! bm25 + points baseline; vector recall lands as a separate, later regression.
 //!
 //! ## Metrics
 //!
