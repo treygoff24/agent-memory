@@ -15,7 +15,8 @@
 
 use std::sync::Arc;
 
-use memory_substrate::{InitOptions, Roots, Substrate};
+use memory_substrate::{InitOptions, Roots, Scope, Substrate};
+use memoryd::embedding::EmbeddingError;
 use memoryd::embedding::{worker, EmbeddingProvider, FixtureProvider};
 use memoryd::handlers::{handle_request_with_state, HandlerState};
 use memoryd::protocol::{GovernanceStatus, RequestEnvelope, RequestPayload, ResponsePayload, ResponseResult};
@@ -73,6 +74,37 @@ async fn drain_all(substrate: &Substrate, provider: &Arc<dyn EmbeddingProvider>)
         if n < 64 {
             break;
         }
+    }
+}
+
+struct RecordingProvider {
+    inner: FixtureProvider,
+    calls: std::sync::Mutex<Vec<&'static str>>,
+}
+
+impl RecordingProvider {
+    fn new(triple: memory_substrate::EmbeddingTriple) -> Self {
+        Self { inner: FixtureProvider::new(triple), calls: std::sync::Mutex::new(Vec::new()) }
+    }
+
+    fn take_calls(&self) -> Vec<&'static str> {
+        std::mem::take(&mut *self.calls.lock().expect("calls lock"))
+    }
+}
+
+impl EmbeddingProvider for RecordingProvider {
+    fn triple(&self) -> &memory_substrate::EmbeddingTriple {
+        self.inner.triple()
+    }
+
+    fn embed_query(&self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
+        self.calls.lock().expect("calls lock").push("query");
+        self.inner.embed_query(text)
+    }
+
+    fn embed_document(&self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
+        self.calls.lock().expect("calls lock").push("document");
+        self.inner.embed_document(text)
     }
 }
 
@@ -246,4 +278,65 @@ async fn write_without_embedding_provider_records_visible_degradation() {
         "missing embedding provider must surface as a visible decision-trace marker, got {:?}",
         response.similarity_degraded,
     );
+}
+
+#[tokio::test]
+async fn fixture_asymmetry_catches_index_and_query_call_site_swaps() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let substrate = init_substrate(&temp).await;
+    let triple = substrate.active_embedding_triple().expect("active triple");
+
+    let recording = Arc::new(RecordingProvider::new(triple.clone()));
+    let provider: Arc<dyn EmbeddingProvider> = recording.clone();
+    let state = HandlerState::new();
+    state.embedding_provider_slot().set(Arc::clone(&provider));
+
+    let body = "The project API gateway uses Envoy for edge routing.";
+    let first = write_memory(&substrate, &state, "project API gateway edge routing", body).await;
+    assert_eq!(first.status, GovernanceStatus::Promoted);
+    recording.take_calls(); // First write attempted query-side similarity before vectors existed.
+
+    let pending = substrate.pending_embedding_jobs(1).await.expect("pending jobs");
+    let chunk_text = pending.first().expect("one pending chunk").text.clone();
+    drain_all(&substrate, &provider).await;
+    assert!(
+        recording.take_calls().iter().all(|call| *call == "document"),
+        "worker drain must use document-flavored embeddings"
+    );
+
+    let document_vector = recording.embed_document(&chunk_text).expect("document vector");
+    let query_vector = recording.embed_query(&chunk_text).expect("query vector");
+    recording.take_calls();
+    let scopes = [Scope::Project, Scope::Org];
+    let document_hit = substrate
+        .knn_active_memories(&triple, &document_vector, &scopes, 1)
+        .await
+        .expect("document knn")
+        .pop()
+        .expect("document hit");
+    let query_hit = substrate
+        .knn_active_memories(&triple, &query_vector, &scopes, 1)
+        .await
+        .expect("query knn")
+        .pop()
+        .expect("query hit");
+    assert!(
+        document_hit.similarity > query_hit.similarity + 0.01,
+        "stored vector should be document-flavored; doc similarity {} vs query similarity {}",
+        document_hit.similarity,
+        query_hit.similarity
+    );
+
+    let second = write_memory(
+        &substrate,
+        &state,
+        "project API gateway edge routing",
+        "The project API gateway uses NGINX for edge routing.",
+    )
+    .await;
+    assert!(
+        recording.take_calls().contains(&"query"),
+        "governance candidate similarity must use query-flavored embeddings"
+    );
+    assert_ne!(second.similarity_degraded.as_deref(), Some("similarity_degraded:no_embedding_provider"));
 }

@@ -138,14 +138,16 @@ fn fire_reality_check_due_on_startup(substrate: &Substrate, state: &HandlerState
 /// Loads the production embedding provider (Qwen3 via fastembed) on a blocking
 /// thread so daemon startup is never gated on a first-use model download, then
 /// starts the drain loop. If the model cannot load — no weights, no network on
-/// first use, unsupported device — the worker stays down and recall degrades to
-/// FTS-only; the empty vector table and pending backlog surface in `doctor`
-/// rather than crashing the daemon.
+/// first use, unsupported device — the loader retries on a slow backoff while
+/// recall degrades to FTS-only; the empty vector table and pending backlog
+/// surface in `doctor` rather than crashing the daemon.
 fn spawn_embedding_worker(
     substrate: Arc<Substrate>,
     provider_slot: crate::embedding::EmbeddingProviderSlot,
     shutdown: watch::Receiver<bool>,
 ) {
+    const MODEL_LOAD_RETRY_BACKOFF: Duration = Duration::from_secs(300);
+
     // Operational opt-out: skip the worker (and its first-use model download /
     // load) on constrained hosts or in test/CI daemons that don't exercise
     // vector recall. Recall degrades to FTS-only, surfaced in `doctor`.
@@ -165,40 +167,83 @@ fn spawn_embedding_worker(
             Ok(triple) => triple,
             Err(error) => {
                 tracing::warn!(%error, "embedding worker not started: cannot read active triple");
+                crate::embedding::record_model_load_failure(format!("cannot read active triple: {error}"));
                 return;
             }
         };
-        let load_triple = triple.clone();
-        let load = tokio::task::spawn_blocking(move || {
-            crate::embedding::FastembedProvider::load_for_runtime(&runtime_root, load_triple)
-        })
-        .await;
-        let provider: Arc<dyn crate::embedding::EmbeddingProvider> = match load {
-            Ok(Ok(provider)) => {
-                tracing::info!(
-                    model = %triple.model_ref,
-                    dimension = triple.dimension,
-                    device = provider.device().label(),
-                    "embedding worker online"
-                );
-                Arc::new(provider)
-            }
-            Ok(Err(error)) => {
-                tracing::warn!(%error, "embedding worker not started: model load failed; recall stays FTS-only");
+        if !crate::embedding::is_fastembed_candle_triple(&triple) {
+            tracing::warn!(
+                provider = %triple.provider,
+                supported_provider = crate::embedding::FASTEMBED_CANDLE_PROVIDER,
+                "embedding worker not started: active embedding provider is unsupported by this daemon"
+            );
+            return;
+        }
+
+        let mut load_shutdown = shutdown.clone();
+        loop {
+            if *load_shutdown.borrow() {
                 return;
             }
-            Err(join_error) => {
-                tracing::warn!(%join_error, "embedding worker not started: model load task panicked");
-                return;
-            }
-        };
-        // Publish the loaded provider so the governance write path can embed
-        // contradiction candidates with the same model that populates the vec
-        // table. Done before the drain loop starts so similarity is available as
-        // soon as the model is up.
-        provider_slot.set(Arc::clone(&provider));
-        crate::embedding::worker::spawn_embedding_worker(substrate, provider, shutdown);
+            let load_triple = triple.clone();
+            let load_runtime_root = runtime_root.clone();
+            let load = tokio::task::spawn_blocking(move || {
+                crate::embedding::FastembedProvider::load_for_runtime(&load_runtime_root, load_triple)
+            })
+            .await;
+            let provider: Arc<dyn crate::embedding::EmbeddingProvider> = match load {
+                Ok(Ok(provider)) => {
+                    crate::embedding::clear_model_load_failure();
+                    tracing::info!(
+                        model = %triple.model_ref,
+                        dimension = triple.dimension,
+                        device = provider.device().label(),
+                        "embedding worker online"
+                    );
+                    Arc::new(provider)
+                }
+                Ok(Err(error)) => {
+                    crate::embedding::record_model_load_failure(error.to_string());
+                    tracing::warn!(
+                        %error,
+                        retry_seconds = MODEL_LOAD_RETRY_BACKOFF.as_secs(),
+                        "embedding worker model load failed; recall stays FTS-only until retry succeeds"
+                    );
+                    if sleep_or_shutdown(&mut load_shutdown, MODEL_LOAD_RETRY_BACKOFF).await {
+                        return;
+                    }
+                    continue;
+                }
+                Err(join_error) => {
+                    crate::embedding::record_model_load_failure(format!("model load task panicked: {join_error}"));
+                    tracing::warn!(
+                        %join_error,
+                        retry_seconds = MODEL_LOAD_RETRY_BACKOFF.as_secs(),
+                        "embedding worker model load task panicked; retrying"
+                    );
+                    if sleep_or_shutdown(&mut load_shutdown, MODEL_LOAD_RETRY_BACKOFF).await {
+                        return;
+                    }
+                    continue;
+                }
+            };
+            // Publish the loaded provider so the governance write path can embed
+            // contradiction candidates with the same model that populates the vec
+            // table. Done before the drain loop starts so similarity is available
+            // as soon as the model is up.
+            provider_slot.set(Arc::clone(&provider));
+            crate::embedding::worker::spawn_embedding_worker(substrate, provider, shutdown);
+            return;
+        }
     });
+}
+
+async fn sleep_or_shutdown(shutdown: &mut watch::Receiver<bool>, duration: Duration) -> bool {
+    tokio::select! {
+        biased;
+        _ = shutdown.changed() => true,
+        _ = tokio::time::sleep(duration) => false,
+    }
 }
 
 fn spawn_reality_check_scheduler(

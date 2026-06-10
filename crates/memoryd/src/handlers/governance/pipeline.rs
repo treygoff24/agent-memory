@@ -96,14 +96,16 @@ pub(crate) async fn governance_write_response(
     let active = active_memory_summaries(substrate).await?;
     // Production contradiction detection: embed the candidate (query side) and
     // KNN against the active triple's vec table, restricted to in-scope active
-    // memories. Only the stateful daemon path runs this — the legacy stateless
-    // `handle_request` shim (`state: None`) carries no embedding backend by
-    // design, so it neither runs similarity nor reports a degradation (that path
-    // is a utility entrypoint, not a governed production write). When state is
-    // present but the model hasn't loaded yet (or its triple disagrees, the vec
-    // table is empty, or KNN/embedding fails), that degradation is surfaced in
-    // the response's `similarity_degraded` decision-trace field below rather than
-    // silently behaving as if nothing was similar (invariant 3).
+    // memories. Normal daemon and public handler entrypoints carry a
+    // `HandlerState` (the legacy `handle_request` shim now creates a fresh one),
+    // so missing/failed embedding is reported as a degradation marker. The only
+    // live `state: None` caller is the reality-check supersede utility path,
+    // which intentionally does not participate in write-path similarity. When
+    // state is present but the model hasn't loaded yet (or its triple disagrees,
+    // the vec table is empty, or KNN/embedding fails), that degradation is
+    // surfaced in the response's `similarity_degraded` decision-trace field
+    // below rather than silently behaving as if nothing was similar
+    // (invariant 3).
     // Over-fetch width tracks the *selected* policy's contradiction top-K so a
     // policy that widens `top_k` still gets enough KNN neighbours to gate on
     // (the engine re-truncates to exactly its width). Falls back to the crate
@@ -617,7 +619,10 @@ async fn execute_write_decision(
         }),
         GovernanceWriteDecision::Supersession { existing_id, policy_applied, .. } => Ok(GovernanceWriteResponse {
             status: GovernanceStatus::Candidate,
-            id: Some(id.as_str().to_string()),
+            // The write path does not persist a new memory for this arm; callers
+            // must invoke `memory_supersede` explicitly, so there is no new id to
+            // return here.
+            id: None,
             namespace: Some(input.response_namespace()),
             reason: None,
             next_actions: vec!["memory_supersede".to_string()],

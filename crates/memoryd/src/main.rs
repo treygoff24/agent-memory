@@ -8,9 +8,14 @@ use memoryd::cli::{self, Cli, Command};
 // drives the accept/dispatch loop and every other in-flight connection. The
 // `rt-multi-thread` feature is already enabled workspace-wide; tokio defaults
 // the worker count to the available parallelism.
-#[tokio::main(flavor = "multi_thread")]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    configure_pre_runtime_environment(&cli);
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    runtime.block_on(run(cli))
+}
+
+async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::Serve(args) => cli::serve::run(args).await?,
         Command::Mcp(args) => cli::daemon::run_mcp(args).await?,
@@ -43,4 +48,17 @@ async fn main() -> anyhow::Result<()> {
         Command::Init(args) => cli::init::run(args).await?,
     }
     Ok(())
+}
+
+fn configure_pre_runtime_environment(cli: &Cli) {
+    let Command::Serve(args) = &cli.command else {
+        return;
+    };
+    // fastembed 5.16.0 exposes `cache_dir` on its generic ONNX init options,
+    // but the Qwen3 candle `Qwen3TextEmbedding::from_hf` path used by Memorum
+    // builds hf-hub internally without a cache-dir parameter. `HF_HOME` is the
+    // only available hook for that path, so set it before the multithreaded
+    // Tokio runtime exists; never mutate process environment from the live
+    // daemon load task.
+    std::env::set_var("HF_HOME", args.runtime.join("models"));
 }

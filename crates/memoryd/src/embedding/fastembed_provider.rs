@@ -17,11 +17,12 @@
 //!
 //! ## Model acquisition
 //!
-//! `Qwen3TextEmbedding::from_hf` resolves weights through the hf-hub cache,
-//! which honors `HF_HOME`. The caller points `HF_HOME` at
-//! `<runtime_root>/models` (see [`FastembedProvider::load_for_runtime`]) so
-//! weights land inside the runtime tree on first use and are reused thereafter.
-//! Weights are never bundled. The model is Apache 2.0.
+//! `Qwen3TextEmbedding::from_hf` resolves weights through hf-hub. In fastembed
+//! 5.16.0 the Qwen3 candle loader does not expose the generic `cache_dir`
+//! option, so the CLI `serve` entrypoint sets `HF_HOME=<runtime>/models` before
+//! constructing the Tokio runtime. This module never mutates process
+//! environment while the daemon is live. Weights are never bundled. The model is
+//! Apache 2.0.
 
 use std::path::Path;
 
@@ -33,8 +34,19 @@ use super::prompts::query_prompt;
 use super::{check_dimension, EmbeddingError, EmbeddingProvider};
 
 /// Maximum tokenized sequence length. Memorum chunks are 50–500 tokens; 512
-/// covers them with headroom while keeping per-call compute bounded.
+/// covers them with headroom while keeping per-call compute bounded. Query-side
+/// governance candidates use the same limit, so very long contradiction
+/// candidates lose their tail before similarity matching.
 const MAX_SEQUENCE_LENGTH: usize = 512;
+
+/// The only active-triple provider lane this process can satisfy with the
+/// fastembed candle worker.
+pub const FASTEMBED_CANDLE_PROVIDER: &str = memory_substrate::tree::DEFAULT_ACTIVE_EMBEDDING_PROVIDER;
+
+/// Whether an active embedding triple belongs to the fastembed candle lane.
+pub fn is_fastembed_candle_triple(triple: &EmbeddingTriple) -> bool {
+    triple.provider == FASTEMBED_CANDLE_PROVIDER
+}
 
 /// Which compute device the model actually loaded onto.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,17 +80,19 @@ impl FastembedProvider {
     /// `<runtime_root>/models` and trying Metal before CPU.
     ///
     /// `triple` is the configured active triple; `triple.model_ref` is the HF
-    /// repo id to load. The loaded model's output dimension is validated against
-    /// `triple.dimension` on the first embed call (invariant 3).
+    /// repo id to load. The loaded model's output dimension is probed before the
+    /// provider is returned (invariant 3), so a bad dimension config disables
+    /// the worker once instead of being rediscovered per queued job.
     pub fn load_for_runtime(runtime_root: &Path, triple: EmbeddingTriple) -> Result<Self, EmbeddingError> {
         let cache = runtime_root.join("models");
         std::fs::create_dir_all(&cache)
             .map_err(|err| EmbeddingError::Load(format!("create model cache {}: {err}", cache.display())))?;
-        // hf-hub's sync API reads HF_HOME for its cache root. Point it at the
-        // runtime tree so weights live with the rest of the per-device state.
-        // SAFETY: set before any HF download on this process; the daemon loads
-        // the model from a single task at startup.
-        std::env::set_var("HF_HOME", &cache);
+        if std::env::var_os("HF_HOME").is_none() {
+            tracing::warn!(
+                cache = %cache.display(),
+                "HF_HOME was not configured before runtime startup; fastembed Qwen3 will use its default cache"
+            );
+        }
         let repo_id = triple.model_ref.clone();
         Self::load(&repo_id, triple)
     }
@@ -97,6 +111,7 @@ impl FastembedProvider {
     fn load(repo_id: &str, triple: EmbeddingTriple) -> Result<Self, EmbeddingError> {
         match Self::load_on(repo_id, &triple, LoadedDevice::Metal) {
             Ok(provider) => Ok(provider),
+            Err(error @ EmbeddingError::DimensionMismatch { .. }) => Err(error),
             Err(metal_err) => {
                 tracing::warn!(
                     error = %metal_err,
@@ -118,6 +133,7 @@ impl FastembedProvider {
         };
         let model = Qwen3TextEmbedding::from_hf(repo_id, &device, dtype, MAX_SEQUENCE_LENGTH)
             .map_err(|err| EmbeddingError::Load(format!("{repo_id} on {}: {err}", lane.label())))?;
+        probe_model_dimension(&model, triple)?;
         Ok(Self { model, triple: triple.clone(), device: lane })
     }
 
@@ -134,6 +150,14 @@ impl FastembedProvider {
     }
 }
 
+fn probe_model_dimension(model: &Qwen3TextEmbedding, triple: &EmbeddingTriple) -> Result<(), EmbeddingError> {
+    let mut vectors = model
+        .embed(&["Memorum embedding dimension probe."])
+        .map_err(|err| EmbeddingError::Load(format!("dimension probe failed: {err}")))?;
+    let vector = vectors.pop().ok_or_else(|| EmbeddingError::Load("dimension probe returned no vector".into()))?;
+    check_dimension(triple, &vector)
+}
+
 impl EmbeddingProvider for FastembedProvider {
     fn triple(&self) -> &EmbeddingTriple {
         &self.triple
@@ -145,5 +169,27 @@ impl EmbeddingProvider for FastembedProvider {
 
     fn embed_document(&self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
         self.embed_one(text)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fastembed_lane_accepts_only_fastembed_candle_provider() {
+        let supported = EmbeddingTriple {
+            provider: FASTEMBED_CANDLE_PROVIDER.to_string(),
+            model_ref: "Qwen/Qwen3-Embedding-0.6B".to_string(),
+            dimension: 1024,
+        };
+        let unsupported = EmbeddingTriple {
+            provider: "synthetic".to_string(),
+            model_ref: "stream-a-test".to_string(),
+            dimension: 32,
+        };
+
+        assert!(is_fastembed_candle_triple(&supported));
+        assert!(!is_fastembed_candle_triple(&unsupported));
     }
 }

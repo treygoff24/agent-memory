@@ -18,7 +18,9 @@ use memory_governance::{
     TiebreakOutcome, TombstoneIndex, TombstoneKind, TombstoneRule,
 };
 use memory_source::ArtifactStore;
-use memory_substrate::{AuxScope, Memory, MemoryContent, MemoryStatus, RecallIndexQuery, Scope, Substrate};
+use memory_substrate::{
+    AuxScope, EmbeddingTriple, Memory, MemoryContent, MemoryStatus, RecallIndexQuery, Scope, Substrate, VectorError,
+};
 
 use crate::embedding::EmbeddingProvider;
 use crate::handlers::{entity_ids, namespace_for_frontmatter, HandlerError};
@@ -318,12 +320,9 @@ pub(super) async fn resolve_similarity_candidates(
         return SimilarityResolution::degraded("similarity_degraded:no_embedding_provider");
     };
 
-    let active_triple = match substrate.active_embedding_triple() {
+    let active_triple = match active_triple_or_degradation(substrate.active_embedding_triple()) {
         Ok(triple) => triple,
-        Err(error) => {
-            tracing::warn!(%error, "contradiction similarity degraded: cannot read active embedding triple");
-            return SimilarityResolution::degraded("similarity_degraded:no_active_triple");
-        }
+        Err(degradation) => return degradation,
     };
     if provider.triple() != &active_triple {
         // Invariant 3: triple is identity. Embedding with a model that disagrees
@@ -386,6 +385,18 @@ pub(super) async fn resolve_similarity_candidates(
         })
         .collect::<Vec<_>>();
     SimilarityResolution::available(hits)
+}
+
+fn active_triple_or_degradation(
+    result: Result<EmbeddingTriple, VectorError>,
+) -> Result<EmbeddingTriple, SimilarityResolution> {
+    match result {
+        Ok(triple) => Ok(triple),
+        Err(error) => {
+            tracing::warn!(%error, "contradiction similarity degraded: cannot read active embedding triple");
+            Err(SimilarityResolution::degraded("similarity_degraded:no_active_triple"))
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -479,5 +490,106 @@ pub(super) struct MemorydSessionResolver;
 impl SessionSpawnResolver for MemorydSessionResolver {
     fn spawned_in_session(&self, _spawn_id: &str) -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use memory_substrate::{InitOptions, Roots};
+
+    use super::*;
+    use crate::embedding::{EmbeddingError, FixtureProvider};
+
+    async fn init_substrate() -> (tempfile::TempDir, Substrate) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+        let substrate =
+            Substrate::init(roots, InitOptions { force_unsafe_durability: true, device_id: Some("dev_policy".into()) })
+                .await
+                .expect("init substrate");
+        (temp, substrate)
+    }
+
+    struct StubProvider {
+        triple: EmbeddingTriple,
+        query: QueryBehavior,
+    }
+
+    enum QueryBehavior {
+        Vector(Vec<f32>),
+        Error,
+    }
+
+    impl EmbeddingProvider for StubProvider {
+        fn triple(&self) -> &EmbeddingTriple {
+            &self.triple
+        }
+
+        fn embed_query(&self, _text: &str) -> Result<Vec<f32>, EmbeddingError> {
+            match &self.query {
+                QueryBehavior::Vector(vector) => Ok(vector.clone()),
+                QueryBehavior::Error => Err(EmbeddingError::Inference("forced query failure".to_string())),
+            }
+        }
+
+        fn embed_document(&self, _text: &str) -> Result<Vec<f32>, EmbeddingError> {
+            Ok(vec![0.0; self.triple.dimension as usize])
+        }
+    }
+
+    async fn degradation_for_provider(
+        substrate: &Substrate,
+        provider: Arc<dyn EmbeddingProvider>,
+    ) -> Option<&'static str> {
+        resolve_similarity_candidates(substrate, Some(&provider), "candidate claim", "project", &[], 5)
+            .await
+            .degradation
+    }
+
+    #[test]
+    fn active_triple_read_error_maps_to_no_active_triple_marker() {
+        let result = active_triple_or_degradation(Err(VectorError::IndexUnavailable("poisoned".to_string())));
+        let degradation = result.expect_err("degraded").degradation;
+        assert_eq!(degradation, Some("similarity_degraded:no_active_triple"));
+    }
+
+    #[tokio::test]
+    async fn triple_mismatch_maps_to_degraded_marker() {
+        let (_temp, substrate) = init_substrate().await;
+        let provider: Arc<dyn EmbeddingProvider> = Arc::new(FixtureProvider::synthetic_test_triple());
+
+        assert_eq!(degradation_for_provider(&substrate, provider).await, Some("similarity_degraded:triple_mismatch"));
+    }
+
+    #[tokio::test]
+    async fn no_vector_table_maps_to_degraded_marker() {
+        let (_temp, substrate) = init_substrate().await;
+        let provider: Arc<dyn EmbeddingProvider> =
+            Arc::new(FixtureProvider::new(substrate.active_embedding_triple().expect("triple")));
+
+        assert_eq!(degradation_for_provider(&substrate, provider).await, Some("similarity_degraded:no_vector_table"));
+    }
+
+    #[tokio::test]
+    async fn embedding_failure_maps_to_degraded_marker() {
+        let (_temp, substrate) = init_substrate().await;
+        let provider: Arc<dyn EmbeddingProvider> = Arc::new(StubProvider {
+            triple: substrate.active_embedding_triple().expect("triple"),
+            query: QueryBehavior::Error,
+        });
+
+        assert_eq!(degradation_for_provider(&substrate, provider).await, Some("similarity_degraded:embedding_failed"));
+    }
+
+    #[tokio::test]
+    async fn knn_failure_maps_to_degraded_marker() {
+        let (_temp, substrate) = init_substrate().await;
+        let triple = substrate.active_embedding_triple().expect("triple");
+        let provider: Arc<dyn EmbeddingProvider> =
+            Arc::new(StubProvider { triple, query: QueryBehavior::Vector(vec![0.0; 1]) });
+
+        assert_eq!(degradation_for_provider(&substrate, provider).await, Some("similarity_degraded:knn_failed"));
     }
 }

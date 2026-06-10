@@ -85,6 +85,42 @@ async fn embedding_health_findings(substrate: &Substrate) -> Vec<DoctorFinding> 
         Err(_) => None,
     };
 
+    if let Ok(triple) = &active {
+        if !crate::embedding::is_fastembed_candle_triple(triple) {
+            findings.push(DoctorFinding {
+                code: "embedding_provider_unsupported".to_string(),
+                message: format!(
+                    "active embedding provider `{}` is unsupported by this daemon; expected `{}`. The embedding worker will not start, so vector recall is unavailable for this triple.",
+                    triple.provider,
+                    crate::embedding::FASTEMBED_CANDLE_PROVIDER
+                ),
+                repair: Some("Switch active_embedding.provider to the fastembed candle lane or run a daemon that supports the configured provider.".to_string()),
+            });
+        }
+    }
+
+    if let Some(error) = crate::embedding::model_load_failure() {
+        findings.push(DoctorFinding {
+            code: "embedding_model_load_failed".to_string(),
+            message: format!(
+                "embedding model load is failing and the daemon is retrying on a slow backoff; vector recall is FTS-only until a retry succeeds. Last error: {error}"
+            ),
+            repair: Some("Check network/model-cache availability and daemon logs; no restart is required after connectivity recovers.".to_string()),
+        });
+    }
+
+    let exhausted = crate::embedding::worker::exhausted_retry_budget_job_count();
+    if exhausted > 0 {
+        let plural = if exhausted == 1 { "" } else { "s" };
+        findings.push(DoctorFinding {
+            code: "embedding_retry_budget_exhausted".to_string(),
+            message: format!(
+                "{exhausted} embedding job{plural} exhausted this daemon process's retry budget and will be skipped until restart so newer jobs can drain."
+            ),
+            repair: Some("Inspect daemon logs for the poisoned chunk ids; restart memoryd to retry them after fixing the cause.".to_string()),
+        });
+    }
+
     if backlog > 0 && vector_count == Some(0) {
         // Backlog exists but nothing has ever been embedded for the active
         // triple — the worker is down (model load failed, disabled, or the
@@ -93,9 +129,9 @@ async fn embedding_health_findings(substrate: &Substrate) -> Vec<DoctorFinding> 
         findings.push(DoctorFinding {
             code: "embedding_worker_idle".to_string(),
             message: format!(
-                "{backlog} embedding job(s) pending and the active-triple ({model}) vector table is empty - the embedding worker is not producing vectors; recall is FTS-only. Check that the model loaded (first use downloads weights)."
+                "{backlog} embedding job(s) pending and the active-triple ({model}) vector table is empty - the embedding worker is not producing vectors; recall is FTS-only. Check daemon logs for model-load retries or provider-lane guards."
             ),
-            repair: Some("Start `memoryd serve` and check daemon logs for an embedding model load error.".to_string()),
+            repair: Some("Start `memoryd serve` and check daemon logs for an embedding model load or provider-lane error.".to_string()),
         });
     } else if backlog > 0 {
         let plural = if backlog == 1 { "" } else { "s" };

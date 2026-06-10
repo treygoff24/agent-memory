@@ -41,8 +41,8 @@ impl FixtureProvider {
         Self { triple }
     }
 
-    fn embed(&self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
-        let vector = hashed_bag_of_words(text, self.triple.dimension as usize);
+    fn embed(&self, role: &'static str, text: &str) -> Result<Vec<f32>, EmbeddingError> {
+        let vector = hashed_bag_of_words(role, text, self.triple.dimension as usize);
         check_dimension(&self.triple, &vector)?;
         Ok(vector)
     }
@@ -54,20 +54,21 @@ impl EmbeddingProvider for FixtureProvider {
     }
 
     fn embed_query(&self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
-        self.embed(text)
+        self.embed("query", text)
     }
 
     fn embed_document(&self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
-        self.embed(text)
+        self.embed("document", text)
     }
 }
 
-/// Feature-hash the lowercased word tokens of `text` into `dimension` buckets,
-/// then L2-normalize. Shared tokens → overlapping nonzero buckets → higher
-/// cosine similarity, which is all the e2e KNN ordering assertion requires.
-fn hashed_bag_of_words(text: &str, dimension: usize) -> Vec<f32> {
+/// Feature-hash the lowercased word tokens of `text` plus an asymmetric role
+/// marker into `dimension` buckets, then L2-normalize. Shared tokens →
+/// overlapping nonzero buckets → higher cosine similarity, while the role token
+/// makes query/document call-site swaps visible in CI.
+fn hashed_bag_of_words(role: &'static str, text: &str, dimension: usize) -> Vec<f32> {
     let mut vector = vec![0f32; dimension.max(1)];
-    for token in text.split(|c: char| !c.is_alphanumeric()).filter(|t| !t.is_empty()) {
+    for token in std::iter::once(role).chain(text.split(|c: char| !c.is_alphanumeric()).filter(|t| !t.is_empty())) {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         token.to_ascii_lowercase().hash(&mut hasher);
         let bucket = (hasher.finish() as usize) % vector.len();
@@ -113,5 +114,13 @@ mod tests {
         let first = provider.embed_document("stable content").expect("first");
         let second = provider.embed_document("stable content").expect("second");
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn query_and_document_embeddings_are_asymmetric() {
+        let provider = FixtureProvider::synthetic_test_triple();
+        let query = provider.embed_query("same content").expect("query");
+        let document = provider.embed_document("same content").expect("document");
+        assert_ne!(query, document, "fixture must catch query/document call-site swaps");
     }
 }

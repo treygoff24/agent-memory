@@ -14,24 +14,29 @@
 //! - [`FastembedProvider`], the production lane: Qwen3-Embedding-0.6B via the
 //!   fastembed candle backend (Metal GPU, with an Apple-BLAS CPU fallback).
 //! - [`FixtureProvider`], a deterministic test/CI lane backed by
-//!   `memory-test-support`'s sanctioned synthetic vectors, implementing the same
-//!   trait so the drain loop and e2e tests run with no model download.
+//!   content-derived hashed vectors, implementing the same trait so the drain
+//!   loop and e2e tests run with no model download.
 //! - [`worker`], the daemon background task that drains the backlog.
 //!
 //! Invariant 3 (spec §10.2.2): the embedding triple `(provider, model_ref,
 //! dimension)` is identity, never flavor. A provider whose output length does
 //! not match its declared `dimension` is a bug surfaced as
 //! [`EmbeddingError::DimensionMismatch`], never silently truncated or padded.
+//!
+//! Metal and CPU use different numeric lanes for the same triple: Metal loads
+//! Qwen3 as fp16, CPU as fp32. The dtype is intentionally treated as a compute
+//! flavor rather than identity, so small numeric drift can coexist in one vector
+//! table across restarts without changing `(provider, model_ref, dimension)`.
 
 mod fastembed_provider;
 mod fixture_provider;
 mod prompts;
 pub mod worker;
 
-pub use fastembed_provider::{FastembedProvider, LoadedDevice};
+pub use fastembed_provider::{is_fastembed_candle_triple, FastembedProvider, LoadedDevice, FASTEMBED_CANDLE_PROVIDER};
 pub use fixture_provider::FixtureProvider;
 
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use memory_substrate::EmbeddingTriple;
 
@@ -62,14 +67,59 @@ impl EmbeddingProviderSlot {
 
     /// Publish the loaded provider so request-path consumers can embed with it.
     pub fn set(&self, provider: Arc<dyn EmbeddingProvider>) {
-        if let Ok(mut guard) = self.inner.write() {
-            *guard = Some(provider);
+        match self.inner.write() {
+            Ok(mut guard) => {
+                *guard = Some(provider);
+            }
+            Err(error) => {
+                tracing::error!(%error, "embedding provider slot poisoned while publishing provider");
+            }
         }
     }
 
     /// The current provider, or `None` if none has been published yet.
     pub fn get(&self) -> Option<Arc<dyn EmbeddingProvider>> {
-        self.inner.read().ok().and_then(|guard| guard.clone())
+        match self.inner.read() {
+            Ok(guard) => guard.clone(),
+            Err(error) => {
+                tracing::error!(%error, "embedding provider slot poisoned while reading provider");
+                None
+            }
+        }
+    }
+}
+
+static MODEL_LOAD_FAILURE: Mutex<Option<String>> = Mutex::new(None);
+
+/// Record the last provider-load failure so `doctor` can explain why the worker
+/// is retrying instead of silently leaving recall FTS-only.
+pub(crate) fn record_model_load_failure(error: impl Into<String>) {
+    match MODEL_LOAD_FAILURE.lock() {
+        Ok(mut guard) => {
+            *guard = Some(error.into());
+        }
+        Err(error) => tracing::error!(%error, "embedding model-load status lock poisoned while recording failure"),
+    }
+}
+
+/// Clear the provider-load failure once a retry succeeds.
+pub(crate) fn clear_model_load_failure() {
+    match MODEL_LOAD_FAILURE.lock() {
+        Ok(mut guard) => {
+            *guard = None;
+        }
+        Err(error) => tracing::error!(%error, "embedding model-load status lock poisoned while clearing failure"),
+    }
+}
+
+/// Last provider-load failure recorded by the server load loop.
+pub(crate) fn model_load_failure() -> Option<String> {
+    match MODEL_LOAD_FAILURE.lock() {
+        Ok(guard) => guard.clone(),
+        Err(error) => {
+            tracing::error!(%error, "embedding model-load status lock poisoned while reading failure");
+            None
+        }
     }
 }
 
