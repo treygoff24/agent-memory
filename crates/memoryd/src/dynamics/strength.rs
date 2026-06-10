@@ -138,7 +138,7 @@ pub fn corroboration(distinct_sources: u32) -> f64 {
 /// Compute `strength(m) ∈ [0, 1]` from its inputs (spec §2).
 ///
 /// `weights` are renormalized before use; `tau_days` is the recency time-constant
-/// (defaults to [`DEFAULT_TAU_DAYS`] when non-positive is not desired, but a
+/// (defaults to [`crate::dynamics::DEFAULT_TAU_DAYS`] when non-positive is not desired, but a
 /// non-positive value simply zeroes the recency term).
 pub fn strength(facts: StrengthFacts, weights: StrengthWeights, tau_days: f64, now: DateTime<Utc>) -> f64 {
     let weights = weights.renormalized();

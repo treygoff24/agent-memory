@@ -99,7 +99,7 @@ fn component_line(label: &str, value: f64, styles: &ThemeStyles) -> Line<'static
     ])
 }
 
-/// Map a normalized [0,1] drift component to a theme severity style.
+/// Map a normalized `[0, 1]` drift component to a theme severity style.
 pub fn severity_style(value: f64, styles: &ThemeStyles) -> Style {
     if value >= HIGH_DRIFT {
         styles.warn

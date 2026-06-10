@@ -251,7 +251,7 @@ impl Index {
 
     /// Deferred second pass for supersession edges after a bulk reindex.
     ///
-    /// The per-memory [`sync_supersession`] insert is FK-guarded (it skips any
+    /// The per-memory `sync_supersession` insert is FK-guarded (it skips any
     /// edge whose `supersedes` target's `memories` row does not yet exist), so a
     /// bulk reindex that visits a supersessor before its target silently drops
     /// that edge rather than aborting. This pass re-derives every supersession

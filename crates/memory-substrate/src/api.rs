@@ -1212,7 +1212,7 @@ impl Substrate {
     ///
     /// Unconditional full reindex: clears all plaintext rows and rebuilds from
     /// every Markdown file. Startup uses the cheaper incremental sweep instead
-    /// (see [`incremental_reindex_at_open`]); this is the explicit operator
+    /// (see `incremental_reindex_at_open`); this is the explicit operator
     /// "rebuild everything" path.
     pub async fn reindex(&self) -> SubstrateResult<usize> {
         let mut index = self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?;
@@ -1433,7 +1433,7 @@ impl Substrate {
     /// Phase 5 surface: returns counts for each derived table affected so callers
     /// can confirm the drop matched their expectation.
     ///
-    /// Delegates to [`crate::index::query::Index::drop_embedding_model_report`] which executes
+    /// Delegates to `Index::drop_embedding_model_report` (index/query.rs) which executes
     /// all three DELETEs and the `table_exists` check atomically on the same connection, avoiding
     /// the TOCTOU window that existed when pre-counts were fetched as separate SELECT queries
     /// before the DELETE. The `table_dropped` field now correctly reflects whether the

@@ -128,7 +128,7 @@ pub fn calibration_log_path(device_id: &str) -> String {
 /// `repo`.
 ///
 /// Atomic-ish on the same footing as the substrate event log
-/// ([`api::append_jsonl_record`]): the record is serialized to a single buffer
+/// (substrate `api::append_jsonl_record`): the record is serialized to a single buffer
 /// with its trailing newline and written with one `write_all`, so a concurrent
 /// reader never sees a half-written line. On the `Full` durability tier the file
 /// and its parent directory are fsync'd, matching the event log's durability

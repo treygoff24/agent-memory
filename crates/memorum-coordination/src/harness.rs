@@ -12,8 +12,8 @@
 //! the coordination capability ([`Coordination`]), an optional [`CliSpec`], an
 //! optional [`McpConfig`] placement, and an optional [`ImporterId`]. Resolution
 //! is alias-aware and case-insensitive, so `"claude"` and `"claude-code"`
-//! resolve to the *same* descriptor — proven by
-//! [`tests::claude_and_claude_code_resolve_to_one_descriptor`].
+//! resolve to the *same* descriptor — proven by the
+//! `claude_and_claude_code_resolve_to_one_descriptor` test below.
 //!
 //! ## Layering
 //!

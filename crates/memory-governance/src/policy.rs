@@ -75,7 +75,7 @@ pub const DEFAULT_CONTRADICTION_TOP_K: usize = 5;
 ///
 /// ## Validation
 ///
-/// [`validate`](Self::validate) runs at load time (fail-closed): the similarity
+/// `validate` runs at load time (fail-closed): the similarity
 /// threshold must lie in `[0.0, 1.0]` and `top_k` must be at least 1 (a zero
 /// width would gate against an empty hit set and silently never detect a
 /// contradiction). A bad block is rejected with

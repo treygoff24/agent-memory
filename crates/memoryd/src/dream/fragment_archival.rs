@@ -21,7 +21,7 @@
 //!
 //! Citations are counted from `Evidence.reference` (`evidence: Vec<Evidence>`)
 //! entries in live memory frontmatter — the same refs grounding rehydration
-//! resolves. Each ref is normalized via [`crate::dream::rehydration::normalize_reference`]
+//! resolves. Each ref is normalized via `crate::dream::rehydration::normalize_reference`
 //! and kept only when it names a `sub_…` fragment. Dream-journal markdown is
 //! deliberately never scanned: it is prose, and grepping it for fragment ids is
 //! brittle by construction.

@@ -15,7 +15,7 @@
 //!
 //! 2. **Startup-block assembly path.** The startup recall builder
 //!    (`memoryd::recall::startup`) selects candidates via
-//!    [`collect_recall_candidates_from_index`] and ranks them via
+//!    [`collect_recall_candidates`] and ranks them via
 //!    [`select_ranked_candidates`] (the points-based ranking in
 //!    `recall/rank.rs`). We invoke those two public functions directly with the
 //!    query case's `namespace_scope`, which is precisely how the startup builder
