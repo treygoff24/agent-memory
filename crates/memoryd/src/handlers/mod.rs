@@ -943,6 +943,15 @@ impl HandlerError {
         Self { code: "substrate_error".to_string(), message: error.to_string(), retryable: true }
     }
 
+    /// Typed refusal for a review approval blocked by grounding rehydration: the
+    /// dream candidate's cited evidence drifted, aged out, or went missing since
+    /// capture, so the approval is refused (and the memory quarantined) instead of
+    /// promoting stale evidence to Active. Carries the stable
+    /// `grounding_rehydration_failed` code so the review UI can show *why*.
+    fn grounding_rehydration(error: &crate::dream::rehydration::GroundingRehydrationError) -> Self {
+        Self { code: error.code().to_string(), message: bounded(&error.to_string(), 240), retryable: false }
+    }
+
     fn privacy(error: impl std::fmt::Display) -> Self {
         Self { code: "privacy_error".to_string(), message: bounded(&error.to_string(), 240), retryable: false }
     }

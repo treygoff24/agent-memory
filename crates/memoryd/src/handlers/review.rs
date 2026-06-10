@@ -136,14 +136,17 @@ pub(crate) async fn review_decision_response(
     if matches!((&decision, memory.frontmatter.status), (ReviewDecision::Approve, MemoryStatus::Quarantined)) {
         return Err(HandlerError::invalid_request("quarantined memories must be resubmitted through governance"));
     }
-    if matches!(decision, ReviewDecision::Approve)
-        && rehydration::requires_rehydration(&memory)
-        && rehydration::verify_dream_candidate(substrate, &memory).await.is_err()
-    {
-        let summary = bounded(&memory.frontmatter.summary, REVIEW_DECISION_SUMMARY_MAX);
-        quarantine_for_grounding_rehydration(substrate, memory).await?;
-        let response = ReviewDecisionResponse { id: id.to_string(), status: "quarantined".to_string(), summary };
-        return Ok(ResponsePayload::ReviewApprove(response));
+    // Approving a dream candidate that asked for grounding rehydration re-runs
+    // verification against the *current* substrate before promotion. If the cited
+    // evidence drifted, aged out, or vanished since capture, quarantine the memory
+    // (so it leaves the candidate queue and is never written Active on this
+    // approval) and refuse the approval with a typed error so the review UI shows
+    // *why* — rather than silently promoting stale evidence.
+    if matches!(decision, ReviewDecision::Approve) && rehydration::requires_rehydration(&memory) {
+        if let Err(error) = rehydration::verify_dream_candidate(substrate, &memory).await {
+            quarantine_for_grounding_rehydration(substrate, memory).await?;
+            return Err(HandlerError::grounding_rehydration(&error));
+        }
     }
     if let ReviewDecision::Reject { reason } = &decision {
         // The rejection reason is caller-supplied free text persisted into the canonical

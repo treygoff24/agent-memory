@@ -20,7 +20,7 @@ async fn dream_candidate_with_missing_substrate_ref_quarantines_on_approve() {
     );
     write_memory(&substrate, candidate.clone()).await;
 
-    approve(&substrate, candidate.frontmatter.id.as_str()).await;
+    approve_refused_for_rehydration(&substrate, candidate.frontmatter.id.as_str()).await;
 
     assert_quarantined_for_rehydration(&substrate, candidate.frontmatter.id.as_str()).await;
 }
@@ -41,7 +41,7 @@ async fn dream_candidate_with_aged_out_substrate_ref_quarantines_on_approve() {
     );
     write_memory(&substrate, candidate.clone()).await;
 
-    approve(&substrate, candidate.frontmatter.id.as_str()).await;
+    approve_refused_for_rehydration(&substrate, candidate.frontmatter.id.as_str()).await;
 
     assert_quarantined_for_rehydration(&substrate, candidate.frontmatter.id.as_str()).await;
 }
@@ -57,7 +57,7 @@ async fn dream_candidate_with_drifted_substrate_ref_quarantines_on_approve() {
     );
     write_memory(&substrate, candidate.clone()).await;
 
-    approve(&substrate, candidate.frontmatter.id.as_str()).await;
+    approve_refused_for_rehydration(&substrate, candidate.frontmatter.id.as_str()).await;
 
     assert_quarantined_for_rehydration(&substrate, candidate.frontmatter.id.as_str()).await;
 }
@@ -71,7 +71,7 @@ async fn dream_candidate_with_missing_repo_relative_file_ref_quarantines_on_appr
     );
     write_memory(&substrate, candidate.clone()).await;
 
-    approve(&substrate, candidate.frontmatter.id.as_str()).await;
+    approve_refused_for_rehydration(&substrate, candidate.frontmatter.id.as_str()).await;
 
     assert_quarantined_for_rehydration(&substrate, candidate.frontmatter.id.as_str()).await;
 }
@@ -85,7 +85,7 @@ async fn dream_candidate_with_missing_file_scheme_ref_quarantines_on_approve() {
     );
     write_memory(&substrate, candidate.clone()).await;
 
-    approve(&substrate, candidate.frontmatter.id.as_str()).await;
+    approve_refused_for_rehydration(&substrate, candidate.frontmatter.id.as_str()).await;
 
     assert_quarantined_for_rehydration(&substrate, candidate.frontmatter.id.as_str()).await;
 }
@@ -101,7 +101,7 @@ async fn dream_candidate_with_drifted_file_ref_uses_configured_threshold() {
     );
     write_memory(&substrate, candidate.clone()).await;
 
-    approve(&substrate, candidate.frontmatter.id.as_str()).await;
+    approve_refused_for_rehydration(&substrate, candidate.frontmatter.id.as_str()).await;
 
     assert_quarantined_for_rehydration(&substrate, candidate.frontmatter.id.as_str()).await;
 }
@@ -133,7 +133,7 @@ async fn dream_candidate_file_refs_reject_absolute_traversal_and_symlink_escape(
         );
         write_memory(&substrate, candidate.clone()).await;
 
-        approve(&substrate, candidate.frontmatter.id.as_str()).await;
+        approve_refused_for_rehydration(&substrate, candidate.frontmatter.id.as_str()).await;
 
         assert_quarantined_for_rehydration(&substrate, candidate.frontmatter.id.as_str()).await;
     }
@@ -150,7 +150,7 @@ async fn dream_candidate_file_refs_reject_absolute_traversal_and_symlink_escape(
     );
     write_memory(&substrate, candidate.clone()).await;
 
-    approve(&substrate, candidate.frontmatter.id.as_str()).await;
+    approve_refused_for_rehydration(&substrate, candidate.frontmatter.id.as_str()).await;
 
     assert_quarantined_for_rehydration(&substrate, candidate.frontmatter.id.as_str()).await;
 }
@@ -172,7 +172,7 @@ async fn dream_candidate_with_inactive_memory_ref_quarantines_on_approve() {
         let candidate = dream_candidate(&candidate_id, [evidence_ref("ev_inactive", &cited_id, "cited memory body")]);
         write_memory(&substrate, candidate.clone()).await;
 
-        approve(&substrate, candidate.frontmatter.id.as_str()).await;
+        approve_refused_for_rehydration(&substrate, candidate.frontmatter.id.as_str()).await;
 
         assert_quarantined_for_rehydration(&substrate, candidate.frontmatter.id.as_str()).await;
     }
@@ -191,6 +191,49 @@ async fn dream_candidate_with_valid_refs_promotes_on_approve() {
     approve(&substrate, candidate.frontmatter.id.as_str()).await;
 
     assert_promoted(&substrate, candidate.frontmatter.id.as_str()).await;
+}
+
+#[tokio::test]
+async fn dream_candidate_with_multiple_valid_substrate_refs_promotes_on_approve() {
+    // The per-run fragment index must resolve *every* substrate citation from a
+    // single `substrate/` walk. Cite two distinct fragments, both intact; the
+    // candidate promotes only if both look-ups succeed against the one index.
+    let (_temp, substrate) = initialized_substrate().await;
+    append_fragment(&substrate, "sub_01HZXJK7J7W0X4Q4KJ7A2R8V20", "first stable observation", Utc::now()).await;
+    append_fragment(&substrate, "sub_01HZXJK7J7W0X4Q4KJ7A2R8V21", "second stable observation", Utc::now()).await;
+    let candidate = dream_candidate(
+        "mem_20260430_a1b2c3d4e5f60718_110050",
+        [
+            evidence_ref("ev_first", "sub_01HZXJK7J7W0X4Q4KJ7A2R8V20", "first stable observation"),
+            evidence_ref("ev_second", "sub_01HZXJK7J7W0X4Q4KJ7A2R8V21", "second stable observation"),
+        ],
+    );
+    write_memory(&substrate, candidate.clone()).await;
+
+    approve(&substrate, candidate.frontmatter.id.as_str()).await;
+
+    assert_promoted(&substrate, candidate.frontmatter.id.as_str()).await;
+}
+
+#[tokio::test]
+async fn dream_candidate_with_one_missing_substrate_ref_among_many_is_refused() {
+    // Equivalence with the prior per-citation scan: a single unresolved citation
+    // among several still fails closed. The index is queried per citation, so the
+    // present fragment passing does not mask the missing one.
+    let (_temp, substrate) = initialized_substrate().await;
+    append_fragment(&substrate, "sub_01HZXJK7J7W0X4Q4KJ7A2R8V22", "present observation", Utc::now()).await;
+    let candidate = dream_candidate(
+        "mem_20260430_a1b2c3d4e5f60718_110051",
+        [
+            evidence_ref("ev_present", "sub_01HZXJK7J7W0X4Q4KJ7A2R8V22", "present observation"),
+            evidence_ref("ev_absent", "sub_01HZXJK7J7W0X4Q4KJ7A2R8V23", "never appended"),
+        ],
+    );
+    write_memory(&substrate, candidate.clone()).await;
+
+    approve_refused_for_rehydration(&substrate, candidate.frontmatter.id.as_str()).await;
+
+    assert_quarantined_for_rehydration(&substrate, candidate.frontmatter.id.as_str()).await;
 }
 
 #[tokio::test]
@@ -215,7 +258,7 @@ dreams:
     );
     write_memory(&substrate, candidate.clone()).await;
 
-    approve(&substrate, candidate.frontmatter.id.as_str()).await;
+    approve_refused_for_rehydration(&substrate, candidate.frontmatter.id.as_str()).await;
 
     assert_quarantined_for_rehydration(&substrate, candidate.frontmatter.id.as_str()).await;
 }
@@ -316,6 +359,25 @@ async fn approve(substrate: &Substrate, id: &str) {
     let ResponseResult::Success(ResponsePayload::ReviewApprove(_)) = response.result else {
         panic!("expected review approval response, got {:?}", response.result);
     };
+}
+
+/// Approve a dream candidate whose grounding rehydration is expected to fail.
+/// The approval must come back as a typed refusal (`grounding_rehydration_failed`)
+/// — the review UI's signal for *why* the promotion was blocked — rather than a
+/// silent success. The candidate's on-disk quarantine state is asserted
+/// separately by [`assert_quarantined_for_rehydration`].
+async fn approve_refused_for_rehydration(substrate: &Substrate, id: &str) {
+    let response = handle_request(
+        substrate,
+        RequestEnvelope::new("req-review-approve", RequestPayload::ReviewApprove { id: id.to_string() }),
+    )
+    .await;
+    let ResponseResult::Error(error) = response.result else {
+        panic!("expected a grounding-rehydration refusal, got {:?}", response.result);
+    };
+    assert_eq!(error.code, GROUNDING_FAILED, "refusal code");
+    assert!(!error.retryable, "rehydration refusal is terminal, not retryable");
+    assert!(!error.message.is_empty(), "refusal carries a reason for the UI");
 }
 
 async fn assert_quarantined_for_rehydration(substrate: &Substrate, id: &str) {
