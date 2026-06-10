@@ -24,6 +24,11 @@ const CARGO_TEST_SKIP_MARKER: &str = "MEMORUM_EVAL_SKIP:";
 /// Marker printed by tests to report actual assertion count for JSON output accuracy.
 /// Format: `MEMORUM_EVAL_ASSERTIONS=<n>` on its own line. Used by `eval_assert_count!`.
 pub const EVAL_ASSERTION_COUNT_MARKER: &str = "MEMORUM_EVAL_ASSERTIONS=";
+/// Marker printed by tests for non-fatal eval-output warnings (recorded, not gating).
+/// Format: `MEMORUM_EVAL_WARNING:<message>` on its own line. Lands in the
+/// orchestrator-scanned stdout channel so warnings (e.g. a recall parse-retry)
+/// are not silent on stderr alone.
+pub const EVAL_WARNING_MARKER: &str = "MEMORUM_EVAL_WARNING:";
 
 #[derive(Debug, Default)]
 pub struct EvalOrchestrator;

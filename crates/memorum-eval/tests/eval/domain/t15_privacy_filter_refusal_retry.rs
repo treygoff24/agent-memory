@@ -7,6 +7,7 @@ use memorum_eval::daemon_scaffold::DaemonScaffold;
 use memorum_eval::harness_runner::{
     HarnessRunResult, HarnessRunner, RealHarness, HARNESS_MCP_CONFIG_PATH_ENV, HARNESS_PROJECT_CWD_ENV,
 };
+use memorum_eval::judge::{judge_recall_served_task, JudgeRequest};
 use memorum_eval::{eval_assert, eval_assert_eq, eval_flush_assertion_count};
 use serde_json::{json, Value};
 use serial_test::serial;
@@ -82,6 +83,26 @@ async fn run_privacy_filter_refusal_and_retry(config: PrivacyRetryHarness) {
     assert_raw_phone_is_not_searchable(scaffold.socket_path());
     assert_no_pii_on_disk(scaffold.tree_dir(), RAW_PHONE_DIGITS)
         .expect("raw phone digits must not persist in temp tree");
+
+    // Recorded, non-gating LLM-as-judge step: ask the harness to score whether
+    // the privacy-refusal-then-retry flow actually served the task (PII kept off
+    // disk while preserving the non-PII meaning). Score lands in eval output via
+    // the MEMORUM_EVAL_JUDGE marker; it never fails the test.
+    let _judge = judge_recall_served_task(
+        &runner,
+        JudgeRequest {
+            test: "t15",
+            harness_label: config.config_label,
+            task_summary: "After the Privacy Filter refused a write containing a raw phone number, \
+                           retry once with the number masked while preserving the sentinel phrase and \
+                           the non-PII meaning, then report the refusal and retry status.",
+            agent_output: &output,
+            env: &phase_env(scaffold.tree_dir(), &mcp_config, config),
+            timeout: HARNESS_TIMEOUT,
+        },
+    )
+    .await;
+
     eval_flush_assertion_count();
 }
 

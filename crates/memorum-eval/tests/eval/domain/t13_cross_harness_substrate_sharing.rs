@@ -4,6 +4,8 @@ use std::time::Duration;
 
 use memorum_eval::daemon_scaffold::DaemonScaffold;
 use memorum_eval::harness_runner::{HarnessRunner, RealHarness, HARNESS_MCP_CONFIG_PATH_ENV, HARNESS_PROJECT_CWD_ENV};
+use memorum_eval::judge::{judge_recall_served_task, JudgeRequest};
+use memorum_eval::orchestrator::EVAL_WARNING_MARKER;
 use memorum_eval::{eval_assert, eval_assert_eq, eval_flush_assertion_count};
 use serde_json::{json, Value};
 use serial_test::serial;
@@ -72,6 +74,24 @@ async fn t13_cross_harness_substrate_sharing() {
         search.pointer("/result/success/search/total").and_then(Value::as_u64).unwrap_or_default() >= 1,
         "memory_search should surface the cross-harness substrate fragment: {search:#?}"
     );
+
+    // Recorded, non-gating LLM-as-judge step: ask the recall harness to score
+    // whether its own recall actually served the task. Score lands in eval
+    // output via the MEMORUM_EVAL_JUDGE marker; it never fails the test.
+    let _judge = judge_recall_served_task(
+        &claude,
+        JudgeRequest {
+            test: "t13",
+            harness_label: "claude",
+            task_summary: "Recall a fact written by another harness (Codex) into shared substrate \
+                           and report whether the cross-compilation Go 1.22 build constraint was found.",
+            agent_output: &claude_output,
+            env: &phase_env(scaffold.tree_dir(), &claude_config),
+            timeout: HARNESS_TIMEOUT,
+        },
+    )
+    .await;
+
     eval_flush_assertion_count();
 }
 
@@ -155,6 +175,11 @@ async fn run_claude_with_one_parse_retry(claude: &HarnessRunner, prompt: &str, e
         return parsed;
     }
 
+    // Surface the parse-retry in recorded eval output rather than only on stderr,
+    // so a retry isn't silent in the orchestrator-scanned channel (stdout). The
+    // panic-after-retry path below already fails loudly; this warns on the first
+    // miss that triggered the retry.
+    println!("{}t13: Claude recall output was not parseable JSON; retrying recall phase once.", EVAL_WARNING_MARKER);
     eprintln!("HARNESS_OUTPUT_PARSE_FAILURE: Claude output was not JSON; retrying Test #13 recall phase once.");
     let retry = claude.run(prompt, env, HARNESS_TIMEOUT).await;
     assert_harness_success("Claude recall retry phase", &retry);
