@@ -47,7 +47,13 @@ pub(crate) async fn startup_response(
     state: &HandlerState,
     request: crate::recall::StartupRequest,
 ) -> Result<ResponsePayload, HandlerError> {
-    match build_startup_response_with_coordination_config(substrate, request, state.coordination_config().clone()).await
+    match build_startup_response_with_coordination_config(
+        substrate,
+        request,
+        state.coordination_config().clone(),
+        state.recall_dedup(),
+    )
+    .await
     {
         Ok(response) => {
             record_budget_exhaustions(state, &response);

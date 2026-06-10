@@ -1,9 +1,9 @@
 use crate::cli::paths::resolve_socket_arg;
+use crate::cli::peer_render::{render_peer_activity_human, render_peer_status_human};
 use crate::cli::{PeerArgs, PeerCommand, PeerReleaseLockArgs};
 use crate::client;
 use crate::protocol::{
-    render_peer_activity_human, render_peer_status_human, PeerActivityFormat, PeerReleaseLockStatus, RequestPayload,
-    ResponseEnvelope, ResponsePayload, ResponseResult,
+    PeerActivityFormat, PeerReleaseLockStatus, RequestPayload, ResponseEnvelope, ResponsePayload, ResponseResult,
 };
 
 pub async fn run(args: PeerArgs) -> anyhow::Result<()> {

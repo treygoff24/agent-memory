@@ -2,6 +2,7 @@ pub(crate) mod binding;
 pub(crate) mod budget;
 pub(crate) mod candidates;
 pub(crate) mod counters;
+pub(crate) mod dedup_state;
 pub(crate) mod delta;
 pub(crate) mod dream_questions;
 pub(crate) mod entity;
@@ -20,6 +21,7 @@ pub use candidates::{
     RecallCollectionRequest, RecallIndexFuture, RecallIndexReader,
 };
 pub use counters::{RecallStatusCounters, SharedRecallCounters};
+pub use dedup_state::RecallDedupState;
 pub use delta::{
     build_delta_response, build_delta_response_with_coordination, DeltaCoordinationContext, DeltaPeerCooldownStore,
     DeltaPeerDeliveryRecorder,

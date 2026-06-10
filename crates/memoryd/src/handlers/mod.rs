@@ -49,7 +49,7 @@ use crate::reality_check::{RcAdvanceRequest, RcRunRequest, RcSessionAdvance, RcS
 use crate::recall::{
     build_delta_response_with_coordination, build_startup_response_with_coordination_config, ConcurrentSessionMode,
     DeltaCoordinationContext, DeltaPeerCooldownStore, DeltaPeerDelivery, DeltaPeerDeliveryRecorder, OmissionReason,
-    RecallError, SessionBinding, SharedRecallCounters, StartupResponse,
+    RecallDedupState, RecallError, SessionBinding, SharedRecallCounters, StartupResponse,
 };
 
 mod doctor;
@@ -110,6 +110,7 @@ pub struct HandlerState {
     peer_update_cooldowns: Arc<PeerUpdateCooldowns>,
     web_dashboard: StdMutex<WebDashboardRuntime>,
     coordination_config: CoordinationConfig,
+    recall_dedup: RecallDedupState,
 }
 
 impl HandlerState {
@@ -135,6 +136,7 @@ impl HandlerState {
             peer_update_cooldowns: Arc::new(PeerUpdateCooldowns::new()),
             web_dashboard: StdMutex::new(WebDashboardRuntime::default()),
             coordination_config,
+            recall_dedup: RecallDedupState::default(),
         }
     }
 
@@ -176,6 +178,12 @@ impl HandlerState {
 
     pub fn coordination_config(&self) -> &CoordinationConfig {
         &self.coordination_config
+    }
+
+    /// Per-daemon dedup state for startup recall (reality-check + dream-question
+    /// surfacing windows). Replaces the former process-global statics.
+    pub(crate) fn recall_dedup(&self) -> &RecallDedupState {
+        &self.recall_dedup
     }
 
     pub fn coordination_level(&self) -> u8 {

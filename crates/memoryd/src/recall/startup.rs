@@ -1,6 +1,5 @@
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
 
 use chrono::{DateTime, Duration, Utc};
 use memorum_coordination::{
@@ -11,6 +10,7 @@ use memory_substrate::{AuxScope, MemoryStatus, RecallIndexQuery, RecallIndexRow,
 use crate::reality_check::RcScheduler;
 use crate::recall::budget::estimated_tokens;
 use crate::recall::candidates::{collect_recall_candidates_from_index, RecallCollectionRequest};
+use crate::recall::dedup_state::RecallDedupState;
 use crate::recall::dream_questions::{select_pending_attention_questions, CAP_TOTAL};
 use crate::recall::error::RecallError;
 use crate::recall::rank::{select_ranked_candidates, RankingContext};
@@ -35,14 +35,12 @@ const REALITY_CHECK_SURFACE_MARKER: &str = "reality-check-pending-attention.last
 const STARTUP_PEER_UPDATE_CAP: usize = 2;
 const DEFAULT_COORDINATION_LEVEL: u8 = 2;
 
-static REALITY_CHECK_SURFACED_AT: OnceLock<Mutex<BTreeMap<PathBuf, DateTime<Utc>>>> = OnceLock::new();
-
 pub async fn build_startup_response(
     substrate: &Substrate,
     request: StartupRequest,
 ) -> Result<StartupResponse, RecallError> {
     let config = CoordinationConfig { level: DEFAULT_COORDINATION_LEVEL, ..CoordinationConfig::default() };
-    build_startup_response_with_coordination_config(substrate, request, config).await
+    build_startup_response_with_coordination_config(substrate, request, config, &RecallDedupState::default()).await
 }
 
 pub async fn build_startup_response_with_coordination_level(
@@ -51,13 +49,14 @@ pub async fn build_startup_response_with_coordination_level(
     default_coordination_level: u8,
 ) -> Result<StartupResponse, RecallError> {
     let config = CoordinationConfig { level: default_coordination_level, ..CoordinationConfig::default() };
-    build_startup_response_with_coordination_config(substrate, request, config).await
+    build_startup_response_with_coordination_config(substrate, request, config, &RecallDedupState::default()).await
 }
 
 pub async fn build_startup_response_with_coordination_config(
     substrate: &Substrate,
     request: StartupRequest,
     coordination_config: CoordinationConfig,
+    dedup_state: &RecallDedupState,
 ) -> Result<StartupResponse, RecallError> {
     let budget_tokens = request.budget_tokens.unwrap_or(DEFAULT_STARTUP_BUDGET_TOKENS);
     let include_recent = request.include_recent;
@@ -118,24 +117,27 @@ pub async fn build_startup_response_with_coordination_config(
         .then(|| format!("- {pending_attention_count} memory item(s) require review before factual recall."));
     let active_entity_ids = active_entity_ids(&selected);
     // `select_pending_attention_questions` reads `dreams/questions/**` from disk
-    // (read_dir + per-file read_to_string) and touches a process-global mutex.
+    // (read_dir + per-file read_to_string) and locks this daemon's dedup ring.
     // Run the whole sync routine on the blocking pool so it never stalls a tokio
     // worker on the per-prompt recall hot path. Inputs are cloned to satisfy the
     // 'static bound; the original `namespaces_in_scope` stays borrowable below.
     let dream_questions = {
         let repo = substrate.roots().repo.clone();
         let namespaces_in_scope = session_binding.namespaces_in_scope.clone();
+        // Clone the `Arc` (not the store) into the blocking closure so the scan
+        // shares this daemon's dedup ring without holding a guard across `.await`.
+        let surfaced_store = dedup_state.recent_surfaced_questions().clone();
         tokio::task::spawn_blocking(move || {
-            select_pending_attention_questions(&repo, &namespaces_in_scope, &active_entity_ids)
+            select_pending_attention_questions(&repo, &namespaces_in_scope, &active_entity_ids, &surfaced_store)
         })
         .await
         .expect("select_pending_attention_questions blocking task panicked")
     };
     let pending_attention_items = review_attention_line.into_iter().chain(dream_questions.lines).collect::<Vec<_>>();
-    let include_reality_check_due = should_offer_reality_check(substrate, Utc::now()).await;
+    let include_reality_check_due = should_offer_reality_check(substrate, dedup_state, Utc::now()).await;
     let rendered_pending_attention = render_pending_attention_body(pending_attention_items, include_reality_check_due);
     if rendered_pending_attention.reality_check_due_emitted {
-        record_reality_check_surface(&substrate.roots().runtime, Utc::now()).await;
+        record_reality_check_surface(dedup_state, &substrate.roots().runtime, Utc::now()).await;
     }
     let mut pending_attention_omissions = dream_questions.omitted_total;
     if rendered_pending_attention.omitted_count > 0 {
@@ -484,7 +486,7 @@ fn from_sync_date(candidates: &[PeerWriteCandidate], peer_updates: &[PeerUpdateE
         .to_string()
 }
 
-async fn should_offer_reality_check(substrate: &Substrate, now: DateTime<Utc>) -> bool {
+async fn should_offer_reality_check(substrate: &Substrate, dedup_state: &RecallDedupState, now: DateTime<Utc>) -> bool {
     // DaemonState::load is sync file IO with many sync callers; hop to the
     // blocking pool here rather than async-ifying it crate-wide.
     let runtime_root = substrate.roots().runtime.clone();
@@ -493,11 +495,16 @@ async fn should_offer_reality_check(substrate: &Substrate, now: DateTime<Utc>) -
         .expect("DaemonState::load blocking task panicked");
     state.reality_check.last_completed_at.is_some()
         && RcScheduler::default().is_due(&state.reality_check, now)
-        && !recently_surfaced_reality_check(&substrate.roots().runtime, now).await
+        && !recently_surfaced_reality_check(dedup_state, &substrate.roots().runtime, now).await
 }
 
-async fn recently_surfaced_reality_check(runtime_root: &Path, now: DateTime<Utc>) -> bool {
-    let in_process = reality_check_surfaced_at()
+async fn recently_surfaced_reality_check(
+    dedup_state: &RecallDedupState,
+    runtime_root: &Path,
+    now: DateTime<Utc>,
+) -> bool {
+    let in_process = dedup_state
+        .reality_check_surfaced_at()
         .lock()
         .expect("reality check pending-attention surface lock not poisoned")
         .get(runtime_root)
@@ -505,18 +512,15 @@ async fn recently_surfaced_reality_check(runtime_root: &Path, now: DateTime<Utc>
     in_process || persisted_reality_check_surface_is_recent(runtime_root, now).await
 }
 
-async fn record_reality_check_surface(runtime_root: &Path, now: DateTime<Utc>) {
-    reality_check_surfaced_at()
+async fn record_reality_check_surface(dedup_state: &RecallDedupState, runtime_root: &Path, now: DateTime<Utc>) {
+    dedup_state
+        .reality_check_surfaced_at()
         .lock()
         .expect("reality check pending-attention surface lock not poisoned")
         .insert(runtime_root.to_path_buf(), now);
     if let Err(error) = write_reality_check_surface_marker(runtime_root, now).await {
         eprintln!("WARN failed to persist reality_check_due pending-attention marker: {error}");
     }
-}
-
-fn reality_check_surfaced_at() -> &'static Mutex<BTreeMap<PathBuf, DateTime<Utc>>> {
-    REALITY_CHECK_SURFACED_AT.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
 async fn persisted_reality_check_surface_is_recent(runtime_root: &Path, now: DateTime<Utc>) -> bool {

@@ -984,6 +984,7 @@ pub mod memory;
 pub(crate) mod output;
 pub(crate) mod paths;
 pub mod peer;
+pub mod peer_render;
 pub mod privacy;
 pub mod reality_check;
 pub mod recall;

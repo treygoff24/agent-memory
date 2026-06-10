@@ -5,12 +5,13 @@ use clap::Parser as _;
 use memorum_coordination::claim_lock::ClaimLockAcquireRequest;
 use memorum_coordination::PresenceRecord;
 use memory_substrate::{InitOptions, Roots, Substrate};
+use memoryd::cli::peer_render::{render_peer_activity_human, render_peer_status_human};
 use memoryd::cli::Cli;
 use memoryd::handlers::{handle_request_with_state, HandlerState};
 use memoryd::mcp::{forward_payload_to_daemon, manifest, ToolName};
 use memoryd::protocol::{
-    render_peer_activity_human, render_peer_status_human, PeerActivityFormat, PeerDeliveryAuditEntry,
-    PeerReleaseLockStatus, RequestEnvelope, RequestPayload, ResponsePayload, ResponseResult,
+    PeerActivityFormat, PeerDeliveryAuditEntry, PeerReleaseLockStatus, RequestEnvelope, RequestPayload,
+    ResponsePayload, ResponseResult,
 };
 use tempfile::TempDir;
 

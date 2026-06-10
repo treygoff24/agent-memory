@@ -2,7 +2,7 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 use chrono::{NaiveDate, Utc};
 use memory_privacy::{safe_plaintext_fragment, DeterministicPrivacyClassifier, SafeFragmentDecision};
@@ -23,8 +23,6 @@ const TOTAL_CAP: usize = 6;
 const QUESTION_TEXT_MAX_BYTES: usize = 240;
 const RECENT_WINDOW_DAYS: i64 = 7;
 const RECENT_SURFACED_RING_LIMIT: usize = 1_024;
-
-static RECENT_SURFACED_QUESTIONS: OnceLock<Mutex<RecentSurfacedQuestionStore>> = OnceLock::new();
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DreamQuestionSelection {
@@ -51,12 +49,13 @@ pub fn select_pending_attention_questions(
     repo: &Path,
     namespaces_in_scope: &[String],
     active_entity_ids: &BTreeSet<String>,
+    surfaced_store: &Arc<Mutex<RecentSurfacedQuestionStore>>,
 ) -> DreamQuestionSelection {
     let mut omitted_total = BTreeMap::new();
     let mut candidates = Vec::new();
     let classifier = DeterministicPrivacyClassifier::new();
     let today = Utc::now().date_naive();
-    let recent_surfaced_hashes = recent_surfaced_hashes(repo, today);
+    let recent_surfaced_hashes = recent_surfaced_hashes(surfaced_store, repo, today);
 
     for scope in namespaces_in_scope {
         let Some((date, path)) = most_recent_question_file(repo, scope, today) else {
@@ -78,7 +77,7 @@ pub fn select_pending_attention_questions(
 
     candidates.sort_by(compare_candidates);
     let selected = apply_caps(candidates, &mut omitted_total);
-    record_surfaced_hashes(repo, today, selected.iter().map(|candidate| candidate.novelty_hash));
+    record_surfaced_hashes(surfaced_store, repo, today, selected.iter().map(|candidate| candidate.novelty_hash));
 
     DreamQuestionSelection { lines: selected.into_iter().map(render_question_line).collect(), omitted_total }
 }
@@ -217,7 +216,7 @@ fn novelty_hash(question: &str) -> [u8; 32] {
 }
 
 #[derive(Debug, Default)]
-struct RecentSurfacedQuestionStore {
+pub(crate) struct RecentSurfacedQuestionStore {
     hashes_by_repo: BTreeMap<PathBuf, VecDeque<RecentSurfacedQuestion>>,
 }
 
@@ -227,15 +226,24 @@ struct RecentSurfacedQuestion {
     surfaced_on: NaiveDate,
 }
 
-fn recent_surfaced_hashes(repo: &Path, today: NaiveDate) -> BTreeSet<[u8; 32]> {
-    let mut store = recent_surfaced_question_store().lock().expect("recent dream question store lock not poisoned");
+fn recent_surfaced_hashes(
+    surfaced_store: &Arc<Mutex<RecentSurfacedQuestionStore>>,
+    repo: &Path,
+    today: NaiveDate,
+) -> BTreeSet<[u8; 32]> {
+    let mut store = surfaced_store.lock().expect("recent dream question store lock not poisoned");
     let entries = store.hashes_by_repo.entry(repo.to_path_buf()).or_default();
     prune_recent_surfaced_entries(entries, today);
     entries.iter().map(|entry| entry.hash).collect()
 }
 
-fn record_surfaced_hashes(repo: &Path, today: NaiveDate, hashes: impl IntoIterator<Item = [u8; 32]>) {
-    let mut store = recent_surfaced_question_store().lock().expect("recent dream question store lock not poisoned");
+fn record_surfaced_hashes(
+    surfaced_store: &Arc<Mutex<RecentSurfacedQuestionStore>>,
+    repo: &Path,
+    today: NaiveDate,
+    hashes: impl IntoIterator<Item = [u8; 32]>,
+) {
+    let mut store = surfaced_store.lock().expect("recent dream question store lock not poisoned");
     let entries = store.hashes_by_repo.entry(repo.to_path_buf()).or_default();
     prune_recent_surfaced_entries(entries, today);
 
@@ -257,10 +265,6 @@ fn prune_recent_surfaced_entries(entries: &mut VecDeque<RecentSurfacedQuestion>,
 fn is_inside_recent_window(surfaced_on: NaiveDate, today: NaiveDate) -> bool {
     let age_days = today.signed_duration_since(surfaced_on).num_days();
     (0..RECENT_WINDOW_DAYS).contains(&age_days)
-}
-
-fn recent_surfaced_question_store() -> &'static Mutex<RecentSurfacedQuestionStore> {
-    RECENT_SURFACED_QUESTIONS.get_or_init(|| Mutex::new(RecentSurfacedQuestionStore::default()))
 }
 
 fn increment(omitted_total: &mut BTreeMap<String, u64>, reason: &str) {
