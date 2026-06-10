@@ -620,6 +620,8 @@ pub enum DreamCommand {
     Cleanup(DreamCleanupArgs),
     /// Review recent dream journal, question, candidate, and cleanup outputs.
     Review(DreamReviewArgs),
+    /// Report review-decision calibration: accept-rate per confidence decile.
+    Calibration(DreamCalibrationArgs),
     /// Enable dreaming on this device by removing the local disabled sentinel.
     Enable(DreamToggleArgs),
     /// Disable dreaming on this device by creating the local disabled sentinel.
@@ -725,6 +727,20 @@ pub struct DreamReviewArgs {
     /// Optional dream scope: `me`, `agent`, `project:<id>`, or `org:<id>`.
     #[arg(long)]
     pub scope: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct DreamCalibrationArgs {
+    /// Canonical memory repository root.
+    #[arg(long, default_value = ".")]
+    pub repo: PathBuf,
+    /// Local per-device runtime root. Accepted for command symmetry; the report
+    /// reads git-synced per-device calibration logs, not runtime state.
+    #[arg(long, default_value = ".memoryd")]
+    pub runtime: PathBuf,
+    /// Emit a structured JSON CalibrationReport instead of the human table.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, Args)]

@@ -39,6 +39,16 @@ pub async fn run(args: crate::cli::DreamArgs) -> anyhow::Result<()> {
                 .map_err(anyhow::Error::msg)?;
             print!("{}", crate::dream::review::render_human_review(&report));
         }
+        crate::cli::DreamCommand::Calibration(args) => {
+            // Read every device's calibration log directly off the synced tree —
+            // no daemon round-trip — and report accept-rate per confidence decile.
+            let report = crate::dream::calibration::build_report(&args.repo)?;
+            if args.json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                print!("{}", crate::dream::calibration::render_human_report(&report));
+            }
+        }
         crate::cli::DreamCommand::Enable(args) => {
             println!("{}", crate::dream::status::PRIVACY_DISCLOSURE);
             crate::dream::status::enable_device(&args.runtime)?;

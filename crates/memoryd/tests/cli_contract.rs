@@ -197,6 +197,9 @@ fn cli_contract_clap_parses_all_dream_subcommands_and_help_exposes_them() {
     .expect("dream review flags parse");
     Cli::try_parse_from(["memoryd", "dream", "enable", "--runtime", "/tmp/rt"]).expect("dream enable parses");
     Cli::try_parse_from(["memoryd", "dream", "disable", "--runtime", "/tmp/rt"]).expect("dream disable parses");
+    Cli::try_parse_from(["memoryd", "dream", "calibration"]).expect("dream calibration parses");
+    Cli::try_parse_from(["memoryd", "dream", "calibration", "--repo", "/tmp/repo", "--json"])
+        .expect("dream calibration flags parse");
 
     let output = Command::new(env!("CARGO_BIN_EXE_memoryd")).args(["dream", "--help"]).output().expect("dream help");
     assert!(output.status.success());

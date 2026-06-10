@@ -1,3 +1,4 @@
+pub mod calibration;
 pub mod cleanup;
 pub mod config;
 pub mod error;

@@ -18,6 +18,7 @@ encrypted/substrate/**/*.jsonl merge=memory-merge-driver\n\
 dreams/questions/**/*.jsonl merge=memory-merge-driver\n\
 dreams/cleanup/**/*.json merge=memory-merge-driver\n\
 dreams/journal/**/*.md merge=memory-merge-driver\n\
+dreams/calibration/*.jsonl merge=union\n\
 leases/journal.lease merge=memory-merge-driver\n\
 tombstones/*.jsonl merge=union\n\
 sources/web/**/manifest.json merge=memory-merge-driver\n\
@@ -36,6 +37,7 @@ const MANAGED_GITATTRIBUTES_PATTERNS: &[&str] = &[
     "dreams/questions/**/*.jsonl",
     "dreams/cleanup/**/*.json",
     "dreams/journal/**/*.md",
+    "dreams/calibration/*.jsonl",
     "leases/journal.lease",
     "tombstones/*.jsonl",
     "sources/web/**/manifest.json",

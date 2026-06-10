@@ -3,6 +3,7 @@
 
 use super::memory_ops::serialized_enum_value;
 use super::*;
+use crate::dream::calibration;
 
 pub(crate) enum ReviewDecision {
     Approve,
@@ -133,6 +134,13 @@ pub(crate) async fn review_decision_response(
     {
         return Err(HandlerError::invalid_request("memory is not eligible for the review queue"));
     }
+    // Snapshot the calibration inputs from the candidate *before* the decision
+    // mutates it (`decision.apply` flips status/trust). The candidate is
+    // calibration-eligible when it was authored by dreaming or is currently
+    // quarantined (dynamics-spec §6). We record only after the decision's write
+    // actually lands — so a rehydration-refused approval (which returns early
+    // below) never logs an `accept`.
+    let calibration_inputs = CalibrationInputs::from_candidate(&memory);
     if matches!((&decision, memory.frontmatter.status), (ReviewDecision::Approve, MemoryStatus::Quarantined)) {
         return Err(HandlerError::invalid_request("quarantined memories must be resubmitted through governance"));
     }
@@ -184,10 +192,79 @@ pub(crate) async fn review_decision_response(
         .await
         .map_err(HandlerError::substrate)?;
 
+    // The decision landed: append a calibration record for eligible candidates.
+    // A failed append must not fail the review (the user's decision already
+    // persisted) — log and carry on.
+    if let Some(inputs) = calibration_inputs {
+        let calibration_decision = match decision {
+            ReviewDecision::Approve => calibration::Decision::Accept,
+            ReviewDecision::Reject { .. } => calibration::Decision::Reject,
+        };
+        if let Err(error) = inputs.append(substrate, calibration_decision) {
+            tracing::warn!(memory_id = %id, %error, "failed to append review calibration record");
+        }
+    }
+
     let response = ReviewDecisionResponse { id: id.to_string(), status: status.to_string(), summary };
     match decision {
         ReviewDecision::Approve => Ok(ResponsePayload::ReviewApprove(response)),
         ReviewDecision::Reject { .. } => Ok(ResponsePayload::ReviewReject(response)),
+    }
+}
+
+/// Calibration inputs snapshotted from a review candidate before its decision
+/// mutates the in-memory copy. `None` when the candidate is not
+/// calibration-eligible (not dream-authored and not quarantined).
+struct CalibrationInputs {
+    candidate_id: String,
+    scope: String,
+    author_kind: AuthorKind,
+    self_reported_confidence: f64,
+}
+
+impl CalibrationInputs {
+    fn from_candidate(memory: &Memory) -> Option<Self> {
+        let fm = &memory.frontmatter;
+        let eligible = matches!(fm.author.kind, AuthorKind::Dreaming) || matches!(fm.status, MemoryStatus::Quarantined);
+        if !eligible {
+            return None;
+        }
+        Some(Self {
+            candidate_id: fm.id.as_str().to_string(),
+            scope: calibration::scope_string(fm.scope, fm.canonical_namespace_id.as_deref()),
+            author_kind: fm.author.kind,
+            self_reported_confidence: fm.confidence,
+        })
+    }
+
+    /// Resolve the local device id and append the calibration record. The device
+    /// id is read from `local-device.yaml` under the runtime root — the same
+    /// identity the event log uses (`load_device_id`), via the substrate's
+    /// public config loader (no fenced substrate API needed).
+    fn append(self, substrate: &Substrate, decision: calibration::Decision) -> std::io::Result<()> {
+        let roots = substrate.roots();
+        let local = memory_substrate::config::load_local_device_config(&roots.runtime)
+            .map_err(std::io::Error::other)?
+            .ok_or_else(|| std::io::Error::other("local-device.yaml missing; cannot resolve device id"))?;
+        calibration::append_decision(
+            &roots.repo,
+            &local.device.id,
+            substrate.durability_tier(),
+            &calibration::DecisionRecord {
+                candidate_id: self.candidate_id,
+                scope: self.scope,
+                author_kind: self.author_kind,
+                self_reported_confidence: self.self_reported_confidence,
+                decision,
+                // The daemon protocol has no edit path today (only approve /
+                // reject), so edit-distance is never produced here; it remains a
+                // record field for a future edit-capable review surface.
+                edit_distance_ratio: None,
+                decided_at: chrono::Utc::now(),
+                // Approve/Reject requests carry no session id on the wire.
+                session_id: None,
+            },
+        )
     }
 }
 
