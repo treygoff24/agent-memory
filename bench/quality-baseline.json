@@ -1,0 +1,174 @@
+{
+  "schema": 1,
+  "ranking_lane": "fts_bm25(search)+structural_points(startup); no vector lane (Task 3.x pending)",
+  "total_cases": 56,
+  "abstention_cases": 6,
+  "seams": {
+    "search": {
+      "scored_cases": 50,
+      "precision_at_k": {
+        "10": 0.013999999999999999,
+        "3": 0.04666666666666666,
+        "5": 0.027999999999999997
+      },
+      "recall_at_k": {
+        "10": 0.07,
+        "3": 0.07,
+        "5": 0.07
+      },
+      "mrr": 0.12,
+      "ndcg_at_k": {
+        "10": 0.09353102385741324,
+        "3": 0.09353102385741324,
+        "5": 0.09353102385741324
+      },
+      "trap_rate_at_5": 0.02
+    },
+    "startup": {
+      "scored_cases": 50,
+      "precision_at_k": {
+        "10": 0.08000000000000002,
+        "3": 0.06,
+        "5": 0.05600000000000001
+      },
+      "recall_at_k": {
+        "10": 0.4433333333333333,
+        "3": 0.10666666666666666,
+        "5": 0.16333333333333333
+      },
+      "mrr": 0.17607047288000494,
+      "ndcg_at_k": {
+        "10": 0.20150094059302767,
+        "3": 0.06843823873993074,
+        "5": 0.09804726176981875
+      },
+      "trap_rate_at_5": 0.02
+    }
+  },
+  "seam_notes": {
+    "search": "memory_search seam: raw query -> Substrate::query_chunks (bm25 FTS), exactly as the daemon's search_response handler. FTS5 sanitization ANDs each token as a phrase, so long natural-language / session-context queries that no single chunk satisfies score near zero — this is the honest behavior of keyword search, not a runner defect. Exact-MemoryId queries (q01-q03) also score zero here: memory_search is chunk-body search, not id lookup. The short keyword/entity cases (q51-q56) give this seam positive dynamic range; the startup seam carries namespace-scoped structural ranking.",
+    "startup": "startup-block assembly seam: namespace-scoped candidate selection by calling collect_recall_candidates_from_index, plus the real structural points ranking (select_ranked_candidates / recall/rank.rs), driven by the case's namespace_scope. Dynamics strength is pinned off for this quality gate, so ambient MEMORUM_DYNAMICS cannot change the baseline. No vector lane today (Task 3.x)."
+  },
+  "abstentions": [
+    {
+      "case_id": "q45-user-current-machine",
+      "seam": "search",
+      "surfaced_count": 0,
+      "surfaced_top": [],
+      "surfaced_trap_at_5": false
+    },
+    {
+      "case_id": "q45-user-current-machine",
+      "seam": "startup",
+      "surfaced_count": 29,
+      "surfaced_top": [
+        "mem_20260204_156ed82f175e2d72_000001",
+        "mem_20260121_fd65e22a41bd5335_000002",
+        "mem_20251010_1dd6e6c8fc9c4975_000002",
+        "mem_20251010_94c397fad90a469e_000001",
+        "mem_20251114_069c1674b7f61d26_000001"
+      ],
+      "surfaced_trap_at_5": false
+    },
+    {
+      "case_id": "q46-third-payment-processor",
+      "seam": "search",
+      "surfaced_count": 0,
+      "surfaced_top": [],
+      "surfaced_trap_at_5": false
+    },
+    {
+      "case_id": "q46-third-payment-processor",
+      "seam": "startup",
+      "surfaced_count": 16,
+      "surfaced_top": [
+        "mem_20260112_7c8e8049dc99a279_000001",
+        "mem_20260110_b930f7c99a190448_000001",
+        "mem_20260105_5be748622f4d7696_000003",
+        "mem_20260105_c7f2ad47829f66b8_000004",
+        "mem_20260105_d2b697e78f7584e0_000001"
+      ],
+      "surfaced_trap_at_5": false
+    },
+    {
+      "case_id": "q47-abstain-kubernetes",
+      "seam": "search",
+      "surfaced_count": 0,
+      "surfaced_top": [],
+      "surfaced_trap_at_5": false
+    },
+    {
+      "case_id": "q47-abstain-kubernetes",
+      "seam": "startup",
+      "surfaced_count": 88,
+      "surfaced_top": [
+        "mem_20260204_156ed82f175e2d72_000001",
+        "mem_20260121_fd65e22a41bd5335_000002",
+        "mem_20251010_1dd6e6c8fc9c4975_000002",
+        "mem_20251010_94c397fad90a469e_000001",
+        "mem_20251114_069c1674b7f61d26_000001"
+      ],
+      "surfaced_trap_at_5": false
+    },
+    {
+      "case_id": "q48-abstain-marketing",
+      "seam": "search",
+      "surfaced_count": 0,
+      "surfaced_top": [],
+      "surfaced_trap_at_5": false
+    },
+    {
+      "case_id": "q48-abstain-marketing",
+      "seam": "startup",
+      "surfaced_count": 88,
+      "surfaced_top": [
+        "mem_20260204_156ed82f175e2d72_000001",
+        "mem_20260121_fd65e22a41bd5335_000002",
+        "mem_20251010_1dd6e6c8fc9c4975_000002",
+        "mem_20251010_94c397fad90a469e_000001",
+        "mem_20251114_069c1674b7f61d26_000001"
+      ],
+      "surfaced_trap_at_5": false
+    },
+    {
+      "case_id": "q49-abstain-mobile-app",
+      "seam": "search",
+      "surfaced_count": 0,
+      "surfaced_top": [],
+      "surfaced_trap_at_5": false
+    },
+    {
+      "case_id": "q49-abstain-mobile-app",
+      "seam": "startup",
+      "surfaced_count": 36,
+      "surfaced_top": [
+        "mem_20260121_90fe694fb60822c3_000001",
+        "mem_20260120_59c0e30eb1190c0d_000001",
+        "mem_20260104_2e92b9fee57807c2_000001",
+        "mem_20260112_7c8e8049dc99a279_000001",
+        "mem_20260110_1428be88b4355bb4_000004"
+      ],
+      "surfaced_trap_at_5": false
+    },
+    {
+      "case_id": "q50-abstain-out-of-scope-secret",
+      "seam": "search",
+      "surfaced_count": 0,
+      "surfaced_top": [],
+      "surfaced_trap_at_5": false
+    },
+    {
+      "case_id": "q50-abstain-out-of-scope-secret",
+      "seam": "startup",
+      "surfaced_count": 29,
+      "surfaced_top": [
+        "mem_20260204_156ed82f175e2d72_000001",
+        "mem_20260121_fd65e22a41bd5335_000002",
+        "mem_20251010_1dd6e6c8fc9c4975_000002",
+        "mem_20251010_94c397fad90a469e_000001",
+        "mem_20251114_069c1674b7f61d26_000001"
+      ],
+      "surfaced_trap_at_5": false
+    }
+  ]
+}
