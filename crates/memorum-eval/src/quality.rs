@@ -194,8 +194,16 @@ impl GoldenCorpus {
     /// (FTS body inclusion, encrypted/metadata-only projection, status) is
     /// exactly what the production indexer would produce for these files.
     pub async fn load() -> Result<Self, QualityError> {
-        let fixtures = Self::fixtures_root();
-        let memories_src = fixtures.join("memories");
+        Self::load_from_root(&Self::fixtures_root()).await
+    }
+
+    /// [`Self::load`] against an arbitrary corpus root (`<root>/memories` +
+    /// `<root>/queries.yaml`). Powers bring-your-own-corpus runs — e.g. a
+    /// private, machine-local corpus distilled from real projects. The
+    /// regression gate never uses this; it stays pinned to the committed
+    /// fixtures via [`Self::load`].
+    pub async fn load_from_root(root: &Path) -> Result<Self, QualityError> {
+        let memories_src = root.join("memories");
         if !memories_src.is_dir() {
             return Err(QualityError::CorpusMissing(memories_src.display().to_string()));
         }
@@ -226,7 +234,12 @@ impl GoldenCorpus {
 
     /// Load and parse `queries.yaml` into labeled cases.
     pub fn load_queries() -> Result<Vec<QueryCase>, QualityError> {
-        let path = Self::fixtures_root().join("queries.yaml");
+        Self::load_queries_from_root(&Self::fixtures_root())
+    }
+
+    /// [`Self::load_queries`] against an arbitrary corpus root.
+    pub fn load_queries_from_root(root: &Path) -> Result<Vec<QueryCase>, QualityError> {
+        let path = root.join("queries.yaml");
         let text = fs::read_to_string(&path)?;
         let parsed: QueryFile = serde_yaml::from_str(&text).map_err(|e| QualityError::Queries(e.to_string()))?;
         Ok(parsed.cases)
@@ -542,17 +555,60 @@ fn dcg_term(gain: f64, rank_index: usize) -> f64 {
 
 /// Run both ranking seams over the golden corpus and produce the full report.
 pub async fn run_quality_report() -> Result<QualityReport, QualityError> {
-    let corpus = GoldenCorpus::load().await?;
-    let cases = GoldenCorpus::load_queries()?;
+    Ok(run_quality_report_with_cases_for_root(&GoldenCorpus::fixtures_root()).await?.0)
+}
+
+/// Per-case outcome detail emitted alongside the aggregate report — what each
+/// seam actually surfaced (top [`CASE_DUMP_TOP_K`]) next to the case's answer
+/// key. Powers `--dump-cases` and human corpus review tooling; never read by
+/// the regression gate.
+#[derive(Debug, Clone, Serialize)]
+pub struct CaseOutcome {
+    pub id: String,
+    pub query: String,
+    pub scope: Vec<String>,
+    pub essential: Vec<String>,
+    pub useful: Vec<String>,
+    pub traps: Vec<String>,
+    pub search_top: Vec<String>,
+    pub search_total: usize,
+    pub startup_top: Vec<String>,
+    pub startup_total: usize,
+}
+
+/// How many surfaced ids per seam a [`CaseOutcome`] carries.
+pub const CASE_DUMP_TOP_K: usize = 10;
+
+/// [`run_quality_report`] against an arbitrary corpus root, also returning the
+/// per-case outcomes (one ranking pass feeds both).
+pub async fn run_quality_report_with_cases_for_root(
+    root: &Path,
+) -> Result<(QualityReport, Vec<CaseOutcome>), QualityError> {
+    let corpus = GoldenCorpus::load_from_root(root).await?;
+    let cases = GoldenCorpus::load_queries_from_root(root)?;
 
     let mut search_acc = SeamAccumulator::default();
     let mut startup_acc = SeamAccumulator::default();
     let mut abstentions = Vec::new();
     let mut abstention_count = 0usize;
+    let mut outcomes = Vec::with_capacity(cases.len());
 
     for case in &cases {
         let search_ranked = corpus.rank_via_search(&case.query).await?;
         let startup_ranked = corpus.rank_via_startup(&case.namespace_scope).await?;
+
+        outcomes.push(CaseOutcome {
+            id: case.id.clone(),
+            query: case.query.clone(),
+            scope: case.namespace_scope.clone(),
+            essential: case.graded.essential.clone(),
+            useful: case.graded.useful.clone(),
+            traps: case.graded.irrelevant_traps.clone(),
+            search_top: search_ranked.iter().take(CASE_DUMP_TOP_K).cloned().collect(),
+            search_total: search_ranked.len(),
+            startup_top: startup_ranked.iter().take(CASE_DUMP_TOP_K).cloned().collect(),
+            startup_total: startup_ranked.len(),
+        });
 
         if case.is_abstention() {
             abstention_count += 1;
@@ -590,7 +646,7 @@ pub async fn run_quality_report() -> Result<QualityReport, QualityError> {
             .to_string(),
     );
 
-    Ok(QualityReport {
+    let report = QualityReport {
         schema: 1,
         ranking_lane: "fts_bm25(search)+structural_points(startup); no vector lane (Task 3.x pending)".to_string(),
         total_cases: cases.len(),
@@ -598,7 +654,8 @@ pub async fn run_quality_report() -> Result<QualityReport, QualityError> {
         seams,
         seam_notes,
         abstentions,
-    })
+    };
+    Ok((report, outcomes))
 }
 
 fn abstention_outcome(case: &QueryCase, seam: &str, ranked: &[String]) -> AbstentionOutcome {
