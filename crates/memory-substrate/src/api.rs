@@ -1415,6 +1415,41 @@ impl Substrate {
             .update_embedding(&update)
     }
 
+    /// The active embedding triple this substrate was opened with.
+    ///
+    /// `(provider, model_ref, dimension)` is the unit of vector-table identity
+    /// (spec §10.2.2 #9); the background embedding worker reads it to know which
+    /// table to write vectors into and which jobs to drain.
+    pub fn active_embedding_triple(&self) -> Result<EmbeddingTriple, VectorError> {
+        Ok(self
+            .index
+            .lock()
+            .map_err(|err| VectorError::IndexUnavailable(format!("index mutex poisoned: {err}")))?
+            .active_embedding()
+            .clone())
+    }
+
+    /// Drain up to `limit` pending embedding jobs for the active triple, each
+    /// paired with the chunk text to embed. See
+    /// [`crate::index::Index::pending_embedding_jobs`].
+    pub async fn pending_embedding_jobs(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<crate::model::PendingEmbeddingJob>, VectorError> {
+        self.index
+            .lock()
+            .map_err(|err| VectorError::IndexUnavailable(format!("index mutex poisoned: {err}")))?
+            .pending_embedding_jobs(limit)
+    }
+
+    /// Count pending embedding jobs for the active triple (doctor backlog).
+    pub fn pending_embedding_job_count(&self) -> Result<usize, VectorError> {
+        let index =
+            self.index.lock().map_err(|err| VectorError::IndexUnavailable(format!("index mutex poisoned: {err}")))?;
+        let triple = index.active_embedding().clone();
+        crate::index::reconcile_pending_jobs(index.connection(), &triple).map_err(Into::into)
+    }
+
     /// Drop embedding model and return the structured report (spec §16.4, B-API-4).
     ///
     /// Phase 5 surface: returns counts for each derived table affected so callers

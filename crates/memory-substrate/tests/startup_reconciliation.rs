@@ -118,11 +118,12 @@ async fn startup_reindex_requeues_missing_active_embedding_jobs() {
     }
     drop(substrate);
 
-    let _reopened = Substrate::open(roots.clone()).await.expect("reopen");
+    let reopened = Substrate::open(roots.clone()).await.expect("reopen");
     let connection =
         memory_substrate::index::open_index(&roots.runtime.join("index.sqlite")).expect("open reopened index");
-    let active =
-        EmbeddingTriple { provider: "synthetic".to_string(), model_ref: "stream-a-test".to_string(), dimension: 32 };
+    // Active triple is the production Qwen3 default, not synthetic/32 — read it
+    // from the substrate rather than hardcoding the superseded synthetic triple.
+    let active = reopened.active_embedding_triple().expect("active triple");
 
     assert_eq!(memory_substrate::index::reconcile_pending_jobs(&connection, &active).expect("pending jobs"), 1);
 }

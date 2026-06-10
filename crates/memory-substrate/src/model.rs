@@ -1182,6 +1182,25 @@ pub struct EmbeddingTriple {
     pub dimension: u32,
 }
 
+/// A pending embedding job paired with the chunk text the worker must embed.
+///
+/// Produced by [`crate::index::Index::pending_embedding_jobs`] / the
+/// [`crate::Substrate::pending_embedding_jobs`] wrapper for the background
+/// embedding worker. `content_hash` is the chunk `body_hash` captured at
+/// enqueue time; it must be passed back as the `expected_chunk_hash` of the
+/// resulting [`EmbeddingUpdate`] so a stale job (the chunk changed since
+/// enqueue) is rejected by the vector store rather than writing a vector for
+/// content that no longer exists.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingEmbeddingJob {
+    /// Chunk id to embed.
+    pub chunk_id: String,
+    /// Chunk text the worker embeds.
+    pub text: String,
+    /// Content hash captured at enqueue time (the chunk `body_hash`).
+    pub content_hash: Sha256,
+}
+
 /// Embedding update request.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EmbeddingUpdate {

@@ -107,17 +107,43 @@ fn write_substrate_marker(root: &Path) -> std::io::Result<()> {
     write_if_missing(&marker_dir.join(SUBSTRATE_MARKER_FILE), "schema_version: 1\nkind: memorum-substrate\n")
 }
 
-/// Create tree directories, tracked bootstrap files, and a synthetic synced
-/// config when one is absent.
+/// Default active-embedding triple written into a fresh `config.yaml`.
+///
+/// `(provider, model_ref, dimension)` is the unit of vector-table identity
+/// (spec §10.2.2 #9). This default is the production embedding lane shipped by
+/// Stream B: Qwen3-Embedding-0.6B served locally via the fastembed candle
+/// backend (Apache 2.0, 1024-dim). See the dated amendment block in
+/// `docs/specs/stream-a-core-substrate-v1.1.md` for the rationale behind
+/// superseding the spec's literal `embeddinggemma-300m-qat-Q8_0 / 768` default.
+///
+/// Stored in a single place so the bootstrap path, the embedding provider, and
+/// tests agree on one canonical triple rather than re-spelling the string.
+pub const DEFAULT_ACTIVE_EMBEDDING_PROVIDER: &str = "fastembed-candle";
+/// Default active-embedding model reference (HF repo id).
+pub const DEFAULT_ACTIVE_EMBEDDING_MODEL_REF: &str = "Qwen/Qwen3-Embedding-0.6B";
+/// Default active-embedding dimension.
+pub const DEFAULT_ACTIVE_EMBEDDING_DIMENSION: u32 = 1024;
+
+/// Create tree directories, tracked bootstrap files, and a synced config
+/// carrying the production default embedding triple when one is absent.
 pub fn bootstrap_repo_tree(root: &Path) -> std::io::Result<()> {
     bootstrap_repo_layout(root)?;
     if !root.join("config.yaml").exists() {
-        std::fs::write(
-            root.join("config.yaml"),
-            "schema_version: 1\nactive_embedding:\n  provider: synthetic\n  model_ref: stream-a-test\n  dimension: 32\n",
-        )?;
+        std::fs::write(root.join("config.yaml"), default_config_yaml())?;
     }
     Ok(())
+}
+
+/// The `config.yaml` body written for a fresh substrate.
+///
+/// Pins the production default embedding triple (spec §10.2.2 #2 amendment).
+/// `active_embedding` is never optional and has no silent fallback: a substrate
+/// initialized without it cannot determine which vector table to enqueue
+/// pending embedding jobs against.
+fn default_config_yaml() -> String {
+    format!(
+        "schema_version: 1\nactive_embedding:\n  provider: {DEFAULT_ACTIVE_EMBEDDING_PROVIDER}\n  model_ref: {DEFAULT_ACTIVE_EMBEDDING_MODEL_REF}\n  dimension: {DEFAULT_ACTIVE_EMBEDDING_DIMENSION}\n",
+    )
 }
 
 fn write_if_missing(path: &Path, contents: &str) -> std::io::Result<()> {

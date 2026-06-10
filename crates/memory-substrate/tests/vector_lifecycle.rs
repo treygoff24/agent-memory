@@ -123,8 +123,9 @@ async fn plaintext_writes_enqueue_pending_embedding_jobs_for_active_triple() {
         .await
         .expect("write");
     let connection = memory_substrate::index::open_index(&roots.runtime.join("index.sqlite")).expect("open index");
-    let active =
-        EmbeddingTriple { provider: "synthetic".to_string(), model_ref: "stream-a-test".to_string(), dimension: 32 };
+    // The active triple is the production Qwen3 default, not synthetic/32 — read
+    // it from the substrate so the assertion tracks the bootstrapped triple.
+    let active = substrate.active_embedding_triple().expect("active triple");
 
     assert_eq!(memory_substrate::index::reconcile_pending_jobs(&connection, &active).expect("pending jobs"), 1);
 }

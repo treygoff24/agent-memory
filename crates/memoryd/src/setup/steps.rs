@@ -332,7 +332,7 @@ async fn ensure_substrate(repo: &Path, runtime: &Path, force_unsafe_durability: 
         Err(OpenError::NotAMemorumSubstrate { .. } | OpenError::DeviceIdentityMissing { .. }) => {
             Substrate::init(roots, InitOptions { force_unsafe_durability, device_id: None })
                 .await
-                .map(|_| format!("initialized Memorum repo at {}", repo.display()))
+                .map(|_| format!("initialized Memorum repo at {}\n{}", repo.display(), embedding_model_notice()))
                 .map_err(|error| error.to_string())?
         }
         Err(error) => return Err(error.to_string()),
@@ -340,6 +340,20 @@ async fn ensure_substrate(repo: &Path, runtime: &Path, force_unsafe_durability: 
 
     ensure_privacy_key(runtime)?;
     Ok(message)
+}
+
+/// Init-output notice for the default embedding model.
+///
+/// Names the model, its license, and that weights are downloaded on first use
+/// (never bundled) into the runtime tree. Surfaced during `memoryd init` so an
+/// operator knows the first daemon start may fetch ~1 GB of weights and under
+/// what license.
+fn embedding_model_notice() -> String {
+    format!(
+        "Embedding model: {} ({} dims, Apache 2.0). Weights download on first daemon use into <runtime>/models (~1 GB); never bundled.",
+        memory_substrate::tree::DEFAULT_ACTIVE_EMBEDDING_MODEL_REF,
+        memory_substrate::tree::DEFAULT_ACTIVE_EMBEDDING_DIMENSION,
+    )
 }
 
 /// Provision the local Stream D age key if it is absent.

@@ -2059,4 +2059,30 @@ The spec also deliberately does **not** legislate the following implementation-p
 
 ---
 
+## Amendments
+
+Dated additive clarifications that do not change a required behavior carry no version bump (per the repo's spec/plan conventions). Each amendment records the date, the sections it touches, and the rationale.
+
+### 2026-06-09 — Default active-embedding triple updated to the shipped production model
+
+**Touches:** §10.2.2 #2 (active triple), §10.2.2 final paragraph ("default active triple ... locked by §20"), §20 #2 ("embedding model default"), §20 #13 (synthetic perf vectors). **Approved by Trey 2026-06-09** ("adapt ur spec and plan accordingly"); see `docs/plans/2026-06-09-dynamics-eval-hardening.md` Task 3.0 and `docs/reference/2026-06-09-embedding-model-research.md`.
+
+When this spec was written, Stream A could not run a real embedding model — inference was Stream B's responsibility — so the substrate shipped a *synthetic* default triple (`synthetic / stream-a-test / 32`) in `bootstrap_repo_tree`, and §20 named `local-gemma / embeddinggemma-300m-qat-Q8_0 / 768` as the intended production default. Stream B has now shipped production embedding inference (Task 3.0). The bootstrapped default active triple is therefore:
+
+```
+provider:  fastembed-candle
+model_ref: Qwen/Qwen3-Embedding-0.6B
+dimension: 1024
+```
+
+Qwen3-Embedding-0.6B (Apache 2.0, ungated, 1024-dim, 32K context) was selected over EmbeddingGemma-300m and other candidates by a golden-corpus bench on Memorum's real failure modes (trap-rate and abstention calibration). The model is served locally via the fastembed candle backend (`Qwen3TextEmbedding`) with Metal GPU offload and a CPU fallback; weights are downloaded on first use into `<runtime_root>/models` and are never bundled.
+
+This is contract-touching under invariant 3 (§10.2.2 #9): provider, model_ref, **and** dimension all change versus the prior literal default (768 → 1024). It does **not** change any required *behavior* of the substrate — the triple remains opaque to Stream A, vector-table identity and the no-silent-fallback rule are unchanged, and any clone carrying an older triple in its synced `config.yaml` keeps that triple (the new default is written only when `config.yaml` is absent at bootstrap). Hence a dated amendment rather than a version bump.
+
+The synthetic triple and `memory-test-support::perf::synthetic_vectors` (§20 #13) remain the sanctioned source of vector content for Stream A perf gates and tests; only the *bootstrapped production default* changed.
+
+**Spec-honesty note (§10.1 "hybrid keyword + vector"):** until Task 3.0, no production consumer wrote vectors, so production retrieval was FTS-only bm25 in practice despite the hybrid description. With the embedding worker shipped, the hybrid description now reflects production reality once the active-triple vector table is populated.
+
+---
+
 *End of Stream A — Core Substrate Spec v1.1.*

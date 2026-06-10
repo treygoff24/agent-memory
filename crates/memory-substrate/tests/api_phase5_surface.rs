@@ -68,7 +68,7 @@ async fn drop_embedding_model_report_returns_structured_counts() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
     let substrate = Substrate::init(
-        roots,
+        roots.clone(),
         InitOptions { force_unsafe_durability: true, device_id: Some("dev_phase5c".to_string()) },
     )
     .await
@@ -118,6 +118,30 @@ async fn drop_embedding_model_report_returns_structured_counts() {
         })
         .await
         .expect("write pending");
+
+    // The bootstrapped active triple is the production Qwen3 triple, not the
+    // synthetic test triple this case drops, so writes auto-enqueue pending jobs
+    // against Qwen3 — not synthetic/32. Enqueue one synthetic pending job
+    // explicitly so the drop report has a pending job to remove for *this*
+    // triple. (Before the 2026-06-09 default-triple amendment, the synthetic
+    // triple was the active one and this row was enqueued implicitly.)
+    {
+        let connection = memory_substrate::index::open_index(&roots.runtime.join("index.sqlite")).expect("open index");
+        connection
+            .execute(
+                "INSERT INTO pending_embedding_jobs(chunk_id, provider, model_ref, dimension, content_hash, enqueued_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![
+                    chunk.chunk_id,
+                    triple.provider,
+                    triple.model_ref,
+                    triple.dimension,
+                    chunk.body_hash.as_str(),
+                    chrono::Utc::now().to_rfc3339(),
+                ],
+            )
+            .expect("enqueue synthetic pending job");
+    }
 
     let report = substrate.drop_embedding_model_report(triple.clone()).await.expect("drop report");
     assert_eq!(report.vectors_removed, 1);

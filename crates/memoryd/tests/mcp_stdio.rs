@@ -129,6 +129,11 @@ fn mcp_stdio_unknown_notifications_do_not_emit_responses() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn mcp_stdio_tools_call_routes_through_daemon_forwarder() {
+    // Disable the production embedding worker for this in-process daemon: loading
+    // the ~1.1 GB Qwen3 model would compete with socket bind under the
+    // multi-thread test runtime. Set synchronously at the top so it is visible
+    // before the daemon task spawns. (Also set in `spawn_daemon`, belt-and-braces.)
+    std::env::set_var("MEMORUM_DISABLE_EMBEDDING_WORKER", "1");
     let temp = tempfile::tempdir().expect("tempdir");
     let socket = unique_socket_path("mcpstdio", "call");
     let substrate = init_substrate(&temp).await;

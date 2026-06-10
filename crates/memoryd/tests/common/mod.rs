@@ -77,6 +77,11 @@ pub fn assert_step(report: &SetupReport, step: SetupStep, status: SetupStepStatu
 /// idle-frame timeout (5s) and return the shutdown sender + server handle.
 #[allow(dead_code)]
 pub fn spawn_daemon(socket: &Path, substrate: Substrate) -> (watch::Sender<bool>, JoinHandle<anyhow::Result<()>>) {
+    // Test daemons never exercise real vector recall — they insert vectors
+    // manually — so disable the production embedding worker. Loading the ~1.1 GB
+    // Qwen3 model at startup would otherwise consume Metal/CPU and slow socket
+    // readiness past the 2s `wait_for_socket` budget. Production keeps the worker.
+    std::env::set_var("MEMORUM_DISABLE_EMBEDDING_WORKER", "1");
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let socket = socket.to_path_buf();
     let options = ServerOptions { idle_frame_timeout: Duration::from_secs(5) };
@@ -97,10 +102,15 @@ pub async fn shutdown(shutdown_tx: watch::Sender<bool>, server: JoinHandle<anyho
     let _ = std::fs::remove_file(socket);
 }
 
-/// Poll the Unix socket until a connection succeeds (up to 2s @ 10ms cadence).
+/// Poll the Unix socket until a connection succeeds (up to 60s @ 10ms cadence).
+///
+/// The 60s budget (was 2s) gives headroom for the now-heavier memoryd test
+/// binary — linking the embedding stack (candle/ort/fastembed) slows the
+/// in-process multi-thread daemon's first bind under test-runner contention.
+/// The real `memoryd serve` binary binds in well under a second.
 #[allow(dead_code)]
 pub async fn wait_for_socket(socket: &Path) {
-    for _ in 0..200 {
+    for _ in 0..6000 {
         if UnixStream::connect(socket).await.is_ok() {
             return;
         }

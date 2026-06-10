@@ -62,6 +62,7 @@ pub async fn serve_substrate(socket_path: impl AsRef<Path>, substrate: Substrate
     spawn_coordination_cleanup_for_state(state.clone(), shutdown_rx.clone());
     fire_reality_check_due_on_startup(&substrate, &state);
     spawn_reality_check_scheduler(substrate.clone(), state.clone(), shutdown_rx.clone());
+    spawn_embedding_worker(substrate.clone(), shutdown_rx.clone());
     serve_with_dispatcher(
         socket_path.as_ref(),
         Dispatch::Substrate { substrate, state },
@@ -92,6 +93,7 @@ pub async fn serve_substrate_with(
     spawn_coordination_cleanup_for_state(state.clone(), shutdown.clone());
     fire_reality_check_due_on_startup(&substrate, &state);
     spawn_reality_check_scheduler(substrate.clone(), state.clone(), shutdown.clone());
+    spawn_embedding_worker(substrate.clone(), shutdown.clone());
     serve_with_dispatcher(socket_path.as_ref(), Dispatch::Substrate { substrate, state }, options, shutdown).await
 }
 
@@ -129,6 +131,65 @@ pub fn spawn_coordination_cleanup_for_state(
 fn fire_reality_check_due_on_startup(substrate: &Substrate, state: &HandlerState) {
     let daemon_state = crate::state::DaemonState::load(&substrate.roots().runtime);
     state.fire_reality_check_due_if_due(&daemon_state.reality_check, chrono::Utc::now());
+}
+
+/// Spawn the background embedding worker.
+///
+/// Loads the production embedding provider (Qwen3 via fastembed) on a blocking
+/// thread so daemon startup is never gated on a first-use model download, then
+/// starts the drain loop. If the model cannot load — no weights, no network on
+/// first use, unsupported device — the worker stays down and recall degrades to
+/// FTS-only; the empty vector table and pending backlog surface in `doctor`
+/// rather than crashing the daemon.
+fn spawn_embedding_worker(substrate: Arc<Substrate>, shutdown: watch::Receiver<bool>) {
+    // Operational opt-out: skip the worker (and its first-use model download /
+    // load) on constrained hosts or in test/CI daemons that don't exercise
+    // vector recall. Recall degrades to FTS-only, surfaced in `doctor`.
+    if std::env::var_os("MEMORUM_DISABLE_EMBEDDING_WORKER").is_some() {
+        tracing::info!("embedding worker disabled via MEMORUM_DISABLE_EMBEDDING_WORKER");
+        return;
+    }
+    let runtime_root = substrate.roots().runtime.clone();
+    tokio::spawn(async move {
+        // Let the daemon bind its socket and serve before this task starts the
+        // CPU/GPU-heavy first-use model load. Loading immediately would compete
+        // with `serve_with_dispatcher`'s bind on the same runtime; a short grace
+        // delay keeps daemon startup responsive while costing the first
+        // embedding only a couple seconds of additional latency.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let triple = match substrate.active_embedding_triple() {
+            Ok(triple) => triple,
+            Err(error) => {
+                tracing::warn!(%error, "embedding worker not started: cannot read active triple");
+                return;
+            }
+        };
+        let load_triple = triple.clone();
+        let load = tokio::task::spawn_blocking(move || {
+            crate::embedding::FastembedProvider::load_for_runtime(&runtime_root, load_triple)
+        })
+        .await;
+        let provider: Arc<dyn crate::embedding::EmbeddingProvider> = match load {
+            Ok(Ok(provider)) => {
+                tracing::info!(
+                    model = %triple.model_ref,
+                    dimension = triple.dimension,
+                    device = provider.device().label(),
+                    "embedding worker online"
+                );
+                Arc::new(provider)
+            }
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "embedding worker not started: model load failed; recall stays FTS-only");
+                return;
+            }
+            Err(join_error) => {
+                tracing::warn!(%join_error, "embedding worker not started: model load task panicked");
+                return;
+            }
+        };
+        crate::embedding::worker::spawn_embedding_worker(substrate, provider, shutdown);
+    });
 }
 
 fn spawn_reality_check_scheduler(

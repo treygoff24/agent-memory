@@ -249,6 +249,45 @@ impl Index {
         reconcile_active_embedding_jobs_impl(&mut self.connection, &triple)
     }
 
+    /// The active embedding triple this index was opened with.
+    pub fn active_embedding(&self) -> &EmbeddingTriple {
+        &self.active_embedding
+    }
+
+    /// Drain up to `limit` pending embedding jobs for the active triple, joined
+    /// to the chunk text the worker must embed.
+    ///
+    /// Only jobs whose chunk still exists *and* whose `content_hash` still
+    /// matches the live `memory_chunks.body_hash` are returned — a stale job
+    /// (chunk edited since enqueue) is skipped here and swept by
+    /// [`Self::reconcile_active_embedding_jobs`]. Returning the matching
+    /// `content_hash` lets the worker pass it back as `expected_chunk_hash` so
+    /// the vector-store write is gated a second time at commit (spec §10.2.1).
+    ///
+    /// Ordered by `enqueued_at` so the oldest backlog drains first.
+    pub fn pending_embedding_jobs(&self, limit: usize) -> Result<Vec<crate::model::PendingEmbeddingJob>, VectorError> {
+        let triple = &self.active_embedding;
+        let mut stmt = self.connection.prepare_cached(
+            "SELECT mc.chunk_id, mc.text, mc.body_hash
+             FROM pending_embedding_jobs pj
+             JOIN memory_chunks mc ON mc.chunk_id = pj.chunk_id
+             WHERE pj.provider = ?1 AND pj.model_ref = ?2 AND pj.dimension = ?3
+               AND pj.content_hash = mc.body_hash
+             ORDER BY pj.enqueued_at
+             LIMIT ?4",
+        )?;
+        let rows = stmt
+            .query_map(params![triple.provider, triple.model_ref, i64::from(triple.dimension), limit as i64], |row| {
+                Ok(crate::model::PendingEmbeddingJob {
+                    chunk_id: row.get::<_, String>(0)?,
+                    text: row.get::<_, String>(1)?,
+                    content_hash: crate::model::Sha256::new(row.get::<_, String>(2)?),
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     /// Query chunks through FTS.
     ///
     /// Free-form user text is sanitized into a sequence of FTS5 phrase tokens

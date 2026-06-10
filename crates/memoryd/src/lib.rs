@@ -5,6 +5,7 @@ pub mod client;
 pub mod coordination_config;
 pub mod dashboard;
 pub mod dream;
+pub mod embedding;
 pub mod export;
 pub mod first_write;
 pub mod handlers;

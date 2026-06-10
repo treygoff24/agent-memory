@@ -28,6 +28,11 @@ pub(super) async fn doctor_response(substrate: &Substrate) -> DoctorResponse {
         }
     }
     let has_substrate_findings = !findings.is_empty();
+    // Embedding-pipeline findings are advisory: recall still works via FTS bm25
+    // without vectors, so a backlog or empty vector table is surfaced but does
+    // not flip doctor unhealthy (a freshly-initialized substrate legitimately
+    // has a backlog before the worker first drains).
+    findings.extend(embedding_health_findings(substrate).await);
     let registry = crate::dream::registry::HarnessCliRegistry::builtin_v0_2();
     let mut enabled_harness_count = 0usize;
     let mut authenticated_harness_count = 0usize;
@@ -58,6 +63,51 @@ fn doctor_is_healthy(
     authenticated_harness_count: usize,
 ) -> bool {
     !has_substrate_findings && (enabled_harness_count == 0 || authenticated_harness_count > 0)
+}
+
+/// Embedding-pipeline health: pending-job backlog and an empty active-triple
+/// vector table.
+///
+/// These are the two signals that the production embedding worker is not
+/// keeping up (or is not running at all — model never loaded). Both are
+/// warnings, not repair-required: recall still works via FTS bm25, just without
+/// vector similarity. A persistent backlog with zero vectors is the strong
+/// "embeddings are not being produced" signal worth surfacing prominently.
+async fn embedding_health_findings(substrate: &Substrate) -> Vec<DoctorFinding> {
+    let mut findings = Vec::new();
+    let backlog = match substrate.pending_embedding_job_count() {
+        Ok(count) => count,
+        Err(_) => return findings,
+    };
+    let active = substrate.active_embedding_triple();
+    let vector_count = match &active {
+        Ok(triple) => substrate.vector_count(triple.clone()).await.ok(),
+        Err(_) => None,
+    };
+
+    if backlog > 0 && vector_count == Some(0) {
+        // Backlog exists but nothing has ever been embedded for the active
+        // triple — the worker is down (model load failed, disabled, or the
+        // daemon was started without it). This is the headline finding.
+        let model = active.as_ref().map(|t| t.model_ref.clone()).unwrap_or_else(|_| "<unknown>".to_string());
+        findings.push(DoctorFinding {
+            code: "embedding_worker_idle".to_string(),
+            message: format!(
+                "{backlog} embedding job(s) pending and the active-triple ({model}) vector table is empty - the embedding worker is not producing vectors; recall is FTS-only. Check that the model loaded (first use downloads weights)."
+            ),
+            repair: Some("Start `memoryd serve` and check daemon logs for an embedding model load error.".to_string()),
+        });
+    } else if backlog > 0 {
+        let plural = if backlog == 1 { "" } else { "s" };
+        findings.push(DoctorFinding {
+            code: "embedding_backlog".to_string(),
+            message: format!(
+                "{backlog} embedding job{plural} pending - vector recall is incomplete until the background worker drains them."
+            ),
+            repair: None,
+        });
+    }
+    findings
 }
 
 #[cfg(test)]
