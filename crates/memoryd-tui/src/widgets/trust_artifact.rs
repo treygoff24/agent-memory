@@ -63,6 +63,7 @@ impl<'a> TrustArtifactWidget<'a> {
                 artifact.recall.last_30_days,
                 artifact.recall.last_recalled_at.map_or_else(|| "never".to_owned(), |time| time.to_rfc3339())
             )),
+            Line::from(format!("Strength: {}", artifact.recall.strength)),
             Line::from(""),
             section("Provenance"),
         ];

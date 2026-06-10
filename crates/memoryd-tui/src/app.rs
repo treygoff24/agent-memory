@@ -1095,7 +1095,7 @@ fn sample_trust_artifact() -> TrustArtifact {
         "original_confidence": "0.90",
         "confidence_reason": "user confirmed; policy-promoted",
         "trust_summary": "high trust; policy-promoted",
-        "recall": { "total": 28, "last_30_days": 12, "last_recalled_at": "2026-05-01T11:02:00Z" },
+        "recall": { "total": 28, "last_30_days": 12, "last_recalled_at": "2026-05-01T11:02:00Z", "strength": "0.74" },
         "provenance_chain": [{ "timestamp": "2026-04-30T14:22:00Z", "kind": "write_committed", "summary": "written by codex-cli", "evidence": "sess_abc123", "device": "macbook" }],
         "policy_decisions": [{ "policy_applied": "project-standard@v2", "policy_source": "disk", "confidence_floor_pass": "pass", "grounding_satisfied": "2 source refs resolved", "contradiction_result": "none detected", "tombstone_enforced": "no matching tombstone", "sensitivity_gate_result": "pass" }],
         "privacy_scan": { "labels_detected": ["none"], "storage_action": "plaintext" },

@@ -30,7 +30,8 @@ fn full_plaintext_artifact() -> TrustArtifact {
         "recall": {
             "total": 28,
             "last_30_days": 12,
-            "last_recalled_at": "2026-05-01T11:02:00Z"
+            "last_recalled_at": "2026-05-01T11:02:00Z",
+            "strength": "0.74"
         },
         "provenance_chain": [
             {
@@ -126,6 +127,7 @@ fn test_all_sections_present_for_plaintext_memory() {
 
     assert!(text.contains("source: substrate:projects/atlasos/deploy-target.md"));
     assert!(text.contains("trust: high trust; policy-promoted"));
+    assert!(text.contains("Strength: 0.74"), "use-driven strength renders in the Recall section");
     assert!(text.contains("evidence: session:claude-code"));
     assert!(text.contains("Supersedes: mem_20260428_0123456789abcdef_000004"));
 }
