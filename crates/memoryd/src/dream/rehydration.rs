@@ -344,7 +344,11 @@ fn levenshtein(left: &str, right: &str) -> usize {
     previous[right_chars.len()]
 }
 
-fn normalize_reference(reference: &str) -> &str {
+/// Strip a citation reference's `memory:`/`substrate:` prefix and `#fragment`
+/// suffix down to its bare id/path. Shared with the fragment-archival deferral
+/// path (`fragment_archival.rs`) so citation-id mapping stays identical between
+/// grounding rehydration and cleanup-time citation counting.
+pub(crate) fn normalize_reference(reference: &str) -> &str {
     let without_prefix = reference
         .strip_prefix("memory:")
         .or_else(|| reference.strip_prefix("substrate:"))

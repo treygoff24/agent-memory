@@ -16,10 +16,11 @@ use memory_substrate::{
 };
 use thiserror::Error;
 
+use crate::dream::fragment_archival::{archive_with_deferral, load_dynamics_config};
 use crate::dream::rehydration::resolve_repo_relative_file_ref;
 use crate::dream::report::{
     cleanup_commit_subject, CleanupFinding, CleanupOperationCounts, CleanupReport, CleanupReportInput,
-    CLEANUP_BOT_AUTHOR,
+    DeferredFragment, CLEANUP_BOT_AUTHOR,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,8 +58,10 @@ async fn run_cleanup_with_git<G: CleanupGit>(
     let repo = substrate.roots().repo.as_path();
     let mut mutated_files = BTreeSet::new();
     let mut findings = Vec::new();
+    let fragment_outcome = archive_expired_fragments(substrate, &config, &mut mutated_files).await?;
+    let deferred_fragments = fragment_outcome.deferred_fragments;
     let mut operations = CleanupOperationCounts {
-        fragments_archived: archive_expired_fragments(substrate, &config, &mut mutated_files).await?,
+        fragments_archived: fragment_outcome.fragments_archived,
         candidates_archived: archive_stale_candidates(substrate, &config, &mut mutated_files, &mut findings).await?,
         ..CleanupOperationCounts::default()
     };
@@ -92,6 +95,7 @@ async fn run_cleanup_with_git<G: CleanupGit>(
         generated_at: config.now,
         operations,
         findings: sorted_findings(findings),
+        deferred_fragments,
         mutated_files: mutated_files.iter().cloned().collect(),
     });
     report.commit_deferred = has_dirty_user_work(git, repo, &mutated_files)?;
@@ -123,18 +127,50 @@ fn validate_config(config: &CleanupConfig) -> Result<(), CleanupError> {
     Ok(())
 }
 
+/// Outcome of the expired-fragment archival step: the count plus any fragments
+/// whose archival the dynamics deferral held back (spec §4).
+struct FragmentArchivalStep {
+    fragments_archived: usize,
+    deferred_fragments: Vec<DeferredFragment>,
+}
+
 async fn archive_expired_fragments(
     substrate: &Substrate,
     config: &CleanupConfig,
     mutated_files: &mut BTreeSet<String>,
-) -> Result<usize, CleanupError> {
-    let before = snapshot_files(substrate.roots().repo.as_path(), &["substrate"])?;
-    let outcome = substrate
-        .archive_expired_substrate_fragments(config.now, config.fragment_lifetime_days)
-        .await
-        .map_err(|err| CleanupError::Substrate(err.to_string()))?;
-    collect_changed_files(substrate.roots().repo.as_path(), &before, &["substrate"], mutated_files)?;
-    Ok(outcome.fragments_archived)
+) -> Result<FragmentArchivalStep, CleanupError> {
+    let repo = substrate.roots().repo.as_path();
+    // Dynamics config is loaded best-effort: a malformed `dynamics:` block falls
+    // back to defaults (deferral on) rather than failing the whole cleanup run.
+    let dynamics = load_dynamics_config(repo).unwrap_or_else(|err| {
+        tracing::warn!(error = %err, "failed to load dynamics config; defaulting to citation-aware archival");
+        crate::dream::fragment_archival::DynamicsConfig::default()
+    });
+
+    // Dynamics off: archive via the substrate's hard cutoff, byte-identical to
+    // pre-dynamics behavior (spec §7 gating rule).
+    if !dynamics.enabled {
+        let before = snapshot_files(repo, &["substrate"])?;
+        let outcome = substrate
+            .archive_expired_substrate_fragments(config.now, config.fragment_lifetime_days)
+            .await
+            .map_err(|err| CleanupError::Substrate(err.to_string()))?;
+        collect_changed_files(repo, &before, &["substrate"], mutated_files)?;
+        return Ok(FragmentArchivalStep {
+            fragments_archived: outcome.fragments_archived,
+            deferred_fragments: Vec::new(),
+        });
+    }
+
+    // Dynamics on: citation-aware selective archival. Cited-and-under-cap
+    // fragments are deferred; everything else archives on the base schedule.
+    let outcome = archive_with_deferral(repo, &config.device_id, config.now, config.fragment_lifetime_days, &dynamics)
+        .map_err(CleanupError::Io)?;
+    mutated_files.extend(outcome.mutated_files);
+    Ok(FragmentArchivalStep {
+        fragments_archived: outcome.fragments_archived,
+        deferred_fragments: outcome.deferred_fragments,
+    })
 }
 
 async fn archive_stale_candidates(

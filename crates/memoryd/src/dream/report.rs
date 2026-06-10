@@ -12,8 +12,27 @@ pub struct CleanupReport {
     pub commit_deferred: bool,
     pub operations: CleanupOperationCounts,
     pub findings: Vec<CleanupFinding>,
+    /// Substrate fragments whose archival was deferred this run because they are
+    /// still cited by live memories and have not yet reached the immortality cap
+    /// (Memory Dynamics spec v0.1 §4). Additive surface; empty when dynamics is
+    /// disabled or nothing is deferred.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deferred_fragments: Vec<DeferredFragment>,
     pub mutated_files: Vec<String>,
     pub git: CleanupGitReport,
+}
+
+/// One deferred substrate fragment in a cleanup report (spec §4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeferredFragment {
+    /// Deferred fragment id (`sub_…`).
+    pub fragment_id: String,
+    /// Citation count (`Evidence.reference` hits across live memories) that
+    /// triggered the deferral.
+    pub citations: u64,
+    /// Hard immortality-cap timestamp: when this fragment archives regardless of
+    /// further citations.
+    pub deferred_until: DateTime<Utc>,
 }
 
 impl CleanupReport {
@@ -27,6 +46,7 @@ impl CleanupReport {
             commit_deferred: false,
             operations: input.operations,
             findings: input.findings,
+            deferred_fragments: input.deferred_fragments,
             mutated_files: input.mutated_files.clone(),
             git: CleanupGitReport {
                 author: CLEANUP_BOT_AUTHOR.to_string(),
@@ -44,6 +64,7 @@ pub struct CleanupReportInput {
     pub generated_at: DateTime<Utc>,
     pub operations: CleanupOperationCounts,
     pub findings: Vec<CleanupFinding>,
+    pub deferred_fragments: Vec<DeferredFragment>,
     pub mutated_files: Vec<String>,
 }
 

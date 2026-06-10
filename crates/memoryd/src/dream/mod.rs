@@ -3,6 +3,7 @@ pub mod cleanup;
 pub mod config;
 pub mod error;
 pub mod evidence;
+pub mod fragment_archival;
 pub mod git;
 pub mod harness;
 pub mod lease;
