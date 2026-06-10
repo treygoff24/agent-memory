@@ -11,6 +11,9 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::dynamics::strength::{strength, StrengthFacts, StrengthWeights};
+use crate::dynamics::usage::{distinct_sources_for_conn, UsageSummary};
+use crate::dynamics::DEFAULT_TAU_DAYS;
 use crate::handlers::memory_ops::serialized_enum_value as enum_value;
 
 const ENCRYPTED_REDACTION: &str = "[encrypted - use memoryd reveal <id> to decrypt]";
@@ -37,6 +40,11 @@ pub struct RecallStats {
     pub total: u32,
     pub last_30_days: u32,
     pub last_recalled_at: Option<DateTime<Utc>>,
+    /// Use-driven strength in `[0, 1]`, rendered to 2 decimals
+    /// (memory-dynamics-v0.1 §3 observability) so an operator can see why a
+    /// memory ranks. Computed over a single-memory pool, so frequency saturates
+    /// when the memory has any recalls (spec §2 single-memory-pool boundary).
+    pub strength: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -266,11 +274,42 @@ fn query_recall_stats(
         )
         .map_err(TrustArtifactError::QueryMirror)?;
 
+    let last_recalled = last_recalled_at.as_deref().and_then(parse_time);
+    let strength = render_strength(
+        connection,
+        id,
+        UsageSummary { count: last_30_days as u32, last_recalled_at: last_recalled },
+        now,
+    );
+
     Ok(RecallStats {
         total: total as u32,
         last_30_days: last_30_days as u32,
-        last_recalled_at: last_recalled_at.as_deref().and_then(parse_time),
+        last_recalled_at: last_recalled,
+        strength,
     })
+}
+
+/// Render the use-driven strength (memory-dynamics-v0.1 §3) for one memory.
+///
+/// Single-memory pool: the `freq_norm` denominator is the memory's own
+/// 30-day count, so frequency saturates to `1` whenever it has any recalls
+/// (spec §2 single-memory-pool boundary). Corroboration reads the same
+/// supersession-chain distinct-source query the ranking path uses. On a query
+/// error this falls back to `"not recorded"` rather than failing the artifact.
+fn render_strength(connection: &Connection, id: &MemoryId, usage: UsageSummary, now: DateTime<Utc>) -> String {
+    let distinct_sources = match distinct_sources_for_conn(connection, &[id.as_str()]) {
+        Ok(map) => map.get(id.as_str()).copied().unwrap_or(0),
+        Err(_) => return "not recorded".to_owned(),
+    };
+    let facts = StrengthFacts {
+        recall_count_30d: usage.count,
+        last_recalled_at: usage.last_recalled_at,
+        max_recall_30d_active: usage.count,
+        distinct_sources,
+    };
+    let value = strength(facts, StrengthWeights::default(), DEFAULT_TAU_DAYS, now);
+    format!("{value:.2}")
 }
 
 fn web_source_evidence(substrate: &Substrate, source: &memory_substrate::Source) -> Option<WebSourceEvidence> {

@@ -7,6 +7,8 @@ use memory_substrate::{
     AuxScope, MemoryStatus, RecallIndexQuery, RecallIndexRow, Scope, Sensitivity, Substrate, SubstrateResult,
 };
 
+use crate::dynamics::strength::{strength, StrengthFacts, StrengthWeights};
+use crate::dynamics::usage::{distinct_sources_for, open_runtime_index_at, recall_usage_for};
 use crate::recall::types::{EntityMatchKind, OmissionReason, RecallOmission, RecallSectionName};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -14,6 +16,13 @@ pub struct RecallCandidate {
     pub id: String,
     pub row: RecallIndexRow,
     pub entity_match: EntityMatchKind,
+    /// Use-driven memory strength in `[0, 1]` (memory-dynamics-v0.1 §3).
+    ///
+    /// `None` when dynamics is disabled, or when the usage query failed and the
+    /// block falls back to a structural-only ranking (soft failure, spec §3).
+    /// `rank.rs` reads this to add the bounded `strength_points` term; absent →
+    /// zero points.
+    pub strength: Option<f64>,
 }
 
 impl RecallCandidate {
@@ -25,11 +34,16 @@ impl RecallCandidate {
         self.entity_match = entity_match;
         self
     }
+
+    pub fn with_strength(mut self, strength: Option<f64>) -> Self {
+        self.strength = strength;
+        self
+    }
 }
 
 impl From<RecallIndexRow> for RecallCandidate {
     fn from(row: RecallIndexRow) -> Self {
-        Self { id: row.id.to_string(), row, entity_match: EntityMatchKind::None }
+        Self { id: row.id.to_string(), row, entity_match: EntityMatchKind::None, strength: None }
     }
 }
 
@@ -111,6 +125,78 @@ pub fn collect_recall_candidates(section: RecallSectionName, rows: Vec<RecallInd
     }
 
     CandidateCollection { facts, omitted, pending_attention_count }
+}
+
+/// Strength hydration inputs (memory-dynamics-v0.1 §3).
+pub struct StrengthHydration {
+    pub weights: StrengthWeights,
+    pub tau_days: f64,
+}
+
+/// Hydrate use-driven `strength` onto each candidate in one batched usage query
+/// (memory-dynamics-v0.1 §3 hydration rule).
+///
+/// All candidate ids are fetched through **one** `events_log` recall-usage query
+/// and **one** supersession-chain corroboration query — no per-candidate round
+/// trips. The pool maximum recall count is computed over this active candidate
+/// set (the `freq_norm` denominator). Strength is then attached to each candidate.
+///
+/// Returns `true` when hydration succeeded. On any index/query error the
+/// candidates are left with `strength = None` (structural-only ranking) and the
+/// function returns `false` so the caller can flag `dynamics_degraded` — never a
+/// hard recall failure (spec §3 soft-failure rule).
+pub fn hydrate_candidate_strength(
+    runtime_root: &std::path::Path,
+    candidates: &mut [RecallCandidate],
+    hydration: &StrengthHydration,
+    now: DateTime<Utc>,
+) -> bool {
+    if candidates.is_empty() {
+        return true;
+    }
+
+    let index = match open_runtime_index_at(runtime_root) {
+        Ok(index) => index,
+        Err(error) => {
+            tracing::warn!(%error, "dynamics: failed to open index for strength hydration; ranking structural-only");
+            return false;
+        }
+    };
+
+    let ids = candidates.iter().map(|candidate| candidate.id.as_str()).collect::<Vec<_>>();
+    let usage = match recall_usage_for(&index, &ids, now) {
+        Ok(usage) => usage,
+        Err(error) => {
+            tracing::warn!(%error, "dynamics: recall-usage query failed; ranking structural-only");
+            return false;
+        }
+    };
+    let distinct_sources = match distinct_sources_for(&index, &ids) {
+        Ok(sources) => sources,
+        Err(error) => {
+            tracing::warn!(%error, "dynamics: corroboration query failed; ranking structural-only");
+            return false;
+        }
+    };
+
+    let max_recall = candidates
+        .iter()
+        .map(|candidate| usage.get(candidate.id.as_str()).map_or(0, |summary| summary.count))
+        .max()
+        .unwrap_or(0);
+
+    for candidate in candidates.iter_mut() {
+        let summary = usage.get(candidate.id.as_str()).copied().unwrap_or_default();
+        let facts = StrengthFacts {
+            recall_count_30d: summary.count,
+            last_recalled_at: summary.last_recalled_at,
+            max_recall_30d_active: max_recall,
+            distinct_sources: distinct_sources.get(candidate.id.as_str()).copied().unwrap_or(0),
+        };
+        candidate.strength = Some(strength(facts, hydration.weights, hydration.tau_days, now));
+    }
+
+    true
 }
 
 fn omission_reason(row: &RecallIndexRow) -> Option<OmissionReason> {

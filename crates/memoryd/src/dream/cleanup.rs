@@ -16,12 +16,13 @@ use memory_substrate::{
 };
 use thiserror::Error;
 
-use crate::dream::fragment_archival::{archive_with_deferral, load_dynamics_config};
+use crate::dream::fragment_archival::archive_with_deferral;
 use crate::dream::rehydration::resolve_repo_relative_file_ref;
 use crate::dream::report::{
     cleanup_commit_subject, CleanupFinding, CleanupOperationCounts, CleanupReport, CleanupReportInput,
     DeferredFragment, CLEANUP_BOT_AUTHOR,
 };
+use crate::dynamics::{load_dynamics_config, DynamicsConfig};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CleanupConfig {
@@ -144,7 +145,7 @@ async fn archive_expired_fragments(
     // back to defaults (deferral on) rather than failing the whole cleanup run.
     let dynamics = load_dynamics_config(repo).unwrap_or_else(|err| {
         tracing::warn!(error = %err, "failed to load dynamics config; defaulting to citation-aware archival");
-        crate::dream::fragment_archival::DynamicsConfig::default()
+        DynamicsConfig::default()
     });
 
     // Dynamics off: archive via the substrate's hard cutoff, byte-identical to

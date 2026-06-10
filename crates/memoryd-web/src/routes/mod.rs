@@ -132,7 +132,7 @@ fn trust_artifact_fixture(id: MemoryId, now: DateTime<Utc>) -> TrustArtifact {
         original_confidence: "0.90".to_owned(),
         confidence_reason: Some("deterministic web fallback fixture".to_owned()),
         trust_summary: "trusted / project-standard@v2".to_owned(),
-        recall: RecallStats { total: 28, last_30_days: 12, last_recalled_at: Some(now) },
+        recall: RecallStats { total: 28, last_30_days: 12, last_recalled_at: Some(now), strength: "0.74".to_owned() },
         provenance_chain: vec![
             ProvenanceEvent {
                 timestamp: fixed_time((2026, 4, 30, 14, 22, 0)),

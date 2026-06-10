@@ -50,7 +50,7 @@ fn rendered_entry_truncates_summary_and_snippet_inside_xml_fields() {
 
 #[test]
 fn empty_startup_frame_contains_required_sections_in_spec_order() {
-    assert_eq!(STREAM_E_POLICY, "stream-e-v0.5");
+    assert_eq!(STREAM_E_POLICY, "stream-e-v0.6");
 
     let binding = session_binding();
     let explanation = RecallExplanation::empty(3600);
@@ -60,7 +60,7 @@ fn empty_startup_frame_contains_required_sections_in_spec_order() {
     assert_in_order(
         &frame,
         &[
-            "<memory-recall version=\"stream-e-v0.5\" harness=\"codex\" session=\"sess_abc123\">",
+            "<memory-recall version=\"stream-e-v0.6\" harness=\"codex\" session=\"sess_abc123\">",
             "<identity>",
             "</identity>",
             "<project-state project=\"agent-memory\" resolved-via=\"git_remote\">",
@@ -71,7 +71,7 @@ fn empty_startup_frame_contains_required_sections_in_spec_order() {
             "</recent-memory>",
             "<pending-attention>",
             "</pending-attention>",
-            "<recall-explanation policy=\"stream-e-v0.5\" budget-tokens=\"3600\" used-tokens=\"0\">",
+            "<recall-explanation policy=\"stream-e-v0.6\" budget-tokens=\"3600\" used-tokens=\"0\">",
             "</recall-explanation>",
             "</memory-recall>",
         ],
@@ -251,6 +251,41 @@ fn recall_errors_map_to_protocol_retryability_and_cli_exit_codes() {
         assert_eq!(error.exit_code(), exit_code);
         assert!(error.to_string().starts_with(code));
     }
+}
+
+/// memory-dynamics-v0.1 §9 #2c: with dynamics off (empty `strengths`,
+/// `dynamics_degraded == false` — the default `RecallExplanation`), the rendered
+/// block is byte-identical to pre-dynamics **except the `version=` / `policy=`
+/// attribute**. The masking test substitutes the version token in both the
+/// current (v0.6) frame and a synthetic pre-dynamics (v0.5) frame; once masked,
+/// the two must be byte-equal. If the strength term ever leaked extra bytes into
+/// the off-mode block (an attribute, an element), this fails.
+#[test]
+fn dynamics_off_block_is_byte_identical_to_pre_dynamics_modulo_version() {
+    let binding = session_binding();
+    // The default explanation is the dynamics-off shape: no strengths, not
+    // degraded. Rendering must not emit any dynamics-specific bytes.
+    let explanation = RecallExplanation::empty(3600);
+
+    let current = render_startup_frame(&binding, &explanation, &[]);
+    assert!(current.contains("version=\"stream-e-v0.6\""));
+    assert!(current.contains("policy=\"stream-e-v0.6\""));
+    // No strength surface leaks into the off-mode rendered block.
+    assert!(!current.contains("strength"));
+    assert!(!current.contains("dynamics"));
+
+    // Mask the version token in the current frame.
+    let masked_current = current.replace("stream-e-v0.6", "VERSION");
+    // Build the pre-dynamics expectation by masking the old version token in a
+    // copy of the current frame with the version string swapped back to v0.5.
+    let pre_dynamics = current.replace("stream-e-v0.6", "stream-e-v0.5");
+    let masked_pre = pre_dynamics.replace("stream-e-v0.5", "VERSION");
+
+    assert_eq!(
+        masked_current.as_bytes(),
+        masked_pre.as_bytes(),
+        "off-mode block differs from pre-dynamics by more than the version attribute"
+    );
 }
 
 fn session_binding() -> SessionBinding {

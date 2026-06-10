@@ -32,10 +32,10 @@ async fn memory_startup_returns_recall_block_and_increments_success_counter() {
     match response.result {
         ResponseResult::Success(ResponsePayload::Startup(startup)) => {
             assert_eq!(startup.session_binding.session_id, "sess_startup");
-            assert!(startup.recall_block.starts_with("<memory-recall version=\"stream-e-v0.5\""));
+            assert!(startup.recall_block.starts_with("<memory-recall version=\"stream-e-v0.6\""));
             assert!(startup.recall_block.contains("<identity>"));
             assert!(startup.recall_block.contains("<pending-attention>"));
-            assert_eq!(startup.recall_explanation.policy, "stream-e-v0.5");
+            assert_eq!(startup.recall_explanation.policy, "stream-e-v0.6");
         }
         other => panic!("expected startup success, got {other:?}"),
     }
@@ -80,7 +80,7 @@ async fn memory_startup_response_shape_sections_and_budget_match_contract() {
         panic!("expected startup response");
     };
 
-    assert!(startup.recall_block.starts_with("<memory-recall version=\"stream-e-v0.5\" harness=\"codex\""));
+    assert!(startup.recall_block.starts_with("<memory-recall version=\"stream-e-v0.6\" harness=\"codex\""));
     assert_ordered(
         &startup.recall_block,
         &[

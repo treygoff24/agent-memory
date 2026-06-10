@@ -9,6 +9,11 @@ use crate::recall::types::{OmissionReason, RecallOmission, RecallSectionName};
 pub struct RankingContext {
     pub now: DateTime<Utc>,
     pub exact_project_namespace: Option<String>,
+    /// Strength-term ceiling (memory-dynamics-v0.1 §3). `0` disables the term
+    /// (dynamics off → structural-only ranking, byte-identical to pre-dynamics
+    /// except the policy version string). At the default `12`, strength can flip
+    /// near-ties (structural gap `< 12`) but never a structural gap `>= 12`.
+    pub alpha_points: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -74,6 +79,22 @@ fn score_candidate(candidate: &RecallCandidate, context: &RankingContext) -> i64
         + recency_weight(candidate, context)
         + confidence_weight(candidate)
         + source_weight(candidate.candidate_source())
+        + strength_points_for(candidate, context)
+}
+
+/// Bounded additive strength term (memory-dynamics-v0.1 §3).
+///
+/// `floor(strength × alpha_points)`, in `[0, alpha_points]`. When the candidate
+/// has no hydrated strength (dynamics off, or usage query soft-failed) or
+/// `alpha_points == 0`, the term is `0` — leaving the structural ranking exactly
+/// as it was before dynamics.
+fn strength_points_for(candidate: &RecallCandidate, context: &RankingContext) -> i64 {
+    match candidate.strength {
+        Some(strength) if context.alpha_points > 0 => {
+            crate::dynamics::strength::strength_points(strength, context.alpha_points)
+        }
+        _ => 0,
+    }
 }
 
 fn compare_ranked_candidates(left: &RankedRecallCandidate, right: &RankedRecallCandidate) -> std::cmp::Ordering {

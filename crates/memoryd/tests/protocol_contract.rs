@@ -728,6 +728,7 @@ fn protocol_contract_success_responses_are_bounded_and_guided() {
             policy_applied: Some("project-standard@v2".to_owned()),
             policy_source: Some("built_in_fallback".to_owned()),
             existing_id: None,
+            similarity_degraded: None,
         }),
     );
     let supersede = ResponseEnvelope::success(
@@ -828,7 +829,8 @@ fn sample_trust_artifact() -> memoryd::trust_artifact::TrustArtifact {
         "recall": {
             "total": 1,
             "last_30_days": 1,
-            "last_recalled_at": "2026-05-01T11:02:00Z"
+            "last_recalled_at": "2026-05-01T11:02:00Z",
+            "strength": "0.42"
         },
         "provenance_chain": [],
         "policy_decisions": [],

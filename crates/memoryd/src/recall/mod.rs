@@ -17,8 +17,8 @@ pub(crate) mod types;
 pub use binding::validate_startup_request;
 pub use budget::{estimated_tokens, truncate_utf8_bytes, TruncatedText};
 pub use candidates::{
-    collect_recall_candidates, collect_recall_candidates_from_index, CandidateCollection, RecallCandidate,
-    RecallCollectionRequest, RecallIndexFuture, RecallIndexReader,
+    collect_recall_candidates, collect_recall_candidates_from_index, hydrate_candidate_strength, CandidateCollection,
+    RecallCandidate, RecallCollectionRequest, RecallIndexFuture, RecallIndexReader, StrengthHydration,
 };
 pub use counters::{RecallStatusCounters, SharedRecallCounters};
 pub use dedup_state::RecallDedupState;
@@ -43,6 +43,6 @@ pub use startup::{
 pub use types::{
     bounded_omissions, BoundedOmissions, ConcurrentSessionMode, DeltaPeerDelivery, DeltaRequest, DeltaResponse,
     EntityMatchKind, OmissionReason, ProjectBinding, ProjectBindingSource, RecallExplanation, RecallOmission,
-    RecallSectionExplanation, RecallSectionName, SessionBinding, StartupRequest, StartupResponse,
+    RecallSectionExplanation, RecallSectionName, RecallStrength, SessionBinding, StartupRequest, StartupResponse,
     MAX_SERIALIZED_OMISSIONS, STREAM_E_POLICY,
 };

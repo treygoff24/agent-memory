@@ -7,9 +7,13 @@ use memorum_coordination::{
 };
 use memory_substrate::{AuxScope, MemoryStatus, RecallIndexQuery, RecallIndexRow, Scope, Substrate, SubstrateError};
 
+use crate::dynamics::{load_dynamics_config, DynamicsConfig};
 use crate::reality_check::RcScheduler;
 use crate::recall::budget::estimated_tokens;
-use crate::recall::candidates::{collect_recall_candidates_from_index, RecallCollectionRequest};
+use crate::recall::candidates::{
+    collect_recall_candidates_from_index, hydrate_candidate_strength, RecallCandidate, RecallCollectionRequest,
+    StrengthHydration,
+};
 use crate::recall::dedup_state::RecallDedupState;
 use crate::recall::dream_questions::{select_pending_attention_questions, CAP_TOTAL};
 use crate::recall::error::RecallError;
@@ -24,8 +28,8 @@ use crate::recall::source_identity::{
     peer_source_identity,
 };
 use crate::recall::types::{
-    bounded_omissions, RecallExplanation, RecallSectionExplanation, RecallSectionName, SessionBinding, StartupRequest,
-    StartupResponse, DEFAULT_STARTUP_BUDGET_TOKENS,
+    bounded_omissions, RecallExplanation, RecallSectionExplanation, RecallSectionName, RecallStrength, SessionBinding,
+    StartupRequest, StartupResponse, DEFAULT_STARTUP_BUDGET_TOKENS,
 };
 use crate::recall::validate_startup_request;
 use crate::state::DaemonState;
@@ -79,12 +83,26 @@ pub async fn build_startup_response_with_coordination_config(
 
     let project_namespace = session_binding.project.as_ref().map(|project| project.canonical_id.clone());
     let ranking_now = collection.facts.iter().map(|candidate| candidate.row.updated_at).max().unwrap_or_default();
+
+    // Hydrate use-driven strength (memory-dynamics-v0.1 §3) before ranking, gated
+    // by `dynamics.enabled`. The hydration is a synchronous SQLite read, so it runs
+    // on the blocking pool to keep tokio workers free on the per-prompt hot path.
+    // Soft failure: on a query error the candidates keep `strength = None` and
+    // `dynamics_degraded` is flagged — never a hard recall failure.
+    let dynamics = load_dynamics_config(substrate.roots().repo.as_path()).unwrap_or_else(|error| {
+        tracing::warn!(%error, "dynamics: failed to load config; ranking structural-only");
+        DynamicsConfig::default()
+    });
+    let StrengthHydrationResult { facts, alpha_points, dynamics_degraded } =
+        hydrate_strength_for_ranking(substrate, &dynamics, collection.facts, ranking_now).await;
+
     let selected = select_ranked_candidates(
         RecallSectionName::RecentMemory,
-        collection.facts,
-        RankingContext { now: ranking_now, exact_project_namespace: project_namespace },
+        facts,
+        RankingContext { now: ranking_now, exact_project_namespace: project_namespace, alpha_points },
         budget_tokens.saturating_sub(128).max(1),
     );
+    let strengths = strength_metadata(&selected);
 
     let included_memory_ids = if include_recent {
         selected.selected.iter().map(|candidate| candidate.id.clone()).collect::<Vec<_>>()
@@ -156,7 +174,8 @@ pub async fn build_startup_response_with_coordination_config(
             body: "Deterministic passive recall from Memorum index rows.".to_owned(),
         },
     ];
-    let startup_context = startup_context_from_selection(&session_binding, &selected);
+    let startup_context = startup_context_from_selection(&session_binding, &selected)
+        .with_harness_registry(coordination_config.harness_registry());
     let startup_peer_updates =
         startup_peer_updates(substrate, &session_binding, &coordination_config, startup_context.clone()).await?;
 
@@ -175,6 +194,8 @@ pub async fn build_startup_response_with_coordination_config(
         ),
         omitted: bounded.omitted,
         omitted_truncated_count: bounded.omitted_truncated_count,
+        strengths,
+        dynamics_degraded,
     };
     let recall_block = render_startup_frame_with_stable_budget(
         &session_binding,
@@ -656,6 +677,53 @@ fn section_explanations(
         .collect()
 }
 
+struct StrengthHydrationResult {
+    facts: Vec<RecallCandidate>,
+    alpha_points: u32,
+    dynamics_degraded: bool,
+}
+
+/// Hydrate strength onto the ranking candidates per the dynamics config
+/// (memory-dynamics-v0.1 §3), on the blocking pool.
+///
+/// Dynamics off (`enabled = false`) → `alpha_points = 0`, no hydration, candidates
+/// untouched: ranking is structural-only and the block is byte-identical to
+/// pre-dynamics except the policy version string. On a usage-query soft failure
+/// the candidates keep `strength = None` and `dynamics_degraded` is set.
+async fn hydrate_strength_for_ranking(
+    substrate: &Substrate,
+    dynamics: &DynamicsConfig,
+    mut facts: Vec<RecallCandidate>,
+    now: DateTime<Utc>,
+) -> StrengthHydrationResult {
+    if !dynamics.enabled || facts.is_empty() {
+        return StrengthHydrationResult { facts, alpha_points: 0, dynamics_degraded: false };
+    }
+
+    let runtime_root = substrate.roots().runtime.clone();
+    let hydration = StrengthHydration { weights: dynamics.weights, tau_days: dynamics.tau_days };
+    let (facts, ok) = tokio::task::spawn_blocking(move || {
+        let ok = hydrate_candidate_strength(&runtime_root, &mut facts, &hydration, now);
+        (facts, ok)
+    })
+    .await
+    .expect("strength hydration blocking task panicked");
+
+    StrengthHydrationResult { facts, alpha_points: dynamics.alpha_points, dynamics_degraded: !ok }
+}
+
+/// Per-memory strength metadata for the recall explanation (spec §3
+/// observability), over the selected candidates that carry a hydrated value.
+fn strength_metadata(selected: &crate::recall::rank::RankedSelection) -> Vec<RecallStrength> {
+    selected
+        .selected
+        .iter()
+        .filter_map(|candidate| {
+            candidate.candidate.strength.map(|strength| RecallStrength { id: candidate.id.clone(), strength })
+        })
+        .collect()
+}
+
 fn map_substrate_error(error: SubstrateError) -> RecallError {
     match error {
         SubstrateError::InvalidQuery { message, .. } => RecallError::invalid_request(message),
@@ -692,6 +760,8 @@ mod tests {
             sections: Vec::new(),
             omitted: Vec::new(),
             omitted_truncated_count: 0,
+            strengths: Vec::new(),
+            dynamics_degraded: false,
         };
 
         let recall_block = render_startup_frame_with_stable_budget(

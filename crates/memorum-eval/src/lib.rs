@@ -1,6 +1,7 @@
 pub mod assertions;
 pub mod daemon_scaffold;
 pub mod harness_runner;
+#[cfg(feature = "judge")]
 pub mod judge;
 pub mod orchestrator;
 #[cfg(feature = "quality")]

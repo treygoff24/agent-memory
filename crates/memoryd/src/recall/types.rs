@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-pub const STREAM_E_POLICY: &str = "stream-e-v0.5";
+pub const STREAM_E_POLICY: &str = "stream-e-v0.6";
 pub const MAX_SERIALIZED_OMISSIONS: usize = 64;
 pub const DEFAULT_STARTUP_BUDGET_TOKENS: usize = 3_600;
 pub const DEFAULT_DELTA_BUDGET_TOKENS: usize = 400;
@@ -29,7 +29,7 @@ pub struct StartupRequest {
     pub budget_tokens: Option<usize>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StartupResponse {
     pub session_binding: SessionBinding,
     pub recall_block: String,
@@ -101,7 +101,7 @@ pub enum ProjectBindingSource {
     GitRemote,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RecallExplanation {
     pub budget_tokens: usize,
     pub budget_used_tokens: usize,
@@ -109,6 +109,26 @@ pub struct RecallExplanation {
     pub sections: Vec<RecallSectionExplanation>,
     pub omitted: Vec<RecallOmission>,
     pub omitted_truncated_count: u32,
+    /// Per-memory use-driven strength (memory-dynamics-v0.1 §3 observability).
+    /// Lets an operator see *why* a memory ranked. Empty when dynamics is off.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub strengths: Vec<RecallStrength>,
+    /// `true` when the usage query soft-failed and ranking fell back to
+    /// structural-only (spec §3 soft-failure rule).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub dynamics_degraded: bool,
+}
+
+/// One memory's strength, surfaced in the recall explanation (spec §3).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecallStrength {
+    pub id: String,
+    /// Strength in `[0, 1]`, rendered to 2 decimals downstream.
+    pub strength: f64,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,6 +191,8 @@ impl RecallExplanation {
             sections: Vec::new(),
             omitted: Vec::new(),
             omitted_truncated_count: 0,
+            strengths: Vec::new(),
+            dynamics_degraded: false,
         }
     }
 

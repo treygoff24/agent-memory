@@ -44,8 +44,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use memory_substrate::{AuxScope, ChunkQuery, InitOptions, MemoryStatus, RecallIndexQuery, Roots, Substrate};
+use memoryd::dynamics::strength::StrengthWeights;
+use memoryd::dynamics::{DEFAULT_ALPHA_POINTS, DEFAULT_TAU_DAYS};
 use memoryd::recall::{
-    collect_recall_candidates, select_ranked_candidates, CandidateCollection, RankingContext, RecallSectionName,
+    collect_recall_candidates, hydrate_candidate_strength, select_ranked_candidates, CandidateCollection,
+    RankingContext, RecallSectionName, StrengthHydration,
 };
 use serde::{Deserialize, Serialize};
 
@@ -311,7 +314,7 @@ impl GoldenCorpus {
             }
         }
 
-        let CandidateCollection { facts, .. } =
+        let CandidateCollection { mut facts, .. } =
             collect_recall_candidates(RecallSectionName::RecentMemory, rows.into_values().collect());
 
         // Ranking context: `now` = newest candidate (matches the startup
@@ -319,7 +322,24 @@ impl GoldenCorpus {
         // bonus, multi-scope leaves it None.
         let now = facts.iter().map(|c| c.row.updated_at).max().unwrap_or_default();
         let exact_project_namespace = single_project_canonical(&prefixes);
-        let context = RankingContext { now, exact_project_namespace };
+
+        // Dynamics A/B toggle (memory-dynamics-v0.1 §3). Default OFF
+        // (`alpha_points = 0`) keeps the structural baseline byte-identical. Set
+        // `MEMORUM_DYNAMICS=on` to hydrate use-driven strength and apply the
+        // bounded `alpha_points = 12` ranking term — the on-mode arm of the
+        // golden-corpus A/B the spec §9 quality gate calls for.
+        let alpha_points = if dynamics_enabled() {
+            hydrate_candidate_strength(
+                &self.substrate.roots().runtime,
+                &mut facts,
+                &StrengthHydration { weights: StrengthWeights::default(), tau_days: DEFAULT_TAU_DAYS },
+                now,
+            );
+            DEFAULT_ALPHA_POINTS
+        } else {
+            0
+        };
+        let context = RankingContext { now, exact_project_namespace, alpha_points };
 
         // Large budget so token truncation never confounds *ranking* quality —
         // we are measuring order, not the startup token cap. Selection still
@@ -327,6 +347,16 @@ impl GoldenCorpus {
         let selection = select_ranked_candidates(RecallSectionName::RecentMemory, facts, context, usize::MAX);
         Ok(selection.selected.into_iter().map(|c| c.id).collect())
     }
+}
+
+/// Whether the dynamics strength term is enabled for this run.
+///
+/// `MEMORUM_DYNAMICS=on` (or `1`/`true`) enables the on-mode arm of the A/B;
+/// anything else (including unset) keeps dynamics off — the structural baseline.
+fn dynamics_enabled() -> bool {
+    std::env::var("MEMORUM_DYNAMICS")
+        .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "on" | "1" | "true" | "yes"))
+        .unwrap_or(false)
 }
 
 /// When exactly one project prefix is in scope, return its canonical id so the
@@ -729,9 +759,10 @@ pub fn compare_to_baseline(report: &QualityReport, tolerance: f64) -> Result<Gat
             regressions.push(format!("baseline missing seam `{seam}`"));
             continue;
         };
-        check_drop(seam, "ndcg@5", &base.ndcg_at_k, &current.ndcg_at_k, "5", tolerance, &mut regressions);
-        check_drop(seam, "recall@5", &base.recall_at_k, &current.recall_at_k, "5", tolerance, &mut regressions);
-        check_rise(seam, "trap_rate@5", base.trap_rate_at_5, current.trap_rate_at_5, tolerance, &mut regressions);
+        let mut check = GateCheck { seam, tolerance, out: &mut regressions };
+        check.drop_at_5("ndcg@5", &base.ndcg_at_k, &current.ndcg_at_k);
+        check.drop_at_5("recall@5", &base.recall_at_k, &current.recall_at_k);
+        check.rise("trap_rate@5", base.trap_rate_at_5, current.trap_rate_at_5);
     }
 
     if regressions.is_empty() {
@@ -741,24 +772,31 @@ pub fn compare_to_baseline(report: &QualityReport, tolerance: f64) -> Result<Gat
     }
 }
 
-fn check_drop(
-    seam: &str,
-    label: &str,
-    base: &BTreeMap<String, f64>,
-    current: &BTreeMap<String, f64>,
-    k: &str,
+/// One seam's tolerance-banded baseline comparison, accumulating violations.
+struct GateCheck<'a> {
+    seam: &'a str,
     tolerance: f64,
-    out: &mut Vec<String>,
-) {
-    let (Some(&b), Some(&c)) = (base.get(k), current.get(k)) else { return };
-    if b - c > tolerance {
-        out.push(format!("{seam} {label}: {c:.4} regressed below baseline {b:.4} (tolerance {tolerance})"));
-    }
+    out: &'a mut Vec<String>,
 }
 
-fn check_rise(seam: &str, label: &str, base: f64, current: f64, tolerance: f64, out: &mut Vec<String>) {
-    if current - base > tolerance {
-        out.push(format!("{seam} {label}: {current:.4} rose above baseline {base:.4} (tolerance {tolerance})"));
+impl GateCheck<'_> {
+    /// Flag `label` when the current `@5` metric drops more than `tolerance` below baseline.
+    /// The gate only inspects rank-5 cuts; trap-rate is likewise @5-only.
+    fn drop_at_5(&mut self, label: &str, base: &BTreeMap<String, f64>, current: &BTreeMap<String, f64>) {
+        let (Some(&b), Some(&c)) = (base.get("5"), current.get("5")) else { return };
+        if b - c > self.tolerance {
+            let Self { seam, tolerance, .. } = self;
+            self.out.push(format!("{seam} {label}: {c:.4} regressed below baseline {b:.4} (tolerance {tolerance})"));
+        }
+    }
+
+    /// Flag `label` when the current value rises more than `tolerance` above baseline (lower-is-better metrics).
+    fn rise(&mut self, label: &str, base: f64, current: f64) {
+        if current - base > self.tolerance {
+            let Self { seam, tolerance, .. } = self;
+            self.out
+                .push(format!("{seam} {label}: {current:.4} rose above baseline {base:.4} (tolerance {tolerance})"));
+        }
     }
 }
 

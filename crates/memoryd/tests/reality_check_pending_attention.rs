@@ -150,8 +150,8 @@ async fn test_startup_xml_version_string_unchanged() {
 
     let startup = fixture.startup().await;
 
-    assert!(startup.recall_block.starts_with("<memory-recall version=\"stream-e-v0.5\""));
-    assert_eq!(startup.recall_explanation.policy, "stream-e-v0.5");
+    assert!(startup.recall_block.starts_with("<memory-recall version=\"stream-e-v0.6\""));
+    assert_eq!(startup.recall_explanation.policy, "stream-e-v0.6");
 }
 
 struct PendingAttentionFixture {

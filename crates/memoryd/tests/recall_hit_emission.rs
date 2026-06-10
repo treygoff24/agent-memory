@@ -71,7 +71,7 @@ async fn test_recall_output_xml_unchanged() {
     let second = fixture.startup().await;
 
     assert_eq!(first.recall_block, second.recall_block);
-    assert!(first.recall_block.starts_with("<memory-recall version=\"stream-e-v0.5\""));
+    assert!(first.recall_block.starts_with("<memory-recall version=\"stream-e-v0.6\""));
     assert!(!first.recall_block.contains("<recall-hit"));
     assert!(!first.recall_block.contains("RecallHit"));
 }

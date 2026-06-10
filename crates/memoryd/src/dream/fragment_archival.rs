@@ -42,80 +42,11 @@ use std::path::Path;
 use chrono::{DateTime, Duration, Utc};
 use memory_substrate::tree::relative_memory_paths;
 use memory_substrate::{Memory, MemoryStatus};
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::dream::rehydration::normalize_reference;
 use crate::dream::report::DeferredFragment;
-
-/// Memoryd-local view of the synced `dynamics:` config section (spec §7).
-///
-/// The `dynamics.*` keys live in the synced `config.yaml` alongside `dreams:`
-/// and `events:`. They are intentionally parsed here as a standalone subtree
-/// rather than threaded through `memory_substrate`'s `SyncedConfig`: the strength
-/// term (Task 5.3) owns the canonical config surface, and the cleanup layer only
-/// needs the deferral knobs. `config.yaml` carries no `deny_unknown_fields`, so a
-/// `dynamics:` block coexists with the substrate's own parse.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DynamicsConfig {
-    /// Master switch (spec §7). `false` turns deferral off; the cleanup layer
-    /// then archives via the substrate's hard cutoff, unchanged.
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
-    /// A fragment cited at least this many times is eligible for deferral
-    /// (spec §4, default 2).
-    #[serde(default = "default_citation_defer_threshold")]
-    pub citation_defer_threshold: u32,
-    /// Immortality cap: total fragment lifetime in days, after which archival
-    /// proceeds regardless of citations (spec §4, default 42 = 3× base).
-    #[serde(default = "default_max_fragment_lifetime_days")]
-    pub max_fragment_lifetime_days: u32,
-}
-
-impl Default for DynamicsConfig {
-    fn default() -> Self {
-        Self {
-            enabled: default_enabled(),
-            citation_defer_threshold: default_citation_defer_threshold(),
-            max_fragment_lifetime_days: default_max_fragment_lifetime_days(),
-        }
-    }
-}
-
-fn default_enabled() -> bool {
-    true
-}
-
-fn default_citation_defer_threshold() -> u32 {
-    2
-}
-
-fn default_max_fragment_lifetime_days() -> u32 {
-    42
-}
-
-/// Outer shape used to pluck just the `dynamics:` subtree out of `config.yaml`.
-#[derive(Debug, Default, Deserialize)]
-struct ConfigDynamicsEnvelope {
-    #[serde(default)]
-    dynamics: Option<DynamicsConfig>,
-}
-
-/// Load the `dynamics:` section from `<repo>/config.yaml`.
-///
-/// An absent file, an absent `dynamics:` section, or any unrecognized extra keys
-/// all resolve to spec defaults (`enabled: true`). A malformed `dynamics:` block
-/// is the only error surfaced; the caller treats that as "config off" rather than
-/// failing the whole cleanup run.
-pub fn load_dynamics_config(repo: &Path) -> Result<DynamicsConfig, String> {
-    let path = repo.join("config.yaml");
-    if !path.exists() {
-        return Ok(DynamicsConfig::default());
-    }
-    let text = fs::read_to_string(&path).map_err(|err| err.to_string())?;
-    let envelope: ConfigDynamicsEnvelope = serde_yaml::from_str(&text).map_err(|err| err.to_string())?;
-    Ok(envelope.dynamics.unwrap_or_default())
-}
+use crate::dynamics::DynamicsConfig;
 
 /// Outcome of one citation-aware archival pass over a device's active fragments.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -395,47 +326,4 @@ fn rewrite_lines(path: &Path, lines: &[String]) -> std::io::Result<()> {
 
 fn repo_relative(repo: &Path, path: &Path) -> String {
     path.strip_prefix(repo).unwrap_or(path).to_string_lossy().replace('\\', "/")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn dynamics_config_defaults_match_spec() {
-        let config = DynamicsConfig::default();
-        assert!(config.enabled);
-        assert_eq!(config.citation_defer_threshold, 2);
-        assert_eq!(config.max_fragment_lifetime_days, 42);
-    }
-
-    #[test]
-    fn dynamics_config_parses_partial_section() {
-        let yaml = "dynamics:\n  citation_defer_threshold: 5\n";
-        let envelope: ConfigDynamicsEnvelope = serde_yaml::from_str(yaml).expect("parse");
-        let config = envelope.dynamics.expect("dynamics present");
-        assert_eq!(config.citation_defer_threshold, 5);
-        // Unspecified keys fall back to spec defaults.
-        assert!(config.enabled);
-        assert_eq!(config.max_fragment_lifetime_days, 42);
-    }
-
-    #[test]
-    fn load_dynamics_config_defaults_when_file_absent() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let config = load_dynamics_config(temp.path()).expect("load");
-        assert_eq!(config, DynamicsConfig::default());
-    }
-
-    #[test]
-    fn load_dynamics_config_ignores_unrelated_keys() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        fs::write(
-            temp.path().join("config.yaml"),
-            "schema_version: 1\ndreams:\n  enabled: true\ndynamics:\n  enabled: false\n",
-        )
-        .expect("write config");
-        let config = load_dynamics_config(temp.path()).expect("load");
-        assert!(!config.enabled);
-    }
 }

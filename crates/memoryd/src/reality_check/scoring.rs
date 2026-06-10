@@ -1,12 +1,11 @@
 use std::collections::HashMap;
 
-use chrono::{DateTime, Duration, Utc};
-use memory_substrate::{
-    index::{open_index, Index},
-    MemoryStatus, RecallIndexRow, Sensitivity, Substrate, SubstrateResult,
-};
+use chrono::{DateTime, Utc};
+use memory_substrate::index::Index;
+use memory_substrate::{MemoryStatus, RecallIndexRow, Sensitivity, Substrate, SubstrateResult};
 use rusqlite::params_from_iter;
 
+use crate::dynamics::usage::{distinct_sources_for, open_runtime_index, recall_usage_for};
 use crate::protocol::ComponentScores;
 use crate::reality_check::types::{ScoreFacts, ScoreWeights, ScoredMemory, ScoringConfig};
 
@@ -31,11 +30,11 @@ pub fn score_memories_at(
         return Ok(Vec::new());
     }
 
-    let index = Index::new(open_index(&substrate.roots().runtime.join("index.sqlite"))?);
+    let index = open_runtime_index(substrate)?;
     let candidate_ids = candidates.iter().map(|row| row.id.as_str()).collect::<Vec<_>>();
-    let recall_counts = recall_counts_30d(&index, &candidate_ids, now)?;
+    let recall_counts = recall_usage_for(&index, &candidate_ids, now)?;
     let static_fields_by_id = indexed_static_fields_by_id(&index, &candidates)?;
-    let distinct_sources_by_id = distinct_sources_by_id(&index, &candidate_ids)?;
+    let distinct_sources_by_id = distinct_sources_for(&index, &candidate_ids)?;
     let max_recall = candidates
         .iter()
         .map(|row| recall_counts.get(row.id.as_str()).map_or(0, |summary| summary.count))
@@ -121,56 +120,11 @@ fn bounded_score(component_scores: ComponentScores, weights: ScoreWeights) -> f6
     raw.clamp(0.0, 1.0)
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-struct RecallSummary {
-    count: u32,
-    last_recalled_at: Option<DateTime<Utc>>,
-}
-
 #[derive(Debug, Clone, Copy)]
 struct IndexedStaticFields {
     last_observed_at: DateTime<Utc>,
     original_confidence: Option<f64>,
     encrypted: bool,
-}
-
-fn recall_counts_30d(
-    index: &Index,
-    memory_ids: &[&str],
-    now: DateTime<Utc>,
-) -> SubstrateResult<HashMap<String, RecallSummary>> {
-    if memory_ids.is_empty() {
-        return Ok(HashMap::new());
-    }
-
-    let cutoff = (now - Duration::days(30)).to_rfc3339();
-    let mut summaries = HashMap::with_capacity(memory_ids.len());
-    for chunk in memory_ids.chunks(SQL_PARAM_CHUNK_SIZE) {
-        let query = format!(
-            "SELECT memory_id, COUNT(*), MAX(ts)
-             FROM events_log
-             WHERE kind = 'recall_hit'
-               AND memory_id IS NOT NULL
-               AND ts > ?
-               AND memory_id IN ({})
-             GROUP BY memory_id",
-            placeholders(chunk.len())
-        );
-        let mut statement = index.connection().prepare_cached(&query)?;
-        let params = std::iter::once(cutoff.as_str()).chain(chunk.iter().copied());
-        let rows = statement.query_map(params_from_iter(params), |row| {
-            let memory_id: String = row.get(0)?;
-            let count = row.get::<_, i64>(1)? as u32;
-            let last_recalled_at = parse_optional_time(row.get::<_, Option<String>>(2)?);
-            Ok((memory_id, RecallSummary { count, last_recalled_at }))
-        })?;
-
-        for row in rows {
-            let (memory_id, summary) = row?;
-            summaries.insert(memory_id, summary);
-        }
-    }
-    Ok(summaries)
 }
 
 fn indexed_static_fields_by_id(
@@ -215,44 +169,6 @@ fn indexed_static_fields_by_id(
     Ok(fields)
 }
 
-fn distinct_sources_by_id(index: &Index, memory_ids: &[&str]) -> SubstrateResult<HashMap<String, u32>> {
-    if memory_ids.is_empty() {
-        return Ok(HashMap::new());
-    }
-
-    let mut counts = HashMap::with_capacity(memory_ids.len());
-    for chunk in memory_ids.chunks(SQL_PARAM_CHUNK_SIZE) {
-        let query = format!(
-            "WITH RECURSIVE chain(root_id, memory_id, depth) AS (
-               SELECT id, id, 0 FROM memories WHERE id IN ({})
-               UNION ALL
-               SELECT c.root_id, ms.supersedes_id, c.depth + 1
-                 FROM chain c
-                 JOIN memory_supersession ms ON ms.memory_id = c.memory_id
-                WHERE c.depth < 8
-             )
-             SELECT chain.root_id, COUNT(DISTINCT mem.source_harness)
-               FROM chain
-               JOIN memories mem ON chain.memory_id = mem.id
-              GROUP BY chain.root_id",
-            placeholders(chunk.len())
-        );
-        let mut statement = index.connection().prepare_cached(&query)?;
-        let rows = statement.query_map(params_from_iter(chunk.iter().copied()), |db_row| {
-            let id: String = db_row.get(0)?;
-            let distinct_sources = db_row.get::<_, i64>(1)? as u32;
-            Ok((id, distinct_sources))
-        })?;
-
-        for row in rows {
-            let (id, count) = row?;
-            counts.insert(id, count);
-        }
-    }
-
-    Ok(counts)
-}
-
 fn compare_scored_memories(left: &ScoredMemory, right: &ScoredMemory) -> std::cmp::Ordering {
     right
         .status
@@ -267,10 +183,6 @@ fn take_top_with_pins(scored: Vec<ScoredMemory>, top_n: usize) -> Vec<ScoredMemo
         return Vec::new();
     }
     scored.into_iter().take(top_n).collect()
-}
-
-fn parse_optional_time(value: Option<String>) -> Option<DateTime<Utc>> {
-    value.as_deref().and_then(parse_time)
 }
 
 fn parse_time(value: &str) -> Option<DateTime<Utc>> {

@@ -290,6 +290,8 @@ export interface RecallStats {
     total: number;
     last_30_days: number;
     last_recalled_at: string | null;
+    /** Use-driven strength in [0, 1], rendered to 2 decimals (memory-dynamics-v0.1 §3). */
+    strength: string;
 }
 
 export interface SupersessionLink {

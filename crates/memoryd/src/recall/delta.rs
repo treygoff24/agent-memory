@@ -114,6 +114,7 @@ async fn build_delta_coordination(
 
     let now = Utc::now();
     let mut session = delta_session_context(session_binding, message);
+    session.set_harness_registry(context.config.harness_registry());
     if session.is_observe_only_harness() {
         return Ok(DeltaCoordination::default());
     }
