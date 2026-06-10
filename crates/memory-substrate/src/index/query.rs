@@ -249,6 +249,34 @@ impl Index {
         reconcile_active_embedding_jobs_impl(&mut self.connection, &triple)
     }
 
+    /// Deferred second pass for supersession edges after a bulk reindex.
+    ///
+    /// The per-memory [`sync_supersession`] insert is FK-guarded (it skips any
+    /// edge whose `supersedes` target's `memories` row does not yet exist), so a
+    /// bulk reindex that visits a supersessor before its target silently drops
+    /// that edge rather than aborting. This pass re-derives every supersession
+    /// edge from the indexed `frontmatter_json`, by which point all `memories`
+    /// rows of the bulk pass are present, so every edge whose target is indexed
+    /// is (re-)added. It is the exact set-based form the v4 migration's
+    /// supersession bootstrap uses (`migrations.rs`), kept identical so the two
+    /// can never drift, and is idempotent: `INSERT OR IGNORE` over a table whose
+    /// per-memory rows the upsert path already replaced, plus the same
+    /// `EXISTS (target)` guard, leaves an already-consistent table unchanged.
+    ///
+    /// Returns the number of edge rows inserted by this pass (edges already
+    /// present, or whose target is still unindexed, contribute zero).
+    pub fn resync_supersession_edges(&mut self) -> rusqlite::Result<usize> {
+        let inserted = self.connection.execute(
+            "INSERT OR IGNORE INTO memory_supersession(memory_id, supersedes_id)
+             SELECT memories.id, superseded.value
+             FROM memories, json_each(memories.frontmatter_json, '$.supersedes') AS superseded
+             WHERE superseded.value IS NOT NULL
+               AND EXISTS (SELECT 1 FROM memories AS target WHERE target.id = superseded.value)",
+            [],
+        )?;
+        Ok(inserted)
+    }
+
     /// The active embedding triple this index was opened with.
     pub fn active_embedding(&self) -> &EmbeddingTriple {
         &self.active_embedding
@@ -1262,8 +1290,22 @@ fn sync_evidence(txn: &Transaction<'_>, memory_id: &str, evidence: &[crate::mode
 fn sync_supersession(txn: &Transaction<'_>, memory_id: &str, supersedes: &[MemoryId]) -> rusqlite::Result<()> {
     txn.execute("DELETE FROM memory_supersession WHERE memory_id = ?1", [memory_id])?;
     for supersedes_id in supersedes {
+        // FK guard, parity with the v4 migration's supersession bootstrap
+        // (`migrations.rs`): the edge is inserted only when its target's
+        // `memories` row already exists. `memory_supersession.supersedes_id`
+        // is a `REFERENCES memories(id)` FK with `PRAGMA foreign_keys = ON`,
+        // so an unguarded insert against a not-yet-indexed target trips the
+        // constraint and — during a *bulk* reindex that walks files in
+        // unsorted order — aborts the whole reconcile. The incremental write
+        // path always has the target present (the replaced memory was indexed
+        // before its replacement is written), so this guard is behavior-
+        // preserving there. Edges to a target that genuinely is not indexed
+        // yet are skipped here and re-added by the deferred resync pass
+        // ([`Index::resync_supersession_edges`]) once every `memories` row of
+        // the bulk pass exists.
         txn.execute(
-            "INSERT OR IGNORE INTO memory_supersession(memory_id, supersedes_id) VALUES (?1, ?2)",
+            "INSERT OR IGNORE INTO memory_supersession(memory_id, supersedes_id)
+             SELECT ?1, ?2 WHERE EXISTS (SELECT 1 FROM memories WHERE id = ?2)",
             params![memory_id, supersedes_id.as_str()],
         )?;
     }

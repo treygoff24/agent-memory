@@ -201,10 +201,10 @@ impl GoldenCorpus {
         let runtime = temp.path().join("runtime");
         fs::create_dir_all(&repo)?;
 
-        // Copy the canonical subtrees (me/, projects/, agent/) to the repo root.
-        // The `supersedes:` edge list is stripped from the staged copies (see
-        // `stage_memory_file`) — that is the only divergence from the on-disk
-        // corpus, and it is behavior-preserving for recall metrics.
+        // Copy the canonical subtrees (me/, projects/, agent/) to the repo root
+        // verbatim — including `supersedes:` edges. The substrate's bulk reindex
+        // FK-guards each supersession edge and runs a deferred resync pass, so a
+        // supersessor indexed before its target no longer aborts the load.
         copy_tree(&memories_src, &repo)?;
 
         let alias_to_canonical = derive_alias_map(&memories_src)?;
@@ -370,9 +370,12 @@ fn single_project_canonical(prefixes: &[String]) -> Option<String> {
     Some(first.to_string())
 }
 
-/// Recursively stage `src` directory contents into `dst`, stripping the
-/// `supersedes:` edge list from every memory `.md` file (see
-/// [`stage_memory_file`]).
+/// Recursively copy `src` directory contents into `dst` verbatim.
+///
+/// Memory `.md` files are copied byte-identical (including their `supersedes:`
+/// edge lists): the substrate's bulk reindex FK-guards each supersession edge
+/// and runs a deferred resync, so a supersessor indexed before its target no
+/// longer aborts the load.
 fn copy_tree(src: &Path, dst: &Path) -> Result<(), QualityError> {
     for entry in fs::read_dir(src)? {
         let entry = entry?;
@@ -381,71 +384,11 @@ fn copy_tree(src: &Path, dst: &Path) -> Result<(), QualityError> {
         if from.is_dir() {
             fs::create_dir_all(&to)?;
             copy_tree(&from, &to)?;
-        } else if from.extension().and_then(|e| e.to_str()) == Some("md") {
-            stage_memory_file(&from, &to)?;
         } else {
             fs::copy(&from, &to)?;
         }
     }
     Ok(())
-}
-
-/// Copy one memory `.md` file into the staged repo, dropping the frontmatter
-/// `supersedes:` YAML block.
-///
-/// ## Why strip `supersedes:`
-///
-/// The substrate's *bulk* reindex (`Substrate::open` → reconcile phase 6) walks
-/// the tree in unsorted `walkdir` order and writes each memory's
-/// `memory_supersession` edge inline via an **unguarded** `INSERT`. When a
-/// supersessor is processed before its target (likely in an unsorted walk), the
-/// `supersedes_id REFERENCES memories(id)` foreign key trips and aborts the
-/// whole reconcile with `OperatorRepairRequired("index consistency: FOREIGN KEY
-/// constraint failed")`. The daemon's *incremental* write path never hits this
-/// (the target always pre-exists), so it is a latent bulk-import bug, not a
-/// runner defect. (The v4 migration's own supersession bootstrap already uses an
-/// `EXISTS` guard; the per-write `sync_supersession` in
-/// `memory-substrate::index::query` does not — that parity gap is the real fix,
-/// flagged to the substrate owner in a peer note.)
-///
-/// The `memory_supersession` edge table is **not consulted by the recall
-/// candidate-selection path** — superseded tails are excluded by their
-/// `status: superseded` (handled in `collect_recall_candidates`), which the
-/// corpus carries independently. So dropping the edge list is behavior-
-/// preserving for every metric this runner computes, and it keeps the runner
-/// inside its crate without editing a substrate file another agent is mid-flight
-/// on.
-fn stage_memory_file(from: &Path, to: &Path) -> Result<(), QualityError> {
-    let text = fs::read_to_string(from)?;
-    let stripped = strip_supersedes_block(&text);
-    fs::write(to, stripped)?;
-    Ok(())
-}
-
-/// Remove a top-level `supersedes:` block (the key line plus its trailing
-/// `- item` list lines) from a memory document. Leaves everything else — body,
-/// other frontmatter, `superseded_by` (which is metadata, not an FK edge) —
-/// byte-identical.
-fn strip_supersedes_block(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut lines = text.lines().peekable();
-    while let Some(line) = lines.next() {
-        if line == "supersedes:" || line.starts_with("supersedes:") && line["supersedes:".len()..].trim().is_empty() {
-            // Drop the key line, then consume the indented `- ...` list items.
-            while let Some(next) = lines.peek() {
-                let trimmed = next.trim_start();
-                if trimmed.starts_with("- ") && next.starts_with(char::is_whitespace) {
-                    lines.next();
-                } else {
-                    break;
-                }
-            }
-            continue;
-        }
-        out.push_str(line);
-        out.push('\n');
-    }
-    out
 }
 
 /// Build the `alias -> canonical_namespace_id` map by reading each project
@@ -882,24 +825,6 @@ mod tests {
         assert_eq!(single_project_canonical(&ids(&["project:p1"])), Some("p1".to_string()));
         assert_eq!(single_project_canonical(&ids(&["project:p1", "project:p2"])), None);
         assert_eq!(single_project_canonical(&ids(&["me"])), None);
-    }
-
-    #[test]
-    fn strip_supersedes_drops_block_keeps_superseded_by() {
-        let doc = "---\nid: mem_a\nstatus: active\nsupersedes:\n  - mem_b\n  - mem_c\nsuperseded_by:\n  - mem_d\ntags:\n  - x\n---\nbody text\n";
-        let out = strip_supersedes_block(doc);
-        assert!(!out.contains("supersedes:"), "supersedes key removed");
-        assert!(!out.contains("mem_b") && !out.contains("mem_c"), "supersedes items removed");
-        assert!(out.contains("superseded_by:"), "superseded_by preserved");
-        assert!(out.contains("mem_d"), "superseded_by item preserved");
-        assert!(out.contains("status: active") && out.contains("body text"), "rest intact");
-        assert!(out.contains("tags:") && out.contains("- x"), "later list intact");
-    }
-
-    #[test]
-    fn strip_supersedes_noop_when_absent() {
-        let doc = "---\nid: mem_a\nstatus: active\n---\nbody\n";
-        assert_eq!(strip_supersedes_block(doc), doc);
     }
 
     #[test]

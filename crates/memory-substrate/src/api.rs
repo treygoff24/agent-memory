@@ -2357,6 +2357,10 @@ fn full_reindex_from_repo(repo: &std::path::Path, index: &mut Index) -> std::io:
             .map_err(|err| std::io::Error::other(err.to_string()))?;
         count += 1;
     }
+    // Deferred supersession pass: the per-memory upsert FK-guards each edge, so a
+    // bulk walk that visited a supersessor before its target dropped that edge.
+    // Now that every `memories` row exists, re-add the dropped edges.
+    index.resync_supersession_edges().map_err(|err| std::io::Error::other(err.to_string()))?;
     index.reconcile_active_embedding_jobs().map_err(|err| std::io::Error::other(err.to_string()))?;
     Ok(count)
 }
@@ -2399,7 +2403,14 @@ fn incremental_reindex_at_open(repo: &std::path::Path, index: &mut Index) -> std
         }
     }
 
-    // (3) Embedding-job reconciliation — must keep running at open.
+    // (3) Deferred supersession pass. Phase 6 (`reindex_stale_memories`) and the
+    // encrypted-tier sweep above both FK-guard each per-memory supersession edge,
+    // so a memory indexed before its `supersedes` target dropped that edge. By
+    // the time this runs at open, every plaintext + encrypted `memories` row is
+    // present, so re-derive and re-add any edge whose target is now indexed.
+    index.resync_supersession_edges().map_err(|err| std::io::Error::other(err.to_string()))?;
+
+    // (4) Embedding-job reconciliation — must keep running at open.
     index.reconcile_active_embedding_jobs().map_err(|err| std::io::Error::other(err.to_string()))?;
     Ok(count)
 }
