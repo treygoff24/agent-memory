@@ -147,15 +147,17 @@ if stale_tui_command="$(rg -n '`memory ui`|memory ui' README.md docs/getting-sta
   fi
 fi
 
-if uncaveated_init="$(
-  rg -n 'memoryd init' README.md docs/getting-started.md docs/mcp-wiring.md docs/api docs/specs/system-v0.2.md 2>/dev/null \
-    | rg -vi 'release-target|not current alpha|future|historical|remains a release-shape target|older docs|# memoryd init' || true
-)"; then
-  if [ -n "$uncaveated_init" ]; then
-    printf '%s\n' "$uncaveated_init" >&2
-    echo "docs contain uncaveated memoryd init references; alpha bootstrap is memoryd serve --init" >&2
-    failed=1
-  fi
+# `memoryd init` shipped (agent-driven onboarding); it replaced `memoryd serve
+# --init` as the documented bootstrap entrypoint. The old guard here forbade
+# uncaveated `memoryd init` references; the invariant is now the inverse — the
+# one-install-story reconciliation (2026-06 docs pass) must not regress.
+if ! rg -q 'memoryd init' docs/getting-started.md; then
+  echo "docs/getting-started.md must document memoryd init as the bootstrap entrypoint" >&2
+  failed=1
+fi
+if ! rg -q 'agent-onboarding\.md' docs/getting-started.md; then
+  echo "docs/getting-started.md must point AI agents at docs/agent-onboarding.md" >&2
+  failed=1
 fi
 
 if uncaveated_lazy_start="$(
