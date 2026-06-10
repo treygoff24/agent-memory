@@ -2,6 +2,8 @@ pub mod assertions;
 pub mod daemon_scaffold;
 pub mod harness_runner;
 pub mod orchestrator;
+#[cfg(feature = "quality")]
+pub mod quality;
 pub mod simulator;
 
 /// Escape a string for embedding inside a JSON double-quoted string value.

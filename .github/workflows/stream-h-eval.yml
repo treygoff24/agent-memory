@@ -35,6 +35,20 @@ jobs:
       - name: Enforce regression metadata contract
         run: cargo test -p memorum-eval --test regression_meta -- --nocapture
 
+      - name: Quality metrics gate (golden corpus — no LLM, mock-mode)
+        run: |
+          # Recall quality metrics (precision/recall@K, MRR, nDCG, trap-rate@5)
+          # over the golden corpus, replayed through the real ranking seams. The
+          # gate test compares against the human-committed
+          # bench/quality-baseline.json and SKIPS cleanly until that file exists.
+          cargo test -p memorum-eval --test quality_baseline -- --nocapture
+          # Emit the report artifact for trend review (and for establishing the
+          # baseline on first run). Never overwrites bench/quality-baseline.json.
+          cargo run --release -p memorum-eval --bin memorum-eval-quality -- \
+            --output-file quality-results.json --check
+        env:
+          RUST_LOG: warn
+
       - name: Run eval harness (mock harness — always runs)
         run: |
           cargo run --release -p memorum-eval -- \
@@ -72,7 +86,9 @@ jobs:
         if: always()
         with:
           name: eval-results-${{ github.run_id }}
-          path: eval-results-*.json
+          path: |
+            eval-results-*.json
+            quality-results.json
 
       - name: Fail if eval did not pass
         run: |

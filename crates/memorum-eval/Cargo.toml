@@ -11,16 +11,48 @@ clap.workspace = true
 memorum-coordination = { path = "../memorum-coordination", optional = true }
 tokio.workspace = true
 
+# Quality-flywheel runner (Task 4.2). These drive the REAL recall ranking paths
+# (memoryd recall candidate-selection + ranking, substrate FTS) against the
+# golden corpus, so they pull the daemon/substrate crates in as regular
+# (optional) dependencies rather than dev-dependencies — the runner is callable
+# from the `memorum-eval-quality` binary and the gate test target alike.
+memory-substrate = { path = "../memory-substrate", optional = true }
+memoryd = { path = "../memoryd", optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+serde_yaml = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
+
 [features]
 # Stream I is shipped; stream-i-deps is on by default so T19 runs in every CI
 # build without needing --features stream-i-deps. (H-B2 fix)
-default = ["stream-i-deps"]
+# `quality` is on by default so the gate test target and the
+# `memorum-eval-quality` binary both build under a bare
+# `cargo build -p memorum-eval --tests`.
+default = ["stream-i-deps", "quality"]
 stream-i-deps = ["dep:memorum-coordination"]
+quality = [
+    "dep:memory-substrate",
+    "dep:memoryd",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:serde_yaml",
+    "dep:tempfile",
+]
 live-harness = []
 
 [[bin]]
 name = "memorum-eval"
 path = "src/main.rs"
+test = false
+
+# Standalone quality-metrics runner. Emits the headline JSON report
+# (precision/recall@K, MRR, nDCG, trap-rate@5) for human review and baseline
+# commit. Lives behind the `quality` feature (default-on).
+[[bin]]
+name = "memorum-eval-quality"
+path = "src/bin/quality_runner.rs"
+required-features = ["quality"]
 test = false
 
 [dev-dependencies]
@@ -41,3 +73,8 @@ path = "tests/eval/regression/t19_peer_update_framing.rs"
 [[test]]
 name = "golden_fixtures_lint"
 path = "tests/golden_fixtures_lint.rs"
+
+[[test]]
+name = "quality_baseline"
+path = "tests/quality_baseline.rs"
+required-features = ["quality"]
