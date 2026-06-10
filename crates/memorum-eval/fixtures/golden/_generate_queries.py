@@ -315,6 +315,43 @@ case("q50-abstain-out-of-scope-secret",
      ["me"],
      essential=[], useful=[])
 
+# --- KEYWORD / ENTITY SEARCH-SEAM PROBES ------------------------------------
+case("q51-keyword-atlas-gateway",
+     "payment gateway Stripe Adyen",
+     ["project:atlas"],
+     essential=["projects/atlas/entities/gateway.md"],
+     useful=["projects/atlas/decisions/2025-12-10-processor-retry.md",
+             "projects/atlas/decisions/2025-12-11-gateway-retry-policy.md"],
+     traps=["projects/orbit/entities/gateway.md"])
+case("q52-keyword-orbit-jwt",
+     "stateless JWT KMS",
+     ["project:orbit"],
+     essential=["projects/orbit/decisions/2025-11-20-stateless-jwt.md"],
+     useful=["projects/orbit/playbooks/key-rotation.md",
+             "projects/orbit/invariants.md"],
+     traps=["projects/orbit/decisions/2025-11-10-session-cookies.md"])
+case("q53-keyword-atlas-pipeline",
+     "billing aggregation pipeline",
+     ["project:atlas"],
+     essential=["projects/atlas/entities/pipeline.md"],
+     traps=["projects/quill/entities/pipeline.md"])
+case("q54-keyword-quill-preview",
+     "GitHub Actions preview",
+     ["project:quill"],
+     essential=["projects/quill/entities/pipeline.md"],
+     useful=["projects/quill/playbooks/preview-deploy.md"])
+case("q55-keyword-priya-observability",
+     "Priya payments observability",
+     ["me"],
+     essential=["me/relationship/facts/priya.md"],
+     useful=["me/knowledge/oncall-rotation.md"])
+case("q56-keyword-idempotency",
+     "client supplied idempotency key dedupe",
+     ["agent", "project:atlas"],
+     essential=["agent/patterns/idempotent-writes.md"],
+     useful=["projects/atlas/invariants-idempotency.md",
+             "projects/atlas/playbooks/idempotency-keys.md"])
+
 
 HEADER = """\
 # Golden recall corpus — labeled query cases (Task 4.1).

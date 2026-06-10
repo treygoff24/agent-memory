@@ -42,7 +42,7 @@ def is_abstain(case):
     # The corpus's abstention-calibration set is the 4 explicitly-named qNN-abstain-*
     # cases (empty essential+useful AND no traps -> the correct answer is "nothing").
     # q45/q46 have empty essential+useful but carry traps: they are precision probes
-    # within the 46 non-abstention set (no nDCG/recall, but trap-rate applies).
+    # for this embedding helper (no nDCG/recall, but trap-rate applies).
     return "abstain" in case["id"]
 
 
@@ -108,7 +108,7 @@ def evaluate(corpus_ids, doc_emb, query_emb_by_case, cases):
             per_case.append((cid, "abstain", top1))
             continue
         nonabstain_top1.append(top1)
-        # trap-rate applies to every non-abstention case (all 46).
+        # trap-rate applies to every non-abstention case collected by this helper.
         tr = trap_in_top_k(ranked_ids, traps, 5)
         traprates.append(tr)
         has_positive = bool(ess or use)

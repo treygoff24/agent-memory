@@ -11,7 +11,7 @@ if [ -z "$changed_files" ]; then
   changed_files=$(git diff-tree --no-commit-id --name-only -r HEAD 2>/dev/null || true)
 fi
 
-canonical=$(printf '%s\n' "$changed_files" | grep -E '^bench/(baseline\..*\.json|.*-results\..*\.json)$' || true)
+canonical=$(printf '%s\n' "$changed_files" | grep -E '^bench/(quality-baseline\.json|baseline\..*\.json|.*-results\..*\.json)$' || true)
 proposed=$(printf '%s\n' "$changed_files" | grep -E '^bench/.*\.proposed$' || true)
 
 if [ -n "$canonical" ] && ! printf '%s' "$commit_msg" | grep -q '\[bench-update\]'; then

@@ -2,10 +2,11 @@
 //!
 //! Loads the golden corpus into a scratch substrate, replays every labeled query
 //! through the real recall ranking seams (bm25 FTS + structural points), and
-//! emits the metrics report as JSON. The baseline gate (the test target) is what
-//! enforces no-regression in CI; this binary is for producing the first run's
-//! JSON (which a human reviews and commits as `bench/quality-baseline.json`) and
-//! for ad-hoc local runs.
+//! emits the metrics report as JSON. Dynamics strength is pinned off for this
+//! quality gate so ambient `MEMORUM_DYNAMICS` cannot change the report. The
+//! baseline gate (the test target) is what enforces no-regression in CI; this
+//! binary is for producing a JSON report that a human may review and commit as
+//! `bench/quality-baseline.json`, and for ad-hoc local runs.
 //!
 //! Usage:
 //!   memorum-eval-quality                       # JSON to stdout

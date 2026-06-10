@@ -15,7 +15,7 @@
 //!
 //! 2. **Startup-block assembly path.** The startup recall builder
 //!    (`memoryd::recall::startup`) selects candidates via
-//!    [`collect_recall_candidates`] and ranks them via
+//!    [`collect_recall_candidates_from_index`] and ranks them via
 //!    [`select_ranked_candidates`] (the points-based ranking in
 //!    `recall/rank.rs`). We invoke those two public functions directly with the
 //!    query case's `namespace_scope`, which is precisely how the startup builder
@@ -44,18 +44,21 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use memory_substrate::{AuxScope, ChunkQuery, InitOptions, MemoryStatus, RecallIndexQuery, Roots, Substrate};
-use memoryd::dynamics::strength::StrengthWeights;
-use memoryd::dynamics::{DEFAULT_ALPHA_POINTS, DEFAULT_TAU_DAYS};
+use memory_substrate::{ChunkQuery, InitOptions, Roots, Substrate};
 use memoryd::recall::{
-    collect_recall_candidates, hydrate_candidate_strength, select_ranked_candidates, CandidateCollection,
-    RankingContext, RecallSectionName, StrengthHydration,
+    collect_recall_candidates_from_index, select_ranked_candidates, CandidateCollection, RankingContext,
+    RecallCollectionRequest, RecallSectionName,
 };
 use serde::{Deserialize, Serialize};
 
 /// K cutoffs the runner reports metrics at. Trap-rate is always reported at 5.
 pub const K_VALUES: [usize; 3] = [3, 5, 10];
 const TRAP_K: usize = 5;
+/// Quality-gate runs are deliberately structural-only. Do not read
+/// `MEMORUM_DYNAMICS` here: if a future dynamics lane is needed, add an explicit
+/// runner flag and a separate baseline rather than letting ambient env change
+/// the gate.
+const QUALITY_GATE_ALPHA_POINTS: u32 = 0;
 
 /// Graded relevance gain used for nDCG and the essential-recall floor.
 const GAIN_ESSENTIAL: f64 = 2.0;
@@ -283,40 +286,24 @@ impl GoldenCorpus {
         Ok(ranked)
     }
 
-    /// **Startup-block assembly seam.** Select candidates from the recall index
-    /// (the same `collect_recall_candidates_from_index` query the startup
-    /// builder issues, run here per resolved namespace prefix) and rank them via
-    /// the real `select_ranked_candidates` points ranking. The namespace set is
-    /// the query case's `namespace_scope`, exactly as the startup builder would
-    /// pass `session_binding.namespaces_in_scope`.
+    /// **Startup-block assembly seam.** Select candidates by calling the same
+    /// recall-index collection function the startup builder uses, then rank them
+    /// via the real `select_ranked_candidates` points ranking. The namespace set
+    /// is the query case's `namespace_scope`, exactly as the startup builder
+    /// would pass `session_binding.namespaces_in_scope`.
     async fn rank_via_startup(&self, scope: &[String]) -> Result<Vec<String>, QualityError> {
         let prefixes = self.resolve_namespace_prefixes(scope);
 
-        // Mirror `collect_recall_candidates_from_index`: one Active+Pinned,
-        // passive-recall-only query per namespace prefix, deduped by id, then
-        // run through the shared candidate-collection + ranking code.
-        let mut rows = BTreeMap::new();
-        for prefix in &prefixes {
-            let query = RecallIndexQuery {
-                namespace_prefix: Some(prefix.clone()),
-                statuses: vec![MemoryStatus::Active, MemoryStatus::Pinned],
-                passive_recall_only: true,
+        let CandidateCollection { facts, .. } = collect_recall_candidates_from_index(
+            &self.substrate,
+            RecallCollectionRequest {
+                section: RecallSectionName::RecentMemory,
+                namespace_prefixes: prefixes.clone(),
                 updated_since: None,
-                match_terms: Vec::new(),
-                hydrate: AuxScope::Entities,
-            };
-            let result = self
-                .substrate
-                .query_recall_index(query)
-                .await
-                .map_err(|e| QualityError::Substrate(format!("query_recall_index: {e:?}")))?;
-            for row in result {
-                rows.entry(row.id.to_string()).or_insert(row);
-            }
-        }
-
-        let CandidateCollection { mut facts, .. } =
-            collect_recall_candidates(RecallSectionName::RecentMemory, rows.into_values().collect());
+            },
+        )
+        .await
+        .map_err(|e| QualityError::Substrate(format!("collect_recall_candidates_from_index: {e:?}")))?;
 
         // Ranking context: `now` = newest candidate (matches the startup
         // builder's `ranking_now`); single-project scope sets the exact-project
@@ -324,23 +311,7 @@ impl GoldenCorpus {
         let now = facts.iter().map(|c| c.row.updated_at).max().unwrap_or_default();
         let exact_project_namespace = single_project_canonical(&prefixes);
 
-        // Dynamics A/B toggle (memory-dynamics-v0.1 §3). Default OFF
-        // (`alpha_points = 0`) keeps the structural baseline byte-identical. Set
-        // `MEMORUM_DYNAMICS=on` to hydrate use-driven strength and apply the
-        // bounded `alpha_points = 12` ranking term — the on-mode arm of the
-        // golden-corpus A/B the spec §9 quality gate calls for.
-        let alpha_points = if dynamics_enabled() {
-            hydrate_candidate_strength(
-                &self.substrate.roots().runtime,
-                &mut facts,
-                &StrengthHydration { weights: StrengthWeights::default(), tau_days: DEFAULT_TAU_DAYS },
-                now,
-            );
-            DEFAULT_ALPHA_POINTS
-        } else {
-            0
-        };
-        let context = RankingContext { now, exact_project_namespace, alpha_points };
+        let context = RankingContext { now, exact_project_namespace, alpha_points: QUALITY_GATE_ALPHA_POINTS };
 
         // Large budget so token truncation never confounds *ranking* quality —
         // we are measuring order, not the startup token cap. Selection still
@@ -348,16 +319,6 @@ impl GoldenCorpus {
         let selection = select_ranked_candidates(RecallSectionName::RecentMemory, facts, context, usize::MAX);
         Ok(selection.selected.into_iter().map(|c| c.id).collect())
     }
-}
-
-/// Whether the dynamics strength term is enabled for this run.
-///
-/// `MEMORUM_DYNAMICS=on` (or `1`/`true`) enables the on-mode arm of the A/B;
-/// anything else (including unset) keeps dynamics off — the structural baseline.
-fn dynamics_enabled() -> bool {
-    std::env::var("MEMORUM_DYNAMICS")
-        .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "on" | "1" | "true" | "yes"))
-        .unwrap_or(false)
 }
 
 /// When exactly one project prefix is in scope, return its canonical id so the
@@ -615,16 +576,17 @@ pub async fn run_quality_report() -> Result<QualityReport, QualityError> {
          long natural-language / session-context queries that no single chunk satisfies score \
          near zero — this is the honest behavior of keyword search, not a runner defect. \
          Exact-MemoryId queries (q01-q03) also score zero here: memory_search is chunk-body \
-         search, not id lookup. The search seam's value is the keyword/entity cases; the \
-         startup seam carries graded-relevance ranking."
+         search, not id lookup. The short keyword/entity cases (q51-q56) give this seam \
+         positive dynamic range; the startup seam carries namespace-scoped structural ranking."
             .to_string(),
     );
     seam_notes.insert(
         "startup".to_string(),
         "startup-block assembly seam: namespace-scoped candidate selection \
-         (collect_recall_candidates_from_index) + the real structural points ranking \
-         (select_ranked_candidates / recall/rank.rs), driven by the case's namespace_scope. \
-         This is the ranking the startup recall block runs. No vector lane today (Task 3.x)."
+         by calling collect_recall_candidates_from_index, plus the real structural points \
+         ranking (select_ranked_candidates / recall/rank.rs), driven by the case's \
+         namespace_scope. Dynamics strength is pinned off for this quality gate, so ambient \
+         MEMORUM_DYNAMICS cannot change the baseline. No vector lane today (Task 3.x)."
             .to_string(),
     );
 
@@ -661,10 +623,11 @@ pub fn report_to_json(report: &QualityReport) -> String {
 
 /// Canonical path of the human-committed quality baseline.
 ///
-/// IMPORTANT: this file is **human-committed only** (CLAUDE.md `bench/baseline.*`
-/// convention). The runner never writes it. The gate skips cleanly when it does
-/// not yet exist — Trey commits the initial baseline after reviewing the first
-/// run's emitted JSON.
+/// IMPORTANT: this file is **human-committed only**, and
+/// `scripts/check-baseline-discipline.sh` enforces the same guard as other
+/// canonical bench JSON. The runner never writes it. The gate skips cleanly
+/// when it does not yet exist — Trey commits the initial baseline after
+/// reviewing an emitted JSON report.
 pub fn baseline_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../bench/quality-baseline.json")
 }
@@ -684,10 +647,12 @@ pub enum GateOutcome {
 /// Compare a fresh report against the committed baseline (if present) within
 /// the given absolute tolerance.
 ///
-/// Tracked regressions per seam:
+/// Tracked regressions:
 ///   - nDCG@5 dropped by more than `tolerance` (headline ranking regression),
 ///   - recall@5 dropped by more than `tolerance` (lost a relevant hit),
-///   - trap-rate@5 rose by more than `tolerance` (surfaced a new trap).
+///   - trap-rate@5 rose by more than `tolerance` (surfaced a new trap),
+///   - a seam present in either side is missing from the other side,
+///   - an abstention case newly surfaces a labeled trap in its top-5.
 pub fn compare_to_baseline(report: &QualityReport, tolerance: f64) -> Result<GateOutcome, QualityError> {
     let path = baseline_path();
     if !path.exists() {
@@ -697,6 +662,10 @@ pub fn compare_to_baseline(report: &QualityReport, tolerance: f64) -> Result<Gat
     let baseline: QualityReport =
         serde_json::from_str(&text).map_err(|e| QualityError::Queries(format!("baseline parse: {e}")))?;
 
+    Ok(compare_reports(report, &baseline, tolerance))
+}
+
+fn compare_reports(report: &QualityReport, baseline: &QualityReport, tolerance: f64) -> GateOutcome {
     let mut regressions = Vec::new();
     for (seam, current) in &report.seams {
         let Some(base) = baseline.seams.get(seam) else {
@@ -708,11 +677,35 @@ pub fn compare_to_baseline(report: &QualityReport, tolerance: f64) -> Result<Gat
         check.drop_at_5("recall@5", &base.recall_at_k, &current.recall_at_k);
         check.rise("trap_rate@5", base.trap_rate_at_5, current.trap_rate_at_5);
     }
+    for seam in baseline.seams.keys() {
+        if !report.seams.contains_key(seam) {
+            regressions.push(format!("report missing seam `{seam}`"));
+        }
+    }
+    check_abstention_traps(report, baseline, &mut regressions);
 
     if regressions.is_empty() {
-        Ok(GateOutcome::Pass)
+        GateOutcome::Pass
     } else {
-        Ok(GateOutcome::Regressed(regressions))
+        GateOutcome::Regressed(regressions)
+    }
+}
+
+fn check_abstention_traps(report: &QualityReport, baseline: &QualityReport, regressions: &mut Vec<String>) {
+    let baseline_traps: BTreeMap<(&str, &str), bool> = baseline
+        .abstentions
+        .iter()
+        .map(|outcome| ((outcome.case_id.as_str(), outcome.seam.as_str()), outcome.surfaced_trap_at_5))
+        .collect();
+
+    for current in &report.abstentions {
+        let key = (current.case_id.as_str(), current.seam.as_str());
+        if baseline_traps.get(&key) == Some(&false) && current.surfaced_trap_at_5 {
+            regressions.push(format!(
+                "abstention {}/{}: surfaced_trap_at_5 changed false -> true",
+                current.case_id, current.seam
+            ));
+        }
     }
 }
 
@@ -763,6 +756,33 @@ mod tests {
 
     fn ids(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn metric_map(value_at_5: f64) -> BTreeMap<String, f64> {
+        BTreeMap::from([("3".to_string(), 0.0), ("5".to_string(), value_at_5), ("10".to_string(), 0.0)])
+    }
+
+    fn metrics(ndcg5: f64, recall5: f64, trap_rate_at_5: f64) -> SeamMetrics {
+        SeamMetrics {
+            scored_cases: 1,
+            precision_at_k: metric_map(0.0),
+            recall_at_k: metric_map(recall5),
+            mrr: 0.0,
+            ndcg_at_k: metric_map(ndcg5),
+            trap_rate_at_5,
+        }
+    }
+
+    fn quality_report(seams: &[(&str, SeamMetrics)], abstentions: Vec<AbstentionOutcome>) -> QualityReport {
+        QualityReport {
+            schema: 1,
+            ranking_lane: "test".to_string(),
+            total_cases: 1,
+            abstention_cases: abstentions.len(),
+            seams: seams.iter().map(|(name, metrics)| ((*name).to_string(), metrics.clone())).collect(),
+            seam_notes: BTreeMap::new(),
+            abstentions,
+        }
     }
 
     #[test]
@@ -836,5 +856,59 @@ mod tests {
         acc.add_case(&c, &ids(&["a"]));
         let m = acc.finish();
         assert!((m.precision_at_k["3"] - 1.0 / 3.0).abs() < 1e-9, "precision@3 {}", m.precision_at_k["3"]);
+    }
+
+    #[test]
+    fn compare_reports_flags_missing_seams_on_either_side() {
+        let search = metrics(1.0, 1.0, 0.0);
+        let startup = metrics(1.0, 1.0, 0.0);
+
+        let baseline_missing = quality_report(&[("search", search.clone())], Vec::new());
+        let current_with_extra =
+            quality_report(&[("search", search.clone()), ("startup", startup.clone())], Vec::new());
+        match compare_reports(&current_with_extra, &baseline_missing, DEFAULT_TOLERANCE) {
+            GateOutcome::Regressed(regressions) => {
+                assert!(regressions.iter().any(|r| r == "baseline missing seam `startup`"), "{regressions:?}");
+            }
+            other => panic!("expected regression, got {other:?}"),
+        }
+
+        let baseline_with_extra = quality_report(&[("search", search.clone()), ("startup", startup)], Vec::new());
+        let current_missing = quality_report(&[("search", search)], Vec::new());
+        match compare_reports(&current_missing, &baseline_with_extra, DEFAULT_TOLERANCE) {
+            GateOutcome::Regressed(regressions) => {
+                assert!(regressions.iter().any(|r| r == "report missing seam `startup`"), "{regressions:?}");
+            }
+            other => panic!("expected regression, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compare_reports_flags_new_abstention_trap() {
+        let clean = AbstentionOutcome {
+            case_id: "q-abstain".to_string(),
+            seam: "search".to_string(),
+            surfaced_count: 1,
+            surfaced_top: ids(&["safe"]),
+            surfaced_trap_at_5: false,
+        };
+        let mut trapped = clean.clone();
+        trapped.surfaced_top = ids(&["trap"]);
+        trapped.surfaced_trap_at_5 = true;
+
+        let baseline = quality_report(&[("search", metrics(1.0, 1.0, 0.0))], vec![clean]);
+        let current = quality_report(&[("search", metrics(1.0, 1.0, 0.0))], vec![trapped]);
+
+        match compare_reports(&current, &baseline, DEFAULT_TOLERANCE) {
+            GateOutcome::Regressed(regressions) => {
+                assert!(
+                    regressions
+                        .iter()
+                        .any(|r| r == "abstention q-abstain/search: surfaced_trap_at_5 changed false -> true"),
+                    "{regressions:?}"
+                );
+            }
+            other => panic!("expected regression, got {other:?}"),
+        }
     }
 }

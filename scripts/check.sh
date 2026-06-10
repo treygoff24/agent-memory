@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+export MEMORUM_DYNAMICS=off
+
 # Long Rust gates on macOS can wedge freshly built executables behind
 # syspolicyd/CSExattrCrypto when they use the repo target dir or sccache.
 # Use an isolated target dir by default and make the risky accelerators opt-in.

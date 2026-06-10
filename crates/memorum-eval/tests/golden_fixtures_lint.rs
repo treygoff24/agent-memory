@@ -200,7 +200,7 @@ fn graded_sets_are_disjoint_per_case() {
 #[test]
 fn query_cases_are_well_formed() {
     let queries = load_queries();
-    assert!(queries.cases.len() >= 40, "expected >=40 labeled cases; found {}", queries.cases.len());
+    assert!(queries.cases.len() >= 56, "expected >=56 labeled cases; found {}", queries.cases.len());
 
     let mut seen = BTreeSet::new();
     let mut problems = Vec::new();
@@ -221,6 +221,8 @@ fn query_cases_are_well_formed() {
     }
 
     assert!(problems.is_empty(), "malformed query cases:\n{}", problems.join("\n"));
+    assert_eq!(queries.cases.len(), 56, "golden corpus should hold 56 labeled query cases");
+    assert_eq!(abstention_cases, 6, "golden corpus should hold 6 abstention cases");
     assert!(
         abstention_cases >= 1,
         "corpus must include at least one abstention case (empty essential+useful) to measure precision"

@@ -479,3 +479,62 @@ cases:
       essential: []
       useful: []
       irrelevant_traps: []
+  - id: q51-keyword-atlas-gateway
+    query: "payment gateway Stripe Adyen"
+    namespace_scope: [project:atlas]
+    graded:
+      essential:
+        - mem_20251103_c4cad2fb7372a353_000001
+      useful:
+        - mem_20251210_7806fbfc8f852b6d_000001
+        - mem_20251211_1d94c80988e12d09_000001
+      irrelevant_traps:
+        - mem_20251112_ac4d7ac60ae71bc7_000002
+  - id: q52-keyword-orbit-jwt
+    query: "stateless JWT KMS"
+    namespace_scope: [project:orbit]
+    graded:
+      essential:
+        - mem_20251120_a43df63066cac661_000001
+      useful:
+        - mem_20251114_f2190dc0b948411e_000002
+        - mem_20251113_c19c1cce237197e3_000001
+      irrelevant_traps:
+        - mem_20251110_e7ed1dcdf272e4d9_000005
+  - id: q53-keyword-atlas-pipeline
+    query: "billing aggregation pipeline"
+    namespace_scope: [project:atlas]
+    graded:
+      essential:
+        - mem_20251106_3d7b4e1955df9118_000002
+      useful: []
+      irrelevant_traps:
+        - mem_20260103_f266644505884c7c_000001
+  - id: q54-keyword-quill-preview
+    query: "GitHub Actions preview"
+    namespace_scope: [project:quill]
+    graded:
+      essential:
+        - mem_20260103_f266644505884c7c_000001
+      useful:
+        - mem_20260105_f24704b2b01c0ac1_000005
+      irrelevant_traps: []
+  - id: q55-keyword-priya-observability
+    query: "Priya payments observability"
+    namespace_scope: [me]
+    graded:
+      essential:
+        - mem_20251002_da9ce782896b6f61_000001
+      useful:
+        - mem_20251101_2d37c78e6c64a78f_000001
+      irrelevant_traps: []
+  - id: q56-keyword-idempotency
+    query: "client supplied idempotency key dedupe"
+    namespace_scope: [agent, project:atlas]
+    graded:
+      essential:
+        - mem_20251020_36c55aaf820d717a_000003
+      useful:
+        - mem_20251102_e77dc3c51249a9ef_000002
+        - mem_20251204_91610cfca2fa4b5e_000001
+      irrelevant_traps: []

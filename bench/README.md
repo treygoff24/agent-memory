@@ -52,7 +52,7 @@ cargo run -p memorum-coordination --bin peer_relevance_bench -- \
 
 ## Recall quality baseline (Task 4.2)
 
-`bench/quality-baseline.json` is the committed baseline for the golden-corpus recall quality metrics (precision/recall@K, MRR, nDCG, trap-rate@5). It is **human-committed only**, the same convention as `baseline.*.json` — no tool, CI step, or agent ever writes it.
+`bench/quality-baseline.json` is the committed baseline for the golden-corpus recall quality metrics (56 cases total: 50 scored, 6 abstention; precision/recall@K, MRR, nDCG, trap-rate@5). It is **human-committed only**, the same convention as `baseline.*.json` — no tool, CI step, or agent ever writes it. `scripts/check-baseline-discipline.sh` enforces the same `[bench-update]` commit-message guard for this file as for other canonical bench JSON.
 
 The runner emits the report to an arbitrary `--output-file` (e.g. `quality-results.json`) for review; it never touches `bench/quality-baseline.json`:
 

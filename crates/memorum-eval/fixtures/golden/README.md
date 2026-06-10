@@ -22,7 +22,7 @@ golden/
 │   ├── me/                # identity, relationship facts, preferences, corrections, knowledge, episodic
 │   ├── projects/          # atlas / orbit / quill — three fictional projects
 │   └── agent/             # patterns, anti-patterns, heuristics, postmortems, playbooks, regressions
-└── queries.yaml           # 50 labeled query cases
+└── queries.yaml           # 56 labeled query cases
 ```
 
 Every memory is real Markdown + YAML frontmatter conforming to the Stream A
@@ -96,11 +96,14 @@ disjoint. A memory can't be both load-bearing and a trap for the same query.
 
 ### Query-case coverage
 
-The 50 cases span: exact-identifier recall (`q01`–`q03`), entity queries incl.
+The 56 cases span: exact-identifier recall (`q01`–`q03`), entity queries incl.
 collisions (`q04`–`q11`), topical queries (`q12`–`q23`), supersession-head
 selection (`q24`–`q28`), cross-project isolation (`q29`–`q31`), agent
 pattern/postmortem recall (`q32`–`q40`), near-duplicate collapse (`q41`–`q42`),
-correction/tombstone traps (`q43`–`q46`), and abstention (`q47`–`q50`).
+correction/tombstone traps (`q43`–`q46`), abstention (`q47`–`q50`), and short
+keyword/entity search probes (`q51`–`q56`). The keyword probes give the bm25
+`memory_search` seam nonzero dynamic range while the longer natural-language
+cases continue to document FTS5 AND-of-phrases limitations.
 
 `namespace_scope` uses `"project:<alias>"` to narrow to a single project; the
 quality runner maps the alias (`atlas`/`orbit`/`quill`) to its
