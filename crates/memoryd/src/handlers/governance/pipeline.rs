@@ -20,7 +20,8 @@ use serde_json::Value;
 use super::meta::{GovernanceMeta, GovernanceWriteInput, GovernanceWriteInputParts, GovernedLifecycle, MetaSource};
 use super::policy::{
     active_memory_summaries, existing_summary_from_memory, governance_engine, load_policy_set, load_tombstone_index,
-    write_tombstone_rule, GovernanceEngineInput, TiebreakMode,
+    resolve_similarity_candidates, write_tombstone_rule, GovernanceEngineInput, SimilarityResolution, TiebreakMode,
+    TopKSource,
 };
 use super::privacy::{attach_privacy_scan, classify_input_privacy};
 use crate::handlers::{
@@ -46,8 +47,17 @@ use crate::protocol::{
 /// active-set read and released when the handler returns.
 static GOVERNANCE_MUTATION_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// Over-fetch width for the write-path KNN similarity query.
+///
+/// The contradiction engine's default top-K limit is 5; we ask the substrate for
+/// a few more neighbours so that after mapping KNN ids back to the active
+/// snapshot (skipping any not yet in it) the engine still sees enough candidates
+/// to gate on. The engine itself re-truncates to its configured width.
+const WRITE_PATH_SIMILARITY_LIMIT: usize = 8;
+
 pub(crate) async fn governance_write_response(
     substrate: &Substrate,
+    state: Option<&HandlerState>,
     request: GovernanceWriteRequest,
 ) -> Result<ResponsePayload, HandlerError> {
     let _governance_guard = GOVERNANCE_MUTATION_LOCK.lock().await;
@@ -82,17 +92,47 @@ pub(crate) async fn governance_write_response(
         }
     };
     let active = active_memory_summaries(substrate).await?;
+    // Production contradiction detection: embed the candidate (query side) and
+    // KNN against the active triple's vec table, restricted to in-scope active
+    // memories. Only the stateful daemon path runs this — the legacy stateless
+    // `handle_request` shim (`state: None`) carries no embedding backend by
+    // design, so it neither runs similarity nor reports a degradation (that path
+    // is a utility entrypoint, not a governed production write). When state is
+    // present but the model hasn't loaded yet (or its triple disagrees, the vec
+    // table is empty, or KNN/embedding fails), that degradation is surfaced in
+    // the response's `similarity_degraded` decision-trace field below rather than
+    // silently behaving as if nothing was similar (invariant 3).
+    let similarity = match state {
+        Some(state) => {
+            resolve_similarity_candidates(
+                substrate,
+                state.embedding_provider().as_ref(),
+                candidate.claim(),
+                candidate.namespace(),
+                &active,
+                WRITE_PATH_SIMILARITY_LIMIT,
+            )
+            .await
+        }
+        None => SimilarityResolution::not_attempted(),
+    };
+    let degradation = similarity.degradation;
     let engine = governance_engine(GovernanceEngineInput {
         policies,
         active,
         tombstones,
         tiebreak_mode: TiebreakMode::Unclear,
-        allow_top_k: false,
+        top_k_source: similarity.source,
         repo_root: substrate.roots().repo.clone(),
     });
     let decision = engine.evaluate_write(&candidate);
-    let response =
+    let mut response =
         execute_write_decision(substrate, WriteExecution { input, id, decision, policy_source, privacy }).await?;
+    // Record any degradation in the dedicated decision-trace field (not in
+    // `next_actions`, which is a caller action list with an exact-shape
+    // contract). A set marker tells the operator the "no contradiction" branch
+    // was reached without a real similarity backend.
+    response.similarity_degraded = degradation.map(str::to_string);
     Ok(ResponsePayload::GovernanceWrite(response))
 }
 
@@ -140,20 +180,25 @@ pub(crate) async fn governance_supersede_response(
     };
     let old_is_encrypted = old_plaintext_body.is_none();
 
-    let (active, tiebreak_mode, allow_top_k) = match &old_plaintext_body {
+    let (active, tiebreak_mode, top_k_source) = match &old_plaintext_body {
+        // Explicit supersede of a plaintext old memory: force the named old
+        // memory into the tiebreaker by surfacing it directly from the active
+        // set (no embedding needed — the caller already named the target).
         Some(body) => (
             vec![existing_summary_from_memory(old_envelope.metadata.clone(), body.clone())],
             TiebreakMode::Contradiction { existing_id: old_id.clone() },
-            true,
+            TopKSource::ActiveSet,
         ),
-        None => (Vec::new(), TiebreakMode::Unclear, false),
+        // Encrypted old memory: no body to compare, so contradiction detection
+        // is intentionally inert (a real empty answer, not a degraded backend).
+        None => (Vec::new(), TiebreakMode::Unclear, TopKSource::Knn(Vec::new())),
     };
     let engine = governance_engine(GovernanceEngineInput {
         policies,
         active,
         tombstones,
         tiebreak_mode,
-        allow_top_k,
+        top_k_source,
         repo_root: substrate.roots().repo.clone(),
     });
     let decision = engine.evaluate_write(&candidate);
@@ -496,6 +541,7 @@ async fn execute_write_decision(
                 policy_applied: Some(policy_applied),
                 policy_source: Some(policy_source_string(policy_source)),
                 existing_id: None,
+                similarity_degraded: None,
             })
         }
         GovernanceWriteDecision::Candidate { reason, policy_applied, .. } => {
@@ -514,6 +560,7 @@ async fn execute_write_decision(
                 policy_applied: Some(policy_applied),
                 policy_source: Some(policy_source_string(policy_source)),
                 existing_id: None,
+                similarity_degraded: None,
             })
         }
         GovernanceWriteDecision::Quarantined { reason, policy_applied, .. } => {
@@ -532,6 +579,7 @@ async fn execute_write_decision(
                 policy_applied: Some(policy_applied),
                 policy_source: Some(policy_source_string(policy_source)),
                 existing_id: None,
+                similarity_degraded: None,
             })
         }
         GovernanceWriteDecision::Duplicate { existing_id, .. } => Ok(GovernanceWriteResponse {
@@ -543,6 +591,7 @@ async fn execute_write_decision(
             policy_applied: None,
             policy_source: Some(policy_source_string(policy_source)),
             existing_id: Some(existing_id),
+            similarity_degraded: None,
         }),
         GovernanceWriteDecision::Refinement { existing_id, .. } => Ok(GovernanceWriteResponse {
             status: GovernanceStatus::Promoted,
@@ -553,6 +602,7 @@ async fn execute_write_decision(
             policy_applied: None,
             policy_source: Some(policy_source_string(policy_source)),
             existing_id: Some(existing_id),
+            similarity_degraded: None,
         }),
         GovernanceWriteDecision::Supersession { existing_id, policy_applied, .. } => Ok(GovernanceWriteResponse {
             status: GovernanceStatus::Candidate,
@@ -563,6 +613,7 @@ async fn execute_write_decision(
             policy_applied: Some(policy_applied),
             policy_source: Some(policy_source_string(policy_source)),
             existing_id: Some(existing_id),
+            similarity_degraded: None,
         }),
         GovernanceWriteDecision::Refused { reason, .. } => Ok(GovernanceWriteResponse {
             status: GovernanceStatus::Refused,
@@ -573,6 +624,7 @@ async fn execute_write_decision(
             policy_applied: None,
             policy_source: Some(policy_source_string(policy_source)),
             existing_id: None,
+            similarity_degraded: None,
         }),
     }
 }
@@ -652,6 +704,7 @@ fn policy_refusal(namespace: String, message: String) -> GovernanceWriteResponse
         policy_applied: None,
         policy_source: None,
         existing_id: None,
+        similarity_degraded: None,
     }
 }
 
@@ -665,6 +718,7 @@ fn tombstone_refusal(namespace: String, message: String, policy_source: PolicySo
         policy_applied: None,
         policy_source: Some(policy_source_string(policy_source)),
         existing_id: None,
+        similarity_degraded: None,
     }
 }
 

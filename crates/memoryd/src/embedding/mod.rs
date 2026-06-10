@@ -31,7 +31,54 @@ pub mod worker;
 pub use fastembed_provider::{FastembedProvider, LoadedDevice};
 pub use fixture_provider::FixtureProvider;
 
+use std::sync::{Arc, RwLock};
+
 use memory_substrate::EmbeddingTriple;
+
+/// A late-initialized, shareable handle to the active embedding provider.
+///
+/// The provider loads asynchronously a moment after daemon startup (the
+/// fastembed model load is CPU/GPU-heavy and must not gate socket binding), so
+/// the slot starts empty and the embedding worker publishes the provider into it
+/// once loaded. Consumers that need to embed on a request path — governance
+/// contradiction detection embeds the candidate text — clone this slot from
+/// `HandlerState` and read the current provider.
+///
+/// An empty slot is not an error: it means embedding inference is unavailable
+/// (model not yet loaded, load failed, or the worker is disabled). Governance
+/// treats that as "no similarity candidates" and records the degradation in the
+/// decision trace rather than silently behaving as if nothing was similar
+/// (invariant 3: no silent fallback).
+#[derive(Clone, Default)]
+pub struct EmbeddingProviderSlot {
+    inner: Arc<RwLock<Option<Arc<dyn EmbeddingProvider>>>>,
+}
+
+impl EmbeddingProviderSlot {
+    /// An empty slot — no provider published yet.
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    /// Publish the loaded provider so request-path consumers can embed with it.
+    pub fn set(&self, provider: Arc<dyn EmbeddingProvider>) {
+        if let Ok(mut guard) = self.inner.write() {
+            *guard = Some(provider);
+        }
+    }
+
+    /// The current provider, or `None` if none has been published yet.
+    pub fn get(&self) -> Option<Arc<dyn EmbeddingProvider>> {
+        self.inner.read().ok().and_then(|guard| guard.clone())
+    }
+}
+
+impl std::fmt::Debug for EmbeddingProviderSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let loaded = self.get().is_some();
+        f.debug_struct("EmbeddingProviderSlot").field("loaded", &loaded).finish()
+    }
+}
 
 /// Failure modes for embedding inference.
 #[derive(Debug, thiserror::Error)]

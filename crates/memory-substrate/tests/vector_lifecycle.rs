@@ -209,6 +209,88 @@ fn chunking_preserves_utf8_when_multibyte_character_crosses_byte_budget() {
     assert_eq!(chunks[1].start_byte, 4095);
 }
 
+#[tokio::test]
+async fn knn_active_memories_filters_by_scope_status_and_returns_nearest_per_memory() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let substrate =
+        Substrate::init(roots, InitOptions { force_unsafe_durability: true, device_id: Some("dev_knn".to_string()) })
+            .await
+            .expect("init");
+
+    // Two agent-scoped memories (in scope for an `agent` candidate) and one
+    // user-scoped memory (out of scope). The user-scoped row must never surface
+    // for an agent-scope query even though its vector is nearest.
+    let mut near = sample_memory("mem_20260424_a1b2c3d4e5f60718_000050");
+    near.body = "near agent memory".to_string();
+    let mut far = sample_memory("mem_20260424_a1b2c3d4e5f60718_000051");
+    far.body = "far agent memory".to_string();
+    let mut other_scope = sample_memory("mem_20260424_a1b2c3d4e5f60718_000052");
+    other_scope.body = "user scoped memory".to_string();
+    other_scope.frontmatter.scope = Scope::User;
+    other_scope.frontmatter.retrieval_policy.max_scope = Scope::User;
+    other_scope.path = Some(RepoPath::new("me/knowledge/mem_20260424_a1b2c3d4e5f60718_000052.md"));
+
+    for memory in [near.clone(), far.clone(), other_scope.clone()] {
+        substrate
+            .write_memory(WriteRequest {
+                operation_id: None,
+                memory,
+                expected_base_hash: None,
+                write_mode: WriteMode::CreateNew,
+                index_projection: None,
+                event_context: EventContext::default(),
+                allow_best_effort_durability: true,
+                classification: ClassificationOutcome::Trusted,
+            })
+            .await
+            .expect("write");
+    }
+
+    let triple = EmbeddingTriple { provider: "synthetic".to_string(), model_ref: "knn".to_string(), dimension: 3 };
+    // `other_scope` is the literal nearest vector to the query, proving the scope
+    // filter — not distance — is what excludes it.
+    for (memory, vector) in
+        [(&near, vec![0.95, 0.0, 0.0]), (&far, vec![0.0, 0.9, 0.0]), (&other_scope, vec![1.0, 0.0, 0.0])]
+    {
+        let chunk = first_index_chunk(memory);
+        substrate
+            .update_embedding(EmbeddingUpdate {
+                chunk_id: chunk.chunk_id,
+                expected_chunk_hash: chunk.body_hash,
+                triple: triple.clone(),
+                vector,
+            })
+            .await
+            .expect("embedding");
+    }
+
+    let hits = substrate
+        .knn_active_memories(&triple, &[1.0, 0.0, 0.0], &[Scope::Agent, Scope::Subagent], 5)
+        .await
+        .expect("knn");
+
+    let ids: Vec<&str> = hits.iter().map(|hit| hit.memory_id.as_str()).collect();
+    assert!(ids.contains(&near.frontmatter.id.as_str()), "in-scope near memory surfaces");
+    assert!(ids.contains(&far.frontmatter.id.as_str()), "in-scope far memory surfaces");
+    assert!(!ids.contains(&other_scope.frontmatter.id.as_str()), "out-of-scope memory must be filtered out");
+    assert_eq!(hits[0].memory_id.as_str(), near.frontmatter.id.as_str(), "nearest in-scope memory ranks first");
+    // One row per memory, and the nearest neighbour's cosine is higher than the
+    // farther one's.
+    assert!(hits[0].similarity > hits[1].similarity, "ordered by descending similarity");
+
+    // Empty scope set returns nothing rather than every memory.
+    assert!(substrate.knn_active_memories(&triple, &[1.0, 0.0, 0.0], &[], 5).await.expect("empty scopes").is_empty());
+
+    // Invariant 3: an unknown triple is a typed error, never a silent empty set.
+    let unknown = EmbeddingTriple { provider: "synthetic".to_string(), model_ref: "absent".to_string(), dimension: 3 };
+    let err = substrate
+        .knn_active_memories(&unknown, &[1.0, 0.0, 0.0], &[Scope::Agent], 5)
+        .await
+        .expect_err("unknown triple is typed");
+    assert!(matches!(err, VectorError::UnknownEmbeddingTriple(_)));
+}
+
 async fn seeded_substrate() -> (tempfile::TempDir, Substrate, Memory) {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));

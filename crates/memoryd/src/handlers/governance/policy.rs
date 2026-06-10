@@ -18,8 +18,9 @@ use memory_governance::{
     TiebreakOutcome, TombstoneIndex, TombstoneKind, TombstoneRule,
 };
 use memory_source::ArtifactStore;
-use memory_substrate::{AuxScope, Memory, MemoryContent, MemoryStatus, RecallIndexQuery, Substrate};
+use memory_substrate::{AuxScope, Memory, MemoryContent, MemoryStatus, RecallIndexQuery, Scope, Substrate};
 
+use crate::embedding::EmbeddingProvider;
 use crate::handlers::{entity_ids, namespace_for_frontmatter, HandlerError};
 
 pub(crate) fn load_policy_set(repo: &Path) -> Result<(PolicySet, PolicySource), HandlerError> {
@@ -97,7 +98,7 @@ pub(super) struct GovernanceEngineInput {
     pub(super) active: Vec<ExistingMemorySummary>,
     pub(super) tombstones: TombstoneIndex,
     pub(super) tiebreak_mode: TiebreakMode,
-    pub(super) allow_top_k: bool,
+    pub(super) top_k_source: TopKSource,
     pub(super) repo_root: PathBuf,
 }
 
@@ -113,10 +114,36 @@ pub(super) fn governance_engine(
         ),
         input.tombstones,
         GovernanceProviders::new(
-            MemorydSimilaritySearch::new(input.active, input.allow_top_k),
+            MemorydSimilaritySearch::new(input.active, input.top_k_source),
             MemorydTiebreaker { tiebreak_mode: input.tiebreak_mode },
         ),
     )
+}
+
+/// Where `SimilaritySearch::top_k` draws its candidate set from for a given write.
+///
+/// The two governance write paths feed the contradiction engine differently:
+///
+/// - The **write path** runs production embedding-backed KNN: the candidate text
+///   is embedded and matched against the active triple's vector table. The hits
+///   carry real cosine similarities, so the engine's threshold gate is
+///   meaningful. When embedding is unavailable (no provider loaded, triple
+///   mismatch, empty vec table) the source is [`TopKSource::Degraded`] — top_k
+///   returns nothing and the handler surfaces the degradation in the decision
+///   trace (invariant 3: visible, not silent).
+///
+/// - The **supersede path** (plaintext old) deliberately forces the named old
+///   memory into the tiebreaker without embedding anything: it carries
+///   [`TopKSource::ActiveSet`], preserving the prior `allow_top_k = true`
+///   behavior of returning the (single-element) active set.
+#[derive(Clone, Debug)]
+pub(super) enum TopKSource {
+    /// Embedding-backed KNN hits with real similarities (write path).
+    Knn(Vec<ExistingMemorySummary>),
+    /// Return the active set directly (supersede path's old-memory forcing).
+    ActiveSet,
+    /// Embedding similarity was requested but unavailable; top_k yields nothing.
+    Degraded,
 }
 
 /// Upper bound on active-memory envelope reads in flight at once.
@@ -213,6 +240,154 @@ pub(super) async fn active_memory_summaries(substrate: &Substrate) -> Result<Vec
     Ok(buffered.into_iter().flatten().collect())
 }
 
+/// Outcome of resolving the write-path top-K similarity candidates.
+///
+/// The handler threads this into both the engine ([`TopKSource`]) and the
+/// response: a `Degraded` outcome both makes `top_k` yield nothing *and* leaves
+/// a marker in the decision trace so the operator sees that contradiction
+/// detection ran without an embedding backend (invariant 3: visible, not silent).
+pub(super) struct SimilarityResolution {
+    pub(super) source: TopKSource,
+    pub(super) degradation: Option<&'static str>,
+}
+
+impl SimilarityResolution {
+    fn available(hits: Vec<ExistingMemorySummary>) -> Self {
+        Self { source: TopKSource::Knn(hits), degradation: None }
+    }
+
+    fn degraded(reason: &'static str) -> Self {
+        Self { source: TopKSource::Degraded, degradation: Some(reason) }
+    }
+
+    /// Similarity detection was not run at all (the legacy stateless handler
+    /// path, which carries no embedding backend by design). No top-K candidates
+    /// and no degradation marker — this path simply does not participate in
+    /// embedding-backed contradiction detection.
+    pub(super) fn not_attempted() -> Self {
+        Self { source: TopKSource::Knn(Vec::new()), degradation: None }
+    }
+}
+
+/// Map a governance namespace label (`me`/`project`/`agent`) to the substrate
+/// scopes that share it, matching `namespace_for_frontmatter`'s inverse.
+fn scopes_for_namespace(namespace: &str) -> Vec<Scope> {
+    match namespace {
+        "me" => vec![Scope::User],
+        "project" => vec![Scope::Project, Scope::Org],
+        "agent" => vec![Scope::Agent, Scope::Subagent],
+        _ => Vec::new(),
+    }
+}
+
+/// Resolve the write-path top-K similarity candidates by embedding the candidate
+/// text and running KNN against the active embedding triple's vector table.
+///
+/// ## Embed side: `embed_query`
+///
+/// The asymmetric Qwen3 pair embeds *queries* with the model-card instruction
+/// prompt and *documents* plainly. A write candidate compared against the corpus
+/// of already-embedded memories is the *query* side of that pair — the stored
+/// memory chunks were embedded with `embed_document` by the drain worker, so the
+/// candidate must use `embed_query` to land in the same asymmetric space the
+/// retrieval was tuned for. (Collapsing the two measurably degrades retrieval;
+/// that is the whole point of the asymmetric contract.)
+///
+/// ## Degradation (invariant 3)
+///
+/// Any condition that means "no real similarity backend" returns
+/// [`SimilarityResolution::degraded`] with a stable reason rather than a silent
+/// empty set:
+/// - no provider loaded (model not up / load failed / worker disabled),
+/// - the provider's triple disagrees with the substrate's active triple,
+/// - the active triple has no vector table yet (`UnknownEmbeddingTriple`),
+/// - embedding inference itself failed.
+///
+/// A genuinely-empty namespace (provider up, triple matches, but no in-scope
+/// neighbours) is *not* degraded — it is a real "no conflict" answer.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn resolve_similarity_candidates(
+    substrate: &Substrate,
+    provider: Option<&std::sync::Arc<dyn EmbeddingProvider>>,
+    candidate_body: &str,
+    namespace: &str,
+    active: &[ExistingMemorySummary],
+    limit: usize,
+) -> SimilarityResolution {
+    let Some(provider) = provider else {
+        return SimilarityResolution::degraded("similarity_degraded:no_embedding_provider");
+    };
+
+    let active_triple = match substrate.active_embedding_triple() {
+        Ok(triple) => triple,
+        Err(error) => {
+            tracing::warn!(%error, "contradiction similarity degraded: cannot read active embedding triple");
+            return SimilarityResolution::degraded("similarity_degraded:no_active_triple");
+        }
+    };
+    if provider.triple() != &active_triple {
+        // Invariant 3: triple is identity. Embedding with a model that disagrees
+        // with the vec table would compare vectors from different spaces.
+        tracing::warn!(
+            provider_triple = ?provider.triple(),
+            active_triple = ?active_triple,
+            "contradiction similarity degraded: provider triple does not match active triple"
+        );
+        return SimilarityResolution::degraded("similarity_degraded:triple_mismatch");
+    }
+
+    let scopes = scopes_for_namespace(namespace);
+    if scopes.is_empty() {
+        // No resolvable scope → no in-scope neighbours by definition. Treated as
+        // a real (empty) answer, not a backend degradation.
+        return SimilarityResolution::available(Vec::new());
+    }
+
+    // Embed off the async runtime: candle compute blocks. Candidate text is the
+    // *query* side of the asymmetric pair (see doc comment).
+    let embed_provider = std::sync::Arc::clone(provider);
+    let body = candidate_body.to_string();
+    let vector = match tokio::task::spawn_blocking(move || embed_provider.embed_query(&body)).await {
+        Ok(Ok(vector)) => vector,
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "contradiction similarity degraded: candidate embedding failed");
+            return SimilarityResolution::degraded("similarity_degraded:embedding_failed");
+        }
+        Err(join_error) => {
+            tracing::warn!(%join_error, "contradiction similarity degraded: embedding task panicked");
+            return SimilarityResolution::degraded("similarity_degraded:embedding_failed");
+        }
+    };
+
+    let neighbours = match substrate.knn_active_memories(&active_triple, &vector, &scopes, limit).await {
+        Ok(neighbours) => neighbours,
+        Err(memory_substrate::VectorError::UnknownEmbeddingTriple(_)) => {
+            // Vec table absent/dropped — embedding is configured but the corpus
+            // has nothing indexed against this triple yet.
+            return SimilarityResolution::degraded("similarity_degraded:no_vector_table");
+        }
+        Err(error) => {
+            tracing::warn!(%error, "contradiction similarity degraded: KNN query failed");
+            return SimilarityResolution::degraded("similarity_degraded:knn_failed");
+        }
+    };
+
+    // Map each KNN neighbour back to its already-computed active summary (claim /
+    // entity hashes, namespace) and re-stamp the measured similarity. Neighbours
+    // absent from the active set (e.g. a row indexed but not yet in the active
+    // snapshot) are skipped rather than fabricated.
+    let by_id: HashMap<&str, &ExistingMemorySummary> = active.iter().map(|summary| (summary.id(), summary)).collect();
+    let hits = neighbours
+        .into_iter()
+        .filter_map(|neighbour| {
+            by_id
+                .get(neighbour.memory_id.as_str())
+                .map(|summary| (*summary).clone().with_similarity(neighbour.similarity))
+        })
+        .collect::<Vec<_>>();
+    SimilarityResolution::available(hits)
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct MemorydSimilaritySearch {
     active: Vec<ExistingMemorySummary>,
@@ -231,11 +406,11 @@ pub(super) struct MemorydSimilaritySearch {
     /// either way. A future change that reads order-sensitive *non-key* fields off
     /// the returned summary would need a stable secondary sort (e.g. by id) here.
     by_claim_key: HashMap<(String, String, String), usize>,
-    allow_top_k: bool,
+    top_k_source: TopKSource,
 }
 
 impl MemorydSimilaritySearch {
-    fn new(active: Vec<ExistingMemorySummary>, allow_top_k: bool) -> Self {
+    fn new(active: Vec<ExistingMemorySummary>, top_k_source: TopKSource) -> Self {
         let mut by_claim_key = HashMap::with_capacity(active.len());
         for (position, memory) in active.iter().enumerate() {
             // First occurrence wins, matching the prior `Iterator::find` semantics.
@@ -247,7 +422,7 @@ impl MemorydSimilaritySearch {
                 ))
                 .or_insert(position);
         }
-        Self { active, by_claim_key, allow_top_k }
+        Self { active, by_claim_key, top_k_source }
     }
 }
 
@@ -262,10 +437,17 @@ impl SimilaritySearch for MemorydSimilaritySearch {
     }
 
     fn top_k(&self, _candidate: &CandidateMemory, limit: usize) -> Vec<ExistingMemorySummary> {
-        if !self.allow_top_k {
-            return Vec::new();
+        match &self.top_k_source {
+            // KNN hits arrive pre-sorted by descending similarity from the
+            // substrate query; truncate to the engine's width.
+            TopKSource::Knn(hits) => hits.iter().take(limit).cloned().collect(),
+            // Supersede path: surface the (single) active old memory so the
+            // explicit-supersede tiebreaker can force a contradiction.
+            TopKSource::ActiveSet => self.active.iter().take(limit).cloned().collect(),
+            // Embedding unavailable: no similarity candidates. The handler has
+            // already recorded the degradation in the decision trace.
+            TopKSource::Degraded => Vec::new(),
         }
-        self.active.iter().take(limit).cloned().collect()
     }
 }
 

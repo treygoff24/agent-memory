@@ -1408,6 +1408,23 @@ pub struct ChunkResult {
     pub score: f64,
 }
 
+/// A single active-memory neighbour returned by a governance KNN similarity
+/// query ([`crate::Substrate::knn_active_memories`]).
+///
+/// One row per *memory* (chunk hits are collapsed to the nearest chunk), already
+/// filtered to active, non-encrypted, in-scope rows. `similarity` is a cosine
+/// similarity in `[-1, 1]` (higher = more similar), derived from the stored L2
+/// distance under the unit-vector assumption documented on the query method.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SimilarMemory {
+    /// Memory id of the neighbour.
+    pub memory_id: MemoryId,
+    /// Lifecycle scope of the neighbour (drives the governance namespace label).
+    pub scope: Scope,
+    /// Cosine similarity to the query vector (higher is nearer).
+    pub similarity: f32,
+}
+
 /// Whether a memory's body is indexable in chunk-level search (spec §10.4).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

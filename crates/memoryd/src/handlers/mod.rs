@@ -111,6 +111,11 @@ pub struct HandlerState {
     web_dashboard: StdMutex<WebDashboardRuntime>,
     coordination_config: CoordinationConfig,
     recall_dedup: RecallDedupState,
+    /// Late-initialized embedding provider, shared with the background embedding
+    /// worker. Governance contradiction detection reads it to embed a write
+    /// candidate for KNN similarity; an empty slot degrades to "no similarity
+    /// candidates" (visible in the decision trace).
+    embedding_provider: crate::embedding::EmbeddingProviderSlot,
 }
 
 impl HandlerState {
@@ -137,7 +142,19 @@ impl HandlerState {
             web_dashboard: StdMutex::new(WebDashboardRuntime::default()),
             coordination_config,
             recall_dedup: RecallDedupState::default(),
+            embedding_provider: crate::embedding::EmbeddingProviderSlot::empty(),
         }
+    }
+
+    /// Shared embedding-provider slot, cloned for the background worker so it can
+    /// publish the loaded provider and for governance to embed write candidates.
+    pub fn embedding_provider_slot(&self) -> crate::embedding::EmbeddingProviderSlot {
+        self.embedding_provider.clone()
+    }
+
+    /// The active embedding provider, if one has been loaded and published.
+    pub(crate) fn embedding_provider(&self) -> Option<std::sync::Arc<dyn crate::embedding::EmbeddingProvider>> {
+        self.embedding_provider.get()
     }
 
     pub fn subscribe_notifications(&self) -> broadcast::Receiver<crate::protocol::NotificationEvent> {
@@ -269,7 +286,7 @@ async fn dispatch(
         RequestPayload::Reveal { id, reason } => reveal_response(substrate, &id, &reason).await,
         RequestPayload::WriteNote { text } => write_note_response(substrate, &text).await,
         RequestPayload::WriteMemory { body, title, tags, meta } => {
-            governance_write_response(substrate, GovernanceWriteRequest { body, title, tags, meta }).await
+            governance_write_response(substrate, Some(state), GovernanceWriteRequest { body, title, tags, meta }).await
         }
         RequestPayload::Supersede { old_id, content, reason, meta } => {
             governance_supersede_response(

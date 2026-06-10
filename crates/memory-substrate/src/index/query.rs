@@ -371,6 +371,136 @@ impl Index {
         rows
     }
 
+    /// KNN over the active embedding triple's vector table, collapsed to one row
+    /// per *memory* and restricted to active, non-encrypted, in-scope rows.
+    ///
+    /// This is the substrate seam for governance contradiction detection
+    /// (Stream C `SimilaritySearch::top_k`): given a candidate's query vector,
+    /// return the nearest active memories within the candidate's namespace scope
+    /// so the engine can decide same/refine/contradict.
+    ///
+    /// ## Scope filtering
+    ///
+    /// `scopes` is the set of `memories.scope` values that share the candidate's
+    /// governance namespace (`me` → `user`; `project` → `project`/`org`;
+    /// `agent` → `agent`/`subagent`). An empty `scopes` slice returns no rows
+    /// rather than every memory — a candidate with no resolvable scope has no
+    /// in-scope neighbours by definition.
+    ///
+    /// ## Status / encryption filtering
+    ///
+    /// Only `status = 'active'` rows participate, and `metadata_only = 0`
+    /// excludes encrypted-body memories (their bodies are never embedded). This
+    /// matches the membership filter [`Self::query_chunks`]/[`Self::query_vector_chunks`]
+    /// apply, plus the active-only restriction governance requires (superseded,
+    /// tombstoned, quarantined, and candidate rows must not trigger a
+    /// contradiction against a write).
+    ///
+    /// ## Distance → similarity
+    ///
+    /// The `vec0` table stores L2 (euclidean) distance. For L2-normalized
+    /// (unit) vectors — which both the production Qwen3 lane and the test
+    /// fixture provider emit — cosine similarity is `1 - d²/2`. Governance
+    /// thresholds are expressed as cosine similarity, so the conversion happens
+    /// here. The unit-vector assumption is the contract: a provider that emits
+    /// un-normalized vectors would skew the similarity, which is a provider bug,
+    /// not silently absorbed here.
+    ///
+    /// ## Chunk → memory collapse
+    ///
+    /// A memory can produce several chunks, so the raw KNN can return multiple
+    /// rows per memory. We over-fetch (`k` is widened past `limit`) and keep each
+    /// memory's nearest chunk (`MIN(distance)`), then truncate to `limit`
+    /// memories ordered by ascending distance. Over-fetching guards against the
+    /// post-`MATCH` WHERE filters (scope/status) shrinking a `k`-row neighbour
+    /// set below `limit` distinct memories.
+    ///
+    /// Per invariant 3 (spec §10.2.2): a triple whose vector table does not exist
+    /// (or was dropped) is [`VectorError::UnknownEmbeddingTriple`], never a silent
+    /// empty result — the caller distinguishes "no neighbours" from "no backend".
+    #[allow(clippy::too_many_arguments)]
+    pub fn knn_active_memories(
+        &self,
+        triple: &EmbeddingTriple,
+        vector: &[f32],
+        scopes: &[Scope],
+        limit: usize,
+    ) -> Result<Vec<crate::model::SimilarMemory>, VectorError> {
+        crate::index::sqlite_vec::validate_dimension(triple, vector)?;
+        if scopes.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let table = crate::index::sqlite_vec::vector_table_name(triple);
+        if is_dropped_triple(&self.connection, triple)? || !table_exists(&self.connection, &table)? {
+            return Err(VectorError::UnknownEmbeddingTriple(triple.clone()));
+        }
+
+        // Over-fetch chunk neighbours so the post-MATCH scope/status filters and
+        // the chunk→memory collapse still leave at least `limit` distinct
+        // memories in the common case. Capped so a huge `limit` cannot ask
+        // sqlite-vec for an unbounded scan.
+        const CHUNK_FANOUT: usize = 8;
+        let knn_k = limit.saturating_mul(CHUNK_FANOUT).clamp(limit, 512);
+
+        // sqlite-vec's KNN form is restrictive: the `embedding MATCH ? AND k = ?`
+        // shape is kept simple (mirroring `query_vector_chunks` — plain WHERE
+        // filters + ORDER BY, no GROUP BY/aggregate over the virtual table). The
+        // chunk→memory collapse (nearest chunk per memory) happens in Rust below.
+        let scope_placeholders = sql_placeholders(scopes.len());
+        let sql = format!(
+            "SELECT memory_chunks.memory_id, memories.scope, {table}.distance
+             FROM {table}
+             JOIN memory_chunks ON memory_chunks.chunk_rowid = {table}.rowid
+             JOIN memories      ON memories.id = memory_chunks.memory_id
+             WHERE embedding MATCH ?1
+               AND k = ?2
+               AND memories.status = 'active'
+               AND memories.metadata_only = 0
+               AND memories.passive_recall = 1
+               AND memories.scope IN ({scope_placeholders})
+             ORDER BY {table}.distance"
+        );
+
+        let blob = crate::index::sqlite_vec::serialize_f32(vector);
+        let mut bindings: Vec<rusqlite::types::Value> = Vec::with_capacity(scopes.len() + 2);
+        bindings.push(rusqlite::types::Value::Blob(blob));
+        bindings.push(rusqlite::types::Value::Integer(knn_k as i64));
+        for scope in scopes {
+            bindings.push(rusqlite::types::Value::Text(scope_str(*scope).to_string()));
+        }
+
+        let mut stmt = self.connection.prepare_cached(&sql)?;
+        let rows = stmt
+            .query_map(params_from_iter(bindings.iter()), |row| {
+                let memory_id: String = row.get(0)?;
+                let scope_text: String = row.get(1)?;
+                let distance: f64 = row.get(2)?;
+                Ok((memory_id, scope_text, distance))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        // Collapse chunk hits to one row per memory (rows are ascending by
+        // distance, so the first hit for each memory is its nearest chunk), then
+        // truncate to `limit` memories preserving distance order.
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut out = Vec::with_capacity(limit.min(rows.len()));
+        for (memory_id, scope_text, distance) in rows {
+            if out.len() >= limit {
+                break;
+            }
+            if !seen.insert(memory_id.clone()) {
+                continue;
+            }
+            let scope = scope_from_str(&scope_text)?;
+            out.push(crate::model::SimilarMemory {
+                memory_id: MemoryId::new(memory_id),
+                scope,
+                similarity: cosine_from_l2_distance(distance),
+            });
+        }
+        Ok(out)
+    }
+
     /// Return the stored `file_hash` for a repo path, or `None` if not indexed.
     ///
     /// Used by phase 6 index-consistency check to avoid a full reindex on every
@@ -1633,6 +1763,20 @@ fn memory_type_str(t: &crate::model::MemoryType) -> &'static str {
         crate::model::MemoryType::Decision => "decision",
         crate::model::MemoryType::OpenQuestion => "open-question",
     }
+}
+
+/// Convert a `vec0` L2 (euclidean) distance into cosine similarity, assuming the
+/// stored and query vectors are L2-normalized (unit length).
+///
+/// For unit vectors `a`, `b`: `‖a − b‖² = 2 − 2·(a·b)`, so the cosine
+/// similarity `a·b = 1 − d²/2`. Both the production Qwen3 lane and the test
+/// fixture provider emit normalized vectors, so this is exact in practice; for
+/// any residual numeric drift the result is clamped to the valid cosine range
+/// `[-1, 1]`. A provider that emits un-normalized vectors would skew this — that
+/// is a provider bug surfaced as off-distribution similarities, never silently
+/// corrected here.
+fn cosine_from_l2_distance(distance: f64) -> f32 {
+    (1.0 - (distance * distance) / 2.0).clamp(-1.0, 1.0) as f32
 }
 
 fn scope_str(s: crate::model::Scope) -> &'static str {

@@ -964,6 +964,17 @@ pub struct GovernanceWriteResponse {
     pub policy_applied: Option<String>,
     pub policy_source: Option<String>,
     pub existing_id: Option<String>,
+    /// Decision-trace marker recording that embedding-backed contradiction
+    /// detection ran degraded for this write — the configured embedding triple
+    /// had no provider loaded, the provider's triple disagreed with the active
+    /// triple, the active triple had no vector table yet, or the KNN/embedding
+    /// step failed. When set, the "no contradiction" portion of the decision was
+    /// reached *without* a real similarity backend, so an operator must not read
+    /// a `promoted` status as "checked against the corpus and found nothing
+    /// similar" (invariant 3: visible here, never silent). `None` on the normal
+    /// path; serde-skipped when absent so existing response shapes are unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub similarity_degraded: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

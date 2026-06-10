@@ -62,7 +62,7 @@ pub async fn serve_substrate(socket_path: impl AsRef<Path>, substrate: Substrate
     spawn_coordination_cleanup_for_state(state.clone(), shutdown_rx.clone());
     fire_reality_check_due_on_startup(&substrate, &state);
     spawn_reality_check_scheduler(substrate.clone(), state.clone(), shutdown_rx.clone());
-    spawn_embedding_worker(substrate.clone(), shutdown_rx.clone());
+    spawn_embedding_worker(substrate.clone(), state.embedding_provider_slot(), shutdown_rx.clone());
     serve_with_dispatcher(
         socket_path.as_ref(),
         Dispatch::Substrate { substrate, state },
@@ -93,7 +93,7 @@ pub async fn serve_substrate_with(
     spawn_coordination_cleanup_for_state(state.clone(), shutdown.clone());
     fire_reality_check_due_on_startup(&substrate, &state);
     spawn_reality_check_scheduler(substrate.clone(), state.clone(), shutdown.clone());
-    spawn_embedding_worker(substrate.clone(), shutdown.clone());
+    spawn_embedding_worker(substrate.clone(), state.embedding_provider_slot(), shutdown.clone());
     serve_with_dispatcher(socket_path.as_ref(), Dispatch::Substrate { substrate, state }, options, shutdown).await
 }
 
@@ -141,7 +141,11 @@ fn fire_reality_check_due_on_startup(substrate: &Substrate, state: &HandlerState
 /// first use, unsupported device — the worker stays down and recall degrades to
 /// FTS-only; the empty vector table and pending backlog surface in `doctor`
 /// rather than crashing the daemon.
-fn spawn_embedding_worker(substrate: Arc<Substrate>, shutdown: watch::Receiver<bool>) {
+fn spawn_embedding_worker(
+    substrate: Arc<Substrate>,
+    provider_slot: crate::embedding::EmbeddingProviderSlot,
+    shutdown: watch::Receiver<bool>,
+) {
     // Operational opt-out: skip the worker (and its first-use model download /
     // load) on constrained hosts or in test/CI daemons that don't exercise
     // vector recall. Recall degrades to FTS-only, surfaced in `doctor`.
@@ -188,6 +192,11 @@ fn spawn_embedding_worker(substrate: Arc<Substrate>, shutdown: watch::Receiver<b
                 return;
             }
         };
+        // Publish the loaded provider so the governance write path can embed
+        // contradiction candidates with the same model that populates the vec
+        // table. Done before the drain loop starts so similarity is available as
+        // soon as the model is up.
+        provider_slot.set(Arc::clone(&provider));
         crate::embedding::worker::spawn_embedding_worker(substrate, provider, shutdown);
     });
 }

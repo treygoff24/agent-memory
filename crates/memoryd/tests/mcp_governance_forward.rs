@@ -37,6 +37,7 @@ async fn mcp_governance_forward_memory_write_forwards_to_governed_daemon_payload
                 policy_applied: Some("project-standard@v2".to_string()),
                 policy_source: Some("built_in_fallback".to_string()),
                 existing_id: None,
+                similarity_degraded: None,
             }),
         )
     })

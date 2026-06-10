@@ -1407,6 +1407,32 @@ impl Substrate {
         Ok(index.query_chunks(&text)?)
     }
 
+    /// KNN over a triple's vector table, collapsed to one row per active,
+    /// in-scope memory.
+    ///
+    /// The substrate seam for governance contradiction detection: given a
+    /// candidate's query vector, return the nearest active memories whose scope
+    /// is in `scopes` (the candidate's governance namespace). See
+    /// [`crate::index::Index::knn_active_memories`] for the filtering and
+    /// distance→similarity contract.
+    ///
+    /// Per invariant 3, a triple with no vector table is
+    /// [`VectorError::UnknownEmbeddingTriple`], never a silent empty result, so
+    /// the caller can distinguish "no neighbours" from "no embedding backend".
+    #[allow(clippy::too_many_arguments)]
+    pub async fn knn_active_memories(
+        &self,
+        triple: &EmbeddingTriple,
+        vector: &[f32],
+        scopes: &[Scope],
+        limit: usize,
+    ) -> Result<Vec<crate::model::SimilarMemory>, VectorError> {
+        self.index
+            .lock()
+            .map_err(|err| VectorError::IndexUnavailable(format!("index mutex poisoned: {err}")))?
+            .knn_active_memories(triple, vector, scopes, limit)
+    }
+
     /// Update embedding for a chunk.
     pub async fn update_embedding(&self, update: EmbeddingUpdate) -> Result<(), VectorError> {
         self.index

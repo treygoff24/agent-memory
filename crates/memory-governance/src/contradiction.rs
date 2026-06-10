@@ -263,6 +263,18 @@ impl ExistingMemorySummary {
         self
     }
 
+    /// Override the similarity score.
+    ///
+    /// Active-memory summaries are built with `similarity = 1.0` (they exist, so
+    /// they are trivially "similar to themselves"); a top-K similarity provider
+    /// re-stamps each surfaced summary with its measured similarity to the
+    /// candidate so the detector's threshold gate operates on real scores.
+    #[must_use]
+    pub fn with_similarity(mut self, similarity: f32) -> Self {
+        self.similarity = similarity;
+        self
+    }
+
     /// Existing memory id.
     pub fn id(&self) -> &str {
         &self.id

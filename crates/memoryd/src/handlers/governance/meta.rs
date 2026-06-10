@@ -345,6 +345,7 @@ impl GovernanceWriteInput {
                 policy_applied: None,
                 policy_source: None,
                 existing_id: None,
+                similarity_degraded: None,
             }),
             PrivacyStorageAction::Plaintext | PrivacyStorageAction::EncryptAtRest => None,
         }
