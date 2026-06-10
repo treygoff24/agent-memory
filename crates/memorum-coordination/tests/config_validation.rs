@@ -152,6 +152,7 @@ fn validate_typed_keeps_valid_boundary_values_inclusive() {
         },
         presence: PresenceConfig { heartbeat_seconds: 10, stale_after_seconds: 20 },
         claim_lock: ClaimLockConfig { ttl_seconds: 3_600 },
+        full_coordination_harnesses: None,
     };
 
     assert_eq!(config.validate_typed(), Ok(()));

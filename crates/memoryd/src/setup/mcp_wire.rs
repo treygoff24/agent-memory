@@ -8,17 +8,48 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use memorum_coordination::HarnessRegistry;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use thiserror::Error;
 use toml_edit::{value, Array, DocumentMut, Item, Table};
 
 /// Harness whose MCP configuration should be wired.
+///
+/// The serde representation (`"claude"` / `"codex"`, kebab-case) is the
+/// load-bearing wire surface for setup config and is left unchanged. Identity
+/// reconciliation with the other harness sites flows through
+/// [`HarnessTarget::descriptor_id`] and [`HarnessTarget::from_identifier`],
+/// which resolve against the shared [`HarnessRegistry`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum HarnessTarget {
     Claude,
     Codex,
+}
+
+impl HarnessTarget {
+    /// Canonical descriptor id this target maps to in the shared registry.
+    pub fn descriptor_id(self) -> &'static str {
+        match self {
+            Self::Claude => "claude-code",
+            Self::Codex => "codex",
+        }
+    }
+
+    /// Resolve any recognized spelling (`"claude"`, `"claude-code"`, `"codex"`,
+    /// `"codex-cli"`, case-insensitive) to the wiring target, via the shared
+    /// harness registry. Returns `None` for harnesses without an MCP wiring
+    /// implementation here.
+    pub fn from_identifier(identifier: &str) -> Option<Self> {
+        let registry = HarnessRegistry::builtin();
+        let descriptor = registry.resolve(identifier)?;
+        match descriptor.id.as_str() {
+            "claude-code" => Some(Self::Claude),
+            "codex" => Some(Self::Codex),
+            _ => None,
+        }
+    }
 }
 
 /// Desired MCP server command.

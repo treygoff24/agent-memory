@@ -2,6 +2,8 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::harness::HarnessRegistry;
+
 /// Typed validation error for `CoordinationConfig` and its sub-structs.
 ///
 /// Replaces the prior `Result<(), String>` returns from the private
@@ -37,6 +39,13 @@ pub struct CoordinationConfig {
     pub presence: PresenceConfig,
     #[serde(default)]
     pub claim_lock: ClaimLockConfig,
+    /// Optional runtime override for the set of harnesses granted full
+    /// coordination. When present it *replaces* the built-in
+    /// full-coordination set (formerly the hard-coded
+    /// `FULL_COORDINATION_HARNESSES` allowlist). When `None`, the built-in
+    /// descriptor registry decides (claude-code + codex are full).
+    #[serde(default)]
+    pub full_coordination_harnesses: Option<Vec<String>>,
 }
 
 impl Default for CoordinationConfig {
@@ -46,7 +55,17 @@ impl Default for CoordinationConfig {
             relevance_gate: RelevanceGateConfig::default(),
             presence: PresenceConfig::default(),
             claim_lock: ClaimLockConfig::default(),
+            full_coordination_harnesses: None,
         }
+    }
+}
+
+impl CoordinationConfig {
+    /// Build the harness identity registry implied by this config: the
+    /// compiled-in built-ins, with the full-coordination capability table
+    /// overridden by `full_coordination_harnesses` when set.
+    pub fn harness_registry(&self) -> HarnessRegistry {
+        HarnessRegistry::with_config_overrides(self.full_coordination_harnesses.as_deref(), &[])
     }
 }
 

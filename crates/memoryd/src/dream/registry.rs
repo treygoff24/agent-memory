@@ -1,5 +1,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
+use memorum_coordination::HarnessRegistry;
+
 use crate::protocol::{HarnessCliStatus, PromptTransport};
 
 use super::harness::{ClaudeCodeCli, CodexCli, HarnessCli};
@@ -7,6 +9,7 @@ use super::harness::{ClaudeCodeCli, CodexCli, HarnessCli};
 pub struct HarnessCliRegistry {
     adapters: BTreeMap<&'static str, Arc<dyn HarnessCli>>,
     disabled_adapters: Vec<HarnessCliStatus>,
+    identities: HarnessRegistry,
 }
 
 impl HarnessCliRegistry {
@@ -17,6 +20,7 @@ impl HarnessCliRegistry {
 
         Self {
             adapters,
+            identities: HarnessRegistry::builtin(),
             disabled_adapters: vec![HarnessCliStatus {
                 name: "gemini".to_owned(),
                 is_installed: false,
@@ -36,8 +40,20 @@ impl HarnessCliRegistry {
         self.disabled_adapters.iter()
     }
 
+    /// Resolve a harness CLI by any recognized spelling.
+    ///
+    /// Exact adapter keys (`"claude"`, `"codex"`) resolve directly, preserving
+    /// the historical surface. Any other alias of the same descriptor — e.g.
+    /// `"claude-code"` for the Claude adapter, `"codex-cli"` for Codex — also
+    /// resolves, so a single identity decides the adapter regardless of
+    /// spelling.
     pub fn get(&self, name: &str) -> Option<Arc<dyn HarnessCli>> {
-        self.adapters.get(name).cloned()
+        if let Some(adapter) = self.adapters.get(name).cloned() {
+            return Some(adapter);
+        }
+
+        let descriptor = self.identities.resolve(name)?;
+        self.adapters.iter().find_map(|(key, adapter)| descriptor.matches(key).then(|| adapter.clone()))
     }
 
     pub async fn select_first_available(&self, priority: &[String]) -> Option<Arc<dyn HarnessCli>> {

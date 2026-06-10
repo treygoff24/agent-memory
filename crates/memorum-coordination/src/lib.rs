@@ -5,6 +5,7 @@ pub mod claim_lock;
 pub mod config;
 pub mod framing_tests;
 pub mod gate;
+pub mod harness;
 pub mod presence;
 pub mod protocol;
 pub mod session;
@@ -12,6 +13,7 @@ pub mod session;
 pub use claim_lock::{ClaimLockAcquireResult, ClaimLockRegistry, ClaimLockRenewResult};
 pub use config::{ClaimLockConfig, ConfigValidationError, CoordinationConfig, PresenceConfig, RelevanceGateConfig};
 pub use gate::{PeerWriteCandidate, RelevanceGate};
+pub use harness::{CliSpec, Coordination, HarnessDescriptor, HarnessRegistry, ImporterId, McpConfig};
 pub use presence::{
     cleanup_stale_sessions, handle_peer_heartbeat, spawn_stale_session_cleanup_task, PeerHeartbeatError,
     PeerHeartbeatOptions, PresenceRecord, PresenceRegistry, StaleSessionClaimLockReleaser, PRESENCE_CLEANUP_INTERVAL,

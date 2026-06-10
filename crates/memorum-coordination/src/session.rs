@@ -4,6 +4,8 @@ use std::path::Path;
 use memory_substrate::EmbeddingTriple;
 use serde::{Deserialize, Serialize};
 
+use crate::harness::HarnessRegistry;
+
 /// Per-project override for Stream I coordination level.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -57,13 +59,13 @@ pub struct QueryEmbedding {
 
 pub type EmbeddingCache = HashMap<(String, String), (EmbeddingTriple, Vec<f32>)>;
 
-// Invariant: this explicit allowlist contains harness names known to support
-// full coordination (peer-update insertion and claim locks). Unknown harnesses
-// default to observe-only to prevent silent privilege escalation. Adding a
-// full-coordination harness requires updating the session_derivation tests.
-const FULL_COORDINATION_HARNESSES: &[&str] = &["codex", "codex-cli", "claude-code"];
-
 /// Working set for one active harness session.
+///
+/// Coordination capability is resolved through [`HarnessRegistry`] keyed off
+/// `harness`. `harness_registry` carries an optional per-session override (a
+/// config-derived registry); when `None`, the built-in registry decides, which
+/// preserves the historical `FULL_COORDINATION_HARNESSES` allowlist behavior
+/// (`codex`, `codex-cli`, `claude-code` + its `claude` alias are full).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SessionContext {
     pub session_id: String,
@@ -76,6 +78,8 @@ pub struct SessionContext {
     pub recent_query_embedding: Option<QueryEmbedding>,
     pub embedding_cache: EmbeddingCache,
     pub surfaced_peer_writes: HashSet<String>,
+    /// Optional config-derived registry override; `None` uses the built-in.
+    pub harness_registry: Option<HarnessRegistry>,
 }
 
 impl SessionContext {
@@ -107,12 +111,32 @@ impl SessionContext {
         session
     }
 
-    pub fn is_full_coordination_harness(&self) -> bool {
-        let harness = self.harness.trim().to_ascii_lowercase();
-        FULL_COORDINATION_HARNESSES.contains(&harness.as_str())
+    /// Replace the registry used to resolve this session's coordination
+    /// capability. Use with the config-derived registry
+    /// ([`crate::CoordinationConfig::harness_registry`]) to honor a
+    /// `full_coordination_harnesses` override at runtime.
+    pub fn with_harness_registry(mut self, registry: HarnessRegistry) -> Self {
+        self.harness_registry = Some(registry);
+        self
     }
 
-    /// Harnesses outside `FULL_COORDINATION_HARNESSES` are observe-only.
+    /// Set the registry override in place.
+    pub fn set_harness_registry(&mut self, registry: HarnessRegistry) {
+        self.harness_registry = Some(registry);
+    }
+
+    fn registry(&self) -> std::borrow::Cow<'_, HarnessRegistry> {
+        match &self.harness_registry {
+            Some(registry) => std::borrow::Cow::Borrowed(registry),
+            None => std::borrow::Cow::Owned(HarnessRegistry::builtin()),
+        }
+    }
+
+    pub fn is_full_coordination_harness(&self) -> bool {
+        self.registry().is_full_coordination(&self.harness)
+    }
+
+    /// Harnesses the registry does not grant full coordination are observe-only.
     pub fn is_observe_only_harness(&self) -> bool {
         !self.is_full_coordination_harness()
     }

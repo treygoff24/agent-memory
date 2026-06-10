@@ -17,11 +17,25 @@ pub enum Harness {
 
 impl Harness {
     /// Stable wire-format token used in the state file's source-keys and in the
-    /// `source.harness` field on the persisted memory.
+    /// `source.harness` field on the persisted memory. This is also the
+    /// canonical descriptor `id` in the shared [`memorum_coordination::HarnessRegistry`].
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::ClaudeCode => "claude-code",
             Self::Codex => "codex",
+        }
+    }
+
+    /// Resolve any recognized spelling (`"claude"`, `"claude-code"`, `"codex"`,
+    /// `"codex-cli"`, case-insensitive) to its importer variant via the shared
+    /// harness registry. Returns `None` for harnesses without an importer here.
+    pub fn from_identifier(identifier: &str) -> Option<Self> {
+        let registry = memorum_coordination::HarnessRegistry::builtin();
+        let descriptor = registry.resolve(identifier)?;
+        match descriptor.id.as_str() {
+            "claude-code" => Some(Self::ClaudeCode),
+            "codex" => Some(Self::Codex),
+            _ => None,
         }
     }
 }
