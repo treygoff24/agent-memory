@@ -1,0 +1,34 @@
+{
+  "model_key": "embeddinggemma",
+  "status": "ok",
+  "meta": {
+    "model_key": "embeddinggemma",
+    "repo": "onnx-community/embeddinggemma-300m-ONNX",
+    "device": "cpu",
+    "dims": 768,
+    "load_path": "sentence-transformers onnx-community/embeddinggemma-300m-ONNX backend=onnx file=model_quantized.onnx provider=CPU",
+    "notes": [
+      "gated repo load failed: GatedRepoError('401 Client Error. (Request ID: Root=1-6a28a950-2578efc508d4f7c5092cea80;401acff6-7c71-466c-ade8-3eada7d94015)\\n\\nCannot access gated repo for url https://huggingface.co/google/embeddin",
+      "onnx fallback loaded with model_quantized.onnx",
+      "gemma docs used prompt_name=document"
+    ],
+    "registered_prompts": [
+      "query",
+      "document"
+    ],
+    "doc_embed_secs": 2.259730815887451,
+    "mean_query_embed_ms": 41.406989097595215
+  },
+  "metrics": {
+    "n_nonabstain": 46,
+    "n_graded_positive": 44,
+    "ndcg10": 0.8432152100013783,
+    "recall5_essential": 0.9090909090909091,
+    "mrr_first_essential": 0.8268780239368475,
+    "trap_rate5": 0.34782608695652173,
+    "n_abstain": 4,
+    "median_top1_abstain": 0.6363569498062134,
+    "median_top1_nonabstain": 0.7731080055236816,
+    "abstain_gap": 0.13675105571746826
+  }
+}

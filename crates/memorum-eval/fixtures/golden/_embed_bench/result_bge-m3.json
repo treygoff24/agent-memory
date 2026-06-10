@@ -1,0 +1,26 @@
+{
+  "model_key": "bge-m3",
+  "status": "ok",
+  "meta": {
+    "model_key": "bge-m3",
+    "repo": "BAAI/bge-m3",
+    "device": "mps",
+    "dims": 1024,
+    "load_path": "sentence-transformers BAAI/bge-m3 (mps)",
+    "notes": [],
+    "doc_embed_secs": 2.547492265701294,
+    "mean_query_embed_ms": 80.57302951812744
+  },
+  "metrics": {
+    "n_nonabstain": 46,
+    "n_graded_positive": 44,
+    "ndcg10": 0.785094732779287,
+    "recall5_essential": 0.8636363636363636,
+    "mrr_first_essential": 0.8100229158467797,
+    "trap_rate5": 0.3695652173913043,
+    "n_abstain": 4,
+    "median_top1_abstain": 0.46969281136989594,
+    "median_top1_nonabstain": 0.6417436301708221,
+    "abstain_gap": 0.1720508188009262
+  }
+}

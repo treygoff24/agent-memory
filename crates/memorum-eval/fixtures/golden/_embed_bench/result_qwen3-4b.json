@@ -1,0 +1,30 @@
+{
+  "model_key": "qwen3-4b",
+  "status": "ok",
+  "meta": {
+    "model_key": "qwen3-4b",
+    "repo": "Qwen/Qwen3-Embedding-4B",
+    "device": "mps",
+    "dims": 2560,
+    "load_path": "sentence-transformers Qwen/Qwen3-Embedding-4B (fp16, mps)",
+    "notes": [],
+    "registered_prompts": [
+      "query",
+      "document"
+    ],
+    "doc_embed_secs": 5.9200499057769775,
+    "mean_query_embed_ms": 67.57779598236084
+  },
+  "metrics": {
+    "n_nonabstain": 46,
+    "n_graded_positive": 44,
+    "ndcg10": 0.7668362568194727,
+    "recall5_essential": 0.8636363636363636,
+    "mrr_first_essential": 0.732130752389373,
+    "trap_rate5": 0.34782608695652173,
+    "n_abstain": 4,
+    "median_top1_abstain": 0.3518310934305191,
+    "median_top1_nonabstain": 0.6985599100589752,
+    "abstain_gap": 0.3467288166284561
+  }
+}
