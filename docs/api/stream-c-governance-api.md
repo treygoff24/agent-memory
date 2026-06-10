@@ -297,8 +297,8 @@ similarity-based contradiction detector for that policy's scope:
 
 ```yaml
 contradiction:
-  similarity_threshold: 0.82   # optional, defaults to 0.82, must be in [0.0, 1.0]
-  top_k: 5                     # optional, defaults to 5, must be >= 1
+  similarity_threshold: 0.82 # optional, defaults to 0.82, must be in [0.0, 1.0]
+  top_k: 5 # optional, defaults to 5, must be >= 1
 ```
 
 - `similarity_threshold` is the minimum cosine similarity a retrieved active

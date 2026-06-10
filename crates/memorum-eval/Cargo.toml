@@ -33,14 +33,7 @@ default = ["stream-i-deps", "quality", "judge"]
 stream-i-deps = ["dep:memorum-coordination"]
 # LLM-as-judge helper for the real-harness e2e tests (T13/T15); needs serde.
 judge = ["dep:serde", "dep:serde_json"]
-quality = [
-    "dep:memory-substrate",
-    "dep:memoryd",
-    "dep:serde",
-    "dep:serde_json",
-    "dep:serde_yaml",
-    "dep:tempfile",
-]
+quality = ["dep:memory-substrate", "dep:memoryd", "dep:serde", "dep:serde_json", "dep:serde_yaml", "dep:tempfile"]
 live-harness = []
 
 [[bin]]
