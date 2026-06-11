@@ -18,6 +18,12 @@ const OBSERVE_ENTITY_BODY_MAX_BYTES: usize = 124;
 const OBSERVE_BINDING_FIELD_MAX_BYTES: usize = 128;
 const CLAIM_LOCK_IDENTITY_MAX_BYTES: usize = 128;
 
+pub(crate) struct SearchResponseRequest<'a> {
+    pub query: &'a str,
+    pub limit: Option<usize>,
+    pub include_body: bool,
+}
+
 pub(crate) async fn delta_response(
     substrate: &Substrate,
     state: &HandlerState,
@@ -30,7 +36,16 @@ pub(crate) async fn delta_response(
         delivery_recorder: Some(state),
         peer_cooldown: Some(state),
     };
-    match build_delta_response_with_coordination(substrate, request, coordination).await {
+    let vector_recall =
+        crate::recall::VectorRecallContext::new(state.embedding_provider(), load_vector_recall_config(substrate));
+    match crate::recall::build_delta_response_with_vector_recall_and_coordination(
+        substrate,
+        request,
+        coordination,
+        vector_recall,
+    )
+    .await
+    {
         Ok(response) => {
             state.recall.record_delta_success();
             Ok(ResponsePayload::Delta(response))
@@ -78,22 +93,74 @@ fn record_budget_exhaustions(state: &HandlerState, response: &StartupResponse) {
 
 pub(crate) async fn search_response(
     substrate: &Substrate,
-    query: &str,
-    limit: Option<usize>,
-    include_body: bool,
+    state: &HandlerState,
+    request: SearchResponseRequest<'_>,
 ) -> Result<ResponsePayload, HandlerError> {
-    let query = query.trim();
+    let query = request.query.trim();
     if query.is_empty() {
         return Err(HandlerError::invalid_request("search query must not be empty"));
     }
 
-    let limit = limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX);
+    let limit = request.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX);
+    let vector_recall =
+        crate::recall::VectorRecallContext::new(state.embedding_provider(), load_vector_recall_config(substrate));
+    let (total, mut hits) =
+        match crate::recall::hybrid::collect_hybrid_recall(substrate, query, Some(&vector_recall)).await {
+            crate::recall::hybrid::HybridRecallDecision::Fused { candidates } => {
+                let total = candidates.len();
+                let hits = candidates
+                    .into_iter()
+                    .take(limit)
+                    .map(|candidate| SearchHit {
+                        id: candidate.id,
+                        summary: bounded(&candidate.text, SEARCH_SNIPPET_MAX),
+                        snippet: bounded(&candidate.text, SEARCH_SNIPPET_MAX),
+                        body: None,
+                        score: candidate.rrf_score,
+                    })
+                    .collect::<Vec<_>>();
+                (total, hits)
+            }
+            crate::recall::hybrid::HybridRecallDecision::FtsOnly { degraded } => {
+                if let Some(marker) = degraded {
+                    tracing::warn!(marker, "memory_search vector recall degraded; falling back to FTS-only");
+                }
+                fts_search_hits(substrate, query, limit).await?
+            }
+        };
+
+    if request.include_body {
+        attach_search_bodies(substrate, &mut hits).await?;
+    }
+
+    let guidance = if request.include_body {
+        "Search returns bounded matching chunks; call memory_get for the bounded record preview.".to_string()
+    } else {
+        "Bounded snippets only; call memory_get for full body access when policy allows.".to_string()
+    };
+    Ok(ResponsePayload::Search(SearchResponse { hits, total, guidance }))
+}
+
+fn load_vector_recall_config(substrate: &Substrate) -> crate::recall::VectorRecallConfig {
+    crate::recall::load_recall_config(substrate.roots().repo.as_path())
+        .map(|config| config.vector_recall)
+        .unwrap_or_else(|error| {
+            tracing::warn!(%error, "recall: failed to load config; vector recall defaults applied");
+            crate::recall::VectorRecallConfig::default()
+        })
+}
+
+async fn fts_search_hits(
+    substrate: &Substrate,
+    query: &str,
+    limit: usize,
+) -> Result<(usize, Vec<SearchHit>), HandlerError> {
     let chunks = substrate
         .query_chunks(ChunkQuery { text: Some(query.to_string()), triple: None, vector: None })
         .await
         .map_err(HandlerError::substrate)?;
     let total = chunks.len();
-    let mut hits = chunks
+    let hits = chunks
         .into_iter()
         .take(limit)
         .map(|chunk| SearchHit {
@@ -104,17 +171,7 @@ pub(crate) async fn search_response(
             score: chunk.score,
         })
         .collect::<Vec<_>>();
-
-    if include_body {
-        attach_search_bodies(substrate, &mut hits).await?;
-    }
-
-    let guidance = if include_body {
-        "Search returns bounded matching chunks; call memory_get for the bounded record preview.".to_string()
-    } else {
-        "Bounded snippets only; call memory_get for full body access when policy allows.".to_string()
-    };
-    Ok(ResponsePayload::Search(SearchResponse { hits, total, guidance }))
+    Ok((total, hits))
 }
 
 /// Populate the bounded body preview for each search hit, overlapping the

@@ -47,9 +47,9 @@ use crate::protocol::{
 };
 use crate::reality_check::{RcAdvanceRequest, RcRunRequest, RcSessionAdvance, RcSessionHandler};
 use crate::recall::{
-    build_delta_response_with_coordination, build_startup_response_with_coordination_config, ConcurrentSessionMode,
-    DeltaCoordinationContext, DeltaPeerCooldownStore, DeltaPeerDelivery, DeltaPeerDeliveryRecorder, OmissionReason,
-    RecallDedupState, RecallError, SessionBinding, SharedRecallCounters, StartupResponse,
+    build_startup_response_with_coordination_config, ConcurrentSessionMode, DeltaCoordinationContext,
+    DeltaPeerCooldownStore, DeltaPeerDelivery, DeltaPeerDeliveryRecorder, OmissionReason, RecallDedupState,
+    RecallError, SessionBinding, SharedRecallCounters, StartupResponse,
 };
 
 mod doctor;
@@ -71,7 +71,7 @@ use governance::{
 };
 use memory_ops::{
     delta_response, get_response, observe_response, reveal_response, search_response, startup_response,
-    write_note_response, ObserveRequestFields,
+    write_note_response, ObserveRequestFields, SearchResponseRequest,
 };
 use peer::{
     peer_activity_response, peer_heartbeat_response, peer_release_lock_response, peer_status_response,
@@ -260,7 +260,7 @@ async fn dispatch(
         RequestPayload::Status => Ok(ResponsePayload::Status(status_response(substrate, state).await)),
         RequestPayload::Doctor => Ok(ResponsePayload::Doctor(doctor_response(substrate).await)),
         RequestPayload::Search { query, limit, include_body } => {
-            search_response(substrate, &query, limit, include_body).await
+            search_response(substrate, state, SearchResponseRequest { query: &query, limit, include_body }).await
         }
         RequestPayload::Get { id, include_provenance } => get_response(substrate, &id, include_provenance).await,
         RequestPayload::TrustArtifact { id } => trust_artifact_response(substrate, state, &id).await,

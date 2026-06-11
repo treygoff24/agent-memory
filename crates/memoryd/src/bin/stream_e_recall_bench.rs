@@ -1,4 +1,6 @@
 use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
@@ -8,7 +10,11 @@ use memory_substrate::{
     MemoryType, RepoPath, RetrievalPolicy, Roots, Scope, Sensitivity, Source, SourceKind, Substrate, TrustLevel,
     WriteMode, WritePolicy, WriteRequest,
 };
-use memoryd::recall::{build_delta_response, build_startup_response, DeltaRequest, StartupRequest};
+use memoryd::embedding::{worker, EmbeddingProvider, FixtureProvider};
+use memoryd::recall::{
+    build_delta_response, build_delta_response_with_vector_recall, build_startup_response, DeltaRequest,
+    StartupRequest, VectorRecallConfig, VectorRecallContext,
+};
 use serde::Serialize;
 
 const SEED_SMOKE: u64 = 169_300_215;
@@ -45,6 +51,7 @@ struct BenchResult {
     startup_warm_p95_ms: f64,
     delta_no_match_p95_ms: f64,
     delta_five_entity_match_p95_ms: f64,
+    delta_with_vector_p95_ms: f64,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -57,15 +64,14 @@ async fn main() -> anyhow::Result<()> {
         results.push(run_size(size, args.warm_runs.max(1)).await?);
     }
 
-    let report = BenchReport {
-        mode: mode.to_owned(),
-        hardware_profile: std::env::var("BENCH_PROFILE").unwrap_or_else(|_| std::env::consts::ARCH.to_owned()),
-        budget_tokens: 3_600,
-        results,
-    };
+    let report =
+        BenchReport { mode: mode.to_owned(), hardware_profile: bench_profile(), budget_tokens: 3_600, results };
 
     enforce_thresholds(&report, args.release)?;
-    println!("{}", serde_json::to_string_pretty(&report)?);
+    let json = serde_json::to_string_pretty(&report)?;
+    let proposed_path = write_proposed_report(&report, &json)?;
+    eprintln!("wrote {}", proposed_path.display());
+    println!("{json}");
     Ok(())
 }
 
@@ -103,6 +109,10 @@ async fn run_size(size: usize, warm_runs: usize) -> anyhow::Result<BenchResult> 
             .await?;
     }
 
+    let triple = substrate.active_embedding_triple()?;
+    let provider: Arc<dyn EmbeddingProvider> = Arc::new(FixtureProvider::new(triple));
+    drain_embeddings(&substrate, &provider).await?;
+
     let cold_start_p95_ms = timed_startup(&substrate, &repo).await?.as_secs_f64() * 1000.0;
     let mut startup = Vec::new();
     let mut selected_memory_count = 0usize;
@@ -119,6 +129,14 @@ async fn run_size(size: usize, warm_runs: usize) -> anyhow::Result<BenchResult> 
     let delta_no_match_p95_ms = timed_delta(&substrate, &repo, "definitely-no-match", warm_runs).await?;
     let delta_five_entity_match_p95_ms =
         timed_delta(&substrate, &repo, "entity-alpha fixture recall", warm_runs).await?;
+    let delta_with_vector_p95_ms = timed_delta_with_vector(DeltaVectorBench {
+        substrate: &substrate,
+        repo: &repo,
+        message: "entity-alpha fixture recall",
+        warm_runs,
+        provider: &provider,
+    })
+    .await?;
 
     Ok(BenchResult {
         memory_count: size,
@@ -130,6 +148,7 @@ async fn run_size(size: usize, warm_runs: usize) -> anyhow::Result<BenchResult> 
         startup_warm_p95_ms: p95(startup).as_secs_f64() * 1000.0,
         delta_no_match_p95_ms,
         delta_five_entity_match_p95_ms,
+        delta_with_vector_p95_ms,
     })
 }
 
@@ -162,6 +181,45 @@ async fn timed_delta(
         durations.push(started.elapsed());
     }
     Ok(p95(durations).as_secs_f64() * 1000.0)
+}
+
+struct DeltaVectorBench<'a> {
+    substrate: &'a Substrate,
+    repo: &'a std::path::Path,
+    message: &'a str,
+    warm_runs: usize,
+    provider: &'a Arc<dyn EmbeddingProvider>,
+}
+
+async fn timed_delta_with_vector(request: DeltaVectorBench<'_>) -> anyhow::Result<f64> {
+    let mut durations = Vec::new();
+    for _ in 0..request.warm_runs {
+        let started = Instant::now();
+        let _ = build_delta_response_with_vector_recall(
+            request.substrate,
+            DeltaRequest {
+                cwd: request.repo.to_string_lossy().into_owned(),
+                session_id: "bench".to_owned(),
+                harness: "codex".to_owned(),
+                message: request.message.to_owned(),
+                budget_tokens: Some(400),
+            },
+            VectorRecallContext::new(Some(Arc::clone(request.provider)), VectorRecallConfig::default()),
+        )
+        .await?;
+        durations.push(started.elapsed());
+    }
+    Ok(p95(durations).as_secs_f64() * 1000.0)
+}
+
+async fn drain_embeddings(substrate: &Substrate, provider: &Arc<dyn EmbeddingProvider>) -> anyhow::Result<()> {
+    loop {
+        let drained = worker::drain_batch(substrate, provider, 256).await.map_err(anyhow::Error::msg)?;
+        if drained < 256 {
+            break;
+        }
+    }
+    Ok(())
 }
 
 async fn startup_response(
@@ -301,8 +359,28 @@ fn enforce_thresholds(report: &BenchReport, release: bool) -> anyhow::Result<()>
         if result.delta_five_entity_match_p95_ms > 120.0 {
             anyhow::bail!("delta five-entity p95 exceeded cap for {} memories", result.memory_count);
         }
+        if result.delta_with_vector_p95_ms > 120.0 {
+            anyhow::bail!("delta with-vector p95 exceeded cap for {} memories", result.memory_count);
+        }
     }
     Ok(())
+}
+
+fn bench_profile() -> String {
+    std::env::var("BENCH_PROFILE").unwrap_or_else(|_| match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64" | "arm64") => "darwin-arm64".to_owned(),
+        ("linux", "x86_64") => "linux-x86_64".to_owned(),
+        (_, arch) => arch.to_owned(),
+    })
+}
+
+fn write_proposed_report(report: &BenchReport, json: &str) -> anyhow::Result<PathBuf> {
+    let path = PathBuf::from(format!("bench/stream-e-recall-results.{}.json.proposed", report.hardware_profile));
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, format!("{json}\n"))?;
+    Ok(path)
 }
 
 fn instant(value: &str) -> DateTime<Utc> {
