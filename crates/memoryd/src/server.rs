@@ -597,6 +597,7 @@ mod tests {
                 delta_block: "<memory-delta empty=\"true\" />\n".to_owned(),
                 budget_used_tokens: 0,
                 guidance: "No passive recall delta matched this turn.".to_owned(),
+                vector_recall_degraded: None,
             }),
         );
 

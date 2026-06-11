@@ -11,6 +11,7 @@ use memory_privacy::{safe_plaintext_fragment, DeterministicPrivacyClassifier, Sa
 use memory_substrate::{AuxScope, ChunkQuery, MemoryStatus, RecallIndexQuery, RecallIndexRow, Scope, Substrate};
 
 use crate::recall::error::RecallError;
+use crate::recall::hybrid::{collect_hybrid_recall, HybridRecallDecision, VectorRecallContext};
 use crate::recall::render::escape_xml_text;
 use crate::recall::render::{emit_recall_hits, render_delta_frame, DeltaRecallItem};
 use crate::recall::source_identity::{
@@ -44,7 +45,7 @@ pub trait DeltaPeerCooldownStore: Sync {
 }
 
 pub async fn build_delta_response(substrate: &Substrate, request: DeltaRequest) -> Result<DeltaResponse, RecallError> {
-    build_delta_response_inner(substrate, request, None).await
+    build_delta_response_inner(substrate, request, None, None).await
 }
 
 pub async fn build_delta_response_with_coordination(
@@ -52,26 +53,36 @@ pub async fn build_delta_response_with_coordination(
     request: DeltaRequest,
     coordination: DeltaCoordinationContext<'_>,
 ) -> Result<DeltaResponse, RecallError> {
-    build_delta_response_inner(substrate, request, Some(coordination)).await
+    build_delta_response_inner(substrate, request, Some(coordination), None).await
+}
+
+pub async fn build_delta_response_with_vector_recall(
+    substrate: &Substrate,
+    request: DeltaRequest,
+    vector_recall: VectorRecallContext,
+) -> Result<DeltaResponse, RecallError> {
+    build_delta_response_inner(substrate, request, None, Some(vector_recall)).await
+}
+
+pub async fn build_delta_response_with_vector_recall_and_coordination(
+    substrate: &Substrate,
+    request: DeltaRequest,
+    coordination: DeltaCoordinationContext<'_>,
+    vector_recall: VectorRecallContext,
+) -> Result<DeltaResponse, RecallError> {
+    build_delta_response_inner(substrate, request, Some(coordination), Some(vector_recall)).await
 }
 
 async fn build_delta_response_inner(
     substrate: &Substrate,
     request: DeltaRequest,
     coordination: Option<DeltaCoordinationContext<'_>>,
+    vector_recall: Option<VectorRecallContext>,
 ) -> Result<DeltaResponse, RecallError> {
     let session_binding = validate_delta_request(&request).await?;
     let budget_tokens = request.budget_tokens.unwrap_or(DEFAULT_DELTA_BUDGET_TOKENS);
     let message = request.message.trim();
-    let chunks = substrate
-        .query_chunks(ChunkQuery { text: Some(message.to_owned()), triple: None, vector: None })
-        .await
-        .map_err(|error| RecallError::substrate_error(error.to_string()))?;
-
-    let items = chunks
-        .into_iter()
-        .map(|chunk| DeltaRecallItem { id: chunk.memory_id.to_string(), text: chunk.text })
-        .collect::<Vec<_>>();
+    let (items, vector_recall_degraded) = collect_delta_items(substrate, message, vector_recall.as_ref()).await?;
     let delta_coordination = match coordination {
         Some(context) => build_delta_coordination(substrate, &session_binding, message, context).await?,
         None => DeltaCoordination::default(),
@@ -93,7 +104,37 @@ async fn build_delta_response_inner(
         delta_block: rendered.block,
         budget_used_tokens: rendered.budget_used_tokens,
         guidance: delta_guidance(rendered.included_item_ids.is_empty()),
+        vector_recall_degraded,
     })
+}
+
+async fn collect_delta_items(
+    substrate: &Substrate,
+    message: &str,
+    vector_recall: Option<&VectorRecallContext>,
+) -> Result<(Vec<DeltaRecallItem>, Option<String>), RecallError> {
+    match collect_hybrid_recall(substrate, message, vector_recall).await {
+        HybridRecallDecision::Fused { candidates } => Ok((
+            candidates
+                .into_iter()
+                .map(|candidate| DeltaRecallItem { id: candidate.id, text: candidate.text })
+                .collect(),
+            None,
+        )),
+        HybridRecallDecision::FtsOnly { degraded } => {
+            let items = fts_delta_items(substrate, message).await?;
+            Ok((items, degraded.map(ToOwned::to_owned)))
+        }
+    }
+}
+
+async fn fts_delta_items(substrate: &Substrate, message: &str) -> Result<Vec<DeltaRecallItem>, RecallError> {
+    let chunks = substrate
+        .query_chunks(ChunkQuery { text: Some(message.to_owned()), triple: None, vector: None })
+        .await
+        .map_err(|error| RecallError::substrate_error(error.to_string()))?;
+
+    Ok(chunks.into_iter().map(|chunk| DeltaRecallItem { id: chunk.memory_id.to_string(), text: chunk.text }).collect())
 }
 
 #[derive(Default)]

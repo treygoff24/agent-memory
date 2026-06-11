@@ -54,6 +54,8 @@ pub struct DeltaResponse {
     pub delta_block: String,
     pub budget_used_tokens: usize,
     pub guidance: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vector_recall_degraded: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -1,12 +1,15 @@
 pub(crate) mod binding;
 pub(crate) mod budget;
 pub(crate) mod candidates;
+pub(crate) mod config;
 pub(crate) mod counters;
 pub(crate) mod dedup_state;
 pub(crate) mod delta;
 pub(crate) mod dream_questions;
 pub(crate) mod entity;
 pub(crate) mod error;
+pub(crate) mod fusion;
+pub(crate) mod hybrid;
 pub(crate) mod project;
 pub(crate) mod rank;
 pub(crate) mod render;
@@ -20,14 +23,18 @@ pub use candidates::{
     collect_recall_candidates, collect_recall_candidates_from_index, hydrate_candidate_strength, CandidateCollection,
     RecallCandidate, RecallCollectionRequest, RecallIndexFuture, RecallIndexReader, StrengthHydration,
 };
+pub use config::{load_recall_config, RecallConfig, VectorRecallConfig};
 pub use counters::{RecallStatusCounters, SharedRecallCounters};
 pub use dedup_state::RecallDedupState;
 pub use delta::{
-    build_delta_response, build_delta_response_with_coordination, DeltaCoordinationContext, DeltaPeerCooldownStore,
+    build_delta_response, build_delta_response_with_coordination, build_delta_response_with_vector_recall,
+    build_delta_response_with_vector_recall_and_coordination, DeltaCoordinationContext, DeltaPeerCooldownStore,
     DeltaPeerDeliveryRecorder,
 };
 pub use entity::{resolve_entity_matches, EntityResolution};
 pub use error::RecallError;
+pub use fusion::{fuse_rrf, FusedHybridCandidate};
+pub use hybrid::VectorRecallContext;
 pub use rank::{
     rank_recall_candidates, select_ranked_candidates, RankedRecallCandidate, RankedSelection, RankingContext,
 };
