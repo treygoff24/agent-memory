@@ -1440,6 +1440,11 @@ pub struct HybridScoreBreakdown {
 pub struct HybridMemoryCandidate {
     /// Memory id.
     pub memory_id: MemoryId,
+    /// Representative chunk text selected by the lane-local chunk→memory
+    /// collapse. BM25 hits use the best matching chunk; vector-only hits use
+    /// the nearest embedded chunk.
+    #[serde(default)]
+    pub text: String,
     /// Lane-local rank/similarity evidence.
     pub score_breakdown: HybridScoreBreakdown,
 }

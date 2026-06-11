@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use memory_substrate::{HybridVectorQuery, MemoryContent, Substrate, VectorError};
+use memory_substrate::{HybridVectorQuery, Substrate, VectorError};
 
 use crate::embedding::EmbeddingProvider;
 use crate::recall::config::VectorRecallConfig;
@@ -93,7 +93,7 @@ pub(crate) async fn collect_hybrid_recall(
     };
 
     let fused = fuse_rrf(&candidates, context.config.rrf_k);
-    let hydrated = hydrate_fused_candidates(substrate, fused).await;
+    let hydrated = hydrate_fused_candidates(fused);
     HybridRecallDecision::Fused { candidates: hydrated }
 }
 
@@ -134,42 +134,15 @@ async fn embed_query_with_timeout(
     }
 }
 
-async fn hydrate_fused_candidates(
-    substrate: &Substrate,
-    fused: Vec<FusedHybridCandidate>,
-) -> Vec<HydratedHybridCandidate> {
-    let mut hydrated = Vec::with_capacity(fused.len());
-    for candidate in fused {
-        let memory_id = candidate.memory_id.clone();
-        let substrate = substrate.clone();
-        let envelope = match tokio::task::spawn_blocking(move || substrate.read_memory_envelope_blocking(&memory_id))
-            .await
-        {
-            Ok(Ok(envelope)) => envelope,
-            Ok(Err(error)) => {
-                tracing::warn!(memory_id = %candidate.memory_id.as_str(), %error, "vector recall candidate hydration failed");
-                continue;
-            }
-            Err(join_error) => {
-                tracing::warn!(memory_id = %candidate.memory_id.as_str(), %join_error, "vector recall hydration task failed");
-                continue;
-            }
-        };
-        let text = match envelope.content {
-            MemoryContent::Plaintext(body) if !body.trim().is_empty() => body,
-            MemoryContent::Plaintext(_) => envelope.metadata.frontmatter.summary,
-            MemoryContent::Ciphertext { .. } | MemoryContent::MetadataOnly => {
-                tracing::warn!(memory_id = %candidate.memory_id.as_str(), "vector recall hydration skipped non-plaintext memory");
-                continue;
-            }
-        };
-        hydrated.push(HydratedHybridCandidate {
+fn hydrate_fused_candidates(fused: Vec<FusedHybridCandidate>) -> Vec<HydratedHybridCandidate> {
+    fused
+        .into_iter()
+        .map(|candidate| HydratedHybridCandidate {
             id: candidate.memory_id.as_str().to_owned(),
-            text,
+            text: candidate.text,
             rrf_score: candidate.rrf_score,
-        });
-    }
-    hydrated
+        })
+        .collect()
 }
 
 #[cfg(test)]

@@ -92,7 +92,7 @@ async fn hybrid_chunks_return_representative_chunk_text() {
     let triple = test_triple("chunk-text");
 
     let mut bm25_and_vector = sample_memory("mem_20260424_a1b2c3d4e5f60718_010015");
-    bm25_and_vector.body = body_with_marker_at_word("bestbm25needle desired-bm25-chunk", 450, 560);
+    bm25_and_vector.body = body_with_marker_at_word("b", "bestbm25needle desired-bm25-chunk", 450, 560);
     let bm25_chunks = memory_substrate::index::chunk_memory(&bm25_and_vector);
     let expected_bm25_text = bm25_chunks
         .iter()
@@ -102,7 +102,7 @@ async fn hybrid_chunks_return_representative_chunk_text() {
         .clone();
 
     let mut vector_only = sample_memory("mem_20260424_a1b2c3d4e5f60718_010016");
-    vector_only.body = body_with_marker_at_word("nearest-vector-chunk", 450, 560);
+    vector_only.body = body_with_marker_at_word("v", "nearest-vector-chunk", 450, 560);
     let vector_chunks = memory_substrate::index::chunk_memory(&vector_only);
     let expected_vector_text = vector_chunks
         .iter()
@@ -292,9 +292,9 @@ fn test_triple(model_ref: &str) -> EmbeddingTriple {
     EmbeddingTriple { provider: "synthetic".to_string(), model_ref: model_ref.to_string(), dimension: 3 }
 }
 
-fn body_with_marker_at_word(marker: &str, marker_index: usize, total_words: usize) -> String {
+fn body_with_marker_at_word(seed: &str, marker: &str, marker_index: usize, total_words: usize) -> String {
     (0..total_words)
-        .map(|index| if index == marker_index { marker.to_string() } else { format!("word{index}") })
+        .map(|index| if index == marker_index { marker.to_string() } else { format!("{seed}{index}") })
         .collect::<Vec<_>>()
         .join(" ")
 }

@@ -452,6 +452,7 @@ impl Index {
                 hit.memory_id.clone(),
                 HybridMemoryCandidate {
                     memory_id: MemoryId::new(hit.memory_id),
+                    text: hit.text,
                     score_breakdown: HybridScoreBreakdown { bm25_rank: Some(hit.rank), cosine_similarity: None },
                 },
             );
@@ -465,6 +466,7 @@ impl Index {
                 })
                 .or_insert_with(|| HybridMemoryCandidate {
                     memory_id: MemoryId::new(hit.memory_id),
+                    text: hit.text,
                     score_breakdown: HybridScoreBreakdown {
                         bm25_rank: None,
                         cosine_similarity: Some(hit.cosine_similarity),
@@ -483,7 +485,7 @@ impl Index {
             return Ok(Vec::new());
         }
         let mut stmt = self.connection.prepare_cached(
-            "SELECT memory_chunks.memory_id, bm25(memory_chunks_fts) AS score
+            "SELECT memory_chunks.memory_id, memory_chunks.text, memory_chunks.chunk_rowid, bm25(memory_chunks_fts) AS score
              FROM memory_chunks_fts
              JOIN memory_chunks ON memory_chunks_fts.rowid = memory_chunks.chunk_rowid
              JOIN memories      ON memories.id = memory_chunks.memory_id
@@ -491,34 +493,40 @@ impl Index {
                AND memories.metadata_only = 0
                AND memories.passive_recall = 1
                AND memories.status IN ('active', 'pinned')
-             ORDER BY score, memory_chunks.memory_id",
+             ORDER BY score, memory_chunks.memory_id, memory_chunks.chunk_rowid",
         )?;
         let rows = stmt
-            .query_map([sanitized.as_str()], |row| Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?)))?
+            .query_map([sanitized.as_str()], |row| {
+                Ok(Bm25ChunkHit {
+                    memory_id: row.get(0)?,
+                    text: row.get(1)?,
+                    chunk_rowid: row.get(2)?,
+                    score: row.get(3)?,
+                })
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
         let mut best_by_memory = BTreeMap::new();
-        for (memory_id, score) in rows {
-            best_by_memory
-                .entry(memory_id)
-                .and_modify(|best_score| {
-                    if score < *best_score {
-                        *best_score = score;
-                    }
-                })
-                .or_insert(score);
+        for hit in rows {
+            let memory_id = hit.memory_id.clone();
+            match best_by_memory.get(&memory_id) {
+                Some(best) if !bm25_chunk_precedes(&hit, best) => {}
+                _ => {
+                    best_by_memory.insert(memory_id, hit);
+                }
+            }
         }
 
-        let mut collapsed: Vec<_> = best_by_memory.into_iter().collect();
-        collapsed.sort_by(|(left_id, left_score), (right_id, right_score)| {
-            left_score.total_cmp(right_score).then_with(|| left_id.cmp(right_id))
+        let mut collapsed: Vec<_> = best_by_memory.into_values().collect();
+        collapsed.sort_by(|left, right| {
+            left.score.total_cmp(&right.score).then_with(|| left.memory_id.cmp(&right.memory_id))
         });
         collapsed.truncate(limit);
 
         Ok(collapsed
             .into_iter()
             .enumerate()
-            .map(|(idx, (memory_id, _score))| Bm25MemoryRank { memory_id, rank: idx + 1 })
+            .map(|(idx, hit)| Bm25MemoryRank { memory_id: hit.memory_id, text: hit.text, rank: idx + 1 })
             .collect())
     }
 
@@ -540,7 +548,7 @@ impl Index {
         const CHUNK_FANOUT: usize = 8;
         let knn_k = limit.saturating_mul(CHUNK_FANOUT).clamp(limit, 512);
         let sql = format!(
-            "SELECT memory_chunks.memory_id, {table}.distance
+            "SELECT memory_chunks.memory_id, memory_chunks.text, memory_chunks.chunk_rowid, {table}.distance
              FROM {table}
              JOIN memory_chunks ON memory_chunks.chunk_rowid = {table}.rowid
              JOIN memories      ON memories.id = memory_chunks.memory_id
@@ -549,37 +557,44 @@ impl Index {
                AND memories.metadata_only = 0
                AND memories.passive_recall = 1
                AND memories.status IN ('active', 'pinned')
-             ORDER BY {table}.distance, memory_chunks.memory_id"
+             ORDER BY {table}.distance, memory_chunks.memory_id, memory_chunks.chunk_rowid"
         );
         let blob = crate::index::sqlite_vec::serialize_f32(vector);
         let mut stmt = self.connection.prepare_cached(&sql)?;
         let rows = stmt
-            .query_map(params![blob, knn_k as i64], |row| Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?)))?
+            .query_map(params![blob, knn_k as i64], |row| {
+                Ok(VectorChunkHit {
+                    memory_id: row.get(0)?,
+                    text: row.get(1)?,
+                    chunk_rowid: row.get(2)?,
+                    distance: row.get(3)?,
+                })
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
         let mut best_by_memory = BTreeMap::new();
-        for (memory_id, distance) in rows {
-            best_by_memory
-                .entry(memory_id)
-                .and_modify(|best_distance| {
-                    if distance < *best_distance {
-                        *best_distance = distance;
-                    }
-                })
-                .or_insert(distance);
+        for hit in rows {
+            let memory_id = hit.memory_id.clone();
+            match best_by_memory.get(&memory_id) {
+                Some(best) if !vector_chunk_precedes(&hit, best) => {}
+                _ => {
+                    best_by_memory.insert(memory_id, hit);
+                }
+            }
         }
 
-        let mut collapsed: Vec<_> = best_by_memory.into_iter().collect();
-        collapsed.sort_by(|(left_id, left_distance), (right_id, right_distance)| {
-            left_distance.total_cmp(right_distance).then_with(|| left_id.cmp(right_id))
+        let mut collapsed: Vec<_> = best_by_memory.into_values().collect();
+        collapsed.sort_by(|left, right| {
+            left.distance.total_cmp(&right.distance).then_with(|| left.memory_id.cmp(&right.memory_id))
         });
         collapsed.truncate(limit);
 
         Ok(collapsed
             .into_iter()
-            .map(|(memory_id, distance)| VectorMemoryScore {
-                memory_id,
-                cosine_similarity: cosine_from_l2_distance(distance),
+            .map(|hit| VectorMemoryScore {
+                memory_id: hit.memory_id,
+                text: hit.text,
+                cosine_similarity: cosine_from_l2_distance(hit.distance),
             })
             .collect())
     }
@@ -1996,14 +2011,38 @@ fn memory_type_str(t: &crate::model::MemoryType) -> &'static str {
     }
 }
 
+struct Bm25ChunkHit {
+    memory_id: String,
+    text: String,
+    chunk_rowid: i64,
+    score: f64,
+}
+
 struct Bm25MemoryRank {
     memory_id: String,
+    text: String,
     rank: usize,
+}
+
+struct VectorChunkHit {
+    memory_id: String,
+    text: String,
+    chunk_rowid: i64,
+    distance: f64,
 }
 
 struct VectorMemoryScore {
     memory_id: String,
+    text: String,
     cosine_similarity: f32,
+}
+
+fn bm25_chunk_precedes(left: &Bm25ChunkHit, right: &Bm25ChunkHit) -> bool {
+    left.score.total_cmp(&right.score).then_with(|| left.chunk_rowid.cmp(&right.chunk_rowid)).is_lt()
+}
+
+fn vector_chunk_precedes(left: &VectorChunkHit, right: &VectorChunkHit) -> bool {
+    left.distance.total_cmp(&right.distance).then_with(|| left.chunk_rowid.cmp(&right.chunk_rowid)).is_lt()
 }
 
 fn compare_hybrid_candidates(left: &HybridMemoryCandidate, right: &HybridMemoryCandidate) -> std::cmp::Ordering {

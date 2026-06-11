@@ -6,6 +6,7 @@ use memory_substrate::{HybridMemoryCandidate, HybridScoreBreakdown, MemoryId};
 #[derive(Debug, Clone, PartialEq)]
 pub struct FusedHybridCandidate {
     pub memory_id: MemoryId,
+    pub text: String,
     pub score_breakdown: HybridScoreBreakdown,
     pub rrf_score: f64,
 }
@@ -42,6 +43,7 @@ pub fn fuse_rrf(candidates: &[HybridMemoryCandidate], rrf_k: u32) -> Vec<FusedHy
                 .unwrap_or_default();
             FusedHybridCandidate {
                 memory_id: candidate.memory_id.clone(),
+                text: candidate.text.clone(),
                 score_breakdown: candidate.score_breakdown.clone(),
                 rrf_score: bm25_score + vector_score,
             }
@@ -65,6 +67,7 @@ mod tests {
     fn candidate(id: &str, bm25_rank: Option<usize>, cosine_similarity: Option<f32>) -> HybridMemoryCandidate {
         HybridMemoryCandidate {
             memory_id: MemoryId::new(id),
+            text: format!("text for {id}"),
             score_breakdown: HybridScoreBreakdown { bm25_rank, cosine_similarity },
         }
     }
@@ -81,6 +84,7 @@ mod tests {
         );
 
         assert_eq!(fused[0].memory_id.as_str(), "mem_20260610_0000000000000002_000002");
+        assert_eq!(fused[0].text, "text for mem_20260610_0000000000000002_000002");
         assert_eq!(fused[1].memory_id.as_str(), "mem_20260610_0000000000000001_000001");
         assert_eq!(fused[2].memory_id.as_str(), "mem_20260610_0000000000000003_000003");
     }
