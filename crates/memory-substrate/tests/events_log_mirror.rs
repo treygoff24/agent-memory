@@ -1,5 +1,7 @@
 use chrono::{TimeZone, Utc};
-use memory_substrate::events::{append_event, read_events, Event, EventKind, EVENT_SCHEMA_VERSION};
+use memory_substrate::events::{
+    append_event, append_events_best_effort, read_events, Event, EventKind, EVENT_SCHEMA_VERSION,
+};
 use memory_substrate::{
     Author, AuthorKind, ClassificationOutcome, DeviceId, EventContext, EventId, Frontmatter, InitOptions, Memory,
     MemoryId, MemoryStatus, MemoryType, OperationId, RepoPath, RetrievalPolicy, Roots, Scope, Sensitivity, Source,
@@ -199,6 +201,63 @@ async fn recall_hit_drift_query_uses_kind_memory_ts_index() {
         plan.contains("idx_events_log_kind_memory_ts"),
         "drift-score query must use idx_events_log_kind_memory_ts; plan was {plan}"
     );
+}
+
+#[tokio::test]
+async fn record_recall_hits_batch_matches_sequential_event_bytes_and_replays() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let substrate = Substrate::init(
+        roots.clone(),
+        InitOptions { force_unsafe_durability: true, device_id: Some("dev_testdevice01".to_string()) },
+    )
+    .await
+    .expect("init substrate");
+    let ids = vec![
+        MemoryId::new("mem_20260501_a1b2c3d4e5f60718_000021"),
+        MemoryId::new("mem_20260501_a1b2c3d4e5f60718_000022"),
+        MemoryId::new("mem_20260501_a1b2c3d4e5f60718_000023"),
+    ];
+
+    let failures = substrate.record_recall_hits(&ids);
+
+    assert!(failures.is_empty(), "recall-hit batch should append cleanly: {failures:?}");
+    let event_log = roots.repo.join("events/dev_testdevice01.jsonl");
+    let batch_bytes = std::fs::read(&event_log).expect("read batch event log bytes");
+    let events = read_events(&event_log).expect("read batch events");
+    assert_eq!(events.len(), ids.len());
+    for (event, expected_id) in events.iter().zip(&ids) {
+        match &event.kind {
+            EventKind::RecallHit { id, .. } => assert_eq!(id, expected_id),
+            other => panic!("expected recall_hit event, got {other:?}"),
+        }
+    }
+    for pair in events.windows(2) {
+        assert_eq!(pair[0].seq + 1, pair[1].seq, "recall-hit seqs must remain contiguous and ordered");
+    }
+
+    let sequential_log = temp.path().join("sequential-dev_testdevice01.jsonl");
+    append_events_best_effort(&sequential_log, &events).expect("write batch fixture bytes");
+    let batched_helper_bytes = std::fs::read(&sequential_log).expect("read helper event log bytes");
+    std::fs::remove_file(&sequential_log).expect("remove helper event log");
+    for event in &events {
+        append_event(&sequential_log, event).expect("write sequential fixture event");
+    }
+    let sequential_bytes = std::fs::read(&sequential_log).expect("read sequential event log bytes");
+    assert_eq!(batched_helper_bytes, sequential_bytes, "batch helper bytes must match N sequential appends");
+    assert_eq!(batch_bytes, sequential_bytes, "record_recall_hits log bytes must match the sequential form");
+
+    let healthy = substrate.events_log_mirror_health().expect("mirror health after batch");
+    assert_eq!(healthy.missing_count, 0);
+    assert_eq!(healthy.jsonl_count, healthy.sqlite_count);
+
+    drop(substrate);
+    let reopened = Substrate::open(roots.clone()).await.expect("reopen substrate");
+    let replayed = read_events(&event_log).expect("replay batch event log after reopen");
+    assert_eq!(replayed, events);
+    let reopened_health = reopened.events_log_mirror_health().expect("mirror health after reopen");
+    assert_eq!(reopened_health.missing_count, 0);
+    assert_eq!(reopened_health.jsonl_count, reopened_health.sqlite_count);
 }
 
 fn recall_hit_event(event_id: &str, device: &str, seq: u64, memory_id: &str) -> Event {
