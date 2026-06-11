@@ -139,6 +139,32 @@ async fn full_reindex_with_cross_file_supersession_succeeds_and_keeps_edge() {
     );
 }
 
+/// End-to-end through the real `Substrate::reindex` bulk path for the common
+/// no-supersedes case. This corpus takes the optimized skip path for the
+/// deferred supersession resync; reindex must still rebuild all memories and
+/// leave the supersession projection empty.
+#[tokio::test]
+async fn full_reindex_without_supersession_edges_succeeds_and_leaves_projection_empty() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let substrate = Substrate::init(
+        roots.clone(),
+        memory_substrate::InitOptions { force_unsafe_durability: true, device_id: Some("dev_test".to_string()) },
+    )
+    .await
+    .expect("init");
+
+    for seq in 30..35 {
+        write_memory(&substrate, sample_memory(&format!("mem_20260610_a1b2c3d4e5f60718_{seq:06}"), Vec::new())).await;
+    }
+
+    let reindexed = substrate.reindex().await.expect("full reindex without supersedes must succeed");
+    assert_eq!(reindexed, 5, "all no-supersedes memories reindexed");
+
+    let db = Connection::open(roots.runtime.join("index.sqlite")).expect("open index for assertion");
+    assert_eq!(supersession_row_count(&db), 0, "no supersession rows should be projected");
+}
+
 /// Runtime writes must not silently drop a supersession edge when the target
 /// exists on disk but its index row is missing (for example, after a git pull
 /// before open-time reindex catches up). The write now leaves a durable pending
@@ -222,6 +248,11 @@ fn supersedes_ids(conn: &Connection, memory_id: &str) -> Vec<String> {
         .expect("query supersession rows")
         .collect::<Result<Vec<_>, _>>()
         .expect("collect supersession rows")
+}
+
+fn supersession_row_count(conn: &Connection) -> usize {
+    conn.query_row("SELECT COUNT(*) FROM memory_supersession", [], |row| row.get::<_, i64>(0))
+        .expect("count supersession rows") as usize
 }
 
 fn sample_memory(id: &str, supersedes: Vec<MemoryId>) -> Memory {

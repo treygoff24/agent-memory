@@ -2342,7 +2342,9 @@ fn full_reindex_from_repo(repo: &std::path::Path, index: &mut Index) -> std::io:
     let entries = collect_reindex_paths(repo, ReindexScope::All).map_err(std::io::Error::other)?;
     index.clear_plaintext_memory_index().map_err(|err| std::io::Error::other(err.to_string()))?;
     let mut count = 0usize;
+    let mut has_supersession_edges = false;
     for entry in entries {
+        has_supersession_edges |= !entry.memory.frontmatter.supersedes.is_empty();
         index
             .upsert_memory_with_file_hash(&entry.memory, entry.metadata_only, Some(&entry.file_hash))
             .map_err(|err| std::io::Error::other(err.to_string()))?;
@@ -2351,7 +2353,9 @@ fn full_reindex_from_repo(repo: &std::path::Path, index: &mut Index) -> std::io:
     // Deferred supersession pass: the per-memory upsert FK-guards each edge, so a
     // bulk walk that visited a supersessor before its target dropped that edge.
     // Now that every `memories` row exists, re-add the dropped edges.
-    index.resync_supersession_edges().map_err(|err| std::io::Error::other(err.to_string()))?;
+    if has_supersession_edges {
+        index.resync_supersession_edges().map_err(|err| std::io::Error::other(err.to_string()))?;
+    }
     index.reconcile_active_embedding_jobs().map_err(|err| std::io::Error::other(err.to_string()))?;
     Ok(count)
 }
