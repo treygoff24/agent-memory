@@ -87,6 +87,57 @@ async fn hybrid_chunks_collapses_chunks_to_best_memory_candidate() {
 }
 
 #[tokio::test]
+async fn hybrid_chunks_return_representative_chunk_text() {
+    let (_temp, _roots, substrate) = new_substrate().await;
+    let triple = test_triple("chunk-text");
+
+    let mut bm25_and_vector = sample_memory("mem_20260424_a1b2c3d4e5f60718_010015");
+    bm25_and_vector.body = body_with_marker_at_word("bestbm25needle desired-bm25-chunk", 450, 560);
+    let bm25_chunks = memory_substrate::index::chunk_memory(&bm25_and_vector);
+    let expected_bm25_text = bm25_chunks
+        .iter()
+        .find(|chunk| chunk.text.contains("desired-bm25-chunk"))
+        .expect("fixture marker is in one chunk")
+        .text
+        .clone();
+
+    let mut vector_only = sample_memory("mem_20260424_a1b2c3d4e5f60718_010016");
+    vector_only.body = body_with_marker_at_word("nearest-vector-chunk", 450, 560);
+    let vector_chunks = memory_substrate::index::chunk_memory(&vector_only);
+    let expected_vector_text = vector_chunks
+        .iter()
+        .find(|chunk| chunk.text.contains("nearest-vector-chunk"))
+        .expect("fixture marker is in one chunk")
+        .text
+        .clone();
+
+    write_memory(&substrate, bm25_and_vector.clone()).await;
+    write_memory(&substrate, vector_only.clone()).await;
+
+    embed_chunks(&substrate, &bm25_and_vector, &triple, vec![vec![1.0, 0.0, 0.0], vec![0.0, 1.0, 0.0]]).await;
+    embed_chunks(&substrate, &vector_only, &triple, vec![vec![0.0, 1.0, 0.0], vec![1.0, 0.0, 0.0]]).await;
+
+    let hits = substrate
+        .query_hybrid_chunks(
+            "bestbm25needle",
+            Some(HybridVectorQuery { triple: &triple, vector: &[1.0, 0.0, 0.0] }),
+            10,
+        )
+        .await
+        .expect("hybrid query");
+
+    let bm25_hit = find_hit(&hits, &bm25_and_vector.frontmatter.id);
+    assert!(bm25_hit.score_breakdown.bm25_rank.is_some());
+    assert!(bm25_hit.score_breakdown.cosine_similarity.is_some());
+    assert_eq!(bm25_hit.text, expected_bm25_text, "BM25 hits carry the best matching chunk text");
+
+    let vector_hit = find_hit(&hits, &vector_only.frontmatter.id);
+    assert_eq!(vector_hit.score_breakdown.bm25_rank, None);
+    assert!(vector_hit.score_breakdown.cosine_similarity.is_some());
+    assert_eq!(vector_hit.text, expected_vector_text, "vector-only hits carry the nearest chunk text");
+}
+
+#[tokio::test]
 async fn hybrid_chunks_tolerates_partial_vector_coverage_in_both_directions() {
     let (_temp, _roots, substrate) = new_substrate().await;
     let triple = test_triple("partial");
@@ -239,6 +290,13 @@ fn find_hit<'a>(hits: &'a [HybridMemoryCandidate], id: &MemoryId) -> &'a HybridM
 
 fn test_triple(model_ref: &str) -> EmbeddingTriple {
     EmbeddingTriple { provider: "synthetic".to_string(), model_ref: model_ref.to_string(), dimension: 3 }
+}
+
+fn body_with_marker_at_word(marker: &str, marker_index: usize, total_words: usize) -> String {
+    (0..total_words)
+        .map(|index| if index == marker_index { marker.to_string() } else { format!("word{index}") })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn sample_memory(id: &str) -> Memory {
