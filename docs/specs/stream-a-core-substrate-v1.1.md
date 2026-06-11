@@ -2087,6 +2087,57 @@ The synthetic triple and `memory-test-support::perf::synthetic_vectors` (§20 #1
 
 **Correction 2026-06-10 (hybrid recall production status):** the final sentence above overclaimed. Production writes now populate active-triple vectors, and governance contradiction detection consumes those vectors through KNN, but no production recall handler embeds recall queries or passes `vector` into `ChunkQuery`. Production retrieval remains FTS-only bm25 today; hybrid keyword+vector recall is still future work.
 
+### 2026-06-10 — `Substrate::query_hybrid_chunks` recall-membership hybrid query surface
+
+**Touches:** §10.4 (query contract — adds the named hybrid-assembly helper the section already promises). **Approved as part of** `docs/plans/2026-06-10-vector-recall-fusion.md` (Wave 0 / S2; Stream E v0.6 fusion arc). This is a **dated additive amendment, not a version bump:** it adds one new public read-only query method that assembles per-hit `score_breakdown` inputs and performs no final policy ranking — exactly the role §10.4 reserves for Stream A. It adds no new required behavior to existing surfaces, removes/renames nothing, and the new surface is allowed in-version per the repo's spec/plan conventions and §10.4.
+
+**Why it exists.** §10.4 already lists "hybrid result assembly with per-hit `score_breakdown` inputs, not final policy ranking" as a Stream A responsibility, but no concrete method exposed it. Stream E v0.6 delta recall and `memory_search` need a recall-membership-respecting hybrid query that runs the bm25 FTS lane and the sqlite-vec KNN lane over the *same* recall-filtered candidate set and hands both per-lane rank inputs back to the caller, who applies the fusion policy (RRF) — Stream A assembles, Stream E ranks.
+
+**New surface:**
+
+```rust
+pub async fn query_hybrid_chunks(
+    &self,
+    text: &str,
+    triple: &EmbeddingTriple,
+    vector: &[f32],
+    limit: usize,
+) -> Result<Vec<HybridCandidate>, VectorError>;
+```
+
+returning **per-MEMORY** candidates (one row per memory, never per chunk), each carrying:
+
+```rust
+pub struct HybridCandidate {
+    pub memory_id: MemoryId,
+    pub score_breakdown: HybridScoreBreakdown,
+}
+
+pub struct HybridScoreBreakdown {
+    /// 0-based rank of this memory in the bm25 FTS lane; `None` when the memory
+    /// had no FTS hit. Lower rank = better.
+    pub bm25_rank: Option<usize>,
+    /// Cosine similarity (from the stored L2 distance under the unit-vector
+    /// assumption, `cosine_from_l2_distance`) for the memory's nearest chunk;
+    /// `None` when the memory had no embedded chunk in the vector lane.
+    /// Explanation/trust-artifact display only — the caller's RRF fusion ranks
+    /// by ordinal rank, not by this value.
+    pub cosine_similarity: Option<f32>,
+}
+```
+
+The exact struct/field names are the implementer's to finalize; the contract is the shape — one row per memory, carrying a bm25-lane rank input and a cosine-similarity explanation value, each `Option` so a memory may appear in one lane, the other, or both. (This is distinct from the existing per-chunk `ScoreBreakdown { fts, vector, distance }` on `ChunkHit`/`MemoryHit`; the hybrid surface returns the per-memory rank-input shape above.)
+
+**Contract:**
+
+- **Both-or-neither, never the silent FTS fallthrough.** The surface takes the FTS `text` lane **and** the `(triple, vector)` vector lane together — both present, or (degenerately) neither. It must **never** silently run vector-without-triple as an FTS-only query the way `query_chunks` does today. Triple is identity (§10.2.2 #6/#9); a triple mismatch is a typed error, never a silent fallback.
+- **Recall membership filter, in both lanes.** Both lanes apply the recall exclusion contract: `metadata_only = 0 AND passive_recall = 1`, **and** exclude superseded and tombstoned memories. This is **explicitly distinct from `knn_active_memories`**, which deliberately **omits** the `passive_recall = 1` filter for write-governance semantics — so `knn_active_memories` is **not** reusable for recall; `query_hybrid_chunks` carries its own passive-recall-respecting query.
+- **Chunk→memory collapse.** Both lanes over-fetch at the chunk level (the same `CHUNK_FANOUT` collapse `knn_active_memories` performs) and collapse to one row per memory: **best bm25** for the FTS lane, **minimum L2 distance** (nearest chunk) for the vector lane. No duplicate memory ids in the output.
+- **Partial-vector-coverage tolerance.** Pending embedding jobs mean some chunks lack vectors (§10.5). A memory with a bm25 hit but no embedded chunk appears with `cosine_similarity: None` / `bm25_rank: Some(_)`; a vector-only hit appears with `bm25_rank: None` / `cosine_similarity: Some(_)`. Unembedded chunks simply contribute no vector rank; this is normal, not an error.
+- **`UnknownEmbeddingTriple` contract — vec-table-absent is an error, never a silent empty.** When the active triple's vector table is absent or dropped, the surface returns `Err(VectorError::UnknownEmbeddingTriple(..))` — mirroring `query_vector_chunks` at `index/query.rs:398-400` — **never** a silently empty result vector. The recall caller (Stream E) catches this `Err` and maps it to its `no_vector_table` degrade marker (FTS-only). A *present* table with some chunks unembedded is the partial-coverage case above (tolerated), not this error.
+
+**Scope of Stream A's role:** `query_hybrid_chunks` is **hybrid result assembly with per-hit `score_breakdown` inputs**, NOT final policy ranking. The Reciprocal Rank Fusion (RRF) policy, the seven-rung degradation ladder, and the query embedding (`embed_query`) all live in Stream E / memoryd — see Stream E v0.6 §16. Stream A runs the two lanes and returns the rank inputs; the caller fuses.
+
 ---
 
 *End of Stream A — Core Substrate Spec v1.1.*
