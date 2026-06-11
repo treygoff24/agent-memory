@@ -13,8 +13,8 @@
 //! on queries — measurably degrades retrieval, so the format is fixed here
 //! rather than left to call sites.
 
-/// Memorum-specific query task that biases Qwen3-Embedding toward directly useful memories and lookalike disambiguation.
-const DEFAULT_QUERY_TASK: &str = "Given an agent task or user message, retrieve stored memories that are directly useful; distinguish lookalike memories by preferring exact people, projects, identifiers, dates, decisions, constraints, and events over merely similar topics or adjacent names";
+/// Memorum-specific query task that biases Qwen3-Embedding toward exact-answer memories and lookalike disambiguation.
+const DEFAULT_QUERY_TASK: &str = "Given an agent task or user message, retrieve stored memories that would be evidence for the exact answer needed; treat exact people, projects, identifiers, dates, decisions, constraints, and events as anchors, and demote memories that only share themes, roles, adjacent names, or plausible but conflicting details";
 
 /// Wrap a query with the Qwen3 instruction prompt.
 pub fn query_prompt(query: &str) -> String {
@@ -30,11 +30,12 @@ mod tests {
         let prompt = query_prompt("when did we switch to qwen3");
         assert!(prompt.starts_with("Instruct: "), "{prompt}");
         assert!(prompt.contains("stored memories"), "{prompt}");
-        assert!(prompt.contains("distinguish lookalike memories"), "{prompt}");
+        assert!(prompt.contains("evidence for the exact answer needed"), "{prompt}");
         assert!(
             prompt.contains("exact people, projects, identifiers, dates, decisions, constraints, and events"),
             "{prompt}"
         );
+        assert!(prompt.contains("plausible but conflicting details"), "{prompt}");
         assert!(prompt.contains("\nQuery: when did we switch to qwen3"), "{prompt}");
     }
 }
