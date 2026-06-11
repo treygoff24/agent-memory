@@ -17,8 +17,9 @@ use crate::error::{
     OpenError, ReadError, SubstrateError, SubstrateResult, ValidationError, VectorError, WriteFailure, WriteFailureKind,
 };
 use crate::events::{
-    append_event, append_event_best_effort, decode_line, ensure_event_sequence_state, read_events,
-    reserve_event_sequence, sync_event_sequence_state, Event, EventKind,
+    append_event, append_event_best_effort, append_events, append_events_best_effort, decode_line,
+    ensure_event_sequence_state, read_events, reserve_event_sequence, reserve_event_sequences,
+    sync_event_sequence_state, Event, EventKind,
 };
 use crate::frontmatter::validate_frontmatter;
 use crate::git;
@@ -1625,21 +1626,59 @@ impl Substrate {
         if let Err(err) = self.guard_event_sequence_state(&device) {
             return ids.iter().map(|id| (id.clone(), std::io::Error::new(err.kind(), err.to_string()))).collect();
         }
-        let mut failures = Vec::new();
         let recalled_at = Utc::now();
-        for id in ids {
-            let kind = EventKind::RecallHit { id: id.clone(), recalled_at };
-            match self.build_recorded_event(kind, &new_operation_id()) {
-                Ok(event) => {
-                    self.best_effort_event_seq.fetch_max(event.seq.saturating_add(1), Ordering::Relaxed);
-                    if let Err(err) = self.append_event_and_mirror(&event, true) {
-                        failures.push((id.clone(), err));
+        let seqs = match reserve_event_sequences(&self.roots.runtime, &self.event_log, &device, ids.len()) {
+            Ok(seqs) => seqs,
+            Err(err) => return ids.iter().map(|id| (id.clone(), copy_io_error(&err))).collect(),
+        };
+        let events = ids
+            .iter()
+            .zip(seqs)
+            .map(|(id, seq)| Event {
+                schema: crate::SUBSTRATE_SCHEMA_VERSION,
+                id: EventId::new(format!("evt_{}", uuid::Uuid::new_v4())),
+                at: Utc::now(),
+                device: device.clone(),
+                seq,
+                operation_id: Some(new_operation_id()),
+                kind: EventKind::RecallHit { id: id.clone(), recalled_at },
+                crc32c: 0,
+            })
+            .collect::<Vec<_>>();
+        for event in &events {
+            self.best_effort_event_seq.fetch_max(event.seq.saturating_add(1), Ordering::Relaxed);
+        }
+        if let Err(err) = self.append_events_and_mirror(&events, true) {
+            return ids.iter().map(|id| (id.clone(), copy_io_error(&err))).collect();
+        }
+        Vec::new()
+    }
+
+    fn append_events_and_mirror(&self, events: &[Event], best_effort: bool) -> std::io::Result<()> {
+        if best_effort {
+            append_events_best_effort(&self.event_log, events)?;
+        } else {
+            append_events(&self.event_log, events)?;
+        }
+        self.mirror_events_fail_soft(events);
+        Ok(())
+    }
+
+    fn mirror_events_fail_soft(&self, events: &[Event]) {
+        match self.index.lock() {
+            Ok(mut index) => {
+                for event in events {
+                    if let Err(err) = index.mirror_event(event) {
+                        tracing::warn!(event_id = event.id.as_str(), "events_log SQLite mirror write failed: {err}");
                     }
                 }
-                Err(err) => failures.push((id.clone(), err)),
+            }
+            Err(err) => {
+                for event in events {
+                    tracing::warn!(event_id = event.id.as_str(), "events_log SQLite mirror lock failed: {err}");
+                }
             }
         }
-        failures
     }
 
     /// Record that encrypted content was intentionally revealed without
@@ -1883,6 +1922,10 @@ fn read_all_event_logs_from_repo(repo: &std::path::Path) -> std::io::Result<Vec<
             .then_with(|| left.id.as_str().cmp(right.id.as_str()))
     });
     Ok(events)
+}
+
+fn copy_io_error(err: &std::io::Error) -> std::io::Error {
+    std::io::Error::new(err.kind(), err.to_string())
 }
 
 fn best_effort_event_seq_start(event_log: &std::path::Path, device: &DeviceId) -> u64 {

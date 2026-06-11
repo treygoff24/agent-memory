@@ -83,6 +83,28 @@ pub(crate) fn reserve_event_sequence(runtime: &Path, event_log: &Path, device_id
     Ok(seq)
 }
 
+/// Reserve `count` per-device event sequence numbers with one persisted state update.
+///
+/// The returned values match `count` consecutive calls to [`reserve_event_sequence`],
+/// including saturating behavior at `u64::MAX`.
+pub(crate) fn reserve_event_sequences(
+    runtime: &Path,
+    event_log: &Path,
+    device_id: &DeviceId,
+    count: usize,
+) -> std::io::Result<Vec<u64>> {
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+    let _lock = lock_sequence_file(runtime)?;
+    let path = runtime.join("event-seq.json");
+    let mut state = load_or_recover_state(event_log, &path, device_id)?;
+    let start = state.next;
+    state.next = state.next.saturating_add(count as u64);
+    write_state_atomic(runtime, &path, &state)?;
+    Ok((0..count).map(|offset| start.saturating_add(offset as u64)).collect())
+}
+
 /// Ensure an event has a non-zero sequence number before appending it.
 pub(crate) fn stamp_event_sequence(runtime: &Path, event_log: &Path, event: &mut Event) -> std::io::Result<()> {
     if event.seq == 0 {

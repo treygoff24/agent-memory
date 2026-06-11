@@ -220,6 +220,16 @@ pub fn append_event(path: &Path, event: &Event) -> std::io::Result<()> {
     append_event_inner(path, event, true)
 }
 
+/// Append events and fsync the log once after all bytes are written.
+///
+/// Each event is serialized with the same framing path as [`append_event`], so
+/// the resulting JSONL bytes are identical to appending the same events one by
+/// one in the same order. If serialization of any event fails, no file is opened
+/// or modified.
+pub fn append_events(path: &Path, events: &[Event]) -> std::io::Result<()> {
+    append_events_inner(path, events, true)
+}
+
 /// Append an event without forcing it to stable storage.
 ///
 /// This is only used when the substrate was explicitly opened in
@@ -229,17 +239,39 @@ pub fn append_event_best_effort(path: &Path, event: &Event) -> std::io::Result<(
     append_event_inner(path, event, false)
 }
 
+/// Append events without forcing them to stable storage.
+///
+/// Preserves [`append_event_best_effort`] semantics while avoiding per-event
+/// file opens and mirror callers' per-event write pipeline.
+pub fn append_events_best_effort(path: &Path, events: &[Event]) -> std::io::Result<()> {
+    append_events_inner(path, events, false)
+}
+
 fn append_event_inner(path: &Path, event: &Event, sync: bool) -> std::io::Result<()> {
+    append_events_inner(path, std::slice::from_ref(event), sync)
+}
+
+fn append_events_inner(path: &Path, events: &[Event], sync: bool) -> std::io::Result<()> {
+    if events.is_empty() {
+        return Ok(());
+    }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let value = serde_json::to_value(event).map_err(std::io::Error::other)?;
-    let line = encode_event_line(&value)?;
-    if line.len() > MAX_LINE_BYTES {
-        return Err(std::io::Error::other(format!("event line too long: {} bytes (max {MAX_LINE_BYTES})", line.len())));
+    let mut bytes = Vec::new();
+    for event in events {
+        let value = serde_json::to_value(event).map_err(std::io::Error::other)?;
+        let line = encode_event_line(&value)?;
+        if line.len() > MAX_LINE_BYTES {
+            return Err(std::io::Error::other(format!(
+                "event line too long: {} bytes (max {MAX_LINE_BYTES})",
+                line.len()
+            )));
+        }
+        bytes.extend_from_slice(line.as_bytes());
     }
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-    file.write_all(line.as_bytes())?;
+    file.write_all(&bytes)?;
     if sync {
         file.sync_all()?;
     }
