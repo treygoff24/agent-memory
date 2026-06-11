@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vector-Recall Fusion — Decision Walkthrough</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface2: #1c2230;
+    --border: #2d3748;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --green-dim: rgba(63,185,80,.12);
+    --amber: #d29922;
+    --amber-dim: rgba(210,153,34,.12);
+    --red: #f85149;
+    --red-dim: rgba(248,81,73,.12);
+    --purple: #bc8cff;
+    --mono: "SF Mono", ui-monospace, Menlo, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 16px/1.6 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    padding: 0 0 80px;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 0 24px; }
+
+  header {
+    border-bottom: 1px solid var(--border);
+    padding: 48px 0 36px;
+    background: linear-gradient(180deg, #131a26 0%, var(--bg) 100%);
+    margin-bottom: 40px;
+  }
+  .kicker { font: 600 12px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--accent); margin-bottom: 14px; }
+  h1 { font-size: 34px; line-height: 1.2; font-weight: 700; letter-spacing: -.02em; }
+  .sub { color: var(--muted); margin-top: 12px; max-width: 640px; }
+  .sub code { font-family: var(--mono); font-size: 14px; color: var(--text); background: var(--surface2); padding: 1px 6px; border-radius: 4px; }
+
+  /* headline metric strip */
+  .strip { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 28px; }
+  .stat { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+  .stat .n { font: 700 24px/1.2 var(--mono); }
+  .stat .l { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .up { color: var(--green); } .warn { color: var(--amber); }
+
+  h2 { font-size: 22px; margin: 48px 0 8px; letter-spacing: -.01em; }
+  .section-sub { color: var(--muted); margin-bottom: 20px; }
+
+  /* decision cards */
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; margin-bottom: 28px; overflow: hidden; }
+  .card-head { padding: 20px 24px 16px; border-bottom: 1px solid var(--border); display: flex; align-items: baseline; gap: 14px; }
+  .dnum { font: 700 13px/1 var(--mono); color: var(--accent); background: rgba(88,166,255,.12); border: 1px solid rgba(88,166,255,.3); border-radius: 6px; padding: 5px 9px; white-space: nowrap; }
+  .card-head h3 { font-size: 19px; }
+  .card-body { padding: 20px 24px 24px; }
+  .context { color: var(--muted); margin-bottom: 18px; }
+  .context strong { color: var(--text); }
+  .context code, .rec code, td code, .pc li code, .step code { font-family: var(--mono); font-size: 13px; background: var(--surface2); padding: 1px 5px; border-radius: 4px; }
+
+  .pcgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 18px; }
+  .pc { border-radius: 10px; padding: 14px 16px; border: 1px solid var(--border); }
+  .pc.pros { background: var(--green-dim); border-color: rgba(63,185,80,.25); }
+  .pc.cons { background: var(--red-dim); border-color: rgba(248,81,73,.25); }
+  .pc h4 { font: 600 11px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; margin-bottom: 10px; }
+  .pc.pros h4 { color: var(--green); } .pc.cons h4 { color: var(--red); }
+  .pc ul { list-style: none; }
+  .pc li { font-size: 14px; padding-left: 18px; position: relative; margin-bottom: 8px; }
+  .pc li:last-child { margin-bottom: 0; }
+  .pc.pros li::before { content: "+"; position: absolute; left: 0; color: var(--green); font-weight: 700; }
+  .pc.cons li::before { content: "–"; position: absolute; left: 0; color: var(--red); font-weight: 700; }
+  .pc .optlabel { font-size: 13px; color: var(--muted); font-style: italic; margin-bottom: 8px; display: block; }
+
+  .rec { background: var(--surface2); border: 1px solid var(--border); border-left: 3px solid var(--purple); border-radius: 8px; padding: 14px 18px; font-size: 15px; }
+  .rec .tag { font: 700 11px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--purple); display: block; margin-bottom: 6px; }
+
+  /* quality table */
+  table { width: 100%; border-collapse: collapse; font-size: 14px; margin: 16px 0 8px; }
+  th, td { padding: 9px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+  th { font: 600 11px/1.4 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+  td.num { font-family: var(--mono); font-size: 13px; }
+  tr.hl td { background: rgba(63,185,80,.07); }
+  .tablenote { font-size: 13px; color: var(--muted); }
+
+  /* roadmap */
+  .step { display: flex; gap: 16px; padding: 16px 0; border-bottom: 1px solid var(--border); align-items: flex-start; }
+  .step:last-child { border-bottom: none; }
+  .step .dot { font: 700 13px/1 var(--mono); min-width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--surface2); border: 1px solid var(--border); color: var(--accent); margin-top: 2px; }
+  .step h4 { font-size: 16px; margin-bottom: 4px; }
+  .step p { font-size: 14px; color: var(--muted); }
+  .badge { display: inline-block; font: 600 10px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; border-radius: 5px; padding: 4px 7px; margin-left: 8px; vertical-align: 2px; }
+  .badge.now { background: var(--green-dim); color: var(--green); border: 1px solid rgba(63,185,80,.3); }
+  .badge.next { background: var(--amber-dim); color: var(--amber); border: 1px solid rgba(210,153,34,.3); }
+  .badge.later { background: rgba(139,148,158,.12); color: var(--muted); border: 1px solid var(--border); }
+
+  footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--border); font-size: 13px; color: var(--muted); }
+  footer code { font-family: var(--mono); }
+
+  @media (max-width: 700px) {
+    .strip { grid-template-columns: 1fr 1fr; }
+    .pcgrid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <div class="kicker">Memorum · Vector-Recall Fusion Arc · 2026-06-11</div>
+    <h1>Four decisions, one roadmap</h1>
+    <p class="sub">The fusion arc shipped and <code>check.sh</code> is green on trunk (<code>fa3744c</code>, run record at <code>ad48a02</code>). Everything left is queued on you. Here's each call, the trade-offs, and what I'd do.</p>
+    <div class="strip">
+      <div class="stat"><div class="n up">7.9×</div><div class="l">nDCG@5 lift, fused real Qwen3 (0.094 → 0.746)</div></div>
+      <div class="stat"><div class="n up">93.8ms</div><div class="l">with-vector recall p95 @ 200 memories (cap: 120ms)</div></div>
+      <div class="stat"><div class="n warn">0.15–0.20</div><div class="l">trap@5 — the one metric that got worse</div></div>
+      <div class="stat"><div class="n">~70</div><div class="l">unpushed commits on the branch</div></div>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <h2>The quality numbers, for reference</h2>
+  <p class="section-sub">Search seam, scored cases. Every relevance metric lifts 4–11× on both corpora; trap-rate is the cost.</p>
+  <table>
+    <thead><tr><th>Corpus / provider</th><th>nDCG@5</th><th>recall@5</th><th>MRR</th><th>trap@5</th></tr></thead>
+    <tbody>
+      <tr><td>Fictional, FTS-only (armed baseline)</td><td class="num">0.094</td><td class="num">0.070</td><td class="num">0.120</td><td class="num">0.020</td></tr>
+      <tr><td>Fictional, fused fixture (re-arm candidate)</td><td class="num">0.445</td><td class="num">0.463</td><td class="num">0.528</td><td class="num">0.180</td></tr>
+      <tr class="hl"><td>Fictional, fused real Qwen3</td><td class="num">0.746</td><td class="num">0.753</td><td class="num">0.828</td><td class="num">0.200</td></tr>
+      <tr><td>Private local corpus, FTS-only</td><td class="num">0.151</td><td class="num">0.120</td><td class="num">0.196</td><td class="num">0.000</td></tr>
+      <tr class="hl"><td>Private local corpus, fused real Qwen3</td><td class="num">0.660</td><td class="num">0.680</td><td class="num">0.768</td><td class="num">0.152</td></tr>
+    </tbody>
+  </table>
+  <p class="tablenote">Traps are engineered lexical-adjacent lookalikes, and the eval seam is corpus-wide while production delta recall is namespace-scoped — so the eval overstates real-world trap exposure.</p>
+
+  <h2>The decisions</h2>
+  <p class="section-sub">In dependency order. Decision 1 unblocks everything else.</p>
+
+  <!-- DECISION 1 -->
+  <div class="card">
+    <div class="card-head"><span class="dnum">D1</span><h3>Trap-rate: arm now, or tune first?</h3></div>
+    <div class="card-body">
+      <p class="context">Fused recall raises trap@5 from ~0.02 to 0.15–0.20 — the semantic lane surfaces engineered lookalikes the lexical lane never matched. The mitigation knobs are config-only: <code>rrf_k</code> (how fast rank fusion decays) and <code>knn_limit</code> (how many vector candidates enter fusion). This gates the re-arm commit (D2).</p>
+      <div class="pcgrid">
+        <div class="pc pros">
+          <h4>Arm now</h4>
+          <ul>
+            <li>4–11× relevance lift ships immediately instead of sitting on a shelf</li>
+            <li>Trap exposure is overstated by the eval (corpus-wide vs namespace-scoped production)</li>
+            <li>Knobs are config-only — tuning later requires no code change and no new arc</li>
+            <li>Armed tripwire starts protecting the <em>new</em> quality level right away</li>
+          </ul>
+        </div>
+        <div class="pc cons">
+          <h4>Arm now</h4>
+          <ul>
+            <li>Ships a known 7–10× trap-rate regression into the armed baseline</li>
+            <li>If a tune would've recovered traps cheaply, you re-arm twice (two <code>[bench-update]</code> human commits)</li>
+            <li>No data yet on whether <code>rrf_k</code>/<code>knn_limit</code> trade traps against recall favorably</li>
+          </ul>
+        </div>
+      </div>
+      <div class="pcgrid">
+        <div class="pc pros">
+          <h4>Tune first</h4>
+          <ul>
+            <li>One sweep (~6–9 fused-report runs) gives the trap-vs-recall curve before committing</li>
+            <li>Re-arm happens once, at the chosen operating point</li>
+          </ul>
+        </div>
+        <div class="pc cons">
+          <h4>Tune first</h4>
+          <ul>
+            <li>Delays everything downstream (D2 → D3 → push)</li>
+            <li>Risk of trading away real recall to suppress synthetic traps that production scoping already mitigates</li>
+            <li>Tuning against the fictional corpus may overfit to its engineered traps</li>
+          </ul>
+        </div>
+      </div>
+      <div class="rec"><span class="tag">My recommendation — hybrid, weighted "arm"</span>
+        Run a <strong>cheap bounded sweep first</strong> — 3 values of <code>rrf_k</code> × 2 of <code>knn_limit</code>, fixture provider, ~30 min wall-clock since it's config-only re-runs of <code>--fused-report</code>. If any point cuts trap@5 below ~0.10 while keeping ≥90% of the nDCG lift, arm there; otherwise arm at defaults. This is "tune first" in letter but "arm now" in spirit: it's one bounded measurement, not an open-ended tuning arc, and it means you only sign one re-arm commit. If you'd rather skip even that, arming at defaults is defensible — the production namespace scoping is a real mitigation, not a rationalization.
+      </div>
+    </div>
+  </div>
+
+  <!-- DECISION 2 -->
+  <div class="card">
+    <div class="card-head"><span class="dnum">D2</span><h3>The atomic <code>[bench-update]</code> re-arm commit</h3></div>
+    <div class="card-body">
+      <p class="context">Held off trunk deliberately: lane-e's <code>79ea90d</code> ("HOLD: switch eval search seam to fused recall") must land in <strong>one human-approved commit</strong> together with the re-armed <code>bench/quality-baseline.json</code> and the lockstep test edits — the B1 invariant says baselines change only by explicit human-authored commits, never piecemeal.</p>
+      <div class="pcgrid">
+        <div class="pc pros">
+          <h4>Land it (after D1)</h4>
+          <ul>
+            <li>Quality tripwire starts guarding fused-recall quality — regressions get caught</li>
+            <li>Closes the arc cleanly; lane-e branch and HOLD commit can be retired</li>
+            <li>Eval seam and production seam measure the same thing again</li>
+          </ul>
+        </div>
+        <div class="pc cons">
+          <h4>Land it</h4>
+          <ul>
+            <li>None real, once D1 is called. The only failure mode is landing it <em>piecemeal</em>, which violates B1</li>
+            <li>Mechanical risk: baseline, seam switch, and test edits must be regenerated from final trunk, not from stale lane state</li>
+          </ul>
+        </div>
+      </div>
+      <div class="rec"><span class="tag">My recommendation</span>
+        <strong>Yes, immediately after D1 resolves.</strong> I prep the commit: cherry-pick <code>79ea90d</code> onto trunk, regenerate the baseline from final trunk at the chosen config, verify the armed tripwire passes, hand you the diff to approve and author. This is the keystone — D3 and D4 both want it landed first.
+      </div>
+    </div>
+  </div>
+
+  <!-- DECISION 3 -->
+  <div class="card">
+    <div class="card-head"><span class="dnum">D3</span><h3>Promote the latency baseline (<code>.proposed</code> → unsuffixed)</h3></div>
+    <div class="card-body">
+      <p class="context"><code>bench/stream-e-recall-results.darwin-arm64.json.proposed</code> holds the post-batching latency numbers (with-vector p95 93.8ms @ 200 / 104.5ms @ 1000). Promotion is a human-authored commit per the same baseline invariant. One wrinkle: <code>delta_no_match</code> sits at 59–62ms against a 60ms cap — a coin-flip caused entirely by the pre-existing <code>validate_delta_request</code> ~55ms tax.</p>
+      <div class="pcgrid">
+        <div class="pc pros">
+          <h4>Promote now</h4>
+          <ul>
+            <li>Locks in the emit-batch win as the protected baseline</li>
+            <li>Bench joins the gate-able surface — the run record's own lesson is that this bench regressed invisibly because nothing ran it</li>
+          </ul>
+        </div>
+        <div class="pc cons">
+          <h4>Promote now</h4>
+          <ul>
+            <li><code>delta_no_match</code> coin-flip means intermittent red gates until the validate-tax arc lands</li>
+            <li>Must regenerate from final trunk on a quiet box first — the file predates the last trunk commits</li>
+          </ul>
+        </div>
+      </div>
+      <div class="rec"><span class="tag">My recommendation</span>
+        <strong>Promote after D2, with one adjustment:</strong> regenerate from final trunk on a quiet box, and either annotate the <code>delta_no_match</code> threshold as known-flaky pending the validate-tax arc or hold just that one phase's threshold at a tolerance that doesn't coin-flip (without renegotiating the §13 budget itself — the budget stays; the bench threshold gets a documented temporary allowance). A baseline that randomly fails trains everyone to ignore red, which defeats its purpose.
+      </div>
+    </div>
+  </div>
+
+  <!-- DECISION 4 -->
+  <div class="card">
+    <div class="card-head"><span class="dnum">D4</span><h3>Push ~70 commits to origin</h3></div>
+    <div class="card-body">
+      <p class="context">The branch is 67 ahead of <code>origin/onboarding/agent-driven-onboarding</code> — two full autonomous arcs (dynamics/eval hardening + vector fusion) exist only on this machine.</p>
+      <div class="pcgrid">
+        <div class="pc pros">
+          <h4>Push now-ish</h4>
+          <ul>
+            <li>Two arcs of work are one disk failure away from gone — this is the real risk on the board</li>
+            <li>Gate is green on trunk; nothing unfinished is <em>on</em> the branch (the HOLD is deliberately off-trunk)</li>
+          </ul>
+        </div>
+        <div class="pc cons">
+          <h4>Push now-ish</h4>
+          <ul>
+            <li>Pushing before D2 means a second push for the re-arm commit (trivial)</li>
+            <li>That's it. There is no good argument for sitting on 70 local-only commits</li>
+          </ul>
+        </div>
+      </div>
+      <div class="rec"><span class="tag">My recommendation</span>
+        <strong>Push today regardless of D1–D3.</strong> Don't serialize backup behind decisions — push now, push again after the re-arm lands. If you want a single tidy push, fine, but only if D1/D2 resolve this session; otherwise the backup argument wins.
+      </div>
+    </div>
+  </div>
+
+  <h2>Remaining work to ship</h2>
+  <p class="section-sub">Beyond the four decisions — the queue as I see it, in order.</p>
+
+  <div class="card"><div class="card-body" style="padding-top:8px; padding-bottom:8px;">
+    <div class="step"><div class="dot">1</div><div><h4>Resolve D1 → land D2 → promote D3 → push <span class="badge now">This session</span></h4><p>The decision chain above. With the bounded sweep, plausibly all done today. I do the mechanical work; you author the two baseline commits.</p></div></div>
+    <div class="step"><div class="dot">2</div><div><h4>Worktree + branch cleanup <span class="badge now">After D2</span></h4><p>Six stale <code>vector-fusion/*</code> worktrees under <code>../agent-memory-wt/</code>. All lane content landed on trunk under new SHAs; <code>lane-e</code> must survive until the re-arm commit lands, then everything goes. I'll list exactly what gets deleted and confirm before touching anything.</p></div></div>
+    <div class="step"><div class="dot">3</div><div><h4>The validate-tax arc <span class="badge next">Next arc</span></h4><p>The biggest known perf debt: <code>validate_delta_request</code> costs ~55ms on <em>every</em> delta request (likely session-binding/git work per request), plus the unexplained startup-warm cost (~1.2s vs 12ms accepted, likely strength hydration), plus the tree_validator +12% re-check on a quiet box. Pre-existing, well-attributed, scoped — a clean plan-and-delegate arc. This also retires the D3 coin-flip permanently.</p></div></div>
+    <div class="step"><div class="dot">4</div><div><h4>Put the stream-e recall bench in a scheduled gate <span class="badge next">Cheap, high value</span></h4><p>Two regressions (validate tax, emission cost) accumulated invisibly because this bench runs in no gate. Doesn't belong in <code>check.sh</code> (latency benches need a quiet box), but a scheduled quiet-box run — even weekly — would have caught both months earlier. Small scripting task.</p></div></div>
+    <div class="step"><div class="dot">5</div><div><h4>Trap-rate follow-through <span class="badge later">If D1 sweep shows a curve</span></h4><p>If the bounded sweep reveals a real trap-vs-recall trade worth exploring, a fuller tuning pass with the real Qwen3 provider against the private corpus. Only if the cheap sweep says there's signal.</p></div></div>
+    <div class="step"><div class="dot">6</div><div><h4>Delegate-lane <code>--alias</code> hygiene <span class="badge later">Process</span></h4><p>Lane self-reports were unrecoverable this run (alias collision returned stale reports). Per-run unique aliases in future orchestrations — a one-line convention, worth writing into the orchestration notes before the next autonomous run.</p></div></div>
+  </div></div>
+
+  <footer>
+    Sources: <code>docs/reviews/2026-06-10-vector-recall-fusion-run-record.md</code> · <code>docs/plans/2026-06-10-vector-recall-fusion.md</code> · live git state @ <code>ad48a02</code>, 2026-06-11. Gate status: <code>check.sh</code> exit 0 on <code>fa3744c</code>.
+  </footer>
+
+</div>
+</body>
+</html>
