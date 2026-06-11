@@ -43,11 +43,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use memory_substrate::{ChunkQuery, InitOptions, Roots, Substrate};
+use memory_substrate::{ChunkQuery, EmbeddingTriple, HybridVectorQuery, InitOptions, Roots, Substrate};
+use memoryd::embedding::{worker, EmbeddingProvider, FastembedProvider, FixtureProvider};
 use memoryd::recall::{
-    collect_recall_candidates_from_index, select_ranked_candidates, CandidateCollection, RankingContext,
-    RecallCollectionRequest, RecallSectionName,
+    collect_recall_candidates_from_index, fuse_rrf, select_ranked_candidates, CandidateCollection, RankingContext,
+    RecallCollectionRequest, RecallSectionName, VectorRecallConfig,
 };
 use serde::{Deserialize, Serialize};
 
@@ -143,6 +145,8 @@ pub enum QualityError {
     Queries(String),
     /// A substrate open/init/query failure.
     Substrate(String),
+    /// An embedding provider, query embedding, or drain failure.
+    Embedding(String),
 }
 
 impl std::fmt::Display for QualityError {
@@ -152,6 +156,7 @@ impl std::fmt::Display for QualityError {
             Self::Io(e) => write!(f, "io error: {e}"),
             Self::Queries(m) => write!(f, "queries.yaml: {m}"),
             Self::Substrate(m) => write!(f, "substrate: {m}"),
+            Self::Embedding(m) => write!(f, "embedding: {m}"),
         }
     }
 }
@@ -174,9 +179,28 @@ impl From<std::io::Error> for QualityError {
 /// `project:<canonical_id>` namespace filter.
 pub struct GoldenCorpus {
     substrate: Substrate,
+    embedding_provider: Arc<dyn EmbeddingProvider>,
     /// `atlas` -> `proj_2170411deb73`, etc., derived from the corpus frontmatter.
     alias_to_canonical: BTreeMap<String, String>,
     _temp: tempfile::TempDir,
+}
+
+/// Embedding backend used by the fused side-report lane.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum QualityEmbeddingProvider {
+    /// Deterministic content-derived vectors; default for gates and local runs.
+    Fixture,
+    /// Production Qwen3 fastembed/candle lane; intended for off-gate measurement.
+    Real,
+}
+
+impl QualityEmbeddingProvider {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Fixture => "fixture",
+            Self::Real => "real",
+        }
+    }
 }
 
 impl GoldenCorpus {
@@ -203,6 +227,18 @@ impl GoldenCorpus {
     /// regression gate never uses this; it stays pinned to the committed
     /// fixtures via [`Self::load`].
     pub async fn load_from_root(root: &Path) -> Result<Self, QualityError> {
+        Self::load_from_root_with_embedding(root, QualityEmbeddingProvider::Fixture).await
+    }
+
+    /// Load a corpus and populate the active vector table with the selected
+    /// provider. Fixture mode intentionally constructs the provider from the
+    /// substrate's active triple rather than assuming the historical synthetic
+    /// test triple; this keeps config, vector table identity, and query vectors
+    /// coherent when the bootstrap default is the production Qwen triple.
+    async fn load_from_root_with_embedding(
+        root: &Path,
+        embedding_provider: QualityEmbeddingProvider,
+    ) -> Result<Self, QualityError> {
         let memories_src = root.join("memories");
         if !memories_src.is_dir() {
             return Err(QualityError::CorpusMissing(memories_src.display().to_string()));
@@ -218,10 +254,13 @@ impl GoldenCorpus {
         // FK-guards each supersession edge and runs a deferred resync pass, so a
         // supersessor indexed before its target no longer aborts the load.
         copy_tree(&memories_src, &repo)?;
+        if embedding_provider == QualityEmbeddingProvider::Real {
+            write_active_embedding_config(&repo, &production_embedding_triple())?;
+        }
 
         let alias_to_canonical = derive_alias_map(&memories_src)?;
 
-        let roots = Roots::new(repo, runtime);
+        let roots = Roots::new(&repo, &runtime);
         let substrate = Substrate::init(
             roots,
             InitOptions { force_unsafe_durability: true, device_id: Some("dev_qualityeval01".to_string()) },
@@ -229,7 +268,10 @@ impl GoldenCorpus {
         .await
         .map_err(|e| QualityError::Substrate(format!("init: {e:?}")))?;
 
-        Ok(Self { substrate, alias_to_canonical, _temp: temp })
+        let provider = build_embedding_provider(&substrate, &runtime, embedding_provider)?;
+        drain_embeddings(&substrate, &provider).await?;
+
+        Ok(Self { substrate, embedding_provider: provider, alias_to_canonical, _temp: temp })
     }
 
     /// Load and parse `queries.yaml` into labeled cases.
@@ -299,6 +341,42 @@ impl GoldenCorpus {
         Ok(ranked)
     }
 
+    /// **Fused search side-report seam.** Embed the query with the selected
+    /// provider, collect BM25+vector candidates through the substrate's hybrid
+    /// surface, and apply memoryd's exported RRF helper. This is deliberately a
+    /// separate path until the lockstep baseline re-arm switches the default
+    /// `rank_via_search` seam.
+    async fn rank_via_fused_search(&self, query: &str) -> Result<Vec<String>, QualityError> {
+        let active_triple = self
+            .substrate
+            .active_embedding_triple()
+            .map_err(|e| QualityError::Substrate(format!("active_embedding_triple for fused search: {e:?}")))?;
+        ensure_provider_matches_active(&active_triple, &self.embedding_provider)?;
+
+        let provider = Arc::clone(&self.embedding_provider);
+        let query_text = query.to_string();
+        let vector = tokio::task::spawn_blocking(move || provider.embed_query(&query_text))
+            .await
+            .map_err(|e| QualityError::Embedding(format!("embed_query join failed: {e}")))?
+            .map_err(|e| QualityError::Embedding(format!("embed_query: {e}")))?;
+
+        let config = VectorRecallConfig::default();
+        let candidates = self
+            .substrate
+            .query_hybrid_chunks(
+                query,
+                Some(HybridVectorQuery { triple: &active_triple, vector: &vector }),
+                config.knn_limit,
+            )
+            .await
+            .map_err(|e| QualityError::Substrate(format!("query_hybrid_chunks: {e:?}")))?;
+
+        Ok(fuse_rrf(&candidates, config.rrf_k)
+            .into_iter()
+            .map(|candidate| candidate.memory_id.as_str().to_string())
+            .collect())
+    }
+
     /// **Startup-block assembly seam.** Select candidates by calling the same
     /// recall-index collection function the startup builder uses, then rank them
     /// via the real `select_ranked_candidates` points ranking. The namespace set
@@ -332,6 +410,74 @@ impl GoldenCorpus {
         let selection = select_ranked_candidates(RecallSectionName::RecentMemory, facts, context, usize::MAX);
         Ok(selection.selected.into_iter().map(|c| c.id).collect())
     }
+}
+
+fn build_embedding_provider(
+    substrate: &Substrate,
+    runtime: &Path,
+    provider: QualityEmbeddingProvider,
+) -> Result<Arc<dyn EmbeddingProvider>, QualityError> {
+    let active_triple = substrate
+        .active_embedding_triple()
+        .map_err(|e| QualityError::Substrate(format!("active_embedding_triple: {e:?}")))?;
+    let provider: Arc<dyn EmbeddingProvider> = match provider {
+        QualityEmbeddingProvider::Fixture => Arc::new(FixtureProvider::new(active_triple.clone())),
+        QualityEmbeddingProvider::Real => Arc::new(
+            FastembedProvider::load_for_runtime(runtime, active_triple.clone())
+                .map_err(|e| QualityError::Embedding(format!("load real embedding provider: {e}")))?,
+        ),
+    };
+    ensure_provider_matches_active(&active_triple, &provider)?;
+    Ok(provider)
+}
+
+fn ensure_provider_matches_active(
+    active_triple: &EmbeddingTriple,
+    provider: &Arc<dyn EmbeddingProvider>,
+) -> Result<(), QualityError> {
+    if provider.triple() == active_triple {
+        return Ok(());
+    }
+    Err(QualityError::Embedding(format!(
+        "embedding provider triple {:?} did not match active substrate triple {:?}",
+        provider.triple(),
+        active_triple
+    )))
+}
+
+async fn drain_embeddings(substrate: &Substrate, provider: &Arc<dyn EmbeddingProvider>) -> Result<(), QualityError> {
+    let active_triple = substrate
+        .active_embedding_triple()
+        .map_err(|e| QualityError::Substrate(format!("active_embedding_triple before drain: {e:?}")))?;
+    ensure_provider_matches_active(&active_triple, provider)?;
+    loop {
+        let drained = worker::drain_batch(substrate, provider, 256)
+            .await
+            .map_err(|e| QualityError::Embedding(format!("drain embeddings: {e}")))?;
+        if drained < 256 {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn production_embedding_triple() -> EmbeddingTriple {
+    EmbeddingTriple {
+        provider: memory_substrate::tree::DEFAULT_ACTIVE_EMBEDDING_PROVIDER.to_string(),
+        model_ref: memory_substrate::tree::DEFAULT_ACTIVE_EMBEDDING_MODEL_REF.to_string(),
+        dimension: memory_substrate::tree::DEFAULT_ACTIVE_EMBEDDING_DIMENSION,
+    }
+}
+
+fn write_active_embedding_config(repo: &Path, triple: &EmbeddingTriple) -> Result<(), QualityError> {
+    fs::write(
+        repo.join("config.yaml"),
+        format!(
+            "schema_version: 1\nactive_embedding:\n  provider: {}\n  model_ref: {}\n  dimension: {}\n",
+            triple.provider, triple.model_ref, triple.dimension
+        ),
+    )?;
+    Ok(())
 }
 
 /// When exactly one project prefix is in scope, return its canonical id so the
@@ -461,6 +607,31 @@ pub struct QualityReport {
     pub abstentions: Vec<AbstentionOutcome>,
 }
 
+/// Side-report for the fused BM25+vector search lane.
+///
+/// This intentionally does not add a new seam to [`QualityReport`]: the armed
+/// baseline gate remains pinned to the default report until the lockstep
+/// baseline re-arm.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FusedQualityReport {
+    /// Schema version of this side-report shape.
+    pub schema: u32,
+    /// Ranking lane note for human comparison with the default report.
+    pub ranking_lane: String,
+    /// Embedding provider selector used for vector population/query embedding.
+    pub embedding_provider: String,
+    /// Active embedding triple used by both vector population and query KNN.
+    pub active_embedding: EmbeddingTriple,
+    /// Total labeled cases.
+    pub total_cases: usize,
+    /// Abstention case count.
+    pub abstention_cases: usize,
+    /// Aggregated fused-lane metrics over non-abstention cases.
+    pub metrics: SeamMetrics,
+    /// Per-abstention-case fused-lane outcomes.
+    pub abstentions: Vec<AbstentionOutcome>,
+}
+
 /// Accumulator while sweeping the scored cases for one seam.
 #[derive(Default)]
 struct SeamAccumulator {
@@ -556,6 +727,47 @@ fn dcg_term(gain: f64, rank_index: usize) -> f64 {
 /// Run both ranking seams over the golden corpus and produce the full report.
 pub async fn run_quality_report() -> Result<QualityReport, QualityError> {
     Ok(run_quality_report_with_cases_for_root(&GoldenCorpus::fixtures_root()).await?.0)
+}
+
+/// Run the fused BM25+vector search lane over a corpus and produce the
+/// side-report JSON shape. This is off-gate measurement only: it is never read
+/// by [`compare_to_baseline`].
+pub async fn run_fused_quality_report_for_root(
+    root: &Path,
+    embedding_provider: QualityEmbeddingProvider,
+) -> Result<FusedQualityReport, QualityError> {
+    let corpus = GoldenCorpus::load_from_root_with_embedding(root, embedding_provider).await?;
+    let cases = GoldenCorpus::load_queries_from_root(root)?;
+
+    let mut fused_acc = SeamAccumulator::default();
+    let mut abstentions = Vec::new();
+    let mut abstention_count = 0usize;
+
+    for case in &cases {
+        let fused_ranked = corpus.rank_via_fused_search(&case.query).await?;
+        if case.is_abstention() {
+            abstention_count += 1;
+            abstentions.push(abstention_outcome(case, "fused_search", &fused_ranked));
+        } else {
+            fused_acc.add_case(case, &fused_ranked);
+        }
+    }
+
+    let active_embedding = corpus
+        .substrate
+        .active_embedding_triple()
+        .map_err(|e| QualityError::Substrate(format!("active_embedding_triple after fused report: {e:?}")))?;
+
+    Ok(FusedQualityReport {
+        schema: 1,
+        ranking_lane: "fused_search: Substrate::query_hybrid_chunks + memoryd::recall::fuse_rrf".to_string(),
+        embedding_provider: embedding_provider.as_str().to_string(),
+        active_embedding,
+        total_cases: cases.len(),
+        abstention_cases: abstention_count,
+        metrics: fused_acc.finish(),
+        abstentions,
+    })
 }
 
 /// Per-case outcome detail emitted alongside the aggregate report — what each
@@ -830,6 +1042,32 @@ mod tests {
         }
     }
 
+    struct FusedFixtureProbe {
+        active_triple: EmbeddingTriple,
+        vector_count: usize,
+        ranked_ids: Vec<String>,
+    }
+
+    async fn fused_fixture_probe() -> Result<FusedFixtureProbe, QualityError> {
+        let corpus = GoldenCorpus::load().await?;
+        let active_triple = corpus
+            .substrate
+            .active_embedding_triple()
+            .map_err(|e| QualityError::Substrate(format!("test active triple: {e:?}")))?;
+        let vector_count = corpus
+            .substrate
+            .vector_count(active_triple.clone())
+            .await
+            .map_err(|e| QualityError::Substrate(format!("test vector_count: {e:?}")))?;
+        let query = GoldenCorpus::load_queries()?
+            .into_iter()
+            .find(|case| !case.is_abstention())
+            .expect("golden corpus has a scored query")
+            .query;
+        let ranked_ids = corpus.rank_via_fused_search(&query).await?;
+        Ok(FusedFixtureProbe { active_triple, vector_count, ranked_ids })
+    }
+
     fn quality_report(seams: &[(&str, SeamMetrics)], abstentions: Vec<AbstentionOutcome>) -> QualityReport {
         QualityReport {
             schema: 1,
@@ -913,6 +1151,18 @@ mod tests {
         acc.add_case(&c, &ids(&["a"]));
         let m = acc.finish();
         assert!((m.precision_at_k["3"] - 1.0 / 3.0).abs() < 1e-9, "precision@3 {}", m.precision_at_k["3"]);
+    }
+
+    #[test]
+    fn fixture_vector_population_uses_active_triple_and_is_deterministic() {
+        let first = crate::block_on(fused_fixture_probe()).expect("first fused fixture probe");
+        let second = crate::block_on(fused_fixture_probe()).expect("second fused fixture probe");
+
+        assert_eq!(first.active_triple, second.active_triple, "scratch loads should use the same active triple");
+        assert!(first.vector_count > 0, "active triple vector table should be populated");
+        assert!(second.vector_count > 0, "active triple vector table should be populated on rerun");
+        assert!(!first.ranked_ids.is_empty(), "fused search should return candidates");
+        assert_eq!(first.ranked_ids, second.ranked_ids, "fixture-backed fused ordering must be deterministic");
     }
 
     #[test]
