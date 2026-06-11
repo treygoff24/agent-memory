@@ -16,6 +16,10 @@ use memory_substrate::{
 use memory_test_support::perf::{corpus_sha256, synthetic_vector};
 use serde_json::json;
 
+const BENCH_EMBEDDING_PROVIDER: &str = "synthetic";
+const BENCH_EMBEDDING_MODEL_REF: &str = "stream-a-test";
+const BENCH_EMBEDDING_DIMENSION: u32 = 32;
+
 #[tokio::main]
 async fn main() {
     if let Err(err) = run().await {
@@ -219,8 +223,12 @@ fn write_report(args: &BenchArgs, metrics: &Metrics, corpus_hash: &str, output: 
         "seed": format!("0x{:x}", args.seed),
         // B-RT-4: corpus_sha256 + active_triple required by spec §17.6.
         "corpus_sha256": corpus_hash,
-        "vector_dimension": 32,
-        "active_triple": { "provider": "synthetic", "model_ref": "stream-a-test", "dimension": 32 },
+        "vector_dimension": BENCH_EMBEDDING_DIMENSION,
+        "active_triple": {
+            "provider": BENCH_EMBEDDING_PROVIDER,
+            "model_ref": BENCH_EMBEDDING_MODEL_REF,
+            "dimension": BENCH_EMBEDDING_DIMENSION
+        },
         "corpus_variants": [
             "long_bodies", "large_bodies", "aliases", "entity_aliases", "regressions",
             "prospective", "tombstones", "encrypted_metadata_only"
@@ -254,17 +262,14 @@ impl Fixture {
         // Use tempfile::TempDir to avoid PID races (R-RT-3).
         let root = tempfile::tempdir().map_err(|e| e.to_string())?;
         let roots = Roots::new(root.path().join("repo"), root.path().join("runtime"));
+        let triple = bench_embedding_triple();
+        write_bench_config(&roots)?;
         let substrate = Substrate::init(
             roots.clone(),
             InitOptions { force_unsafe_durability: true, device_id: Some("dev_bench".into()) },
         )
         .await
         .map_err(|e| e.to_string())?;
-        let triple = EmbeddingTriple {
-            provider: "synthetic".to_string(),
-            model_ref: "stream-a-test".to_string(),
-            dimension: 32,
-        };
 
         for index in 0..corpus {
             let memory = sample_memory(index, seed);
@@ -301,6 +306,25 @@ impl Fixture {
         std::mem::forget(root);
         Ok(Self { roots, substrate, triple, corpus_size: corpus })
     }
+}
+
+fn bench_embedding_triple() -> EmbeddingTriple {
+    EmbeddingTriple {
+        provider: BENCH_EMBEDDING_PROVIDER.to_string(),
+        model_ref: BENCH_EMBEDDING_MODEL_REF.to_string(),
+        dimension: BENCH_EMBEDDING_DIMENSION,
+    }
+}
+
+fn write_bench_config(roots: &Roots) -> Result<(), String> {
+    std::fs::create_dir_all(&roots.repo).map_err(|e| e.to_string())?;
+    std::fs::write(
+        roots.repo.join("config.yaml"),
+        format!(
+            "schema_version: 1\nactive_embedding:\n  provider: {BENCH_EMBEDDING_PROVIDER}\n  model_ref: {BENCH_EMBEDDING_MODEL_REF}\n  dimension: {BENCH_EMBEDDING_DIMENSION}\n",
+        ),
+    )
+    .map_err(|e| e.to_string())
 }
 
 fn sample_memory(index: usize, seed: u64) -> Memory {
