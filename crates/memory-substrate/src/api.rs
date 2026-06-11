@@ -1376,6 +1376,26 @@ impl Substrate {
         Ok(index.query_chunks(&text)?)
     }
 
+    /// Query recall-eligible chunks through BM25 and, optionally, a structurally
+    /// complete vector lane, collapsed to one candidate per memory.
+    ///
+    /// `limit` applies independently to each lane before the union is returned.
+    /// This method does **not** fuse or RRF-rank candidates; memoryd owns fusion.
+    /// A supplied vector lane always carries the exact embedding triple, and a
+    /// missing/dropped vector table returns [`VectorError::UnknownEmbeddingTriple`]
+    /// rather than silently falling back to BM25-only results.
+    pub async fn query_hybrid_chunks(
+        &self,
+        text: &str,
+        vector_query: Option<HybridVectorQuery<'_>>,
+        limit: usize,
+    ) -> Result<Vec<HybridMemoryCandidate>, VectorError> {
+        self.index
+            .lock()
+            .map_err(|err| VectorError::IndexUnavailable(format!("index mutex poisoned: {err}")))?
+            .query_hybrid_chunks(text, vector_query, limit)
+    }
+
     /// KNN over a triple's vector table, collapsed to one row per active,
     /// in-scope memory.
     ///

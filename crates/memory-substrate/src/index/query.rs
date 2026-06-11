@@ -14,9 +14,10 @@ use crate::events::{Event, EventKind};
 use crate::index::chunking::chunk_memory;
 use crate::markdown::hash_bytes;
 use crate::model::{
-    AuxScope, ChunkResult, EmbeddingTriple, EmbeddingUpdate, Entity, EventsLogMirrorHealth, Memory, MemoryId,
-    MemoryQuery, MemoryStatus, QueryResult, RecallIndexQuery, RecallIndexRow, RepoPath, ReviewQueuePage,
-    ReviewQueueRow, Scope, Sensitivity, Sha256, SourceKind,
+    AuxScope, ChunkResult, EmbeddingTriple, EmbeddingUpdate, Entity, EventsLogMirrorHealth, HybridMemoryCandidate,
+    HybridScoreBreakdown, HybridVectorQuery, Memory, MemoryId, MemoryQuery, MemoryStatus, QueryResult,
+    RecallIndexQuery, RecallIndexRow, RepoPath, ReviewQueuePage, ReviewQueueRow, Scope, Sensitivity, Sha256,
+    SourceKind,
 };
 
 use super::{bucketed_in_clause_width, pad_in_clause_bindings, sql_placeholders};
@@ -423,6 +424,164 @@ impl Index {
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(Into::into);
         rows
+    }
+
+    /// Query recall-eligible chunks through BM25 and, optionally, a vector KNN
+    /// lane, collapsed to one candidate per memory.
+    ///
+    /// This surface deliberately stops before fusion: it returns lane-local
+    /// BM25 rank and vector cosine evidence so memoryd can perform RRF later.
+    /// `limit` is lane-local because applying one final limit here would itself
+    /// require a fusion policy.
+    pub fn query_hybrid_chunks(
+        &self,
+        text: &str,
+        vector_query: Option<HybridVectorQuery<'_>>,
+        limit: usize,
+    ) -> Result<Vec<HybridMemoryCandidate>, VectorError> {
+        let bm25_hits = self.query_hybrid_bm25_memories(text, limit)?;
+        let vector_hits = if let Some(query) = vector_query {
+            self.query_hybrid_vector_memories(query.triple, query.vector, limit)?
+        } else {
+            Vec::new()
+        };
+
+        let mut candidates: BTreeMap<String, HybridMemoryCandidate> = BTreeMap::new();
+        for hit in bm25_hits {
+            candidates.insert(
+                hit.memory_id.clone(),
+                HybridMemoryCandidate {
+                    memory_id: MemoryId::new(hit.memory_id),
+                    score_breakdown: HybridScoreBreakdown { bm25_rank: Some(hit.rank), cosine_similarity: None },
+                },
+            );
+        }
+
+        for hit in vector_hits {
+            candidates
+                .entry(hit.memory_id.clone())
+                .and_modify(|candidate| {
+                    candidate.score_breakdown.cosine_similarity = Some(hit.cosine_similarity);
+                })
+                .or_insert_with(|| HybridMemoryCandidate {
+                    memory_id: MemoryId::new(hit.memory_id),
+                    score_breakdown: HybridScoreBreakdown {
+                        bm25_rank: None,
+                        cosine_similarity: Some(hit.cosine_similarity),
+                    },
+                });
+        }
+
+        let mut out: Vec<_> = candidates.into_values().collect();
+        out.sort_by(compare_hybrid_candidates);
+        Ok(out)
+    }
+
+    fn query_hybrid_bm25_memories(&self, text: &str, limit: usize) -> Result<Vec<Bm25MemoryRank>, VectorError> {
+        let sanitized = sanitize_fts_query(text);
+        if sanitized.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut stmt = self.connection.prepare_cached(
+            "SELECT memory_chunks.memory_id, bm25(memory_chunks_fts) AS score
+             FROM memory_chunks_fts
+             JOIN memory_chunks ON memory_chunks_fts.rowid = memory_chunks.chunk_rowid
+             JOIN memories      ON memories.id = memory_chunks.memory_id
+             WHERE memory_chunks_fts MATCH ?1
+               AND memories.metadata_only = 0
+               AND memories.passive_recall = 1
+               AND memories.status IN ('active', 'pinned')
+             ORDER BY score, memory_chunks.memory_id",
+        )?;
+        let rows = stmt
+            .query_map([sanitized.as_str()], |row| Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let mut best_by_memory = BTreeMap::new();
+        for (memory_id, score) in rows {
+            best_by_memory
+                .entry(memory_id)
+                .and_modify(|best_score| {
+                    if score < *best_score {
+                        *best_score = score;
+                    }
+                })
+                .or_insert(score);
+        }
+
+        let mut collapsed: Vec<_> = best_by_memory.into_iter().collect();
+        collapsed.sort_by(|(left_id, left_score), (right_id, right_score)| {
+            left_score.total_cmp(right_score).then_with(|| left_id.cmp(right_id))
+        });
+        collapsed.truncate(limit);
+
+        Ok(collapsed
+            .into_iter()
+            .enumerate()
+            .map(|(idx, (memory_id, _score))| Bm25MemoryRank { memory_id, rank: idx + 1 })
+            .collect())
+    }
+
+    fn query_hybrid_vector_memories(
+        &self,
+        triple: &EmbeddingTriple,
+        vector: &[f32],
+        limit: usize,
+    ) -> Result<Vec<VectorMemoryScore>, VectorError> {
+        crate::index::sqlite_vec::validate_dimension(triple, vector)?;
+        let table = crate::index::sqlite_vec::vector_table_name(triple);
+        if is_dropped_triple(&self.connection, triple)? || !table_exists(&self.connection, &table)? {
+            return Err(VectorError::UnknownEmbeddingTriple(triple.clone()));
+        }
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        const CHUNK_FANOUT: usize = 8;
+        let knn_k = limit.saturating_mul(CHUNK_FANOUT).clamp(limit, 512);
+        let sql = format!(
+            "SELECT memory_chunks.memory_id, {table}.distance
+             FROM {table}
+             JOIN memory_chunks ON memory_chunks.chunk_rowid = {table}.rowid
+             JOIN memories      ON memories.id = memory_chunks.memory_id
+             WHERE embedding MATCH ?1
+               AND k = ?2
+               AND memories.metadata_only = 0
+               AND memories.passive_recall = 1
+               AND memories.status IN ('active', 'pinned')
+             ORDER BY {table}.distance, memory_chunks.memory_id"
+        );
+        let blob = crate::index::sqlite_vec::serialize_f32(vector);
+        let mut stmt = self.connection.prepare_cached(&sql)?;
+        let rows = stmt
+            .query_map(params![blob, knn_k as i64], |row| Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let mut best_by_memory = BTreeMap::new();
+        for (memory_id, distance) in rows {
+            best_by_memory
+                .entry(memory_id)
+                .and_modify(|best_distance| {
+                    if distance < *best_distance {
+                        *best_distance = distance;
+                    }
+                })
+                .or_insert(distance);
+        }
+
+        let mut collapsed: Vec<_> = best_by_memory.into_iter().collect();
+        collapsed.sort_by(|(left_id, left_distance), (right_id, right_distance)| {
+            left_distance.total_cmp(right_distance).then_with(|| left_id.cmp(right_id))
+        });
+        collapsed.truncate(limit);
+
+        Ok(collapsed
+            .into_iter()
+            .map(|(memory_id, distance)| VectorMemoryScore {
+                memory_id,
+                cosine_similarity: cosine_from_l2_distance(distance),
+            })
+            .collect())
     }
 
     /// KNN over the active embedding triple's vector table, collapsed to one row
@@ -1834,6 +1993,42 @@ fn memory_type_str(t: &crate::model::MemoryType) -> &'static str {
         crate::model::MemoryType::Invariant => "invariant",
         crate::model::MemoryType::Decision => "decision",
         crate::model::MemoryType::OpenQuestion => "open-question",
+    }
+}
+
+struct Bm25MemoryRank {
+    memory_id: String,
+    rank: usize,
+}
+
+struct VectorMemoryScore {
+    memory_id: String,
+    cosine_similarity: f32,
+}
+
+fn compare_hybrid_candidates(left: &HybridMemoryCandidate, right: &HybridMemoryCandidate) -> std::cmp::Ordering {
+    compare_optional_rank(left.score_breakdown.bm25_rank, right.score_breakdown.bm25_rank)
+        .then_with(|| {
+            compare_optional_similarity(left.score_breakdown.cosine_similarity, right.score_breakdown.cosine_similarity)
+        })
+        .then_with(|| left.memory_id.as_str().cmp(right.memory_id.as_str()))
+}
+
+fn compare_optional_rank(left: Option<usize>, right: Option<usize>) -> std::cmp::Ordering {
+    match (left, right) {
+        (Some(left), Some(right)) => left.cmp(&right),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
+}
+
+fn compare_optional_similarity(left: Option<f32>, right: Option<f32>) -> std::cmp::Ordering {
+    match (left, right) {
+        (Some(left), Some(right)) => right.total_cmp(&left),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
     }
 }
 

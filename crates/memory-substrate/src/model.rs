@@ -1408,6 +1408,42 @@ pub struct ChunkResult {
     pub score: f64,
 }
 
+/// Structurally valid vector half of a hybrid recall query.
+///
+/// `triple` and `vector` travel together so callers cannot supply a vector
+/// without the exact embedding triple identity. The absence of this struct means
+/// "BM25-only"; its presence means "BM25 plus this exact vector lane".
+#[derive(Clone, Copy, Debug)]
+pub struct HybridVectorQuery<'a> {
+    /// Embedding triple identity for the vector table.
+    pub triple: &'a EmbeddingTriple,
+    /// Query vector for sqlite-vec KNN.
+    pub vector: &'a [f32],
+}
+
+/// Per-lane explainability/rank inputs for a hybrid recall candidate.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct HybridScoreBreakdown {
+    /// One-based memory rank from the BM25 lane after chunk→memory collapse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bm25_rank: Option<usize>,
+    /// Cosine similarity from the vector lane after chunk→memory collapse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cosine_similarity: Option<f32>,
+}
+
+/// Per-memory hybrid recall candidate.
+///
+/// This is intentionally not a fused score. Memoryd owns RRF/fusion; the
+/// substrate only returns the lane-local evidence needed to fuse later.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct HybridMemoryCandidate {
+    /// Memory id.
+    pub memory_id: MemoryId,
+    /// Lane-local rank/similarity evidence.
+    pub score_breakdown: HybridScoreBreakdown,
+}
+
 /// A single active-memory neighbour returned by a governance KNN similarity
 /// query ([`crate::Substrate::knn_active_memories`]).
 ///
