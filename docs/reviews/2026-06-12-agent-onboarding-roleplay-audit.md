@@ -246,6 +246,50 @@ The fix wave surfaced two NEW findings:
   daemon already resolves the project for `memory_startup`; writes should use the same
   binding). This explains finding 11's directory symptom at the deepest level.
 
+### 17. `memoryd uninstall` first dogfood: three defects in one run
+
+- **MAJOR (open):** ran the new `uninstall --non-interactive --json --purge` against a
+  live install. (a) `stop_daemon` failed — daemons launched via `memoryd mcp
+  --auto-start` write no pid file, so the pid-file SIGTERM path can't find them; needs a
+  socket-holder fallback (shutdown RPC, or lsof/fuser on the socket). (b) Despite the
+  failed stop, `purge_data` **proceeded and deleted repo+runtime out from under the
+  running daemon**, leaving an orphaned process whose socket "verified gone" only
+  because the directory was deleted — purge must be gated on the daemon actually being
+  stopped. (c) The run exited **0 with a failed step**, violating the init-mirrored
+  contract (non-zero when any step fails). Everything else (print-only preview, scoped
+  unwire of the stale project-scope entry, purge, leftover-binary report) behaved
+  exactly as specced.
+
+### 18. Symlinked memory dirs are invisible to import discovery (fixed in-run)
+
+- **MAJOR (fixed in-run):** Claude discovery walked with `follow_links(false)`, so any
+  project whose `<encoded>/memory/` is a symlink contributes zero candidates, silently.
+  This is the normal state on shared-profile machines — C-Mux's `~/.claude-shared`
+  migration symlinked the memory dirs mid-day, and detection dropped from the project's
+  real corpus to whatever wasn't yet migrated. After flipping to `follow_links(true)`
+  (+ regression test), detection went from 3 candidates to **228**. The morning runs'
+  "4 candidates" were already partially suppressed. Lesson for the eval harness: assert
+  candidate counts against a known fixture corpus, not just "import succeeded".
+
+### 19. Bulk import at real scale: repair-supersede corrupts the chunk index
+
+- **BLOCKER (open, substrate — Codex's stream):** the 228-candidate import wrote 202
+  memories (privacy refusals firing correctly along the way), then aborted
+  deterministically on a RepairBucket supersede with `write failed: index failed after
+  commit (retryable=true)`. After that, `memoryd doctor` reports `operator repair
+  required: UNIQUE constraint failed: memory_chunks.chunk_id` and `doctor --reindex`
+  fails replaying the events log with the same constraint — committed duplicate chunk
+  events survive replay, so the index cannot be rebuilt. Recall returns zero hits on
+  the corrupted store. Matches the supersession-FK/bulk-reindex issue in
+  `docs/2026-06-10-for-substrate-owner-supersession-fk-bulk-reindex.md`; live repro
+  preserved in `~/memorum` and peer note left at
+  `docs/2026-06-12-for-codex-import-repair-supersede-index-corruption.md`.
+- **Nit:** lane D's PartialExecute message ("aborted ... after N memories had already
+  been written") worked exactly as designed — keep it.
+- **Nit:** git-remote projects bucket under raw canonical-id directories
+  (`projects/proj_ffe3aa…/`); friendly aliases (repo basename) would make the repo
+  browsable. Policy projects with a `.memory-project.yaml` alias got readable dirs.
+
 ### 16. Non-init socket commands resolve a different default runtime
 
 - **Friction (open):** `memoryd search/get/mcp/...` default their socket via

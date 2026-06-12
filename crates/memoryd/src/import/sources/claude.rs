@@ -50,7 +50,11 @@ pub fn parse(root: &Path) -> ImportResult<ClaudeParseOutput> {
         return Ok(ClaudeParseOutput::default());
     }
     let mut output = ClaudeParseOutput::default();
-    for entry in walkdir::WalkDir::new(root).follow_links(false) {
+    // follow_links(true): shared-profile setups symlink `<encoded>/memory/` to a
+    // common store (observed live: C-Mux's ~/.claude-shared migration). walkdir
+    // detects symlink cycles and reports them as entry errors, which we already
+    // collect per-file below.
+    for entry in walkdir::WalkDir::new(root).follow_links(true) {
         let entry = match entry {
             Ok(value) => value,
             Err(error) => {
@@ -481,6 +485,25 @@ Promote to prod.\n";
         let segments: Vec<&str> = encoded.trim_start_matches('-').split('-').collect();
         let resolved = resolve_existing_path(Path::new("/"), &segments).expect("resolves");
         assert_eq!(resolved, real);
+    }
+
+    /// Shared-profile setups (e.g. C-Mux's ~/.claude-shared migration) replace
+    /// `<encoded>/memory/` with a symlink to a common store; discovery must
+    /// follow it or the whole project's memories silently vanish.
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_memory_dir_is_followed() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let shared = tmp.path().join("shared-store");
+        std::fs::create_dir_all(&shared).expect("mkdir shared");
+        std::fs::write(shared.join("fact.md"), b"---\nname: Fact\n---\nbody\n").expect("write");
+        let root = tmp.path().join("projects");
+        let project = root.join("-Users-u-x");
+        std::fs::create_dir_all(&project).expect("mkdir project");
+        std::os::unix::fs::symlink(&shared, project.join("memory")).expect("symlink");
+
+        let out = run(&root);
+        assert_eq!(out.candidates.len(), 1, "memories behind a symlinked memory dir are discovered");
     }
 
     #[test]
