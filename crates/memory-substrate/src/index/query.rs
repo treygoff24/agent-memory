@@ -490,9 +490,7 @@ impl Index {
 
         let relaxed = sanitize_relaxed_fts_query(text);
         if collapsed.len() < limit && !relaxed.is_empty() && relaxed != sanitized {
-            let relaxed_row_limit = limit.saturating_mul(8).min(256).max(limit);
-            let relaxed_hits =
-                collapse_bm25_memory_hits(self.query_hybrid_bm25_chunks(&relaxed, Some(relaxed_row_limit))?);
+            let relaxed_hits = self.query_hybrid_bm25_chunks_memory_collapsed(&relaxed, limit)?;
             let mut seen = collapsed.iter().map(|hit| hit.memory_id.clone()).collect::<BTreeSet<_>>();
             for hit in relaxed_hits {
                 if collapsed.len() >= limit {
@@ -550,6 +548,39 @@ impl Index {
         let mut stmt = self.connection.prepare_cached(SQL)?;
         let rows = stmt
             .query_map([fts_query], bm25_chunk_hit_from_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into);
+        rows
+    }
+
+    fn query_hybrid_bm25_chunks_memory_collapsed(
+        &self,
+        fts_query: &str,
+        memory_limit: usize,
+    ) -> Result<Vec<Bm25ChunkHit>, VectorError> {
+        const SQL: &str =
+            "SELECT memory_id, text, chunk_rowid, score FROM (
+               SELECT memory_id, text, chunk_rowid, score,
+                      ROW_NUMBER() OVER (PARTITION BY memory_id ORDER BY score, chunk_rowid) AS rn
+               FROM (
+                 SELECT memory_chunks.memory_id, memory_chunks.text, memory_chunks.chunk_rowid,
+                        bm25(memory_chunks_fts) AS score
+                 FROM memory_chunks_fts
+                 JOIN memory_chunks ON memory_chunks_fts.rowid = memory_chunks.chunk_rowid
+                 JOIN memories      ON memories.id = memory_chunks.memory_id
+                 WHERE memory_chunks_fts MATCH ?1
+                   AND memories.metadata_only = 0
+                   AND memories.passive_recall = 1
+                   AND memories.status IN ('active', 'pinned')
+               )
+             )
+             WHERE rn = 1
+             ORDER BY score, memory_id
+             LIMIT ?2";
+
+        let mut stmt = self.connection.prepare_cached(SQL)?;
+        let rows = stmt
+            .query_map(params![fts_query, memory_limit as i64], bm25_chunk_hit_from_row)?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(Into::into);
         rows
@@ -2380,7 +2411,14 @@ fn is_low_signal_query_term(term: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{relaxed_fts_token, sanitize_fts_query, sanitize_relaxed_fts_query};
+    use chrono::Utc;
+
+    use super::{relaxed_fts_token, sanitize_fts_query, sanitize_relaxed_fts_query, Index};
+    use crate::index::{chunk_memory, open_index};
+    use crate::model::{
+        Author, AuthorKind, Frontmatter, Memory, MemoryId, MemoryStatus, MemoryType, RepoPath, RetrievalPolicy,
+        Scope, Sensitivity, Source, SourceKind, TrustLevel, WritePolicy,
+    };
 
     #[test]
     fn sanitize_plain_word_wraps_as_single_phrase() {
@@ -2463,5 +2501,126 @@ mod tests {
             sanitize_relaxed_fts_query("what is the PR for v2 B-7"),
             "\"PR\" OR \"v2\" OR \"B-7\""
         );
+    }
+
+    #[test]
+    fn relaxed_bm25_fallback_limits_distinct_memories_not_chunks() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let mut index = Index::new(open_index(&temp.path().join("index.sqlite"))?);
+
+        let mut multi_chunk = sample_memory("mem_20260612_a1b2c3d4e5f60718_010100");
+        multi_chunk.body = (0..15_000)
+            .map(|index| format!("relaxedanchor token{index}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let multi_chunks = chunk_memory(&multi_chunk);
+        assert!(
+            multi_chunks.len() > 32,
+            "fixture must exceed the old chunk-row cap for limit=4, got {}",
+            multi_chunks.len()
+        );
+
+        let satellite_terms = ["bravoextra", "charlieextra", "deltaextra", "echoextra", "foxtrotextra"];
+        let satellite_ids = [
+            "mem_20260612_a1b2c3d4e5f60718_010101",
+            "mem_20260612_a1b2c3d4e5f60718_010102",
+            "mem_20260612_a1b2c3d4e5f60718_010103",
+            "mem_20260612_a1b2c3d4e5f60718_010104",
+            "mem_20260612_a1b2c3d4e5f60718_010105",
+        ];
+        let mut satellites = Vec::new();
+        for (id, term) in satellite_ids.into_iter().zip(satellite_terms) {
+            let mut memory = sample_memory(id);
+            memory.body = format!("relaxedanchor {term} satellite body");
+            satellites.push(memory);
+        }
+
+        index.upsert_memory(&multi_chunk, false)?;
+        for memory in &satellites {
+            index.upsert_memory(memory, false)?;
+        }
+
+        let limit = 4;
+        let hits = index.query_hybrid_bm25_memories(
+            "relaxedanchor bravoextra charlieextra deltaextra echoextra foxtrotextra golfextra",
+            limit,
+        )?;
+
+        assert_eq!(hits.len(), limit, "relaxed fallback should fill the lane with distinct memories");
+        let memory_ids: Vec<_> = hits.iter().map(|hit| hit.memory_id.as_str()).collect();
+        assert_eq!(
+            memory_ids.iter().collect::<std::collections::BTreeSet<_>>().len(),
+            limit,
+            "each hit must be a distinct memory, not duplicate chunks from one memory"
+        );
+        Ok(())
+    }
+
+    fn sample_memory(id: &str) -> Memory {
+        let now = Utc::now();
+        Memory {
+            frontmatter: Frontmatter {
+                schema_version: 1,
+                id: MemoryId::new(id),
+                memory_type: MemoryType::Pattern,
+                scope: Scope::Agent,
+                summary: "bm25 relaxed fallback".to_string(),
+                confidence: 1.0,
+                original_confidence: None,
+                trust_level: TrustLevel::Trusted,
+                sensitivity: Sensitivity::Internal,
+                status: MemoryStatus::Active,
+                created_at: now,
+                updated_at: now,
+                observed_at: None,
+                author: Author {
+                    kind: AuthorKind::System,
+                    user_handle: None,
+                    harness: None,
+                    harness_version: None,
+                    session_id: None,
+                    subagent_id: None,
+                    phase: None,
+                    component: Some("test".to_string()),
+                },
+                namespace: None,
+                canonical_namespace_id: None,
+                tags: Vec::new(),
+                entities: Vec::new(),
+                aliases: Vec::new(),
+                source: Source {
+                    kind: SourceKind::Import,
+                    reference: None,
+                    harness: None,
+                    harness_version: None,
+                    session_id: None,
+                    subagent_id: None,
+                    device: None,
+                },
+                evidence: Vec::new(),
+                requires_user_confirmation: false,
+                review_state: None,
+                supersedes: Vec::new(),
+                superseded_by: Vec::new(),
+                related: Vec::new(),
+                tombstone_events: Vec::new(),
+                retrieval_policy: RetrievalPolicy {
+                    passive_recall: true,
+                    max_scope: Scope::Agent,
+                    mask_personal_for_synthesis: false,
+                    index_body: true,
+                    index_embeddings: true,
+                },
+                write_policy: WritePolicy {
+                    human_review_required: false,
+                    policy_applied: "default-v1".to_string(),
+                    expected_base_hash: None,
+                },
+                merge_diagnostics: None,
+                extras: std::collections::BTreeMap::new(),
+            },
+            body: "bm25 relaxed fallback body".to_string(),
+            path: Some(RepoPath::new(format!("agent/patterns/{id}.md"))),
+        }
     }
 }
