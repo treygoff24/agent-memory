@@ -4,7 +4,7 @@
 //! below.  Column lists, value bindings, and index names are kept in the same
 //! vertical region as the statement that uses them so readers don't scroll.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Utc};
 use rusqlite::{named_params, params, params_from_iter, Connection, Transaction};
@@ -484,7 +484,39 @@ impl Index {
         if sanitized.is_empty() || limit == 0 {
             return Ok(Vec::new());
         }
-        let mut stmt = self.connection.prepare_cached(
+
+        let mut collapsed = collapse_bm25_memory_hits(self.query_hybrid_bm25_chunks(&sanitized, None)?);
+        collapsed.truncate(limit);
+
+        let relaxed = sanitize_relaxed_fts_query(text);
+        if collapsed.len() < limit && !relaxed.is_empty() && relaxed != sanitized {
+            let relaxed_row_limit = limit.saturating_mul(8).min(256).max(limit);
+            let relaxed_hits =
+                collapse_bm25_memory_hits(self.query_hybrid_bm25_chunks(&relaxed, Some(relaxed_row_limit))?);
+            let mut seen = collapsed.iter().map(|hit| hit.memory_id.clone()).collect::<BTreeSet<_>>();
+            for hit in relaxed_hits {
+                if collapsed.len() >= limit {
+                    break;
+                }
+                if seen.insert(hit.memory_id.clone()) {
+                    collapsed.push(hit);
+                }
+            }
+        }
+
+        Ok(collapsed
+            .into_iter()
+            .enumerate()
+            .map(|(idx, hit)| Bm25MemoryRank { memory_id: hit.memory_id, text: hit.text, rank: idx + 1 })
+            .collect())
+    }
+
+    fn query_hybrid_bm25_chunks(
+        &self,
+        fts_query: &str,
+        row_limit: Option<usize>,
+    ) -> Result<Vec<Bm25ChunkHit>, VectorError> {
+        const SQL: &str =
             "SELECT memory_chunks.memory_id, memory_chunks.text, memory_chunks.chunk_rowid, bm25(memory_chunks_fts) AS score
              FROM memory_chunks_fts
              JOIN memory_chunks ON memory_chunks_fts.rowid = memory_chunks.chunk_rowid
@@ -493,41 +525,34 @@ impl Index {
                AND memories.metadata_only = 0
                AND memories.passive_recall = 1
                AND memories.status IN ('active', 'pinned')
-             ORDER BY score, memory_chunks.memory_id, memory_chunks.chunk_rowid",
-        )?;
-        let rows = stmt
-            .query_map([sanitized.as_str()], |row| {
-                Ok(Bm25ChunkHit {
-                    memory_id: row.get(0)?,
-                    text: row.get(1)?,
-                    chunk_rowid: row.get(2)?,
-                    score: row.get(3)?,
-                })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+             ORDER BY score, memory_chunks.memory_id, memory_chunks.chunk_rowid";
+        const SQL_LIMITED: &str =
+            "SELECT memory_chunks.memory_id, memory_chunks.text, memory_chunks.chunk_rowid, bm25(memory_chunks_fts) AS score
+             FROM memory_chunks_fts
+             JOIN memory_chunks ON memory_chunks_fts.rowid = memory_chunks.chunk_rowid
+             JOIN memories      ON memories.id = memory_chunks.memory_id
+             WHERE memory_chunks_fts MATCH ?1
+               AND memories.metadata_only = 0
+               AND memories.passive_recall = 1
+               AND memories.status IN ('active', 'pinned')
+             ORDER BY score, memory_chunks.memory_id, memory_chunks.chunk_rowid
+             LIMIT ?2";
 
-        let mut best_by_memory = BTreeMap::new();
-        for hit in rows {
-            let memory_id = hit.memory_id.clone();
-            match best_by_memory.get(&memory_id) {
-                Some(best) if !bm25_chunk_precedes(&hit, best) => {}
-                _ => {
-                    best_by_memory.insert(memory_id, hit);
-                }
-            }
+        if let Some(row_limit) = row_limit {
+            let mut stmt = self.connection.prepare_cached(SQL_LIMITED)?;
+            let rows = stmt
+                .query_map(params![fts_query, row_limit as i64], bm25_chunk_hit_from_row)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(Into::into);
+            return rows;
         }
 
-        let mut collapsed: Vec<_> = best_by_memory.into_values().collect();
-        collapsed.sort_by(|left, right| {
-            left.score.total_cmp(&right.score).then_with(|| left.memory_id.cmp(&right.memory_id))
-        });
-        collapsed.truncate(limit);
-
-        Ok(collapsed
-            .into_iter()
-            .enumerate()
-            .map(|(idx, hit)| Bm25MemoryRank { memory_id: hit.memory_id, text: hit.text, rank: idx + 1 })
-            .collect())
+        let mut stmt = self.connection.prepare_cached(SQL)?;
+        let rows = stmt
+            .query_map([fts_query], bm25_chunk_hit_from_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into);
+        rows
     }
 
     fn query_hybrid_vector_memories(
@@ -2037,6 +2062,28 @@ struct VectorMemoryScore {
     cosine_similarity: f32,
 }
 
+fn bm25_chunk_hit_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Bm25ChunkHit> {
+    Ok(Bm25ChunkHit { memory_id: row.get(0)?, text: row.get(1)?, chunk_rowid: row.get(2)?, score: row.get(3)? })
+}
+
+fn collapse_bm25_memory_hits(rows: Vec<Bm25ChunkHit>) -> Vec<Bm25ChunkHit> {
+    let mut best_by_memory = BTreeMap::new();
+    for hit in rows {
+        let memory_id = hit.memory_id.clone();
+        match best_by_memory.get(&memory_id) {
+            Some(best) if !bm25_chunk_precedes(&hit, best) => {}
+            _ => {
+                best_by_memory.insert(memory_id, hit);
+            }
+        }
+    }
+
+    let mut collapsed: Vec<_> = best_by_memory.into_values().collect();
+    collapsed
+        .sort_by(|left, right| left.score.total_cmp(&right.score).then_with(|| left.memory_id.cmp(&right.memory_id)));
+    collapsed
+}
+
 fn bm25_chunk_precedes(left: &Bm25ChunkHit, right: &Bm25ChunkHit) -> bool {
     left.score.total_cmp(&right.score).then_with(|| left.chunk_rowid.cmp(&right.chunk_rowid)).is_lt()
 }
@@ -2223,9 +2270,76 @@ fn sanitize_fts_query(input: &str) -> String {
         .join(" ")
 }
 
+const RELAXED_FTS_MAX_TERMS: usize = 8;
+
+/// Build a bounded OR query for the hybrid BM25 lane's fallback pass.
+///
+/// The primary BM25 pass remains strict (`term term term`, implicit AND). This
+/// relaxed expression only fills unused lane slots, so exact all-term matches
+/// keep better BM25 ranks while memories sharing distinctive query anchors can
+/// still corroborate the vector lane.
+fn sanitize_relaxed_fts_query(input: &str) -> String {
+    input
+        .split_whitespace()
+        .filter_map(relaxed_fts_token)
+        .take(RELAXED_FTS_MAX_TERMS)
+        .map(|token| format!("\"{}\"", token.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" OR ")
+}
+
+fn relaxed_fts_token(token: &str) -> Option<&str> {
+    let trimmed = token.trim_matches(|character: char| !character.is_alphanumeric());
+    if trimmed.chars().filter(|character| character.is_alphanumeric()).count() < 4 {
+        return None;
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    if is_low_signal_query_term(&lower) {
+        return None;
+    }
+
+    Some(trimmed)
+}
+
+fn is_low_signal_query_term(term: &str) -> bool {
+    matches!(
+        term,
+        "about"
+            | "after"
+            | "again"
+            | "also"
+            | "before"
+            | "being"
+            | "could"
+            | "does"
+            | "doing"
+            | "from"
+            | "have"
+            | "into"
+            | "memory"
+            | "memories"
+            | "should"
+            | "that"
+            | "their"
+            | "there"
+            | "these"
+            | "this"
+            | "those"
+            | "user"
+            | "what"
+            | "when"
+            | "where"
+            | "which"
+            | "with"
+            | "would"
+            | "your"
+    )
+}
+
 #[cfg(test)]
 mod tests {
-    use super::sanitize_fts_query;
+    use super::{sanitize_fts_query, sanitize_relaxed_fts_query};
 
     #[test]
     fn sanitize_plain_word_wraps_as_single_phrase() {
@@ -2267,5 +2381,21 @@ mod tests {
         // `NOT to` is operator syntax in FTS5; after sanitization it becomes
         // two phrase matches, both required, neither one a NOT.
         assert_eq!(sanitize_fts_query("foo NOT bar"), "\"foo\" \"NOT\" \"bar\"");
+    }
+
+    #[test]
+    fn relaxed_sanitize_ors_distinctive_terms_for_fallback() {
+        assert_eq!(
+            sanitize_relaxed_fts_query("what language preference should the user use"),
+            "\"language\" OR \"preference\""
+        );
+    }
+
+    #[test]
+    fn relaxed_sanitize_bounds_terms_and_keeps_fts_escaping() {
+        assert_eq!(
+            sanitize_relaxed_fts_query("alpha beta gamma delta epsilon zeta eta theta iota kappa say\"hi"),
+            "\"alpha\" OR \"beta\" OR \"gamma\" OR \"delta\" OR \"epsilon\" OR \"zeta\" OR \"theta\" OR \"iota\""
+        );
     }
 }
