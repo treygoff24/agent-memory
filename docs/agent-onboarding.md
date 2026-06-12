@@ -59,6 +59,8 @@ Ask: "Should I wire MCP for the harness you are using now (`current`), for Claud
 
 Map their answer to `--wire-mcp current|claude|codex|all|none`.
 
+`current` resolves from the active harness session environment first, then falls back to the single detected harness if exactly one harness is detected. If multiple harnesses are detected and the session environment is ambiguous, setup fails loudly instead of skipping MCP wiring. When you already know the intended target, prefer passing explicit `claude`, `codex`, or `all`.
+
 ### Decision 2: which harness memory to import
 
 Explain: If they have existing memory files in Claude Code or Codex CLI, Memorum can import them so nothing is lost. This is non-destructive — source files are never modified.
@@ -66,6 +68,8 @@ Explain: If they have existing memory files in Claude Code or Codex CLI, Memorum
 Ask: "Should I import memory from the harness you are using now (`current`), from Claude Code (`claude`), from Codex CLI (`codex`), from all detected harnesses (`all`), or skip import (`none`)?"
 
 Map their answer to `--harness current|claude|codex|all|none`. If they want import, also add `--import`.
+
+`current` uses the same resolution order as MCP wiring: active harness session environment, then exactly-one-detected fallback, then a loud failure if still ambiguous. If you know which memory source the user wants, prefer explicit `claude`, `codex`, or `all`.
 
 ### Decision 3: how to handle memories whose project folder is not a git checkout
 
@@ -274,6 +278,11 @@ These are every flag accepted by `memoryd init`. Do not cite flags outside this 
 --harness <current|claude|codex|all|none>
     Harness set to import. Omitted: prompted by the wizard on a TTY;
     defaults to current on the non-interactive path.
+    current resolves from the harness session environment first
+    (Claude Code: CLAUDECODE or CLAUDE_CODE_ENTRYPOINT; Codex CLI:
+    CODEX_HOME), then falls back to the single detected harness. If neither
+    tier is unambiguous, init fails with guidance instead of silently skipping.
+    Prefer explicit claude, codex, or all when you already know the target.
 
 --non-git-cwd-default <skip|me|generate>
     Default placement for imported memories whose cwd is not a git checkout.
@@ -283,6 +292,9 @@ These are every flag accepted by `memoryd init`. Do not cite flags outside this 
 --wire-mcp <current|claude|codex|all|none>
     MCP configs to wire. Omitted: prompted by the wizard on a TTY; defaults
     to current on the non-interactive path.
+    current uses the same environment-first, exactly-one-detected fallback as
+    --harness current and fails loudly if still ambiguous. Prefer explicit
+    claude, codex, or all when you already know the target.
 
 --daemon <on-demand|background|launchd|none>
     Daemon arrangement to provision during setup. Omitted: prompted by the

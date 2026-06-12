@@ -1,5 +1,6 @@
 //! Executable setup-engine steps.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -202,11 +203,14 @@ async fn run_import_step<R: SetupStepRuntime>(
         return ImportStepOutcome::without_report(StepCompletion::skipped(SetupStep::Import, "memory import disabled"));
     }
 
-    let SelectedImport::Run { filter, label } = selected_import(plan) else {
-        return ImportStepOutcome::without_report(StepCompletion::skipped(
-            SetupStep::Import,
-            "no import harness selected; pass an explicit harness to import memories",
-        ));
+    let (filter, label) = match selected_import(plan) {
+        SelectedImport::Run { filter, label } => (filter, label),
+        SelectedImport::Skip(message) => {
+            return ImportStepOutcome::without_report(StepCompletion::skipped(SetupStep::Import, message));
+        }
+        SelectedImport::Failed(message) => {
+            return ImportStepOutcome::without_report(StepCompletion::failed(SetupStep::Import, message));
+        }
     };
 
     let mut prompts = prompt_backend(plan.decisions.non_git_cwd_default);
@@ -233,11 +237,14 @@ async fn run_import_step<R: SetupStepRuntime>(
 }
 
 fn wire_mcp_step<R: SetupStepRuntime>(engine: &SetupEngine, plan: &SetupPlan, runtime: &mut R) -> WireStepOutcome {
-    let SelectedWireTargets::Run(targets) = selected_wire_targets(plan) else {
-        return WireStepOutcome::without_restart(StepCompletion::skipped(
-            SetupStep::WireMcp,
-            "no MCP harness selected; pass an explicit harness to wire configs",
-        ));
+    let targets = match selected_wire_targets(plan) {
+        SelectedWireTargets::Run(targets) => targets,
+        SelectedWireTargets::Skip(message) => {
+            return WireStepOutcome::without_restart(StepCompletion::skipped(SetupStep::WireMcp, message));
+        }
+        SelectedWireTargets::Failed(message) => {
+            return WireStepOutcome::without_restart(StepCompletion::failed(SetupStep::WireMcp, message));
+        }
     };
 
     let spec = match mcp_server_spec(engine, plan) {
@@ -458,8 +465,15 @@ fn install_launchd(request: DaemonStepRequest<'_>) -> Result<String, String> {
 }
 
 fn selected_import(plan: &SetupPlan) -> SelectedImport {
+    selected_import_with_env(plan, |name| std::env::var_os(name))
+}
+
+fn selected_import_with_env<F>(plan: &SetupPlan, env: F) -> SelectedImport
+where
+    F: FnMut(&str) -> Option<OsString>,
+{
     match plan.decisions.harnesses {
-        HarnessSelection::None => SelectedImport::Skip,
+        HarnessSelection::None => SelectedImport::Skip("--harness none was chosen; memory import skipped".to_string()),
         HarnessSelection::All => SelectedImport::Run { filter: None, label: "all harnesses".to_string() },
         HarnessSelection::Claude => {
             SelectedImport::Run { filter: Some(HarnessFilter::Claude), label: "Claude Code".to_string() }
@@ -467,29 +481,105 @@ fn selected_import(plan: &SetupPlan) -> SelectedImport {
         HarnessSelection::Codex => {
             SelectedImport::Run { filter: Some(HarnessFilter::Codex), label: "Codex".to_string() }
         }
-        HarnessSelection::Current => match detected_harnesses(plan).as_slice() {
-            [HarnessTarget::Claude] => SelectedImport::Run {
-                filter: Some(HarnessFilter::Claude),
-                label: "current harness (Claude Code)".to_string(),
-            },
-            [HarnessTarget::Codex] => {
-                SelectedImport::Run { filter: Some(HarnessFilter::Codex), label: "current harness (Codex)".to_string() }
+        HarnessSelection::Current => {
+            match resolve_current_harness(plan, env, "--harness", "--harness claude|codex|all") {
+                Ok(HarnessTarget::Claude) => SelectedImport::Run {
+                    filter: Some(HarnessFilter::Claude),
+                    label: "current harness (Claude Code)".to_string(),
+                },
+                Ok(HarnessTarget::Codex) => SelectedImport::Run {
+                    filter: Some(HarnessFilter::Codex),
+                    label: "current harness (Codex)".to_string(),
+                },
+                Err(message) => SelectedImport::Failed(message),
             }
-            _ => SelectedImport::Skip,
-        },
+        }
     }
 }
 
 fn selected_wire_targets(plan: &SetupPlan) -> SelectedWireTargets {
+    selected_wire_targets_with_env(plan, |name| std::env::var_os(name))
+}
+
+fn selected_wire_targets_with_env<F>(plan: &SetupPlan, env: F) -> SelectedWireTargets
+where
+    F: FnMut(&str) -> Option<OsString>,
+{
     match plan.decisions.wire_mcp {
-        WireMcpSelection::None => SelectedWireTargets::Skip,
+        WireMcpSelection::None => {
+            SelectedWireTargets::Skip("--wire-mcp none was chosen; MCP wiring skipped".to_string())
+        }
         WireMcpSelection::Claude => SelectedWireTargets::Run(vec![HarnessTarget::Claude]),
         WireMcpSelection::Codex => SelectedWireTargets::Run(vec![HarnessTarget::Codex]),
         WireMcpSelection::All => SelectedWireTargets::Run(vec![HarnessTarget::Claude, HarnessTarget::Codex]),
-        WireMcpSelection::Current => match detected_harnesses(plan).as_slice() {
-            [target] => SelectedWireTargets::Run(vec![*target]),
-            _ => SelectedWireTargets::Skip,
-        },
+        WireMcpSelection::Current => {
+            match resolve_current_harness(plan, env, "--wire-mcp", "--wire-mcp claude|codex|all") {
+                Ok(target) => SelectedWireTargets::Run(vec![target]),
+                Err(message) => SelectedWireTargets::Failed(message),
+            }
+        }
+    }
+}
+
+fn resolve_current_harness<F>(
+    plan: &SetupPlan,
+    mut env: F,
+    flag: &'static str,
+    rerun_hint: &'static str,
+) -> Result<HarnessTarget, String>
+where
+    F: FnMut(&str) -> Option<OsString>,
+{
+    if let Some(target) = current_harness_from_env(&mut env) {
+        return Ok(target);
+    }
+
+    let detected = detected_harnesses(plan);
+    match detected.as_slice() {
+        [target] => Ok(*target),
+        _ => Err(current_harness_resolution_error(flag, rerun_hint, &detected)),
+    }
+}
+
+fn current_harness_from_env<F>(mut env: F) -> Option<HarnessTarget>
+where
+    F: FnMut(&str) -> Option<OsString>,
+{
+    let claude = env_var_is_set(&mut env, "CLAUDECODE") || env_var_is_set(&mut env, "CLAUDE_CODE_ENTRYPOINT");
+    let codex = env_var_is_set(&mut env, "CODEX_HOME");
+
+    match (claude, codex) {
+        (true, false) => Some(HarnessTarget::Claude),
+        (false, true) => Some(HarnessTarget::Codex),
+        _ => None,
+    }
+}
+
+fn env_var_is_set<F>(env: &mut F, name: &str) -> bool
+where
+    F: FnMut(&str) -> Option<OsString>,
+{
+    env(name).is_some_and(|value| !value.is_empty())
+}
+
+fn current_harness_resolution_error(flag: &str, rerun_hint: &str, detected: &[HarnessTarget]) -> String {
+    let env_message = "no unambiguous harness session detected in the environment";
+    if detected.is_empty() {
+        return format!(
+            "{flag} current could not be resolved: no harnesses detected and {env_message}; re-run with {rerun_hint}"
+        );
+    }
+
+    format!(
+        "{flag} current is ambiguous: multiple harnesses detected ({}) and {env_message}; re-run with {rerun_hint}",
+        detected.iter().map(|target| harness_target_name(*target)).collect::<Vec<_>>().join(", ")
+    )
+}
+
+fn harness_target_name(target: HarnessTarget) -> &'static str {
+    match target {
+        HarnessTarget::Claude => "claude",
+        HarnessTarget::Codex => "codex",
     }
 }
 
@@ -658,12 +748,14 @@ impl StepCompletion {
 }
 
 enum SelectedImport {
-    Skip,
+    Skip(String),
+    Failed(String),
     Run { filter: Option<HarnessFilter>, label: String },
 }
 
 enum SelectedWireTargets {
-    Skip,
+    Skip(String),
+    Failed(String),
     Run(Vec<HarnessTarget>),
 }
 
@@ -689,6 +781,7 @@ impl VerificationSignal {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::ffi::OsString;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use memory_substrate::{Roots, Substrate};
@@ -701,7 +794,9 @@ mod tests {
     use crate::import::report::ImportReport;
     use crate::protocol::{DoctorResponse, StatusResponse};
     use crate::server::{serve_substrate_with, ServerOptions};
-    use crate::setup::{FlagDrivenIo, SetupDecisions, SetupDetectionOptions};
+    use crate::setup::{
+        DaemonDetection, FlagDrivenIo, SetupDecisions, SetupDetection, SetupDetectionOptions, SetupSocketState,
+    };
 
     #[tokio::test]
     async fn ensure_repo_initializes_real_substrate_idempotently() {
@@ -917,6 +1012,81 @@ mod tests {
         assert_eq!(runtime.import_calls, 1);
         assert_eq!(runtime.last_import_dry_run, Some(true));
         assert_step(&report, SetupStep::Import, SetupStepStatus::Succeeded);
+    }
+
+    #[test]
+    fn current_selection_prefers_claude_session_env_over_dual_detection() {
+        let plan = selection_plan(HarnessSelection::Current, WireMcpSelection::Current, true, true);
+
+        match selected_import_with_env(&plan, fake_env(&[("CLAUDECODE", "1")])) {
+            SelectedImport::Run { filter, label } => {
+                assert_eq!(filter, Some(HarnessFilter::Claude));
+                assert_eq!(label, "current harness (Claude Code)");
+            }
+            other => panic!("expected Claude import selection, got {}", selected_import_debug(&other)),
+        }
+
+        match selected_wire_targets_with_env(&plan, fake_env(&[("CLAUDE_CODE_ENTRYPOINT", "cli")])) {
+            SelectedWireTargets::Run(targets) => assert_eq!(targets, vec![HarnessTarget::Claude]),
+            other => panic!("expected Claude wire target, got {}", selected_wire_debug(&other)),
+        }
+    }
+
+    #[test]
+    fn current_selection_prefers_codex_session_env_over_dual_detection() {
+        let plan = selection_plan(HarnessSelection::Current, WireMcpSelection::Current, true, true);
+
+        match selected_import_with_env(&plan, fake_env(&[("CODEX_HOME", "/tmp/codex")])) {
+            SelectedImport::Run { filter, label } => {
+                assert_eq!(filter, Some(HarnessFilter::Codex));
+                assert_eq!(label, "current harness (Codex)");
+            }
+            other => panic!("expected Codex import selection, got {}", selected_import_debug(&other)),
+        }
+
+        match selected_wire_targets_with_env(&plan, fake_env(&[("CODEX_HOME", "/tmp/codex")])) {
+            SelectedWireTargets::Run(targets) => assert_eq!(targets, vec![HarnessTarget::Codex]),
+            other => panic!("expected Codex wire target, got {}", selected_wire_debug(&other)),
+        }
+    }
+
+    #[test]
+    fn current_selection_falls_back_to_single_detected_harness_when_env_absent() {
+        let plan = selection_plan(HarnessSelection::Current, WireMcpSelection::Current, false, true);
+
+        match selected_import_with_env(&plan, fake_env(&[])) {
+            SelectedImport::Run { filter, label } => {
+                assert_eq!(filter, Some(HarnessFilter::Codex));
+                assert_eq!(label, "current harness (Codex)");
+            }
+            other => panic!("expected Codex import fallback, got {}", selected_import_debug(&other)),
+        }
+
+        match selected_wire_targets_with_env(&plan, fake_env(&[])) {
+            SelectedWireTargets::Run(targets) => assert_eq!(targets, vec![HarnessTarget::Codex]),
+            other => panic!("expected Codex wire fallback, got {}", selected_wire_debug(&other)),
+        }
+    }
+
+    #[test]
+    fn current_selection_fails_loudly_when_dual_detected_and_env_absent() {
+        let plan = selection_plan(HarnessSelection::Current, WireMcpSelection::Current, true, true);
+
+        match selected_import_with_env(&plan, fake_env(&[])) {
+            SelectedImport::Failed(message) => assert_eq!(
+                message,
+                "--harness current is ambiguous: multiple harnesses detected (claude, codex) and no unambiguous harness session detected in the environment; re-run with --harness claude|codex|all"
+            ),
+            other => panic!("expected ambiguous import failure, got {}", selected_import_debug(&other)),
+        }
+
+        match selected_wire_targets_with_env(&plan, fake_env(&[])) {
+            SelectedWireTargets::Failed(message) => assert_eq!(
+                message,
+                "--wire-mcp current is ambiguous: multiple harnesses detected (claude, codex) and no unambiguous harness session detected in the environment; re-run with --wire-mcp claude|codex|all"
+            ),
+            other => panic!("expected ambiguous wire failure, got {}", selected_wire_debug(&other)),
+        }
     }
 
     #[test]
@@ -1140,6 +1310,54 @@ mod tests {
 
     fn assert_step_present(report: &SetupReport, step: SetupStep) {
         assert!(report.steps.iter().any(|entry| entry.step == step), "missing {step:?} step");
+    }
+
+    fn selection_plan(
+        harnesses: HarnessSelection,
+        wire_mcp: WireMcpSelection,
+        claude_detected: bool,
+        codex_detected: bool,
+    ) -> SetupPlan {
+        SetupPlan {
+            detection: SetupDetection {
+                claude: harness_detection("claude", claude_detected),
+                codex: harness_detection("codex", codex_detected),
+                daemon: DaemonDetection {
+                    socket_path: PathBuf::from("/tmp/memorum-test.sock"),
+                    socket_state: SetupSocketState::Absent,
+                },
+            },
+            decisions: SetupDecisions { harnesses, wire_mcp, ..Default::default() },
+        }
+    }
+
+    fn harness_detection(name: &str, detected: bool) -> HarnessDetection {
+        HarnessDetection {
+            root: detected.then(|| PathBuf::from(format!("/tmp/{name}"))),
+            source: None,
+            candidates: 0,
+            parse_errors: 0,
+        }
+    }
+
+    fn fake_env<'a>(vars: &'a [(&'a str, &'a str)]) -> impl FnMut(&str) -> Option<OsString> + 'a {
+        move |name| vars.iter().find_map(|(key, value)| (*key == name).then(|| OsString::from(*value)))
+    }
+
+    fn selected_import_debug(selection: &SelectedImport) -> String {
+        match selection {
+            SelectedImport::Skip(message) => format!("Skip({message})"),
+            SelectedImport::Failed(message) => format!("Failed({message})"),
+            SelectedImport::Run { filter, label } => format!("Run({filter:?}, {label})"),
+        }
+    }
+
+    fn selected_wire_debug(selection: &SelectedWireTargets) -> String {
+        match selection {
+            SelectedWireTargets::Skip(message) => format!("Skip({message})"),
+            SelectedWireTargets::Failed(message) => format!("Failed({message})"),
+            SelectedWireTargets::Run(targets) => format!("Run({targets:?})"),
+        }
     }
 
     fn has_arg_pair(args: &[String], flag: &str, value: &str) -> bool {

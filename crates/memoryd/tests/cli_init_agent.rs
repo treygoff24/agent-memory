@@ -149,6 +149,53 @@ fn non_interactive_without_import_skips_and_stays_json() {
     assert!(report.import_report.is_none(), "no import means no import section");
 }
 
+/// `current` is the documented agent default. On machines where both harnesses
+/// are installed but the process environment does not identify the active
+/// harness session, setup must fail loudly instead of silently skipping import
+/// and MCP wiring.
+#[test]
+#[serial]
+fn current_import_and_wire_fail_loudly_when_dual_detected_without_session_env() {
+    let env = TestEnv::new();
+    env.seed_default_codex_root();
+    let repo = env.temp.path().join("repo");
+
+    let output = env.run_init_without_current_session_env([
+        "init",
+        "--non-interactive",
+        "--json",
+        "--import",
+        "--harness",
+        "current",
+        "--non-git-cwd-default",
+        "me",
+        "--wire-mcp",
+        "current",
+        "--daemon",
+        "none",
+        "--print-only",
+        "--repo",
+        path_arg(&repo),
+        "--runtime",
+        path_arg(&repo.join(".memoryd")),
+    ]);
+
+    assert_eq!(output.status.code(), Some(1), "ambiguous current must be fatal\nstderr:\n{}", stderr(&output));
+    let report: SetupReport = parse_stdout(&output);
+    assert_step(&report, SetupStep::Import, SetupStepStatus::Failed);
+    assert_step(&report, SetupStep::WireMcp, SetupStepStatus::Failed);
+    assert_step_message(
+        &report,
+        SetupStep::Import,
+        "--harness current is ambiguous: multiple harnesses detected (claude, codex) and no unambiguous harness session detected in the environment; re-run with --harness claude|codex|all",
+    );
+    assert_step_message(
+        &report,
+        SetupStep::WireMcp,
+        "--wire-mcp current is ambiguous: multiple harnesses detected (claude, codex) and no unambiguous harness session detected in the environment; re-run with --wire-mcp claude|codex|all",
+    );
+}
+
 /// A fatal non-`Verify` step must fail the process (exit code 1) while stdout
 /// still carries the full, parseable `SetupReport`. This locks in the agent
 /// frontend's core failure-signaling contract.
@@ -257,6 +304,12 @@ impl TestEnv {
         .expect("write codex MEMORY.md");
     }
 
+    /// Create the default Codex root under HOME so detection sees Codex without
+    /// relying on `CODEX_HOME` (which also identifies the current Codex session).
+    fn seed_default_codex_root(&self) {
+        std::fs::create_dir_all(self.home.join(".codex").join("memories")).expect("default codex root");
+    }
+
     /// Run the `memoryd` binary with the harness roots pinned to the fixture
     /// environment so discovery never touches the developer's real `~/.codex`
     /// or `~/.claude`.
@@ -266,6 +319,22 @@ impl TestEnv {
             .env("HOME", &self.home)
             .env("CLAUDE_CONFIG_DIR", &self.claude_config)
             .env("CODEX_HOME", &self.codex_home)
+            .env_remove("MEMORUM_REPO")
+            .output()
+            .expect("run memoryd")
+    }
+
+    /// Run with both harnesses discoverable but without any current-session
+    /// env var. This prevents the test process's own Codex/Claude environment
+    /// from leaking into `memoryd init`.
+    fn run_init_without_current_session_env<const N: usize>(&self, args: [&str; N]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_memoryd"))
+            .args(args)
+            .env("HOME", &self.home)
+            .env("CLAUDE_CONFIG_DIR", &self.claude_config)
+            .env_remove("CODEX_HOME")
+            .env_remove("CLAUDECODE")
+            .env_remove("CLAUDE_CODE_ENTRYPOINT")
             .env_remove("MEMORUM_REPO")
             .output()
             .expect("run memoryd")
@@ -283,4 +352,13 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> T {
 
 fn canonical_json<T: serde::Serialize>(value: &T) -> String {
     serde_json::to_string(&serde_json::to_value(value).expect("to value")).expect("to string")
+}
+
+fn assert_step_message(report: &SetupReport, step: SetupStep, expected: &str) {
+    let entry = report
+        .steps
+        .iter()
+        .find(|entry| entry.step == step)
+        .unwrap_or_else(|| panic!("setup report missing step {step:?}; steps: {:?}", report.steps));
+    assert_eq!(entry.message.as_deref(), Some(expected));
 }
