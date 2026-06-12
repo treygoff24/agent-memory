@@ -70,14 +70,7 @@ pub async fn run(args: InitArgs) -> anyhow::Result<()> {
 /// Mirrors `scripts/install-memorum.sh`: `--repo` flag → `$MEMORUM_REPO` →
 /// `~/memorum`, with runtime defaulting to `<repo>/.memoryd`.
 pub(crate) fn resolve_repo_runtime(args: &InitArgs) -> (PathBuf, PathBuf) {
-    let default_repo = std::env::var("MEMORUM_REPO")
-        .ok()
-        .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|home| home.join("memorum")))
-        .unwrap_or_else(|| PathBuf::from("./memorum"));
-    let repo = args.repo.clone().unwrap_or(default_repo);
-    let runtime = args.runtime.clone().unwrap_or_else(|| repo.join(".memoryd"));
-    (repo, runtime)
+    crate::cli::paths::resolve_repo_runtime_paths(args.repo.clone(), args.runtime.clone())
 }
 
 #[cfg(test)]

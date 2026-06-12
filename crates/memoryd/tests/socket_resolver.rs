@@ -1,6 +1,7 @@
 use clap::Parser as _;
 use memoryd::cli::{Cli, Command as CliCommand, PeerCommand, ReviewCommand, WebCommand};
 use memoryd::socket::{default_runtime_root, probe_live_socket, resolve_socket_path, SocketProbe};
+use serial_test::serial;
 use std::sync::{Mutex, OnceLock};
 
 static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -72,6 +73,25 @@ fn explicit_socket_override_still_parses() {
 
     let CliCommand::Status(args) = cli.command else { panic!("expected status") };
     assert_eq!(args.socket.as_deref(), Some(std::path::Path::new("/tmp/explicit.sock")));
+}
+
+#[test]
+fn doctor_args_default_repo_and_runtime_to_none_for_init_aligned_resolution() {
+    let cli = Cli::try_parse_from(["memoryd", "doctor"]).expect("doctor parses");
+
+    let CliCommand::Doctor(args) = cli.command else { panic!("expected doctor") };
+    assert!(args.repo.is_none());
+    assert!(args.runtime.is_none());
+}
+
+#[test]
+#[serial]
+fn status_socket_arg_defaults_to_none_for_init_aligned_resolution() {
+    let _guard = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().expect("env lock");
+
+    let cli = Cli::try_parse_from(["memoryd", "status"]).expect("status parses");
+    let CliCommand::Status(args) = cli.command else { panic!("expected status") };
+    assert!(args.socket.is_none());
 }
 
 fn assert_socket_defaults_to_none(cli: Cli) {

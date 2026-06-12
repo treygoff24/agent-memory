@@ -364,12 +364,12 @@ pub struct RootArgs {
 
 #[derive(Debug, Args)]
 pub struct DoctorArgs {
-    /// Canonical memory repository root.
-    #[arg(long, default_value = ".")]
-    pub repo: PathBuf,
-    /// Local per-device runtime root.
-    #[arg(long, default_value = ".memoryd")]
-    pub runtime: PathBuf,
+    /// Canonical memory repository root (default `$MEMORUM_REPO` or `~/memorum`).
+    #[arg(long)]
+    pub repo: Option<PathBuf>,
+    /// Local per-device runtime directory (default `<repo>/.memoryd`).
+    #[arg(long)]
+    pub runtime: Option<PathBuf>,
     /// Rebuild the derived SQLite event-log mirror from canonical JSONL events before reporting health.
     #[arg(long)]
     pub reindex: bool,

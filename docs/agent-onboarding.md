@@ -220,6 +220,8 @@ memoryd doctor
 memoryd status
 ```
 
+Bare invocations use the same default paths as `memoryd init`: repo `$MEMORUM_REPO` or `~/memorum`, runtime `<repo>/.memoryd`, and status socket `<repo>/.memoryd/memoryd.sock`. You do not need path flags unless the user chose non-default locations during setup.
+
 If the user has non-default paths, add the path flags:
 
 ```bash
@@ -227,11 +229,9 @@ memoryd doctor --repo <PATH> --runtime <PATH>
 memoryd status --socket <PATH>
 ```
 
-**Interpreting doctor output:** Doctor reports substrate health. `healthy` means nothing is broken. `events_log_mirror_lag` means the derived SQLite mirror is behind; run the reindex command it prints. Any other failure is a real problem — report the output to the user and stop.
+**Interpreting doctor output:** Doctor prints a pretty-printed JSON response envelope to stdout (for example `{"id":"cli-doctor","result":{"success":{"doctor":{...}}}}`). Inside `result.success.doctor`, `healthy: true` means nothing is broken. `events_log_mirror_lag` means the derived SQLite mirror is behind; run the reindex command it prints. Any other failure is a real problem — report the output to the user and stop. Doctor exits `1` when `healthy` is false. There is no `--json` flag; stdout is always this envelope.
 
-**Interpreting status output:** Status queries the running daemon over its socket. A successful response means the daemon is reachable. If status fails and the daemon mode was `none`, that is expected. If status fails with any other daemon mode, the daemon did not start correctly — check `ensure_daemon` step message in the report.
-
-Neither `doctor` nor `status` has a JSON output mode; their output is human-readable text.
+**Interpreting status output:** Status queries the running daemon over its socket and prints a pretty-printed JSON response envelope to stdout (same `id` / `result` shape as other daemon RPCs). A successful `result.success` payload means the daemon is reachable. If status fails and the daemon mode was `none`, that is expected. If status fails with any other daemon mode, the daemon did not start correctly — check `ensure_daemon` step message in the report. There is no `--json` flag; stdout is always this envelope.
 
 ---
 
@@ -298,11 +298,13 @@ These are every flag accepted by `memoryd init`. Do not cite flags outside this 
 ```
 memoryd doctor [--repo <PATH>] [--runtime <PATH>] [--reindex]
     Check local substrate and daemon configuration.
-    Note: doctor has no json output flag; output is human-readable text.
+    Defaults match init: --repo $MEMORUM_REPO or ~/memorum; --runtime <repo>/.memoryd.
+    Prints a pretty-printed JSON response envelope to stdout (no --json flag).
 
 memoryd status [--socket <PATH>]
     Query daemon health.
-    Note: status has no json output flag; output is human-readable text.
+    Default socket: <resolved repo>/.memoryd/memoryd.sock (repo resolved like init).
+    Prints a pretty-printed JSON response envelope to stdout (no --json flag).
 
 memoryd serve [--repo <PATH>] [--runtime <PATH>] [--socket <PATH>] [--init]
     Run the local daemon directly (for manual or custom arrangements).
