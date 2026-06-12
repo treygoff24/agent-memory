@@ -165,8 +165,6 @@ async fn execute(args: &UninstallArgs, repo: &Path, runtime: &Path, _confirmed: 
     report
 }
 
-// --- detection ---------------------------------------------------------------
-
 #[derive(Debug, Clone, Serialize)]
 struct Detection {
     repo: PathBuf,
@@ -279,8 +277,6 @@ fn repo_is_memorum_shaped(repo: &Path) -> bool {
     repo.join(".memorum").exists() || repo.join("config.yaml").exists()
 }
 
-// --- step: detect ------------------------------------------------------------
-
 fn detect_step(detection: &Detection) -> StepReport {
     let mut notes = vec![format!("repo {}", detection.repo.display()), format!("socket {:?}", detection.socket_state)];
     if detection.pid_file_present {
@@ -301,8 +297,6 @@ fn detect_step(detection: &Detection) -> StepReport {
     }
     StepReport::new(UninstallStep::Detect, SetupStepStatus::Succeeded).with_message(notes.join("; "))
 }
-
-// --- step: stop_daemon -------------------------------------------------------
 
 async fn stop_daemon_step(runtime: &Path, socket: &Path, print_only: bool) -> StepReport {
     let pid_file = pid_file_path(runtime);
@@ -422,8 +416,6 @@ unsafe extern "C" {
     fn posix_kill(pid: i32, sig: i32) -> i32;
 }
 
-// --- step: remove_launchd ----------------------------------------------------
-
 fn remove_launchd_step(detection: &Detection, print_only: bool) -> StepReport {
     if !cfg!(target_os = "macos") {
         return StepReport::new(UninstallStep::RemoveLaunchd, SetupStepStatus::Skipped)
@@ -480,8 +472,6 @@ unsafe extern "C" {
     #[link_name = "getuid"]
     fn posix_getuid() -> u32;
 }
-
-// --- step: unwire_mcp --------------------------------------------------------
 
 fn unwire_mcp_steps(args: &UninstallArgs, detection: &Detection) -> Vec<StepReport> {
     let mut steps = Vec::new();
@@ -546,8 +536,6 @@ fn unwire_one(step: UninstallStep, config: &HarnessConfigDetection, print_only: 
     }
 }
 
-// --- step: purge_data --------------------------------------------------------
-
 fn purge_data_step(args: &UninstallArgs, detection: &Detection, stop_status: SetupStepStatus) -> StepReport {
     let repo = &detection.repo;
     let runtime = &detection.runtime;
@@ -610,8 +598,6 @@ fn dirs_to_purge(repo: &Path, runtime: &Path) -> Vec<PathBuf> {
         vec![repo.to_path_buf(), runtime.to_path_buf()]
     }
 }
-
-// --- step: verify ------------------------------------------------------------
 
 fn verify_step(socket: &Path, detection: &Detection, purged: bool, print_only: bool) -> StepReport {
     if print_only {
@@ -682,8 +668,6 @@ fn leftover_binaries() -> Vec<String> {
 fn cargo_uninstall_oneliner(packages: &[String]) -> String {
     format!("cargo uninstall {}", packages.join(" "))
 }
-
-// --- report types ------------------------------------------------------------
 
 /// Machine-readable outcome for `memoryd uninstall`. Mirrors the `SetupReport`
 /// shape (`schema_version` + `steps[]`) so an agent can parse both with the same

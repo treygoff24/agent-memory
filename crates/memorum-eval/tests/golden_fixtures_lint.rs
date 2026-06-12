@@ -103,7 +103,7 @@ fn no_secret_sensitivity_on_disk() {
     assert!(offenders.is_empty(), "`secret` sensitivity must never be persisted:\n{}", offenders.join("\n"));
 }
 
-// --- queries.yaml -----------------------------------------------------------
+// Mirrors the on-disk shape of queries.yaml.
 
 #[derive(serde::Deserialize)]
 struct QueryFile {

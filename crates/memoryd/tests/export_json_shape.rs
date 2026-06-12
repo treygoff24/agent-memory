@@ -96,8 +96,6 @@ fn make_metadata_only_memory(id: &str, updated_at_str: &str) -> Memory {
     }
 }
 
-// ---- main test -----------------------------------------------------------
-
 #[tokio::test]
 async fn export_json_shape_validates_v0_1_schema() {
     let temp = tempfile::tempdir().expect("tempdir");

@@ -1470,18 +1470,6 @@ pub struct SimilarMemory {
     pub similarity: f32,
 }
 
-/// Whether a memory's body is indexable in chunk-level search (spec §10.4).
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BodyIndexability {
-    /// Body is fully indexed for FTS and embeddings.
-    Full,
-    /// Only metadata is indexed; body chunks/vectors are absent.
-    MetadataOnly,
-    /// Body indexing is disabled entirely (e.g. `index_body = false`).
-    None,
-}
-
 /// Component scores for a hybrid hit (spec §10.4 / §16.4).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ScoreBreakdown {

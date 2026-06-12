@@ -187,7 +187,7 @@ async fn deferral_is_stable_across_repeated_runs_until_cap() {
     assert_eq!(second.operations.fragments_archived, 0);
 }
 
-// ---- fixture plumbing (mirrors dream_cleanup.rs) ----
+// Fixture plumbing mirrors dream_cleanup.rs.
 
 struct Fixture {
     roots: Roots,

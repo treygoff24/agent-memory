@@ -222,7 +222,7 @@ fn rank_ids(ranked: Vec<memoryd::recall::RankedRecallCandidate>) -> Vec<String> 
     ranked.into_iter().map(|item| item.id).collect()
 }
 
-// --- Memory-dynamics-v0.1 §3 bounded-influence invariant -------------------
+// Memory-dynamics-v0.1 §3 bounded-influence invariant.
 //
 // Structural gap is built from scope (User=25 vs Agent=15 → 10), recency (the
 // follower is deliberately newer), and confidence (floor(conf*10) points). The
