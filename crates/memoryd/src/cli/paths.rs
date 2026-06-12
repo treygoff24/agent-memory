@@ -77,10 +77,7 @@ mod tests {
         let previous = std::env::var_os("MEMORUM_REPO");
         std::env::set_var("MEMORUM_REPO", "/tmp/env-repo");
 
-        assert_eq!(
-            default_status_socket(),
-            PathBuf::from("/tmp/env-repo/.memoryd/memoryd.sock")
-        );
+        assert_eq!(default_status_socket(), PathBuf::from("/tmp/env-repo/.memoryd/memoryd.sock"));
 
         match previous {
             Some(value) => std::env::set_var("MEMORUM_REPO", value),
@@ -92,9 +89,6 @@ mod tests {
     #[serial]
     fn cli_resolve_status_socket_arg_honors_explicit_override() {
         let explicit = PathBuf::from("/tmp/explicit.sock");
-        assert_eq!(
-            resolve_status_socket_arg(&Some(explicit.clone())),
-            explicit
-        );
+        assert_eq!(resolve_status_socket_arg(&Some(explicit.clone())), explicit);
     }
 }

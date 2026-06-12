@@ -258,11 +258,7 @@ fn detected_launchd_plists() -> Vec<PathBuf> {
         return Vec::new();
     };
     let agents = home.join("Library").join("LaunchAgents");
-    LAUNCHD_LABELS
-        .iter()
-        .map(|label| agents.join(format!("{label}.plist")))
-        .filter(|path| path.exists())
-        .collect()
+    LAUNCHD_LABELS.iter().map(|label| agents.join(format!("{label}.plist"))).filter(|path| path.exists()).collect()
 }
 
 fn pid_file_path(runtime: &Path) -> PathBuf {
@@ -506,8 +502,11 @@ fn unwire_one(step: UninstallStep, config: &HarnessConfigDetection, print_only: 
     }
 
     match crate::setup::mcp_wire::write_config_file_safely(&config.path, &outcome.body) {
-        Ok(()) => StepReport::new(step, SetupStepStatus::Succeeded)
-            .with_message(format!("removed {} memorum entry/entries from {}", outcome.removed, config.path.display())),
+        Ok(()) => StepReport::new(step, SetupStepStatus::Succeeded).with_message(format!(
+            "removed {} memorum entry/entries from {}",
+            outcome.removed,
+            config.path.display()
+        )),
         Err(error) => StepReport::new(step, SetupStepStatus::Failed)
             .with_message(format!("failed to write {}: {error}", config.path.display())),
     }
@@ -550,8 +549,11 @@ fn purge_data_step(args: &UninstallArgs, repo: &Path, runtime: &Path, detection:
     }
 
     if errors.is_empty() {
-        StepReport::new(UninstallStep::PurgeData, SetupStepStatus::Succeeded)
-            .with_message(format!("deleted repo {} and runtime {}", repo.display(), runtime.display()))
+        StepReport::new(UninstallStep::PurgeData, SetupStepStatus::Succeeded).with_message(format!(
+            "deleted repo {} and runtime {}",
+            repo.display(),
+            runtime.display()
+        ))
     } else {
         StepReport::new(UninstallStep::PurgeData, SetupStepStatus::Failed).with_message(errors.join("; "))
     }
@@ -575,8 +577,9 @@ fn verify_step(socket: &Path, detection: &Detection, purged: bool, print_only: b
         // A dry-run applied nothing, so the live probes would report the
         // still-present state as residual. Report `expected` rather than failing
         // a preview that deliberately changed nothing.
-        return StepReport::new(UninstallStep::Verify, SetupStepStatus::Expected)
-            .with_message("[dry-run] would confirm socket gone, plists gone, configs clean, and report leftover binaries");
+        return StepReport::new(UninstallStep::Verify, SetupStepStatus::Expected).with_message(
+            "[dry-run] would confirm socket gone, plists gone, configs clean, and report leftover binaries",
+        );
     }
 
     let mut findings = Vec::new();

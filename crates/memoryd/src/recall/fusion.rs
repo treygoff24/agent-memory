@@ -81,9 +81,7 @@ fn apply_recency_prior_and_sort(
     let newest = candidates.iter().filter_map(|candidate| candidate.recency_at).max();
     for candidate in candidates.iter_mut() {
         let recency_norm = match (candidate.recency_at, newest) {
-            (Some(recency_at), Some(newest)) => {
-                recency_norm(recency_at, newest, recency_half_life_days)
-            }
+            (Some(recency_at), Some(newest)) => recency_norm(recency_at, newest, recency_half_life_days),
             _ => 0.0,
         };
         candidate.final_score = candidate.rrf_score + recency_lambda * recency_norm;

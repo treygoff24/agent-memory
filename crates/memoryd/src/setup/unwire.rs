@@ -102,10 +102,7 @@ fn remove_from_servers_object(scope: &mut Map<String, Value>) -> usize {
 /// whose `command` is exactly `memoryd`. A missing entry, or one repointed at a
 /// different binary, is left untouched.
 fn entry_is_memorum(entry: Option<&Value>) -> bool {
-    entry
-        .and_then(Value::as_object)
-        .and_then(|server| server.get("command"))
-        .and_then(Value::as_str)
+    entry.and_then(Value::as_object).and_then(|server| server.get("command")).and_then(Value::as_str)
         == Some(MEMORUM_SERVER_COMMAND)
 }
 

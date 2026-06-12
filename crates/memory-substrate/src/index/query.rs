@@ -572,8 +572,7 @@ impl Index {
         fts_query: &str,
         memory_limit: usize,
     ) -> Result<Vec<Bm25ChunkHit>, VectorError> {
-        const SQL: &str =
-            "SELECT memory_id, text, chunk_rowid, score, updated_at, observed_at FROM (
+        const SQL: &str = "SELECT memory_id, text, chunk_rowid, score, updated_at, observed_at FROM (
                SELECT memory_id, text, chunk_rowid, score, updated_at, observed_at,
                       ROW_NUMBER() OVER (PARTITION BY memory_id ORDER BY score, chunk_rowid) AS rn
                FROM (
@@ -2483,8 +2482,8 @@ mod tests {
     use super::{relaxed_fts_token, sanitize_fts_query, sanitize_relaxed_fts_query, Index};
     use crate::index::{chunk_memory, open_index};
     use crate::model::{
-        Author, AuthorKind, Frontmatter, Memory, MemoryId, MemoryStatus, MemoryType, RepoPath, RetrievalPolicy,
-        Scope, Sensitivity, Source, SourceKind, TrustLevel, WritePolicy,
+        Author, AuthorKind, Frontmatter, Memory, MemoryId, MemoryStatus, MemoryType, RepoPath, RetrievalPolicy, Scope,
+        Sensitivity, Source, SourceKind, TrustLevel, WritePolicy,
     };
 
     #[test]
@@ -2564,10 +2563,7 @@ mod tests {
 
     #[test]
     fn relaxed_sanitize_keeps_identifier_tokens_in_or_fallback() {
-        assert_eq!(
-            sanitize_relaxed_fts_query("what is the PR for v2 B-7"),
-            "\"PR\" OR \"v2\" OR \"B-7\""
-        );
+        assert_eq!(sanitize_relaxed_fts_query("what is the PR for v2 B-7"), "\"PR\" OR \"v2\" OR \"B-7\"");
     }
 
     #[test]
@@ -2576,10 +2572,7 @@ mod tests {
         let mut index = Index::new(open_index(&temp.path().join("index.sqlite"))?);
 
         let mut multi_chunk = sample_memory("mem_20260612_a1b2c3d4e5f60718_010100");
-        multi_chunk.body = (0..15_000)
-            .map(|index| format!("relaxedanchor token{index}"))
-            .collect::<Vec<_>>()
-            .join(" ");
+        multi_chunk.body = (0..15_000).map(|index| format!("relaxedanchor token{index}")).collect::<Vec<_>>().join(" ");
         let multi_chunks = chunk_memory(&multi_chunk);
         assert!(
             multi_chunks.len() > 32,
@@ -2631,8 +2624,7 @@ mod tests {
         let strict_id = "mem_20260612_a1b2c3d4e5f60718_020100";
         let mut strict_match = sample_memory(strict_id);
         strict_match.body =
-            "rankanchor bravoextra charlieextra deltaextra echoextra foxtrotextra golfextra strict body"
-                .to_string();
+            "rankanchor bravoextra charlieextra deltaextra echoextra foxtrotextra golfextra strict body".to_string();
 
         let satellite_terms = ["bravoextra", "charlieextra", "deltaextra", "echoextra", "foxtrotextra"];
         let satellite_ids = [

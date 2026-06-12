@@ -34,10 +34,7 @@ pub async fn run_doctor(args: DoctorArgs) -> anyhow::Result<()> {
     let (repo, runtime) = resolve_repo_runtime_paths(args.repo, args.runtime);
     let substrate = match Substrate::open(Roots::new(repo.clone(), runtime.clone())).await {
         Err(OpenError::NotAMemorumSubstrate { .. }) => {
-            anyhow::bail!(
-                "not a Memorum substrate at {}; run `memoryd init` to create one",
-                repo.display()
-            );
+            anyhow::bail!("not a Memorum substrate at {}; run `memoryd init` to create one", repo.display());
         }
         Err(other) => return Err(other.into()),
         Ok(substrate) => substrate,

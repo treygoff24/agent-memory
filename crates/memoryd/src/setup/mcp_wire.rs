@@ -508,11 +508,7 @@ fn remove_stale_claude_project_scope_memorum(document: &mut Value, spec: &McpSer
 }
 
 fn is_memorum_memoryd_server(entry: &Value) -> bool {
-    entry
-        .as_object()
-        .and_then(|server| server.get("command"))
-        .and_then(Value::as_str)
-        == Some("memoryd")
+    entry.as_object().and_then(|server| server.get("command")).and_then(Value::as_str) == Some("memoryd")
 }
 
 fn claude_status_before_merge(
@@ -719,18 +715,7 @@ mod tests {
     fn claude_mcp_add_args_include_user_scope() {
         assert_eq!(
             claude_mcp_add_args(&memorum_spec()),
-            vec![
-                "mcp",
-                "add",
-                "--scope",
-                "user",
-                "memorum",
-                "--",
-                "memoryd",
-                "mcp",
-                "--socket",
-                "/tmp/memoryd.sock"
-            ]
+            vec!["mcp", "add", "--scope", "user", "memorum", "--", "memoryd", "mcp", "--socket", "/tmp/memoryd.sock"]
         );
     }
 
@@ -823,10 +808,7 @@ mod tests {
             .expect("claude fallback does not hard-fail setup");
 
         assert_eq!(outcome.status, WireStatus::Wired);
-        let config = runtime
-            .files
-            .get(Path::new("/home/tester/.claude.json"))
-            .expect("user-scope config written");
+        let config = runtime.files.get(Path::new("/home/tester/.claude.json")).expect("user-scope config written");
         let parsed: Value = serde_json::from_str(config).expect("valid json");
         assert_eq!(parsed["mcpServers"]["memorum"]["command"], "memoryd");
     }
@@ -842,8 +824,7 @@ mod tests {
         assert!(runtime.files.contains_key(Path::new("/custom/claude/.claude.json")));
         assert!(
             outcome.message.as_deref().is_some_and(|message| {
-                message.contains("Claude: wired (user scope)")
-                    && message.contains("/custom/claude/.claude.json")
+                message.contains("Claude: wired (user scope)") && message.contains("/custom/claude/.claude.json")
             }),
             "unexpected message: {:?}",
             outcome.message

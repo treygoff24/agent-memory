@@ -74,9 +74,8 @@ fn unwire_removes_only_memorum_entries_preserving_others() {
 #[serial]
 fn unwire_leaves_foreign_memorum_entry_untouched() {
     let env = TestEnv::new();
-    let claude_json = env.write_claude_config(
-        r#"{ "mcpServers": { "memorum": { "command": "some-other-bin", "args": [] } } }"#,
-    );
+    let claude_json =
+        env.write_claude_config(r#"{ "mcpServers": { "memorum": { "command": "some-other-bin", "args": [] } } }"#);
     let before = std::fs::read_to_string(&claude_json).expect("read");
 
     let output = env.run(["uninstall", "--non-interactive", "--json", "--harness", "claude"]);
@@ -99,15 +98,8 @@ fn purge_is_refused_without_flag() {
     let repo = env.temp.path().join("repo");
     std::fs::create_dir_all(repo.join(".memorum")).expect("memorum-shaped repo");
 
-    let output = env.run([
-        "uninstall",
-        "--non-interactive",
-        "--json",
-        "--harness",
-        "none",
-        "--repo",
-        repo.to_str().unwrap(),
-    ]);
+    let output =
+        env.run(["uninstall", "--non-interactive", "--json", "--harness", "none", "--repo", repo.to_str().unwrap()]);
     assert_success(&output);
 
     let report: Value = parse(&output);
@@ -192,8 +184,9 @@ impl TestEnv {
 
 fn parse(output: &Output) -> Value {
     let raw = stdout(output);
-    serde_json::from_str(&raw)
-        .unwrap_or_else(|error| panic!("stdout must be pure JSON ({error})\nstdout:\n{raw}\nstderr:\n{}", stderr(output)))
+    serde_json::from_str(&raw).unwrap_or_else(|error| {
+        panic!("stdout must be pure JSON ({error})\nstdout:\n{raw}\nstderr:\n{}", stderr(output))
+    })
 }
 
 fn find_step<'a>(report: &'a Value, name: &str) -> Option<&'a Value> {

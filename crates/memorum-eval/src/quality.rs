@@ -371,12 +371,7 @@ impl GoldenCorpus {
             .await
             .map_err(|e| QualityError::Substrate(format!("query_hybrid_chunks: {e:?}")))?;
 
-        Ok(fuse_rrf(
-            &candidates,
-            config.rrf_k,
-            config.recency_lambda,
-            config.recency_half_life_days,
-        )
+        Ok(fuse_rrf(&candidates, config.rrf_k, config.recency_lambda, config.recency_half_life_days)
             .into_iter()
             .map(|candidate| candidate.memory_id.as_str().to_string())
             .collect())
