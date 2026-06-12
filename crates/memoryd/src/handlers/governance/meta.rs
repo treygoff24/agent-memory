@@ -83,6 +83,7 @@ pub(crate) struct GovernanceMeta {
     evidence: Option<Vec<EvidenceMeta>>,
     supersedes: Option<Vec<String>>,
     canonical_namespace_id: Option<String>,
+    namespace_alias: Option<String>,
     requires_user_confirmation: Option<bool>,
 }
 
@@ -205,6 +206,7 @@ impl Default for GovernanceMeta {
             evidence: None,
             supersedes: None,
             canonical_namespace_id: None,
+            namespace_alias: None,
             requires_user_confirmation: None,
         }
     }
@@ -406,7 +408,8 @@ impl GovernanceWriteInput {
         let related = self.related_for_persist()?;
         let supersedes = self.supersedes_for_persist()?;
         let evidence = self.evidence_for_persist();
-        let canonical_namespace_id = self.meta.canonical_namespace_id.clone().or_else(|| self.substrate_namespace());
+        let namespace = self.substrate_namespace();
+        let canonical_namespace_id = self.meta.canonical_namespace_id.clone().or_else(|| namespace.clone());
         // Importer writes carry already-vetted content from prior harness sessions and
         // should not flood the Reality Check review queue with low-confidence guesses.
         // Caller can suppress the review flag for non-candidate writes; lifecycle still
@@ -430,7 +433,7 @@ impl GovernanceWriteInput {
                 updated_at: now,
                 observed_at: None,
                 author: self.author(),
-                namespace: self.substrate_namespace(),
+                namespace,
                 canonical_namespace_id,
                 tags: self.persisted_tags(privacy.storage_action),
                 entities,
@@ -592,6 +595,17 @@ impl GovernanceWriteInput {
         })
     }
 
+    pub(super) fn is_same_body_bucket_repair(&self, old: &Frontmatter, old_body: &str) -> bool {
+        if self.body != old_body {
+            return false;
+        }
+        let namespace = self.substrate_namespace();
+        let canonical_namespace_id = self.meta.canonical_namespace_id.clone().or_else(|| namespace.clone());
+        old.scope != self.substrate_scope()
+            || old.namespace != namespace
+            || old.canonical_namespace_id != canonical_namespace_id
+    }
+
     fn substrate_scope(&self) -> Scope {
         match self.meta.namespace {
             GovernanceNamespace::Me => Scope::User,
@@ -601,7 +615,19 @@ impl GovernanceWriteInput {
     }
 
     fn substrate_namespace(&self) -> Option<String> {
-        matches!(self.meta.namespace, GovernanceNamespace::Project).then(|| DEFAULT_PROJECT_NAMESPACE.to_string())
+        matches!(self.meta.namespace, GovernanceNamespace::Project).then(|| self.project_namespace_alias())
+    }
+
+    fn project_namespace_alias(&self) -> String {
+        if self.meta.canonical_namespace_id.is_some() {
+            return self
+                .meta
+                .namespace_alias
+                .clone()
+                .or_else(|| self.meta.canonical_namespace_id.clone())
+                .unwrap_or_else(|| DEFAULT_PROJECT_NAMESPACE.to_string());
+        }
+        DEFAULT_PROJECT_NAMESPACE.to_string()
     }
 
     fn governance_sources(&self) -> Vec<GovernanceSource> {
@@ -732,7 +758,8 @@ impl GovernanceWriteInput {
         match self.meta.namespace {
             GovernanceNamespace::Me => RepoPath::new(format!("me/knowledge/{id}.md")),
             GovernanceNamespace::Project => {
-                RepoPath::new(format!("projects/{DEFAULT_PROJECT_NAMESPACE}/decisions/{id}.md"))
+                let namespace = self.project_namespace_alias();
+                RepoPath::new(format!("projects/{namespace}/decisions/{id}.md"))
             }
             GovernanceNamespace::Agent => RepoPath::new(format!("agent/patterns/{id}.md")),
         }
@@ -875,6 +902,7 @@ mod tests {
     fn governance_meta_accepts_importer_provenance_fields_and_round_trips_through_to_memory() {
         let payload = serde_json::json!({
             "namespace": "project",
+            "namespace_alias": "policy",
             "source_kind": "import",
             "source_ref": "/Users/treygoff/.claude/projects/example/memory/topic.md",
             "confidence": 0.7,
@@ -909,7 +937,12 @@ mod tests {
         assert_eq!(memory.frontmatter.aliases, vec!["topic.md".to_string()]);
         assert_eq!(memory.frontmatter.related[0].as_str(), "mem_20260527_a1b2c3d4e5f60718_000010");
         assert_eq!(memory.frontmatter.supersedes[0].as_str(), "mem_20260527_a1b2c3d4e5f60718_000003");
+        assert_eq!(memory.frontmatter.namespace.as_deref(), Some("policy"));
         assert_eq!(memory.frontmatter.canonical_namespace_id.as_deref(), Some("proj_0123456789abcdef"));
+        assert_eq!(
+            memory.path.as_ref().map(|path| path.as_str()),
+            Some("projects/policy/decisions/mem_20260527_a1b2c3d4e5f60718_000042.md")
+        );
 
         // Evidence id is minted as `ev_<ulid>`; quote_norm_hash is `sha256:<hex>` over
         // the whitespace-collapsed quote (so "  shipped\n  fix  " hashes the same as
@@ -953,6 +986,36 @@ mod tests {
         assert_eq!(
             memory.frontmatter.source.reference.as_deref(),
             Some("/Users/treygoff/.claude/projects/x/memory/y.md")
+        );
+    }
+
+    #[test]
+    fn same_body_bucket_repair_detects_changed_project_bucket() {
+        let old = write_input(serde_json::json!({
+            "namespace": "project",
+            "source_kind": "import"
+        }))
+        .to_memory(
+            MemoryId::new("mem_20260527_a1b2c3d4e5f60718_000008"),
+            promoted_lifecycle(),
+            &plaintext_privacy_decision(),
+        )
+        .expect("old memory converts");
+
+        let repair = write_input(serde_json::json!({
+            "namespace": "project",
+            "namespace_alias": "policy",
+            "canonical_namespace_id": "proj_policy-c6698817853503be",
+            "source_kind": "import"
+        }));
+
+        assert!(
+            repair.is_same_body_bucket_repair(&old.frontmatter, "Body text"),
+            "same body with different project namespace/canonical id is an allowed bucket repair"
+        );
+        assert!(
+            !repair.is_same_body_bucket_repair(&old.frontmatter, "Different body"),
+            "changed content must still use normal supersession governance"
         );
     }
 

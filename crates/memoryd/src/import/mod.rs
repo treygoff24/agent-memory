@@ -72,6 +72,17 @@ pub enum ImportError {
     /// Wraps a JSON serialization or deserialization failure.
     #[error("import json error: {0}")]
     Json(#[from] serde_json::Error),
+
+    /// Execution aborted after one or more daemon-mediated writes had already
+    /// committed. Import is intentionally not fully transactional, so the
+    /// operator needs an honest count before rerunning.
+    #[error("import aborted while processing {source_key} after {completed_writes} memories had already been written: {source}")]
+    PartialExecute {
+        source_key: String,
+        completed_writes: usize,
+        #[source]
+        source: Box<ImportError>,
+    },
 }
 
 impl ImportError {

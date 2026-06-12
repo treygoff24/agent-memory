@@ -29,6 +29,11 @@ pub struct ScopeBinding {
     /// Namespace name for the persisted memory. `Some("project")` for project
     /// scope; `Some("me")` for user scope.
     pub namespace: Option<String>,
+    /// Project alias used for frontmatter `namespace` and `projects/<alias>/`
+    /// placement. For YAML-backed projects this is the YAML alias when present;
+    /// generated projects use the same basename alias written to
+    /// `.memory-project.yaml`; git-remote-only projects fall back to canonical id.
+    pub namespace_alias: Option<String>,
     /// `proj_<hex>` canonical namespace id when in project scope; `None`
     /// otherwise.
     pub canonical_namespace_id: Option<String>,
@@ -206,6 +211,7 @@ impl ProjectMapper {
             return Ok(ScopeBinding {
                 scope: Scope::User,
                 namespace: Some("me".to_string()),
+                namespace_alias: None,
                 canonical_namespace_id: None,
                 resolution: ResolutionKind::UserScope,
                 project_yaml: None,
@@ -220,10 +226,13 @@ impl ProjectMapper {
                     ProjectBindingSource::GitRemote => ResolutionKind::GitRemote,
                     ProjectBindingSource::YamlOverride => ResolutionKind::YamlOverride,
                 };
+                let canonical_id = binding.canonical_id;
+                let namespace_alias = binding.alias.unwrap_or_else(|| canonical_id.clone());
                 return Ok(ScopeBinding {
                     scope: Scope::Project,
                     namespace: Some("project".to_string()),
-                    canonical_namespace_id: Some(binding.canonical_id),
+                    namespace_alias: Some(namespace_alias),
+                    canonical_namespace_id: Some(canonical_id),
                     resolution,
                     project_yaml: None,
                 });
@@ -245,11 +254,13 @@ impl ProjectMapper {
         match prompt_result.disposition {
             PromptedDisposition::GenerateProjectYaml => {
                 let canonical_id = derive_canonical_id_for_dir(cwd);
+                let namespace_alias = derive_alias_for_dir(cwd).to_string();
                 let yaml_path = cwd.join(".memory-project.yaml");
                 let yaml_action = self.prepare_project_yaml(&yaml_path)?;
                 Ok(ScopeBinding {
                     scope: Scope::Project,
                     namespace: Some("project".to_string()),
+                    namespace_alias: Some(namespace_alias),
                     canonical_namespace_id: Some(canonical_id),
                     resolution: ResolutionKind::PromptedNewProject,
                     project_yaml: Some(ProjectYamlDisposition { path: yaml_path, action: yaml_action }),
@@ -258,6 +269,7 @@ impl ProjectMapper {
             PromptedDisposition::DropToMe => Ok(ScopeBinding {
                 scope: Scope::User,
                 namespace: Some("me".to_string()),
+                namespace_alias: None,
                 canonical_namespace_id: None,
                 resolution: ResolutionKind::PromptedDropToMe,
                 project_yaml: None,
@@ -265,6 +277,7 @@ impl ProjectMapper {
             PromptedDisposition::Skip => Ok(ScopeBinding {
                 scope: Scope::User,
                 namespace: None,
+                namespace_alias: None,
                 canonical_namespace_id: None,
                 resolution: ResolutionKind::PromptedSkip,
                 project_yaml: None,

@@ -82,6 +82,9 @@ pub enum PlanAction {
     /// State file already records this source with a matching content hash —
     /// skip.
     SkipUnchanged { existing_memory_id: String },
+    /// State file records this exact source/content under a different bucket —
+    /// supersede the prior memory with identical content in the correct bucket.
+    RepairBucket { prior_memory_id: String, prior_content_hash: String },
     /// State file records this source under a different content hash —
     /// supersede the prior memory.
     Supersede { prior_memory_id: String, prior_content_hash: String },
@@ -388,6 +391,57 @@ impl ImportEngine {
                     counters_mut(&mut report, &harness_key).skipped_by_prompt += 1;
                     continue;
                 }
+                PlanAction::RepairBucket { prior_memory_id, .. } => {
+                    let related = resolve_related_ids(action, &alias_to_id);
+                    let supersede_meta =
+                        build_write_meta(action, &related, Some(std::slice::from_ref(prior_memory_id)));
+                    if opts.dry_run {
+                        counters_mut(&mut report, &harness_key).superseded += 1;
+                        continue;
+                    }
+                    let supersede = client
+                        .supersede(SupersedeRequest {
+                            old_id: prior_memory_id.clone(),
+                            content: action.candidate.body.clone(),
+                            reason: "import bucket repair".to_string(),
+                            meta: supersede_meta,
+                        })
+                        .await
+                        .map_err(|error| partial_import_error(error, &report, &action.source_key))?;
+                    match supersede.status {
+                        GovernanceStatus::Promoted => {
+                            let new_id = supersede.new_id.unwrap_or_else(|| prior_memory_id.clone());
+                            counters_mut(&mut report, &harness_key).superseded += 1;
+                            record_promoted(
+                                &mut state,
+                                action,
+                                &new_id,
+                                Some(prior_memory_id.as_str()),
+                                &mut alias_to_id,
+                                &self.state_path,
+                            )
+                            .map_err(|error| partial_import_error(error, &report, &action.source_key))?;
+                        }
+                        GovernanceStatus::Refused => {
+                            let reason =
+                                supersede.reason.map_or("refused".to_string(), |reason| reason.as_str().to_string());
+                            bump_refusal(counters_mut(&mut report, &harness_key), &reason);
+                            report.refusals.push(RefusalEntry {
+                                source_key: action.source_key.clone(),
+                                harness: harness_key.clone(),
+                                reason,
+                                suggested_next_action: Some("inspect bucket repair refusal".to_string()),
+                            });
+                        }
+                        other => {
+                            counters_mut(&mut report, &harness_key).written_candidate += 1;
+                            if opts.verbose_progress {
+                                eprintln!("{progress_prefix} bucket-repair-{:?}: {}", other, action.source_key);
+                            }
+                        }
+                    }
+                    continue;
+                }
                 PlanAction::WriteNew | PlanAction::Supersede { .. } => {}
             }
 
@@ -407,13 +461,15 @@ impl ImportEngine {
                     tags: Vec::new(),
                     meta,
                 })
-                .await?;
+                .await
+                .map_err(|error| partial_import_error(error, &report, &action.source_key))?;
 
             match outcome.status {
                 GovernanceStatus::Promoted => match (outcome.id, outcome.existing_id) {
                     (Some(written_id), None) => {
                         counters_mut(&mut report, &harness_key).written_new += 1;
-                        record_promoted(&mut state, action, &written_id, None, &mut alias_to_id, &self.state_path)?;
+                        record_promoted(&mut state, action, &written_id, None, &mut alias_to_id, &self.state_path)
+                            .map_err(|error| partial_import_error(error, &report, &action.source_key))?;
                     }
                     (_, Some(existing_id)) => {
                         counters_mut(&mut report, &harness_key).dedup_existing += 1;
@@ -422,7 +478,8 @@ impl ImportEngine {
                             harness: harness_key.clone(),
                             existing_memory_id: existing_id.clone(),
                         });
-                        record_promoted(&mut state, action, &existing_id, None, &mut alias_to_id, &self.state_path)?;
+                        record_promoted(&mut state, action, &existing_id, None, &mut alias_to_id, &self.state_path)
+                            .map_err(|error| partial_import_error(error, &report, &action.source_key))?;
                     }
                     (None, None) => {
                         record_unexpected_response(&mut report, &harness_key, action, "promoted-without-id");
@@ -448,7 +505,8 @@ impl ImportEngine {
                                 reason: "import supersede".to_string(),
                                 meta: supersede_meta,
                             })
-                            .await?;
+                            .await
+                            .map_err(|error| partial_import_error(error, &report, &action.source_key))?;
                         match supersede.status {
                             GovernanceStatus::Promoted => {
                                 let new_id = supersede.new_id.unwrap_or_else(|| existing_id.clone());
@@ -460,7 +518,8 @@ impl ImportEngine {
                                     Some(existing_id.as_str()),
                                     &mut alias_to_id,
                                     &self.state_path,
-                                )?;
+                                )
+                                .map_err(|error| partial_import_error(error, &report, &action.source_key))?;
                             }
                             GovernanceStatus::Refused => {
                                 let reason = supersede
@@ -484,7 +543,8 @@ impl ImportEngine {
                     } else {
                         counters_mut(&mut report, &harness_key).written_candidate += 1;
                         if let Some(written_id) = outcome.id {
-                            record_promoted(&mut state, action, &written_id, None, &mut alias_to_id, &self.state_path)?;
+                            record_promoted(&mut state, action, &written_id, None, &mut alias_to_id, &self.state_path)
+                                .map_err(|error| partial_import_error(error, &report, &action.source_key))?;
                         } else {
                             // A candidate without an id leaves the source unrecorded,
                             // so a re-run would re-write it (not idempotent). Surface
@@ -497,7 +557,8 @@ impl ImportEngine {
                 GovernanceStatus::Quarantined => {
                     counters_mut(&mut report, &harness_key).quarantined += 1;
                     if let Some(written_id) = outcome.id {
-                        record_promoted(&mut state, action, &written_id, None, &mut alias_to_id, &self.state_path)?;
+                        record_promoted(&mut state, action, &written_id, None, &mut alias_to_id, &self.state_path)
+                            .map_err(|error| partial_import_error(error, &report, &action.source_key))?;
                     } else {
                         record_unexpected_response(&mut report, &harness_key, action, "quarantined-without-id");
                     }
@@ -529,8 +590,12 @@ impl ImportEngine {
         }
 
         if !opts.dry_run {
-            materialize_planned_project_yamls(&mut report, &plan)?;
-            state.save_canonical(&self.state_path)?;
+            if let Err(error) = materialize_planned_project_yamls(&mut report, &plan) {
+                return Err(partial_import_error(error, &report, "<finalize>"));
+            }
+            if let Err(error) = state.save_canonical(&self.state_path) {
+                return Err(partial_import_error(error, &report, "<finalize>"));
+            }
         }
         Ok(ExecuteResult { report, state })
     }
@@ -583,6 +648,49 @@ fn register_aliases_for(candidate: &ParsedMemory, id: &str, alias_to_id: &mut Ha
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ImportBucket {
+    namespace: Option<String>,
+    canonical_namespace_id: Option<String>,
+}
+
+fn target_import_bucket(scope: &ScopeBinding) -> ImportBucket {
+    let namespace = match scope.scope {
+        memory_substrate::Scope::Project | memory_substrate::Scope::Org => scope
+            .namespace_alias
+            .clone()
+            .or_else(|| scope.canonical_namespace_id.clone())
+            .or_else(|| scope.namespace.clone()),
+        _ => scope.namespace.clone(),
+    };
+    ImportBucket { namespace, canonical_namespace_id: scope.canonical_namespace_id.clone() }
+}
+
+fn import_bucket_matches(record: &ImportRecord, scope: &ScopeBinding) -> bool {
+    let expected = target_import_bucket(scope);
+    if record.namespace.is_none() && record.canonical_namespace_id.is_none() {
+        return expected.canonical_namespace_id.is_none();
+    }
+    record.namespace == expected.namespace && record.canonical_namespace_id == expected.canonical_namespace_id
+}
+
+fn plan_action_for_record(record: &ImportRecord, candidate_content_hash: &str, scope: &ScopeBinding) -> PlanAction {
+    if record.content_hash == candidate_content_hash && import_bucket_matches(record, scope) {
+        return PlanAction::SkipUnchanged { existing_memory_id: record.memory_id.clone() };
+    }
+    if record.content_hash == candidate_content_hash {
+        return bucket_repair_action(record);
+    }
+    PlanAction::Supersede { prior_memory_id: record.memory_id.clone(), prior_content_hash: record.content_hash.clone() }
+}
+
+fn bucket_repair_action(record: &ImportRecord) -> PlanAction {
+    PlanAction::RepairBucket {
+        prior_memory_id: record.memory_id.clone(),
+        prior_content_hash: record.content_hash.clone(),
+    }
+}
+
 /// Format a candidate's on-disk source path as a governance-groundable `file:`
 /// reference.
 ///
@@ -631,6 +739,11 @@ fn build_write_meta(action: &PlannedWrite, related: &[String], supersedes: Optio
     if let Some(canon) = &action.scope.canonical_namespace_id {
         meta.insert("canonical_namespace_id".to_string(), Value::String(canon.clone()));
     }
+    if let Some(alias) = target_import_bucket(&action.scope).namespace {
+        if action.scope.canonical_namespace_id.is_some() {
+            meta.insert("namespace_alias".to_string(), Value::String(alias));
+        }
+    }
     // Entity & alias surface forms are derived from the parser hints. For
     // Codex Task Groups, `tags` already lives in frontmatter_hint as keywords;
     // for Claude topics, `name` lives there.
@@ -644,8 +757,13 @@ fn build_write_meta(action: &PlannedWrite, related: &[String], supersedes: Optio
     }
     if let Some(prior) = supersedes {
         meta.insert("supersedes".to_string(), Value::Array(prior.iter().cloned().map(Value::String).collect()));
-    } else if let PlanAction::Supersede { prior_memory_id, .. } = &action.action {
-        meta.insert("supersedes".to_string(), Value::Array(vec![Value::String(prior_memory_id.clone())]));
+    } else {
+        match &action.action {
+            PlanAction::Supersede { prior_memory_id, .. } | PlanAction::RepairBucket { prior_memory_id, .. } => {
+                meta.insert("supersedes".to_string(), Value::Array(vec![Value::String(prior_memory_id.clone())]));
+            }
+            PlanAction::SkipUnchanged { .. } | PlanAction::WriteNew | PlanAction::SkipByPrompt => {}
+        }
     }
     if let Some(Value::Array(evidence_refs)) = action.candidate.frontmatter_hint.get("evidence_refs") {
         let evidence: Vec<Value> = evidence_refs
@@ -680,12 +798,15 @@ fn record_promoted(
     alias_to_id: &mut HashMap<String, String>,
     state_path: &Path,
 ) -> ImportResult<()> {
+    let bucket = target_import_bucket(&action.scope);
     let mut record = ImportRecord {
         memory_id: new_id.to_string(),
         content_hash: action.candidate.content_hash.clone(),
         imported_at: Utc::now(),
         harness: action.candidate.harness.as_str().to_string(),
         source_path_at_import: action.candidate.source_path.clone(),
+        namespace: bucket.namespace,
+        canonical_namespace_id: bucket.canonical_namespace_id,
         supersession_chain: Vec::new(),
     };
     if let Some(prior_id) = superseded {
@@ -714,6 +835,22 @@ fn bump_refusal(counters: &mut HarnessCounters, reason: &str) {
         "policy" => counters.refused_policy += 1,
         _ => counters.refused_other += 1,
     }
+}
+
+fn partial_import_error(error: ImportError, report: &ImportReport, source_key: &str) -> ImportError {
+    ImportError::PartialExecute {
+        source_key: source_key.to_string(),
+        completed_writes: completed_write_count(report),
+        source: Box::new(error),
+    }
+}
+
+fn completed_write_count(report: &ImportReport) -> usize {
+    report
+        .harnesses
+        .values()
+        .map(|counters| counters.written_new + counters.superseded + counters.written_candidate + counters.quarantined)
+        .sum()
 }
 
 fn record_unexpected_response(report: &mut ImportReport, harness_key: &str, action: &PlannedWrite, reason: &str) {
@@ -796,6 +933,7 @@ impl ImportEngine {
             let scope = cwd_to_scope.get(&candidate.cwd).cloned().unwrap_or_else(|| ScopeBinding {
                 scope: memory_substrate::Scope::User,
                 namespace: Some("me".to_string()),
+                namespace_alias: None,
                 canonical_namespace_id: None,
                 resolution: ResolutionKind::UserScope,
                 project_yaml: None,
@@ -804,13 +942,7 @@ impl ImportEngine {
                 PlanAction::SkipByPrompt
             } else {
                 match state.imports.get(&candidate.source_key) {
-                    Some(record) if record.content_hash == candidate.content_hash => {
-                        PlanAction::SkipUnchanged { existing_memory_id: record.memory_id.clone() }
-                    }
-                    Some(record) => PlanAction::Supersede {
-                        prior_memory_id: record.memory_id.clone(),
-                        prior_content_hash: record.content_hash.clone(),
-                    },
+                    Some(record) => plan_action_for_record(record, &candidate.content_hash, &scope),
                     None => PlanAction::WriteNew,
                 }
             };
@@ -1047,6 +1179,7 @@ fn parse_error_source_key(error: &ImportError) -> String {
         ImportError::AnotherImportInProgress { .. } => "<lock>".to_string(),
         ImportError::CorruptState { path, .. } => path.display().to_string(),
         ImportError::Json(_) => "<json>".to_string(),
+        ImportError::PartialExecute { source_key, .. } => source_key.clone(),
     }
 }
 
@@ -1058,6 +1191,7 @@ fn parse_error_kind(error: &ImportError) -> String {
         ImportError::AnotherImportInProgress { .. } => "lock".to_string(),
         ImportError::CorruptState { .. } => "corrupt_state".to_string(),
         ImportError::Json(_) => "json".to_string(),
+        ImportError::PartialExecute { .. } => "partial_execute".to_string(),
     }
 }
 
@@ -1117,6 +1251,7 @@ mod tests {
             scope: ScopeBinding {
                 scope: memory_substrate::Scope::User,
                 namespace: Some("me".to_string()),
+                namespace_alias: None,
                 canonical_namespace_id: None,
                 resolution: ResolutionKind::UserScope,
                 project_yaml: None,
@@ -1125,6 +1260,55 @@ mod tests {
             wiki_link_targets_resolvable: Vec::new(),
             wiki_link_targets_back_edge: Vec::new(),
         }
+    }
+
+    fn import_record(
+        memory_id: &str,
+        content_hash: &str,
+        namespace: Option<&str>,
+        canonical_namespace_id: Option<&str>,
+    ) -> ImportRecord {
+        ImportRecord {
+            memory_id: memory_id.to_string(),
+            content_hash: content_hash.to_string(),
+            imported_at: Utc::now(),
+            harness: "claude-code".to_string(),
+            source_path_at_import: PathBuf::from("ignored"),
+            namespace: namespace.map(str::to_string),
+            canonical_namespace_id: canonical_namespace_id.map(str::to_string),
+            supersession_chain: Vec::new(),
+        }
+    }
+
+    fn project_scope(namespace_alias: &str, canonical_namespace_id: &str) -> ScopeBinding {
+        ScopeBinding {
+            scope: memory_substrate::Scope::Project,
+            namespace: Some("project".to_string()),
+            namespace_alias: Some(namespace_alias.to_string()),
+            canonical_namespace_id: Some(canonical_namespace_id.to_string()),
+            resolution: ResolutionKind::YamlOverride,
+            project_yaml: None,
+        }
+    }
+
+    #[test]
+    fn unchanged_project_import_with_matching_bucket_skips_idempotently() {
+        let record = import_record("mem_existing", "sha256:same", Some("policy"), Some("proj_policy-c6698817853503be"));
+        let action =
+            plan_action_for_record(&record, "sha256:same", &project_scope("policy", "proj_policy-c6698817853503be"));
+        assert!(
+            matches!(action, PlanAction::SkipUnchanged { existing_memory_id } if existing_memory_id == "mem_existing")
+        );
+    }
+
+    #[test]
+    fn unchanged_project_import_with_different_bucket_repairs_instead_of_skipping() {
+        let record = import_record("mem_wrong_bucket", "sha256:same", Some("agent-memory"), Some("proj_agent-memory"));
+        let action =
+            plan_action_for_record(&record, "sha256:same", &project_scope("policy", "proj_policy-c6698817853503be"));
+        assert!(
+            matches!(action, PlanAction::RepairBucket { prior_memory_id, prior_content_hash } if prior_memory_id == "mem_wrong_bucket" && prior_content_hash == "sha256:same")
+        );
     }
 
     #[test]
@@ -1298,6 +1482,8 @@ mod tests {
                 imported_at: Utc::now(),
                 harness: "claude-code".to_string(),
                 source_path_at_import: PathBuf::from("ignored"),
+                namespace: Some("me".to_string()),
+                canonical_namespace_id: None,
                 supersession_chain: Vec::new(),
             },
         );
@@ -1322,6 +1508,104 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn second_run_with_unchanged_content_but_wrong_project_bucket_repairs_bucket() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let claude_root = tmp.path().join("claude");
+        let project = tmp.path().join("policy");
+        std::fs::create_dir_all(claude_root.join("proj/memory")).expect("mkdir");
+        std::fs::write(claude_root.join("proj/memory/a.md"), b"---\nname: A\n---\nbody a\n").expect("write");
+
+        let engine = ImportEngine::new(tmp.path());
+        let mut prompts = NoPrompts;
+        let first_plan = engine
+            .plan(
+                ImportOptions {
+                    from_claude: Some(claude_root.clone()),
+                    from_codex: Some(PathBuf::from("/no")),
+                    harness_filter: None,
+                    state: ImportState::default(),
+                },
+                &mut prompts,
+            )
+            .await
+            .expect("first plan");
+        let source_key = first_plan.actions[0].source_key.clone();
+        let content_hash = first_plan.actions[0].candidate.content_hash.clone();
+
+        let mut state = ImportState::default();
+        state.imports.insert(
+            source_key,
+            ImportRecord {
+                memory_id: "mem_wrong_bucket".to_string(),
+                content_hash,
+                imported_at: Utc::now(),
+                harness: "claude-code".to_string(),
+                source_path_at_import: PathBuf::from("ignored"),
+                namespace: Some("agent-memory".to_string()),
+                canonical_namespace_id: Some("proj_agent-memory".to_string()),
+                supersession_chain: Vec::new(),
+            },
+        );
+
+        let mut candidate = first_plan.actions[0].candidate.clone();
+        candidate.cwd = Some(project);
+        let action = PlannedWrite {
+            source_key: candidate.source_key.clone(),
+            candidate,
+            scope: ScopeBinding {
+                scope: memory_substrate::Scope::Project,
+                namespace: Some("project".to_string()),
+                namespace_alias: Some("policy".to_string()),
+                canonical_namespace_id: Some("proj_policy-c6698817853503be".to_string()),
+                resolution: ResolutionKind::YamlOverride,
+                project_yaml: None,
+            },
+            action: bucket_repair_action(state.imports.get("claude:proj/memory/a.md").expect("seeded record")),
+            wiki_link_targets_resolvable: Vec::new(),
+            wiki_link_targets_back_edge: Vec::new(),
+        };
+
+        assert!(
+            matches!(action.action, PlanAction::RepairBucket { ref prior_memory_id, .. } if prior_memory_id == "mem_wrong_bucket")
+        );
+
+        let mut client = MockDaemonClient::default().push_supersede(SupersedeOutcome {
+            status: GovernanceStatus::Promoted,
+            new_id: Some("mem_rebucketed".to_string()),
+            reason: None,
+        });
+        let result = engine
+            .execute(
+                ImportPlan {
+                    actions: vec![action],
+                    source_discovery_summary: DiscoverySummary::default(),
+                    unresolved_back_edges: Vec::new(),
+                    parse_errors: Vec::new(),
+                    state,
+                },
+                ExecuteOptions::default(),
+                &mut client,
+            )
+            .await
+            .expect("repair execute ok");
+
+        assert!(client.write_calls.is_empty(), "bucket repair must not get swallowed by duplicate detection");
+        assert_eq!(client.supersede_calls.len(), 1);
+        assert_eq!(client.supersede_calls[0].old_id, "mem_wrong_bucket");
+        assert_eq!(client.supersede_calls[0].meta.get("namespace_alias").and_then(Value::as_str), Some("policy"));
+        assert_eq!(
+            client.supersede_calls[0].meta.get("canonical_namespace_id").and_then(Value::as_str),
+            Some("proj_policy-c6698817853503be")
+        );
+        let claude = result.report.harnesses.get("claude-code").expect("bucket");
+        assert_eq!(claude.superseded, 1);
+        let record = result.state.imports.get("claude:proj/memory/a.md").expect("state record");
+        assert_eq!(record.memory_id, "mem_rebucketed");
+        assert_eq!(record.namespace.as_deref(), Some("policy"));
+        assert_eq!(record.canonical_namespace_id.as_deref(), Some("proj_policy-c6698817853503be"));
+    }
+
+    #[tokio::test]
     async fn second_run_with_changed_content_produces_supersede() {
         let tmp = tempfile::tempdir().expect("tmp");
         let claude_root = tmp.path().join("claude");
@@ -1339,6 +1623,8 @@ mod tests {
                 imported_at: Utc::now(),
                 harness: "claude-code".to_string(),
                 source_path_at_import: PathBuf::from("ignored"),
+                namespace: Some("me".to_string()),
+                canonical_namespace_id: None,
                 supersession_chain: Vec::new(),
             },
         );

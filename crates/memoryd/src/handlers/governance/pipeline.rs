@@ -192,6 +192,10 @@ pub(crate) async fn governance_supersede_response(
         MemoryContent::Ciphertext { .. } | MemoryContent::MetadataOnly => None,
     };
     let old_is_encrypted = old_plaintext_body.is_none();
+    let bucket_repair_policy_applied = old_plaintext_body
+        .as_deref()
+        .filter(|old_body| input.is_same_body_bucket_repair(&old_envelope.metadata.frontmatter, old_body))
+        .map(|_| old_envelope.metadata.frontmatter.write_policy.policy_applied.clone());
 
     let (active, tiebreak_mode, top_k_source) = match &old_plaintext_body {
         // Explicit supersede of a plaintext old memory: force the named old
@@ -215,9 +219,12 @@ pub(crate) async fn governance_supersede_response(
         repo_root: substrate.roots().repo.clone(),
     });
     let decision = engine.evaluate_write(&candidate);
-    let policy_applied = match resolve_supersede_policy_applied(old_is_encrypted, decision, &old_id, policy_source) {
-        Ok(policy_applied) => policy_applied,
-        Err(response) => return Ok(ResponsePayload::GovernanceSupersede(*response)),
+    let policy_applied = match bucket_repair_policy_applied {
+        Some(policy_applied) => policy_applied,
+        None => match resolve_supersede_policy_applied(old_is_encrypted, decision, &old_id, policy_source) {
+            Ok(policy_applied) => policy_applied,
+            Err(response) => return Ok(ResponsePayload::GovernanceSupersede(*response)),
+        },
     };
 
     let mut replacement = input.to_memory(

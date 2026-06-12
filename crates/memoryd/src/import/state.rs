@@ -44,6 +44,16 @@ pub struct ImportRecord {
     pub imported_at: DateTime<Utc>,
     pub harness: String,
     pub source_path_at_import: PathBuf,
+    /// Persisted frontmatter namespace alias at the time this source was
+    /// imported. Legacy records omit it; project records missing this value are
+    /// treated as needing one repair pass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+    /// Persisted canonical namespace id at the time this source was imported.
+    /// This participates in idempotency so reruns can repair old wrong buckets
+    /// instead of skipping solely on content hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_namespace_id: Option<String>,
     #[serde(default)]
     pub supersession_chain: Vec<SupersededRecord>,
 }
@@ -233,6 +243,8 @@ mod tests {
             imported_at: Utc.with_ymd_and_hms(2026, 5, 27, 22, 33, 0).unwrap(),
             harness: "claude-code".to_string(),
             source_path_at_import: PathBuf::from("/Users/u/.claude/projects/x/memory/y.md"),
+            namespace: Some("me".to_string()),
+            canonical_namespace_id: None,
             supersession_chain: Vec::new(),
         }
     }
