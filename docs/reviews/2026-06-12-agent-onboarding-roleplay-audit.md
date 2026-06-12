@@ -298,3 +298,49 @@ The fix wave surfaced two NEW findings:
   (`$MEMORUM_REPO`→`~/memorum`, runtime `<repo>/.memoryd`). Two different "default
   socket" answers in one binary. Align the remaining commands on the shared helper
   (surfaced by the lane B implementation report).
+
+## Addendum — fix wave 2, 2026-06-12 evening
+
+Findings 15, 16, and 17 root-caused (orchestrator), designed, and fixed via three
+parallel `delegate codex work` worktree lanes with orchestrator review; two review
+catches fixed at integration. All on `main`, full `scripts/check.sh` green.
+
+### 15 — FIXED (`fix(write): resolve project namespace from session cwd` + follow-up)
+
+Root cause ran deeper than the constant: live `memory_write`/`memory_supersede` meta
+carries no project identity at all, so the daemon had nothing to place by. Fix is
+stateless cwd-based resolution (a session_id→binding registry was rejected — the
+on-demand daemon can restart between `memory_startup` and a write): the MCP bridge
+injects its process cwd into write/supersede meta when absent; the daemon resolves it
+through the same `resolve_project_binding` as startup; explicit
+`canonical_namespace_id` wins; unresolvable project writes are refused with an
+actionable message (no silent fallback); `DEFAULT_PROJECT_NAMESPACE` is deleted.
+**Review catch:** the lane's supersede inheritance deferred to `cwd` when present —
+but the bridge injects cwd into *every* supersede, so superseding a project-X memory
+from a project-Y terminal would have relocated it to `projects/Y/`. Inheritance from
+the old memory's frontmatter now beats cwd (foreign-cwd regression e2e added).
+
+### 16 — FIXED (`fix(cli): unify daemon socket defaults`)
+
+One canonical client default in `cli/paths.rs::default_socket()`:
+`$MEMORUM_RUNTIME` → `<resolved repo>/.memoryd/memoryd.sock`. All connect-only
+commands (import, memory ops, review, web, ui, reality-check, source, peer, mcp,
+setup detect) route through it; the XDG `socket::default_runtime_root()` and the two
+duplicate resolvers in `cli/mod.rs` are deleted. `McpArgs --repo/--runtime` moved
+from cwd-relative clap defaults to canonical resolution (wired configs pass explicit
+flags, so installed entries are unaffected). Side catch: the pre-fix socket mismatch
+had left a stray `.memorum/import-state.json` in this repo's root from a misdirected
+import run — removed, and `.memorum/` added to `.oxfmtignore`.
+
+### 17 — FIXED (`fix(uninstall): stop pidless daemons safely` + follow-up)
+
+Deepest root cause: **no code path ever wrote `<runtime>/memoryd.pid`** — uninstall's
+SIGTERM path read a file nothing creates. (a) `memoryd serve` now writes the pid file
+at startup via a drop guard that only removes it if it still holds its own pid; every
+daemon (direct serve, launchd, MCP auto-start) funnels through serve, so all get it.
+(b) For pid-file-less daemons, `stop_daemon` asks the live socket for its pid via the
+`Status` RPC (2s timeout) before SIGTERM. (c) Purge is gated: a failed stop refuses
+to purge, preserving repo+runtime. (d) Non-zero exit on any failed step pinned by an
+end-to-end regression test (real serve child, real SIGTERM). **Review catch:** the
+lane's purge gate fired before the `--purge` check, reporting a phantom purge refusal
+on non-purge runs — reordered, with a unit test pinning Skipped.
