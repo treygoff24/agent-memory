@@ -17,7 +17,7 @@ async fn artifact_memory_preserves_tool_output_handle_through_recall_search_and_
     let scaffold = DaemonScaffold::fresh().await;
     let project_cwd = scaffold.tree_dir().join("proj-alpha");
     write_project_file(&project_cwd, DEFAULT_PROJECT_ID, "Project Alpha");
-    let mut agent = SimulatorAgent::new(SimulatorConfig::new(scaffold.socket_path()));
+    let mut agent = SimulatorAgent::new(SimulatorConfig::new(scaffold.socket_path()).with_cwd(&project_cwd));
 
     let artifact_body = format!(
         "Database migration dry-run output: 14 tables affected, 2 foreign key cycles detected. Full log at {ARTIFACT_HANDLE}"

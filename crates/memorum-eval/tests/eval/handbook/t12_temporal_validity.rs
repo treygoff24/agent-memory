@@ -16,7 +16,7 @@ async fn temporal_validity_fields_are_not_silently_ignored_and_fresh_memory_is_c
     let scaffold = DaemonScaffold::fresh().await;
     let project_cwd = scaffold.tree_dir().join("proj-alpha");
     write_project_file(&project_cwd, DEFAULT_PROJECT_ID, "Project Alpha");
-    let mut agent = SimulatorAgent::new(SimulatorConfig::new(scaffold.socket_path()));
+    let mut agent = SimulatorAgent::new(SimulatorConfig::new(scaffold.socket_path()).with_cwd(&project_cwd));
 
     let expired_meta = json!({
         "namespace": "project",

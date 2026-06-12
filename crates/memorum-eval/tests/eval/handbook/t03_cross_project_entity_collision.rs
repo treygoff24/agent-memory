@@ -16,7 +16,7 @@ async fn project_binding_filters_project_memory_from_other_project_recall() {
     write_project_file(&alpha_cwd, DEFAULT_PROJECT_ID, "Project Alpha");
     write_project_file(&beta_cwd, "proj_beta", "Project Beta");
 
-    let mut agent = SimulatorAgent::new(SimulatorConfig::new(scaffold.socket_path()));
+    let mut agent = SimulatorAgent::new(SimulatorConfig::new(scaffold.socket_path()).with_cwd(&alpha_cwd));
     let alpha = agent
         .run_script([SimulatorAction::WriteWithMetaJson {
             body: "The API uses JWT authentication. Entity ent_api_auth belongs to proj_alpha.".to_owned(),

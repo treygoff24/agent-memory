@@ -95,6 +95,8 @@ fn write_pii_memory(socket_path: &Path, body: &str, source_ref: &str) -> Value {
                 "tags": ["stream-h", "t18"],
                 "meta": {
                     "namespace": "project",
+                    "canonical_namespace_id": "proj_eval_t18",
+                    "namespace_alias": "eval-t18",
                     "type": "claim",
                     "summary": "T18 encrypted key rotation fixture",
                     "confidence": 0.95,

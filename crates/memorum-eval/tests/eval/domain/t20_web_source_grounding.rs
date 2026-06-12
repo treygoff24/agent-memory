@@ -50,6 +50,8 @@ async fn write(substrate: &Substrate, id: &str, source_ref: &str) -> memoryd::pr
                 tags: Vec::new(),
                 meta: serde_json::json!({
                     "namespace": "project",
+                    "canonical_namespace_id": "proj_eval_t20",
+                    "namespace_alias": "eval-t20",
                     "type": "claim",
                     "summary": "T20 web source grounding",
                     "confidence": 0.95,

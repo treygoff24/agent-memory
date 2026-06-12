@@ -149,6 +149,8 @@ fn write_memory(socket_path: &Path, title: &str, confidence: f64) -> String {
                 "tags": ["stream-h", "t16"],
                 "meta": {
                     "namespace": "project",
+                    "canonical_namespace_id": "proj_eval_t16",
+                    "namespace_alias": "eval-t16",
                     "type": "claim",
                     "summary": title,
                     "confidence": confidence,

@@ -17,7 +17,7 @@ async fn simulated_compaction_resumption_preserves_active_working_state_without_
     let scaffold = DaemonScaffold::fresh().await;
     let project_cwd = scaffold.tree_dir().join("proj-alpha");
     write_project_file(&project_cwd, DEFAULT_PROJECT_ID, "Project Alpha");
-    let mut agent = SimulatorAgent::new(SimulatorConfig::new(scaffold.socket_path()));
+    let mut agent = SimulatorAgent::new(SimulatorConfig::new(scaffold.socket_path()).with_cwd(&project_cwd));
 
     let mut first_round_ids = Vec::new();
     for index in 0..10 {

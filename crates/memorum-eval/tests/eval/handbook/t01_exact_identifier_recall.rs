@@ -18,7 +18,7 @@ async fn exact_identifier_survives_startup_recall_and_search() {
     let project_cwd = scaffold.tree_dir().join("proj-alpha");
     write_project_file(&project_cwd, DEFAULT_PROJECT_ID, "Project Alpha");
 
-    let mut agent = SimulatorAgent::new(SimulatorConfig::new(scaffold.socket_path()));
+    let mut agent = SimulatorAgent::new(SimulatorConfig::new(scaffold.socket_path()).with_cwd(&project_cwd));
     let sentinel_body = format!("id: mem_test_001 exact recall sentinel {SENTINEL}");
     let observations = agent
         .run_script([SimulatorAction::WriteWithMetaJson {

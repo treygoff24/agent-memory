@@ -77,6 +77,14 @@ impl SimulatorConfig {
     pub fn new(socket_path: impl AsRef<Path>) -> Self {
         Self { socket_path: Some(socket_path.as_ref().to_path_buf()), ..Self::default() }
     }
+
+    /// Bind the session to a working directory from the first action, the way a
+    /// real harness session starts inside a project checkout. Writes issued
+    /// before any `NewSession` resolve project placement from this cwd.
+    pub fn with_cwd(mut self, cwd: impl AsRef<Path>) -> Self {
+        self.cwd = Some(cwd.as_ref().to_path_buf());
+        self
+    }
 }
 
 impl SimulatorAgent {
@@ -160,7 +168,7 @@ impl SimulatorAgent {
             r#"{{"write_memory":{{"body":"{}","title":{},"tags":[],"meta":{}}}}}"#,
             crate::json_escape(body),
             optional_string_json(title),
-            meta_json
+            self.meta_json_with_session_cwd(meta_json)
         ));
         self.observations.last_write_outcome = extract_string_field(&response, "status");
         self.observations.last_write_json = Some(response);
@@ -172,7 +180,7 @@ impl SimulatorAgent {
             crate::json_escape(request.old_id),
             crate::json_escape(request.new_body),
             crate::json_escape(request.reason),
-            request.meta.to_json(request.new_body)
+            self.meta_json_with_session_cwd(&request.meta.to_json(request.new_body))
         ));
         self.observations.last_supersede_outcome = extract_string_field(&response, "status");
         self.observations.last_supersede_json = Some(response);
@@ -237,6 +245,24 @@ impl SimulatorAgent {
         let mut response = String::new();
         BufReader::new(stream).read_line(&mut response).expect("read simulator daemon response");
         response
+    }
+
+    /// Mirror the MCP bridge contract: every write/supersede carries the
+    /// session cwd unless the meta already pins one. The daemon resolves
+    /// project placement from it (`resolve_project_binding`), so simulator
+    /// sessions bound to a project dir place memories like real harnesses do.
+    fn meta_json_with_session_cwd(&self, meta_json: &str) -> String {
+        let trimmed = meta_json.trim();
+        if trimmed.contains("\"cwd\"") {
+            return trimmed.to_owned();
+        }
+        let rest = trimmed.strip_prefix('{').expect("simulator meta_json is a JSON object");
+        let cwd = crate::json_escape(&self.cwd());
+        if rest.trim_start() == "}" {
+            format!(r#"{{"cwd":"{cwd}"}}"#)
+        } else {
+            format!(r#"{{"cwd":"{cwd}",{rest}"#)
+        }
     }
 
     fn cwd(&self) -> String {
