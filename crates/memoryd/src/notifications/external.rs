@@ -235,6 +235,10 @@ pub struct ReqwestSlackWebhook {
     client: reqwest::Client,
 }
 
+fn base_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder().timeout(Duration::from_secs(10)).connect_timeout(Duration::from_secs(5))
+}
+
 impl ReqwestSlackWebhook {
     pub fn new() -> Self {
         // Do NOT use `reqwest::Client::new()` here: its default system-proxy
@@ -244,13 +248,23 @@ impl ReqwestSlackWebhook {
         // binds, and against a bloated `target/debug/deps` that scan takes
         // minutes — wedging startup. Honor explicit env-var proxies (the only
         // proxy form a headless daemon should respect) and skip system lookup.
-        let builder = match explicit_env_proxy().and_then(|url| reqwest::Proxy::all(url).ok()) {
-            Some(proxy) => reqwest::Client::builder().proxy(proxy),
-            None => reqwest::Client::builder().no_proxy(),
+        let builder = match explicit_env_proxy() {
+            Some(url) => match reqwest::Proxy::all(&url) {
+                Ok(proxy) => base_builder().proxy(proxy),
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        proxy_url = %url,
+                        "malformed explicit proxy env var; falling back to direct (proxyless) connection"
+                    );
+                    base_builder().no_proxy()
+                }
+            },
+            None => base_builder().no_proxy(),
         };
-        let client = builder.build().unwrap_or_else(|_| {
-            reqwest::Client::builder().no_proxy().build().expect("proxyless reqwest client builds")
-        });
+        let client = builder
+            .build()
+            .unwrap_or_else(|_| base_builder().no_proxy().build().expect("proxyless reqwest client builds"));
         Self { client }
     }
 }

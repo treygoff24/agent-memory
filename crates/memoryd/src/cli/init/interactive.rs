@@ -156,21 +156,22 @@ impl SetupIo for InteractiveIo {
         self.print_intro_once(detection);
 
         let total = detection.claude.candidates + detection.codex.candidates;
+        if total == 0 {
+            println!("No prior harness memory found — nothing to import.");
+            self.chose_import = false;
+            return Ok(false);
+        }
         if let Some(seeded) = self.seeds.import {
             println!("Import prior harness memory: {} (--import)", if seeded { "yes" } else { "no" });
             self.chose_import = seeded;
             return Ok(seeded);
-        }
-        if total == 0 {
-            println!("No prior harness memory found — nothing to import.");
-            return Ok(false);
         }
 
         let prompt = format!(
             "Import prior harness memory into Memorum? ({} Claude, {} Codex candidate(s))",
             detection.claude.candidates, detection.codex.candidates
         );
-        let answer = dialoguer::Confirm::new().with_prompt(prompt).default(true).interact().unwrap_or(false);
+        let answer = dialoguer::Confirm::new().with_prompt(prompt).default(false).interact().unwrap_or(false);
         self.chose_import = answer;
         Ok(answer)
     }
@@ -191,7 +192,7 @@ impl SetupIo for InteractiveIo {
         let selection = dialoguer::Select::new()
             .with_prompt("Which harness memories should be imported?")
             .items(items)
-            .default(3)
+            .default(0)
             .interact()
             .unwrap_or(4);
         let harness = match selection {
@@ -253,7 +254,7 @@ impl SetupIo for InteractiveIo {
         let selection = dialoguer::Select::new()
             .with_prompt("Which MCP harness configs should be wired to Memorum?")
             .items(items)
-            .default(3)
+            .default(4)
             .interact()
             .unwrap_or(4);
         let wire = match selection {
@@ -291,9 +292,9 @@ impl SetupIo for InteractiveIo {
         let selection = dialoguer::Select::new()
             .with_prompt("How should the Memorum daemon be arranged?")
             .items(items)
-            .default(0)
+            .default(3)
             .interact()
-            .unwrap_or(0);
+            .unwrap_or(3);
         let strategy = match selection {
             1 => DaemonStrategy::Background,
             2 => {
@@ -617,7 +618,8 @@ mod tests {
     #[test]
     fn seeded_decisions_answer_without_prompting() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let detection = empty_detection(temp.path());
+        let mut detection = empty_detection(temp.path());
+        detection.codex.candidates = 1;
 
         let mut io = InteractiveIo {
             seeds: SeededDecisions {
@@ -637,6 +639,23 @@ mod tests {
         assert_eq!(io.choose_mcp_wiring(&detection).expect("wire"), WireMcpSelection::Claude);
         assert_eq!(io.choose_daemon_strategy(&detection).expect("daemon"), DaemonStrategy::OnDemand);
         assert!(!io.print_only().expect("print_only"), "seeded opt-ins must run real steps");
+    }
+
+    /// An explicit `--import` seed cannot opt into import when discovery found
+    /// no candidate memories; there is nothing real to import.
+    #[test]
+    fn seeded_import_with_no_candidates_skips_import() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let detection = empty_detection(temp.path());
+
+        let mut io = InteractiveIo {
+            seeds: SeededDecisions { import: Some(true), ..SeededDecisions::default() },
+            chose_import: true,
+            ..InteractiveIo::default()
+        };
+
+        assert!(!io.confirm_import(&detection).expect("confirm_import"));
+        assert!(!io.chose_import, "no candidates must clear the import opt-in");
     }
 
     /// With no seeds and nothing detected, the import confirm declines without

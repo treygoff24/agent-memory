@@ -100,17 +100,19 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 # memoryd-web gates its dashboard fixtures behind the non-default `dev-fixtures`
 # feature so production builds can never embed fake numbers. The test suite needs
 # those fixtures, so enable the feature for the workspace test runs (production
-# `cargo install`/`cargo build` stays feature-off and fixture-free).
-WEB_FIXTURE_FEATURE="memoryd-web/dev-fixtures"
+# `cargo install`/`cargo build` stays feature-off and fixture-free). memoryd's
+# dev-fixtures feature is also needed so gated bench-bin unit tests are built
+# and run by the gate without exposing those bins to feature-off installs.
+TEST_FIXTURE_FEATURES="memoryd-web/dev-fixtures,memoryd/dev-fixtures"
 
 if [[ "$USE_NEXTEST" -eq 1 ]]; then
-  cargo nextest run --workspace --features "$WEB_FIXTURE_FEATURE"
-  cargo nextest run --workspace --release --features "$WEB_FIXTURE_FEATURE"
+  cargo nextest run --workspace --features "$TEST_FIXTURE_FEATURES"
+  cargo nextest run --workspace --release --features "$TEST_FIXTURE_FEATURES"
   # nextest doesn't run doctests; cover them so we don't lose coverage vs `cargo test`.
-  cargo test --workspace --doc --features "$WEB_FIXTURE_FEATURE"
+  cargo test --workspace --doc --features "$TEST_FIXTURE_FEATURES"
 else
-  cargo test --workspace --features "$WEB_FIXTURE_FEATURE"
-  cargo test --workspace --release --features "$WEB_FIXTURE_FEATURE"
+  cargo test --workspace --features "$TEST_FIXTURE_FEATURES"
+  cargo test --workspace --release --features "$TEST_FIXTURE_FEATURES"
 fi
 
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps

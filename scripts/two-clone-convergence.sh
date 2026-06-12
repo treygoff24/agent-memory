@@ -21,7 +21,9 @@ fixtures=50
 workspace="$(git rev-parse --show-toplevel)"
 cd "$workspace"
 cargo build -q -p memory-merge-driver
-driver_bin="$workspace/target/debug/memory-merge-driver"
+# Honor CARGO_TARGET_DIR (scripts/check.sh builds into a temp target dir): the
+# `cargo build` above lands the driver there, not at the default $workspace/target.
+driver_bin="${CARGO_TARGET_DIR:-$workspace/target}/debug/memory-merge-driver"
 
 tmpdir="$(mktemp -d)"
 if [ "$keep" -eq 0 ]; then

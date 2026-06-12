@@ -13,9 +13,9 @@
 //! Dispatch rules:
 //! 1. `--detect-only` always runs the side-effect-free detection path (agent).
 //! 2. `--non-interactive` / `--json` force the machine path (agent).
-//! 3. Otherwise, when stdin is a TTY, run the interactive wizard. Declining
-//!    every prompt is a guaranteed no-op (see `InteractiveIo`).
-//! 4. When stdin is not a TTY and no machine mode was selected, refuse with
+//! 3. Otherwise, when stdin and stderr are TTYs, run the interactive wizard.
+//!    Declining every prompt is a guaranteed no-op (see `InteractiveIo`).
+//! 4. When stdin or stderr is not a TTY and no machine mode was selected, refuse with
 //!    guidance instead of mutating anything. A piped/CI caller must opt into
 //!    the scripted path explicitly; silent provisioning from a bare `init` in
 //!    a non-TTY shell is exactly the trap this rule exists to close.
@@ -42,7 +42,7 @@ pub async fn run(args: InitArgs) -> anyhow::Result<()> {
         return agent::run(args).await;
     }
 
-    if std::io::stdin().is_terminal() {
+    if std::io::stdin().is_terminal() && std::io::stderr().is_terminal() {
         return interactive::run(args).await;
     }
 
@@ -50,7 +50,7 @@ pub async fn run(args: InitArgs) -> anyhow::Result<()> {
     // agent path provisions a substrate from flag defaults, which is never an
     // acceptable side effect of a bare `memoryd init` in a pipe or CI job.
     anyhow::bail!(
-        "memoryd init: stdin is not a terminal, so the interactive wizard cannot run.\n\
+        "memoryd init: this terminal cannot run the interactive wizard (stdin and stderr must both be a TTY).\n\
          \n\
          Pick an explicit mode instead:\n\
          \n\
