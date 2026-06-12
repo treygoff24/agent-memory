@@ -32,6 +32,7 @@ pub(crate) struct HydratedHybridCandidate {
     pub id: String,
     pub text: String,
     pub rrf_score: f64,
+    pub final_score: f64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -92,7 +93,12 @@ pub(crate) async fn collect_hybrid_recall(
         }
     };
 
-    let fused = fuse_rrf(&candidates, context.config.rrf_k);
+    let fused = fuse_rrf(
+        &candidates,
+        context.config.rrf_k,
+        context.config.recency_lambda,
+        context.config.recency_half_life_days,
+    );
     let hydrated = hydrate_fused_candidates(fused);
     HybridRecallDecision::Fused { candidates: hydrated }
 }
@@ -141,6 +147,7 @@ fn hydrate_fused_candidates(fused: Vec<FusedHybridCandidate>) -> Vec<HydratedHyb
             id: candidate.memory_id.as_str().to_owned(),
             text: candidate.text,
             rrf_score: candidate.rrf_score,
+            final_score: candidate.final_score,
         })
         .collect()
 }

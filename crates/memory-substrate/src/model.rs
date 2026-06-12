@@ -1447,6 +1447,10 @@ pub struct HybridMemoryCandidate {
     pub text: String,
     /// Lane-local rank/similarity evidence.
     pub score_breakdown: HybridScoreBreakdown,
+    /// Freshness signal for downstream RRF recency prior: `max(observed_at, updated_at)`
+    /// from the memories index row. `None` when the index row lacks usable timestamps.
+    #[serde(default)]
+    pub recency_at: Option<DateTime<Utc>>,
 }
 
 /// A single active-memory neighbour returned by a governance KNN similarity

@@ -116,7 +116,7 @@ pub(crate) async fn search_response(
                         summary: bounded(&candidate.text, SEARCH_SNIPPET_MAX),
                         snippet: bounded(&candidate.text, SEARCH_SNIPPET_MAX),
                         body: None,
-                        score: candidate.rrf_score,
+                        score: candidate.final_score,
                     })
                     .collect::<Vec<_>>();
                 (total, hits)

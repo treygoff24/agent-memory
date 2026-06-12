@@ -454,6 +454,7 @@ impl Index {
                     memory_id: MemoryId::new(hit.memory_id),
                     text: hit.text,
                     score_breakdown: HybridScoreBreakdown { bm25_rank: Some(hit.rank), cosine_similarity: None },
+                    recency_at: hit.recency_at,
                 },
             );
         }
@@ -463,6 +464,7 @@ impl Index {
                 .entry(hit.memory_id.clone())
                 .and_modify(|candidate| {
                     candidate.score_breakdown.cosine_similarity = Some(hit.cosine_similarity);
+                    candidate.recency_at = later_recency_at(candidate.recency_at, hit.recency_at);
                 })
                 .or_insert_with(|| HybridMemoryCandidate {
                     memory_id: MemoryId::new(hit.memory_id),
@@ -471,6 +473,7 @@ impl Index {
                         bm25_rank: None,
                         cosine_similarity: Some(hit.cosine_similarity),
                     },
+                    recency_at: hit.recency_at,
                 });
         }
 
@@ -513,7 +516,7 @@ impl Index {
                     let relaxed_position = idx - strict_len + 1;
                     strict_len + relaxed_position + RELAXED_RANK_OFFSET
                 };
-                Bm25MemoryRank { memory_id: hit.memory_id, text: hit.text, rank }
+                Bm25MemoryRank { memory_id: hit.memory_id, text: hit.text, rank, recency_at: hit.recency_at }
             })
             .collect())
     }
@@ -524,7 +527,8 @@ impl Index {
         row_limit: Option<usize>,
     ) -> Result<Vec<Bm25ChunkHit>, VectorError> {
         const SQL: &str =
-            "SELECT memory_chunks.memory_id, memory_chunks.text, memory_chunks.chunk_rowid, bm25(memory_chunks_fts) AS score
+            "SELECT memory_chunks.memory_id, memory_chunks.text, memory_chunks.chunk_rowid, bm25(memory_chunks_fts) AS score,
+                    memories.updated_at, memories.observed_at
              FROM memory_chunks_fts
              JOIN memory_chunks ON memory_chunks_fts.rowid = memory_chunks.chunk_rowid
              JOIN memories      ON memories.id = memory_chunks.memory_id
@@ -534,7 +538,8 @@ impl Index {
                AND memories.status IN ('active', 'pinned')
              ORDER BY score, memory_chunks.memory_id, memory_chunks.chunk_rowid";
         const SQL_LIMITED: &str =
-            "SELECT memory_chunks.memory_id, memory_chunks.text, memory_chunks.chunk_rowid, bm25(memory_chunks_fts) AS score
+            "SELECT memory_chunks.memory_id, memory_chunks.text, memory_chunks.chunk_rowid, bm25(memory_chunks_fts) AS score,
+                    memories.updated_at, memories.observed_at
              FROM memory_chunks_fts
              JOIN memory_chunks ON memory_chunks_fts.rowid = memory_chunks.chunk_rowid
              JOIN memories      ON memories.id = memory_chunks.memory_id
@@ -568,12 +573,12 @@ impl Index {
         memory_limit: usize,
     ) -> Result<Vec<Bm25ChunkHit>, VectorError> {
         const SQL: &str =
-            "SELECT memory_id, text, chunk_rowid, score FROM (
-               SELECT memory_id, text, chunk_rowid, score,
+            "SELECT memory_id, text, chunk_rowid, score, updated_at, observed_at FROM (
+               SELECT memory_id, text, chunk_rowid, score, updated_at, observed_at,
                       ROW_NUMBER() OVER (PARTITION BY memory_id ORDER BY score, chunk_rowid) AS rn
                FROM (
                  SELECT memory_chunks.memory_id, memory_chunks.text, memory_chunks.chunk_rowid,
-                        bm25(memory_chunks_fts) AS score
+                        bm25(memory_chunks_fts) AS score, memories.updated_at, memories.observed_at
                  FROM memory_chunks_fts
                  JOIN memory_chunks ON memory_chunks_fts.rowid = memory_chunks.chunk_rowid
                  JOIN memories      ON memories.id = memory_chunks.memory_id
@@ -613,7 +618,8 @@ impl Index {
         const CHUNK_FANOUT: usize = 8;
         let knn_k = limit.saturating_mul(CHUNK_FANOUT).clamp(limit, 512);
         let sql = format!(
-            "SELECT memory_chunks.memory_id, memory_chunks.text, memory_chunks.chunk_rowid, {table}.distance
+            "SELECT memory_chunks.memory_id, memory_chunks.text, memory_chunks.chunk_rowid, {table}.distance,
+                    memories.updated_at, memories.observed_at
              FROM {table}
              JOIN memory_chunks ON memory_chunks.chunk_rowid = {table}.rowid
              JOIN memories      ON memories.id = memory_chunks.memory_id
@@ -627,14 +633,7 @@ impl Index {
         let blob = crate::index::sqlite_vec::serialize_f32(vector);
         let mut stmt = self.connection.prepare_cached(&sql)?;
         let rows = stmt
-            .query_map(params![blob, knn_k as i64], |row| {
-                Ok(VectorChunkHit {
-                    memory_id: row.get(0)?,
-                    text: row.get(1)?,
-                    chunk_rowid: row.get(2)?,
-                    distance: row.get(3)?,
-                })
-            })?
+            .query_map(params![blob, knn_k as i64], vector_chunk_hit_from_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
         let mut best_by_memory = BTreeMap::new();
@@ -660,6 +659,7 @@ impl Index {
                 memory_id: hit.memory_id,
                 text: hit.text,
                 cosine_similarity: cosine_from_l2_distance(hit.distance),
+                recency_at: hit.recency_at,
             })
             .collect())
     }
@@ -2081,12 +2081,14 @@ struct Bm25ChunkHit {
     text: String,
     chunk_rowid: i64,
     score: f64,
+    recency_at: Option<DateTime<Utc>>,
 }
 
 struct Bm25MemoryRank {
     memory_id: String,
     text: String,
     rank: usize,
+    recency_at: Option<DateTime<Utc>>,
 }
 
 struct VectorChunkHit {
@@ -2094,16 +2096,56 @@ struct VectorChunkHit {
     text: String,
     chunk_rowid: i64,
     distance: f64,
+    recency_at: Option<DateTime<Utc>>,
 }
 
 struct VectorMemoryScore {
     memory_id: String,
     text: String,
     cosine_similarity: f32,
+    recency_at: Option<DateTime<Utc>>,
 }
 
 fn bm25_chunk_hit_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Bm25ChunkHit> {
-    Ok(Bm25ChunkHit { memory_id: row.get(0)?, text: row.get(1)?, chunk_rowid: row.get(2)?, score: row.get(3)? })
+    let updated_at: String = row.get(4)?;
+    let observed_at: Option<String> = row.get(5)?;
+    Ok(Bm25ChunkHit {
+        memory_id: row.get(0)?,
+        text: row.get(1)?,
+        chunk_rowid: row.get(2)?,
+        score: row.get(3)?,
+        recency_at: memory_recency_at(&updated_at, observed_at.as_deref()),
+    })
+}
+
+fn vector_chunk_hit_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<VectorChunkHit> {
+    let updated_at: String = row.get(4)?;
+    let observed_at: Option<String> = row.get(5)?;
+    Ok(VectorChunkHit {
+        memory_id: row.get(0)?,
+        text: row.get(1)?,
+        chunk_rowid: row.get(2)?,
+        distance: row.get(3)?,
+        recency_at: memory_recency_at(&updated_at, observed_at.as_deref()),
+    })
+}
+
+fn memory_recency_at(updated_at: &str, observed_at: Option<&str>) -> Option<DateTime<Utc>> {
+    let updated = parse_index_time(updated_at).ok()?;
+    let observed = observed_at.and_then(|value| parse_index_time(value).ok());
+    Some(match observed {
+        Some(observed) if observed > updated => observed,
+        _ => updated,
+    })
+}
+
+fn later_recency_at(left: Option<DateTime<Utc>>, right: Option<DateTime<Utc>>) -> Option<DateTime<Utc>> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(if left > right { left } else { right }),
+        (Some(left), None) => Some(left),
+        (None, Some(right)) => Some(right),
+        (None, None) => None,
+    }
 }
 
 fn collapse_bm25_memory_hits(rows: Vec<Bm25ChunkHit>) -> Vec<Bm25ChunkHit> {
