@@ -33,11 +33,18 @@ use memory_substrate::EmbeddingTriple;
 use super::prompts::query_prompt;
 use super::{check_dimension, EmbeddingError, EmbeddingProvider};
 
-/// Maximum tokenized sequence length. Memorum chunks are 50–500 tokens; 512
-/// covers them with headroom while keeping per-call compute bounded. Query-side
-/// governance candidates use the same limit, so very long contradiction
-/// candidates lose their tail before similarity matching.
-const MAX_SEQUENCE_LENGTH: usize = 512;
+/// Maximum tokenized sequence length passed to fastembed truncation.
+///
+/// Memorum document chunks are capped at 500 tokens. Query-side paths
+/// (`embed_query`, including governance contradiction detection) prepend the
+/// tuned Qwen3 instruction prefix from `prompts::query_prompt`, measured at 67
+/// tokens with the real tokenizer. 640 = 500 + 67 + headroom so a max-sized
+/// chunk plus the prefix is not silently truncated before similarity matching.
+///
+/// fastembed pads with `PaddingStrategy::BatchLongest`, so this cap does not
+/// force every call to 640 tokens — only sequences that would exceed it are
+/// clipped, and batch tensors pad to the longest post-truncation sequence in the batch.
+const MAX_SEQUENCE_LENGTH: usize = 640;
 
 /// The only active-triple provider lane this process can satisfy with the
 /// fastembed candle worker.
