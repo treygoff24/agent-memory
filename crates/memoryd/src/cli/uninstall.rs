@@ -7,8 +7,9 @@
 //! 1. `detect` — resolve repo/runtime (same default resolution as init), probe
 //!    socket liveness, find which harness configs hold a `memorum` MCP entry,
 //!    and whether the `com.memorum.*` launchd plists are present.
-//! 2. `stop_daemon` — SIGTERM the pid from `<runtime>/memoryd.pid` (no shutdown
-//!    RPC exists), wait briefly, verify exit. `skipped` if nothing is running.
+//! 2. `stop_daemon` — SIGTERM the pid from `<runtime>/memoryd.pid`, or ask a
+//!    live pid-file-less daemon for its pid via `Status`; wait briefly and
+//!    verify exit. `skipped` if nothing is running.
 //! 3. `remove_launchd` — `launchctl bootout` + delete the `com.memorum.daemon`
 //!    and `com.memorum.dream-scheduled` plists. macOS-only; `skipped` elsewhere.
 //! 4. `unwire_mcp` — remove only the `memorum`/`memoryd` MCP entry from the
@@ -33,6 +34,10 @@ use crate::setup::{
     claude_config_path, codex_config_path, remove_memorum_mcp_json, remove_memorum_mcp_toml, SetupStepStatus,
 };
 use crate::socket::{probe_live_socket, resolve_socket_path, SocketProbe};
+use crate::{
+    client,
+    protocol::{RequestPayload, ResponsePayload, ResponseResult},
+};
 
 /// macOS launchd labels installed by `scripts/install-launchd.sh`.
 const LAUNCHD_LABELS: &[&str] = &["com.memorum.daemon", "com.memorum.dream-scheduled"];
@@ -150,10 +155,12 @@ async fn execute(args: &UninstallArgs, repo: &Path, runtime: &Path, _confirmed: 
 
     let mut report = UninstallReport::new(detection.clone());
     report.push(detect_step(&detection));
-    report.push(stop_daemon_step(runtime, &socket, args.print_only));
+    let stop_step = stop_daemon_step(runtime, &socket, args.print_only).await;
+    let stop_status = stop_step.status;
+    report.push(stop_step);
     report.push(remove_launchd_step(&detection, args.print_only));
     report.extend(unwire_mcp_steps(args, &detection));
-    report.push(purge_data_step(args, repo, runtime, &detection));
+    report.push(purge_data_step(args, repo, runtime, &detection, stop_status));
     report.push(verify_step(&socket, &detection, args.purge, args.print_only));
     report
 }
@@ -297,7 +304,7 @@ fn detect_step(detection: &Detection) -> StepReport {
 
 // --- step: stop_daemon -------------------------------------------------------
 
-fn stop_daemon_step(runtime: &Path, socket: &Path, print_only: bool) -> StepReport {
+async fn stop_daemon_step(runtime: &Path, socket: &Path, print_only: bool) -> StepReport {
     let pid_file = pid_file_path(runtime);
     let socket_live = matches!(probe_live_socket(socket), SocketProbe::Live);
     let pid = read_pid(&pid_file);
@@ -313,7 +320,7 @@ fn stop_daemon_step(runtime: &Path, socket: &Path, print_only: bool) -> StepRepo
             .with_message(format!("[dry-run] would SIGTERM the daemon ({target}) and remove {}", pid_file.display()));
     }
 
-    match stop_daemon(pid, socket) {
+    match stop_daemon(pid, socket).await {
         Ok(message) => {
             let _ = std::fs::remove_file(&pid_file);
             StepReport::new(UninstallStep::StopDaemon, SetupStepStatus::Succeeded).with_message(message)
@@ -326,17 +333,13 @@ fn read_pid(pid_file: &Path) -> Option<u32> {
     std::fs::read_to_string(pid_file).ok().and_then(|raw| raw.trim().parse::<u32>().ok())
 }
 
-/// SIGTERM the daemon pid (no shutdown RPC exists), wait up to ~5s for exit, and
-/// confirm the socket went down. Returns `Ok` with a human summary or `Err`.
-fn stop_daemon(pid: Option<u32>, socket: &Path) -> Result<String, String> {
-    let Some(pid) = pid else {
-        // A live socket without a pid file: we cannot safely target a process,
-        // so report that the operator must stop it. This is rare (the installer
-        // always writes a pid file) and not worth a process-scan heuristic.
-        return Err(format!(
-            "socket at {} is live but no pid file was found; stop the daemon manually before retrying",
-            socket.display()
-        ));
+/// SIGTERM the daemon pid, waiting up to ~5s for exit. Missing pid files fall
+/// back to the daemon's `Status` response so older/lost-pid daemons can still
+/// be stopped without process-scan heuristics.
+async fn stop_daemon(pid: Option<u32>, socket: &Path) -> Result<String, String> {
+    let pid = match pid {
+        Some(pid) => pid,
+        None => pid_from_status(socket).await?,
     };
 
     if !process_alive(pid) {
@@ -352,6 +355,37 @@ fn stop_daemon(pid: Option<u32>, socket: &Path) -> Result<String, String> {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
     Err(format!("daemon pid {pid} did not exit within 5s after SIGTERM"))
+}
+
+async fn pid_from_status(socket: &Path) -> Result<u32, String> {
+    let status = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        client::request(socket, "uninstall-status", RequestPayload::Status),
+    )
+    .await
+    .map_err(|_| live_socket_no_pid_guidance(socket, "Status request timed out"))?
+    .map_err(|error| live_socket_no_pid_guidance(socket, &format!("Status request failed: {error:#}")))?;
+
+    match status.result {
+        ResponseResult::Success(ResponsePayload::Status(status)) => status
+            .daemon
+            .map(|daemon| daemon.pid)
+            .ok_or_else(|| live_socket_no_pid_guidance(socket, "Status response did not include a daemon pid")),
+        ResponseResult::Success(other) => {
+            Err(live_socket_no_pid_guidance(socket, &format!("Status request returned unexpected response: {other:?}")))
+        }
+        ResponseResult::Error(error) => Err(live_socket_no_pid_guidance(
+            socket,
+            &format!("Status request returned {}: {}", error.code, error.message),
+        )),
+    }
+}
+
+fn live_socket_no_pid_guidance(socket: &Path, reason: &str) -> String {
+    format!(
+        "socket at {} is live but no pid file was found ({reason}); stop the daemon manually before retrying",
+        socket.display()
+    )
 }
 
 #[cfg(unix)]
@@ -514,7 +548,18 @@ fn unwire_one(step: UninstallStep, config: &HarnessConfigDetection, print_only: 
 
 // --- step: purge_data --------------------------------------------------------
 
-fn purge_data_step(args: &UninstallArgs, repo: &Path, runtime: &Path, detection: &Detection) -> StepReport {
+fn purge_data_step(
+    args: &UninstallArgs,
+    repo: &Path,
+    runtime: &Path,
+    detection: &Detection,
+    stop_status: SetupStepStatus,
+) -> StepReport {
+    if stop_status == SetupStepStatus::Failed {
+        return StepReport::new(UninstallStep::PurgeData, SetupStepStatus::Failed)
+            .with_message("refusing to purge while the daemon may still be running; stop it manually and re-run");
+    }
+
     if !args.purge {
         return StepReport::new(UninstallStep::PurgeData, SetupStepStatus::Skipped)
             .with_message("data preserved; pass --purge to delete");
@@ -746,7 +791,7 @@ mod tests {
         input.purge = true; // repo is None → not explicit
         let detection = Detection::probe(&input, &repo, &runtime, &resolve_socket_path(&runtime));
 
-        let step = purge_data_step(&input, &repo, &runtime, &detection);
+        let step = purge_data_step(&input, &repo, &runtime, &detection, SetupStepStatus::Skipped);
         assert_eq!(step.status, SetupStepStatus::Failed);
         assert!(repo.exists(), "refused purge must not delete the dir");
     }
@@ -758,7 +803,7 @@ mod tests {
         let repo = temp.path().join("repo");
         let runtime = repo.join(".memoryd");
         let detection = Detection::probe(&input, &repo, &runtime, &resolve_socket_path(&runtime));
-        let step = purge_data_step(&input, &repo, &runtime, &detection);
+        let step = purge_data_step(&input, &repo, &runtime, &detection, SetupStepStatus::Skipped);
         assert_eq!(step.status, SetupStepStatus::Skipped);
         assert_eq!(step.message.as_deref(), Some("data preserved; pass --purge to delete"));
     }
