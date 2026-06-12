@@ -148,10 +148,6 @@ impl PresenceRegistry {
         )
     }
 
-    pub fn cleanup_stale(&self, stale_threshold: Duration) -> Vec<String> {
-        self.cleanup_stale_at(Instant::now(), stale_threshold)
-    }
-
     pub fn cleanup_stale_at(&self, now: Instant, stale_threshold: Duration) -> Vec<String> {
         self.cleanup_stale_records_at(now, stale_threshold).into_iter().map(|record| record.session_id).collect()
     }

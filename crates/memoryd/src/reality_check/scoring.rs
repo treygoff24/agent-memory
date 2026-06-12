@@ -140,7 +140,7 @@ fn indexed_static_fields_by_id(
             "SELECT id, path, COALESCE(observed_at, created_at), original_confidence, metadata_only
              FROM memories
              WHERE id IN ({})",
-            placeholders(chunk.len())
+            crate::util::sql_placeholders(chunk.len())
         );
         let mut statement = index.connection().prepare_cached(&query)?;
         let rows = statement.query_map(params_from_iter(chunk.iter().copied()), |db_row| {
@@ -158,7 +158,7 @@ fn indexed_static_fields_by_id(
             fields.insert(
                 id,
                 IndexedStaticFields {
-                    last_observed_at: parse_time(&observed_at).unwrap_or(fallback),
+                    last_observed_at: crate::util::parse_rfc3339_utc(&observed_at).unwrap_or(fallback),
                     original_confidence,
                     encrypted: metadata_only || path.starts_with("encrypted/"),
                 },
@@ -183,13 +183,4 @@ fn take_top_with_pins(scored: Vec<ScoredMemory>, top_n: usize) -> Vec<ScoredMemo
         return Vec::new();
     }
     scored.into_iter().take(top_n).collect()
-}
-
-fn parse_time(value: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(value).ok().map(|time| time.with_timezone(&Utc))
-}
-
-fn placeholders(count: usize) -> String {
-    debug_assert!(count > 0);
-    std::iter::repeat_n("?", count).collect::<Vec<_>>().join(",")
 }

@@ -1,6 +1,6 @@
-use crate::cli::paths::resolve_socket_arg;
 use crate::cli::{WebArgs, WebCommand};
 use crate::client;
+use crate::paths::resolve_socket_arg;
 use crate::protocol::{RequestPayload, ResponseEnvelope, ResponsePayload, ResponseResult};
 
 pub async fn run(args: WebArgs) -> anyhow::Result<()> {

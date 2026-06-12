@@ -1,9 +1,9 @@
 use crate::cli::output::{
     governance_write_response_promoted_id, maybe_emit_first_write_banner, print_response, write_note_response_id,
 };
-use crate::cli::paths::resolve_socket_arg;
 use crate::cli::{ForgetArgs, GetArgs, SearchArgs, SupersedeArgs, WriteMemoryArgs, WriteNoteArgs};
 use crate::mcp::meta_with_current_cwd_if_missing;
+use crate::paths::resolve_socket_arg;
 use crate::protocol::RequestPayload;
 
 pub async fn run_search(args: SearchArgs) -> anyhow::Result<()> {

@@ -1,9 +1,9 @@
 //! Review-queue request handlers: listing the queue, applying approve/reject
 //! decisions (with grounding-rehydration quarantine), and the ReviewDecision model.
 
-use super::memory_ops::serialized_enum_value;
 use super::*;
 use crate::dream::calibration;
+use crate::util::serialized_enum_value;
 
 pub(crate) enum ReviewDecision {
     Approve,

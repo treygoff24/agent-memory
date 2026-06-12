@@ -287,10 +287,6 @@ impl App {
         self.rebuild_inbox();
     }
 
-    pub fn set_trust_artifact(&mut self, artifact: TrustArtifact) {
-        self.snapshot.trust_artifact = Some(artifact);
-    }
-
     pub fn handle_event(&mut self, event: Event, now: Instant) {
         self.on_tick(now);
         match event {

@@ -977,7 +977,7 @@ pub fn ui_subprocess_args(args: &UiArgs) -> Vec<OsString> {
         OsString::from("--panel"),
         OsString::from(args.panel.to_string()),
         OsString::from("--socket"),
-        crate::cli::paths::resolve_socket_arg(&args.socket).as_os_str().to_owned(),
+        crate::paths::resolve_socket_arg(&args.socket).as_os_str().to_owned(),
     ]
 }
 
@@ -999,7 +999,7 @@ pub fn web_request_payload(command: &WebCommand) -> RequestPayload {
     match command {
         WebCommand::Enable(args) => RequestPayload::WebEnable {
             port: args.port,
-            socket_path: crate::cli::paths::resolve_socket_arg(&args.socket).to_string_lossy().into_owned(),
+            socket_path: crate::paths::resolve_socket_arg(&args.socket).to_string_lossy().into_owned(),
         },
         WebCommand::Disable(_) => RequestPayload::WebDisable,
         WebCommand::Status(_) => RequestPayload::WebStatus,
@@ -1040,7 +1040,6 @@ pub mod import;
 pub mod init;
 pub mod memory;
 pub(crate) mod output;
-pub(crate) mod paths;
 pub mod peer;
 pub mod peer_render;
 pub mod privacy;

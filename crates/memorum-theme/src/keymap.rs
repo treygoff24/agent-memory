@@ -88,21 +88,4 @@ impl Keymap {
         }
         Self { bindings }
     }
-
-    pub fn emacs() -> Self {
-        let mut keymap = Self::vim_arrows();
-        keymap.bindings.insert(
-            KeyChord { key: KeyCode::Char('n'), mods: KeyModifiers { ctrl: true, alt: false, shift: false } },
-            Action::MoveDown,
-        );
-        keymap.bindings.insert(
-            KeyChord { key: KeyCode::Char('p'), mods: KeyModifiers { ctrl: true, alt: false, shift: false } },
-            Action::MoveUp,
-        );
-        keymap
-    }
-
-    pub fn merge_user_overrides(&mut self, overrides: HashMap<KeyChord, Action>) {
-        self.bindings.extend(overrides);
-    }
 }

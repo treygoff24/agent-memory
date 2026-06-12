@@ -1,9 +1,9 @@
-use crate::cli::paths::resolve_socket_arg;
 use crate::cli::{ImportArgs, ImportHarness, NonGitCwdDefault};
 use crate::import::pipeline::{run_import_session, ExecuteOptions, HarnessFilter, ImportOptions, SocketDaemonClient};
 use crate::import::project_map::{
     FixedDispositionBackend, InteractivePromptBackend, PromptBackend, PromptedDisposition,
 };
+use crate::paths::resolve_socket_arg;
 
 pub async fn run(args: ImportArgs) -> anyhow::Result<()> {
     let harness_filter = match args.harness {

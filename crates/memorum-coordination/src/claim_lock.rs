@@ -272,10 +272,6 @@ impl ClaimLockRegistry {
         }
     }
 
-    pub fn sweep_expired(&self) -> Vec<ClaimLockInfo> {
-        self.sweep_expired_at(Instant::now())
-    }
-
     pub fn sweep_expired_at(&self, now: Instant) -> Vec<ClaimLockInfo> {
         let memory_ids = self
             .locks

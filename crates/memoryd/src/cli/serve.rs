@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::watch;
 
-use crate::cli::paths::resolve_socket_with_runtime;
 use crate::cli::ServeArgs;
+use crate::paths::resolve_socket_with_runtime;
 use crate::server::{self, ServerOptions};
 use crate::state;
 

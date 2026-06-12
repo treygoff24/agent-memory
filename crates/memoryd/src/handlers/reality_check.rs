@@ -213,7 +213,7 @@ async fn correct_reality_check_item(
                 "type": governance_type_meta(old.frontmatter.memory_type),
                 "summary": old.frontmatter.summary,
                 "confidence": old.frontmatter.confidence,
-                "sensitivity": memory_ops::serialized_enum_value(&old.frontmatter.sensitivity),
+                "sensitivity": crate::util::serialized_enum_value(&old.frontmatter.sensitivity),
                 "source_kind": "user",
                 "explicit_user_context": true
             }),

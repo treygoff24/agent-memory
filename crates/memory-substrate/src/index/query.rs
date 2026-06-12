@@ -105,16 +105,6 @@ impl Index {
         )
     }
 
-    /// Clear all derived rows before a full reindex.
-    pub fn clear_memory_index(&mut self) -> rusqlite::Result<()> {
-        let txn = self.connection.transaction()?;
-        txn.execute("DELETE FROM memory_chunks", [])?;
-        txn.execute("DELETE FROM memories", [])?;
-        txn.execute("DELETE FROM chunk_vectors", [])?;
-        txn.execute("DELETE FROM chunk_embedding_meta", [])?;
-        txn.commit()
-    }
-
     /// Clear plaintext-derived rows before reindexing Markdown files.
     ///
     /// Encrypted-tier rows (`encrypted/%`) are intentionally preserved here:

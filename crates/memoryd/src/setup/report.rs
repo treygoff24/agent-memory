@@ -35,11 +35,6 @@ impl SetupReport {
         self
     }
 
-    pub fn with_import_report(mut self, import_report: ImportReport) -> Self {
-        self.import_report = Some(import_report);
-        self
-    }
-
     pub fn push_step(&mut self, step: SetupStepReport) {
         self.steps.push(step);
     }

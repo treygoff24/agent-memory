@@ -4,11 +4,11 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::cli::paths::default_socket;
 use crate::import::discovery::{
     discover_claude_memory_root, discover_codex_memory_root, ClaudeMemoryRoot, CodexMemoryRoot, DiscoverySource,
 };
 use crate::import::sources::{claude, codex};
+use crate::paths::default_socket;
 use crate::socket::{probe_live_socket, SocketProbe};
 
 use super::SetupResult;

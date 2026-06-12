@@ -28,7 +28,6 @@ use memory_substrate::{
     SubstrateFragmentAppendRequest, SubstrateFragmentEncryption, SubstrateFragmentPayload, TrustLevel, WriteMode,
     WritePolicy, WriteRequest as SubstrateWriteRequest,
 };
-use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::{broadcast, Mutex};
 

@@ -42,10 +42,6 @@ impl FlagDrivenIo {
     pub fn notes(&self) -> &[String] {
         &self.notes
     }
-
-    pub fn into_notes(self) -> Vec<String> {
-        self.notes
-    }
 }
 
 impl SetupIo for FlagDrivenIo {

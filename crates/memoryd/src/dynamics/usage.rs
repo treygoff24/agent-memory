@@ -84,7 +84,7 @@ pub fn recall_usage_for_conn(
                AND ts > ?
                AND memory_id IN ({})
              GROUP BY memory_id",
-            placeholders(chunk.len())
+            crate::util::sql_placeholders(chunk.len())
         );
         let mut statement = connection.prepare_cached(&query)?;
         let params = std::iter::once(cutoff.as_str()).chain(chunk.iter().copied());
@@ -136,7 +136,7 @@ pub fn distinct_sources_for_conn(
                FROM chain
                JOIN memories mem ON chain.memory_id = mem.id
               GROUP BY chain.root_id",
-            placeholders(chunk.len())
+            crate::util::sql_placeholders(chunk.len())
         );
         let mut statement = connection.prepare_cached(&query)?;
         let rows = statement.query_map(params_from_iter(chunk.iter().copied()), |db_row| {
@@ -155,14 +155,5 @@ pub fn distinct_sources_for_conn(
 }
 
 fn parse_optional_time(value: Option<String>) -> Option<DateTime<Utc>> {
-    value.as_deref().and_then(parse_time)
-}
-
-fn parse_time(value: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(value).ok().map(|time| time.with_timezone(&Utc))
-}
-
-fn placeholders(count: usize) -> String {
-    debug_assert!(count > 0);
-    std::iter::repeat_n("?", count).collect::<Vec<_>>().join(",")
+    value.as_deref().and_then(crate::util::parse_rfc3339_utc)
 }

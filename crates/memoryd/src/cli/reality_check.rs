@@ -1,6 +1,6 @@
-use crate::cli::paths::resolve_socket_arg;
 use crate::cli::{RealityCheckArgs, RealityCheckCommand};
 use crate::client;
+use crate::paths::resolve_socket_arg;
 use crate::protocol::{
     RealityCheckRequest, RealityCheckResponse, RequestPayload, ResponseEnvelope, ResponsePayload, ResponseResult,
 };

@@ -6,6 +6,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 
 use super::governance::{classify_privacy, write_privacy_memory};
 use super::*;
+use crate::util::serialized_enum_value;
 
 const SEARCH_LIMIT_DEFAULT: usize = 10;
 const SEARCH_LIMIT_MAX: usize = 20;
@@ -264,12 +265,6 @@ fn get_provenance(memory: &Memory) -> GetProvenance {
             .or_else(|| memory.frontmatter.source.session_id.clone()),
         evidence_refs: memory.frontmatter.evidence.iter().map(|evidence| evidence.reference.clone()).collect(),
     }
-}
-
-pub(crate) fn serialized_enum_value<T: Serialize>(value: &T) -> String {
-    let json = serde_json::to_value(value)
-        .expect("invariant: caller passes a unit-variant enum that serde always serializes infallibly");
-    json.as_str().expect("invariant: callers pass unit-variant enums that serialize to JSON strings").to_string()
 }
 
 pub(crate) async fn reveal_response(

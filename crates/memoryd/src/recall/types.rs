@@ -197,13 +197,6 @@ impl RecallExplanation {
             dynamics_degraded: false,
         }
     }
-
-    pub fn with_bounded_omissions(mut self, omissions: Vec<RecallOmission>) -> Self {
-        let bounded = bounded_omissions(omissions);
-        self.omitted = bounded.omitted;
-        self.omitted_truncated_count = bounded.omitted_truncated_count;
-        self
-    }
 }
 
 impl RecallSectionName {

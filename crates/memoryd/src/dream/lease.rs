@@ -181,21 +181,6 @@ pub fn release_manual_lease_with_git(git: &mut impl LeaseGit, request: LeaseAcqu
     }
 }
 
-pub fn run_scheduled_lease(
-    git: &mut impl LeaseGit,
-    request: ScheduledLeaseRequest,
-) -> Result<ScheduledLeaseReport, LeaseError> {
-    run_scheduled_lease_with_runner_and_sleeper(git, request, &RealLeaseSleeper, |lease| Ok(lease.report.clone()))
-}
-
-pub fn run_scheduled_lease_with_runner(
-    git: &mut impl LeaseGit,
-    request: ScheduledLeaseRequest,
-    mut run_dream: impl FnMut(&LeaseAcquired) -> Result<DreamRunReport, LeaseError>,
-) -> Result<ScheduledLeaseReport, LeaseError> {
-    run_scheduled_lease_with_runner_and_sleeper(git, request, &RealLeaseSleeper, |lease| run_dream(lease))
-}
-
 pub fn run_scheduled_lease_with_runner_and_sleeper(
     git: &mut impl LeaseGit,
     request: ScheduledLeaseRequest,

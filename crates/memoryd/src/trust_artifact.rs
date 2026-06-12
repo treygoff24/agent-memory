@@ -14,7 +14,7 @@ use serde_json::Value;
 use crate::dynamics::strength::{strength, StrengthFacts};
 use crate::dynamics::usage::{distinct_sources_for_conn, UsageSummary};
 use crate::dynamics::{load_dynamics_config, DynamicsConfig};
-use crate::handlers::memory_ops::serialized_enum_value as enum_value;
+use crate::util::serialized_enum_value as enum_value;
 
 const ENCRYPTED_REDACTION: &str = "[encrypted - use memoryd reveal <id> to decrypt]";
 const NO_POLICY_VALUE: &str = "not recorded";
@@ -280,7 +280,7 @@ fn query_recall_stats(
         )
         .map_err(TrustArtifactError::QueryMirror)?;
 
-    let last_recalled = last_recalled_at.as_deref().and_then(parse_time);
+    let last_recalled = last_recalled_at.as_deref().and_then(crate::util::parse_rfc3339_utc);
     let strength = render_strength(
         connection,
         StrengthRenderInput {
@@ -412,7 +412,7 @@ fn query_provenance(connection: &Connection, id: &MemoryId) -> Result<Vec<Proven
             let kind: String = row.get(1)?;
             let device: String = row.get(2)?;
             let payload_json: String = row.get(3)?;
-            let timestamp = parse_time(&timestamp).unwrap_or(DateTime::<Utc>::UNIX_EPOCH);
+            let timestamp = crate::util::parse_rfc3339_utc(&timestamp).unwrap_or(DateTime::<Utc>::UNIX_EPOCH);
             let payload = serde_json::from_str::<Value>(&payload_json).unwrap_or(Value::Null);
             Ok(ProvenanceEvent {
                 timestamp,
@@ -657,10 +657,6 @@ fn value_to_string(value: &Value) -> Option<String> {
         Value::Number(value) => Some(value.to_string()),
         _ => None,
     }
-}
-
-fn parse_time(value: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(value).ok().map(|time| time.with_timezone(&Utc))
 }
 
 fn privacy_namespace(scope: &memory_substrate::Scope) -> PrivacyNamespace {

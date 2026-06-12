@@ -70,7 +70,7 @@ pub async fn run(args: InitArgs) -> anyhow::Result<()> {
 /// Mirrors `scripts/install-memorum.sh`: `--repo` flag → `$MEMORUM_REPO` →
 /// `~/memorum`, with runtime defaulting to `<repo>/.memoryd`.
 pub(crate) fn resolve_repo_runtime(args: &InitArgs) -> (PathBuf, PathBuf) {
-    crate::cli::paths::resolve_repo_runtime_paths(args.repo.clone(), args.runtime.clone())
+    crate::paths::resolve_repo_runtime_paths(args.repo.clone(), args.runtime.clone())
 }
 
 #[cfg(test)]

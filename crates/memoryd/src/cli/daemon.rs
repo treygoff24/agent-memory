@@ -5,8 +5,8 @@ use memory_substrate::{OpenError, Roots, Substrate};
 use super::{DoctorArgs, McpArgs, SocketArgs};
 use crate::cli::exit::doctor_cli_exit_code;
 use crate::cli::output::print_response;
-use crate::cli::paths::{resolve_repo_runtime_paths, resolve_socket_arg, resolve_socket_with_runtime};
 use crate::client;
+use crate::paths::{resolve_repo_runtime_paths, resolve_socket_arg, resolve_socket_with_runtime};
 use crate::protocol::RequestPayload;
 use crate::socket::{await_socket_ready, spawn_serve_child, DaemonReadiness, DAEMON_READY_TIMEOUT};
 

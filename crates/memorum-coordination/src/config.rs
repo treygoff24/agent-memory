@@ -151,10 +151,6 @@ impl Default for RelevanceGateConfig {
 }
 
 impl RelevanceGateConfig {
-    pub fn recency_window(&self) -> Duration {
-        Duration::from_secs(self.recency_window_seconds)
-    }
-
     fn validate(&self) -> Result<(), ConfigValidationError> {
         validate_unit_threshold("coordination.relevance_gate.threshold", self.threshold)?;
         validate_inclusive_range(

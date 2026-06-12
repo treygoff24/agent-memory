@@ -1,7 +1,7 @@
 use crate::cli::output::print_response;
-use crate::cli::paths::resolve_socket_arg;
 use crate::cli::{ReviewArgs, ReviewCommand};
 use crate::client;
+use crate::paths::resolve_socket_arg;
 use crate::protocol::RequestPayload;
 
 pub async fn run(args: ReviewArgs) -> anyhow::Result<()> {

@@ -72,9 +72,7 @@ const GAIN_USEFUL: f64 = 1.0;
 /// deterministic, so any movement is a real ranking change, not noise.
 pub const DEFAULT_TOLERANCE: f64 = 0.02;
 
-// ---------------------------------------------------------------------------
 // Corpus + query model
-// ---------------------------------------------------------------------------
 
 /// One labeled query case from `queries.yaml`.
 #[derive(Debug, Clone, Deserialize)]
@@ -130,9 +128,7 @@ impl QueryCase {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Errors
-// ---------------------------------------------------------------------------
 
 /// Errors raised while assembling or running the quality corpus.
 #[derive(Debug)]
@@ -169,9 +165,7 @@ impl From<std::io::Error> for QualityError {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Corpus harness — a real Substrate populated from the golden tree
-// ---------------------------------------------------------------------------
 
 /// A scratch substrate with the golden corpus indexed through the real reindex
 /// path, plus the project-alias → canonical-namespace-id map needed to resolve
@@ -553,9 +547,7 @@ fn collect_markdown(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Metrics
-// ---------------------------------------------------------------------------
 
 /// Aggregated metrics for one ranking seam over the non-abstention cases.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -720,9 +712,7 @@ fn dcg_term(gain: f64, rank_index: usize) -> f64 {
     gain / ((rank_index as f64 + 2.0).log2())
 }
 
-// ---------------------------------------------------------------------------
 // Runner
-// ---------------------------------------------------------------------------
 
 /// Run both ranking seams over the golden corpus and produce the full report.
 pub async fn run_quality_report() -> Result<QualityReport, QualityError> {
@@ -886,9 +876,7 @@ pub fn report_to_json(report: &QualityReport) -> String {
     serde_json::to_string_pretty(report).expect("QualityReport serializes infallibly")
 }
 
-// ---------------------------------------------------------------------------
 // Baseline gate
-// ---------------------------------------------------------------------------
 
 /// Canonical path of the human-committed quality baseline.
 ///

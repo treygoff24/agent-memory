@@ -1,7 +1,7 @@
 use crate::cli::output::print_response;
-use crate::cli::paths::resolve_socket_arg;
 use crate::cli::{SourceArgs, SourceCaptureArgs, SourceCaptureCliMode, SourceCommand};
 use crate::client;
+use crate::paths::resolve_socket_arg;
 use crate::protocol::{CaptureSourceMode, RequestPayload, SourceCapturePayload};
 
 pub async fn run(args: SourceArgs) -> anyhow::Result<()> {

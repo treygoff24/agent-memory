@@ -32,12 +32,6 @@ impl PaletteState {
         self.message.as_deref()
     }
 
-    pub fn set_input(&mut self, input: impl Into<String>) {
-        self.input = input.into();
-        self.selected = 0;
-        self.message = None;
-    }
-
     pub fn selected_label(&self) -> Option<&'static str> {
         self.candidates().get(self.selected).map(|command| command.label)
     }

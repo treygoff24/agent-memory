@@ -32,8 +32,6 @@
 //! Importers stay code: an [`ImporterId`] only *names* a parser that must exist
 //! in `memoryd`; config cannot conjure a new parser.
 
-use std::collections::BTreeMap;
-
 use serde::{Deserialize, Serialize};
 
 /// Whether a harness participates in full Stream I coordination (peer-update
@@ -269,11 +267,6 @@ impl HarnessRegistry {
     /// Iterate descriptors in registration order.
     pub fn descriptors(&self) -> impl Iterator<Item = &HarnessDescriptor> {
         self.descriptors.iter()
-    }
-
-    /// Build the canonical id → resolved-coordination map (diagnostics/tests).
-    pub fn coordination_table(&self) -> BTreeMap<String, Coordination> {
-        self.descriptors.iter().map(|d| (d.id.clone(), d.coordination)).collect()
     }
 }
 

@@ -14,6 +14,9 @@ pub mod import;
 pub mod mcp;
 pub mod mcp_stdio;
 pub mod notifications;
+/// Path-resolution leaf: repo/runtime/socket defaults shared by `cli` and `setup`.
+/// Lives at the crate root (not under `cli`) to break the `cli` <-> `setup` module cycle.
+pub(crate) mod paths;
 pub mod policy_editor;
 pub mod protocol;
 pub mod reality_check;
@@ -25,3 +28,4 @@ pub mod slash_commands;
 pub mod socket;
 pub mod state;
 pub mod trust_artifact;
+pub(crate) mod util;

@@ -1,7 +1,7 @@
 use crate::cli::exit::{exit_protocol_error, exit_recall_unavailable};
-use crate::cli::paths::resolve_socket_with_runtime;
 use crate::cli::{RecallArgs, RecallCommand};
 use crate::client;
+use crate::paths::resolve_socket_with_runtime;
 use crate::protocol::{RequestPayload, ResponsePayload, ResponseResult};
 use crate::recall::{DeltaRequest, StartupRequest};
 
