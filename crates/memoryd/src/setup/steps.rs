@@ -545,14 +545,17 @@ fn current_harness_from_env<F>(mut env: F) -> Option<HarnessTarget>
 where
     F: FnMut(&str) -> Option<OsString>,
 {
-    let claude = env_var_is_set(&mut env, "CLAUDECODE") || env_var_is_set(&mut env, "CLAUDE_CODE_ENTRYPOINT");
-    let codex = env_var_is_set(&mut env, "CODEX_HOME");
-
-    match (claude, codex) {
-        (true, false) => Some(HarnessTarget::Claude),
-        (false, true) => Some(HarnessTarget::Codex),
-        _ => None,
+    // CLAUDECODE / CLAUDE_CODE_ENTRYPOINT only exist inside a live Claude Code
+    // session, while CODEX_HOME is a config-location pointer users commonly
+    // export in shell profiles. Session-scoped signals win outright; a static
+    // CODEX_HOME must not turn a Claude session ambiguous.
+    if env_var_is_set(&mut env, "CLAUDECODE") || env_var_is_set(&mut env, "CLAUDE_CODE_ENTRYPOINT") {
+        return Some(HarnessTarget::Claude);
     }
+    if env_var_is_set(&mut env, "CODEX_HOME") {
+        return Some(HarnessTarget::Codex);
+    }
+    None
 }
 
 fn env_var_is_set<F>(env: &mut F, name: &str) -> bool
@@ -1047,6 +1050,18 @@ mod tests {
         match selected_wire_targets_with_env(&plan, fake_env(&[("CODEX_HOME", "/tmp/codex")])) {
             SelectedWireTargets::Run(targets) => assert_eq!(targets, vec![HarnessTarget::Codex]),
             other => panic!("expected Codex wire target, got {}", selected_wire_debug(&other)),
+        }
+    }
+
+    /// CODEX_HOME is often a static profile export; a live Claude session
+    /// signal must win over it rather than rendering `current` ambiguous.
+    #[test]
+    fn current_selection_prefers_claude_session_signal_over_static_codex_home() {
+        let plan = selection_plan(HarnessSelection::Current, WireMcpSelection::Current, true, true);
+
+        match selected_import_with_env(&plan, fake_env(&[("CLAUDECODE", "1"), ("CODEX_HOME", "/tmp/codex")])) {
+            SelectedImport::Run { filter, .. } => assert_eq!(filter, Some(HarnessFilter::Claude)),
+            other => panic!("expected Claude import selection, got {}", selected_import_debug(&other)),
         }
     }
 
