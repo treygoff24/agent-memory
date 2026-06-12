@@ -169,3 +169,20 @@ Source grounding does not support browser-rendered capture, authenticated
 browser sessions, screenshots/OCR, client-supplied key paths, or privacy bypass
 flags in alpha. The model privacy filter remains unsupported; deterministic
 privacy checks still apply and unsafe plaintext fails closed.
+
+## 8. Uninstalling
+
+When you want a clean exit, `memoryd uninstall` reverses what `memoryd init` and `scripts/install-memorum.sh` set up. It stops the daemon, removes the launchd plist (macOS), and unwires the `memorum` MCP entry from your harness configs — leaving every sibling server and unrelated setting in place.
+
+```bash
+memoryd uninstall --print-only   # preview every step without changing anything
+memoryd uninstall                # interactive confirm, then run
+```
+
+Your data is preserved by default. To also delete the repo and runtime directories, add `--purge` (you will be asked to confirm the resolved absolute paths on a terminal):
+
+```bash
+memoryd uninstall --purge
+```
+
+Installed binaries are never removed for you — the final `verify` step prints the `cargo uninstall memoryd memoryd-tui memoryd-web memory-merge-driver` line if you want them gone too.

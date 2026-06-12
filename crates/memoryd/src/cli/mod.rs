@@ -77,6 +77,49 @@ pub enum Command {
     /// daemon, and wire MCP configs. Interactive wizard on a TTY; scripted
     /// JSON path via `--non-interactive`.
     Init(InitArgs),
+    /// Reverse what `memoryd init` / `scripts/install-memorum.sh` set up: stop
+    /// the daemon, remove the launchd plist, unwire MCP configs, and optionally
+    /// purge the repo/runtime data. The clean exit. Scripted JSON path via
+    /// `--non-interactive --json`; `--print-only` previews with zero side effects.
+    Uninstall(UninstallArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct UninstallArgs {
+    /// Canonical Memorum repo root (default `$MEMORUM_REPO` or `~/memorum`).
+    #[arg(long)]
+    pub repo: Option<PathBuf>,
+    /// Local per-device runtime directory (default `<repo>/.memoryd`).
+    #[arg(long)]
+    pub runtime: Option<PathBuf>,
+    /// Run without prompts; drive teardown from flags and emit a
+    /// machine-readable report. Suitable for CI and agent teardown.
+    #[arg(long, default_value_t = false)]
+    pub non_interactive: bool,
+    /// Emit machine-readable JSON to stdout; diagnostics always go to stderr.
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
+    /// Plan and report every step without applying side effects.
+    #[arg(long, default_value_t = false)]
+    pub print_only: bool,
+    /// Delete the repo and runtime directories. Without this flag, data is
+    /// preserved and the purge step reports `skipped`.
+    #[arg(long, default_value_t = false)]
+    pub purge: bool,
+    /// Harness configs to unwire. Omitted: all detected harnesses.
+    #[arg(long, value_enum)]
+    pub harness: Option<UninstallHarness>,
+}
+
+/// Harness selection for `memoryd uninstall --harness`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "lowercase")]
+pub enum UninstallHarness {
+    Current,
+    Claude,
+    Codex,
+    All,
+    None,
 }
 
 #[derive(Debug, Args)]
@@ -1015,4 +1058,5 @@ pub mod review;
 pub mod serve;
 pub mod source;
 pub mod ui;
+pub mod uninstall;
 pub mod web;

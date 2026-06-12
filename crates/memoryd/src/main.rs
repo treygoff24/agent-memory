@@ -46,6 +46,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Command::Import(args) => cli::import::run(args).await?,
         Command::Init(args) => cli::init::run(args).await?,
+        Command::Uninstall(args) => cli::uninstall::run(args).await?,
     }
     Ok(())
 }

@@ -9,6 +9,7 @@ pub mod io;
 pub mod mcp_wire;
 pub mod report;
 pub mod steps;
+pub mod unwire;
 
 use std::path::{Path, PathBuf};
 
@@ -21,6 +22,10 @@ pub use detect::{
 pub use io::{collect_setup_decisions, FlagDrivenIo, SetupIo};
 pub use mcp_wire::{wire, HarnessTarget, McpServerSpec, WireError, WireMode, WireOutcome, WireStatus};
 pub use report::{SetupReport, SetupStep, SetupStepReport, SetupStepStatus, VerifyDetail};
+pub use unwire::{
+    claude_config_path, codex_config_path, remove_memorum_mcp_json, remove_memorum_mcp_toml, ConfigUnwireOutcome,
+    MEMORUM_SERVER_COMMAND, MEMORUM_SERVER_NAME,
+};
 
 /// Result alias for setup orchestration.
 pub type SetupResult<T> = Result<T, SetupError>;

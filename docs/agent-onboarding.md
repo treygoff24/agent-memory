@@ -305,6 +305,25 @@ These are every flag accepted by `memoryd init`. Do not cite flags outside this 
     (dry-run import, print-only MCP wiring).
 ```
 
+## Uninstalling
+
+`memoryd uninstall` is the clean reverse of `memoryd init` — the easy exit a user should be able to take at any time. Drive it the same way you drove install: detect, confirm with the user, run, verify.
+
+1. **Detect.** Run `memoryd uninstall --print-only` and read the JSON. It resolves the repo/runtime, probes the daemon socket, lists which harness configs hold a `memorum` MCP entry, and (on macOS) reports any `com.memorum.*` launchd plist. Nothing is changed.
+2. **Confirm with the user.** Show them what will happen. By default their data is **preserved** — only the daemon, launchd plist, and MCP wiring are removed. Deleting the repo and runtime requires `--purge`, which is destructive. Always confirm the resolved absolute paths before purging.
+3. **Run.** `memoryd uninstall --non-interactive --json [--purge] [--harness <set>]`. It stops the daemon (SIGTERM the pid in `<runtime>/memoryd.pid`), removes the launchd plist, and removes only the `memorum` MCP entry whose command is `memoryd` — sibling servers and unrelated config are left untouched, at both Claude user scope and project scope.
+4. **Verify.** The final `verify` step confirms the socket is gone, the plist is gone, and the configs are clean. It also reports any leftover binaries on PATH with the `cargo uninstall` one-liner — `memoryd uninstall` never removes installed binaries for you. Tell the user that line if they want a full removal.
+
+```
+memoryd uninstall [--repo <PATH>] [--runtime <PATH>]
+                  [--non-interactive] [--json] [--print-only]
+                  [--purge] [--harness <current|claude|codex|all|none>]
+    Reverse what init / install-memorum.sh set up.
+    Without --purge, data is preserved (purge step reports `skipped`).
+    A bare invocation on a TTY runs a one-line confirm; a non-TTY call without
+    --non-interactive / --json / --print-only refuses with guidance, like init.
+```
+
 ## Reference: related subcommands
 
 ```

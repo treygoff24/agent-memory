@@ -653,7 +653,10 @@ impl McpWireRuntime for SystemWireRuntime {
     }
 }
 
-fn write_config_file_safely(path: &Path, contents: &str) -> Result<(), WireError> {
+/// Atomically replace `path` with `contents`, backing up any prior file. Shared
+/// with `unwire` so config removal uses the same backup + temp-rename discipline
+/// as wiring.
+pub(crate) fn write_config_file_safely(path: &Path, contents: &str) -> Result<(), WireError> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     if path.exists() {
         let backup_path = sibling_with_unique_suffix(path, "bak");

@@ -140,6 +140,19 @@ memoryd ui --socket "$MEMORUM_SOCKET"
 memorum-eval --harness mock --output text
 ```
 
+## Uninstalling
+
+`memoryd uninstall` is the clean reverse of `memoryd init`: it stops the daemon, removes the launchd plist, and unwires the `memorum` MCP entry from your harness configs (leaving everything else untouched). Your data is preserved by default — pass `--purge` to also delete the repo and runtime.
+
+```bash
+memoryd uninstall --print-only                 # preview every step, change nothing
+memoryd uninstall                              # interactive confirm, then run
+memoryd uninstall --purge                      # also delete the repo + runtime
+memoryd uninstall --non-interactive --json     # scripted teardown for CI/agents
+```
+
+Installed binaries are never removed automatically; the final `verify` step prints the `cargo uninstall` one-liner if you want a full removal.
+
 ## Quality gates
 
 Focused Rust checks:
