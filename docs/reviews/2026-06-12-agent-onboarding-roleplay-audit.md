@@ -226,3 +226,31 @@ filesystem-aware Claude cwd decoder + 3 tests (finding 6).
   warning absent on non-interactive generate (9); FTS-only warm-up window (12).
 - Nits: detection JSON lacks promised repo field (3); doctor/status JSON-mode doc drift
   (8); status connection-refused hint (13); restart_required stickiness (14).
+
+## Addendum — fix wave, 2026-06-12 afternoon
+
+All six open majors were fixed via delegated lanes (Codex: findings 4, 7+11, 13;
+Cursor: findings 8, 10) with orchestrator review and integration fixes, plus a new
+`memoryd uninstall` subcommand (Opus subagent) reversing init/installer provisioning.
+The fix wave surfaced two NEW findings:
+
+### 15. Daemon write path hardcodes the project namespace
+
+- **MAJOR (open):** `crates/memoryd/src/handlers/mod.rs` declares
+  `const DEFAULT_PROJECT_NAMESPACE: &str = "agent-memory"` — a dev placeholder. Every
+  project-scoped write that does not carry a `canonical_namespace_id` in its meta
+  buckets under the literal directory `projects/agent-memory/`, regardless of which
+  project the session is in. The fix wave routed *import* writes correctly (they now
+  carry canonical id + alias), but ordinary `memory_write` calls from live MCP sessions
+  still hit the constant. The write path needs session-binding-aware placement (the
+  daemon already resolves the project for `memory_startup`; writes should use the same
+  binding). This explains finding 11's directory symptom at the deepest level.
+
+### 16. Non-init socket commands resolve a different default runtime
+
+- **Friction (open):** `memoryd search/get/mcp/...` default their socket via
+  `default_runtime_root()` (`$MEMORUM_RUNTIME` / `~/.local/share/memorum/runtime`),
+  while init/doctor/status now share the init-aligned default
+  (`$MEMORUM_REPO`→`~/memorum`, runtime `<repo>/.memoryd`). Two different "default
+  socket" answers in one binary. Align the remaining commands on the shared helper
+  (surfaced by the lane B implementation report).
