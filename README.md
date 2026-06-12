@@ -35,7 +35,7 @@ bash scripts/install-memorum.sh --force-reinstall --repo "$MEMORUM_REPO" --runti
 ```
 
 The installer installs the operator-facing dogfood binaries:
-`memoryd`, `memoryd-tui`, `memoryd-web`, and `memoryd-merge-driver`.
+`memoryd`, `memoryd-tui`, `memoryd-web`, and `memory-merge-driver`.
 `memorum-eval` is a development/eval binary; install it separately only when
 you are running evals.
 

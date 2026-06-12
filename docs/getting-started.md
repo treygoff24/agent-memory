@@ -43,7 +43,7 @@ bash scripts/install-memorum.sh --force-reinstall --repo "$HOME/memorum" --runti
 ```
 
 The installer builds the dogfood operator binaries (`memoryd`, `memoryd-tui`,
-`memoryd-web`, and `memoryd-merge-driver`) and prints MCP client snippets with
+`memoryd-web`, and `memory-merge-driver`) and prints MCP client snippets with
 an absolute socket path. If you prefer a manual install, use the same binary set:
 
 ```bash

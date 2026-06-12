@@ -287,7 +287,7 @@ install_memoryd_if_needed() {
   fi
 
   local crates=(memoryd memoryd-tui memoryd-web memory-merge-driver)
-  local bins=(memoryd memoryd-tui memoryd-web memoryd-merge-driver)
+  local bins=(memoryd memoryd-tui memoryd-web memory-merge-driver)
   for crate in "${crates[@]}"; do
     if [ "$dry_run" -eq 0 ]; then
       if [ "$crate" = "memoryd" ] && [ "$force_reinstall" -eq 0 ] && [ -n "$expected" ] && [ "$installed" = "$expected" ]; then
@@ -311,7 +311,7 @@ install_memoryd_if_needed() {
       echo "+ command -v $bin"
     done
   fi
-  echo "installer binary set: memoryd, memoryd-tui, memoryd-web, memoryd-merge-driver"
+  echo "installer binary set: memoryd, memoryd-tui, memoryd-web, memory-merge-driver"
   echo "note: memorum-eval is a development/eval binary; install it separately with cargo install --path crates/memorum-eval --locked when needed."
 }
 

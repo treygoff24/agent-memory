@@ -80,7 +80,7 @@ CLI path used the local credential setup successfully.
 ## Option 2: clone and run the bootstrap installer
 
 Use this path when you want the full current binary set (`memoryd`,
-`memoryd-tui`, `memoryd-web`, and `memoryd-merge-driver`) plus daemon startup
+`memoryd-tui`, `memoryd-web`, and `memory-merge-driver`) plus daemon startup
 and MCP snippets:
 
 ```bash
