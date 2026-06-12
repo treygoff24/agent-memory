@@ -15,4 +15,4 @@ for arg in "$@"; do
   esac
 done
 
-cargo run "${cargo_mode[@]}" -p memoryd --bin stream_e_recall_bench -- "$mode" --sizes "$sizes" --warm-runs "$warm_runs"
+cargo run "${cargo_mode[@]}" -p memoryd --features dev-fixtures --bin stream_e_recall_bench -- "$mode" --sizes "$sizes" --warm-runs "$warm_runs"

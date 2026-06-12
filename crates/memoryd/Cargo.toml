@@ -65,6 +65,18 @@ name = "stream_f_dream_bench"
 path = "src/bin/stream_f_dream_bench.rs"
 required-features = ["dev-fixtures"]
 
+# Bench bins are dev tooling: gating them behind dev-fixtures keeps
+# `cargo install memoryd` from dropping bench executables into a user's PATH.
+[[bin]]
+name = "stream_e_recall_bench"
+path = "src/bin/stream_e_recall_bench.rs"
+required-features = ["dev-fixtures"]
+
+[[bin]]
+name = "stream_g_bench"
+path = "src/bin/stream_g_bench.rs"
+required-features = ["dev-fixtures"]
+
 [dev-dependencies]
 rusqlite.workspace = true
 serial_test.workspace = true

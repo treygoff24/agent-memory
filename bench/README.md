@@ -5,7 +5,7 @@ Benchmark binaries may assert against checked-in canonical results, but they mus
 ## Stream G observability
 
 ```bash
-cargo run -p memoryd --bin stream_g_bench -- \
+cargo run -p memoryd --features dev-fixtures --bin stream_g_bench -- \
   --profile darwin-arm64 \
   --output bench/stream-g-observability-results.darwin-arm64.json
 ```
@@ -15,12 +15,12 @@ This writes `bench/stream-g-observability-results.darwin-arm64.json.proposed` an
 After reviewing the proposed diff from a human shell session:
 
 ```bash
-cargo run -p memoryd --bin stream_g_bench -- \
+cargo run -p memoryd --features dev-fixtures --bin stream_g_bench -- \
   --profile darwin-arm64 \
   --output bench/stream-g-observability-results.darwin-arm64.json \
   --promote-canonical
 
-cargo run -p memoryd --bin stream_g_bench -- \
+cargo run -p memoryd --features dev-fixtures --bin stream_g_bench -- \
   --profile darwin-arm64 \
   --assert \
   --baseline bench/stream-g-observability-results.darwin-arm64.json
