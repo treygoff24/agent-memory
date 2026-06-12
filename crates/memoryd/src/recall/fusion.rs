@@ -2,6 +2,8 @@ use std::collections::HashMap;
 
 use memory_substrate::{HybridMemoryCandidate, HybridScoreBreakdown, MemoryId};
 
+use crate::recall::config::DEFAULT_VECTOR_RECALL_RECENCY_TIE_EPSILON;
+
 /// A hybrid recall candidate after Reciprocal Rank Fusion.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FusedHybridCandidate {
@@ -16,7 +18,9 @@ pub struct FusedHybridCandidate {
 /// Rank bases are 1-based throughout: substrate BM25 ranks are already 1-based,
 /// and this helper derives 1-based vector ranks from descending cosine
 /// similarity. A memory absent from a lane contributes nothing for that lane.
-/// Equal fused scores resolve deterministically by lexicographic memory id.
+/// Near-equal fused scores may use the `mem_YYYYMMDD` id prefix as a
+/// subordinate freshness signal; remaining ties resolve deterministically by
+/// lexicographic memory id.
 pub fn fuse_rrf(candidates: &[HybridMemoryCandidate], rrf_k: u32) -> Vec<FusedHybridCandidate> {
     let mut vector_rank_by_id = HashMap::new();
     let mut vector_lane =
@@ -50,14 +54,47 @@ pub fn fuse_rrf(candidates: &[HybridMemoryCandidate], rrf_k: u32) -> Vec<FusedHy
         })
         .collect::<Vec<_>>();
 
-    fused.sort_by(|left, right| {
-        right.rrf_score.total_cmp(&left.rrf_score).then_with(|| left.memory_id.as_str().cmp(right.memory_id.as_str()))
-    });
+    sort_by_rrf_with_recency_ties(&mut fused, DEFAULT_VECTOR_RECALL_RECENCY_TIE_EPSILON);
     fused
 }
 
 fn reciprocal_rank_score(k: f64, rank: usize) -> f64 {
     1.0 / (k + rank as f64)
+}
+
+fn sort_by_rrf_with_recency_ties(candidates: &mut [FusedHybridCandidate], epsilon: f64) {
+    candidates.sort_by(|left, right| {
+        right.rrf_score.total_cmp(&left.rrf_score).then_with(|| left.memory_id.as_str().cmp(right.memory_id.as_str()))
+    });
+    if epsilon <= 0.0 {
+        return;
+    }
+
+    let mut group_start = 0;
+    while group_start < candidates.len() {
+        let group_score = candidates[group_start].rrf_score;
+        let mut group_end = group_start + 1;
+        while group_end < candidates.len() && (group_score - candidates[group_end].rrf_score).abs() <= epsilon {
+            group_end += 1;
+        }
+
+        candidates[group_start..group_end].sort_by(|left, right| {
+            memory_id_date(right.memory_id.as_str())
+                .cmp(&memory_id_date(left.memory_id.as_str()))
+                .then_with(|| right.rrf_score.total_cmp(&left.rrf_score))
+                .then_with(|| left.memory_id.as_str().cmp(right.memory_id.as_str()))
+        });
+        group_start = group_end;
+    }
+}
+
+fn memory_id_date(memory_id: &str) -> Option<u32> {
+    let date = memory_id.strip_prefix("mem_")?.get(..8)?;
+    if date.bytes().all(|byte| byte.is_ascii_digit()) {
+        date.parse().ok()
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -101,5 +138,33 @@ mod tests {
 
         assert_eq!(fused[0].memory_id.as_str(), "mem_20260610_0000000000000001_000001");
         assert_eq!(fused[1].memory_id.as_str(), "mem_20260610_0000000000000002_000002");
+    }
+
+    #[test]
+    fn recency_breaks_only_near_ties() {
+        let fused = fuse_rrf(
+            &[
+                candidate("mem_20250101_0000000000000001_000001", Some(4), None),
+                candidate("mem_20260101_0000000000000002_000002", Some(5), None),
+            ],
+            60,
+        );
+
+        assert_eq!(fused[0].memory_id.as_str(), "mem_20260101_0000000000000002_000002");
+        assert_eq!(fused[1].memory_id.as_str(), "mem_20250101_0000000000000001_000001");
+    }
+
+    #[test]
+    fn recency_does_not_cross_meaningful_rrf_gap() {
+        let fused = fuse_rrf(
+            &[
+                candidate("mem_20250101_0000000000000001_000001", Some(2), None),
+                candidate("mem_20260101_0000000000000002_000002", Some(3), None),
+            ],
+            60,
+        );
+
+        assert_eq!(fused[0].memory_id.as_str(), "mem_20250101_0000000000000001_000001");
+        assert_eq!(fused[1].memory_id.as_str(), "mem_20260101_0000000000000002_000002");
     }
 }

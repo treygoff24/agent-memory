@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 pub const DEFAULT_VECTOR_RECALL_ENABLED: bool = true;
 pub const DEFAULT_VECTOR_RECALL_KNN_LIMIT: usize = 20;
 pub const DEFAULT_VECTOR_RECALL_RRF_K: u32 = 60;
+pub const DEFAULT_VECTOR_RECALL_RECENCY_TIE_EPSILON: f64 = 0.00025;
 pub const DEFAULT_VECTOR_RECALL_EMBED_TIMEOUT_MS: u64 = 50;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
