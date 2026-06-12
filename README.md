@@ -99,7 +99,7 @@ For Claude Code, use user-scope wiring:
 claude mcp add --scope user memorum -- memoryd mcp --socket "/absolute/path/to/memorum/.memoryd/memoryd.sock"
 ```
 
-Or add this at the top-level `mcpServers` key of the user config (`$CLAUDE_CONFIG_DIR/.claude.json` or `~/.claude/.claude.json`):
+Or add this at the top-level `mcpServers` key of the user config (`$CLAUDE_CONFIG_DIR/.claude.json` or `~/.claude.json`):
 
 ```json
 {

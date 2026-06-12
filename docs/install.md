@@ -137,7 +137,7 @@ The Claude MCP one-liner uses the same argument grammar as `setup::mcp_wire`:
 claude mcp add --scope user memorum -- memoryd mcp --socket "/absolute/path/to/memorum/.memoryd/memoryd.sock"
 ```
 
-For config-file based clients, use the JSON snippet printed by the installer. In Claude Code this belongs at the top-level `mcpServers` key of the user config (`$CLAUDE_CONFIG_DIR/.claude.json` or `~/.claude/.claude.json`), not under `projects.<cwd>.mcpServers`:
+For config-file based clients, use the JSON snippet printed by the installer. In Claude Code this belongs at the top-level `mcpServers` key of the user config (`$CLAUDE_CONFIG_DIR/.claude.json` or `~/.claude.json`), not under `projects.<cwd>.mcpServers`:
 
 ```json
 {

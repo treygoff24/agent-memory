@@ -57,7 +57,7 @@ Wire Memorum at **user scope** so it follows you across projects:
 claude mcp add --scope user memorum -- memoryd mcp --socket "/absolute/path/to/memorum/.memoryd/memoryd.sock"
 ```
 
-Or merge the same server shape at the top-level `mcpServers` key of the user config (`$CLAUDE_CONFIG_DIR/.claude.json` or `~/.claude/.claude.json`). Do not tuck it under `projects.<cwd>.mcpServers` — that project-local entry disappears when you work elsewhere.
+Or merge the same server shape at the top-level `mcpServers` key of the user config (`$CLAUDE_CONFIG_DIR/.claude.json` or `~/.claude.json`). Do not tuck it under `projects.<cwd>.mcpServers` — that project-local entry disappears when you work elsewhere.
 
 ```json
 {

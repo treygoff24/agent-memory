@@ -289,11 +289,19 @@ pub fn claude_mcp_add_args(spec: &McpServerSpec) -> Vec<String> {
 fn wire_claude(spec: &McpServerSpec, runtime: &mut dyn McpWireRuntime) -> Result<WireOutcome, WireError> {
     let cli_args = claude_mcp_add_args(spec);
     match runtime.claude_mcp_add(&cli_args) {
-        Ok(Some(result)) if result.success => Ok(claude_wire_outcome(WireStatus::Wired, Some("configured with `claude mcp add --scope user`".to_string()))),
-        Ok(Some(result)) if is_existing_claude_server(&result) => Ok(claude_wire_outcome(
-            WireStatus::AlreadyCurrent,
-            Some(command_failure_reason(&result)),
-        )),
+        Ok(Some(result)) if result.success => {
+            let stale_removed = cleanup_stale_project_scope_entries(spec, runtime)?;
+            let mut detail = "configured with `claude mcp add --scope user`".to_string();
+            if stale_removed {
+                detail.push_str("; removed stale project-scope memorum entry");
+            }
+            Ok(claude_wire_outcome(WireStatus::Wired, Some(detail)))
+        }
+        Ok(Some(result)) if is_existing_claude_server(&result) => {
+            let stale_removed = cleanup_stale_project_scope_entries(spec, runtime)?;
+            let status = if stale_removed { WireStatus::Updated } else { WireStatus::AlreadyCurrent };
+            Ok(claude_wire_outcome(status, Some(command_failure_reason(&result))))
+        }
         Ok(Some(result)) => wire_claude_json_fallback(spec, runtime, Some(command_failure_reason(&result))),
         Ok(None) => wire_claude_json_fallback(spec, runtime, Some("`claude` was not found on PATH".to_string())),
         Err(error) => wire_claude_json_fallback(spec, runtime, Some(error.to_string())),
@@ -360,6 +368,27 @@ fn write_claude_user_config(
     Ok(merge)
 }
 
+/// Strip stale `projects.*.mcpServers.memorum` entries left by earlier
+/// project-scope wiring. Runs after a successful `claude mcp add --scope user`,
+/// which only touches the top-level `mcpServers` key — without this pass an
+/// upgrading user keeps a double registration.
+fn cleanup_stale_project_scope_entries(
+    spec: &McpServerSpec,
+    runtime: &mut dyn McpWireRuntime,
+) -> Result<bool, WireError> {
+    let config_path = claude_config_path(runtime)?;
+    let Some(existing) = runtime.read_to_string(&config_path)? else {
+        return Ok(false);
+    };
+    let mut document = parse_json_document(&existing)?;
+    if !remove_stale_claude_project_scope_memorum(&mut document, spec) {
+        return Ok(false);
+    }
+    let body = format!("{}\n", serde_json::to_string_pretty(&document)?);
+    write_config(runtime, &config_path, &body)?;
+    Ok(true)
+}
+
 fn claude_config_path(runtime: &dyn McpWireRuntime) -> Result<PathBuf, WireError> {
     if let Some(dir) = runtime.env_var("CLAUDE_CONFIG_DIR").filter(|value| !value.is_empty()) {
         return Ok(PathBuf::from(dir).join(".claude.json"));
@@ -367,7 +396,7 @@ fn claude_config_path(runtime: &dyn McpWireRuntime) -> Result<PathBuf, WireError
 
     runtime
         .home_dir()
-        .map(|home| home.join(".claude").join(".claude.json"))
+        .map(|home| home.join(".claude.json"))
         .ok_or(WireError::MissingHome { target: HarnessTarget::Claude })
 }
 
@@ -789,7 +818,7 @@ mod tests {
         assert_eq!(outcome.status, WireStatus::Wired);
         let config = runtime
             .files
-            .get(Path::new("/home/tester/.claude/.claude.json"))
+            .get(Path::new("/home/tester/.claude.json"))
             .expect("user-scope config written");
         let parsed: Value = serde_json::from_str(config).expect("valid json");
         assert_eq!(parsed["mcpServers"]["memorum"]["command"], "memoryd");
@@ -865,6 +894,39 @@ mod tests {
             self.claude_add_count += 1;
             Ok(self.claude_add_result.clone())
         }
+    }
+
+    #[test]
+    fn claude_cli_success_also_removes_stale_project_scope_entry() {
+        let existing = r#"{
+  "mcpServers": {},
+  "projects": {
+    "/repo/a": {
+      "mcpServers": {
+        "memorum": { "command": "memoryd", "args": ["mcp"] },
+        "other": { "command": "otherd" }
+      }
+    }
+  }
+}
+"#;
+        let mut runtime = FakeRuntime::default().with_home(PathBuf::from("/home/tester"));
+        runtime.files.insert(PathBuf::from("/home/tester/.claude.json"), existing.to_string());
+        runtime.claude_add_result = Some(CommandResult { success: true, stdout: String::new(), stderr: String::new() });
+
+        let outcome = wire_with_runtime(HarnessTarget::Claude, &memorum_spec(), WireMode::Apply, &mut runtime)
+            .expect("claude wiring succeeds");
+
+        assert_eq!(outcome.status, WireStatus::Wired);
+        assert!(
+            outcome.message.as_deref().is_some_and(|message| message.contains("removed stale project-scope")),
+            "unexpected message: {:?}",
+            outcome.message
+        );
+        let config = runtime.files.get(Path::new("/home/tester/.claude.json")).expect("config rewritten");
+        let parsed: Value = serde_json::from_str(config).expect("valid json");
+        assert!(parsed["projects"]["/repo/a"]["mcpServers"].get("memorum").is_none(), "stale entry removed");
+        assert_eq!(parsed["projects"]["/repo/a"]["mcpServers"]["other"]["command"], "otherd", "sibling preserved");
     }
 
     #[test]
