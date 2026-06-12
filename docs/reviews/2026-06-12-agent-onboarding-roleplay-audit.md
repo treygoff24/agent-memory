@@ -214,7 +214,8 @@ and verified via real MCP handshake + recall calls.
 **Shipped in this session:** merge-driver name fix (installer + 4 docs, finding 1);
 filesystem-aware Claude cwd decoder + 3 tests (finding 6).
 
-**Punch list by severity:**
+**Punch list by severity** (snapshot at dogfood time — the addenda below record the
+fix waves; as of the evening addendum every major here plus 15/16/17 is fixed):
 - Blockers (fixed): installer name mismatch (1); lossy cwd decode (6).
 - Major (open): `current` silently no-ops on dual-harness machines + misleading skip
   messages (4); sticky wrong buckets from failed runs / non-atomic import (7);
