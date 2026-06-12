@@ -22,6 +22,8 @@ mod export_fixture;
 use export_fixture::{init_substrate, make_plaintext_memory, write_plaintext};
 
 const DEVICE_ID: &str = "dev_exportshape01";
+const TEST_PROJECT_CANONICAL_ID: &str = "proj_export_json_shape";
+const TEST_PROJECT_ALIAS: &str = "export-json-shape";
 
 fn make_metadata_only_memory(id: &str, updated_at_str: &str) -> Memory {
     let ts = chrono::DateTime::parse_from_rfc3339(updated_at_str).expect("fixed ts").with_timezone(&chrono::Utc);
@@ -133,6 +135,8 @@ async fn export_json_shape_validates_v0_1_schema() {
                     "namespace": "project",
                     "type": "claim",
                     "summary": "encrypted export fixture",
+                    "canonical_namespace_id": TEST_PROJECT_CANONICAL_ID,
+                    "namespace_alias": TEST_PROJECT_ALIAS,
                     "confidence": 0.85,
                     "source_kind": "user",
                     "explicit_user_context": true

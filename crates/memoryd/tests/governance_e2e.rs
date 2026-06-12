@@ -1,8 +1,15 @@
+use std::path::Path;
+use std::process::Command;
+
 use memory_substrate::{InitOptions, MemoryId, Roots, Substrate};
 use memoryd::handlers::handle_request;
 use memoryd::protocol::{
     GovernanceRefusalReason, GovernanceStatus, RequestEnvelope, RequestPayload, ResponsePayload, ResponseResult,
 };
+use sha2::{Digest, Sha256};
+
+const TEST_PROJECT_CANONICAL_ID: &str = "proj_governance_e2e";
+const TEST_PROJECT_ALIAS: &str = "governance-e2e";
 
 #[tokio::test]
 async fn governance_e2e_grounded_project_write_becomes_active_or_candidate_per_policy() {
@@ -21,6 +28,8 @@ async fn governance_e2e_grounded_project_write_becomes_active_or_candidate_per_p
                     "namespace": "project",
                     "type": "project",
                     "summary": "Task 9 governance wiring is in scope",
+                    "canonical_namespace_id": TEST_PROJECT_CANONICAL_ID,
+                    "namespace_alias": TEST_PROJECT_ALIAS,
                     "confidence": 0.95,
                     "sensitivity": "internal",
                     "source_kind": "user",
@@ -96,6 +105,8 @@ async fn governance_e2e_missing_privacy_classification_is_classified_by_stream_d
                     "namespace": "project",
                     "type": "claim",
                     "summary": "Missing privacy classification",
+                    "canonical_namespace_id": TEST_PROJECT_CANONICAL_ID,
+                    "namespace_alias": TEST_PROJECT_ALIAS,
                     "confidence": 0.95,
                     "source_kind": "user",
                     "explicit_user_context": true
@@ -113,6 +124,92 @@ async fn governance_e2e_missing_privacy_classification_is_classified_by_stream_d
     let saved = substrate.read_memory(&MemoryId::new(&id)).await.expect("classified memory readable");
     assert_eq!(saved.frontmatter.sensitivity, memory_substrate::Sensitivity::Internal);
     assert!(saved.frontmatter.extras.contains_key("privacy_scan"));
+}
+
+#[tokio::test]
+async fn governance_e2e_project_write_resolves_namespace_from_meta_cwd_git_remote() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let substrate = init_substrate(&temp).await;
+    let project = temp.path().join("project-cwd");
+    let normalized_remote = "github.com/example/memorum-cwd-fixture";
+    init_git_project_with_origin(&project, "https://github.com/example/memorum-cwd-fixture.git");
+    let canonical_id = format!("proj_{}", hex::encode(Sha256::digest(normalized_remote.as_bytes())));
+
+    let response = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "write-project-cwd",
+            RequestPayload::WriteMemory {
+                body: "Cwd-bound project writes should persist into the resolved project namespace.".to_string(),
+                title: Some("cwd-bound project write".to_string()),
+                tags: vec!["project".to_string()],
+                meta: serde_json::json!({
+                    "namespace": "project",
+                    "cwd": project,
+                    "type": "project",
+                    "summary": "cwd-bound project write",
+                    "confidence": 0.95,
+                    "sensitivity": "internal",
+                    "source_kind": "user",
+                    "explicit_user_context": true
+                }),
+            },
+        ),
+    )
+    .await;
+
+    let ResponseResult::Success(ResponsePayload::GovernanceWrite(write)) = response.result else {
+        panic!("expected governed write success, got {:?}", response.result);
+    };
+    assert!(matches!(write.status, GovernanceStatus::Promoted | GovernanceStatus::Candidate));
+    let id = write.id.expect("governed write returns memory id");
+    let saved = substrate.read_memory(&MemoryId::new(&id)).await.expect("governed write persisted");
+    assert_eq!(saved.frontmatter.canonical_namespace_id.as_deref(), Some(canonical_id.as_str()));
+    assert_eq!(
+        saved.frontmatter.namespace.as_deref(),
+        Some(canonical_id.as_str()),
+        "git-remote bindings have no alias, so placement falls back to canonical id"
+    );
+    let expected_path = format!("projects/{canonical_id}/decisions/{id}.md");
+    assert_eq!(saved.path.as_ref().map(|path| path.as_str()), Some(expected_path.as_str()));
+}
+
+#[tokio::test]
+async fn governance_e2e_project_write_without_identity_is_invalid_request() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let substrate = init_substrate(&temp).await;
+
+    let response = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "write-project-no-identity",
+            RequestPayload::WriteMemory {
+                body: "Project writes without identity should fail closed.".to_string(),
+                title: None,
+                tags: Vec::new(),
+                meta: serde_json::json!({
+                    "namespace": "project",
+                    "type": "project",
+                    "summary": "missing project identity",
+                    "confidence": 0.95,
+                    "sensitivity": "internal",
+                    "source_kind": "user",
+                    "explicit_user_context": true
+                }),
+            },
+        ),
+    )
+    .await;
+
+    let ResponseResult::Error(error) = response.result else {
+        panic!("expected invalid_request, got {:?}", response.result);
+    };
+    assert_eq!(error.code, "invalid_request");
+    assert!(
+        error.message.contains("project-namespace write requires project identity"),
+        "message is actionable: {}",
+        error.message
+    );
 }
 
 #[tokio::test]
@@ -216,6 +313,45 @@ async fn governance_e2e_supersede_updates_old_and_new_frontmatter() {
     assert_eq!(old_memory.frontmatter.status, memory_substrate::MemoryStatus::Superseded);
     assert!(old_memory.frontmatter.superseded_by.iter().any(|id| id.as_str() == new_id));
     assert!(new_memory.frontmatter.supersedes.iter().any(|id| id.as_str() == old_id));
+}
+
+#[tokio::test]
+async fn governance_e2e_supersede_without_project_identity_inherits_old_namespace_fields() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let substrate = init_substrate(&temp).await;
+    let old = governed_project_write(&substrate, "inherit-old", "The inherited deployment target is staging.").await;
+    let old_id = old.id.expect("old id");
+
+    let response = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "supersede-inherit",
+            RequestPayload::Supersede {
+                old_id: old_id.clone(),
+                content: "The inherited deployment target is production.".to_string(),
+                reason: "deployment target changed".to_string(),
+                meta: serde_json::json!({
+                    "type": "project",
+                    "summary": "Inherited deployment target is production",
+                    "confidence": 0.95,
+                    "sensitivity": "internal",
+                    "source_kind": "user",
+                    "explicit_user_context": true
+                }),
+            },
+        ),
+    )
+    .await;
+
+    let ResponseResult::Success(ResponsePayload::GovernanceSupersede(supersede)) = response.result else {
+        panic!("expected supersede success, got {:?}", response.result);
+    };
+    let new_id = supersede.new_id.expect("new id");
+    let old_memory = substrate.read_memory(&MemoryId::new(&old_id)).await.expect("old memory readable");
+    let new_memory = substrate.read_memory(&MemoryId::new(&new_id)).await.expect("new memory readable");
+    assert_eq!(new_memory.frontmatter.scope, old_memory.frontmatter.scope);
+    assert_eq!(new_memory.frontmatter.namespace, old_memory.frontmatter.namespace);
+    assert_eq!(new_memory.frontmatter.canonical_namespace_id, old_memory.frontmatter.canonical_namespace_id);
 }
 
 #[tokio::test]
@@ -325,6 +461,8 @@ async fn governed_project_write(
                     "namespace": "project",
                     "type": "project",
                     "summary": request_id,
+                    "canonical_namespace_id": TEST_PROJECT_CANONICAL_ID,
+                    "namespace_alias": TEST_PROJECT_ALIAS,
                     "confidence": 0.95,
                     "sensitivity": "internal",
                     "source_kind": "user",
@@ -338,6 +476,17 @@ async fn governed_project_write(
         panic!("expected governed write success, got {:?}", response.result);
     };
     write
+}
+
+fn init_git_project_with_origin(path: &Path, origin: &str) {
+    std::fs::create_dir_all(path).expect("project dir");
+    git(path, ["init"]);
+    git(path, ["remote", "add", "origin", origin]);
+}
+
+fn git<const N: usize>(cwd: &Path, args: [&str; N]) {
+    let status = Command::new("git").args(args).current_dir(cwd).status().expect("git command starts");
+    assert!(status.success(), "git command failed in {}: {:?}", cwd.display(), status);
 }
 
 async fn init_substrate(temp: &tempfile::TempDir) -> Substrate {

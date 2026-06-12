@@ -323,7 +323,7 @@ impl Fixture {
 
     fn create_directory_at_next_memory_path(&self, old_id: &str) -> std::path::PathBuf {
         let next_id = next_memory_id_after(old_id);
-        let path = self.roots.repo.join(format!("projects/agent-memory/decisions/{next_id}.md"));
+        let path = self.roots.repo.join(format!("projects/claim-lock-test/decisions/{next_id}.md"));
         std::fs::create_dir(&path).expect("create blocker directory");
         path
     }
@@ -347,6 +347,8 @@ fn project_meta(summary: &str, harness: &str, session_id: &str) -> serde_json::V
         "namespace": "project",
         "type": "project",
         "summary": summary,
+        "canonical_namespace_id": "proj_claim_lock_test",
+        "namespace_alias": "claim-lock-test",
         "confidence": 0.95,
         "sensitivity": "internal",
         "source_kind": "user",

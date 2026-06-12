@@ -317,6 +317,8 @@ mod tests {
                         "namespace": "project",
                         "type": "claim",
                         "summary": summary,
+                        "canonical_namespace_id": "proj_embedding_worker_test",
+                        "namespace_alias": "embedding-worker-test",
                         "confidence": 0.95,
                         "sensitivity": "internal",
                         "source_kind": "user",

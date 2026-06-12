@@ -307,9 +307,12 @@ pub async fn forward_to_daemon(
         ToolRequest::MemoryGet(args) => {
             RequestPayload::Get { id: args.id, include_provenance: args.include_provenance }
         }
-        ToolRequest::MemoryWrite(args) => {
-            RequestPayload::WriteMemory { body: args.body, title: args.title, tags: args.tags, meta: args.meta }
-        }
+        ToolRequest::MemoryWrite(args) => RequestPayload::WriteMemory {
+            body: args.body,
+            title: args.title,
+            tags: args.tags,
+            meta: meta_with_current_cwd_if_missing(args.meta)?,
+        },
         ToolRequest::MemoryNote(args) => RequestPayload::WriteNote { text: args.text },
         ToolRequest::MemoryObserve(args) => RequestPayload::Observe {
             text: args.text,
@@ -324,7 +327,7 @@ pub async fn forward_to_daemon(
             old_id: args.old_id,
             content: args.new_body,
             reason: args.reason,
-            meta: args.meta,
+            meta: meta_with_current_cwd_if_missing(args.meta)?,
         },
         ToolRequest::MemoryForget(args) => RequestPayload::Forget { id: args.id, reason: args.reason },
         ToolRequest::MemoryReveal(args) => RequestPayload::Reveal { id: args.id, reason: args.reason },
@@ -339,6 +342,23 @@ pub async fn forward_to_daemon(
     };
 
     forward_payload_to_daemon(socket_path, id, payload).await
+}
+
+pub(crate) fn meta_with_current_cwd_if_missing(meta: Value) -> Result<Value> {
+    let cwd = std::env::current_dir()?;
+    Ok(meta_with_cwd_if_missing(meta, &cwd))
+}
+
+fn meta_with_cwd_if_missing(meta: Value, cwd: &Path) -> Value {
+    let cwd = Value::String(cwd.to_string_lossy().into_owned());
+    match meta {
+        Value::Null => json!({ "cwd": cwd }),
+        Value::Object(mut fields) => {
+            fields.entry("cwd".to_string()).or_insert(cwd);
+            Value::Object(fields)
+        }
+        other => other,
+    }
 }
 
 pub async fn forward_payload_to_daemon(
@@ -622,4 +642,38 @@ fn capture_source_input_schema() -> Value {
 
 fn null_value() -> Value {
     Value::Null
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use serde_json::json;
+
+    use super::meta_with_cwd_if_missing;
+
+    #[test]
+    fn memory_write_meta_without_cwd_gets_bridge_cwd_injected() {
+        let meta = meta_with_cwd_if_missing(json!({ "namespace": "project" }), Path::new("/tmp/memorum-project"));
+
+        assert_eq!(meta["namespace"], "project");
+        assert_eq!(meta["cwd"], "/tmp/memorum-project");
+    }
+
+    #[test]
+    fn memory_write_meta_absent_gets_bridge_cwd_injected() {
+        let meta = meta_with_cwd_if_missing(serde_json::Value::Null, Path::new("/tmp/memorum-project"));
+
+        assert_eq!(meta, json!({ "cwd": "/tmp/memorum-project" }));
+    }
+
+    #[test]
+    fn caller_supplied_cwd_is_preserved() {
+        let meta = meta_with_cwd_if_missing(
+            json!({ "namespace": "project", "cwd": "/caller/supplied" }),
+            Path::new("/tmp/memorum-project"),
+        );
+
+        assert_eq!(meta["cwd"], "/caller/supplied");
+    }
 }

@@ -17,6 +17,9 @@ use memoryd::embedding::{worker, EmbeddingProvider, FixtureProvider};
 use memoryd::handlers::{handle_request_with_state, HandlerState};
 use memoryd::protocol::{GovernanceStatus, RequestEnvelope, RequestPayload, ResponsePayload, ResponseResult};
 
+const TEST_PROJECT_CANONICAL_ID: &str = "proj_passive_recall_knn";
+const TEST_PROJECT_ALIAS: &str = "passive-recall-knn";
+
 #[tokio::test]
 async fn governed_write_quarantines_against_passive_recall_disabled_active_memory() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -69,6 +72,8 @@ async fn governed_write_quarantines_against_passive_recall_disabled_active_memor
                     "namespace": "project",
                     "type": "claim",
                     "summary": "billing service production database engine",
+                    "canonical_namespace_id": TEST_PROJECT_CANONICAL_ID,
+                    "namespace_alias": TEST_PROJECT_ALIAS,
                     "confidence": 0.95,
                     "sensitivity": "internal",
                     "source_kind": "user",
@@ -133,8 +138,8 @@ fn project_memory(id: &str, summary: &str, body: &str, passive_recall: bool) -> 
                 phase: None,
                 component: Some("test".to_string()),
             },
-            namespace: Some("agent-memory".to_string()),
-            canonical_namespace_id: Some("agent-memory".to_string()),
+            namespace: Some(TEST_PROJECT_ALIAS.to_string()),
+            canonical_namespace_id: Some(TEST_PROJECT_CANONICAL_ID.to_string()),
             tags: vec!["passive-recall-disabled-contradiction".to_string()],
             entities: Vec::new(),
             aliases: Vec::new(),
@@ -170,6 +175,6 @@ fn project_memory(id: &str, summary: &str, body: &str, passive_recall: bool) -> 
             extras: Default::default(),
         },
         body: body.to_string(),
-        path: Some(RepoPath::new(format!("projects/proj_passive_knn/patterns/{id}.md"))),
+        path: Some(RepoPath::new(format!("projects/{TEST_PROJECT_ALIAS}/patterns/{id}.md"))),
     }
 }

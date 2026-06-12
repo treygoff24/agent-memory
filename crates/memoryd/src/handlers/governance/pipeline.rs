@@ -12,10 +12,10 @@ use memory_governance::{GovernanceWriteDecision, PolicySet, PolicySource, Tombst
 use memory_privacy::{FileKeyProvider, PrivacyDecision, PrivacyEncryptor};
 use memory_substrate::{
     events::EventKind, ClassificationOutcome, EncryptedWriteRequest, EventContext, Memory, MemoryContent, MemoryId,
-    MemoryStatus, Substrate, SupersedeRequest as SubstrateSupersedeRequest, TombstoneRequest, TrustLevel, WriteMode,
-    WriteRequest as SubstrateWriteRequest,
+    MemoryStatus, Scope, Substrate, SupersedeRequest as SubstrateSupersedeRequest, TombstoneRequest, TrustLevel,
+    WriteMode, WriteRequest as SubstrateWriteRequest,
 };
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use super::meta::{GovernanceMeta, GovernanceWriteInput, GovernanceWriteInputParts, GovernedLifecycle, MetaSource};
 use super::policy::{
@@ -63,13 +63,14 @@ pub(crate) async fn governance_write_response(
     request: GovernanceWriteRequest,
 ) -> Result<ResponsePayload, HandlerError> {
     let _governance_guard = GOVERNANCE_MUTATION_LOCK.lock().await;
-    let input = GovernanceWriteInput::parse(GovernanceWriteInputParts {
+    let mut input = GovernanceWriteInput::parse(GovernanceWriteInputParts {
         body: request.body,
         title: request.title,
         tags: request.tags,
         meta: request.meta,
         source: MetaSource::McpHumanWrite,
     })?;
+    input.resolve_project_namespace().await?;
     let privacy = classify_input_privacy(&input)?;
     if let Some(response) = input.privacy_refusal(&privacy) {
         return Ok(ResponsePayload::GovernanceWrite(response));
@@ -157,13 +158,16 @@ pub(crate) async fn governance_supersede_response(
     let _governance_guard = GOVERNANCE_MUTATION_LOCK.lock().await;
     let GovernanceSupersedeRequest { old_id, content, reason, meta } = request;
     let old_memory_id = HandlerError::parse_memory_id(old_id.clone())?;
-    let input = GovernanceWriteInput::parse(GovernanceWriteInputParts {
+    let old_envelope = substrate.read_memory_envelope(&old_memory_id).await.map_err(HandlerError::substrate)?;
+    let meta = inherit_supersede_namespace_meta(meta, &old_envelope.metadata.frontmatter);
+    let mut input = GovernanceWriteInput::parse(GovernanceWriteInputParts {
         body: content,
         title: None,
         tags: Vec::new(),
         meta,
         source: MetaSource::Default,
     })?;
+    input.resolve_project_namespace().await?;
     let privacy = classify_input_privacy(&input)?;
     if let Some(refusal) = input.privacy_refusal(&privacy) {
         return Ok(ResponsePayload::GovernanceSupersede(supersede_refused(
@@ -180,8 +184,6 @@ pub(crate) async fn governance_supersede_response(
         Ok(inputs) => inputs,
         Err(response) => return Ok(ResponsePayload::GovernanceSupersede(*response)),
     };
-    let old_envelope = substrate.read_memory_envelope(&old_memory_id).await.map_err(HandlerError::substrate)?;
-
     // The contradiction detector compares the new candidate against the old body. For
     // encrypted-old memories we can't read the body without an explicit reveal, so we
     // skip body-based contradiction and let the explicit supersede call carry intent:
@@ -284,6 +286,44 @@ pub(crate) async fn governance_supersede_response(
         policy_source: Some(policy_source_string(policy_source)),
         warning,
     }))
+}
+
+fn inherit_supersede_namespace_meta(meta: Value, old: &memory_substrate::Frontmatter) -> Value {
+    let mut fields = match meta {
+        Value::Null => Map::new(),
+        Value::Object(fields) => fields,
+        other => return other,
+    };
+
+    let effective_namespace = match fields.get("namespace").and_then(Value::as_str) {
+        Some(namespace) => namespace.to_string(),
+        None => {
+            let namespace = namespace_for_scope(old.scope);
+            fields.insert("namespace".to_string(), Value::String(namespace.to_string()));
+            namespace.to_string()
+        }
+    };
+
+    if effective_namespace == "project" && !fields.contains_key("cwd") {
+        if let Some(canonical_namespace_id) = &old.canonical_namespace_id {
+            fields
+                .entry("canonical_namespace_id".to_string())
+                .or_insert_with(|| Value::String(canonical_namespace_id.clone()));
+        }
+        if let Some(namespace_alias) = &old.namespace {
+            fields.entry("namespace_alias".to_string()).or_insert_with(|| Value::String(namespace_alias.clone()));
+        }
+    }
+
+    Value::Object(fields)
+}
+
+fn namespace_for_scope(scope: Scope) -> &'static str {
+    match scope {
+        Scope::User => "me",
+        Scope::Project | Scope::Org => "project",
+        Scope::Agent | Scope::Subagent => "agent",
+    }
 }
 
 struct MarkOldSuperseded<'a> {

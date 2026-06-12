@@ -5,6 +5,9 @@ use memoryd::protocol::{
     GovernanceRefusalReason, GovernanceStatus, RequestEnvelope, RequestPayload, ResponsePayload, ResponseResult,
 };
 
+const TEST_PROJECT_CANONICAL_ID: &str = "proj_privacy_e2e";
+const TEST_PROJECT_ALIAS: &str = "privacy-e2e";
+
 #[tokio::test]
 async fn privacy_e2e_secret_governed_write_is_refused_before_disk_effects() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -23,6 +26,8 @@ async fn privacy_e2e_secret_governed_write_is_refused_before_disk_effects() {
                     "namespace": "project",
                     "type": "claim",
                     "summary": "secret canary",
+                    "canonical_namespace_id": TEST_PROJECT_CANONICAL_ID,
+                    "namespace_alias": TEST_PROJECT_ALIAS,
                     "confidence": 0.95,
                     "source_kind": "user",
                     "explicit_user_context": true
@@ -60,6 +65,8 @@ async fn privacy_e2e_personal_write_is_encrypted_and_not_raw_searchable() {
                     "namespace": "project",
                     "type": "claim",
                     "summary": "contact",
+                    "canonical_namespace_id": TEST_PROJECT_CANONICAL_ID,
+                    "namespace_alias": TEST_PROJECT_ALIAS,
                     "confidence": 0.95,
                     "source_kind": "user",
                     "explicit_user_context": true
@@ -124,6 +131,8 @@ async fn privacy_e2e_caller_confidential_without_spans_is_metadata_only_encrypte
                     "namespace": "project",
                     "type": "claim",
                     "summary": "confidential acquisition note",
+                    "canonical_namespace_id": TEST_PROJECT_CANONICAL_ID,
+                    "namespace_alias": TEST_PROJECT_ALIAS,
                     "confidence": 0.95,
                     "sensitivity": "confidential",
                     "source_kind": "user",
@@ -176,6 +185,8 @@ async fn privacy_e2e_project_url_and_date_stay_plaintext_and_searchable() {
                     "namespace": "project",
                     "type": "claim",
                     "summary": "release notes link",
+                    "canonical_namespace_id": TEST_PROJECT_CANONICAL_ID,
+                    "namespace_alias": TEST_PROJECT_ALIAS,
                     "confidence": 0.95,
                     "source_kind": "user",
                     "explicit_user_context": true
@@ -225,6 +236,8 @@ async fn privacy_e2e_phone_contact_is_encrypted_findable_and_revealable() {
                     "namespace": "project",
                     "type": "claim",
                     "summary": "Rep. Mills Chief of Staff cell phone",
+                    "canonical_namespace_id": TEST_PROJECT_CANONICAL_ID,
+                    "namespace_alias": TEST_PROJECT_ALIAS,
                     "confidence": 0.95,
                     "source_kind": "user",
                     "explicit_user_context": true,
@@ -389,6 +402,8 @@ async fn privacy_e2e_reveal_fails_for_plaintext_and_missing_key() {
                     "namespace": "project",
                     "type": "claim",
                     "summary": "missing key contact",
+                    "canonical_namespace_id": TEST_PROJECT_CANONICAL_ID,
+                    "namespace_alias": TEST_PROJECT_ALIAS,
                     "confidence": 0.95,
                     "source_kind": "user",
                     "explicit_user_context": true
@@ -432,6 +447,8 @@ async fn privacy_e2e_metadata_secret_is_refused_before_disk_effects() {
                     "namespace": "project",
                     "type": "claim",
                     "summary": "safe summary",
+                    "canonical_namespace_id": TEST_PROJECT_CANONICAL_ID,
+                    "namespace_alias": TEST_PROJECT_ALIAS,
                     "confidence": 0.95,
                     "source_kind": "user",
                     "explicit_user_context": true
@@ -468,6 +485,8 @@ async fn privacy_e2e_encrypted_memory_can_be_forgotten_without_plaintext_leak() 
                     "namespace": "project",
                     "type": "claim",
                     "summary": "encrypted forget fixture",
+                    "canonical_namespace_id": TEST_PROJECT_CANONICAL_ID,
+                    "namespace_alias": TEST_PROJECT_ALIAS,
                     "confidence": 0.95,
                     "source_kind": "user",
                     "explicit_user_context": true
@@ -674,6 +693,8 @@ async fn governed_project_write(
                     "namespace": "project",
                     "type": "project",
                     "summary": request_id,
+                    "canonical_namespace_id": TEST_PROJECT_CANONICAL_ID,
+                    "namespace_alias": TEST_PROJECT_ALIAS,
                     "confidence": 0.95,
                     "sensitivity": "internal",
                     "source_kind": "user",

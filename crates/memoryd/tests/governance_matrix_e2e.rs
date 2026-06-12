@@ -11,6 +11,9 @@ use memoryd::protocol::{
     GovernanceRefusalReason, GovernanceStatus, RequestEnvelope, RequestPayload, ResponsePayload, ResponseResult,
 };
 
+const TEST_PROJECT_CANONICAL_ID: &str = "proj_governance_matrix";
+const TEST_PROJECT_ALIAS: &str = "governance-matrix";
+
 #[tokio::test]
 async fn governance_matrix_e2e_covers_actor_write_paths() {
     for fixture in ACTOR_FIXTURES {
@@ -202,6 +205,20 @@ async fn write_memory(substrate: &Substrate, write_case: WriteCase<'_>) -> memor
             ("subagent", Some(format!("session-spawn:{}", governance_fixtures::SPAWNED_SUBAGENT_ID)), false)
         }
     };
+    let mut meta = serde_json::json!({
+        "namespace": write_case.namespace,
+        "type": "claim",
+        "summary": write_case.request_id,
+        "confidence": 0.96,
+        "sensitivity": "internal",
+        "source_kind": source_kind,
+        "source_ref": source_ref,
+        "explicit_user_context": explicit_user_context
+    });
+    if write_case.namespace == "project" {
+        meta["canonical_namespace_id"] = serde_json::json!(TEST_PROJECT_CANONICAL_ID);
+        meta["namespace_alias"] = serde_json::json!(TEST_PROJECT_ALIAS);
+    }
 
     let response = handle_request(
         substrate,
@@ -211,16 +228,7 @@ async fn write_memory(substrate: &Substrate, write_case: WriteCase<'_>) -> memor
                 body: write_case.body.to_string(),
                 title: Some(write_case.request_id.to_string()),
                 tags: vec!["governance-matrix".to_string()],
-                meta: serde_json::json!({
-                    "namespace": write_case.namespace,
-                    "type": "claim",
-                    "summary": write_case.request_id,
-                    "confidence": 0.96,
-                    "sensitivity": "internal",
-                    "source_kind": source_kind,
-                    "source_ref": source_ref,
-                    "explicit_user_context": explicit_user_context
-                }),
+                meta,
             },
         ),
     )

@@ -7,6 +7,7 @@
 //! `pub(super)` surface re-exported by `governance::mod`.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use memory_governance::{
     CandidateMemory, Scope as GovernanceScope, Source as GovernanceSource, SourceKind as GovernanceSourceKind,
@@ -22,9 +23,10 @@ use serde_json::Value;
 use crate::handlers::memory_ops::validated_claim_lock_identity_field;
 use crate::handlers::{
     bounded, compute_quote_norm_hash, insert_safe_descriptor, is_safe_plaintext_for_indexing, HandlerError,
-    DEFAULT_PROJECT_NAMESPACE, DEFAULT_SUPERSEDE_HARNESS, DEFAULT_SUPERSEDE_SESSION_ID,
+    DEFAULT_SUPERSEDE_HARNESS, DEFAULT_SUPERSEDE_SESSION_ID,
 };
 use crate::protocol::{GovernanceRefusalReason, GovernanceStatus, GovernanceWriteResponse};
+use crate::recall::project::resolve_project_binding;
 use crate::recall::ConcurrentSessionMode;
 
 #[derive(Clone, Debug)]
@@ -84,6 +86,7 @@ pub(crate) struct GovernanceMeta {
     supersedes: Option<Vec<String>>,
     canonical_namespace_id: Option<String>,
     namespace_alias: Option<String>,
+    cwd: Option<String>,
     requires_user_confirmation: Option<bool>,
 }
 
@@ -207,6 +210,7 @@ impl Default for GovernanceMeta {
             supersedes: None,
             canonical_namespace_id: None,
             namespace_alias: None,
+            cwd: None,
             requires_user_confirmation: None,
         }
     }
@@ -276,6 +280,8 @@ fn parse_governance_meta(meta: Value, source: MetaSource) -> Result<GovernanceMe
     serde_json::from_value(meta).map_err(|err| HandlerError::invalid_request(err.to_string()))
 }
 
+pub(super) const PROJECT_NAMESPACE_IDENTITY_REQUIRED_MESSAGE: &str = "project-namespace write requires project identity: pass meta.canonical_namespace_id, or call from a project directory (git remote or .memory-project.yaml), or use namespace \"me\"/\"agent\"";
+
 impl GovernanceWriteInput {
     pub(super) fn parse(parts: GovernanceWriteInputParts) -> Result<Self, HandlerError> {
         let GovernanceWriteInputParts { body, title, tags, meta, source } = parts;
@@ -290,6 +296,32 @@ impl GovernanceWriteInput {
             return Err(HandlerError::invalid_request("confidence must be finite and between 0.0 and 1.0"));
         }
         Ok(Self { body, title, tags, meta })
+    }
+
+    pub(super) async fn resolve_project_namespace(&mut self) -> Result<(), HandlerError> {
+        if !matches!(self.meta.namespace, GovernanceNamespace::Project) {
+            return Ok(());
+        }
+        if self.meta.canonical_namespace_id.is_some() {
+            return Ok(());
+        }
+
+        let Some(cwd) = self.meta.cwd.as_deref() else {
+            return Err(project_namespace_identity_error());
+        };
+
+        let binding = resolve_project_binding(Path::new(cwd)).await.map_err(|error| {
+            HandlerError::invalid_request(format!(
+                "{PROJECT_NAMESPACE_IDENTITY_REQUIRED_MESSAGE}; project resolution error: {error}"
+            ))
+        })?;
+        let Some(binding) = binding else {
+            return Err(project_namespace_identity_error());
+        };
+
+        self.meta.canonical_namespace_id = Some(binding.canonical_id);
+        self.meta.namespace_alias = binding.alias;
+        Ok(())
     }
 
     pub(super) fn privacy_scan_text(&self) -> String {
@@ -408,7 +440,7 @@ impl GovernanceWriteInput {
         let related = self.related_for_persist()?;
         let supersedes = self.supersedes_for_persist()?;
         let evidence = self.evidence_for_persist();
-        let namespace = self.substrate_namespace();
+        let namespace = self.substrate_namespace()?;
         let canonical_namespace_id = self.meta.canonical_namespace_id.clone().or_else(|| namespace.clone());
         // Importer writes carry already-vetted content from prior harness sessions and
         // should not flood the Reality Check review queue with low-confidence guesses.
@@ -469,7 +501,7 @@ impl GovernanceWriteInput {
                 extras,
             },
             body: self.body.clone(),
-            path: Some(self.repo_path(id.as_str())),
+            path: Some(self.repo_path(id.as_str())?),
         })
     }
 
@@ -599,7 +631,9 @@ impl GovernanceWriteInput {
         if self.body != old_body {
             return false;
         }
-        let namespace = self.substrate_namespace();
+        let Ok(namespace) = self.substrate_namespace() else {
+            return false;
+        };
         let canonical_namespace_id = self.meta.canonical_namespace_id.clone().or_else(|| namespace.clone());
         old.scope != self.substrate_scope()
             || old.namespace != namespace
@@ -614,20 +648,19 @@ impl GovernanceWriteInput {
         }
     }
 
-    fn substrate_namespace(&self) -> Option<String> {
-        matches!(self.meta.namespace, GovernanceNamespace::Project).then(|| self.project_namespace_alias())
+    fn substrate_namespace(&self) -> Result<Option<String>, HandlerError> {
+        if matches!(self.meta.namespace, GovernanceNamespace::Project) {
+            return self.project_namespace_alias().map(Some);
+        }
+        Ok(None)
     }
 
-    fn project_namespace_alias(&self) -> String {
-        if self.meta.canonical_namespace_id.is_some() {
-            return self
-                .meta
-                .namespace_alias
-                .clone()
-                .or_else(|| self.meta.canonical_namespace_id.clone())
-                .unwrap_or_else(|| DEFAULT_PROJECT_NAMESPACE.to_string());
-        }
-        DEFAULT_PROJECT_NAMESPACE.to_string()
+    fn project_namespace_alias(&self) -> Result<String, HandlerError> {
+        self.meta
+            .namespace_alias
+            .clone()
+            .or_else(|| self.meta.canonical_namespace_id.clone())
+            .ok_or_else(project_namespace_identity_error)
     }
 
     fn governance_sources(&self) -> Vec<GovernanceSource> {
@@ -754,16 +787,20 @@ impl GovernanceWriteInput {
         }
     }
 
-    fn repo_path(&self, id: &str) -> RepoPath {
+    fn repo_path(&self, id: &str) -> Result<RepoPath, HandlerError> {
         match self.meta.namespace {
-            GovernanceNamespace::Me => RepoPath::new(format!("me/knowledge/{id}.md")),
+            GovernanceNamespace::Me => Ok(RepoPath::new(format!("me/knowledge/{id}.md"))),
             GovernanceNamespace::Project => {
-                let namespace = self.project_namespace_alias();
-                RepoPath::new(format!("projects/{namespace}/decisions/{id}.md"))
+                let namespace = self.project_namespace_alias()?;
+                Ok(RepoPath::new(format!("projects/{namespace}/decisions/{id}.md")))
             }
-            GovernanceNamespace::Agent => RepoPath::new(format!("agent/patterns/{id}.md")),
+            GovernanceNamespace::Agent => Ok(RepoPath::new(format!("agent/patterns/{id}.md"))),
         }
     }
+}
+
+fn project_namespace_identity_error() -> HandlerError {
+    HandlerError::invalid_request(PROJECT_NAMESPACE_IDENTITY_REQUIRED_MESSAGE)
 }
 
 #[cfg(test)]
@@ -773,10 +810,10 @@ mod tests {
 
     use super::{
         parse_governance_meta, GovernanceMeta, GovernanceSourceKindMeta, GovernanceWriteInput,
-        GovernanceWriteInputParts, GovernedLifecycle, MetaSource,
+        GovernanceWriteInputParts, GovernedLifecycle, MetaSource, PROJECT_NAMESPACE_IDENTITY_REQUIRED_MESSAGE,
     };
+    use crate::handlers::compute_quote_norm_hash;
     use crate::handlers::governance::privacy::classify_input_privacy;
-    use crate::handlers::{compute_quote_norm_hash, DEFAULT_PROJECT_NAMESPACE};
     use memory_privacy::PrivacyStorageAction;
 
     // T00: importer-provenance fields on GovernanceMeta. The tests below lock the
@@ -819,24 +856,17 @@ mod tests {
         assert!(meta.canonical_namespace_id.is_none());
         assert!(meta.requires_user_confirmation.is_none());
 
-        // Backward-compat: an empty payload should produce the exact same Memory shape
-        // as before the additive extension — empty entities/aliases/related/evidence/supersedes
-        // and canonical_namespace_id falling back to the default project namespace.
+        // Empty project-scoped meta no longer silently falls back to a development
+        // placeholder namespace; callers must provide identity or cwd before persistence.
         let input = write_input(Value::Null);
-        let memory = input
+        let err = input
             .to_memory(
                 MemoryId::new("mem_20260527_a1b2c3d4e5f60718_000001"),
                 promoted_lifecycle(),
                 &plaintext_privacy_decision(),
             )
-            .expect("empty meta converts to memory");
-        assert!(memory.frontmatter.entities.is_empty());
-        assert!(memory.frontmatter.aliases.is_empty());
-        assert!(memory.frontmatter.related.is_empty());
-        assert!(memory.frontmatter.evidence.is_empty());
-        assert!(memory.frontmatter.supersedes.is_empty());
-        assert_eq!(memory.frontmatter.canonical_namespace_id.as_deref(), Some(DEFAULT_PROJECT_NAMESPACE));
-        assert!(!memory.frontmatter.requires_user_confirmation);
+            .expect_err("empty project meta must refuse before persistence");
+        assert!(err.message.contains(PROJECT_NAMESPACE_IDENTITY_REQUIRED_MESSAGE), "actionable error: {}", err.message);
     }
 
     #[test]
@@ -960,6 +990,7 @@ mod tests {
     fn governance_meta_import_source_kind_maps_to_file_source_and_memoryd_import_harness() {
         let payload = serde_json::json!({
             "namespace": "project",
+            "canonical_namespace_id": "proj_import_source",
             "source_kind": "import",
             "source_ref": "/Users/treygoff/.claude/projects/x/memory/y.md"
         });
@@ -993,6 +1024,8 @@ mod tests {
     fn same_body_bucket_repair_detects_changed_project_bucket() {
         let old = write_input(serde_json::json!({
             "namespace": "project",
+            "namespace_alias": "legacy",
+            "canonical_namespace_id": "proj_legacy",
             "source_kind": "import"
         }))
         .to_memory(

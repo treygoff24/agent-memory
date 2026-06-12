@@ -13,6 +13,9 @@ use memoryd::embedding::{worker, EmbeddingProvider, FixtureProvider};
 use memoryd::handlers::handle_request;
 use memoryd::protocol::{RequestEnvelope, RequestPayload, ResponsePayload, ResponseResult};
 
+const TEST_PROJECT_CANONICAL_ID: &str = "proj_embedding_drain_e2e";
+const TEST_PROJECT_ALIAS: &str = "embedding-drain-e2e";
+
 async fn init_substrate(temp: &tempfile::TempDir) -> Substrate {
     let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
     Substrate::init(
@@ -38,6 +41,8 @@ async fn write_memory(substrate: &Substrate, summary: &str, body: &str) -> Strin
                     "namespace": "project",
                     "type": "project",
                     "summary": summary,
+                    "canonical_namespace_id": TEST_PROJECT_CANONICAL_ID,
+                    "namespace_alias": TEST_PROJECT_ALIAS,
                     "confidence": 0.95,
                     "sensitivity": "internal",
                     "source_kind": "user",

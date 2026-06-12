@@ -21,6 +21,8 @@ const DEVICE_ID: &str = "dev_exportenc03";
 const PLAINTEXT_BODY: &str = "This is the plaintext body the export must include verbatim.";
 const ENCRYPTED_PLAINTEXT: &str = "SECRET-encrypted-content-202-555-0199-keep-out-of-stdout";
 const FIXTURE_TS: &str = "2026-05-01T10:00:00Z";
+const TEST_PROJECT_CANONICAL_ID: &str = "proj_export_encrypted_default";
+const TEST_PROJECT_ALIAS: &str = "export-encrypted-default";
 
 #[tokio::test]
 async fn encrypted_bodies_are_never_emitted_no_reveal_event() {
@@ -52,6 +54,8 @@ async fn encrypted_bodies_are_never_emitted_no_reveal_event() {
                     "namespace": "project",
                     "type": "claim",
                     "summary": "encrypted export fixture",
+                    "canonical_namespace_id": TEST_PROJECT_CANONICAL_ID,
+                    "namespace_alias": TEST_PROJECT_ALIAS,
                     "confidence": 0.85,
                     "source_kind": "user",
                     "explicit_user_context": true

@@ -26,6 +26,7 @@ async fn mcp_governance_forward_memory_write_forwards_to_governed_daemon_payload
         assert_eq!(title.as_deref(), Some("Project fact"));
         assert_eq!(tags, ["governed"]);
         assert_eq!(meta["namespace"], "project");
+        assert_eq!(meta["cwd"], std::env::current_dir().expect("current dir").to_string_lossy().as_ref());
         ResponseEnvelope::success(
             request.id,
             ResponsePayload::GovernanceWrite(GovernanceWriteResponse {
@@ -77,6 +78,7 @@ async fn mcp_governance_forward_memory_supersede_forwards_to_governed_daemon_pay
         assert_eq!(content, "replacement content");
         assert_eq!(reason, "old fact was stale");
         assert_eq!(meta["sensitivity"], "internal");
+        assert_eq!(meta["cwd"], std::env::current_dir().expect("current dir").to_string_lossy().as_ref());
         ResponseEnvelope::success(
             request.id,
             ResponsePayload::GovernanceSupersede(GovernanceSupersedeResponse {

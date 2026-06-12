@@ -21,6 +21,9 @@ use memoryd::embedding::{worker, EmbeddingProvider, FixtureProvider};
 use memoryd::handlers::{handle_request_with_state, HandlerState};
 use memoryd::protocol::{GovernanceStatus, RequestEnvelope, RequestPayload, ResponsePayload, ResponseResult};
 
+const TEST_PROJECT_CANONICAL_ID: &str = "proj_contradiction_similarity_e2e";
+const TEST_PROJECT_ALIAS: &str = "contradiction-similarity-e2e";
+
 async fn init_substrate(temp: &tempfile::TempDir) -> Substrate {
     let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
     Substrate::init(
@@ -52,6 +55,8 @@ async fn write_memory(
                     "namespace": "project",
                     "type": "claim",
                     "summary": summary,
+                    "canonical_namespace_id": TEST_PROJECT_CANONICAL_ID,
+                    "namespace_alias": TEST_PROJECT_ALIAS,
                     "confidence": 0.95,
                     "sensitivity": "internal",
                     "source_kind": "user",

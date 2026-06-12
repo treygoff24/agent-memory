@@ -91,7 +91,6 @@ const REVIEW_QUEUE_REASON_MAX: usize = 512;
 const REVIEW_QUEUE_ACTION_MAX: usize = 96;
 const REVIEW_DECISION_SUMMARY_MAX: usize = 512;
 const REVIEW_RESPONSE_FRAME_BUDGET: usize = MAX_FRAME_BYTES - 1024;
-const DEFAULT_PROJECT_NAMESPACE: &str = "agent-memory";
 const REVEAL_REASON_MAX_CHARS: usize = 512;
 const REDACTED_REASON: &str = "[redacted]";
 const FORGET_REASON_MAX_CHARS: usize = 160;

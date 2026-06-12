@@ -34,6 +34,27 @@ use memoryd::protocol::{
 #[cfg(feature = "dev-fixtures")]
 use {chrono::Duration, chrono::Utc};
 
+const TEST_PROJECT_CANONICAL_ID: &str = "proj_handler_contract";
+const TEST_PROJECT_ALIAS: &str = "handler-contract";
+
+fn project_identity_meta() -> serde_json::Value {
+    serde_json::json!({
+        "namespace": "project",
+        "canonical_namespace_id": TEST_PROJECT_CANONICAL_ID,
+        "namespace_alias": TEST_PROJECT_ALIAS
+    })
+}
+
+fn with_project_identity(mut meta: serde_json::Value) -> serde_json::Value {
+    let serde_json::Value::Object(fields) = &mut meta else {
+        return project_identity_meta();
+    };
+    fields.insert("namespace".to_string(), serde_json::json!("project"));
+    fields.insert("canonical_namespace_id".to_string(), serde_json::json!(TEST_PROJECT_CANONICAL_ID));
+    fields.insert("namespace_alias".to_string(), serde_json::json!(TEST_PROJECT_ALIAS));
+    meta
+}
+
 #[tokio::test]
 async fn search_and_get_return_bounded_protocol_responses_from_substrate() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -275,7 +296,7 @@ async fn mcp_human_write_defaults_to_explicit_context_and_promotes_project_memor
                 body: "Human MCP writes should not fight the operator during dogfood.".to_string(),
                 title: Some("dogfood human write".to_string()),
                 tags: vec!["dogfood".to_string()],
-                meta: serde_json::Value::Null,
+                meta: project_identity_meta(),
             },
         ),
     )
@@ -307,7 +328,7 @@ async fn mcp_human_write_with_partial_meta_inherits_human_defaults() {
                 body: "Trey prefers narrow verification after isolated stale assertions.".to_string(),
                 title: None,
                 tags: Vec::new(),
-                meta: serde_json::json!({ "type": "claim" }),
+                meta: with_project_identity(serde_json::json!({ "type": "claim" })),
             },
         ),
     )
@@ -338,7 +359,7 @@ async fn supersede_null_meta_keeps_strict_programmatic_defaults() {
                 body: "The deployment target is staging.".to_string(),
                 title: None,
                 tags: Vec::new(),
-                meta: serde_json::Value::Null,
+                meta: project_identity_meta(),
             },
         ),
     )
@@ -383,11 +404,11 @@ async fn supersede_succeeds_for_plaintext_and_encrypted_memories_alike() {
                 body: "The deployment target is staging.".to_string(),
                 title: Some("deployment target".to_string()),
                 tags: Vec::new(),
-                meta: serde_json::json!({
+                meta: with_project_identity(serde_json::json!({
                     "explicit_user_context": true,
                     "confidence": 0.95,
                     "source_kind": "user"
-                }),
+                })),
             },
         ),
     )
@@ -430,7 +451,7 @@ async fn supersede_succeeds_for_plaintext_and_encrypted_memories_alike() {
                 body: "Rep. Mills Chief of Staff cell is 202-555-0198.".to_string(),
                 title: Some("Rep. Mills Chief of Staff cell".to_string()),
                 tags: vec!["contact".to_string()],
-                meta: serde_json::json!({
+                meta: with_project_identity(serde_json::json!({
                     "explicit_user_context": true,
                     "confidence": 0.95,
                     "source_kind": "user",
@@ -440,7 +461,7 @@ async fn supersede_succeeds_for_plaintext_and_encrypted_memories_alike() {
                         "role": "Chief of Staff",
                         "value_kind": "phone"
                     }
-                }),
+                })),
             },
         ),
     )
@@ -510,7 +531,7 @@ async fn forget_rejects_empty_reason_and_sanitizes_sensitive_reason_before_tombs
                 body: "The stale onboarding code is alpha-42.".to_string(),
                 title: Some("stale onboarding code".to_string()),
                 tags: Vec::new(),
-                meta: serde_json::Value::Null,
+                meta: project_identity_meta(),
             },
         ),
     )
@@ -564,7 +585,7 @@ async fn reveal_accepts_url_reason_uses_envelope_metadata_and_bounds_reason_leng
                 body: "Rep. Mills Chief of Staff cell is 202-555-0198.".to_string(),
                 title: Some("Rep. Mills Chief of Staff cell".to_string()),
                 tags: vec!["contact".to_string()],
-                meta: serde_json::json!({
+                meta: with_project_identity(serde_json::json!({
                     "explicit_user_context": true,
                     "confidence": 0.95,
                     "source_kind": "user",
@@ -574,7 +595,7 @@ async fn reveal_accepts_url_reason_uses_envelope_metadata_and_bounds_reason_leng
                         "role": "Chief of Staff",
                         "value_kind": "phone"
                     }
-                }),
+                })),
             },
         ),
     )
@@ -637,7 +658,7 @@ async fn mcp_human_write_still_refuses_secret_content_before_governance() {
                 body: "SSN 123-45-6789 must not persist.".to_string(),
                 title: None,
                 tags: Vec::new(),
-                meta: serde_json::Value::Null,
+                meta: project_identity_meta(),
             },
         ),
     )
@@ -1099,7 +1120,7 @@ async fn status_response_includes_live_dashboard_counts() {
                 body: "Active memory for status dashboard".to_owned(),
                 title: Some("Status active".to_owned()),
                 tags: vec!["status-dashboard".to_owned()],
-                meta: serde_json::Value::Null,
+                meta: project_identity_meta(),
             },
         ),
     )

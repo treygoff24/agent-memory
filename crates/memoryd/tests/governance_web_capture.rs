@@ -12,6 +12,9 @@ use memoryd::protocol::{
     GovernanceRefusalReason, GovernanceStatus, RequestEnvelope, RequestPayload, ResponsePayload, ResponseResult,
 };
 
+const TEST_PROJECT_CANONICAL_ID: &str = "proj_web_capture_e2e";
+const TEST_PROJECT_ALIAS: &str = "web-capture-e2e";
+
 #[tokio::test]
 async fn governed_write_accepts_verified_webcap_ref() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -89,6 +92,8 @@ async fn write_web_memory(
                     "namespace": "project",
                     "type": "claim",
                     "summary": "Web grounded memory",
+                    "canonical_namespace_id": TEST_PROJECT_CANONICAL_ID,
+                    "namespace_alias": TEST_PROJECT_ALIAS,
                     "confidence": 0.95,
                     "sensitivity": "internal",
                     "source_kind": "web_capture",

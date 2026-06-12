@@ -3,6 +3,7 @@ use crate::cli::output::{
 };
 use crate::cli::paths::resolve_socket_arg;
 use crate::cli::{ForgetArgs, GetArgs, SearchArgs, SupersedeArgs, WriteMemoryArgs, WriteNoteArgs};
+use crate::mcp::meta_with_current_cwd_if_missing;
 use crate::protocol::RequestPayload;
 
 pub async fn run_search(args: SearchArgs) -> anyhow::Result<()> {
@@ -48,7 +49,7 @@ pub async fn run_write(args: WriteMemoryArgs) -> anyhow::Result<()> {
             body: args.body,
             title: args.title,
             tags: args.tags,
-            meta: parse_meta(args.meta)?,
+            meta: meta_with_current_cwd_if_missing(parse_meta(args.meta)?)?,
         },
     )
     .await?;
@@ -69,7 +70,7 @@ pub async fn run_supersede(args: SupersedeArgs) -> anyhow::Result<()> {
                 old_id: args.old_id,
                 content: args.content,
                 reason: args.reason,
-                meta: parse_meta(args.meta)?,
+                meta: meta_with_current_cwd_if_missing(parse_meta(args.meta)?)?,
             },
         )
         .await?,
