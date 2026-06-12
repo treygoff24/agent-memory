@@ -2318,10 +2318,15 @@ const RELAXED_FTS_MAX_TERMS: usize = 8;
 /// `S + i + RELAXED_RANK_OFFSET` (i = 1-based position among appended relaxed
 /// hits), demoting OR-matches to tie-breakers of last resort because their BM25
 /// scores come from a different query expression and are not rank-comparable
-/// with strict AND hits. The value mirrors the default `rrf_k` (60), so a
-/// relaxed hit contributes at most ~half of what the same ordinal rank would
-/// contribute as a strict hit in reciprocal-rank fusion.
-const RELAXED_RANK_OFFSET: usize = 60;
+/// with strict AND hits.
+///
+/// 15 was chosen by a deterministic sweep on the recall-quality corpus
+/// (2026-06-12, offsets 0/15/30/60): 15 was the only value that beat the
+/// undiscounted behavior on nDCG@5 (0.7776 vs 0.7754) while recall@5 gave back
+/// only 0.003 — heavier discounts (30, 60) lost real answers the OR fallback
+/// was legitimately surfacing, not just noise (trap rate was flat across the
+/// whole sweep).
+const RELAXED_RANK_OFFSET: usize = 15;
 
 /// Build a bounded OR query for the hybrid BM25 lane's fallback pass.
 ///
