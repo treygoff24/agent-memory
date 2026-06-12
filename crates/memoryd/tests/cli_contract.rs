@@ -312,8 +312,9 @@ fn test_memoryd_ui_rejects_non_tty() {
 }
 
 #[test]
-fn test_memoryd_web_enable_delegates_to_daemon() {
-    let cli = Cli::try_parse_from(["memoryd", "web", "enable"]).expect("web enable parses");
+fn test_memoryd_web_enable_delegates_to_daemon_with_explicit_socket() {
+    let cli =
+        Cli::try_parse_from(["memoryd", "web", "enable", "--socket", "/tmp/memoryd.sock"]).expect("web enable parses");
 
     let CliCommand::Web(web) = cli.command else {
         panic!("expected web command");
@@ -321,12 +322,7 @@ fn test_memoryd_web_enable_delegates_to_daemon() {
 
     assert_eq!(
         web_request_payload(&web.command),
-        RequestPayload::WebEnable {
-            port: 7137,
-            socket_path: memoryd::socket::resolve_socket_path(&memoryd::socket::default_runtime_root())
-                .to_string_lossy()
-                .into_owned()
-        }
+        RequestPayload::WebEnable { port: 7137, socket_path: "/tmp/memoryd.sock".to_owned() }
     );
 }
 

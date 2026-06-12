@@ -32,17 +32,6 @@ pub fn resolve_socket_path(runtime: &Path) -> PathBuf {
     runtime.join("memoryd.sock")
 }
 
-/// Default runtime root for connect-only commands.
-pub fn default_runtime_root() -> PathBuf {
-    if let Some(value) = std::env::var_os("MEMORUM_RUNTIME") {
-        return PathBuf::from(value);
-    }
-    if let Some(home) = std::env::var_os("HOME") {
-        return PathBuf::from(home).join(".local/share/memorum/runtime");
-    }
-    PathBuf::from(".memoryd")
-}
-
 /// How long the daemon-readiness poll waits for the socket to go live.
 pub const DAEMON_READY_TIMEOUT: Duration = Duration::from_secs(10);
 

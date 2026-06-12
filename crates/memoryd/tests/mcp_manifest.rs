@@ -99,12 +99,7 @@ fn mcp_manifest_excludes_admin_tools_and_provides_descriptors() {
 #[tokio::test]
 async fn mcp_forward_rejects_admin_web_payloads_before_socket_io() {
     for payload in [
-        RequestPayload::WebEnable {
-            port: 7137,
-            socket_path: memoryd::socket::resolve_socket_path(&memoryd::socket::default_runtime_root())
-                .to_string_lossy()
-                .into_owned(),
-        },
+        RequestPayload::WebEnable { port: 7137, socket_path: "/tmp/memoryd.sock".to_owned() },
         RequestPayload::WebDisable,
         RequestPayload::WebStatus,
     ] {

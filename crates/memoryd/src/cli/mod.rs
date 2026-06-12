@@ -257,15 +257,15 @@ pub enum NonGitCwdDefault {
 
 #[derive(Debug, Args)]
 pub struct McpArgs {
-    /// Unix socket path used to reach memoryd. Defaults to `<runtime>/memoryd.sock`.
+    /// Unix socket path used to reach memoryd. Defaults to the canonical client socket.
     #[arg(long)]
     pub socket: Option<PathBuf>,
-    /// Canonical memory repository root used when auto-starting memoryd.
-    #[arg(long, default_value = ".")]
-    pub repo: PathBuf,
-    /// Local per-device runtime root used for socket resolution and auto-start.
-    #[arg(long, default_value = ".memoryd")]
-    pub runtime: PathBuf,
+    /// Canonical memory repository root used when auto-starting memoryd (default `$MEMORUM_REPO` or `~/memorum`).
+    #[arg(long)]
+    pub repo: Option<PathBuf>,
+    /// Local per-device runtime root used for socket resolution and auto-start (default `<repo>/.memoryd`).
+    #[arg(long)]
+    pub runtime: Option<PathBuf>,
     /// Auto-start memoryd when the resolved socket is absent.
     #[arg(long, default_value_t = false, action = ArgAction::Set)]
     pub auto_start: bool,
@@ -972,20 +972,12 @@ pub fn validate_ui_stdin(stdin_is_tty: bool) -> Result<(), UiLaunchError> {
     }
 }
 
-fn resolved_ui_socket(args: &UiArgs) -> PathBuf {
-    args.socket.clone().unwrap_or_else(|| crate::socket::resolve_socket_path(&crate::socket::default_runtime_root()))
-}
-
-fn resolved_web_socket(socket: &Option<PathBuf>) -> PathBuf {
-    socket.clone().unwrap_or_else(|| crate::socket::resolve_socket_path(&crate::socket::default_runtime_root()))
-}
-
 pub fn ui_subprocess_args(args: &UiArgs) -> Vec<OsString> {
     vec![
         OsString::from("--panel"),
         OsString::from(args.panel.to_string()),
         OsString::from("--socket"),
-        resolved_ui_socket(args).as_os_str().to_owned(),
+        crate::cli::paths::resolve_socket_arg(&args.socket).as_os_str().to_owned(),
     ]
 }
 
@@ -1007,7 +999,7 @@ pub fn web_request_payload(command: &WebCommand) -> RequestPayload {
     match command {
         WebCommand::Enable(args) => RequestPayload::WebEnable {
             port: args.port,
-            socket_path: resolved_web_socket(&args.socket).to_string_lossy().into_owned(),
+            socket_path: crate::cli::paths::resolve_socket_arg(&args.socket).to_string_lossy().into_owned(),
         },
         WebCommand::Disable(_) => RequestPayload::WebDisable,
         WebCommand::Status(_) => RequestPayload::WebStatus,

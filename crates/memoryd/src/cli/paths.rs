@@ -18,18 +18,21 @@ pub(crate) fn resolve_repo_runtime_paths(repo: Option<PathBuf>, runtime: Option<
     (repo, runtime)
 }
 
-/// Default daemon socket for bare `memoryd status`: `<resolved repo>/.memoryd/memoryd.sock`.
-pub(crate) fn default_status_socket() -> PathBuf {
+/// Default daemon socket for bare client commands.
+///
+/// `$MEMORUM_RUNTIME` remains an escape hatch for non-standard daemon
+/// placements; otherwise clients follow the same repo-aligned runtime default
+/// used by standard daemon setup.
+pub(crate) fn default_socket() -> PathBuf {
+    if let Some(runtime) = std::env::var_os("MEMORUM_RUNTIME") {
+        return crate::socket::resolve_socket_path(&PathBuf::from(runtime));
+    }
     let (_, runtime) = resolve_repo_runtime_paths(None, None);
     crate::socket::resolve_socket_path(&runtime)
 }
 
 pub(crate) fn resolve_socket_arg(socket: &Option<PathBuf>) -> PathBuf {
-    socket.clone().unwrap_or_else(|| crate::socket::resolve_socket_path(&crate::socket::default_runtime_root()))
-}
-
-pub(crate) fn resolve_status_socket_arg(socket: &Option<PathBuf>) -> PathBuf {
-    socket.clone().unwrap_or_else(default_status_socket)
+    socket.clone().unwrap_or_else(default_socket)
 }
 
 pub(crate) fn resolve_socket_with_runtime(socket: &Option<PathBuf>, runtime: &std::path::Path) -> PathBuf {
@@ -73,13 +76,19 @@ mod tests {
 
     #[test]
     #[serial]
-    fn cli_default_status_socket_uses_init_aligned_runtime() {
-        let previous = std::env::var_os("MEMORUM_REPO");
+    fn cli_default_socket_memorum_runtime_wins() {
+        let previous_runtime = std::env::var_os("MEMORUM_RUNTIME");
+        let previous_repo = std::env::var_os("MEMORUM_REPO");
+        std::env::set_var("MEMORUM_RUNTIME", "/tmp/env-runtime");
         std::env::set_var("MEMORUM_REPO", "/tmp/env-repo");
 
-        assert_eq!(default_status_socket(), PathBuf::from("/tmp/env-repo/.memoryd/memoryd.sock"));
+        assert_eq!(default_socket(), PathBuf::from("/tmp/env-runtime/memoryd.sock"));
 
-        match previous {
+        match previous_runtime {
+            Some(value) => std::env::set_var("MEMORUM_RUNTIME", value),
+            None => std::env::remove_var("MEMORUM_RUNTIME"),
+        }
+        match previous_repo {
             Some(value) => std::env::set_var("MEMORUM_REPO", value),
             None => std::env::remove_var("MEMORUM_REPO"),
         }
@@ -87,8 +96,48 @@ mod tests {
 
     #[test]
     #[serial]
-    fn cli_resolve_status_socket_arg_honors_explicit_override() {
+    fn cli_default_socket_uses_init_aligned_runtime() {
+        let previous_runtime = std::env::var_os("MEMORUM_RUNTIME");
+        let previous_repo = std::env::var_os("MEMORUM_REPO");
+        std::env::remove_var("MEMORUM_RUNTIME");
+        std::env::set_var("MEMORUM_REPO", "/tmp/env-repo");
+
+        assert_eq!(default_socket(), PathBuf::from("/tmp/env-repo/.memoryd/memoryd.sock"));
+
+        match previous_runtime {
+            Some(value) => std::env::set_var("MEMORUM_RUNTIME", value),
+            None => std::env::remove_var("MEMORUM_RUNTIME"),
+        }
+        match previous_repo {
+            Some(value) => std::env::set_var("MEMORUM_REPO", value),
+            None => std::env::remove_var("MEMORUM_REPO"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn cli_resolve_socket_arg_defaults_to_repo_aligned_socket() {
+        let previous_runtime = std::env::var_os("MEMORUM_RUNTIME");
+        let previous_repo = std::env::var_os("MEMORUM_REPO");
+        std::env::remove_var("MEMORUM_RUNTIME");
+        std::env::set_var("MEMORUM_REPO", "/tmp/env-repo");
+
+        assert_eq!(resolve_socket_arg(&None), PathBuf::from("/tmp/env-repo/.memoryd/memoryd.sock"));
+
+        match previous_runtime {
+            Some(value) => std::env::set_var("MEMORUM_RUNTIME", value),
+            None => std::env::remove_var("MEMORUM_RUNTIME"),
+        }
+        match previous_repo {
+            Some(value) => std::env::set_var("MEMORUM_REPO", value),
+            None => std::env::remove_var("MEMORUM_REPO"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn cli_resolve_socket_arg_honors_explicit_override() {
         let explicit = PathBuf::from("/tmp/explicit.sock");
-        assert_eq!(resolve_status_socket_arg(&Some(explicit.clone())), explicit);
+        assert_eq!(resolve_socket_arg(&Some(explicit.clone())), explicit);
     }
 }

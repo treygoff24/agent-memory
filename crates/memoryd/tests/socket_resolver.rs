@@ -1,27 +1,12 @@
 use clap::Parser as _;
 use memoryd::cli::{Cli, Command as CliCommand, PeerCommand, ReviewCommand, WebCommand};
-use memoryd::socket::{default_runtime_root, probe_live_socket, resolve_socket_path, SocketProbe};
-use serial_test::serial;
-use std::sync::{Mutex, OnceLock};
-
-static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+use memoryd::socket::{probe_live_socket, resolve_socket_path, SocketProbe};
 
 #[test]
 fn private_socket_path_resolves_under_runtime_root() {
     let runtime = tempfile::tempdir().expect("runtime");
 
     assert_eq!(resolve_socket_path(runtime.path()), runtime.path().join("memoryd.sock"));
-}
-
-#[test]
-fn default_runtime_root_honors_memorum_runtime_env() {
-    let _guard = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().expect("env lock");
-    let temp = tempfile::tempdir().expect("runtime");
-    std::env::set_var("MEMORUM_RUNTIME", temp.path());
-
-    assert_eq!(default_runtime_root(), temp.path());
-
-    std::env::remove_var("MEMORUM_RUNTIME");
 }
 
 #[test]
@@ -38,6 +23,7 @@ fn probe_distinguishes_absent_and_stale_paths() {
 fn cli_socket_args_default_to_none_for_canonical_resolution() {
     let cases: Vec<Vec<&str>> = vec![
         vec!["memoryd", "status"],
+        vec!["memoryd", "mcp"],
         vec!["memoryd", "search", "query"],
         vec!["memoryd", "get", "mem_1"],
         vec!["memoryd", "write-note", "note"],
@@ -85,10 +71,17 @@ fn doctor_args_default_repo_and_runtime_to_none_for_init_aligned_resolution() {
 }
 
 #[test]
-#[serial]
-fn status_socket_arg_defaults_to_none_for_init_aligned_resolution() {
-    let _guard = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().expect("env lock");
+fn mcp_args_default_repo_runtime_and_socket_to_none_for_canonical_resolution() {
+    let cli = Cli::try_parse_from(["memoryd", "mcp"]).expect("mcp parses");
 
+    let CliCommand::Mcp(args) = cli.command else { panic!("expected mcp") };
+    assert!(args.socket.is_none());
+    assert!(args.repo.is_none());
+    assert!(args.runtime.is_none());
+}
+
+#[test]
+fn status_socket_arg_defaults_to_none_for_init_aligned_resolution() {
     let cli = Cli::try_parse_from(["memoryd", "status"]).expect("status parses");
     let CliCommand::Status(args) = cli.command else { panic!("expected status") };
     assert!(args.socket.is_none());
@@ -96,6 +89,11 @@ fn status_socket_arg_defaults_to_none_for_init_aligned_resolution() {
 
 fn assert_socket_defaults_to_none(cli: Cli) {
     match cli.command {
+        CliCommand::Mcp(args) => {
+            assert!(args.socket.is_none());
+            assert!(args.repo.is_none());
+            assert!(args.runtime.is_none());
+        }
         CliCommand::Status(args) => assert!(args.socket.is_none()),
         CliCommand::Search(args) => assert!(args.socket.is_none()),
         CliCommand::Get(args) => assert!(args.socket.is_none()),

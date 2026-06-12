@@ -4,11 +4,12 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::cli::paths::default_socket;
 use crate::import::discovery::{
     discover_claude_memory_root, discover_codex_memory_root, ClaudeMemoryRoot, CodexMemoryRoot, DiscoverySource,
 };
 use crate::import::sources::{claude, codex};
-use crate::socket::{default_runtime_root, probe_live_socket, resolve_socket_path, SocketProbe};
+use crate::socket::{probe_live_socket, SocketProbe};
 
 use super::SetupResult;
 
@@ -131,7 +132,7 @@ fn empty_harness_detection() -> HarnessDetection {
 }
 
 fn detect_daemon(socket_path: Option<PathBuf>) -> DaemonDetection {
-    let socket_path = socket_path.unwrap_or_else(|| resolve_socket_path(&default_runtime_root()));
+    let socket_path = socket_path.unwrap_or_else(default_socket);
     let socket_state = probe_live_socket(&socket_path).into();
     DaemonDetection { socket_path, socket_state }
 }

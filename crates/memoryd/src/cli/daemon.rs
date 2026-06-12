@@ -5,15 +5,23 @@ use memory_substrate::{OpenError, Roots, Substrate};
 use super::{DoctorArgs, McpArgs, SocketArgs};
 use crate::cli::exit::doctor_cli_exit_code;
 use crate::cli::output::print_response;
-use crate::cli::paths::{resolve_repo_runtime_paths, resolve_status_socket_arg};
+use crate::cli::paths::{resolve_repo_runtime_paths, resolve_socket_arg, resolve_socket_with_runtime};
 use crate::client;
 use crate::protocol::RequestPayload;
 use crate::socket::{await_socket_ready, spawn_serve_child, DaemonReadiness, DAEMON_READY_TIMEOUT};
 
 pub async fn run_mcp(args: McpArgs) -> anyhow::Result<()> {
-    let socket = args.socket.clone().unwrap_or_else(|| crate::socket::resolve_socket_path(&args.runtime));
+    let socket_arg = args.socket;
+    let runtime_overridden = args.runtime.is_some();
+    let repo_overridden = args.repo.is_some();
+    let (repo, runtime) = resolve_repo_runtime_paths(args.repo, args.runtime);
+    let socket = if runtime_overridden || repo_overridden {
+        resolve_socket_with_runtime(&socket_arg, &runtime)
+    } else {
+        resolve_socket_arg(&socket_arg)
+    };
     if args.auto_start && !matches!(crate::socket::probe_live_socket(&socket), crate::socket::SocketProbe::Live) {
-        auto_start_daemon(&args.repo, &args.runtime, &socket).await?;
+        auto_start_daemon(&repo, &runtime, &socket).await?;
     }
     crate::mcp_stdio::serve_stdio_with_options(
         &socket,
@@ -24,9 +32,7 @@ pub async fn run_mcp(args: McpArgs) -> anyhow::Result<()> {
 }
 
 pub async fn run_status(args: SocketArgs) -> anyhow::Result<()> {
-    print_response(
-        client::request(resolve_status_socket_arg(&args.socket), "cli-status", RequestPayload::Status).await?,
-    )?;
+    print_response(client::request(resolve_socket_arg(&args.socket), "cli-status", RequestPayload::Status).await?)?;
     Ok(())
 }
 

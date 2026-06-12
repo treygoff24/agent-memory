@@ -276,12 +276,7 @@ fn test_reality_check_request_respond_round_trips_serde() {
 #[test]
 fn test_web_dashboard_requests_round_trip_serde() {
     for request in [
-        RequestPayload::WebEnable {
-            port: 7137,
-            socket_path: memoryd::socket::resolve_socket_path(&memoryd::socket::default_runtime_root())
-                .to_string_lossy()
-                .into_owned(),
-        },
+        RequestPayload::WebEnable { port: 7137, socket_path: "/tmp/memoryd.sock".to_owned() },
         RequestPayload::WebDisable,
         RequestPayload::WebStatus,
     ] {
