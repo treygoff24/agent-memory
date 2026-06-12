@@ -237,8 +237,31 @@ pub struct ReqwestSlackWebhook {
 
 impl ReqwestSlackWebhook {
     pub fn new() -> Self {
-        Self { client: reqwest::Client::new() }
+        // Do NOT use `reqwest::Client::new()` here: its default system-proxy
+        // discovery calls macOS SCDynamicStore, which synchronously scans the
+        // executable's whole directory via CFBundleGetMainBundle. This
+        // constructor runs on the daemon startup path *before* the socket
+        // binds, and against a bloated `target/debug/deps` that scan takes
+        // minutes — wedging startup. Honor explicit env-var proxies (the only
+        // proxy form a headless daemon should respect) and skip system lookup.
+        let builder = match explicit_env_proxy().and_then(|url| reqwest::Proxy::all(url).ok()) {
+            Some(proxy) => reqwest::Client::builder().proxy(proxy),
+            None => reqwest::Client::builder().no_proxy(),
+        };
+        let client = builder.build().unwrap_or_else(|_| {
+            reqwest::Client::builder().no_proxy().build().expect("proxyless reqwest client builds")
+        });
+        Self { client }
     }
+}
+
+/// First explicit HTTPS/HTTP proxy from the conventional environment
+/// variables, if any. Slack webhooks are always HTTPS, so HTTPS proxies take
+/// precedence.
+fn explicit_env_proxy() -> Option<String> {
+    ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]
+        .iter()
+        .find_map(|name| std::env::var(name).ok().filter(|value| !value.is_empty()))
 }
 
 impl Default for ReqwestSlackWebhook {
