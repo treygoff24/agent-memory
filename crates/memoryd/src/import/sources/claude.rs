@@ -257,20 +257,42 @@ fn flush_section(sections: &mut Vec<Section>, heading: String, lines: Vec<&str>)
 
 /// Claude's per-project directories are named like
 /// `-Users-treygoff-Code-atlasos` for `/Users/treygoff/Code/atlasos`. The
-/// transformation is: leading `-` plus separator-`-` for `/`. We reverse it for
-/// `cwd` hinting (best-effort; if the resulting path doesn't exist on this
-/// machine we still hand the cwd to the project-mapper, which may prompt or
-/// skip).
+/// transformation is: leading `-` plus separator-`-` for `/`. The encoding is
+/// lossy — a literal `-` inside a path segment (`/Users/x/agent-memory`) is
+/// indistinguishable from a separator — so we resolve against the live
+/// filesystem first and only fall back to the naive every-`-`-is-`/` decode
+/// when no on-disk directory matches (e.g. the path no longer exists on this
+/// machine). The fallback keeps cwd hinting best-effort; the project-mapper
+/// may prompt or skip when handed a phantom path.
 fn cwd_from_encoded_path(path: &Path, root: &Path) -> Option<PathBuf> {
     let relative = path.strip_prefix(root).ok()?;
     let mut components = relative.components();
     let encoded = components.next()?.as_os_str().to_str()?;
-    if !encoded.starts_with('-') {
-        return None;
+    let encoded = encoded.strip_prefix('-')?;
+    let segments: Vec<&str> = encoded.split('-').collect();
+    if let Some(existing) = resolve_existing_path(Path::new("/"), &segments) {
+        return Some(existing);
     }
-    let path = encoded.replace('-', "/");
-    let path = path.strip_prefix('/').unwrap_or(&path);
-    Some(PathBuf::from(format!("/{path}")))
+    Some(PathBuf::from(format!("/{}", segments.join("/"))))
+}
+
+/// Resolve an ambiguous hyphen-encoded path against the filesystem: each
+/// boundary between segments is either a `/` or a literal `-`. Boundaries are
+/// tried as separators first, matching the historical decode for paths with no
+/// hyphenated segments.
+fn resolve_existing_path(base: &Path, segments: &[&str]) -> Option<PathBuf> {
+    if segments.is_empty() {
+        return Some(base.to_path_buf());
+    }
+    for end in 1..=segments.len() {
+        let candidate = base.join(segments[..end].join("-"));
+        if candidate.is_dir() {
+            if let Some(resolved) = resolve_existing_path(&candidate, &segments[end..]) {
+                return Some(resolved);
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -434,5 +456,39 @@ Promote to prod.\n";
         let out = run(tmp.path());
         assert_eq!(out.candidates.len(), 1);
         assert_eq!(out.candidates[0].cwd.as_deref(), Some(Path::new("/Users/treygoff/Code/atlasos")),);
+    }
+
+    #[test]
+    fn resolve_existing_path_recovers_hyphenated_segment() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let real = tmp.path().join("Code").join("agent-memory");
+        std::fs::create_dir_all(&real).expect("mkdir");
+        // Encode the real path the way Claude does: '/' -> '-'.
+        let encoded_root = tmp.path().to_str().expect("utf8").replace('/', "-");
+        let encoded = format!("{encoded_root}-Code-agent-memory");
+        let segments: Vec<&str> = encoded.trim_start_matches('-').split('-').collect();
+        let resolved = resolve_existing_path(Path::new("/"), &segments).expect("resolves");
+        assert_eq!(resolved, real);
+    }
+
+    #[test]
+    fn resolve_existing_path_prefers_separator_when_unambiguous() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let real = tmp.path().join("Code").join("atlasos");
+        std::fs::create_dir_all(&real).expect("mkdir");
+        let encoded_root = tmp.path().to_str().expect("utf8").replace('/', "-");
+        let encoded = format!("{encoded_root}-Code-atlasos");
+        let segments: Vec<&str> = encoded.trim_start_matches('-').split('-').collect();
+        let resolved = resolve_existing_path(Path::new("/"), &segments).expect("resolves");
+        assert_eq!(resolved, real);
+    }
+
+    #[test]
+    fn cwd_from_encoded_directory_falls_back_to_naive_decode_for_missing_paths() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        write_fixture(tmp.path(), "-no-such-root-anywhere-xyz/memory/x.md", b"---\nname: X\n---\nbody\n");
+        let out = run(tmp.path());
+        assert_eq!(out.candidates.len(), 1);
+        assert_eq!(out.candidates[0].cwd.as_deref(), Some(Path::new("/no/such/root/anywhere/xyz")),);
     }
 }
