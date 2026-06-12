@@ -160,7 +160,7 @@ async fn execute(args: &UninstallArgs, repo: &Path, runtime: &Path, _confirmed: 
     report.push(stop_step);
     report.push(remove_launchd_step(&detection, args.print_only));
     report.extend(unwire_mcp_steps(args, &detection));
-    report.push(purge_data_step(args, repo, runtime, &detection, stop_status));
+    report.push(purge_data_step(args, &detection, stop_status));
     report.push(verify_step(&socket, &detection, args.purge, args.print_only));
     report
 }
@@ -548,13 +548,9 @@ fn unwire_one(step: UninstallStep, config: &HarnessConfigDetection, print_only: 
 
 // --- step: purge_data --------------------------------------------------------
 
-fn purge_data_step(
-    args: &UninstallArgs,
-    repo: &Path,
-    runtime: &Path,
-    detection: &Detection,
-    stop_status: SetupStepStatus,
-) -> StepReport {
+fn purge_data_step(args: &UninstallArgs, detection: &Detection, stop_status: SetupStepStatus) -> StepReport {
+    let repo = &detection.repo;
+    let runtime = &detection.runtime;
     if !args.purge {
         return StepReport::new(UninstallStep::PurgeData, SetupStepStatus::Skipped)
             .with_message("data preserved; pass --purge to delete");
@@ -791,7 +787,7 @@ mod tests {
         input.purge = true; // repo is None → not explicit
         let detection = Detection::probe(&input, &repo, &runtime, &resolve_socket_path(&runtime));
 
-        let step = purge_data_step(&input, &repo, &runtime, &detection, SetupStepStatus::Skipped);
+        let step = purge_data_step(&input, &detection, SetupStepStatus::Skipped);
         assert_eq!(step.status, SetupStepStatus::Failed);
         assert!(repo.exists(), "refused purge must not delete the dir");
     }
@@ -803,7 +799,7 @@ mod tests {
         let repo = temp.path().join("repo");
         let runtime = repo.join(".memoryd");
         let detection = Detection::probe(&input, &repo, &runtime, &resolve_socket_path(&runtime));
-        let step = purge_data_step(&input, &repo, &runtime, &detection, SetupStepStatus::Skipped);
+        let step = purge_data_step(&input, &detection, SetupStepStatus::Skipped);
         assert_eq!(step.status, SetupStepStatus::Skipped);
         assert_eq!(step.message.as_deref(), Some("data preserved; pass --purge to delete"));
     }
@@ -815,7 +811,7 @@ mod tests {
         let repo = temp.path().join("repo");
         let runtime = repo.join(".memoryd");
         let detection = Detection::probe(&input, &repo, &runtime, &resolve_socket_path(&runtime));
-        let step = purge_data_step(&input, &repo, &runtime, &detection, SetupStepStatus::Failed);
+        let step = purge_data_step(&input, &detection, SetupStepStatus::Failed);
         assert_eq!(step.status, SetupStepStatus::Skipped);
         assert_eq!(step.message.as_deref(), Some("data preserved; pass --purge to delete"));
     }
