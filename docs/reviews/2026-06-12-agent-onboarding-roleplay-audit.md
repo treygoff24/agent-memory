@@ -345,3 +345,12 @@ to purge, preserving repo+runtime. (d) Non-zero exit on any failed step pinned b
 end-to-end regression test (real serve child, real SIGTERM). **Review catch:** the
 lane's purge gate fired before the `--purge` check, reporting a phantom purge refusal
 on non-purge runs — reordered, with a unit test pinning Skipped.
+
+### Post-integration live verification (2026-06-12, orchestrator)
+
+Re-verified the wave on `main` at `1ea0919` against a real daemon (fresh substrate, `memoryd serve --init`, real `memoryd mcp` stdio bridge):
+
+- **15 positive:** `memory_write` from a project cwd (git remote `github.com/example/memorum-live-fixture`, no `cwd`/`canonical_namespace_id` in meta) promoted and landed at `projects/proj_52d7d3d2…/decisions/<id>.md` with matching `namespace`/`canonical_namespace_id` frontmatter — exact SHA-256 canonical id.
+- **15 negative:** the same write from a non-project cwd was refused fail-closed (`invalid_request`, actionable message naming the three escape hatches); no stray file written.
+- **17:** `serve` wrote `<runtime>/memoryd.pid` with the correct pid at startup; SIGTERM shutdown removed it via the drop guard.
+- **Scoring perf:** `test_score_memories_at_10k_fixture_under_500ms_p95` re-run quietly at this head — ok (1.98s wall for the test, p95 within threshold).
