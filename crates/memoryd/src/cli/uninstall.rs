@@ -555,14 +555,14 @@ fn purge_data_step(
     detection: &Detection,
     stop_status: SetupStepStatus,
 ) -> StepReport {
-    if stop_status == SetupStepStatus::Failed {
-        return StepReport::new(UninstallStep::PurgeData, SetupStepStatus::Failed)
-            .with_message("refusing to purge while the daemon may still be running; stop it manually and re-run");
-    }
-
     if !args.purge {
         return StepReport::new(UninstallStep::PurgeData, SetupStepStatus::Skipped)
             .with_message("data preserved; pass --purge to delete");
+    }
+
+    if stop_status == SetupStepStatus::Failed {
+        return StepReport::new(UninstallStep::PurgeData, SetupStepStatus::Failed)
+            .with_message("refusing to purge while the daemon may still be running; stop it manually and re-run");
     }
 
     // Refuse to delete a repo that does not look like a Memorum repo unless the
@@ -804,6 +804,18 @@ mod tests {
         let runtime = repo.join(".memoryd");
         let detection = Detection::probe(&input, &repo, &runtime, &resolve_socket_path(&runtime));
         let step = purge_data_step(&input, &repo, &runtime, &detection, SetupStepStatus::Skipped);
+        assert_eq!(step.status, SetupStepStatus::Skipped);
+        assert_eq!(step.message.as_deref(), Some("data preserved; pass --purge to delete"));
+    }
+
+    #[test]
+    fn non_purge_run_reports_skipped_even_when_stop_failed() {
+        let input = args(); // purge = false
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = temp.path().join("repo");
+        let runtime = repo.join(".memoryd");
+        let detection = Detection::probe(&input, &repo, &runtime, &resolve_socket_path(&runtime));
+        let step = purge_data_step(&input, &repo, &runtime, &detection, SetupStepStatus::Failed);
         assert_eq!(step.status, SetupStepStatus::Skipped);
         assert_eq!(step.message.as_deref(), Some("data preserved; pass --purge to delete"));
     }
