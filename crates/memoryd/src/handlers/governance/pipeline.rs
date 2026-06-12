@@ -304,7 +304,12 @@ fn inherit_supersede_namespace_meta(meta: Value, old: &memory_substrate::Frontma
         }
     };
 
-    if effective_namespace == "project" && !fields.contains_key("cwd") {
+    // Inheritance from the old memory beats the bridge-injected `cwd`: a
+    // supersede edits an existing memory in place, so its bucket must not
+    // migrate to whatever project the caller happens to be sitting in. The
+    // `cwd` fallback only fires for legacy project memories that carry no
+    // namespace identity. Explicit caller-supplied ids still win via `entry`.
+    if effective_namespace == "project" {
         if let Some(canonical_namespace_id) = &old.canonical_namespace_id {
             fields
                 .entry("canonical_namespace_id".to_string())

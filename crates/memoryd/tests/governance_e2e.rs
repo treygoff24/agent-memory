@@ -354,6 +354,50 @@ async fn governance_e2e_supersede_without_project_identity_inherits_old_namespac
     assert_eq!(new_memory.frontmatter.canonical_namespace_id, old_memory.frontmatter.canonical_namespace_id);
 }
 
+/// The MCP bridge injects `cwd` into every supersede. Placement must still
+/// inherit from the old memory — a supersede issued from an unrelated
+/// directory must not relocate the memory to the caller's project (or refuse
+/// because the caller's cwd resolves to no project).
+#[tokio::test]
+async fn governance_e2e_supersede_with_foreign_cwd_still_inherits_old_namespace_fields() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let substrate = init_substrate(&temp).await;
+    let old = governed_project_write(&substrate, "inherit-cwd", "The cwd-shadowed target is staging.").await;
+    let old_id = old.id.expect("old id");
+    let foreign_cwd = tempfile::tempdir().expect("foreign cwd");
+
+    let response = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "supersede-inherit-cwd",
+            RequestPayload::Supersede {
+                old_id: old_id.clone(),
+                content: "The cwd-shadowed target is production.".to_string(),
+                reason: "deployment target changed".to_string(),
+                meta: serde_json::json!({
+                    "type": "project",
+                    "summary": "Cwd-shadowed target is production",
+                    "confidence": 0.95,
+                    "sensitivity": "internal",
+                    "source_kind": "user",
+                    "explicit_user_context": true,
+                    "cwd": foreign_cwd.path().to_string_lossy(),
+                }),
+            },
+        ),
+    )
+    .await;
+
+    let ResponseResult::Success(ResponsePayload::GovernanceSupersede(supersede)) = response.result else {
+        panic!("expected supersede success, got {:?}", response.result);
+    };
+    let new_id = supersede.new_id.expect("new id");
+    let old_memory = substrate.read_memory(&MemoryId::new(&old_id)).await.expect("old memory readable");
+    let new_memory = substrate.read_memory(&MemoryId::new(&new_id)).await.expect("new memory readable");
+    assert_eq!(new_memory.frontmatter.namespace, old_memory.frontmatter.namespace);
+    assert_eq!(new_memory.frontmatter.canonical_namespace_id, old_memory.frontmatter.canonical_namespace_id);
+}
+
 #[tokio::test]
 async fn governance_e2e_forget_tombstones_memory_and_removes_term_from_fts_hits() {
     let temp = tempfile::tempdir().expect("tempdir");
