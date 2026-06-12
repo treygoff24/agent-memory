@@ -14,11 +14,13 @@ Related guides — each says who it is for:
 
 How much it does depends on how you invoke it:
 
-**Interactive provisioning** — pass an action flag (`--import` or `--print-only`) to drive the prompt-based wizard that walks you through each decision and applies it:
+**Interactive wizard (the default on a terminal)** — a bare `memoryd init` opens with a detection summary (what prior memory was found and how it was discovered), then walks through import, daemon arrangement, and MCP wiring, and closes with a setup summary plus next steps:
 
 ```bash
-memoryd init --import   # interactive wizard: prompts then provisions
+memoryd init   # full wizard: detect → import → daemon → MCP wiring → verify
 ```
+
+Declining every prompt is a guaranteed no-op — nothing is created or modified unless you opt in. Explicit selector flags (`--import`, `--harness`, `--wire-mcp`, `--daemon`, `--non-git-cwd-default`) pre-answer their prompt instead of being re-asked, and `--print-only` runs the whole wizard as a dry run.
 
 **Agent/CI non-interactive mode** — all decisions via flags, machine-readable JSON report (`SetupReport`) on stdout:
 
@@ -28,7 +30,7 @@ memoryd init --non-interactive --json --wire-mcp current --daemon on-demand
 
 Add `--import --harness current` to bring in prior harness memory. Use `--detect-only` to inspect what is present without mutating anything. The full flag reference and the `SetupReport` JSON shape live in [`docs/agent-onboarding.md`](agent-onboarding.md).
 
-**Note on a bare `memoryd init`:** with no action flag on an interactive terminal, `memoryd init` runs in advisory mode — it prints detection and the next commands to run but does **not** provision the daemon or wire MCP. Pass `--import`/`--print-only` (or `--non-interactive`) when you want it to act.
+**Note on pipes and CI:** when stdin is not a terminal, a bare `memoryd init` refuses with guidance instead of provisioning anything. Scripted callers must opt in explicitly with `--non-interactive` (or `--json` / `--detect-only`).
 
 When `memoryd init` has provisioned the daemon and wired MCP for you, skip ahead to [step 3 (verify)](#3-verify-daemon-health) and [step 4 (wire MCP)](#4-wire-mcp) to confirm — then continue from there. The manual steps below are the alternative path if you are not using `memoryd init`.
 

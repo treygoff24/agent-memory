@@ -73,7 +73,9 @@ pub enum Command {
     /// import. Per the locked design, every memory goes through the daemon
     /// socket so privacy, governance, and event-log machinery all fire.
     Import(ImportArgs),
-    /// Interactive first-run setup: detect harness memory and offer to import.
+    /// First-run setup: detect prior harness memory, import it, provision the
+    /// daemon, and wire MCP configs. Interactive wizard on a TTY; scripted
+    /// JSON path via `--non-interactive`.
     Init(InitArgs),
 }
 
@@ -97,22 +99,27 @@ pub struct InitArgs {
     /// detection summary as JSON and exits.
     #[arg(long, default_value_t = false)]
     pub detect_only: bool,
-    /// Import detected harness memory through the daemon during setup.
+    /// Import detected harness memory through the daemon during setup. On a
+    /// TTY this pre-answers the wizard's import prompt with "yes".
     #[arg(long, default_value_t = false)]
     pub import: bool,
-    /// Harness set to import (default: the single detected harness).
-    #[arg(long, value_enum, default_value_t = InitHarness::Current)]
-    pub harness: InitHarness,
+    /// Harness set to import. Omitted: prompted by the wizard on a TTY;
+    /// `current` (the single detected harness) on the non-interactive path.
+    #[arg(long, value_enum)]
+    pub harness: Option<InitHarness>,
     /// Default placement for imported memories whose cwd is not a git
-    /// checkout. Mirrors `memoryd import --non-git-cwd-default`.
-    #[arg(long, value_enum, default_value_t = NonGitCwdDefault::Skip)]
-    pub non_git_cwd_default: NonGitCwdDefault,
-    /// MCP configs to wire (default: the single detected harness).
-    #[arg(long, value_enum, default_value_t = WireMcpMode::Current)]
-    pub wire_mcp: WireMcpMode,
-    /// Daemon arrangement to provision during setup.
-    #[arg(long, value_enum, default_value_t = DaemonMode::OnDemand)]
-    pub daemon: DaemonMode,
+    /// checkout. Mirrors `memoryd import --non-git-cwd-default`. Omitted:
+    /// prompted by the wizard on a TTY; `skip` on the non-interactive path.
+    #[arg(long, value_enum)]
+    pub non_git_cwd_default: Option<NonGitCwdDefault>,
+    /// MCP configs to wire. Omitted: prompted by the wizard on a TTY;
+    /// `current` (the single detected harness) on the non-interactive path.
+    #[arg(long, value_enum)]
+    pub wire_mcp: Option<WireMcpMode>,
+    /// Daemon arrangement to provision during setup. Omitted: prompted by the
+    /// wizard on a TTY; `on-demand` on the non-interactive path.
+    #[arg(long, value_enum)]
+    pub daemon: Option<DaemonMode>,
     /// Plan and report every step without applying side effects (dry-run
     /// import, print-only MCP wiring).
     #[arg(long, default_value_t = false)]

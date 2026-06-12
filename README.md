@@ -55,6 +55,21 @@ For development without installing, use `cargo run --bin memoryd -- ...`.
 
 ## Quickstart
 
+The fastest path is the interactive wizard — it detects prior Claude Code /
+Codex memory, imports it with your consent, arranges the daemon, and wires the
+`memorum` MCP server into your agents, then prints next steps:
+
+```bash
+memoryd init
+```
+
+Declining every prompt is a guaranteed no-op, so it is always safe to run and
+look. (In scripts/CI, use `memoryd init --non-interactive --json` — a bare
+`init` without a terminal refuses rather than guessing. AI agents should follow
+`docs/agent-onboarding.md`.)
+
+The manual equivalent of what the wizard does:
+
 Define the private runtime and socket once per shell:
 
 ```bash

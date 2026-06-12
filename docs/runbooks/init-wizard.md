@@ -4,13 +4,17 @@
 Claude Code and Codex CLI memory, provisions the daemon, wires MCP config, and
 (optionally) imports prior harness memory.
 
-This runbook used to document an older **detect-and-advise** behavior, where
-`memoryd init` only reported what it found and printed `memoryd serve --init`
-plus `memoryd import` as next steps. That advisory output is now superseded: it
-survives only as the no-action-flag fallback on an interactive terminal. The
-real bootstrap runs through the shared setup engine on either the interactive
-(`--import` / `--print-only`) or non-interactive (`--non-interactive --json`)
-path.
+On a terminal, a bare `memoryd init` runs the full interactive wizard:
+detection summary (including *how* each memory root was discovered — env var,
+settings file, or default path), import, daemon arrangement, MCP wiring, and a
+closing summary with next steps. Declining every prompt is a guaranteed no-op.
+Explicit selector flags pre-answer their prompt; `--print-only` makes the whole
+run a dry run.
+
+When stdin is **not** a terminal, a bare `memoryd init` refuses with guidance
+rather than provisioning anything — scripted callers must pass
+`--non-interactive` (or `--json` / `--detect-only`) explicitly. The older
+**detect-and-advise** advisory output is fully removed.
 
 For the current, authoritative guidance:
 

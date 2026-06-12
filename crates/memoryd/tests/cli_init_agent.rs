@@ -15,7 +15,7 @@ use memoryd::import::report::ImportReport;
 use memoryd::setup::{SetupDetection, SetupReport, SetupStep, SetupStepStatus};
 use serial_test::serial;
 
-use common::{assert_step, assert_success, parse_stdout, path_arg, stderr};
+use common::{assert_step, assert_success, parse_stdout, path_arg, stderr, stdout};
 
 /// `init --detect-only --json` against an empty environment must produce a
 /// parseable detection summary, write nothing to stderr, exit zero, and leave
@@ -187,11 +187,12 @@ fn fatal_step_exits_nonzero_with_parseable_report() {
     assert_step(&report, SetupStep::EnsureRepo, SetupStepStatus::Failed);
 }
 
-/// A non-TTY invocation with no machine flags still routes to the agent path
-/// (deterministic JSON) rather than blocking on prompts.
+/// A non-TTY invocation without an explicit machine mode must refuse with
+/// guidance — never silently provision a substrate from flag defaults. Piped
+/// and CI callers opt in via `--non-interactive` / `--json` / `--detect-only`.
 #[test]
 #[serial]
-fn piped_bare_invocation_routes_to_agent_json() {
+fn piped_invocation_without_machine_mode_refuses_with_guidance() {
     let env = TestEnv::new();
     let repo = env.temp.path().join("repo");
 
@@ -209,9 +210,13 @@ fn piped_bare_invocation_routes_to_agent_json() {
         path_arg(&repo.join(".memoryd")),
     ]);
 
-    assert_success(&output);
-    // Pure JSON, not the legacy advisory text.
-    let _report: SetupReport = parse_stdout(&output);
+    assert!(!output.status.success(), "non-TTY init without a machine mode must fail");
+    assert!(stdout(&output).trim().is_empty(), "refusal must not write to stdout: {}", stdout(&output));
+    let err = stderr(&output);
+    assert!(err.contains("--non-interactive"), "refusal must point at the scripted path: {err}");
+    assert!(err.contains("--detect-only"), "refusal must point at read-only detection: {err}");
+    assert!(err.contains("agent-onboarding"), "refusal must point agents at the onboarding doc: {err}");
+    assert!(!repo.exists(), "a refused init must not create the repo directory");
 }
 
 struct TestEnv {

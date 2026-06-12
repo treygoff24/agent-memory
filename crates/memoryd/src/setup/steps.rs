@@ -555,6 +555,18 @@ fn reject_literal_tilde(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Human-readable wiring status for step messages — these surface verbatim in
+/// the wizard epilogue and the JSON report, so no raw enum variant names.
+fn wire_status_text(status: WireStatus) -> &'static str {
+    match status {
+        WireStatus::Wired => "wired",
+        WireStatus::AlreadyCurrent => "already wired",
+        WireStatus::Updated => "updated",
+        WireStatus::PrintedOnly => "printed config snippet only (dry run)",
+        WireStatus::Skipped => "skipped",
+    }
+}
+
 fn wire_outcome_summary(outcomes: Vec<Result<WireOutcome, String>>) -> WireStepOutcome {
     let mut messages = Vec::new();
     let mut failed = false;
@@ -564,7 +576,7 @@ fn wire_outcome_summary(outcomes: Vec<Result<WireOutcome, String>>) -> WireStepO
         match outcome {
             Ok(outcome) => {
                 restart_required |= matches!(outcome.status, WireStatus::Wired | WireStatus::Updated);
-                messages.push(format!("{:?}: {:?}", outcome.target, outcome.status));
+                messages.push(format!("{:?}: {}", outcome.target, wire_status_text(outcome.status)));
             }
             Err(message) => {
                 failed = true;

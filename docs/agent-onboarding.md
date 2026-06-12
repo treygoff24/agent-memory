@@ -8,7 +8,7 @@ Related guides:
 - For **build/install on a fresh machine** (`cargo install`, `scripts/install-memorum.sh`), see [`docs/install.md`](install.md).
 - When something breaks, [`docs/troubleshooting.md`](troubleshooting.md) maps first-run symptoms to fixes.
 
-`memoryd init` is the unified bootstrap entrypoint for all of these; this guide drives its non-interactive (`--non-interactive --json`) path.
+`memoryd init` is the unified bootstrap entrypoint for all of these; this guide drives its non-interactive (`--non-interactive --json`) path. Always pass those flags: when stdin is not a terminal, a bare `memoryd init` refuses with guidance rather than provisioning anything, and on a terminal it launches the human wizard instead.
 
 ## What you are doing
 
@@ -272,17 +272,21 @@ These are every flag accepted by `memoryd init`. Do not cite flags outside this 
     Import detected harness memory through the daemon during setup.
 
 --harness <current|claude|codex|all|none>
-    Harness set to import (default: current).
+    Harness set to import. Omitted: prompted by the wizard on a TTY;
+    defaults to current on the non-interactive path.
 
 --non-git-cwd-default <skip|me|generate>
     Default placement for imported memories whose cwd is not a git checkout.
-    Default: skip.
+    Omitted: prompted by the wizard on a TTY; defaults to skip on the
+    non-interactive path.
 
 --wire-mcp <current|claude|codex|all|none>
-    MCP configs to wire (default: current).
+    MCP configs to wire. Omitted: prompted by the wizard on a TTY; defaults
+    to current on the non-interactive path.
 
 --daemon <on-demand|background|launchd|none>
-    Daemon arrangement to provision during setup (default: on-demand).
+    Daemon arrangement to provision during setup. Omitted: prompted by the
+    wizard on a TTY; defaults to on-demand on the non-interactive path.
 
 --print-only
     Plan and report every step without applying side effects

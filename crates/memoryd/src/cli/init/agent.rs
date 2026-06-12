@@ -75,13 +75,17 @@ async fn run_setup(args: InitArgs) -> anyhow::Result<()> {
 }
 
 /// Map parsed CLI flags onto the engine's owned decision bundle.
+///
+/// Omitted selectors take the documented non-interactive defaults (`current`
+/// harness/wiring, `skip` for non-git cwds, `on-demand` daemon) — on this path
+/// there is no prompt to fall back to.
 fn decisions_from_args(args: &InitArgs) -> SetupDecisions {
     SetupDecisions {
         import_memories: args.import,
-        harnesses: args.harness.into(),
-        non_git_cwd_default: args.non_git_cwd_default.into(),
-        wire_mcp: args.wire_mcp.into(),
-        daemon: args.daemon.into(),
+        harnesses: args.harness.unwrap_or(InitHarness::Current).into(),
+        non_git_cwd_default: args.non_git_cwd_default.unwrap_or(NonGitCwdDefault::Skip).into(),
+        wire_mcp: args.wire_mcp.unwrap_or(WireMcpMode::Current).into(),
+        daemon: args.daemon.unwrap_or(DaemonMode::OnDemand).into(),
         print_only: args.print_only,
     }
 }
