@@ -488,6 +488,7 @@ impl Index {
         let mut collapsed = collapse_bm25_memory_hits(self.query_hybrid_bm25_chunks(&sanitized, None)?);
         collapsed.truncate(limit);
 
+        let strict_len = collapsed.len();
         let relaxed = sanitize_relaxed_fts_query(text);
         if collapsed.len() < limit && !relaxed.is_empty() && relaxed != sanitized {
             let relaxed_hits = self.query_hybrid_bm25_chunks_memory_collapsed(&relaxed, limit)?;
@@ -505,7 +506,15 @@ impl Index {
         Ok(collapsed
             .into_iter()
             .enumerate()
-            .map(|(idx, hit)| Bm25MemoryRank { memory_id: hit.memory_id, text: hit.text, rank: idx + 1 })
+            .map(|(idx, hit)| {
+                let rank = if idx < strict_len {
+                    idx + 1
+                } else {
+                    let relaxed_position = idx - strict_len + 1;
+                    strict_len + relaxed_position + RELAXED_RANK_OFFSET
+                };
+                Bm25MemoryRank { memory_id: hit.memory_id, text: hit.text, rank }
+            })
             .collect())
     }
 
@@ -2303,6 +2312,17 @@ fn sanitize_fts_query(input: &str) -> String {
 
 const RELAXED_FTS_MAX_TERMS: usize = 8;
 
+/// Rank penalty applied to relaxed OR-fallback hits before RRF fusion.
+///
+/// Strict AND hits keep contiguous ranks `1..=S`. Relaxed-only hits receive
+/// `S + i + RELAXED_RANK_OFFSET` (i = 1-based position among appended relaxed
+/// hits), demoting OR-matches to tie-breakers of last resort because their BM25
+/// scores come from a different query expression and are not rank-comparable
+/// with strict AND hits. The value mirrors the default `rrf_k` (60), so a
+/// relaxed hit contributes at most ~half of what the same ordinal rank would
+/// contribute as a strict hit in reciprocal-rank fusion.
+const RELAXED_RANK_OFFSET: usize = 60;
+
 /// Build a bounded OR query for the hybrid BM25 lane's fallback pass.
 ///
 /// The primary BM25 pass remains strict (`term term term`, implicit AND). This
@@ -2553,6 +2573,59 @@ mod tests {
             limit,
             "each hit must be a distinct memory, not duplicate chunks from one memory"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn relaxed_bm25_fallback_applies_rank_offset_to_or_hits() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let mut index = Index::new(open_index(&temp.path().join("index.sqlite"))?);
+
+        let strict_id = "mem_20260612_a1b2c3d4e5f60718_020100";
+        let mut strict_match = sample_memory(strict_id);
+        strict_match.body =
+            "rankanchor bravoextra charlieextra deltaextra echoextra foxtrotextra golfextra strict body"
+                .to_string();
+
+        let satellite_terms = ["bravoextra", "charlieextra", "deltaextra", "echoextra", "foxtrotextra"];
+        let satellite_ids = [
+            "mem_20260612_a1b2c3d4e5f60718_020101",
+            "mem_20260612_a1b2c3d4e5f60718_020102",
+            "mem_20260612_a1b2c3d4e5f60718_020103",
+            "mem_20260612_a1b2c3d4e5f60718_020104",
+            "mem_20260612_a1b2c3d4e5f60718_020105",
+        ];
+        let mut satellites = Vec::new();
+        for (id, term) in satellite_ids.into_iter().zip(satellite_terms) {
+            let mut memory = sample_memory(id);
+            memory.body = format!("rankanchor {term} relaxed-only satellite body");
+            satellites.push(memory);
+        }
+
+        index.upsert_memory(&strict_match, false)?;
+        for memory in &satellites {
+            index.upsert_memory(memory, false)?;
+        }
+
+        let limit = 4;
+        let hits = index.query_hybrid_bm25_memories(
+            "rankanchor bravoextra charlieextra deltaextra echoextra foxtrotextra golfextra",
+            limit,
+        )?;
+
+        assert_eq!(hits.len(), limit);
+
+        let strict_hits: Vec<_> = hits.iter().filter(|hit| hit.memory_id == strict_id).collect();
+        assert_eq!(strict_hits.len(), 1, "exactly one strict AND match expected");
+        assert_eq!(strict_hits[0].rank, 1);
+
+        let relaxed_hits: Vec<_> = hits.iter().filter(|hit| hit.memory_id != strict_id).collect();
+        assert_eq!(relaxed_hits.len(), limit - 1);
+        let strict_len = strict_hits.len();
+        for (idx, hit) in relaxed_hits.iter().enumerate() {
+            assert_eq!(hit.rank, strict_len + idx + 1 + super::RELAXED_RANK_OFFSET);
+        }
+
         Ok(())
     }
 
