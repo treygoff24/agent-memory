@@ -2278,6 +2278,11 @@ const RELAXED_FTS_MAX_TERMS: usize = 8;
 /// relaxed expression only fills unused lane slots, so exact all-term matches
 /// keep better BM25 ranks while memories sharing distinctive query anchors can
 /// still corroborate the vector lane.
+///
+/// Short tokens (1–3 alphanumeric characters) are kept only when they look
+/// like identifiers (digits, all-caps acronyms, or mixed alnum); lone letters and
+/// short lowercase filler are dropped. Longer tokens still pass through the
+/// low-signal stopword filter.
 fn sanitize_relaxed_fts_query(input: &str) -> String {
     input
         .split_whitespace()
@@ -2288,9 +2293,21 @@ fn sanitize_relaxed_fts_query(input: &str) -> String {
         .join(" OR ")
 }
 
+/// Retain a whitespace token for the relaxed OR fallback when it survives
+/// identifier-aware short-token filtering and the low-signal stopword list.
+///
+/// Tokens with fewer than four alphanumeric characters are kept only when they
+/// look like recall anchors: they contain a digit, are an all-uppercase acronym
+/// (two or more letters), or mix letters and digits. Lone letters and short
+/// lowercase pure-alpha filler are dropped.
 fn relaxed_fts_token(token: &str) -> Option<&str> {
     let trimmed = token.trim_matches(|character: char| !character.is_alphanumeric());
-    if trimmed.chars().filter(|character| character.is_alphanumeric()).count() < 4 {
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let alnum_count = trimmed.chars().filter(|character| character.is_alphanumeric()).count();
+    if alnum_count < 4 && !should_keep_short_identifier(trimmed) {
         return None;
     }
 
@@ -2300,6 +2317,30 @@ fn relaxed_fts_token(token: &str) -> Option<&str> {
     }
 
     Some(trimmed)
+}
+
+fn should_keep_short_identifier(trimmed: &str) -> bool {
+    let alnum = trimmed.chars().filter(|character| character.is_alphanumeric()).collect::<Vec<_>>();
+    let count = alnum.len();
+    if count == 0 {
+        return false;
+    }
+
+    // Lone letters (any case) are noise; lone digits are anchors.
+    if count == 1 {
+        return alnum[0].is_ascii_digit();
+    }
+
+    let has_digit = alnum.iter().any(|character| character.is_ascii_digit());
+    if has_digit {
+        return true;
+    }
+
+    if count >= 2 && alnum.iter().all(|character| character.is_ascii_uppercase()) {
+        return true;
+    }
+
+    false
 }
 
 fn is_low_signal_query_term(term: &str) -> bool {
@@ -2339,7 +2380,7 @@ fn is_low_signal_query_term(term: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{sanitize_fts_query, sanitize_relaxed_fts_query};
+    use super::{relaxed_fts_token, sanitize_fts_query, sanitize_relaxed_fts_query};
 
     #[test]
     fn sanitize_plain_word_wraps_as_single_phrase() {
@@ -2396,6 +2437,31 @@ mod tests {
         assert_eq!(
             sanitize_relaxed_fts_query("alpha beta gamma delta epsilon zeta eta theta iota kappa say\"hi"),
             "\"alpha\" OR \"beta\" OR \"gamma\" OR \"delta\" OR \"epsilon\" OR \"zeta\" OR \"theta\" OR \"iota\""
+        );
+    }
+
+    #[test]
+    fn relaxed_token_keeps_short_identifier_anchors() {
+        assert_eq!(relaxed_fts_token("v2"), Some("v2"));
+        assert_eq!(relaxed_fts_token("PR"), Some("PR"));
+        // `trim_matches` strips only leading/trailing non-alnum; interior hyphens stay.
+        assert_eq!(relaxed_fts_token("B-7"), Some("B-7"));
+        assert_eq!(relaxed_fts_token("7"), Some("7"));
+        assert_eq!(relaxed_fts_token("Rust"), Some("Rust"));
+    }
+
+    #[test]
+    fn relaxed_token_drops_short_low_signal_filler() {
+        assert_eq!(relaxed_fts_token("at"), None);
+        assert_eq!(relaxed_fts_token("a"), None);
+        assert_eq!(relaxed_fts_token("I"), None);
+    }
+
+    #[test]
+    fn relaxed_sanitize_keeps_identifier_tokens_in_or_fallback() {
+        assert_eq!(
+            sanitize_relaxed_fts_query("what is the PR for v2 B-7"),
+            "\"PR\" OR \"v2\" OR \"B-7\""
         );
     }
 }
