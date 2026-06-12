@@ -376,7 +376,11 @@ fn cleanup_stale_project_scope_entries(
     spec: &McpServerSpec,
     runtime: &mut dyn McpWireRuntime,
 ) -> Result<bool, WireError> {
-    let config_path = claude_config_path(runtime)?;
+    // An unresolvable config location means there is nothing we can clean; the
+    // CLI add already succeeded, so don't fail the wiring over the cleanup.
+    let Ok(config_path) = claude_config_path(runtime) else {
+        return Ok(false);
+    };
     let Some(existing) = runtime.read_to_string(&config_path)? else {
         return Ok(false);
     };

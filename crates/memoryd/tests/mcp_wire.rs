@@ -165,23 +165,23 @@ fn codex_apply_rejects_invalid_top_level_mcp_servers_without_writing() {
 }
 
 #[test]
-fn claude_falls_back_to_project_json_when_cli_is_absent() {
-    let mut runtime = FakeRuntime::default().with_current_dir(PathBuf::from("/repo"));
+fn claude_falls_back_to_user_config_when_cli_is_absent() {
+    let mut runtime = FakeRuntime::default().with_home(PathBuf::from("/home/tester"));
 
     let outcome = wire_with_runtime(HarnessTarget::Claude, &memorum_spec(), WireMode::Apply, &mut runtime)
         .expect("claude fallback does not hard-fail setup");
 
     assert_eq!(outcome.status, WireStatus::Wired);
     assert_eq!(runtime.claude_add_count, 1);
-    let config = runtime.files.get(Path::new("/repo/.mcp.json")).expect("fallback config written");
+    let config = runtime.files.get(Path::new("/home/tester/.claude.json")).expect("user-scope config written");
     let parsed: serde_json::Value = serde_json::from_str(config).expect("valid json");
     assert_eq!(parsed["mcpServers"]["memorum"]["command"], "memoryd");
 }
 
 #[test]
-fn claude_fallback_preserves_backup_when_updating_existing_project_config() {
-    let config_path = PathBuf::from("/repo/.mcp.json");
-    let mut runtime = FakeRuntime::default().with_current_dir(PathBuf::from("/repo"));
+fn claude_fallback_preserves_backup_when_updating_existing_user_config() {
+    let config_path = PathBuf::from("/home/tester/.claude.json");
+    let mut runtime = FakeRuntime::default().with_home(PathBuf::from("/home/tester"));
     runtime.files.insert(config_path.clone(), "{\"theme\":\"dark\"}\n".to_string());
 
     let outcome = wire_with_runtime(HarnessTarget::Claude, &memorum_spec(), WireMode::Apply, &mut runtime)
@@ -194,7 +194,7 @@ fn claude_fallback_preserves_backup_when_updating_existing_project_config() {
 }
 
 #[test]
-fn claude_cli_success_does_not_write_project_fallback() {
+fn claude_cli_success_does_not_write_config_when_nothing_is_stale() {
     let mut runtime = FakeRuntime::default().with_claude_add(successful_claude_add());
 
     let outcome = wire_with_runtime(HarnessTarget::Claude, &memorum_spec(), WireMode::Apply, &mut runtime)
@@ -207,7 +207,7 @@ fn claude_cli_success_does_not_write_project_fallback() {
 }
 
 #[test]
-fn claude_cli_duplicate_add_does_not_write_project_fallback() {
+fn claude_cli_duplicate_add_does_not_write_config_when_nothing_is_stale() {
     let mut runtime = FakeRuntime::default().with_claude_add(already_exists_claude_add());
 
     let outcome = wire_with_runtime(HarnessTarget::Claude, &memorum_spec(), WireMode::Apply, &mut runtime)
@@ -240,13 +240,13 @@ fn claude_failed_cli_and_invalid_project_json_degrades_to_print_only() {
 
 #[test]
 fn claude_cli_grammar_matches_live_help_fixture() {
-    // Source of truth captured from this worker's live `claude mcp add --help`
-    // on 2026-06-01: `Usage: claude mcp add [options] <name> <commandOrUrl> [args...]`.
-    // The same help examples show subprocess flags separated as:
-    // `claude mcp add my-server -- my-command --some-flag arg1`.
+    // Source of truth captured from live `claude mcp add --help` on 2026-06-12:
+    // `Usage: claude mcp add [options] <name> <commandOrUrl> [args...]`, with
+    // `-s, --scope` accepting `user` for cross-project wiring and `--`
+    // separating subprocess flags as in the help examples.
     assert_eq!(
         claude_mcp_add_args(&memorum_spec()),
-        vec!["mcp", "add", "memorum", "--", "memoryd", "mcp", "--socket", "/tmp/memoryd.sock"]
+        vec!["mcp", "add", "--scope", "user", "memorum", "--", "memoryd", "mcp", "--socket", "/tmp/memoryd.sock"]
     );
 }
 
