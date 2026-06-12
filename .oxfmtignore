@@ -18,6 +18,7 @@ docs/explainers/*.html
 docs/reviews/2026-05-28-main-rs-refactor-review.md
 docs/reviews/2026-06-05-elegance-audit.md
 docs/reviews/2026-06-10-vector-recall-fusion-run-record.md
+docs/reviews/2026-06-11-recall-quality-autoresearch-run-record.md
 
 # Generated/hand-curated golden recall corpus (Task 4.1). The markdown bodies,
 # YAML frontmatter, queries.yaml, and id registry are emitted by the authoring
