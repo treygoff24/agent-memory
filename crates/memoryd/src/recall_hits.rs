@@ -35,7 +35,7 @@ pub fn recent_recall_hits(
             device,
             seq: seq.max(0) as u64,
             memory_id,
-            recalled_at: parse_time(&recalled_at),
+            recalled_at: crate::util::parse_rfc3339_utc(&recalled_at).unwrap_or(DateTime::<Utc>::UNIX_EPOCH),
             summary,
         });
     }
@@ -45,10 +45,6 @@ pub fn recent_recall_hits(
 
 fn clamp_limit(limit: Option<usize>) -> usize {
     limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT)
-}
-
-fn parse_time(value: &str) -> DateTime<Utc> {
-    DateTime::parse_from_rfc3339(value).map(|value| value.with_timezone(&Utc)).unwrap_or(DateTime::<Utc>::UNIX_EPOCH)
 }
 
 #[cfg(test)]

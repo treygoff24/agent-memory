@@ -14,11 +14,8 @@ pub mod simulator;
 /// every other ASCII control character as `\uXXXX`. Non-ASCII printable Unicode
 /// passes through unchanged.
 ///
-/// This is the single canonical implementation for the crate. The previously
-/// scattered copies in harness_runner, simulator, and orchestrator had a subtle
-/// divergence: harness_runner and simulator passed control characters other than
-/// `\n`/`\r`/`\t` through verbatim, while orchestrator correctly escaped them as
-/// `\uXXXX`. The orchestrator variant (most complete) was kept here.
+/// Single canonical implementation for the crate: every control character
+/// other than `\n`/`\r`/`\t` is escaped as `\uXXXX` rather than passed verbatim.
 pub(crate) fn json_escape(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
     for character in value.chars() {

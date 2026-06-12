@@ -5,6 +5,7 @@ pub mod focus;
 pub mod inbox;
 pub mod inspector;
 pub mod palette;
+pub mod protocol;
 pub mod state;
 pub mod status;
 pub mod theme_glue;

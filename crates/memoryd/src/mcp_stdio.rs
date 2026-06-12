@@ -70,10 +70,6 @@ pub struct StdioOptions {
 ///
 /// The MCP stdio transport reserves stdout for protocol frames. Diagnostics
 /// from this loop therefore go to stderr; normal EOF is not logged.
-pub async fn serve_stdio(socket_path: &Path) -> Result<()> {
-    serve_stdio_with_options(socket_path, StdioOptions::default()).await
-}
-
 pub async fn serve_stdio_with_options(socket_path: &Path, options: StdioOptions) -> Result<()> {
     let mut reader = BufReader::new(tokio::io::stdin());
     let mut stdout = tokio::io::stdout();

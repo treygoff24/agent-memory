@@ -16,12 +16,10 @@ static SUBPROCESS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// from poison.
 ///
 /// These tests mutate process-wide state (cwd, PATH) and so must run one at a
-/// time. Previously each call site used `.lock().expect(...)`; when one test
-/// panicked while holding the guard, the mutex became poisoned and every later
-/// test in the file panicked on acquire, cascading a single real failure into a
-/// wall of spurious ones. The guarded value is `()` (the mutex only provides
-/// mutual exclusion, it carries no data that a panic could leave inconsistent),
-/// so recovering the inner guard via `into_inner()` is always safe.
+/// time. Recovering from poison keeps one panicking test from cascading into a
+/// wall of spurious acquire-panics in every later test. The guarded value is `()`
+/// (the mutex carries no data a panic could leave inconsistent), so recovering
+/// the inner guard via `into_inner()` is always safe.
 fn lock_subprocess_test() -> std::sync::MutexGuard<'static, ()> {
     SUBPROCESS_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }

@@ -74,10 +74,6 @@ impl DaemonScaffold {
         Self { tree_dir, socket_path, child: Some(DaemonChild { child }) }
     }
 
-    pub async fn from_fixture(_name: &str) -> Self {
-        Self::fresh().await
-    }
-
     pub async fn doctor(&self) -> DoctorReport {
         let mut stream = UnixStream::connect(&self.socket_path)
             .unwrap_or_else(|err| panic!("connect to memoryd socket {}: {err}", self.socket_path.display()));

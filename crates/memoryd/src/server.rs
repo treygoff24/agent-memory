@@ -50,28 +50,6 @@ pub async fn serve(socket_path: impl AsRef<Path>) -> Result<()> {
     serve_with_dispatcher(socket_path.as_ref(), Dispatch::Standalone, ServerOptions::default(), shutdown_rx).await
 }
 
-/// Run the substrate-backed daemon forever with default options. For test
-/// harnesses or supervised lifecycles that need to drive shutdown, use
-/// [`serve_substrate_with`].
-pub async fn serve_substrate(socket_path: impl AsRef<Path>, substrate: Substrate) -> Result<()> {
-    let (_shutdown_tx, shutdown_rx) = watch::channel(false);
-    let substrate = Arc::new(substrate);
-    let state = Arc::new(state_for_substrate(substrate.as_ref())?);
-    spawn_notification_dispatcher(&state);
-    emit_startup_blocking_conflicts(&substrate, &state);
-    spawn_coordination_cleanup_for_state(state.clone(), shutdown_rx.clone());
-    fire_reality_check_due_on_startup(&substrate, &state);
-    spawn_reality_check_scheduler(substrate.clone(), state.clone(), shutdown_rx.clone());
-    spawn_embedding_worker(substrate.clone(), state.embedding_provider_slot(), shutdown_rx.clone());
-    serve_with_dispatcher(
-        socket_path.as_ref(),
-        Dispatch::Substrate { substrate, state },
-        ServerOptions::default(),
-        shutdown_rx,
-    )
-    .await
-}
-
 /// Run the substrate-backed daemon with caller-supplied options and a
 /// shutdown signal.
 ///
