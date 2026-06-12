@@ -92,6 +92,14 @@ Expected result: `status` returns a ready daemon response, and `doctor` reports 
 
 Add this to your MCP-capable client config. Replace the placeholder socket path with the output of `echo "$MEMORUM_SOCKET"` (or the absolute path printed by `scripts/install-memorum.sh`). Most MCP clients do not expand `~` inside JSON/TOML.
 
+For Claude Code, prefer user-scope wiring so Memorum is available in every project:
+
+```bash
+claude mcp add --scope user memorum -- memoryd mcp --socket "/absolute/path/to/memorum/.memoryd/memoryd.sock"
+```
+
+Or merge this JSON at the top-level `mcpServers` key of the user config (`$CLAUDE_CONFIG_DIR/.claude.json` or `~/.claude/.claude.json`):
+
 ```json
 {
   "mcpServers": {

@@ -128,16 +128,16 @@ prefixed with `MEMORUM_AGENT_SUMMARY_JSON=`. The value is JSON with absolute
 Example shape:
 
 ```text
-MEMORUM_AGENT_SUMMARY_JSON={"mode":"agent","repo":"/home/alice/memorum","runtime":"/home/alice/memorum/.memoryd","socket":"/home/alice/memorum/.memoryd/memoryd.sock","next_command":"claude mcp add memorum -- memoryd mcp --socket /home/alice/memorum/.memoryd/memoryd.sock","next_command_argv":["claude","mcp","add","memorum","--","memoryd","mcp","--socket","/home/alice/memorum/.memoryd/memoryd.sock"]}
+MEMORUM_AGENT_SUMMARY_JSON={"mode":"agent","repo":"/home/alice/memorum","runtime":"/home/alice/memorum/.memoryd","socket":"/home/alice/memorum/.memoryd/memoryd.sock","next_command":"claude mcp add --scope user memorum -- memoryd mcp --socket /home/alice/memorum/.memoryd/memoryd.sock","next_command_argv":["claude","mcp","add","--scope","user","memorum","--","memoryd","mcp","--socket","/home/alice/memorum/.memoryd/memoryd.sock"]}
 ```
 
 The Claude MCP one-liner uses the same argument grammar as `setup::mcp_wire`:
 
 ```bash
-claude mcp add memorum -- memoryd mcp --socket "/absolute/path/to/memorum/.memoryd/memoryd.sock"
+claude mcp add --scope user memorum -- memoryd mcp --socket "/absolute/path/to/memorum/.memoryd/memoryd.sock"
 ```
 
-For config-file based clients, use the JSON snippet printed by the installer:
+For config-file based clients, use the JSON snippet printed by the installer. In Claude Code this belongs at the top-level `mcpServers` key of the user config (`$CLAUDE_CONFIG_DIR/.claude.json` or `~/.claude/.claude.json`), not under `projects.<cwd>.mcpServers`:
 
 ```json
 {

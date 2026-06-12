@@ -93,6 +93,14 @@ memoryd mcp --socket "$MEMORUM_SOCKET"
 
 Wire an MCP client to launch the stdio bridge. Use the absolute socket path printed by `scripts/install-memorum.sh`; most MCP clients do not expand `~` inside JSON/TOML.
 
+For Claude Code, use user-scope wiring:
+
+```bash
+claude mcp add --scope user memorum -- memoryd mcp --socket "/absolute/path/to/memorum/.memoryd/memoryd.sock"
+```
+
+Or add this at the top-level `mcpServers` key of the user config (`$CLAUDE_CONFIG_DIR/.claude.json` or `~/.claude/.claude.json`):
+
 ```json
 {
   "mcpServers": {

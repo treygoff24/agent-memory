@@ -43,8 +43,9 @@ assert_contains "installer binary set: memoryd, memoryd-tui, memoryd-web, memory
 assert_contains "memorum-eval is a development/eval binary"
 assert_contains "memoryd serve --init --repo $repo --runtime $runtime --socket $runtime/memoryd.sock"
 assert_contains "memoryd status --socket $runtime/memoryd.sock"
-assert_contains "claude mcp add memorum -- memoryd mcp --socket $runtime/memoryd.sock"
+assert_contains "claude mcp add --scope user memorum -- memoryd mcp --socket $runtime/memoryd.sock"
 assert_not_contains "claude mcp add memorum memoryd -- mcp"
+assert_not_contains "claude mcp add memorum -- memoryd"
 assert_contains '"args": ["mcp", "--socket", "'"$runtime"'/memoryd.sock"]'
 assert_contains "command -v memory-merge-driver"
 assert_not_contains "/tmp/memoryd.sock"
@@ -79,7 +80,7 @@ rel_assert() {
 }
 rel_assert "memoryd serve --init --repo $rel_repo --runtime $rel_runtime --socket $rel_runtime/memoryd.sock" "serve"
 rel_assert "memoryd status --socket $rel_runtime/memoryd.sock" "status"
-rel_assert "claude mcp add memorum -- memoryd mcp --socket $rel_runtime/memoryd.sock" "claude"
+rel_assert "claude mcp add --scope user memorum -- memoryd mcp --socket $rel_runtime/memoryd.sock" "claude"
 rel_assert '"args": ["mcp", "--socket", "'"$rel_runtime"'/memoryd.sock"]' "json"
 rel_not_contains() {
   local needle="$1"
@@ -180,11 +181,13 @@ expected_socket = sys.argv[2]
 assert summary["mode"] == "agent", summary
 assert summary["socket"] == expected_socket, summary
 assert os.path.isabs(summary["socket"]), summary
-assert summary["next_command"] == f'claude mcp add memorum -- memoryd mcp --socket {expected_socket}', summary
+assert summary["next_command"] == f'claude mcp add --scope user memorum -- memoryd mcp --socket {expected_socket}', summary
 assert summary["next_command_argv"] == [
     "claude",
     "mcp",
     "add",
+    "--scope",
+    "user",
     "memorum",
     "--",
     "memoryd",

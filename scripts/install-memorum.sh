@@ -212,13 +212,13 @@ shell_word() {
 }
 
 claude_mcp_command() {
-  printf 'claude mcp add memorum -- memoryd mcp --socket %s' "$(shell_word "$socket")"
+  printf 'claude mcp add --scope user memorum -- memoryd mcp --socket %s' "$(shell_word "$socket")"
 }
 
 emit_agent_summary() {
   local next_command
   next_command="$(claude_mcp_command)"
-  local next_command_argv=(claude mcp add memorum -- memoryd mcp --socket "$socket")
+  local next_command_argv=(claude mcp add --scope user memorum -- memoryd mcp --socket "$socket")
 
   printf 'MEMORUM_AGENT_SUMMARY_JSON={'
   printf '"mode":"agent",'
@@ -240,7 +240,7 @@ print_mcp_snippets() {
   claude_mcp_command
   printf '\n\n'
   cat <<SNIPPET
-MCP client snippet:
+MCP client snippet (Claude Code: top-level mcpServers in user .claude.json):
 {
   "mcpServers": {
     "memorum": {
