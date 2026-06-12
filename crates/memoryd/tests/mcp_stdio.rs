@@ -112,6 +112,34 @@ fn mcp_stdio_rejects_reveal_call_when_reveal_is_not_allowed() {
 }
 
 #[test]
+fn mcp_stdio_tools_call_rejects_missing_required_arguments_before_daemon_probe() {
+    let socket = unique_socket_path("mcpstdio", "startup-missing-args");
+    let mut server = McpServerProcess::spawn(&socket);
+    let response = server.request(json!({
+        "jsonrpc": "2.0",
+        "id": "startup-missing-args",
+        "method": "tools/call",
+        "params": {
+            "name": "memory_startup",
+            "arguments": {}
+        }
+    }));
+
+    assert_eq!(response["jsonrpc"], "2.0");
+    assert_eq!(response["id"], "startup-missing-args");
+    assert!(response.get("result").is_none(), "invalid args use JSON-RPC error convention: {response}");
+    assert_eq!(response["error"]["code"], -32602);
+    assert_eq!(response["error"]["message"], "invalid arguments for memory_startup");
+    let details = response["error"]["data"]["message"].as_str().expect("error data message");
+    assert!(details.contains("memory_startup"), "error names the tool: {details}");
+    assert!(details.contains("required shape"), "error includes required shape: {details}");
+    for field in ["cwd", "session_id", "harness"] {
+        assert!(details.contains(field), "error names missing {field}: {details}");
+    }
+    assert!(!details.contains("daemon_not_running"), "argument validation must run before daemon probing: {details}");
+}
+
+#[test]
 fn mcp_stdio_unknown_notifications_do_not_emit_responses() {
     let socket = unique_socket_path("mcpstdio", "notification");
     let mut server = McpServerProcess::spawn(&socket);
@@ -197,6 +225,50 @@ async fn mcp_stdio_tools_call_routes_through_daemon_forwarder() {
     assert_eq!(search["result"]["isError"], Value::Bool(false));
     let hits = search["result"]["structuredContent"]["hits"].as_array().expect("search hits array");
     assert!(hits.iter().any(|hit| hit["id"] == note_id), "search should find the note written via stdio MCP");
+
+    let invalid_search = server.request(json!({
+        "jsonrpc": "2.0",
+        "id": "call-invalid-search",
+        "method": "tools/call",
+        "params": {
+            "name": "memory_search",
+            "arguments": {
+                "query": "",
+                "limit": 5
+            }
+        }
+    }));
+
+    assert_eq!(invalid_search["result"]["isError"], Value::Bool(true));
+    assert!(
+        invalid_search["result"]["content"][0]["text"]
+            .as_str()
+            .expect("tool error text")
+            .contains("search query must not be empty"),
+        "handler error should be visible tool content: {invalid_search}"
+    );
+
+    let startup = server.request(json!({
+        "jsonrpc": "2.0",
+        "id": "call-startup",
+        "method": "tools/call",
+        "params": {
+            "name": "memory_startup",
+            "arguments": {
+                "cwd": temp.path().join("repo"),
+                "session_id": "sess_mcp_stdio",
+                "harness": "codex",
+                "budget_tokens": 3600
+            }
+        }
+    }));
+
+    assert_eq!(startup["jsonrpc"], "2.0");
+    assert_eq!(startup["id"], "call-startup");
+    assert_eq!(startup["result"]["isError"], Value::Bool(false));
+    for field in ["session_binding", "recall_block", "budget_used_tokens", "recall_explanation", "guidance"] {
+        assert!(startup["result"]["structuredContent"].get(field).is_some(), "startup response missing {field}");
+    }
 
     drop(server);
     shutdown(shutdown_tx, daemon, &socket).await;

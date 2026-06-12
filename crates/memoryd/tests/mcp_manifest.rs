@@ -361,6 +361,28 @@ fn mcp_tool_args_reject_unknown_fields_for_every_tool() {
 }
 
 #[test]
+fn mcp_tool_args_report_all_missing_required_fields_for_every_tool() {
+    let manifest = manifest();
+    for tool in ToolName::all() {
+        let descriptor =
+            manifest.tools.iter().find(|descriptor| descriptor.name == tool.as_str()).expect("tool exists");
+        let required = descriptor.input_schema["required"].as_array().expect("required fields are declared");
+        if required.is_empty() {
+            continue;
+        }
+
+        let error = request_from_args(tool, serde_json::json!({})).expect_err("missing required fields reject");
+        let message = error.to_string();
+        assert!(message.contains(tool.as_str()), "error must name {tool}: {message}");
+        assert!(message.contains("required shape"), "error must describe required shape for {tool}: {message}");
+        for field in required {
+            let field = field.as_str().expect("required field name");
+            assert!(message.contains(field), "error for {tool} must name missing field {field}: {message}");
+        }
+    }
+}
+
+#[test]
 fn memory_observe_request_validates_entities_shape() {
     let request = request_from_args(
         ToolName::try_from("memory_observe").expect("observe tool name parses"),

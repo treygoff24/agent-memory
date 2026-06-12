@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 use crate::client;
 pub use crate::protocol::ObserveKind as ObserveKindRequest;
@@ -170,19 +170,109 @@ fn manifest_from_tools<const N: usize>(tools: [ToolName; N]) -> Manifest {
     Manifest { tools: tools.into_iter().map(descriptor).collect() }
 }
 
-pub fn request_from_args(name: ToolName, args: Value) -> Result<ToolRequest, serde_json::Error> {
-    match name {
-        ToolName::Search => serde_json::from_value(args).map(ToolRequest::MemorySearch),
-        ToolName::Get => serde_json::from_value(args).map(ToolRequest::MemoryGet),
-        ToolName::Write => serde_json::from_value(args).map(ToolRequest::MemoryWrite),
-        ToolName::Supersede => serde_json::from_value(args).map(ToolRequest::MemorySupersede),
-        ToolName::Forget => serde_json::from_value(args).map(ToolRequest::MemoryForget),
-        ToolName::Reveal => serde_json::from_value(args).map(ToolRequest::MemoryReveal),
-        ToolName::Startup => serde_json::from_value(args).map(ToolRequest::MemoryStartup),
-        ToolName::Note => serde_json::from_value(args).map(ToolRequest::MemoryNote),
-        ToolName::Observe => serde_json::from_value(args).map(ToolRequest::MemoryObserve),
-        ToolName::CaptureSource => serde_json::from_value(args).map(ToolRequest::MemoryCaptureSource),
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolArgumentsError {
+    tool: ToolName,
+    message: String,
+}
+
+impl ToolArgumentsError {
+    fn new(tool: ToolName, message: impl Into<String>) -> Self {
+        Self { tool, message: message.into() }
     }
+}
+
+impl fmt::Display for ToolArgumentsError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{} arguments {}", self.tool, self.message)
+    }
+}
+
+impl std::error::Error for ToolArgumentsError {}
+
+pub fn request_from_args(name: ToolName, args: Value) -> Result<ToolRequest, ToolArgumentsError> {
+    validate_required_arguments(name, &args)?;
+    match name {
+        ToolName::Search => deserialize_tool_args(name, args).map(ToolRequest::MemorySearch),
+        ToolName::Get => deserialize_tool_args(name, args).map(ToolRequest::MemoryGet),
+        ToolName::Write => deserialize_tool_args(name, args).map(ToolRequest::MemoryWrite),
+        ToolName::Supersede => deserialize_tool_args(name, args).map(ToolRequest::MemorySupersede),
+        ToolName::Forget => deserialize_tool_args(name, args).map(ToolRequest::MemoryForget),
+        ToolName::Reveal => deserialize_tool_args(name, args).map(ToolRequest::MemoryReveal),
+        ToolName::Startup => deserialize_tool_args(name, args).map(ToolRequest::MemoryStartup),
+        ToolName::Note => deserialize_tool_args(name, args).map(ToolRequest::MemoryNote),
+        ToolName::Observe => deserialize_tool_args(name, args).map(ToolRequest::MemoryObserve),
+        ToolName::CaptureSource => deserialize_tool_args(name, args).map(ToolRequest::MemoryCaptureSource),
+    }
+}
+
+fn validate_required_arguments(name: ToolName, args: &Value) -> Result<(), ToolArgumentsError> {
+    let required_shape = required_argument_shape(name);
+    let Some(arguments) = args.as_object() else {
+        return Err(ToolArgumentsError::new(name, format!("must be a JSON object; required shape: {required_shape}")));
+    };
+
+    let missing_fields = required_argument_fields(name)
+        .into_iter()
+        .filter(|field| !argument_object_contains_required_field(name, arguments, field))
+        .collect::<Vec<_>>();
+
+    if missing_fields.is_empty() {
+        return Ok(());
+    }
+
+    Err(ToolArgumentsError::new(
+        name,
+        format!("missing required fields: {}; required shape: {required_shape}", missing_fields.join(", ")),
+    ))
+}
+
+fn deserialize_tool_args<T>(name: ToolName, args: Value) -> Result<T, ToolArgumentsError>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    serde_json::from_value(args).map_err(|error| {
+        ToolArgumentsError::new(
+            name,
+            format!("are invalid: {error}; required shape: {}", required_argument_shape(name)),
+        )
+    })
+}
+
+fn argument_object_contains_required_field(name: ToolName, arguments: &Map<String, Value>, field: &str) -> bool {
+    arguments.contains_key(field)
+        || matches!((name, field), (ToolName::CaptureSource, "source")) && arguments.contains_key("url")
+}
+
+fn required_argument_fields(name: ToolName) -> Vec<String> {
+    let descriptor = descriptor(name);
+    descriptor
+        .input_schema
+        .get("required")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn required_argument_shape(name: ToolName) -> String {
+    let descriptor = descriptor(name);
+    let properties = descriptor.input_schema.get("properties").and_then(Value::as_object);
+    let fields = required_argument_fields(name)
+        .into_iter()
+        .map(|field| {
+            let field_type = properties
+                .and_then(|properties| properties.get(&field))
+                .and_then(|property| property.get("type"))
+                .and_then(Value::as_str)
+                .unwrap_or("value");
+            format!("{field}: {field_type}")
+        })
+        .collect::<Vec<_>>();
+
+    format!("{{ {} }}", fields.join(", "))
 }
 
 /// Forward an MCP `ToolRequest` to the memoryd daemon.
