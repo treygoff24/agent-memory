@@ -44,9 +44,7 @@ async fn since_filter_is_inclusive_and_rejects_bare_dates() {
     let repo = temp.path().join("repo");
     let runtime = temp.path().join("runtime");
 
-    // ------------------------------------------------------------------
     // Sub-case 1: inclusive boundary
-    // ------------------------------------------------------------------
     let output = Command::new(env!("CARGO_BIN_EXE_memoryd"))
         .args([
             "export",
@@ -81,9 +79,7 @@ async fn since_filter_is_inclusive_and_rejects_bare_dates() {
     // filters.since should echo back the verbatim ISO string the operator passed.
     assert_eq!(value["filters"]["since"].as_str(), Some(boundary), "filters.since must be the verbatim --since value");
 
-    // ------------------------------------------------------------------
     // Sub-case 2: bare-date input -> exit 2 with canonical-form hint
-    // ------------------------------------------------------------------
     let bare = Command::new(env!("CARGO_BIN_EXE_memoryd"))
         .args([
             "export",

@@ -1496,32 +1496,6 @@ pub struct ScoreBreakdown {
     pub distance: Option<f32>,
 }
 
-/// Memory query hit for spec §16.4 `query_memory`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct MemoryHit {
-    /// Hydrated memory metadata (frontmatter + path).
-    pub memory: Memory,
-    /// Body indexing class, controls Stream E's recall routing.
-    pub body_indexability: BodyIndexability,
-    /// Per-component scores for explainability.
-    pub score_breakdown: ScoreBreakdown,
-}
-
-/// Chunk query hit for spec §16.4 `query_chunks`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ChunkHit {
-    /// Chunk id (`chk_<sha256>`).
-    pub chunk_id: String,
-    /// Owning memory id.
-    pub memory_id: MemoryId,
-    /// Chunk text snippet.
-    pub text: String,
-    /// Body indexing class for the parent memory.
-    pub body_indexability: BodyIndexability,
-    /// Per-component scores.
-    pub score_breakdown: ScoreBreakdown,
-}
-
 /// Encryption envelope describing how Stream D produced the ciphertext.
 ///
 /// Encryption envelope describing how Stream D produced the ciphertext.

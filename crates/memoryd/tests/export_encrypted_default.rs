@@ -29,15 +29,11 @@ async fn encrypted_bodies_are_never_emitted_no_reveal_event() {
     let temp = tempfile::tempdir().expect("tempdir");
     let substrate = init_substrate(&temp, DEVICE_ID).await;
 
-    // ------------------------------------------------------------------
     // Plaintext memory.
-    // ------------------------------------------------------------------
     let plain_id = "mem_20260501_aabbccdd00112233_000001";
     write_plaintext(&substrate, make_plaintext_memory(plain_id, PLAINTEXT_BODY, FIXTURE_TS)).await;
 
-    // ------------------------------------------------------------------
     // Ciphertext memory (encrypts ENCRYPTED_PLAINTEXT through governance).
-    // ------------------------------------------------------------------
     FileKeyProvider::runtime_default(&temp.path().join("runtime"))
         .onboard_local_file()
         .expect("onboard local key for encrypted fixture");
@@ -75,9 +71,7 @@ async fn encrypted_bodies_are_never_emitted_no_reveal_event() {
     let reveal_count_before =
         events_before.iter().filter(|e| matches!(e.kind, EventKind::EncryptedContentRevealed { .. })).count();
 
-    // ------------------------------------------------------------------
     // Spawn memoryd export.
-    // ------------------------------------------------------------------
     let repo = temp.path().join("repo");
     let runtime = temp.path().join("runtime");
     let output = Command::new(env!("CARGO_BIN_EXE_memoryd"))
@@ -117,9 +111,7 @@ async fn encrypted_bodies_are_never_emitted_no_reveal_event() {
     assert!(enc_row["body"].is_null(), "encrypted body must be null");
     assert_eq!(enc_row["body_marker"].as_str(), Some("encrypted"), "encrypted body_marker must be `encrypted`");
 
-    // ------------------------------------------------------------------
     // No EncryptedContentRevealed event appeared after the export ran.
-    // ------------------------------------------------------------------
     let events_after: Vec<_> = substrate.events().expect("events after").into_iter().collect();
     let reveal_count_after =
         events_after.iter().filter(|e| matches!(e.kind, EventKind::EncryptedContentRevealed { .. })).count();
@@ -129,11 +121,9 @@ async fn encrypted_bodies_are_never_emitted_no_reveal_event() {
          EncryptedContentRevealed events before={reveal_count_before} after={reveal_count_after}"
     );
 
-    // ------------------------------------------------------------------
     // Defense-in-depth: the ciphertext bytes on disk do NOT appear in
     // stdout. Walk the `encrypted/` subtree and check each file's bytes
     // are absent from the export output.
-    // ------------------------------------------------------------------
     let encrypted_root = repo.join("encrypted");
     if encrypted_root.is_dir() {
         for entry in walkdir_simple(&encrypted_root) {

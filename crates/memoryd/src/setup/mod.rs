@@ -115,6 +115,3 @@ pub struct SetupPlan {
 
 /// Setup run outcome type. Future step execution fills this report.
 pub type SetupOutcome = SetupReport;
-
-/// Per-step result type used by reports.
-pub type SetupStepResult = SetupStepReport;

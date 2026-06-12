@@ -55,14 +55,12 @@ async fn out_writes_atomically_and_matches_stdout() {
         runtime.to_str().expect("runtime utf8"),
     ];
 
-    // ------------------------------------------------------------------
     // Sub-case A: byte-for-byte identical to stdout-mode.
     //
     // Two `memoryd export` invocations produce the same `exported_at`
     // only if they run within the same millisecond — they almost
     // certainly will not. So we compare every byte EXCEPT the
     // `exported_at` field; everything else must match exactly.
-    // ------------------------------------------------------------------
     let stdout_run = Command::new(bin).args(&common_args).output().expect("spawn stdout-mode export");
     assert!(
         stdout_run.status.success(),
@@ -121,7 +119,6 @@ async fn out_writes_atomically_and_matches_stdout() {
         "--out file must be private on Unix"
     );
 
-    // ------------------------------------------------------------------
     // Sub-case B: no `.tmp` sidecars left in the output directory.
     //
     // After a successful --out run, the output directory contains the
@@ -130,7 +127,6 @@ async fn out_writes_atomically_and_matches_stdout() {
     // pragmatically as "the target file plus, optionally, a `.DS_Store`
     // or other OS junk", and assert the load-bearing invariant: no
     // `.tmp` leftovers under any name.
-    // ------------------------------------------------------------------
     let leftovers: Vec<_> =
         std::fs::read_dir(out_temp.path()).expect("read output dir").filter_map(Result::ok).collect();
     let names: Vec<String> = leftovers.iter().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
@@ -140,9 +136,7 @@ async fn out_writes_atomically_and_matches_stdout() {
         "no `.tmp` sidecar may remain after a successful --out run; saw {names:?}"
     );
 
-    // ------------------------------------------------------------------
     // Sub-case C: basename output path resolves against current_dir.
-    // ------------------------------------------------------------------
     let basename_temp = tempfile::tempdir().expect("basename tempdir");
     let basename_run = Command::new(bin)
         .current_dir(basename_temp.path())
@@ -171,9 +165,7 @@ async fn out_writes_atomically_and_matches_stdout() {
         "basename --out must not leave temp sidecars; saw {basename_names:?}"
     );
 
-    // ------------------------------------------------------------------
     // Sub-case D: symlink target refusal.
-    // ------------------------------------------------------------------
     #[cfg(unix)]
     {
         let symlink_temp = tempfile::tempdir().expect("symlink tempdir");
@@ -205,10 +197,8 @@ async fn out_writes_atomically_and_matches_stdout() {
         assert!(!real_path.exists(), "symlink refusal must not create the symlink target");
     }
 
-    // ------------------------------------------------------------------
     // Sub-case E: missing parent directory -> exit 1, stderr names
     // the missing parent, no partial file left in the grandparent.
-    // ------------------------------------------------------------------
     let grandparent = tempfile::tempdir().expect("grandparent tempdir");
     let missing_parent_name = "this-dir-does-not-exist";
     let bad_out = grandparent.path().join(missing_parent_name).join("export.json");

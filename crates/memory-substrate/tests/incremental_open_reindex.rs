@@ -171,9 +171,7 @@ async fn open_reconciles_pending_embedding_jobs() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // helpers
-// ---------------------------------------------------------------------------
 
 async fn write_through_api(substrate: &Substrate, memory: &Memory) {
     substrate

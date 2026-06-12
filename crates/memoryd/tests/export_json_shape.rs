@@ -103,9 +103,7 @@ async fn export_json_shape_validates_v0_1_schema() {
     let temp = tempfile::tempdir().expect("tempdir");
     let substrate = init_substrate(&temp, DEVICE_ID).await;
 
-    // ------------------------------------------------------------------
     // Memory 1: Plaintext
-    // ------------------------------------------------------------------
     let plain_id = "mem_20260501_aabbccdd00112233_000001";
     // Explicit sub-second component pins millisecond-precision round-trip (I1).
     let plain_ts = "2026-05-01T10:00:00.456Z";
@@ -115,10 +113,8 @@ async fn export_json_shape_validates_v0_1_schema() {
     )
     .await;
 
-    // ------------------------------------------------------------------
     // Memory 2: Encrypted (Ciphertext) — write a personal body via
     // governance handler after onboarding a local key.
-    // ------------------------------------------------------------------
     FileKeyProvider::runtime_default(&temp.path().join("runtime"))
         .onboard_local_file()
         .expect("onboard local key for encrypted fixture");
@@ -150,10 +146,8 @@ async fn export_json_shape_validates_v0_1_schema() {
     };
     let enc_id = enc_write.id.expect("encrypted write id");
 
-    // ------------------------------------------------------------------
     // Memory 3: MetadataOnly — write an encrypted record with empty
     // ciphertext bytes.  When read back, the substrate returns MetadataOnly.
-    // ------------------------------------------------------------------
     let meta_id = "mem_20260503_aabbccdd00112233_000003";
     let meta_ts = "2026-05-03T12:00:00.789Z";
     let metadata_only_memory = make_metadata_only_memory(meta_id, meta_ts);
@@ -170,9 +164,7 @@ async fn export_json_shape_validates_v0_1_schema() {
         .await
         .expect("write metadata-only memory");
 
-    // ------------------------------------------------------------------
     // Spawn memoryd export as a subprocess
-    // ------------------------------------------------------------------
     let repo = temp.path().join("repo");
     let runtime = temp.path().join("runtime");
 
@@ -196,9 +188,7 @@ async fn export_json_shape_validates_v0_1_schema() {
         output.status,
     );
 
-    // ------------------------------------------------------------------
     // Parse JSON
-    // ------------------------------------------------------------------
     let value: serde_json::Value =
         serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("stdout is not valid JSON: {e}\nstdout: {stdout}"));
 
@@ -243,9 +233,7 @@ async fn export_json_shape_validates_v0_1_schema() {
     let memories = value["memories"].as_array().expect("memories is array");
     assert_eq!(memories.len(), 3, "memories.length must be 3");
 
-    // ------------------------------------------------------------------
     // Per-memory field assertions
-    // ------------------------------------------------------------------
     let permitted_scopes = ["user", "project", "org", "agent", "subagent"];
     let permitted_statuses = ["candidate", "active", "pinned", "superseded", "archived", "tombstoned"];
 
@@ -294,9 +282,7 @@ async fn export_json_shape_validates_v0_1_schema() {
         }
     }
 
-    // ------------------------------------------------------------------
     // Sorted by (updated_at, id) ascending
-    // ------------------------------------------------------------------
     for window in memories.windows(2) {
         let a_updated = window[0]["updated_at"].as_str().expect("updated_at string");
         let b_updated = window[1]["updated_at"].as_str().expect("updated_at string");
@@ -307,9 +293,7 @@ async fn export_json_shape_validates_v0_1_schema() {
         assert!(a_key <= b_key, "memories must be sorted by (updated_at, id) ascending: {a_key:?} > {b_key:?}");
     }
 
-    // ------------------------------------------------------------------
     // Body/body_marker routing per §6
-    // ------------------------------------------------------------------
 
     // Find each memory by checking body/body_marker
     let plain_mem = memories.iter().find(|m| m["id"].as_str() == Some(plain_id)).unwrap_or_else(|| {
@@ -344,9 +328,7 @@ async fn export_json_shape_validates_v0_1_schema() {
         "metadata-only memory must have body_marker 'metadata-only'"
     );
 
-    // ------------------------------------------------------------------
     // Stderr: exactly one success-summary line matching ^memory_count=\d+ bytes=\d+$
-    // ------------------------------------------------------------------
     let stderr_trimmed = stderr.trim_end_matches('\n');
     let stderr_lines: Vec<&str> = stderr_trimmed.lines().collect();
     assert_eq!(

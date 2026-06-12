@@ -693,17 +693,24 @@ trait CleanupGit {
 
 struct RealCleanupGit;
 
+/// Strip inherited Git environment so the cleanup-bot operates against
+/// `repo`'s own working tree rather than an ambient `GIT_DIR`/worktree set by
+/// a calling git process (e.g. a merge driver or hook).
+fn scrub_inherited_git_env(command: &mut Command) {
+    command
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_OBJECT_DIRECTORY")
+        .env_remove("GIT_NAMESPACE");
+}
+
 impl CleanupGit for RealCleanupGit {
     fn run(&self, repo: &Path, args: &[&str]) -> Result<String, CleanupError> {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(repo)
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .env_remove("GIT_INDEX_FILE")
-            .env_remove("GIT_OBJECT_DIRECTORY")
-            .env_remove("GIT_NAMESPACE")
-            .output()?;
+        let mut command = Command::new("git");
+        command.args(args).current_dir(repo);
+        scrub_inherited_git_env(&mut command);
+        let output = command.output()?;
         if output.status.success() {
             Ok(String::from_utf8_lossy(&output.stdout).to_string())
         } else {
@@ -713,14 +720,9 @@ impl CleanupGit for RealCleanupGit {
 
     fn commit_cleanup(&self, repo: &Path, subject: &str, summary: &str) -> Result<CommitCleanupOutcome, CleanupError> {
         let mut command = Command::new("git");
+        command.args(["commit", "--author", CLEANUP_BOT_AUTHOR, "-m", subject, "-m", summary]).current_dir(repo);
+        scrub_inherited_git_env(&mut command);
         command
-            .args(["commit", "--author", CLEANUP_BOT_AUTHOR, "-m", subject, "-m", summary])
-            .current_dir(repo)
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .env_remove("GIT_INDEX_FILE")
-            .env_remove("GIT_OBJECT_DIRECTORY")
-            .env_remove("GIT_NAMESPACE")
             .env("GIT_AUTHOR_NAME", "memoryd cleanup-bot")
             .env("GIT_AUTHOR_EMAIL", "noreply@memoryd.local")
             .env("GIT_COMMITTER_NAME", "memoryd cleanup-bot")
