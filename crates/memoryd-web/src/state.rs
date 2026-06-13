@@ -6,6 +6,7 @@ use axum::http::StatusCode;
 use axum::Json;
 use rand::RngCore;
 use serde_json::{json, Value};
+use subtle::ConstantTimeEq;
 use tokio::sync::Mutex;
 
 use crate::routes::DashboardData;
@@ -28,7 +29,27 @@ impl CsrfToken {
     }
 
     pub fn matches_header(&self, request: &axum::http::Request<axum::body::Body>) -> bool {
-        request.headers().get(CSRF_HEADER).and_then(|value| value.to_str().ok()).is_some_and(|value| value == self.0)
+        request
+            .headers()
+            .get(CSRF_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| self.constant_time_eq(value))
+    }
+
+    /// Constant-time equality against a candidate token.
+    ///
+    /// The CSRF token is a bearer secret, so the comparison must not leak how
+    /// many leading bytes matched via timing. `subtle::ConstantTimeEq` only
+    /// compares constant-time when the slices are the same length, so we first
+    /// reject any length mismatch — the token length (`CSRF_TOKEN_BYTES * 2` hex
+    /// chars) is fixed and public, so branching on length leaks nothing secret.
+    fn constant_time_eq(&self, candidate: &str) -> bool {
+        let expected = self.0.as_bytes();
+        let candidate = candidate.as_bytes();
+        if expected.len() != candidate.len() {
+            return false;
+        }
+        expected.ct_eq(candidate).into()
     }
 }
 
@@ -186,4 +207,42 @@ pub fn backend_unavailable(route: &'static str) -> (StatusCode, Json<Value>) {
             "note": "dashboard routes require a daemon-backed or test fixture backend"
         })),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn csrf_constant_time_eq_accepts_exact_match() {
+        let token = CsrfToken::generate();
+        let value = token.as_str().to_owned();
+        assert!(token.constant_time_eq(&value));
+    }
+
+    #[test]
+    fn csrf_constant_time_eq_rejects_wrong_token() {
+        let token = CsrfToken::generate();
+        let other = CsrfToken::generate();
+        assert_ne!(token.as_str(), other.as_str());
+        assert!(!token.constant_time_eq(other.as_str()));
+    }
+
+    #[test]
+    fn csrf_constant_time_eq_rejects_length_mismatch() {
+        let token = CsrfToken::generate();
+        // A correct prefix must not pass: rejecting a length mismatch is what
+        // keeps the constant-time comparison sound (subtle requires equal len).
+        let prefix = &token.as_str()[..token.as_str().len() - 1];
+        assert!(!token.constant_time_eq(prefix));
+        assert!(!token.constant_time_eq(""));
+        assert!(!token.constant_time_eq(&format!("{}0", token.as_str())));
+    }
+
+    #[test]
+    fn csrf_token_is_fixed_hex_length() {
+        // Length is public and fixed; the constant-time guard relies on it.
+        let token = CsrfToken::generate();
+        assert_eq!(token.as_str().len(), CSRF_TOKEN_BYTES * 2);
+    }
 }

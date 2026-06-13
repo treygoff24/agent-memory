@@ -38,8 +38,16 @@ async fn test_get_roi_daemon_returns_live_metrics_not_deferred_stub() {
     let (shutdown_tx, server) = spawn_daemon(&socket, substrate);
     wait_for_socket(&socket).await;
 
-    let response = router_with_state(WebState::daemon(&socket))
-        .oneshot(Request::builder().uri("/api/roi?window=90").body(Body::empty()).expect("request builds"))
+    let app = router_with_state(WebState::daemon(&socket));
+    let token = fetch_csrf_token(app.clone()).await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/roi?window=90")
+                .header("x-memorum-csrf", token)
+                .body(Body::empty())
+                .expect("request builds"),
+        )
         .await
         .expect("request succeeds");
 
@@ -157,8 +165,12 @@ async fn test_post_policy_editor_rejects_invalid_yaml_before_write() {
 
 #[cfg(feature = "dev-fixtures")]
 async fn get_json(app: axum::Router, route: &str) -> Value {
+    // Data-bearing GET reads are gated behind the per-dashboard bearer token.
+    let token = fetch_csrf_token(app.clone()).await;
     let response = app
-        .oneshot(Request::builder().uri(route).body(Body::empty()).expect("request builds"))
+        .oneshot(
+            Request::builder().uri(route).header("x-memorum-csrf", token).body(Body::empty()).expect("request builds"),
+        )
         .await
         .expect("request succeeds");
 
@@ -166,7 +178,6 @@ async fn get_json(app: axum::Router, route: &str) -> Value {
     json_body(response).await
 }
 
-#[cfg(feature = "dev-fixtures")]
 async fn fetch_csrf_token(app: axum::Router) -> String {
     let response = app
         .oneshot(Request::builder().uri("/").body(Body::empty()).expect("request builds"))
@@ -185,7 +196,6 @@ async fn response_body(response: axum::response::Response) -> String {
     String::from_utf8(bytes.to_vec()).expect("response is utf8")
 }
 
-#[cfg(feature = "dev-fixtures")]
 fn csrf_token_from_html(html: &str) -> &str {
     let name_at = html.find(r#"name="csrf-token""#).expect("csrf meta tag exists");
     let tag_start = html[..name_at].rfind("<meta").expect("csrf tag starts with meta");

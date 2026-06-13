@@ -40,7 +40,12 @@ reqwest = { version = "0.12", default-features = false, features = ["charset", "
 rusqlite = { version = "0.32", features = ["bundled", "serde_json"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-serde_yaml = "0.9"
+# serde_yaml (dtolnay) is deprecated/unmaintained and will receive no future
+# security patches, yet it parses untrusted input on threat-model boundaries
+# (imported foreign Claude/Codex frontmatter, config.yaml). serde_yaml_ng is the
+# maintained, API-compatible successor fork. Renamed to `serde_yaml` so every
+# `use serde_yaml::...` / `serde_yaml::from_str` call site stays unchanged.
+serde_yaml = { package = "serde_yaml_ng", version = "0.10" }
 serial_test = "3.4"
 sha2 = "0.10"
 scraper = "0.23"

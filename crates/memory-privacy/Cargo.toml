@@ -14,6 +14,10 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+# Zeroize-on-drop wrapper for the age x25519 private key held in KeyMaterial.
+# Version pinned to the one already resolved transitively via `age`, so this
+# direct dependency does not perturb the locked graph.
+zeroize = "1"
 
 [dev-dependencies]
 tempfile.workspace = true

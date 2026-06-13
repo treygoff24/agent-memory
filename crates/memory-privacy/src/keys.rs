@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use age::secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 use crate::error::{PrivacyError, PrivacyResult};
 
@@ -12,12 +13,18 @@ use crate::error::{PrivacyError, PrivacyResult};
 use std::os::unix::fs::PermissionsExt;
 
 /// Minimal key material boundary for the encrypted tier.
+///
+/// The private `identity` is held in a [`Zeroizing<String>`] so the age x25519
+/// secret is wiped from heap memory when the `KeyMaterial` (and every clone)
+/// drops, matching the memory hygiene the `age` crate applies to its own
+/// `Identity`. Construct it via [`KeyMaterial::new`]; read the secret only at
+/// the parse boundary via [`KeyMaterial::expose_identity`].
 #[derive(Clone)]
 pub struct KeyMaterial {
     /// Public recipient identifier.
     pub recipient: String,
-    /// Local private key material or test secret.
-    pub identity: String,
+    /// Local private key material or test secret, zeroed on drop.
+    identity: Zeroizing<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,12 +37,26 @@ pub struct KeyRotation {
 }
 
 impl KeyMaterial {
+    /// Construct key material from a public recipient and a secret identity.
+    /// The identity is moved into a zeroizing wrapper so it is wiped on drop.
+    pub fn new(recipient: impl Into<String>, identity: impl Into<String>) -> Self {
+        Self { recipient: recipient.into(), identity: Zeroizing::new(identity.into()) }
+    }
+
     /// Generate fresh X25519 key material.
     pub fn generate() -> Self {
         let identity = age::x25519::Identity::generate();
         let recipient = identity.to_public().to_string();
-        let identity = identity.to_string().expose_secret().to_string();
+        // `to_string()` yields a `SecretString`; copy it into the zeroizing
+        // wrapper and let the temporary `SecretString` drop immediately.
+        let identity = Zeroizing::new(identity.to_string().expose_secret().to_string());
         Self { recipient, identity }
+    }
+
+    /// Borrow the secret identity at the parse boundary. Kept private so the
+    /// raw secret cannot be cloned out into a non-zeroizing `String`.
+    fn expose_identity(&self) -> &str {
+        self.identity.as_str()
     }
 
     /// Parse the age recipient.
@@ -45,7 +66,7 @@ impl KeyMaterial {
 
     /// Parse the age identity.
     pub fn identity(&self) -> PrivacyResult<age::x25519::Identity> {
-        self.identity.parse().map_err(|err| PrivacyError::KeyUnavailable(format!("invalid identity: {err}")))
+        self.expose_identity().parse().map_err(|err| PrivacyError::KeyUnavailable(format!("invalid identity: {err}")))
     }
 }
 
@@ -67,13 +88,15 @@ struct KeyRecord {
 
 impl From<KeyMaterial> for KeyRecord {
     fn from(key: KeyMaterial) -> Self {
-        Self { recipient: key.recipient, identity: key.identity }
+        // The record is the on-disk serialization shape; copy the secret out of
+        // the zeroizing wrapper only at this serialization boundary.
+        Self { recipient: key.recipient, identity: key.identity.as_str().to_owned() }
     }
 }
 
 impl From<KeyRecord> for KeyMaterial {
     fn from(record: KeyRecord) -> Self {
-        Self { recipient: record.recipient, identity: record.identity }
+        Self { recipient: record.recipient, identity: Zeroizing::new(record.identity) }
     }
 }
 
@@ -202,8 +225,7 @@ impl KeyProvider for FileKeyProvider {
     fn load_key(&self) -> PrivacyResult<KeyMaterial> {
         reject_symlink(&self.path)?;
         validate_private_file(&self.path)?;
-        let text = fs::read_to_string(&self.path)
-            .map_err(|err| PrivacyError::KeyUnavailable(format!("{} ({err})", self.path.display())))?;
+        let text = fs::read_to_string(&self.path).map_err(|err| key_io_error(&self.path, err))?;
         serde_json::from_str::<KeyRecord>(&text)
             .map(KeyMaterial::from)
             .map_err(|err| PrivacyError::KeyUnavailable(err.to_string()))
@@ -282,8 +304,23 @@ fn unix_nanos() -> PrivacyResult<u128> {
         .map_err(|err| PrivacyError::KeyUnavailable(err.to_string()))
 }
 
+/// Classify an [`io::Error`] from a key-file access into the typed privacy
+/// error. A missing file becomes [`PrivacyError::KeyMissing`] so callers can
+/// branch on the [`io::ErrorKind`] rather than a stringified OS message, which
+/// is locale- and platform-dependent.
+fn key_io_error(path: &Path, err: std::io::Error) -> PrivacyError {
+    let message = format!("{} ({err})", path.display());
+    match err.kind() {
+        std::io::ErrorKind::NotFound => PrivacyError::KeyMissing(message),
+        _ => PrivacyError::KeyUnavailable(message),
+    }
+}
+
+/// True when the error reflects a genuinely-absent key file. Matches on the
+/// typed [`PrivacyError::KeyMissing`] variant (sourced from
+/// [`io::ErrorKind::NotFound`]) rather than substring-matching an OS message.
 fn is_missing_key_error(error: &PrivacyError) -> bool {
-    matches!(error, PrivacyError::KeyUnavailable(message) if message.contains("No such file") || message.contains("os error 2"))
+    matches!(error, PrivacyError::KeyMissing(_))
 }
 
 fn reject_symlink(path: &Path) -> PrivacyResult<()> {
@@ -308,7 +345,7 @@ fn harden_private_directory(_path: &Path) -> PrivacyResult<()> {
 
 #[cfg(unix)]
 fn validate_private_file(path: &Path) -> PrivacyResult<()> {
-    let metadata = fs::metadata(path).map_err(|err| PrivacyError::KeyUnavailable(err.to_string()))?;
+    let metadata = fs::metadata(path).map_err(|err| key_io_error(path, err))?;
     if metadata.permissions().mode() & 0o077 != 0 {
         return Err(PrivacyError::KeyUnavailable(format!(
             "key file must not be group/world accessible: {}",

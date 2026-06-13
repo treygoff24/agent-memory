@@ -12,6 +12,13 @@ pub enum PrivacyError {
     /// The encrypted tier cannot be used because key material is absent.
     #[error("privacy key unavailable: {0}")]
     KeyUnavailable(String),
+    /// The key file does not exist on disk.
+    ///
+    /// Distinct from [`PrivacyError::KeyUnavailable`] so that callers (e.g. key
+    /// rotation) can branch on a genuinely-absent prior key without
+    /// substring-matching a platform/locale-dependent OS error string.
+    #[error("privacy key missing: {0}")]
+    KeyMissing(String),
     /// Encryption or decryption failed.
     #[error("privacy crypto error: {0}")]
     Crypto(String),

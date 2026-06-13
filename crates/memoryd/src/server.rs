@@ -252,8 +252,7 @@ async fn serve_with_dispatcher(
 ) -> Result<()> {
     prepare_socket_path(socket_path).await?;
 
-    let listener = UnixListener::bind(socket_path).with_context(|| format!("bind socket {}", socket_path.display()))?;
-    harden_socket_permissions(socket_path)?;
+    let listener = bind_owner_only_socket(socket_path)?;
 
     loop {
         tokio::select! {
@@ -274,15 +273,49 @@ async fn serve_with_dispatcher(
     }
 }
 
+/// Bind the daemon's Unix socket so it is never momentarily group/world-connectable.
+///
+/// On unix, `UnixListener::bind` creates the socket node with the process umask,
+/// leaving a brief window in which the socket may be group/world-connectable
+/// before a follow-up `chmod 0o600` lands. To eliminate that TOCTOU window we
+/// bind to a unique sibling temp name, tighten its mode to `0o600` while no
+/// well-known path points at it, then atomically `rename` it into the final
+/// socket path. Listeners survive `rename(2)`, so the rebind is seamless.
 #[cfg(unix)]
-fn harden_socket_permissions(socket_path: &Path) -> Result<()> {
-    std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))
-        .with_context(|| format!("chmod owner-only socket {}", socket_path.display()))
+fn bind_owner_only_socket(socket_path: &Path) -> Result<UnixListener> {
+    let temp_path = owner_only_socket_temp_path(socket_path);
+    // A stale temp from a crashed predecessor would make bind fail with EADDRINUSE.
+    let _ = std::fs::remove_file(&temp_path);
+
+    let listener = UnixListener::bind(&temp_path).with_context(|| format!("bind socket {}", temp_path.display()))?;
+
+    if let Err(error) = std::fs::set_permissions(&temp_path, std::fs::Permissions::from_mode(0o600))
+        .with_context(|| format!("chmod owner-only socket {}", temp_path.display()))
+        .and_then(|()| {
+            std::fs::rename(&temp_path, socket_path)
+                .with_context(|| format!("activate owner-only socket {}", socket_path.display()))
+        })
+    {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(error);
+    }
+
+    Ok(listener)
+}
+
+#[cfg(unix)]
+fn owner_only_socket_temp_path(socket_path: &Path) -> std::path::PathBuf {
+    let mut file_name = socket_path.file_name().map(|name| name.to_os_string()).unwrap_or_default();
+    file_name.push(format!(".tmp.{}", std::process::id()));
+    match socket_path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.join(file_name),
+        _ => std::path::PathBuf::from(file_name),
+    }
 }
 
 #[cfg(not(unix))]
-fn harden_socket_permissions(_socket_path: &Path) -> Result<()> {
-    Ok(())
+fn bind_owner_only_socket(socket_path: &Path) -> Result<UnixListener> {
+    UnixListener::bind(socket_path).with_context(|| format!("bind socket {}", socket_path.display()))
 }
 
 #[derive(Clone)]
@@ -485,26 +518,40 @@ fn socket_parent(socket_path: &Path) -> Option<&Path> {
 
 async fn prepare_socket_parent(parent: &Path) -> Result<()> {
     match tokio::fs::metadata(parent).await {
-        Ok(metadata) if metadata.is_dir() => Ok(()),
+        Ok(metadata) if metadata.is_dir() => harden_socket_parent(parent, &metadata),
         Ok(_) => anyhow::bail!("socket_parent_not_directory: {}", parent.display()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             tokio::fs::create_dir_all(parent)
                 .await
                 .with_context(|| format!("create socket parent {}", parent.display()))?;
-            harden_created_socket_parent(parent)
+            let metadata = tokio::fs::metadata(parent)
+                .await
+                .with_context(|| format!("inspect newly-created socket parent {}", parent.display()))?;
+            harden_socket_parent(parent, &metadata)
         }
         Err(error) => Err(error).with_context(|| format!("inspect socket parent {}", parent.display())),
     }
 }
 
+/// Ensure the socket's parent directory is owner-only (`0o700`).
+///
+/// This runs whether the directory was just created or already existed: a
+/// pre-existing runtime dir left at the default `0o755` by another code path or
+/// by the user would otherwise leave the owner-only socket living inside a
+/// world-traversable directory. Mirrors the `validate_private_file` posture in
+/// `memory-privacy`, but repairs rather than refuses so the daemon can recover a
+/// loosened runtime dir in place.
 #[cfg(unix)]
-fn harden_created_socket_parent(parent: &Path) -> Result<()> {
+fn harden_socket_parent(parent: &Path, metadata: &std::fs::Metadata) -> Result<()> {
+    if metadata.permissions().mode() & 0o077 == 0 {
+        return Ok(());
+    }
     std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
-        .with_context(|| format!("chmod owner-only newly-created socket parent {}", parent.display()))
+        .with_context(|| format!("chmod owner-only socket parent {}", parent.display()))
 }
 
 #[cfg(not(unix))]
-fn harden_created_socket_parent(_parent: &Path) -> Result<()> {
+fn harden_socket_parent(_parent: &Path, _metadata: &std::fs::Metadata) -> Result<()> {
     Ok(())
 }
 
@@ -536,6 +583,46 @@ mod tests {
     use super::response_line_with_frame_cap;
     use crate::protocol::{ResponseEnvelope, ResponsePayload, ResponseResult};
     use crate::recall::{DeltaResponse, StartupResponse};
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bind_owner_only_socket_creates_socket_with_0o600_and_no_temp_residue() {
+        use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("memoryd.sock");
+
+        let _listener = super::bind_owner_only_socket(&socket_path).expect("bind owner-only socket");
+
+        let metadata = std::fs::symlink_metadata(&socket_path).expect("socket metadata");
+        assert!(metadata.file_type().is_socket(), "final path is a socket node");
+        assert_eq!(
+            metadata.permissions().mode() & 0o777,
+            0o600,
+            "socket is owner-only the instant it appears at its final path"
+        );
+
+        // The bind/chmod/rename dance must leave no group/world-connectable temp behind.
+        let temp_path = super::owner_only_socket_temp_path(&socket_path);
+        assert!(!temp_path.exists(), "temp socket residue removed after rename");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn prepare_socket_parent_repairs_preexisting_world_traversable_dir() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let parent = dir.path().join("runtime");
+        std::fs::create_dir(&parent).expect("create runtime dir");
+        // Simulate a runtime dir left at the default 0o755 by another code path.
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).expect("loosen perms");
+
+        super::prepare_socket_parent(&parent).await.expect("prepare existing parent");
+
+        let mode = std::fs::metadata(&parent).expect("parent metadata").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "pre-existing loose parent re-hardened to owner-only");
+    }
 
     #[test]
     fn oversized_startup_response_is_replaced_with_bounded_protocol_error() {

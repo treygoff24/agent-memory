@@ -51,10 +51,7 @@ async fn test_get_status_returns_correct_shape() {
 
 #[tokio::test]
 async fn test_default_router_does_not_serve_fixture_dashboard_data() {
-    let response = router()
-        .oneshot(Request::builder().uri("/api/status").body(Body::empty()).expect("request builds"))
-        .await
-        .expect("request succeeds");
+    let response = get_with_token(router(), "/api/status").await;
 
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     let body = json_body(response).await;
@@ -64,10 +61,7 @@ async fn test_default_router_does_not_serve_fixture_dashboard_data() {
 #[tokio::test]
 async fn test_daemon_router_attempts_socket_backend_instead_of_backendless_router() {
     let missing_socket = tempfile::NamedTempFile::new().expect("missing socket placeholder is created");
-    let response = router_with_state(WebState::daemon(missing_socket.path()))
-        .oneshot(Request::builder().uri("/api/status").body(Body::empty()).expect("request builds"))
-        .await
-        .expect("request succeeds");
+    let response = get_with_token(router_with_state(WebState::daemon(missing_socket.path())), "/api/status").await;
 
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     let body = json_body(response).await;
@@ -122,15 +116,11 @@ async fn test_daemon_backed_recall_hits_route_surfaces_live_recall_emission() {
         other => panic!("expected startup success, got {other:?}"),
     }
 
-    let response = router_with_state(WebState::daemon(&socket))
-        .oneshot(
-            Request::builder()
-                .uri("/api/recall-hits?since=2026-05-01T00:00:00Z&limit=10")
-                .body(Body::empty())
-                .expect("request builds"),
-        )
-        .await
-        .expect("request succeeds");
+    let response = get_with_token(
+        router_with_state(WebState::daemon(&socket)),
+        "/api/recall-hits?since=2026-05-01T00:00:00Z&limit=10",
+    )
+    .await;
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = json_body(response).await;
@@ -173,15 +163,8 @@ async fn test_search_route_forwards_to_daemon() {
     ));
     wait_for_socket(&socket).await;
 
-    let response = router_with_state(WebState::daemon(&socket))
-        .oneshot(
-            Request::builder()
-                .uri("/api/search?q=daemon-visible-term&limit=5")
-                .body(Body::empty())
-                .expect("request builds"),
-        )
-        .await
-        .expect("request succeeds");
+    let response =
+        get_with_token(router_with_state(WebState::daemon(&socket)), "/api/search?q=daemon-visible-term&limit=5").await;
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = json_body(response).await;
@@ -223,11 +206,7 @@ async fn test_daemon_backed_reality_check_route_creates_session_and_confirms() {
     wait_for_socket(&socket).await;
 
     let app = router_with_state(WebState::daemon(&socket));
-    let response = app
-        .clone()
-        .oneshot(Request::builder().uri("/api/reality-check").body(Body::empty()).expect("request builds"))
-        .await
-        .expect("request succeeds");
+    let response = get_with_token(app.clone(), "/api/reality-check").await;
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = json_body(response).await;
@@ -390,15 +369,8 @@ async fn test_get_audit_temporal_returns_historical_state() {
 #[cfg(feature = "dev-fixtures")]
 #[tokio::test]
 async fn test_get_audit_walk_returns_provenance_graph_not_deferred_stub() {
-    let response = fixture_router()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/api/audit/{AUDIT_MEMORY_ID}/walk?direction=up&depth=2"))
-                .body(Body::empty())
-                .expect("request builds"),
-        )
-        .await
-        .expect("request succeeds");
+    let response =
+        get_with_token(fixture_router(), &format!("/api/audit/{AUDIT_MEMORY_ID}/walk?direction=up&depth=2")).await;
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = json_body(response).await;
@@ -412,15 +384,8 @@ async fn test_get_audit_walk_returns_provenance_graph_not_deferred_stub() {
 #[cfg(feature = "dev-fixtures")]
 #[tokio::test]
 async fn test_get_audit_walk_rejects_invalid_direction() {
-    let response = fixture_router()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/api/audit/{AUDIT_MEMORY_ID}/walk?direction=sideways"))
-                .body(Body::empty())
-                .expect("request builds"),
-        )
-        .await
-        .expect("request succeeds");
+    let response =
+        get_with_token(fixture_router(), &format!("/api/audit/{AUDIT_MEMORY_ID}/walk?direction=sideways")).await;
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body = json_body(response).await;
@@ -555,10 +520,7 @@ async fn test_daemon_configured_notifications_stream_returns_empty_heartbeat() {
 #[tokio::test]
 async fn test_dashboard_future_sections_are_real_json_routes() {
     for route in ["/api/policy-editor", "/api/sync-dashboard"] {
-        let response = fixture_router()
-            .oneshot(Request::builder().uri(route).body(Body::empty()).expect("request builds"))
-            .await
-            .expect("request succeeds");
+        let response = get_with_token(fixture_router(), route).await;
 
         assert_eq!(response.status(), StatusCode::OK, "{route}");
         assert_json_content_type(&response, route);
@@ -580,10 +542,7 @@ async fn test_non_audit_routes_do_not_leak_audit_body() {
         "/api/recall-hits",
         "/api/review",
     ] {
-        let response = fixture_router()
-            .oneshot(Request::builder().uri(route).body(Body::empty()).expect("request builds"))
-            .await
-            .expect("request succeeds");
+        let response = get_with_token(fixture_router(), route).await;
         assert_eq!(response.status(), StatusCode::OK, "{route}");
         assert_json_content_type(&response, route);
         let body = response_body(response).await;
@@ -593,8 +552,14 @@ async fn test_non_audit_routes_do_not_leak_audit_body() {
 
 #[cfg(feature = "dev-fixtures")]
 async fn get_json(route: &str) -> Value {
-    let response = fixture_router()
-        .oneshot(Request::builder().uri(route).body(Body::empty()).expect("request builds"))
+    // Data-bearing GET reads are now gated behind the per-dashboard bearer token,
+    // so the request must present the token minted by this router instance.
+    let app = fixture_router();
+    let token = fetch_csrf_token(app.clone()).await;
+    let response = app
+        .oneshot(
+            Request::builder().uri(route).header("x-memorum-csrf", token).body(Body::empty()).expect("request builds"),
+        )
         .await
         .expect("request succeeds");
 
@@ -621,6 +586,18 @@ async fn fetch_csrf_token(app: axum::Router) -> String {
         .expect("request succeeds");
     let html = response_body(response).await;
     csrf_token_from_html(&html).to_owned()
+}
+
+/// Issue a GET against `app` carrying the bearer token minted by that router
+/// instance. Data-bearing GET reads are gated behind the token, so a plain GET
+/// would now be rejected with 403 before the handler runs.
+async fn get_with_token(app: axum::Router, uri: &str) -> axum::response::Response {
+    let token = fetch_csrf_token(app.clone()).await;
+    app.oneshot(
+        Request::builder().uri(uri).header("x-memorum-csrf", token).body(Body::empty()).expect("request builds"),
+    )
+    .await
+    .expect("request succeeds")
 }
 
 async fn json_body(response: axum::response::Response) -> Value {

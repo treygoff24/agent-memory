@@ -664,11 +664,20 @@ fn governance_type_meta(memory_type: MemoryType) -> &'static str {
 /// empty or carries secret/PII content; otherwise return it trimmed and bounded to
 /// `max_chars`. Reason fields are persisted verbatim into the canonical event log, so this
 /// is the single policy that keeps a secret out of the plaintext audit trail (invariant 1).
+///
+/// The primary gate is the privacy classifier's entropy/structure detector
+/// (`is_safe_plaintext_for_indexing` → `SecretOnlyScan`: credential regexes,
+/// Luhn-valid cards, SSNs, and high-entropy tokens). That catches credential-shaped
+/// content regardless of whether the operator happened to type a marker word like
+/// "secret" or "token" alongside it. `contains_secret_or_pii_marker` is kept only as
+/// an additive belt for short marker-laden phrases the structural detector underweights;
+/// it is never the sole line of defense.
 fn sanitize_reason(reason: &str, max_chars: usize) -> String {
     let trimmed = reason.trim();
     if trimmed.is_empty() {
         return REDACTED_REASON.to_owned();
     }
+    // Primary: structural/entropy classifier. Belt: keyword denylist.
     if !is_safe_plaintext_for_indexing(trimmed) || contains_secret_or_pii_marker(trimmed) {
         return REDACTED_REASON.to_owned();
     }
@@ -1048,6 +1057,22 @@ mod tests {
         assert_eq!(sanitize_forget_reason(""), REDACTED_REASON);
         assert_eq!(sanitize_forget_reason("SSN 123-45-6789"), REDACTED_REASON);
         assert_eq!(sanitize_forget_reason(&"a".repeat(FORGET_REASON_MAX_CHARS + 10)).len(), FORGET_REASON_MAX_CHARS);
+    }
+
+    #[test]
+    fn forget_reason_redacts_bare_credentials_without_marker_words() {
+        // The structural/entropy classifier — not the keyword denylist — must be the
+        // primary gate. These reasons carry none of the denylisted marker words
+        // ("secret", "token", "api key", "sk-"), so they exercise the classifier path.
+
+        // AWS access key ID shape, no marker words.
+        assert_eq!(sanitize_forget_reason("rotating AKIAIOSFODNN7EXAMPLE per policy"), REDACTED_REASON);
+
+        // Bare high-entropy credential (>=32 mixed alnum chars), no marker words.
+        assert_eq!(sanitize_forget_reason("replacing xQ9fLp2Zr7Wk4Nb8Vt3Hy6Mc1Js5Dg0Ae after audit"), REDACTED_REASON);
+
+        // Sanity: an ordinary operator reason with no secret structure survives.
+        assert_eq!(sanitize_forget_reason("duplicate of the onboarding note"), "duplicate of the onboarding note");
     }
 
     #[test]

@@ -107,12 +107,39 @@ impl TestDaemon {
 }
 
 async fn get_json(socket: &std::path::Path, route: &str) -> (StatusCode, Value) {
-    let response = router_with_state(WebState::daemon(socket))
-        .oneshot(Request::builder().uri(route).body(Body::empty()).expect("request builds"))
+    // Data-bearing GET reads are gated behind the per-dashboard bearer token; the
+    // request must carry the token minted by this router instance.
+    let app = router_with_state(WebState::daemon(socket));
+    let token = fetch_csrf_token(app.clone()).await;
+    let response = app
+        .oneshot(
+            Request::builder().uri(route).header("x-memorum-csrf", token).body(Body::empty()).expect("request builds"),
+        )
         .await
         .expect("request succeeds");
     let status = response.status();
     (status, serde_json::from_str(&response_body(response).await).expect("response is json"))
+}
+
+async fn fetch_csrf_token(app: axum::Router) -> String {
+    let response = app
+        .oneshot(Request::builder().uri("/").body(Body::empty()).expect("request builds"))
+        .await
+        .expect("request succeeds");
+    let html = response_body(response).await;
+    csrf_token_from_html(&html).to_owned()
+}
+
+fn csrf_token_from_html(html: &str) -> &str {
+    let name_at = html.find(r#"name="csrf-token""#).expect("csrf meta tag exists");
+    let tag_start = html[..name_at].rfind("<meta").expect("csrf tag starts with meta");
+    let tag_end = html[name_at..].find('>').expect("csrf meta tag closes") + name_at;
+    let tag = &html[tag_start..tag_end];
+    let marker = r#"content=""#;
+    let start = tag.find(marker).expect("csrf meta tag has content") + marker.len();
+    let tail = &tag[start..];
+    let end = tail.find('"').expect("csrf meta content closes");
+    &tail[..end]
 }
 
 async fn response_body(response: axum::response::Response) -> String {

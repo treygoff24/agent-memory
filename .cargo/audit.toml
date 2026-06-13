@@ -1,0 +1,22 @@
+# cargo-audit configuration for the dependency-CVE gate (scripts/cargo-audit-gate.sh).
+#
+# The gate runs `cargo audit --deny warnings` so NEW advisories — including
+# unmaintained/unsound warnings — fail loudly. The ignores below are the known,
+# accepted residue: all transitive, all pinned by upstream crates we can't patch
+# without forking. Re-check this list when bumping the parent crate named in
+# each entry; remove the ignore as soon as the parent releases a fixed graph.
+
+[advisories]
+ignore = [
+    # fxhash unmaintained — via scraper -> selectors. Hash algorithm for CSS
+    # selector matching on web captures; no untrusted-input soundness concern.
+    "RUSTSEC-2025-0057",
+    # paste unmaintained — proc-macro, build-time only, via ratatui/metal.
+    "RUSTSEC-2024-0436",
+    # proc-macro-error2 unmaintained — proc-macro, build-time only.
+    "RUSTSEC-2026-0173",
+    # lru IterMut Stacked Borrows unsoundness — via ratatui 0.29. ratatui does
+    # not expose or use IterMut on its internal lru caches; revisit on the next
+    # ratatui bump (expected to move to lru >= 0.16 where this is fixed).
+    "RUSTSEC-2026-0002",
+]

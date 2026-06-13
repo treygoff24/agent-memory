@@ -82,6 +82,18 @@ else
   echo "warning: pnpm/package.json unavailable; skipping JS format/lint checks" >&2
 fi
 run_parallel docs-validity    ./scripts/docs-command-validity.sh
+# Dependency-CVE scan over Cargo.lock (RUSTSEC advisories). Optional tool, so we
+# only run it when present — `cargo install cargo-audit` (or cargo-deny) to opt
+# in. cargo-audit needs network to refresh its advisory DB; a fetch failure is
+# treated as a skip (warning, not gate failure) so offline runs stay green,
+# while an actual vulnerable-dependency finding fails the gate.
+if command -v cargo-audit >/dev/null 2>&1; then
+  run_parallel cargo-audit    ./scripts/cargo-audit-gate.sh
+elif command -v cargo-deny >/dev/null 2>&1; then
+  run_parallel cargo-deny     cargo deny check advisories
+else
+  echo "warning: neither cargo-audit nor cargo-deny installed; skipping dependency-CVE scan" >&2
+fi
 run_parallel installer-test   ./scripts/install-memorum.test.sh
 run_parallel baseline         ./scripts/check-baseline-discipline.sh
 if command -v specgate >/dev/null 2>&1; then

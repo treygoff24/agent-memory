@@ -83,34 +83,95 @@ web:
     assert!(error.downcast_ref::<WebConfigError>().is_some());
 }
 
+const SPEC_API_GET_ROUTES: [&str; 12] = [
+    "/api/status",
+    "/api/entity-graph",
+    "/api/entity-graph/ent_memorum",
+    "/api/roi",
+    "/api/reality-check",
+    "/api/reality-check/history",
+    "/api/audit/mem_20260501_a1b2c3d4e5f60718_000010",
+    "/api/audit/mem_20260501_a1b2c3d4e5f60718_000010/walk",
+    "/api/audit/mem_20260501_a1b2c3d4e5f60718_000010/temporal",
+    "/api/review",
+    "/api/policy-editor",
+    "/api/sync-dashboard",
+];
+
 #[tokio::test]
 async fn test_spec_api_get_routes_return_json() {
     let app = fixture_router();
-    let get_routes = [
-        "/api/status",
-        "/api/entity-graph",
-        "/api/entity-graph/ent_memorum",
-        "/api/roi",
-        "/api/reality-check",
-        "/api/reality-check/history",
-        "/api/audit/mem_20260501_a1b2c3d4e5f60718_000010",
-        "/api/audit/mem_20260501_a1b2c3d4e5f60718_000010/walk",
-        "/api/audit/mem_20260501_a1b2c3d4e5f60718_000010/temporal",
-        "/api/review",
-        "/api/policy-editor",
-        "/api/sync-dashboard",
-    ];
+    let token = fetch_csrf_token(app.clone()).await;
 
-    for route in get_routes {
+    for route in SPEC_API_GET_ROUTES {
         let response = app
             .clone()
-            .oneshot(Request::builder().uri(route).body(Body::empty()).expect("request builds"))
+            .oneshot(
+                Request::builder()
+                    .uri(route)
+                    .header("x-memorum-csrf", &token)
+                    .body(Body::empty())
+                    .expect("request builds"),
+            )
             .await
             .expect("request succeeds");
 
         assert_eq!(response.status(), StatusCode::OK, "{route}");
         assert_json(response, route).await;
     }
+}
+
+#[tokio::test]
+async fn test_spec_api_get_routes_require_csrf_token() {
+    // Loopback reachability alone must not surface memory data. A GET with a
+    // valid loopback Host but no bearer token is rejected before the handler,
+    // closing the local cross-process read path require_local_host leaves open.
+    let app = fixture_router();
+
+    for route in SPEC_API_GET_ROUTES {
+        let response = app
+            .clone()
+            .oneshot(Request::builder().uri(route).body(Body::empty()).expect("request builds"))
+            .await
+            .expect("request succeeds");
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{route} must require the bearer token");
+    }
+}
+
+#[tokio::test]
+async fn test_spec_api_get_routes_reject_wrong_csrf_token() {
+    let app = fixture_router();
+
+    for route in SPEC_API_GET_ROUTES {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(route)
+                    .header("x-memorum-csrf", "wrong-token")
+                    .body(Body::empty())
+                    .expect("request builds"),
+            )
+            .await
+            .expect("request succeeds");
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{route} must reject a wrong token");
+    }
+}
+
+#[tokio::test]
+async fn test_bootstrap_routes_do_not_require_csrf_token() {
+    // The HTML shell and the SSE stream must be reachable before the page holds
+    // the token. They stay behind require_local_host but outside the bearer gate.
+    let app = fixture_router();
+
+    let index = app
+        .clone()
+        .oneshot(Request::builder().uri("/").body(Body::empty()).expect("request builds"))
+        .await
+        .expect("request succeeds");
+    assert_eq!(index.status(), StatusCode::OK, "/ must not require the bearer token");
 }
 
 #[tokio::test]

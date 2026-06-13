@@ -211,8 +211,13 @@ impl TestDaemon {
 }
 
 async fn get_json(socket: &std::path::Path, route: &str) -> (StatusCode, Value) {
-    let response = router_with_state(WebState::daemon(socket))
-        .oneshot(Request::builder().uri(route).body(Body::empty()).expect("request builds"))
+    // Data-bearing GET reads are gated behind the per-dashboard bearer token.
+    let app = router_with_state(WebState::daemon(socket));
+    let token = fetch_csrf_token(app.clone()).await;
+    let response = app
+        .oneshot(
+            Request::builder().uri(route).header("x-memorum-csrf", token).body(Body::empty()).expect("request builds"),
+        )
         .await
         .expect("request succeeds");
     let status = response.status();

@@ -52,7 +52,27 @@ fn missing_key_fails_closed() {
     let provider = FileKeyProvider::runtime_default(temp.path());
     let error = provider.load_key().expect_err("missing key");
 
-    assert!(error.to_string().contains("privacy key unavailable"));
+    // A genuinely-absent key file is surfaced as the typed `KeyMissing` variant
+    // (sourced from io::ErrorKind::NotFound), not by substring-matching a
+    // locale/platform-dependent OS error string.
+    assert!(matches!(error, memory_privacy::PrivacyError::KeyMissing(_)), "expected KeyMissing, got {error:?}");
+}
+
+#[test]
+fn rotate_from_absent_prior_key_starts_fresh() {
+    // Rotation must treat a missing prior key as "no previous key" rather than a
+    // hard error. This branch is gated on the typed KeyMissing classification;
+    // the regression guards against locale-dependent message matching that could
+    // misclassify the absent key and flip fail-open/fail-closed behavior.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let provider = FileKeyProvider::runtime_default(temp.path());
+
+    let rotation = provider.rotate_local_file().expect("rotate with no prior key");
+
+    assert!(rotation.previous_recipient.is_none());
+    assert!(rotation.archived_key_path.is_none());
+    assert!(rotation.active_key_path.is_file());
+    assert!(provider.load_key().is_ok());
 }
 
 #[test]

@@ -34,6 +34,7 @@ rust-embed = "8.11"
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
+subtle = "2.6"
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true

@@ -12,7 +12,7 @@ use axum::Router;
 use rust_embed::RustEmbed;
 use tokio::net::TcpListener;
 
-use crate::auth::require_csrf;
+use crate::auth::{require_csrf, require_local_host};
 use crate::config::WebConfig;
 use crate::routes::{
     audit, audit_temporal, audit_walk, entity_detail, entity_graph, notifications_stream, policy_editor_get,
@@ -39,15 +39,16 @@ pub fn fixture_router() -> Router {
 }
 
 pub fn router_with_state(state: WebState) -> Router {
-    let protected_post_routes = Router::new()
-        .route("/api/reality-check/respond", post(reality_check_respond))
-        .route("/api/review/action", post(review_action))
-        .route("/api/policy-editor", post(policy_editor_post))
-        .route_layer(middleware::from_fn_with_state(state.clone(), require_csrf));
-
-    Router::new()
-        .route("/", get(index))
-        .route("/assets/{*path}", get(asset))
+    // Every data-bearing endpoint — GET reads and POST mutations alike — sits
+    // behind the per-dashboard bearer token. require_local_host blocks the
+    // browser DNS-rebind/cross-origin path, but loopback reachability alone does
+    // not gate *another local process* (or another user on a shared machine)
+    // from issuing a plain GET with a loopback `Host` and reading memory bodies,
+    // search results, and the audit graph. The TCP listener has no owner
+    // restriction like the daemon's 0o600 Unix socket, so the token is what
+    // closes the local cross-process read path. The token is delivered only to
+    // the legitimately-served dashboard page (injected into index.html).
+    let protected_routes = Router::new()
         .route("/api/status", get(status))
         .route("/api/entity-graph", get(entity_graph))
         .route("/api/entity-graph/{entity_id}", get(entity_detail))
@@ -60,10 +61,26 @@ pub fn router_with_state(state: WebState) -> Router {
         .route("/api/audit/{id}/walk", get(audit_walk))
         .route("/api/audit/{id}/temporal", get(audit_temporal))
         .route("/api/review", get(review_queue))
-        .route("/api/notifications/stream", get(notifications_stream))
         .route("/api/policy-editor", get(policy_editor_get))
         .route("/api/sync-dashboard", get(sync_dashboard))
-        .merge(protected_post_routes)
+        .route("/api/reality-check/respond", post(reality_check_respond))
+        .route("/api/review/action", post(review_action))
+        .route("/api/policy-editor", post(policy_editor_post))
+        .route_layer(middleware::from_fn_with_state(state.clone(), require_csrf));
+
+    Router::new()
+        // Bootstrap surfaces that must be reachable *before* the page holds the
+        // token: the HTML shell that carries the token to the browser, its static
+        // assets, and the SSE stream (EventSource cannot attach custom headers).
+        // These remain behind require_local_host but outside the bearer gate.
+        .route("/", get(index))
+        .route("/assets/{*path}", get(asset))
+        .route("/api/notifications/stream", get(notifications_stream))
+        .merge(protected_routes)
+        // DNS-rebinding / cross-origin guard runs ahead of every route, closing
+        // the browser cross-origin read path that the loopback bind alone cannot
+        // protect. Layered before `with_state` so it wraps the entire router.
+        .layer(middleware::from_fn(require_local_host))
         .with_state(state)
 }
 
