@@ -1,6 +1,7 @@
 docs/reviews/stream-c-*.md
 docs/reviews/2026-05-08-gap-fix-verification.md
 docs/reviews/2026-05-26-alpha-gap-audit.md
+docs/reviews/2026-06-13-elegance-audit.md
 docs/reference/*.md
 target/
 **/target/
