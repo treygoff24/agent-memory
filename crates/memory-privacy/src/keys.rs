@@ -17,8 +17,9 @@ use std::os::unix::fs::PermissionsExt;
 /// The private `identity` is held in a [`Zeroizing<String>`] so the age x25519
 /// secret is wiped from heap memory when the `KeyMaterial` (and every clone)
 /// drops, matching the memory hygiene the `age` crate applies to its own
-/// `Identity`. Construct it via [`KeyMaterial::new`]; read the secret only at
-/// the parse boundary via [`KeyMaterial::expose_identity`].
+/// `Identity`. Construct it via [`KeyMaterial::new`]; the secret is read only at
+/// the parse boundary (`identity()`/`recipient()`) through a private accessor
+/// that keeps the raw string from being cloned into a non-zeroizing `String`.
 #[derive(Clone)]
 pub struct KeyMaterial {
     /// Public recipient identifier.
