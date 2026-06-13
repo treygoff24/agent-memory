@@ -26,11 +26,14 @@ pub struct FusedHybridCandidate {
 /// nudge near-ties; remaining ties resolve deterministically by lexicographic
 /// memory id.
 pub fn fuse_rrf(
-    candidates: &[HybridMemoryCandidate],
+    candidates: Vec<HybridMemoryCandidate>,
     rrf_k: u32,
     recency_lambda: f64,
     recency_half_life_days: f64,
 ) -> Vec<FusedHybridCandidate> {
+    // Borrow pre-pass: derive 1-based vector ranks before the consuming pass so
+    // the owned candidates (each carrying a heap String `text` up to a full chunk)
+    // can be moved — not cloned — into the fused output below.
     let mut vector_rank_by_id = HashMap::new();
     let mut vector_lane =
         candidates.iter().filter(|candidate| candidate.score_breakdown.cosine_similarity.is_some()).collect::<Vec<_>>();
@@ -45,7 +48,7 @@ pub fn fuse_rrf(
 
     let k = f64::from(rrf_k);
     let mut fused = candidates
-        .iter()
+        .into_iter()
         .map(|candidate| {
             let bm25_score =
                 candidate.score_breakdown.bm25_rank.map(|rank| reciprocal_rank_score(k, rank)).unwrap_or_default();
@@ -55,9 +58,9 @@ pub fn fuse_rrf(
                 .map(|rank| reciprocal_rank_score(k, rank))
                 .unwrap_or_default();
             FusedHybridCandidate {
-                memory_id: candidate.memory_id.clone(),
-                text: candidate.text.clone(),
-                score_breakdown: candidate.score_breakdown.clone(),
+                memory_id: candidate.memory_id,
+                text: candidate.text,
+                score_breakdown: candidate.score_breakdown,
                 rrf_score: bm25_score + vector_score,
                 recency_at: candidate.recency_at,
                 final_score: 0.0,
@@ -134,7 +137,7 @@ mod tests {
     #[test]
     fn fuses_two_one_based_rank_lanes() {
         let fused = fuse_rrf(
-            &[
+            vec![
                 candidate("mem_20260610_0000000000000001_000001", Some(1), None, None),
                 candidate("mem_20260610_0000000000000002_000002", Some(2), Some(0.9), None),
                 candidate("mem_20260610_0000000000000003_000003", None, Some(0.95), None),
@@ -153,7 +156,7 @@ mod tests {
     #[test]
     fn equal_scores_tie_break_by_memory_id() {
         let fused = fuse_rrf(
-            &[
+            vec![
                 candidate("mem_20260610_0000000000000002_000002", Some(1), None, None),
                 candidate("mem_20260610_0000000000000001_000001", None, Some(0.8), None),
             ],
@@ -171,7 +174,7 @@ mod tests {
         let fresh = utc(2026, 6, 1);
         let stale = utc(2026, 1, 1);
         let fused = fuse_rrf(
-            &[
+            vec![
                 candidate("mem_20260610_0000000000000001_000001", Some(4), None, Some(stale)),
                 candidate("mem_20260610_0000000000000002_000002", Some(5), None, Some(fresh)),
             ],
@@ -190,7 +193,7 @@ mod tests {
         let fresh = utc(2026, 6, 1);
         let stale = utc(2026, 3, 3);
         let fused = fuse_rrf(
-            &[
+            vec![
                 candidate("mem_20260610_0000000000000001_000001", Some(4), None, Some(stale)),
                 candidate("mem_20260610_0000000000000002_000002", Some(5), None, Some(fresh)),
             ],
@@ -210,7 +213,7 @@ mod tests {
         let fresh = utc(2026, 6, 1);
         let stale = utc(2026, 5, 1);
         let fused = fuse_rrf(
-            &[
+            vec![
                 candidate("mem_20260610_0000000000000001_000001", Some(2), None, Some(stale)),
                 candidate("mem_20260610_0000000000000002_000002", Some(3), None, Some(fresh)),
             ],
@@ -227,7 +230,7 @@ mod tests {
     fn missing_recency_at_sorts_behind_dated_candidate_at_equal_rrf() {
         let dated = utc(2026, 6, 1);
         let fused = fuse_rrf(
-            &[
+            vec![
                 candidate("mem_20260610_0000000000000002_000002", Some(1), None, None),
                 candidate("mem_20260610_0000000000000001_000001", None, Some(0.8), Some(dated)),
             ],

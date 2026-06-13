@@ -44,7 +44,7 @@ pub(crate) async fn review_queue_response(
     // response renders, instead of reading and re-parsing every canonical memory
     // file on each (repeatedly-polled) inbox request.
     let bounded_limit = limit.unwrap_or(REVIEW_QUEUE_LIMIT_DEFAULT).min(REVIEW_QUEUE_LIMIT_MAX);
-    let page = substrate.review_queue(bounded_limit).map_err(HandlerError::substrate)?;
+    let page = substrate.review_queue(bounded_limit).await.map_err(HandlerError::substrate)?;
 
     if page.total >= REVIEW_QUEUE_DOGFOOD_THRESHOLD {
         state.emit_notification(NotificationEvent::ReviewQueueOverThreshold {

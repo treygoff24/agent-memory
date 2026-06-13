@@ -61,7 +61,7 @@ pub(crate) async fn status_response(substrate: &Substrate, state: &HandlerState)
 }
 
 async fn live_index_stats(substrate: &Substrate) -> Result<IndexStats, HandlerError> {
-    let counts = substrate.count_memories_by_status().map_err(HandlerError::substrate)?;
+    let counts = substrate.count_memories_by_status().await.map_err(HandlerError::substrate)?;
     let active = status_count(&counts, MemoryStatus::Active);
     let pinned = status_count(&counts, MemoryStatus::Pinned);
     // Seek the latest reindex event in the SQLite mirror (kind-indexed MAX(ts))
@@ -76,7 +76,7 @@ async fn live_index_stats(substrate: &Substrate) -> Result<IndexStats, HandlerEr
 }
 
 async fn live_review_queue_counts(substrate: &Substrate) -> Result<ReviewQueueCounts, HandlerError> {
-    let counts = substrate.count_memories_by_status().map_err(HandlerError::substrate)?;
+    let counts = substrate.count_memories_by_status().await.map_err(HandlerError::substrate)?;
     let candidate = status_count(&counts, MemoryStatus::Candidate);
     let quarantined = status_count(&counts, MemoryStatus::Quarantined);
     Ok(ReviewQueueCounts { candidate, quarantined, dream_low_confidence: 0 })

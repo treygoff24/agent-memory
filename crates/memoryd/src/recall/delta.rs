@@ -207,6 +207,9 @@ async fn delta_peer_candidate_rows(
                     updated_since: None,
                     match_terms: Vec::new(),
                     hydrate: AuxScope::None,
+                    // Peer-write attribution reads source/author harness+session
+                    // identity off each surviving row, so project those fields.
+                    source_identity: true,
                 })
                 .await
                 .map_err(|error| RecallError::substrate_error(error.to_string()))?

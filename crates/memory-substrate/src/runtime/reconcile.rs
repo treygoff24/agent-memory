@@ -14,7 +14,7 @@ use crate::events::{
     EventKind,
 };
 use crate::index::Index;
-use crate::markdown::read_memory_file;
+use crate::markdown::{read_memory_file, read_memory_file_hash};
 use crate::model::{EventId, Memory, MemoryId, MemoryStatus, OperationId, RepoPath, Sha256, TrustLevel};
 
 /// Durable pending index operation kind.
@@ -302,11 +302,10 @@ fn phase_5_replay_pending_events(
 /// optimization is that clean files are not re-upserted and startup no longer
 /// performs a second unconditional clear+rebuild pass.
 fn phase_6_index_consistency(repo: &Path, index: &mut Index, report: &mut ReconcileReport) -> std::io::Result<()> {
-    let reindexed = reindex_stale_memories(repo, index)
+    let outcome = reindex_and_scan_conflicts(repo, index)
         .map_err(|err| std::io::Error::other(format!("index consistency: {err}")))?;
-    report.reindexed_memories = reindexed;
-    report.blocking_conflicts =
-        scan_blocking_conflicts(repo).map_err(|err| std::io::Error::other(format!("blocking conflict scan: {err}")))?;
+    report.reindexed_memories = outcome.reindexed;
+    report.blocking_conflicts = outcome.conflicts;
     if !report.blocking_conflicts.is_empty() {
         report.operator_action_required = true;
     }
@@ -422,26 +421,62 @@ fn replay_encrypted_op(repo: &Path, index: &mut Index, op: &PendingEncryptedInde
     }
 }
 
-/// Reindex only memories whose disk hash has drifted from the index row.
+/// Result of the merged phase-6 index-consistency sweep: how many memories were
+/// reindexed and the set of blocking (quarantined) conflicts.
+struct IndexConsistencyOutcome {
+    reindexed: u32,
+    conflicts: Vec<String>,
+}
+
+/// Reindex stale memories and collect blocking conflicts in a SINGLE tree walk.
 ///
-/// This is still an O(n_plaintext_files) read+hash sweep; it avoids rewriting
-/// clean index rows, not reading the files.
+/// Previously phase 6 walked the repo twice — once to reindex drifted files and
+/// again, re-reading and re-parsing every `.md`, purely to inspect
+/// `status`/`trust_level` for quarantine. This merges both jobs into one walk and
+/// additionally gates the expensive Markdown parse behind a cheap raw-bytes hash:
 ///
-/// Returns the count of memories reindexed. Falls back to full reindex when
-/// the index cannot answer hash queries (empty index, schema mismatch).
-fn reindex_stale_memories(repo: &Path, index: &mut Index) -> Result<u32, Box<dyn std::error::Error>> {
-    let mut count = 0u32;
-    for entry in walkdir::WalkDir::new(repo).follow_links(false) {
+/// - Compute the on-disk file hash from raw bytes (no parse).
+/// - Compare against the indexed `(file_hash, is_quarantined)`.
+/// - On a hash match the file is clean: skip the parse entirely and read its
+///   quarantine flag straight from the index (which faithfully mirrors the
+///   frontmatter for an in-sync row).
+/// - Only on a hash drift (or an unindexed file) do we parse via
+///   [`read_memory_file`], upsert, and read the quarantine flag from the parsed
+///   frontmatter.
+///
+/// Drifted memories are collected during the walk and upserted as one batch via
+/// [`Index::batch_upsert_memories_with_file_hash`] — a single WAL commit cycle
+/// and a single `dropped_embedding_triples` probe for the whole drift set,
+/// instead of one transaction + one probe per drifted file. The batch path
+/// FK-guards each row's supersession edges identically to the per-row path, so a
+/// deferred [`Index::resync_supersession_edges`] pass re-adds any edge whose
+/// target landed later in the batch (idempotent `INSERT OR IGNORE`; the open-time
+/// sweep also runs it).
+///
+/// Behavior-preserving: same files visited, same reindex predicate, same
+/// quarantine conflict set (still sorted+deduped), same final index state. Warm
+/// startup over an unchanged repo now does N cheap hashes instead of N full
+/// parses, one walk not two, and zero writes (no drift → empty batch).
+fn reindex_and_scan_conflicts(
+    repo: &Path,
+    index: &mut Index,
+) -> Result<IndexConsistencyOutcome, Box<dyn std::error::Error>> {
+    let mut conflicts = Vec::new();
+    // Drifted/unindexed files collected during the walk, upserted as one batch.
+    let mut drifted: Vec<(Memory, Sha256)> = Vec::new();
+    // Prune `.git` before descent rather than skipping its files post-hoc: git
+    // rewrites `.git/objects/**` concurrently (loose-object packing right after a
+    // commit), so descending into it races `walkdir`'s readdir against git's
+    // unlink and surfaces a spurious ENOENT through `entry?`. Pruning the subtree
+    // is also strictly less work than walking and discarding every `.git` entry.
+    let walk = walkdir::WalkDir::new(repo).follow_links(false).into_iter().filter_entry(|e| e.file_name() != ".git");
+    for entry in walk {
         let entry = entry?;
         if !entry.file_type().is_file() {
             continue;
         }
         let path = entry.path();
         if path.extension().is_none_or(|ext| ext != "md") {
-            continue;
-        }
-        // Skip paths inside .git/
-        if path.components().any(|c| c.as_os_str() == ".git") {
             continue;
         }
         let Ok(repo_relative) = path.strip_prefix(repo) else { continue };
@@ -453,48 +488,46 @@ fn reindex_stale_memories(repo: &Path, index: &mut Index) -> Result<u32, Box<dyn
         let Ok(relative_str) = repo_relative.to_str().ok_or("non-utf8 path") else { continue };
         let repo_path = RepoPath::new(relative_str);
 
-        let (memory, disk_hash) = read_memory_file(repo, &repo_path)?;
+        // Cheap raw-bytes hash first; only parse when it tells us the row is stale.
+        let disk_hash = read_memory_file_hash(repo, &repo_path)?;
+        let indexed = index.file_consistency_state(&repo_path);
+        let quarantined = match indexed {
+            Some((idx_hash, idx_quarantined)) if idx_hash == disk_hash => {
+                // Clean file: index row mirrors the frontmatter, no parse needed.
+                idx_quarantined
+            }
+            _ => {
+                // Drifted or unindexed: parse, defer the upsert into the batch,
+                // read quarantine from disk.
+                let (memory, parsed_hash) = read_memory_file(repo, &repo_path)?;
+                let quarantined = memory.frontmatter.status == MemoryStatus::Quarantined
+                    || memory.frontmatter.trust_level == TrustLevel::Quarantined;
+                drifted.push((memory, parsed_hash));
+                quarantined
+            }
+        };
 
-        let needs_reindex = index.file_hash_for(&repo_path).map(|idx_hash| idx_hash != disk_hash).unwrap_or(true);
-
-        if needs_reindex {
-            index.upsert_memory_with_file_hash(&memory, false, Some(&disk_hash))?;
-            count += 1;
-        }
-    }
-    Ok(count)
-}
-
-fn scan_blocking_conflicts(repo: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let mut conflicts = Vec::new();
-    for entry in walkdir::WalkDir::new(repo).follow_links(false) {
-        let entry = entry?;
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let path = entry.path();
-        if path.extension().is_none_or(|ext| ext != "md") {
-            continue;
-        }
-        if path.components().any(|c| c.as_os_str() == ".git") {
-            continue;
-        }
-        let Ok(repo_relative) = path.strip_prefix(repo) else { continue };
-        if repo_relative.components().next().is_some_and(|c| c.as_os_str() == "encrypted") {
-            continue;
-        }
-        let Ok(relative_str) = repo_relative.to_str().ok_or("non-utf8 path") else { continue };
-        let repo_path = RepoPath::new(relative_str);
-        let (memory, _) = read_memory_file(repo, &repo_path)?;
-        if memory.frontmatter.status == MemoryStatus::Quarantined
-            || memory.frontmatter.trust_level == TrustLevel::Quarantined
-        {
+        if quarantined {
             conflicts.push(repo_path.as_str().to_string());
         }
     }
+
+    let reindexed = drifted.len() as u32;
+    let has_supersession_edges = drifted.iter().any(|(memory, _)| !memory.frontmatter.supersedes.is_empty());
+    // One transaction + one dropped-triple probe for the whole drift set.
+    index.batch_upsert_memories_with_file_hash(
+        drifted.iter().map(|(memory, file_hash)| (memory, false, Some(file_hash))),
+    )?;
+    // The batch FK-guards each per-row supersession edge, so a supersessor
+    // upserted before its target dropped that edge; re-add now that every row in
+    // the batch exists (idempotent — open-time sweep runs it again).
+    if has_supersession_edges {
+        index.resync_supersession_edges()?;
+    }
+
     conflicts.sort();
     conflicts.dedup();
-    Ok(conflicts)
+    Ok(IndexConsistencyOutcome { reindexed, conflicts })
 }
 
 /// Delete or rewrite a pending queue file after replay.

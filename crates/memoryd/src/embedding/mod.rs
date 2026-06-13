@@ -166,6 +166,20 @@ pub trait EmbeddingProvider: Send + Sync {
 
     /// Embed a document/chunk string as plain text (no instruction prompt).
     fn embed_document(&self, text: &str) -> Result<Vec<f32>, EmbeddingError>;
+
+    /// Embed a batch of document/chunk strings as plain text, returning one
+    /// vector per input in positional order.
+    ///
+    /// The default implementation loops over [`Self::embed_document`], so a
+    /// provider gets correct batch behavior for free; transformer-backed
+    /// providers (fastembed/candle) override this to amortize the forward pass
+    /// over the whole slice, which is several times faster per item at batch
+    /// sizes typical of a cold reindex. The per-item results are byte-identical
+    /// to calling `embed_document` once per text, so the drain worker's
+    /// stale-chunk keying is unaffected.
+    fn embed_documents(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+        texts.iter().map(|text| self.embed_document(text)).collect()
+    }
 }
 
 /// Validate a produced vector against the provider's declared dimension.

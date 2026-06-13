@@ -361,7 +361,7 @@ async fn inspect_entities_response(
     // Read only the entity tables (id-ordered), instead of loading and fully
     // hydrating every recall-index row. Same iteration order as the prior
     // `for row { for entity in row.entities }`, so aggregation is identical.
-    let entity_rows = substrate.entity_index_rows().map_err(HandlerError::substrate)?;
+    let entity_rows = substrate.entity_index_rows().await.map_err(HandlerError::substrate)?;
     let prefix = prefix.map(|value| value.to_ascii_lowercase());
     let mut by_id: BTreeMap<String, EntitySummary> = BTreeMap::new();
     for (memory_id, entity) in entity_rows {
@@ -434,7 +434,7 @@ async fn namespace_tree_response(
     let include_children = depth.unwrap_or(1) > 0;
     // Aggregate scope/namespace counts in SQL (GROUP BY) instead of loading and
     // fully hydrating every recall-index row only to count namespaces in Rust.
-    let namespace_counts = substrate.namespace_counts().map_err(HandlerError::substrate)?;
+    let namespace_counts = substrate.namespace_counts().await.map_err(HandlerError::substrate)?;
     let mut counts = BTreeMap::<String, usize>::new();
     for (scope, canonical_namespace_id, count) in namespace_counts {
         let namespace = namespace_label(scope, canonical_namespace_id.as_deref());
@@ -509,6 +509,8 @@ async fn conflicts_list_response(substrate: &Substrate, limit: Option<usize>) ->
         .query_recall_index_including_metadata_only(RecallIndexQuery {
             statuses: vec![MemoryStatus::Quarantined],
             hydrate: AuxScope::None,
+            // Reads `merge_diagnostics_json` per row to render the conflict reason.
+            source_identity: true,
             ..RecallIndexQuery::default()
         })
         .await

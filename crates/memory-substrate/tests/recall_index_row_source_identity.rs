@@ -6,11 +6,13 @@ use memory_substrate::{
 };
 
 // Stream I peer-write attribution reads harness/session identity straight off
-// the recall-index row instead of re-reading canonical files. These fields are
-// projected from `frontmatter_json` via `json_extract`, so guard that the
-// projection populates `source.*` and `author.*` and yields `None` when absent.
+// the recall-index row instead of re-reading canonical files. The session/author
+// identity and merge-diagnostics fields are projected from `frontmatter_json` via
+// `json_extract` only when `RecallIndexQuery::source_identity` is set, so guard
+// that the full projection populates `source.*`/`author.*` (and yields `None`
+// when absent) while the cheap default omits the extra parses.
 #[test]
-fn recall_index_row_projects_source_and_author_identity() {
+fn recall_index_row_projects_source_and_author_identity_when_requested() {
     let temp = tempfile::tempdir().expect("tempdir");
     let mut index = Index::new(open_index(&temp.path().join("index.sqlite")).expect("open index"));
 
@@ -30,7 +32,9 @@ fn recall_index_row_projects_source_and_author_identity() {
         .upsert_memory(&sample_memory("mem_20260501_a1b2c3d4e5f60718_000502", None, None, None, None), false)
         .expect("upsert without identity");
 
-    let mut rows = index.query_recall_index(&RecallIndexQuery::default()).expect("query recall index");
+    let mut rows = index
+        .query_recall_index(&RecallIndexQuery { source_identity: true, ..RecallIndexQuery::default() })
+        .expect("query recall index");
     rows.sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
 
     assert_eq!(rows[0].source_harness.as_deref(), Some("claude-code"));
@@ -42,6 +46,40 @@ fn recall_index_row_projects_source_and_author_identity() {
     assert_eq!(rows[1].source_session_id, None);
     assert_eq!(rows[1].author_harness, None);
     assert_eq!(rows[1].author_session_id, None);
+}
+
+// The hot recall/ranking path uses the default (cheap) projection: `source_harness`
+// is still served straight from its materialized column (one fewer JSON parse than
+// the prior `json_extract`), while the session/author identity fields the ranking
+// path never reads are left `None` and cost no per-row `json_extract`.
+#[test]
+fn recall_index_row_cheap_projection_keeps_source_harness_column_only() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let mut index = Index::new(open_index(&temp.path().join("index.sqlite")).expect("open index"));
+
+    index
+        .upsert_memory(
+            &sample_memory(
+                "mem_20260501_a1b2c3d4e5f60718_000511",
+                Some("claude-code"),
+                Some("sess-source"),
+                Some("codex"),
+                Some("sess-author"),
+            ),
+            false,
+        )
+        .expect("upsert with identity");
+
+    let rows = index.query_recall_index(&RecallIndexQuery::default()).expect("query recall index");
+
+    // `source_harness` comes from the materialized column, identical to the value
+    // `json_extract($.source.harness)` would have returned.
+    assert_eq!(rows[0].source_harness.as_deref(), Some("claude-code"));
+    // The gated identity fields are unread by ranking and stay `None` (not parsed).
+    assert_eq!(rows[0].source_session_id, None);
+    assert_eq!(rows[0].author_harness, None);
+    assert_eq!(rows[0].author_session_id, None);
+    assert_eq!(rows[0].merge_diagnostics_json, None);
 }
 
 // Stream I claim-lock conflict detection resolves entities from the index in a

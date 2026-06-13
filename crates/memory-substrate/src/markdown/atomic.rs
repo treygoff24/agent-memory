@@ -35,6 +35,34 @@ pub fn read_memory_file(repo: &Path, path: &RepoPath) -> Result<(Memory, Sha256)
     Ok((parsed.memory, hash_bytes(&bytes)))
 }
 
+/// Hash a Markdown memory file's raw bytes without parsing frontmatter.
+///
+/// Returns the same [`Sha256`] [`read_memory_file`] computes (both hash the raw
+/// on-disk bytes via [`hash_bytes`]), but skips the frontmatter/Markdown parse.
+/// Lets startup index-consistency gate the expensive parse behind a cheap
+/// hash-equality check: a file whose raw-bytes hash matches the indexed
+/// `file_hash` is clean and need not be parsed at all. Applies the identical
+/// path-safety and repo-containment validation as [`read_memory_file`].
+pub fn read_memory_file_hash(repo: &Path, path: &RepoPath) -> Result<Sha256, crate::error::ReadError> {
+    if !path.is_safe_relative() {
+        return Err(crate::error::ReadError::Parse {
+            path: path.clone(),
+            message: "invalid repo-relative memory path".to_string(),
+        });
+    }
+    let absolute = repo.join(path.as_path());
+    let canonical_repo = repo.canonicalize()?;
+    let canonical_path = absolute.canonicalize()?;
+    if !canonical_path.starts_with(&canonical_repo) {
+        return Err(crate::error::ReadError::Parse {
+            path: path.clone(),
+            message: "memory path resolves outside repository".to_string(),
+        });
+    }
+    let bytes = fs::read(&absolute)?;
+    Ok(hash_bytes(&bytes))
+}
+
 /// Arguments for an atomic write.
 pub struct AtomicWrite<'a> {
     /// Repository root.

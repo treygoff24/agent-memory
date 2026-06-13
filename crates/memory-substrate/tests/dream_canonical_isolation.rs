@@ -216,6 +216,7 @@ async fn stream_f_noncanonical_files_are_never_indexed_or_returned_by_queries() 
             updated_since: None,
             match_terms: vec!["stream-f-isolation".to_string()],
             hydrate: AuxScope::All,
+            source_identity: true,
         })
         .await
         .expect("recall query");

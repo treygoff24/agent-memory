@@ -19,9 +19,19 @@ pub struct RankingContext {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RankedRecallCandidate {
-    pub id: String,
     pub score: i64,
     pub candidate: RecallCandidate,
+}
+
+impl RankedRecallCandidate {
+    /// Candidate id, borrowed from the embedded [`RecallCandidate`].
+    ///
+    /// `RankedRecallCandidate` previously carried its own `id: String` field that
+    /// duplicated `candidate.id`; this accessor reads the single owned copy
+    /// instead, removing one heap allocation per candidate on the ranking path.
+    pub fn id(&self) -> &str {
+        &self.candidate.id
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -35,7 +45,7 @@ pub fn rank_recall_candidates(candidates: Vec<RecallCandidate>, context: Ranking
         .into_iter()
         .map(|candidate| {
             let score = score_candidate(&candidate, &context);
-            RankedRecallCandidate { id: candidate.id.clone(), score, candidate }
+            RankedRecallCandidate { score, candidate }
         })
         .collect::<Vec<_>>();
 
@@ -61,7 +71,7 @@ pub fn select_ranked_candidates(
             selected.push(candidate);
         } else {
             omitted.push(RecallOmission {
-                id: Some(candidate.id),
+                id: Some(candidate.candidate.id),
                 section,
                 reason: OmissionReason::BudgetExhausted,
                 alias: None,
@@ -106,7 +116,7 @@ fn compare_ranked_candidates(left: &RankedRecallCandidate, right: &RankedRecallC
             status_sort_key(right.candidate.candidate_status()).cmp(&status_sort_key(left.candidate.candidate_status()))
         })
         .then_with(|| right.candidate.row.updated_at.cmp(&left.candidate.row.updated_at))
-        .then_with(|| left.id.cmp(&right.id))
+        .then_with(|| left.candidate.id.cmp(&right.candidate.id))
 }
 
 fn status_weight(status: MemoryStatus) -> i64 {

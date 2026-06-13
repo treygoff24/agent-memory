@@ -59,6 +59,19 @@ impl Substrate {
         &self.startup_reconcile_report
     }
 
+    /// Cloned handle to the substrate's live, already-initialized derived-index
+    /// connection (behind the shared `Mutex`).
+    ///
+    /// Lets read-only recall consumers (e.g. strength hydration on the blocking
+    /// pool) reuse this connection instead of calling `open_index` per request —
+    /// which would re-run the full `SCHEMA_SQL` DDL batch, the migration version
+    /// probes, and the WAL pragmas on every recall. Callers lock the returned
+    /// handle and read through [`Index::connection`]; the lock is held only for
+    /// the duration of their queries, matching the substrate's own write path.
+    pub fn index_handle(&self) -> Arc<Mutex<Index>> {
+        Arc::clone(&self.index)
+    }
+
     /// Initialize a new memory repository and open it.
     ///
     /// Q4: `git::adopt_clone` is the sole authority that mints
@@ -1244,16 +1257,35 @@ impl Substrate {
     }
 
     /// Query recall-index rows without hydrating memory envelopes.
+    ///
+    /// The SQLite read (a `memories` table scan that can materialize every
+    /// active/pinned row in a namespace) runs on a blocking thread via
+    /// `spawn_blocking`, matching the strength-hydration and disk-read paths, so
+    /// the heaviest recall query does not occupy a tokio worker under load. The
+    /// mutex guard is taken and released entirely inside the blocking closure;
+    /// no lock is held across an `.await`.
     pub async fn query_recall_index(&self, query: RecallIndexQuery) -> SubstrateResult<Vec<RecallIndexRow>> {
-        self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.query_recall_index(&query)
+        let index = Arc::clone(&self.index);
+        tokio::task::spawn_blocking(move || {
+            index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.query_recall_index(&query)
+        })
+        .await
+        .map_err(|err| OpenError::InvalidRoots(format!("recall index query task panicked: {err}")))?
     }
 
     /// Count recall-index rows matching `query` via an index-only `COUNT(*)`,
     /// without marshalling rows or hydrating auxiliary tables. The predicate is
     /// identical to [`Self::query_recall_index`], so this returns the same value
     /// as that call's `rows.len()` for the same query.
+    ///
+    /// Runs the index scan on a blocking thread (see [`Self::query_recall_index`]).
     pub async fn count_recall_index(&self, query: RecallIndexQuery) -> SubstrateResult<usize> {
-        self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.count_recall_index(&query)
+        let index = Arc::clone(&self.index);
+        tokio::task::spawn_blocking(move || {
+            index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.count_recall_index(&query)
+        })
+        .await
+        .map_err(|err| OpenError::InvalidRoots(format!("recall index count task panicked: {err}")))?
     }
 
     /// Project the entities (with aliases) for a set of memory ids in one
@@ -1269,41 +1301,77 @@ impl Substrate {
     }
 
     /// Query recall-index rows, including encrypted metadata-only rows.
+    ///
+    /// Runs the index scan on a blocking thread (see [`Self::query_recall_index`])
+    /// because the predicate can materialize an entire namespace's rows.
     pub async fn query_recall_index_including_metadata_only(
         &self,
         query: RecallIndexQuery,
     ) -> SubstrateResult<Vec<RecallIndexRow>> {
-        self.index
-            .lock()
-            .map_err(|err| OpenError::InvalidRoots(err.to_string()))?
-            .query_recall_index_including_metadata_only(&query)
+        let index = Arc::clone(&self.index);
+        tokio::task::spawn_blocking(move || {
+            index
+                .lock()
+                .map_err(|err| OpenError::InvalidRoots(err.to_string()))?
+                .query_recall_index_including_metadata_only(&query)
+        })
+        .await
+        .map_err(|err| OpenError::InvalidRoots(format!("recall index query task panicked: {err}")))?
     }
 
     /// Count memories grouped by lifecycle status via a single index-only scan
     /// on the derived index, instead of materializing rows per status. Returns
     /// one `(status, count)` pair per distinct status present.
-    pub fn count_memories_by_status(&self) -> SubstrateResult<Vec<(MemoryStatus, u64)>> {
-        self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.count_by_status()
+    ///
+    /// Runs the scan on a blocking thread (see [`Self::query_recall_index`]).
+    pub async fn count_memories_by_status(&self) -> SubstrateResult<Vec<(MemoryStatus, u64)>> {
+        let index = Arc::clone(&self.index);
+        tokio::task::spawn_blocking(move || {
+            index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.count_by_status()
+        })
+        .await
+        .map_err(|err| OpenError::InvalidRoots(format!("count-by-status task panicked: {err}")))?
     }
 
     /// Serve the review queue from the derived index: the total count of
     /// review-queue members plus a bounded, newest-first slice carrying exactly
     /// the fields the response renders. Replaces the prior full repo walk +
     /// per-file frontmatter parse on this repeatedly-polled inbox surface.
-    pub fn review_queue(&self, limit: usize) -> SubstrateResult<crate::model::ReviewQueuePage> {
-        self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.review_queue(limit)
+    ///
+    /// Runs the scan on a blocking thread (see [`Self::query_recall_index`]).
+    pub async fn review_queue(&self, limit: usize) -> SubstrateResult<crate::model::ReviewQueuePage> {
+        let index = Arc::clone(&self.index);
+        tokio::task::spawn_blocking(move || {
+            index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.review_queue(limit)
+        })
+        .await
+        .map_err(|err| OpenError::InvalidRoots(format!("review-queue task panicked: {err}")))?
     }
 
     /// Count memories grouped by `(scope, canonical_namespace_id)` for namespace
     /// aggregation, without hydrating per-row entities/tags/aliases.
-    pub fn namespace_counts(&self) -> SubstrateResult<Vec<(Scope, Option<String>, u64)>> {
-        self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.namespace_counts()
+    ///
+    /// Runs the scan on a blocking thread (see [`Self::query_recall_index`]).
+    pub async fn namespace_counts(&self) -> SubstrateResult<Vec<(Scope, Option<String>, u64)>> {
+        let index = Arc::clone(&self.index);
+        tokio::task::spawn_blocking(move || {
+            index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.namespace_counts()
+        })
+        .await
+        .map_err(|err| OpenError::InvalidRoots(format!("namespace-counts task panicked: {err}")))?
     }
 
     /// Stream every indexed entity (with aliases) as `(memory_id, Entity)`
     /// pairs for entity-graph aggregation, reading only the entity tables.
-    pub fn entity_index_rows(&self) -> SubstrateResult<Vec<(MemoryId, crate::model::Entity)>> {
-        self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.entity_index_rows()
+    ///
+    /// Runs the scan on a blocking thread (see [`Self::query_recall_index`]).
+    pub async fn entity_index_rows(&self) -> SubstrateResult<Vec<(MemoryId, crate::model::Entity)>> {
+        let index = Arc::clone(&self.index);
+        tokio::task::spawn_blocking(move || {
+            index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.entity_index_rows()
+        })
+        .await
+        .map_err(|err| OpenError::InvalidRoots(format!("entity-index task panicked: {err}")))?
     }
 
     /// Recent `recall_hit` events joined to memory summaries, newest-first,
@@ -1391,10 +1459,21 @@ impl Substrate {
         vector_query: Option<HybridVectorQuery<'_>>,
         limit: usize,
     ) -> Result<Vec<HybridMemoryCandidate>, VectorError> {
-        self.index
-            .lock()
-            .map_err(|err| VectorError::IndexUnavailable(format!("index mutex poisoned: {err}")))?
-            .query_hybrid_chunks(text, vector_query, limit)
+        // Own the borrowed query inputs so the FTS + KNN scan can run on a
+        // blocking thread (the borrowed `text`/vector do not outlive this call).
+        // Keeps the heaviest recall lane off the tokio worker pool.
+        let index = Arc::clone(&self.index);
+        let text = text.to_owned();
+        let vector_query = vector_query.map(|q| (q.triple.clone(), q.vector.to_vec()));
+        tokio::task::spawn_blocking(move || {
+            let vector_query = vector_query.as_ref().map(|(triple, vector)| HybridVectorQuery { triple, vector });
+            index
+                .lock()
+                .map_err(|err| VectorError::IndexUnavailable(format!("index mutex poisoned: {err}")))?
+                .query_hybrid_chunks(&text, vector_query, limit)
+        })
+        .await
+        .map_err(|err| VectorError::IndexUnavailable(format!("hybrid chunk query task panicked: {err}")))?
     }
 
     /// KNN over a triple's vector table, collapsed to one row per active,
@@ -1429,6 +1508,25 @@ impl Substrate {
             .lock()
             .map_err(|err| VectorError::IndexUnavailable(format!("index mutex poisoned: {err}")))?
             .update_embedding(&update)
+    }
+
+    /// Apply a batch of embedding updates, returning one result per input in
+    /// positional order.
+    ///
+    /// Behaviorally identical to calling [`Self::update_embedding`] once per
+    /// update — each chunk is validated and committed independently — but the
+    /// per-chunk metadata/job-resolution writes share a single SQLite
+    /// transaction, so a bulk reindex pays one WAL commit per batch instead of
+    /// one per chunk. The drain worker uses this to amortize the embedding fill.
+    pub async fn update_embeddings_batch(
+        &self,
+        updates: Vec<EmbeddingUpdate>,
+    ) -> Result<Vec<Result<(), VectorError>>, VectorError> {
+        Ok(self
+            .index
+            .lock()
+            .map_err(|err| VectorError::IndexUnavailable(format!("index mutex poisoned: {err}")))?
+            .update_embeddings_batch(&updates))
     }
 
     /// The active embedding triple this substrate was opened with.
@@ -2384,15 +2482,15 @@ fn placeholder_frontmatter(id: &MemoryId) -> Frontmatter {
 fn full_reindex_from_repo(repo: &std::path::Path, index: &mut Index) -> std::io::Result<usize> {
     let entries = collect_reindex_paths(repo, ReindexScope::All).map_err(std::io::Error::other)?;
     index.clear_plaintext_memory_index().map_err(|err| std::io::Error::other(err.to_string()))?;
-    let mut count = 0usize;
-    let mut has_supersession_edges = false;
-    for entry in entries {
-        has_supersession_edges |= !entry.memory.frontmatter.supersedes.is_empty();
-        index
-            .upsert_memory_with_file_hash(&entry.memory, entry.metadata_only, Some(&entry.file_hash))
-            .map_err(|err| std::io::Error::other(err.to_string()))?;
-        count += 1;
-    }
+    let count = entries.len();
+    let has_supersession_edges = entries.iter().any(|entry| !entry.memory.frontmatter.supersedes.is_empty());
+    // One transaction across the whole rebuild (one WAL commit cycle instead of
+    // one per memory) and one `is_dropped_triple` probe for the batch.
+    index
+        .batch_upsert_memories_with_file_hash(
+            entries.iter().map(|entry| (&entry.memory, entry.metadata_only, Some(&entry.file_hash))),
+        )
+        .map_err(|err| std::io::Error::other(err.to_string()))?;
     // Deferred supersession pass: the per-memory upsert FK-guards each edge, so a
     // bulk walk that visited a supersessor before its target dropped that edge.
     // Now that every `memories` row exists, re-add the dropped edges.
@@ -2423,23 +2521,31 @@ fn incremental_reindex_at_open(repo: &std::path::Path, index: &mut Index) -> std
     index.prune_orphaned_plaintext_rows(repo).map_err(|err| std::io::Error::other(err.to_string()))?;
 
     // (2) Encrypted-tier incremental reindex — hash-compare like phase 6.
-    let mut count = 0usize;
+    //
+    // Two-pass to amortize: first filter the stale entries (cheap hash compare),
+    // then upsert the whole stale set under a single transaction via
+    // `batch_upsert_memories_with_file_hash` (one WAL commit cycle instead of N).
+    // The deferred `resync_supersession_edges` pass below covers the FK-guarded
+    // per-row supersession behavior, exactly as the per-row path required.
     let entries = collect_reindex_paths(repo, ReindexScope::EncryptedOnly).map_err(std::io::Error::other)?;
-    for entry in entries {
-        let stale = entry
-            .memory
-            .path
-            .as_ref()
-            .and_then(|path| index.file_hash_for(path))
-            .map(|indexed| indexed != entry.file_hash)
-            .unwrap_or(true);
-        if stale {
-            index
-                .upsert_memory_with_file_hash(&entry.memory, entry.metadata_only, Some(&entry.file_hash))
-                .map_err(|err| std::io::Error::other(err.to_string()))?;
-            count += 1;
-        }
-    }
+    let stale_entries: Vec<ReindexEntry> = entries
+        .into_iter()
+        .filter(|entry| {
+            entry
+                .memory
+                .path
+                .as_ref()
+                .and_then(|path| index.file_hash_for(path))
+                .map(|indexed| indexed != entry.file_hash)
+                .unwrap_or(true)
+        })
+        .collect();
+    let count = stale_entries.len();
+    index
+        .batch_upsert_memories_with_file_hash(
+            stale_entries.iter().map(|entry| (&entry.memory, entry.metadata_only, Some(&entry.file_hash))),
+        )
+        .map_err(|err| std::io::Error::other(err.to_string()))?;
 
     // (3) Deferred supersession pass. Phase 6 (`reindex_stale_memories`) and the
     // encrypted-tier sweep above both FK-guard each per-memory supersession edge,

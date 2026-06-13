@@ -94,7 +94,7 @@ pub(crate) async fn collect_hybrid_recall(
     };
 
     let fused = fuse_rrf(
-        &candidates,
+        candidates,
         context.config.rrf_k,
         context.config.recency_lambda,
         context.config.recency_half_life_days,

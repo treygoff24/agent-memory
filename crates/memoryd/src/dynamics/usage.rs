@@ -76,6 +76,11 @@ pub fn recall_usage_for_conn(
     let cutoff = (now - Duration::days(30)).to_rfc3339();
     let mut summaries = HashMap::with_capacity(memory_ids.len());
     for chunk in memory_ids.chunks(SQL_PARAM_CHUNK_SIZE) {
+        // Bucket the `IN` width so varied candidate-pool sizes reuse a handful of
+        // cached statements instead of compiling a fresh plan per distinct count.
+        // Bindings are padded to the bucket width by repeating the first id; `IN`
+        // is set membership, so the repeat matches no extra rows.
+        let width = crate::util::bucketed_in_clause_width(chunk.len());
         let query = format!(
             "SELECT memory_id, COUNT(*), MAX(ts)
              FROM events_log
@@ -84,10 +89,10 @@ pub fn recall_usage_for_conn(
                AND ts > ?
                AND memory_id IN ({})
              GROUP BY memory_id",
-            crate::util::sql_placeholders(chunk.len())
+            crate::util::sql_placeholders(width)
         );
         let mut statement = connection.prepare_cached(&query)?;
-        let params = std::iter::once(cutoff.as_str()).chain(chunk.iter().copied());
+        let params = std::iter::once(cutoff.as_str()).chain(crate::util::pad_in_clause_ids(chunk, width));
         let rows = statement.query_map(params_from_iter(params), |row| {
             let memory_id: String = row.get(0)?;
             let count = row.get::<_, i64>(1)? as u32;
@@ -123,6 +128,10 @@ pub fn distinct_sources_for_conn(
 
     let mut counts = HashMap::with_capacity(memory_ids.len());
     for chunk in memory_ids.chunks(SQL_PARAM_CHUNK_SIZE) {
+        // Bucket + pad the `IN` width (see `recall_usage_for_conn`). The seed
+        // `WHERE id IN (...)` is set membership over the unique `memories.id`, so
+        // a repeated padded id seeds the same chain root at most once.
+        let width = crate::util::bucketed_in_clause_width(chunk.len());
         let query = format!(
             "WITH RECURSIVE chain(root_id, memory_id, depth) AS (
                SELECT id, id, 0 FROM memories WHERE id IN ({})
@@ -136,10 +145,10 @@ pub fn distinct_sources_for_conn(
                FROM chain
                JOIN memories mem ON chain.memory_id = mem.id
               GROUP BY chain.root_id",
-            crate::util::sql_placeholders(chunk.len())
+            crate::util::sql_placeholders(width)
         );
         let mut statement = connection.prepare_cached(&query)?;
-        let rows = statement.query_map(params_from_iter(chunk.iter().copied()), |db_row| {
+        let rows = statement.query_map(params_from_iter(crate::util::pad_in_clause_ids(chunk, width)), |db_row| {
             let id: String = db_row.get(0)?;
             let distinct_sources = db_row.get::<_, i64>(1)? as u32;
             Ok((id, distinct_sources))

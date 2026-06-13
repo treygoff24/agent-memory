@@ -19,7 +19,7 @@ fn ranking_formula_uses_spec_weights_from_recall_index_fields() {
     let ranked = rank_recall_candidates(vec![candidate], context());
 
     assert_eq!(ranked[0].score, 199);
-    assert_eq!(ranked[0].id, "mem_20260430_0000000000000001_000001");
+    assert_eq!(ranked[0].id(), "mem_20260430_0000000000000001_000001");
 }
 
 #[test]
@@ -30,7 +30,7 @@ fn ranking_is_computed_from_recall_index_rows_without_envelope_hydration() {
     let ranked = rank_recall_candidates(vec![low, high], context());
 
     assert_eq!(
-        ranked.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
+        ranked.iter().map(|item| item.id()).collect::<Vec<_>>(),
         vec!["mem_20260430_0000000000000002_000002", "mem_20260430_0000000000000001_000001",]
     );
 }
@@ -51,7 +51,7 @@ fn tie_breakers_are_score_status_recency_then_lexicographic_id() {
     let ranked = rank_recall_candidates(vec![older_active_lex_b, newer_active, pinned, older_active_lex_a], context());
 
     assert_eq!(
-        ranked.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
+        ranked.iter().map(|item| item.id()).collect::<Vec<_>>(),
         vec![
             "mem_20260430_0000000000000001_000001",
             "mem_20260430_0000000000000004_000004",
@@ -96,7 +96,7 @@ fn budget_exhaustion_produces_stable_omissions() {
     let selected = select_ranked_candidates(RecallSectionName::RecentMemory, candidates, context(), 2);
 
     assert_eq!(
-        selected.selected.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
+        selected.selected.iter().map(|item| item.id()).collect::<Vec<_>>(),
         vec!["mem_20260430_0000000000000001_000001", "mem_20260430_0000000000000002_000002",]
     );
     assert_eq!(selected.omitted.len(), 1);
@@ -219,7 +219,7 @@ fn context_with_alpha(alpha_points: u32) -> RankingContext {
 }
 
 fn rank_ids(ranked: Vec<memoryd::recall::RankedRecallCandidate>) -> Vec<String> {
-    ranked.into_iter().map(|item| item.id).collect()
+    ranked.into_iter().map(|item| item.id().to_owned()).collect()
 }
 
 // Memory-dynamics-v0.1 §3 bounded-influence invariant.
@@ -255,7 +255,7 @@ fn winner_with_structural_gap(gap: i64, alpha_points: u32) -> String {
     .with_strength(Some(1.0));
 
     let ranked = rank_recall_candidates(vec![leader, follower], context_with_alpha(alpha_points));
-    ranked[0].id.clone()
+    ranked[0].id().to_owned()
 }
 
 #[test]
@@ -290,7 +290,8 @@ fn strength_cannot_overcome_a_pinned_vs_active_gap() {
     let ranked = rank_recall_candidates(vec![active, pinned], context_with_alpha(12));
 
     assert_eq!(
-        ranked[0].id, "mem_20260430_000000000000cccc_000003",
+        ranked[0].id(),
+        "mem_20260430_000000000000cccc_000003",
         "full strength must never beat a pinned-vs-active gap"
     );
 }

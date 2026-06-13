@@ -105,7 +105,7 @@ pub async fn build_startup_response_with_coordination_config(
     let strengths = strength_metadata(&selected);
 
     let included_memory_ids = if include_recent {
-        selected.selected.iter().map(|candidate| candidate.id.clone()).collect::<Vec<_>>()
+        selected.selected.iter().map(|candidate| candidate.id().to_owned()).collect::<Vec<_>>()
     } else {
         Vec::new()
     };
@@ -116,7 +116,7 @@ pub async fn build_startup_response_with_coordination_config(
             .iter()
             .map(|candidate| {
                 render_memory_entry(&RecallEntry {
-                    id: candidate.id.clone(),
+                    id: candidate.id().to_owned(),
                     summary: candidate.candidate.row.summary.clone(),
                     snippet: None,
                     updated: candidate.candidate.row.updated_at.to_rfc3339(),
@@ -189,7 +189,7 @@ pub async fn build_startup_response_with_coordination_config(
         policy: crate::recall::STREAM_E_POLICY.to_owned(),
         sections: section_explanations(
             &section_token_estimates,
-            selected.selected.iter().map(|candidate| candidate.id.clone()).collect(),
+            selected.selected.iter().map(|candidate| candidate.id().to_owned()).collect(),
             bounded.omitted.len() as u32 + bounded.omitted_truncated_count,
         ),
         omitted: bounded.omitted,
@@ -305,6 +305,9 @@ async fn startup_peer_candidate_rows(
             updated_since: None,
             match_terms: Vec::new(),
             hydrate: AuxScope::None,
+            // Peer-write attribution reads source/author harness+session identity
+            // off each surviving row, so project those fields.
+            source_identity: true,
         })
         .await
         .map_err(map_substrate_error)?
@@ -593,6 +596,7 @@ async fn count_candidate_attention(substrate: &Substrate, namespace_prefixes: &[
                 updated_since: None,
                 match_terms: Vec::new(),
                 hydrate: AuxScope::None,
+                source_identity: false,
             })
             .await
             .map_err(map_substrate_error)?;
@@ -700,10 +704,10 @@ async fn hydrate_strength_for_ranking(
         return StrengthHydrationResult { facts, alpha_points: 0, dynamics_degraded: false };
     }
 
-    let runtime_root = substrate.roots().runtime.clone();
+    let index = substrate.index_handle();
     let hydration = StrengthHydration { weights: dynamics.weights, tau_days: dynamics.tau_days };
     let (facts, ok) = tokio::task::spawn_blocking(move || {
-        let ok = hydrate_candidate_strength(&runtime_root, &mut facts, &hydration, now);
+        let ok = hydrate_candidate_strength(&index, &mut facts, &hydration, now);
         (facts, ok)
     })
     .await
@@ -719,7 +723,7 @@ fn strength_metadata(selected: &crate::recall::rank::RankedSelection) -> Vec<Rec
         .selected
         .iter()
         .filter_map(|candidate| {
-            candidate.candidate.strength.map(|strength| RecallStrength { id: candidate.id.clone(), strength })
+            candidate.candidate.strength.map(|strength| RecallStrength { id: candidate.id().to_owned(), strength })
         })
         .collect()
 }

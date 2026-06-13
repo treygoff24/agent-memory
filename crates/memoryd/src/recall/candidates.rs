@@ -1,14 +1,16 @@
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
+use memory_substrate::index::Index;
 use memory_substrate::{
     AuxScope, MemoryStatus, RecallIndexQuery, RecallIndexRow, Scope, Sensitivity, Substrate, SubstrateResult,
 };
 
 use crate::dynamics::strength::{strength, StrengthFacts, StrengthWeights};
-use crate::dynamics::usage::{distinct_sources_for, open_runtime_index_at, recall_usage_for};
+use crate::dynamics::usage::{distinct_sources_for_conn, recall_usage_for_conn};
 use crate::recall::types::{EntityMatchKind, OmissionReason, RecallOmission, RecallSectionName};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -95,6 +97,9 @@ pub async fn collect_recall_candidates_from_index(
             // read `row.entities` to match dream-question pending-attention and
             // seed the relevance gate. Hydrate entities; tags/aliases stay unused.
             hydrate: AuxScope::Entities,
+            // Ranking/omission reads none of the identity/merge-diagnostics
+            // fields, so skip the per-row json_extract for them on this hot path.
+            source_identity: false,
         };
         for row in reader.query_recall_index(query).await? {
             rows.entry(row.id.to_string()).or_insert(row);
@@ -146,7 +151,7 @@ pub struct StrengthHydration {
 /// function returns `false` so the caller can flag `dynamics_degraded` — never a
 /// hard recall failure (spec §3 soft-failure rule).
 pub fn hydrate_candidate_strength(
-    runtime_root: &std::path::Path,
+    index: &Arc<Mutex<Index>>,
     candidates: &mut [RecallCandidate],
     hydration: &StrengthHydration,
     now: DateTime<Utc>,
@@ -155,23 +160,28 @@ pub fn hydrate_candidate_strength(
         return true;
     }
 
-    let index = match open_runtime_index_at(runtime_root) {
+    // Reuse the substrate's live, already-initialized index connection rather than
+    // opening a fresh one per recall (which would re-run the full SCHEMA_SQL DDL
+    // batch, migration probes, and WAL pragmas every time). The lock is held only
+    // for the two read queries below, matching the substrate's own write path.
+    let index = match index.lock() {
         Ok(index) => index,
         Err(error) => {
-            tracing::warn!(%error, "dynamics: failed to open index for strength hydration; ranking structural-only");
+            tracing::warn!(%error, "dynamics: index mutex poisoned; ranking structural-only");
             return false;
         }
     };
+    let connection = index.connection();
 
     let ids = candidates.iter().map(|candidate| candidate.id.as_str()).collect::<Vec<_>>();
-    let usage = match recall_usage_for(&index, &ids, now) {
+    let usage = match recall_usage_for_conn(connection, &ids, now) {
         Ok(usage) => usage,
         Err(error) => {
             tracing::warn!(%error, "dynamics: recall-usage query failed; ranking structural-only");
             return false;
         }
     };
-    let distinct_sources = match distinct_sources_for(&index, &ids) {
+    let distinct_sources = match distinct_sources_for_conn(connection, &ids) {
         Ok(sources) => sources,
         Err(error) => {
             tracing::warn!(%error, "dynamics: corroboration query failed; ranking structural-only");

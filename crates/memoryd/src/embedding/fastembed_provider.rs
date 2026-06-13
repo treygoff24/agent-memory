@@ -155,6 +155,29 @@ impl FastembedProvider {
         check_dimension(&self.triple, &vector)?;
         Ok(vector)
     }
+
+    /// Embed a whole slice of document texts in one fastembed forward pass.
+    ///
+    /// fastembed amortizes the candle matmuls over the batch slice (and pads to
+    /// the longest post-truncation sequence, see [`MAX_SEQUENCE_LENGTH`]), so a
+    /// single `self.model.embed(texts)` is several times faster per item than
+    /// looping `embed_one`. Each returned vector is dimension-checked exactly as
+    /// `embed_one` does, so per-item results are byte-identical to the per-text
+    /// path.
+    fn embed_documents_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+        let vectors = self.model.embed(texts).map_err(|err| EmbeddingError::Inference(err.to_string()))?;
+        if vectors.len() != texts.len() {
+            return Err(EmbeddingError::Inference(format!(
+                "model returned {} vectors for {} inputs",
+                vectors.len(),
+                texts.len()
+            )));
+        }
+        for vector in &vectors {
+            check_dimension(&self.triple, vector)?;
+        }
+        Ok(vectors)
+    }
 }
 
 fn probe_model_dimension(model: &Qwen3TextEmbedding, triple: &EmbeddingTriple) -> Result<(), EmbeddingError> {
@@ -176,6 +199,13 @@ impl EmbeddingProvider for FastembedProvider {
 
     fn embed_document(&self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
         self.embed_one(text)
+    }
+
+    fn embed_documents(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.embed_documents_batch(texts)
     }
 }
 

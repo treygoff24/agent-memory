@@ -236,46 +236,86 @@ async fn drain_batch_with_budget(
     let triple = provider.triple().clone();
     let mut succeeded = 0usize;
 
-    for job in jobs {
-        let PendingEmbeddingJob { chunk_id, text, content_hash } = job;
-        if retry_budget.is_exhausted(&chunk_id) {
-            tracing::debug!(%chunk_id, "embedding job skipped after retry budget exhaustion");
-            continue;
+    // Partition out jobs whose chunk has already exhausted its retry budget; they
+    // are skipped without an embed pass, exactly as the per-job loop did.
+    let live_jobs: Vec<PendingEmbeddingJob> = jobs
+        .into_iter()
+        .filter(|job| {
+            if retry_budget.is_exhausted(&job.chunk_id) {
+                tracing::debug!(chunk_id = %job.chunk_id, "embedding job skipped after retry budget exhaustion");
+                false
+            } else {
+                true
+            }
+        })
+        .collect();
+    if live_jobs.is_empty() {
+        return Ok(DrainOutcome { requested, fetched, succeeded });
+    }
+
+    // Embed the whole live batch in one off-runtime forward pass. candle compute
+    // is blocking and would otherwise stall the tokio worker; `spawn_blocking`
+    // requires `'static`, satisfied by the cloned Arc + owned texts. Batching
+    // amortizes the transformer matmuls over the slice — several times faster per
+    // item than one `embed_document` call per chunk — and the per-item vectors
+    // are byte-identical to the per-text path, so stale-chunk keying is preserved.
+    let embed_provider = Arc::clone(provider);
+    let texts: Vec<String> = live_jobs.iter().map(|job| job.text.clone()).collect();
+    let vectors = match tokio::task::spawn_blocking(move || {
+        let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+        embed_provider.embed_documents(&refs)
+    })
+    .await
+    {
+        Ok(Ok(vectors)) => vectors,
+        Ok(Err(error)) => {
+            // A batch embed failure poisons the whole batch indiscriminately;
+            // charge each live job a retry so a single bad chunk cannot wedge the
+            // batch forever (the per-job retry budget still bounds it).
+            for job in &live_jobs {
+                retry_budget.record_failure(&job.chunk_id, &error);
+            }
+            return Ok(DrainOutcome { requested, fetched, succeeded });
         }
-        // Embed off the async runtime — candle compute is blocking and would
-        // otherwise stall the tokio worker. `spawn_blocking` requires `'static`,
-        // which the cloned Arc + owned text satisfy.
-        let embed_provider = Arc::clone(provider);
-        let vector = match tokio::task::spawn_blocking(move || embed_provider.embed_document(&text)).await {
-            Ok(Ok(vector)) => vector,
-            Ok(Err(error)) => {
-                retry_budget.record_failure(&chunk_id, error);
-                continue;
+        Err(join_error) => {
+            for job in &live_jobs {
+                retry_budget.record_failure(&job.chunk_id, &join_error);
             }
-            Err(join_error) => {
-                retry_budget.record_failure(&chunk_id, join_error);
-                continue;
-            }
-        };
-        let update = EmbeddingUpdate {
-            chunk_id: chunk_id.clone(),
-            expected_chunk_hash: content_hash,
+            return Ok(DrainOutcome { requested, fetched, succeeded });
+        }
+    };
+    debug_assert_eq!(vectors.len(), live_jobs.len(), "embed_documents must return one vector per input");
+
+    // Build one update per (job, vector) pair, then write the whole batch through
+    // a single substrate transaction. Results come back keyed positionally to the
+    // updates, so each job's outcome (success / benign StaleChunk / failure) is
+    // recorded against its own chunk exactly as the per-chunk path did.
+    let updates: Vec<EmbeddingUpdate> = live_jobs
+        .iter()
+        .zip(vectors)
+        .map(|(job, vector)| EmbeddingUpdate {
+            chunk_id: job.chunk_id.clone(),
+            expected_chunk_hash: job.content_hash.clone(),
             triple: triple.clone(),
             vector,
-        };
-        match substrate.update_embedding(update).await {
+        })
+        .collect();
+    let write_results = substrate.update_embeddings_batch(updates).await.map_err(|err| err.to_string())?;
+    for (job, result) in live_jobs.iter().zip(write_results) {
+        let chunk_id = job.chunk_id.as_str();
+        match result {
             Ok(()) => {
                 succeeded = succeeded.saturating_add(1);
-                retry_budget.record_success(&chunk_id);
+                retry_budget.record_success(chunk_id);
             }
             Err(VectorError::StaleChunk { .. }) => {
                 // StaleChunk here is benign: the chunk changed between drain and
                 // write; reconcile re-enqueues with the new content hash.
-                retry_budget.record_success(&chunk_id);
+                retry_budget.record_success(chunk_id);
                 tracing::debug!(%chunk_id, "embedding write skipped for stale chunk");
             }
             Err(error) => {
-                retry_budget.record_failure(&chunk_id, error);
+                retry_budget.record_failure(chunk_id, error);
             }
         }
     }

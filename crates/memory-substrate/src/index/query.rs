@@ -105,6 +105,35 @@ impl Index {
         )
     }
 
+    /// Upsert many memories under a single transaction, computing the
+    /// loop-invariant "active embedding triple dropped?" flag once.
+    ///
+    /// Equivalent to calling [`Self::upsert_memory_with_file_hash`] for each
+    /// `(memory, metadata_only, file_hash)` triple, but the whole batch shares
+    /// one transaction (one WAL commit cycle instead of N) and one
+    /// `dropped_embedding_triples` probe (the active triple is fixed for the
+    /// batch). Each row's FK-guarded supersession behavior is unchanged, so
+    /// callers that relied on the per-row `resync_supersession_edges` follow-up
+    /// must still run it after the batch. On any row error the transaction is
+    /// rolled back as a unit.
+    pub fn batch_upsert_memories_with_file_hash<'a, I>(&mut self, memories: I) -> rusqlite::Result<()>
+    where
+        I: IntoIterator<Item = (&'a Memory, bool, Option<&'a Sha256>)>,
+    {
+        let active_embedding_dropped = is_dropped_triple_rusqlite(&self.connection, &self.active_embedding)?;
+        let active_embedding = self.active_embedding.clone();
+        let txn = self.connection.transaction()?;
+        for (memory, metadata_only, file_hash) in memories {
+            upsert_memory_row_in_txn(
+                &txn,
+                memory,
+                MemoryUpsertOptions { metadata_only, file_hash, active_embedding: &active_embedding },
+                active_embedding_dropped,
+            )?;
+        }
+        txn.commit()
+    }
+
     /// Clear plaintext-derived rows before reindexing Markdown files.
     ///
     /// Encrypted-tier rows (`encrypted/%`) are intentionally preserved here:
@@ -200,6 +229,90 @@ impl Index {
         resolve_pending_embedding_job(&txn, update)?;
         txn.commit()?;
         Ok(())
+    }
+
+    /// Batched sibling of [`Self::update_embedding`] for the drain worker.
+    ///
+    /// Applies a slice of embedding updates, returning one `Result` per input in
+    /// positional order. Each update is validated and committed independently, so
+    /// per-chunk outcomes — including the benign `StaleChunk` skip — are
+    /// byte-identical to calling [`Self::update_embedding`] once per update. The
+    /// only difference is amortization: the per-chunk metadata/job-resolution
+    /// writes share a single SQLite transaction (one WAL commit) instead of one
+    /// transaction per chunk.
+    ///
+    /// Spec §10.2.1 step 4 ordering is preserved: every vector payload is upserted
+    /// OUTSIDE the transaction first, then the `chunk_embedding_meta` +
+    /// `pending_embedding_jobs` rows for the chunks that upserted cleanly are
+    /// written in one transaction. A chunk whose validation or vector upsert fails
+    /// contributes its error to the result vector and is excluded from the
+    /// transaction, exactly as the per-chunk path would leave it.
+    pub fn update_embeddings_batch(&mut self, updates: &[EmbeddingUpdate]) -> Vec<Result<(), VectorError>> {
+        let mut results: Vec<Result<(), VectorError>> = Vec::with_capacity(updates.len());
+        // Indices of updates that validated and upserted their vector cleanly and
+        // therefore still need their metadata/job rows written in the shared txn.
+        let mut committed_indices: Vec<usize> = Vec::with_capacity(updates.len());
+
+        // Step 1: per-chunk validation + vector upsert, OUTSIDE any transaction
+        // (spec §10.2.1 step 4). Mirrors the head of `update_embedding`.
+        for update in updates {
+            let outcome = (|| {
+                validate_update_preconditions(&self.connection, update)?;
+                let chunk_rowid = read_chunk_rowid(&self.connection, update.chunk_id.as_str())?;
+                ensure_vector_table(&self.connection, &update.triple)?;
+                upsert_vector_payload(
+                    &self.connection,
+                    &update.triple,
+                    update.chunk_id.as_str(),
+                    chunk_rowid,
+                    &update.vector,
+                )
+            })();
+            results.push(outcome);
+        }
+        for (idx, result) in results.iter().enumerate() {
+            if result.is_ok() {
+                committed_indices.push(idx);
+            }
+        }
+        if committed_indices.is_empty() {
+            return results;
+        }
+
+        // Step 2: one SQLite transaction for the metadata + job resolution of
+        // every chunk that upserted cleanly. If opening or committing the txn
+        // fails, downgrade the affected entries to that error so callers do not
+        // observe a vector without its resolved job.
+        let txn = match self.connection.transaction() {
+            Ok(txn) => txn,
+            Err(err) => {
+                // `VectorError` is not `Clone` (its rusqlite/serde sources are
+                // not), so fan the single failure out as a message-preserving
+                // `IndexUnavailable` per affected chunk.
+                let message = err.to_string();
+                for idx in &committed_indices {
+                    results[*idx] = Err(VectorError::IndexUnavailable(message.clone()));
+                }
+                return results;
+            }
+        };
+        for idx in &committed_indices {
+            let update = &updates[*idx];
+            if let Err(err) =
+                upsert_chunk_embedding_meta(&txn, update).and_then(|()| resolve_pending_embedding_job(&txn, update))
+            {
+                results[*idx] = Err(err);
+            }
+        }
+        if let Err(err) = txn.commit() {
+            let message = err.to_string();
+            for idx in &committed_indices {
+                if results[*idx].is_ok() {
+                    results[*idx] = Err(VectorError::IndexUnavailable(message.clone()));
+                }
+            }
+        }
+        results
     }
 
     /// Drop an embedding triple and return the removal report.
@@ -606,8 +719,15 @@ impl Index {
 
         const CHUNK_FANOUT: usize = 8;
         let knn_k = limit.saturating_mul(CHUNK_FANOUT).clamp(limit, 512);
+        // Over-fetch text-free rows only: the KNN lane retrieves up to `knn_k`
+        // chunks (limit*8) but collapses to one chunk per memory and truncates to
+        // `limit`, discarding ~90% of rows. Selecting `memory_chunks.text` here
+        // would materialize a heap String per over-fetched chunk (up to
+        // MAX_CHUNK_BYTES each) only to drop most of them. Instead we project the
+        // tiny `(memory_id, chunk_rowid, distance, recency)` tuple, collapse and
+        // truncate, then fetch text only for the surviving nearest chunks below.
         let sql = format!(
-            "SELECT memory_chunks.memory_id, memory_chunks.text, memory_chunks.chunk_rowid, {table}.distance,
+            "SELECT memory_chunks.memory_id, memory_chunks.chunk_rowid, {table}.distance,
                     memories.updated_at, memories.observed_at
              FROM {table}
              JOIN memory_chunks ON memory_chunks.chunk_rowid = {table}.rowid
@@ -622,14 +742,14 @@ impl Index {
         let blob = crate::index::sqlite_vec::serialize_f32(vector);
         let mut stmt = self.connection.prepare_cached(&sql)?;
         let rows = stmt
-            .query_map(params![blob, knn_k as i64], vector_chunk_hit_from_row)?
+            .query_map(params![blob, knn_k as i64], vector_chunk_ref_from_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
         let mut best_by_memory = BTreeMap::new();
         for hit in rows {
             let memory_id = hit.memory_id.clone();
             match best_by_memory.get(&memory_id) {
-                Some(best) if !vector_chunk_precedes(&hit, best) => {}
+                Some(best) if !vector_chunk_ref_precedes(&hit, best) => {}
                 _ => {
                     best_by_memory.insert(memory_id, hit);
                 }
@@ -642,11 +762,15 @@ impl Index {
         });
         collapsed.truncate(limit);
 
+        // Fetch text only for the surviving nearest chunks, one row per memory.
+        let survivor_rowids: Vec<i64> = collapsed.iter().map(|hit| hit.chunk_rowid).collect();
+        let texts = chunk_texts_by_rowid(&self.connection, &survivor_rowids)?;
+
         Ok(collapsed
             .into_iter()
             .map(|hit| VectorMemoryScore {
                 memory_id: hit.memory_id,
-                text: hit.text,
+                text: texts.get(&hit.chunk_rowid).cloned().unwrap_or_default(),
                 cosine_similarity: cosine_from_l2_distance(hit.distance),
                 recency_at: hit.recency_at,
             })
@@ -796,6 +920,39 @@ impl Index {
             Err(rusqlite::Error::QueryReturnedNoRows) => None,
             Err(error) => {
                 tracing::warn!(path = path.as_str(), %error, "index file-hash lookup failed; forcing safe reindex");
+                None
+            }
+        }
+    }
+
+    /// Return the indexed `(file_hash, is_quarantined)` for a repo path, or
+    /// `None` if not indexed.
+    ///
+    /// Lets phase-6 index consistency gate the expensive Markdown parse behind a
+    /// cheap raw-bytes hash comparison: when the on-disk hash matches the stored
+    /// `file_hash`, the file is clean and its frontmatter is already faithfully
+    /// reflected by the indexed `status`/`trust_level`, so the blocking-conflict
+    /// check can read the quarantine flag from here instead of re-parsing.
+    /// `is_quarantined` mirrors the prior `scan_blocking_conflicts` predicate:
+    /// either `status` or `trust_level` equal to `quarantined`.
+    pub fn file_consistency_state(&self, path: &RepoPath) -> Option<(crate::model::Sha256, bool)> {
+        match self.connection.query_row(
+            "SELECT file_hash, status, trust_level FROM memories WHERE path = ?1",
+            [path.as_str()],
+            |row| {
+                let hash: String = row.get(0)?;
+                let status: String = row.get(1)?;
+                let trust_level: String = row.get(2)?;
+                Ok((hash, status, trust_level))
+            },
+        ) {
+            Ok((hash, status, trust_level)) => {
+                let quarantined = status == "quarantined" || trust_level == "quarantined";
+                Some((crate::model::Sha256::new(hash), quarantined))
+            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(error) => {
+                tracing::warn!(path = path.as_str(), %error, "index consistency lookup failed; forcing safe reindex");
                 None
             }
         }
@@ -982,19 +1139,37 @@ impl Index {
         query: &RecallIndexQuery,
         include_metadata_only: bool,
     ) -> SubstrateResult<Vec<RecallIndexRow>> {
+        // Base scalar projection (18 columns). `source_harness` is read from its
+        // materialized column rather than re-parsed out of `frontmatter_json` —
+        // the column is written from the identical `source.harness` frontmatter
+        // field at upsert time, so the values are byte-equal and the column read
+        // saves a JSON parse per row.
+        //
+        // The remaining identity/merge-diagnostics fields require a per-row
+        // `json_extract` parse of `frontmatter_json`. Only the peer-write
+        // attribution and conflict-list readers consume them, so the projection
+        // is gated behind `query.source_identity`: the hot ranking/omission path
+        // omits the four extra `json_extract` calls entirely and leaves those
+        // fields `None`. Both SQL variants stay warm in `prepare_cached` under
+        // distinct keys.
         let mut sql = String::from(
             "SELECT memories.id,memories.path,memories.summary,memories.status,memories.scope,
                     memories.canonical_namespace_id,memories.updated_at,memories.indexed_at,memories.confidence,
                     memories.source_kind,memories.source_device,memories.sensitivity,memories.passive_recall,memories.index_body,
                     memories.requires_user_confirmation,memories.review_state,
                     memories.human_review_required,memories.max_scope,
-                    json_extract(memories.frontmatter_json, '$.source.harness'),
+                    memories.source_harness",
+        );
+        if query.source_identity {
+            sql.push_str(
+                ",
                     json_extract(memories.frontmatter_json, '$.source.session_id'),
                     json_extract(memories.frontmatter_json, '$.author.harness'),
                     json_extract(memories.frontmatter_json, '$.author.session_id'),
-                    json_extract(memories.frontmatter_json, '$._merge_diagnostics')
-             FROM memories",
-        );
+                    json_extract(memories.frontmatter_json, '$._merge_diagnostics')",
+            );
+        }
+        sql.push_str(" FROM memories");
         let mut filters = Vec::new();
         let mut bindings = Vec::new();
         append_recall_index_filters(query, include_metadata_only, &mut filters, &mut bindings)?;
@@ -1005,7 +1180,7 @@ impl Index {
         let mut rows = stmt.query(params_from_iter(bindings.iter()))?;
         let mut results = Vec::new();
         while let Some(row) = rows.next()? {
-            results.push(row_to_recall_index_row(row)?);
+            results.push(row_to_recall_index_row(row, query.source_identity)?);
         }
         hydrate_recall_index_auxiliary(&self.connection, &mut results, query.hydrate)?;
         Ok(results)
@@ -1274,11 +1449,16 @@ fn upsert_vector_payload(
         &format!("INSERT OR REPLACE INTO {table}(rowid, embedding) VALUES (?1, ?2)"),
         params![chunk_rowid, blob],
     )?;
-    let vector_json = serde_json::to_string(vector)?;
+    // The `chunk_vectors` shadow row exists only so `vector_count` has a table to
+    // COUNT; the `embedding` blob written to the vec0 table above is the sole copy
+    // KNN ever reads. `vector_json` is never SELECTed anywhere in the workspace,
+    // so serializing the vector to a JSON float array (a per-element float→text
+    // pass plus a large text payload on every embedding upsert) is dead weight.
+    // The column is `NOT NULL`, so write an empty string to keep the row valid.
     conn.execute(
-        "INSERT INTO chunk_vectors(chunk_id,provider,model_ref,dimension,vector_json) VALUES (?1,?2,?3,?4,?5)
+        "INSERT INTO chunk_vectors(chunk_id,provider,model_ref,dimension,vector_json) VALUES (?1,?2,?3,?4,'')
          ON CONFLICT(chunk_id,provider,model_ref,dimension) DO UPDATE SET vector_json=excluded.vector_json",
-        params![chunk_id, triple.provider, triple.model_ref, i64::from(triple.dimension), vector_json],
+        params![chunk_id, triple.provider, triple.model_ref, i64::from(triple.dimension)],
     )?;
     Ok(())
 }
@@ -1341,7 +1521,27 @@ fn upsert_memory_row_with_full_metadata(
 ) -> rusqlite::Result<()> {
     let active_embedding_dropped = is_dropped_triple_rusqlite(connection, options.active_embedding)?;
     let txn = connection.transaction()?;
+    upsert_memory_row_in_txn(&txn, memory, options, active_embedding_dropped)?;
+    txn.commit()
+}
 
+/// Upsert a single memory row (plus auxiliary tables, chunks, and embedding
+/// jobs) inside a caller-supplied transaction.
+///
+/// Factored out of [`upsert_memory_row_with_full_metadata`] so a bulk reindex
+/// can amortize one transaction across many rows and compute the
+/// loop-invariant `active_embedding_dropped` flag once, instead of opening a
+/// transaction and re-running the `dropped_embedding_triples` EXISTS probe per
+/// memory. The single-row wrapper preserves the prior one-transaction-per-call
+/// behavior. `active_embedding_dropped` MUST be
+/// `is_dropped_triple_rusqlite(_, options.active_embedding)` for the same
+/// triple, so batching is byte-for-byte equivalent to the per-row path.
+fn upsert_memory_row_in_txn(
+    txn: &rusqlite::Transaction<'_>,
+    memory: &Memory,
+    options: MemoryUpsertOptions<'_>,
+    active_embedding_dropped: bool,
+) -> rusqlite::Result<()> {
     let path = resolve_memory_path(memory);
     let sensitivity = sensitivity_str(memory.frontmatter.sensitivity);
     let memory_type = memory_type_str(&memory.frontmatter.memory_type);
@@ -1441,44 +1641,54 @@ fn upsert_memory_row_with_full_metadata(
         },
     )?;
 
-    sync_auxiliary_tables(&txn, memory)?;
+    sync_auxiliary_tables(txn, memory)?;
 
     // Rebuild chunks for this memory.
     txn.execute("DELETE FROM memory_chunks WHERE memory_id = ?1", [memory.frontmatter.id.as_str()])?;
     if !options.metadata_only && memory.frontmatter.retrieval_policy.index_body {
+        // Hoist the loop-invariant INSERTs out of the per-chunk loop: rusqlite's
+        // `Transaction::execute` recompiles its SQL on every call, so a memory
+        // with M chunks would re-parse+re-plan the same two statements M times.
+        // `prepare_cached` compiles once and reuses across iterations (and across
+        // memories within a bulk reindex sharing this connection).
+        let enqueue_embeddings = memory.frontmatter.retrieval_policy.index_embeddings && !active_embedding_dropped;
+        let mut chunk_stmt = txn.prepare_cached(
+            "INSERT INTO memory_chunks(memory_id,chunk_id,body_hash,text,start_byte,end_byte)
+             VALUES (?1,?2,?3,?4,?5,?6)",
+        )?;
+        let mut pending_stmt = if enqueue_embeddings {
+            Some(txn.prepare_cached(
+                "INSERT OR IGNORE INTO pending_embedding_jobs(
+                     chunk_id, provider, model_ref, dimension, content_hash, enqueued_at
+                 ) VALUES (?1,?2,?3,?4,?5,?6)",
+            )?)
+        } else {
+            None
+        };
         for chunk in chunk_memory(memory) {
-            txn.execute(
-                "INSERT INTO memory_chunks(memory_id,chunk_id,body_hash,text,start_byte,end_byte)
-                 VALUES (?1,?2,?3,?4,?5,?6)",
-                params![
-                    memory.frontmatter.id.as_str(),
-                    chunk.chunk_id.as_str(),
-                    chunk.body_hash.as_str(),
-                    chunk.text,
-                    chunk.start_byte as i64,
-                    chunk.end_byte as i64
-                ],
-            )?;
-            if memory.frontmatter.retrieval_policy.index_embeddings && !active_embedding_dropped {
+            chunk_stmt.execute(params![
+                memory.frontmatter.id.as_str(),
+                chunk.chunk_id.as_str(),
+                chunk.body_hash.as_str(),
+                chunk.text,
+                chunk.start_byte as i64,
+                chunk.end_byte as i64
+            ])?;
+            if let Some(pending_stmt) = pending_stmt.as_mut() {
                 let enqueued_at = chrono::Utc::now().to_rfc3339();
-                txn.execute(
-                    "INSERT OR IGNORE INTO pending_embedding_jobs(
-                         chunk_id, provider, model_ref, dimension, content_hash, enqueued_at
-                     ) VALUES (?1,?2,?3,?4,?5,?6)",
-                    params![
-                        chunk.chunk_id.as_str(),
-                        options.active_embedding.provider.as_str(),
-                        options.active_embedding.model_ref.as_str(),
-                        i64::from(options.active_embedding.dimension),
-                        chunk.body_hash.as_str(),
-                        enqueued_at
-                    ],
-                )?;
+                pending_stmt.execute(params![
+                    chunk.chunk_id.as_str(),
+                    options.active_embedding.provider.as_str(),
+                    options.active_embedding.model_ref.as_str(),
+                    i64::from(options.active_embedding.dimension),
+                    chunk.body_hash.as_str(),
+                    enqueued_at
+                ])?;
             }
         }
     }
 
-    txn.commit()
+    Ok(())
 }
 
 /// Sync priority auxiliary tables: tags, aliases, entities, evidence, supersession.
@@ -1499,19 +1709,18 @@ fn sync_auxiliary_tables(txn: &Transaction<'_>, memory: &Memory) -> rusqlite::Re
 
 fn sync_tags(txn: &Transaction<'_>, memory_id: &str, tags: &[String]) -> rusqlite::Result<()> {
     txn.execute("DELETE FROM memory_tags WHERE memory_id = ?1", [memory_id])?;
+    let mut stmt = txn.prepare_cached("INSERT OR IGNORE INTO memory_tags(memory_id, tag) VALUES (?1, ?2)")?;
     for tag in tags {
-        txn.execute("INSERT OR IGNORE INTO memory_tags(memory_id, tag) VALUES (?1, ?2)", params![memory_id, tag])?;
+        stmt.execute(params![memory_id, tag])?;
     }
     Ok(())
 }
 
 fn sync_aliases(txn: &Transaction<'_>, memory_id: &str, aliases: &[String]) -> rusqlite::Result<()> {
     txn.execute("DELETE FROM memory_aliases WHERE memory_id = ?1", [memory_id])?;
+    let mut stmt = txn.prepare_cached("INSERT OR IGNORE INTO memory_aliases(memory_id, alias) VALUES (?1, ?2)")?;
     for alias in aliases {
-        txn.execute(
-            "INSERT OR IGNORE INTO memory_aliases(memory_id, alias) VALUES (?1, ?2)",
-            params![memory_id, alias],
-        )?;
+        stmt.execute(params![memory_id, alias])?;
     }
     Ok(())
 }
@@ -1519,16 +1728,15 @@ fn sync_aliases(txn: &Transaction<'_>, memory_id: &str, aliases: &[String]) -> r
 fn sync_entities(txn: &Transaction<'_>, memory_id: &str, entities: &[crate::model::Entity]) -> rusqlite::Result<()> {
     txn.execute("DELETE FROM memory_entity_aliases WHERE memory_id = ?1", [memory_id])?;
     txn.execute("DELETE FROM memory_entities WHERE memory_id = ?1", [memory_id])?;
+    let mut entity_stmt =
+        txn.prepare_cached("INSERT OR IGNORE INTO memory_entities(memory_id, entity_id, label) VALUES (?1, ?2, ?3)")?;
+    let mut alias_stmt = txn.prepare_cached(
+        "INSERT OR IGNORE INTO memory_entity_aliases(memory_id, entity_id, alias) VALUES (?1, ?2, ?3)",
+    )?;
     for entity in entities {
-        txn.execute(
-            "INSERT OR IGNORE INTO memory_entities(memory_id, entity_id, label) VALUES (?1, ?2, ?3)",
-            params![memory_id, entity.id, entity.label],
-        )?;
+        entity_stmt.execute(params![memory_id, entity.id, entity.label])?;
         for alias in &entity.aliases {
-            txn.execute(
-                "INSERT OR IGNORE INTO memory_entity_aliases(memory_id, entity_id, alias) VALUES (?1, ?2, ?3)",
-                params![memory_id, entity.id, alias],
-            )?;
+            alias_stmt.execute(params![memory_id, entity.id, alias])?;
         }
     }
     Ok(())
@@ -1536,36 +1744,36 @@ fn sync_entities(txn: &Transaction<'_>, memory_id: &str, entities: &[crate::mode
 
 fn sync_evidence(txn: &Transaction<'_>, memory_id: &str, evidence: &[crate::model::Evidence]) -> rusqlite::Result<()> {
     txn.execute("DELETE FROM memory_evidence WHERE memory_id = ?1", [memory_id])?;
+    let mut stmt = txn.prepare_cached(
+        "INSERT OR IGNORE INTO memory_evidence(
+             memory_id, evidence_id, quote, quote_norm_hash, ref_text, weight, observed_at
+         ) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+    )?;
     for ev in evidence {
         let observed_at = ev.observed_at.as_ref().map(|t| t.to_rfc3339());
-        txn.execute(
-            "INSERT OR IGNORE INTO memory_evidence(
-                 memory_id, evidence_id, quote, quote_norm_hash, ref_text, weight, observed_at
-             ) VALUES (?1,?2,?3,?4,?5,?6,?7)",
-            params![memory_id, ev.id, ev.quote, ev.quote_norm_hash, ev.reference, ev.weight, observed_at],
-        )?;
+        stmt.execute(params![memory_id, ev.id, ev.quote, ev.quote_norm_hash, ev.reference, ev.weight, observed_at])?;
     }
     Ok(())
 }
 
 fn sync_supersession(txn: &Transaction<'_>, memory_id: &str, supersedes: &[MemoryId]) -> rusqlite::Result<()> {
     txn.execute("DELETE FROM memory_supersession WHERE memory_id = ?1", [memory_id])?;
+    // FK guard, parity with the v4 migration's supersession bootstrap
+    // (`migrations.rs`): the edge is inserted only when its target's
+    // `memories` row already exists. `memory_supersession.supersedes_id`
+    // is a `REFERENCES memories(id)` FK with `PRAGMA foreign_keys = ON`,
+    // so an unguarded insert against a not-yet-indexed target trips the
+    // constraint and — during a *bulk* reindex that walks files in
+    // unsorted order — aborts the whole reconcile. Bulk callers keep this
+    // skip-then-resync behavior. Runtime write callers audit the skipped
+    // target set after upsert and enqueue durable §8.3 repair state instead
+    // of silently waiting for a restart.
+    let mut stmt = txn.prepare_cached(
+        "INSERT OR IGNORE INTO memory_supersession(memory_id, supersedes_id)
+         SELECT ?1, ?2 WHERE EXISTS (SELECT 1 FROM memories WHERE id = ?2)",
+    )?;
     for supersedes_id in supersedes {
-        // FK guard, parity with the v4 migration's supersession bootstrap
-        // (`migrations.rs`): the edge is inserted only when its target's
-        // `memories` row already exists. `memory_supersession.supersedes_id`
-        // is a `REFERENCES memories(id)` FK with `PRAGMA foreign_keys = ON`,
-        // so an unguarded insert against a not-yet-indexed target trips the
-        // constraint and — during a *bulk* reindex that walks files in
-        // unsorted order — aborts the whole reconcile. Bulk callers keep this
-        // skip-then-resync behavior. Runtime write callers audit the skipped
-        // target set after upsert and enqueue durable §8.3 repair state instead
-        // of silently waiting for a restart.
-        txn.execute(
-            "INSERT OR IGNORE INTO memory_supersession(memory_id, supersedes_id)
-             SELECT ?1, ?2 WHERE EXISTS (SELECT 1 FROM memories WHERE id = ?2)",
-            params![memory_id, supersedes_id.as_str()],
-        )?;
+        stmt.execute(params![memory_id, supersedes_id.as_str()])?;
     }
     Ok(())
 }
@@ -1816,7 +2024,18 @@ fn collect_query_results(
     Ok(results)
 }
 
-fn row_to_recall_index_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RecallIndexRow> {
+/// Marshal a recall-index row.
+///
+/// `source_identity` mirrors [`RecallIndexQuery::source_identity`]: when set,
+/// the SELECT projected the four extra identity/merge-diagnostics columns
+/// (indices 19-22) and they are read here; when unset they are absent from the
+/// row and left `None`. `source_harness` (index 18) is always present.
+fn row_to_recall_index_row(row: &rusqlite::Row<'_>, source_identity: bool) -> rusqlite::Result<RecallIndexRow> {
+    let (source_session_id, author_harness, author_session_id, merge_diagnostics_json) = if source_identity {
+        (row.get(19)?, row.get(20)?, row.get(21)?, row.get(22)?)
+    } else {
+        (None, None, None, None)
+    };
     Ok(RecallIndexRow {
         id: MemoryId::new(row.get::<_, String>(0)?),
         // `from_unchecked`: path was validated at index-write time; hydrating from DB row.
@@ -1838,10 +2057,10 @@ fn row_to_recall_index_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RecallIn
         human_review_required: row.get::<_, i64>(16)? != 0,
         max_scope: scope_from_str(row.get::<_, String>(17)?.as_str())?,
         source_harness: row.get(18)?,
-        source_session_id: row.get(19)?,
-        author_harness: row.get(20)?,
-        author_session_id: row.get(21)?,
-        merge_diagnostics_json: row.get(22)?,
+        source_session_id,
+        author_harness,
+        author_session_id,
+        merge_diagnostics_json,
         tags: Vec::new(),
         aliases: Vec::new(),
         entities: Vec::new(),
@@ -1942,13 +2161,15 @@ fn read_entities_by_memory(conn: &Connection, ids: &[String]) -> rusqlite::Resul
     );
     let mut stmt = conn.prepare_cached(&sql)?;
     let mut rows = stmt.query(params_from_iter(pad_in_clause_bindings(ids, width)))?;
-    let aliases_by_entity = read_entity_aliases_by_memory(conn, ids)?;
+    let mut aliases_by_entity = read_entity_aliases_by_memory(conn, ids)?;
     let mut entities = BTreeMap::<String, Vec<Entity>>::new();
     while let Some(row) = rows.next()? {
         let memory_id = row.get::<_, String>(0)?;
         let entity_id = row.get::<_, String>(1)?;
         let label = row.get::<_, String>(2)?;
-        let aliases = aliases_by_entity.get(&(memory_id.clone(), entity_id.clone())).cloned().unwrap_or_default();
+        // `(memory_id, entity_id)` is unique per row, so `remove` is safe and
+        // hands us the owned alias Vec instead of cloning a throwaway copy.
+        let aliases = aliases_by_entity.remove(&(memory_id.clone(), entity_id.clone())).unwrap_or_default();
         entities.entry(memory_id).or_default().push(Entity { id: entity_id, label, aliases });
     }
     Ok(entities)
@@ -2080,18 +2301,21 @@ struct Bm25MemoryRank {
     recency_at: Option<DateTime<Utc>>,
 }
 
-struct VectorChunkHit {
-    memory_id: String,
-    text: String,
-    chunk_rowid: i64,
-    distance: f64,
-    recency_at: Option<DateTime<Utc>>,
-}
-
 struct VectorMemoryScore {
     memory_id: String,
     text: String,
     cosine_similarity: f32,
+    recency_at: Option<DateTime<Utc>>,
+}
+
+/// Text-free nearest-chunk reference: the over-fetch projection used by the
+/// vector KNN lane before it knows which chunks survive collapse/truncation.
+/// Carries only the columns needed to pick one nearest chunk per memory; text is
+/// fetched separately for survivors via [`chunk_texts_by_rowid`].
+struct VectorChunkRef {
+    memory_id: String,
+    chunk_rowid: i64,
+    distance: f64,
     recency_at: Option<DateTime<Utc>>,
 }
 
@@ -2107,16 +2331,41 @@ fn bm25_chunk_hit_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Bm25Chun
     })
 }
 
-fn vector_chunk_hit_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<VectorChunkHit> {
-    let updated_at: String = row.get(4)?;
-    let observed_at: Option<String> = row.get(5)?;
-    Ok(VectorChunkHit {
+fn vector_chunk_ref_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<VectorChunkRef> {
+    let updated_at: String = row.get(3)?;
+    let observed_at: Option<String> = row.get(4)?;
+    Ok(VectorChunkRef {
         memory_id: row.get(0)?,
-        text: row.get(1)?,
-        chunk_rowid: row.get(2)?,
-        distance: row.get(3)?,
+        chunk_rowid: row.get(1)?,
+        distance: row.get(2)?,
         recency_at: memory_recency_at(&updated_at, observed_at.as_deref()),
     })
+}
+
+/// Fetch chunk text for the given `chunk_rowid`s, keyed by rowid. Used to hydrate
+/// the surviving nearest chunks after the vector KNN lane collapses and truncates
+/// its text-free over-fetch. Reuses the bucketed `IN (...)` plan cache so each
+/// call maps to one of a handful of cached statements.
+fn chunk_texts_by_rowid(connection: &Connection, rowids: &[i64]) -> rusqlite::Result<BTreeMap<i64, String>> {
+    let mut texts = BTreeMap::new();
+    if rowids.is_empty() {
+        return Ok(texts);
+    }
+    for chunk in rowids.chunks(MIRROR_HEALTH_PRESENCE_CHUNK) {
+        let width = bucketed_in_clause_width(chunk.len());
+        let sql =
+            format!("SELECT chunk_rowid, text FROM memory_chunks WHERE chunk_rowid IN ({})", sql_placeholders(width));
+        let mut stmt = connection.prepare_cached(&sql)?;
+        // Pad to the bucketed width by repeating the first rowid — `IN` is set
+        // membership, so the duplicate matches the same row and adds nothing.
+        let first = chunk[0];
+        let padded = chunk.iter().copied().chain(std::iter::repeat_n(first, width - chunk.len()));
+        let mut rows = stmt.query(params_from_iter(padded))?;
+        while let Some(row) = rows.next()? {
+            texts.insert(row.get::<_, i64>(0)?, row.get::<_, String>(1)?);
+        }
+    }
+    Ok(texts)
 }
 
 fn memory_recency_at(updated_at: &str, observed_at: Option<&str>) -> Option<DateTime<Utc>> {
@@ -2159,7 +2408,7 @@ fn bm25_chunk_precedes(left: &Bm25ChunkHit, right: &Bm25ChunkHit) -> bool {
     left.score.total_cmp(&right.score).then_with(|| left.chunk_rowid.cmp(&right.chunk_rowid)).is_lt()
 }
 
-fn vector_chunk_precedes(left: &VectorChunkHit, right: &VectorChunkHit) -> bool {
+fn vector_chunk_ref_precedes(left: &VectorChunkRef, right: &VectorChunkRef) -> bool {
     left.distance.total_cmp(&right.distance).then_with(|| left.chunk_rowid.cmp(&right.chunk_rowid)).is_lt()
 }
 

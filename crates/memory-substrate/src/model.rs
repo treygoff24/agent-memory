@@ -1281,6 +1281,17 @@ pub struct RecallIndexQuery {
     pub match_terms: Vec<String>,
     /// Which auxiliary-table fields to hydrate onto each returned row.
     pub hydrate: AuxScope,
+    /// Project the peer source/author identity and merge-diagnostics fields
+    /// (`source_session_id`, `author_harness`, `author_session_id`,
+    /// `merge_diagnostics_json`) onto each row via per-row `json_extract`.
+    ///
+    /// Defaults to `false`: the hot recall/ranking path reads none of these and
+    /// pays nothing for them, leaving those `RecallIndexRow` fields `None`. Only
+    /// the Stream I peer-write attribution path and the conflict-list surface,
+    /// which actually consume the identity/merge-diagnostics fields, set this so
+    /// the extra JSON parses run only when a reader needs them. `source_harness`
+    /// is always projected from its materialized column regardless of this flag.
+    pub source_identity: bool,
 }
 
 /// Stream E recall-index row projected from SQLite index and auxiliary tables.

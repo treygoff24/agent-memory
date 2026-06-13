@@ -152,6 +152,7 @@ async fn memory_query_filters_and_recall_index_use_stream_a_index_projections() 
                 "recall".to_string(),
             ],
             hydrate: AuxScope::All,
+            source_identity: true,
         })
         .await
         .expect("recall index query");
@@ -210,6 +211,7 @@ async fn recall_index_match_terms_use_union_semantics() {
             updated_since: None,
             match_terms: vec!["source-tag-only".to_string(), "source-memory-alias-only".to_string()],
             hydrate: AuxScope::All,
+            source_identity: true,
         })
         .await
         .expect("multi-term recall-index match query");
@@ -252,6 +254,7 @@ async fn recall_index_statuses_and_updated_since_filters_are_independent() {
             updated_since: None,
             match_terms: Vec::new(),
             hydrate: AuxScope::All,
+            source_identity: true,
         })
         .await
         .expect("status-only recall index query");
@@ -265,6 +268,7 @@ async fn recall_index_statuses_and_updated_since_filters_are_independent() {
             updated_since: Some(parse_time("2026-04-30T11:00:00Z")),
             match_terms: Vec::new(),
             hydrate: AuxScope::All,
+            source_identity: true,
         })
         .await
         .expect("updated-since-only recall index query");
@@ -281,6 +285,7 @@ async fn recall_index_statuses_and_updated_since_filters_are_independent() {
             updated_since: Some(parse_time("2026-04-30T11:00:00Z")),
             match_terms: Vec::new(),
             hydrate: AuxScope::All,
+            source_identity: true,
         })
         .await
         .expect("combined status and updated-since recall index query");
@@ -497,6 +502,7 @@ async fn assert_isolated_recall_match(substrate: &Substrate, source: RecallMatch
             updated_since: None,
             match_terms: vec![fixture.match_term.to_string()],
             hydrate: AuxScope::All,
+            source_identity: true,
         })
         .await
         .expect("isolated recall-index match query");
