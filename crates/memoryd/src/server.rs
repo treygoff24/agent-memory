@@ -518,42 +518,54 @@ fn socket_parent(socket_path: &Path) -> Option<&Path> {
 
 async fn prepare_socket_parent(parent: &Path) -> Result<()> {
     match tokio::fs::metadata(parent).await {
-        Ok(metadata) if metadata.is_dir() => harden_socket_parent(parent, &metadata),
+        Ok(metadata) if metadata.is_dir() => {
+            warn_on_loose_socket_parent(parent, &metadata);
+            Ok(())
+        }
         Ok(_) => anyhow::bail!("socket_parent_not_directory: {}", parent.display()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             tokio::fs::create_dir_all(parent)
                 .await
                 .with_context(|| format!("create socket parent {}", parent.display()))?;
-            let metadata = tokio::fs::metadata(parent)
-                .await
-                .with_context(|| format!("inspect newly-created socket parent {}", parent.display()))?;
-            harden_socket_parent(parent, &metadata)
+            harden_created_socket_parent(parent)
         }
         Err(error) => Err(error).with_context(|| format!("inspect socket parent {}", parent.display())),
     }
 }
 
-/// Ensure the socket's parent directory is owner-only (`0o700`).
+/// Owner-only mode for parent directories the daemon creates itself.
 ///
-/// This runs whether the directory was just created or already existed: a
-/// pre-existing runtime dir left at the default `0o755` by another code path or
-/// by the user would otherwise leave the owner-only socket living inside a
-/// world-traversable directory. Mirrors the `validate_private_file` posture in
-/// `memory-privacy`, but repairs rather than refuses so the daemon can recover a
-/// loosened runtime dir in place.
+/// Pre-existing directories are deliberately NOT repaired: the socket path is
+/// caller-supplied, so its parent can be an arbitrary shared directory (`/tmp`
+/// being the catastrophic case) that the daemon must never chmod. The pinned
+/// contract is `server_does_not_chmod_existing_socket_parent_directory`. The
+/// socket node itself is always `0o600` regardless of where it lives; a loose
+/// pre-existing parent only weakens deny-by-traversal defense in depth, which
+/// `warn_on_loose_socket_parent` surfaces to the operator instead.
 #[cfg(unix)]
-fn harden_socket_parent(parent: &Path, metadata: &std::fs::Metadata) -> Result<()> {
-    if metadata.permissions().mode() & 0o077 == 0 {
-        return Ok(());
-    }
+fn harden_created_socket_parent(parent: &Path) -> Result<()> {
     std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
-        .with_context(|| format!("chmod owner-only socket parent {}", parent.display()))
+        .with_context(|| format!("chmod owner-only newly-created socket parent {}", parent.display()))
 }
 
 #[cfg(not(unix))]
-fn harden_socket_parent(_parent: &Path, _metadata: &std::fs::Metadata) -> Result<()> {
+fn harden_created_socket_parent(_parent: &Path) -> Result<()> {
     Ok(())
 }
+
+#[cfg(unix)]
+fn warn_on_loose_socket_parent(parent: &Path, metadata: &std::fs::Metadata) {
+    use std::os::unix::fs::PermissionsExt;
+    if metadata.permissions().mode() & 0o077 != 0 {
+        tracing::warn!(
+            parent = %parent.display(),
+            "socket parent directory is group/world-accessible; the socket itself is 0o600, but a dedicated 0o700 runtime dir is recommended"
+        );
+    }
+}
+
+#[cfg(not(unix))]
+fn warn_on_loose_socket_parent(_parent: &Path, _metadata: &std::fs::Metadata) {}
 
 async fn remove_stale_socket(socket_path: &Path) -> Result<()> {
     match tokio::fs::symlink_metadata(socket_path).await {
@@ -609,19 +621,35 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn prepare_socket_parent_repairs_preexisting_world_traversable_dir() {
+    async fn prepare_socket_parent_does_not_chmod_a_preexisting_loose_dir() {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::tempdir().expect("tempdir");
         let parent = dir.path().join("runtime");
         std::fs::create_dir(&parent).expect("create runtime dir");
-        // Simulate a runtime dir left at the default 0o755 by another code path.
+        // A caller-supplied socket path can point into a shared dir the daemon
+        // does not own (the `/tmp` case). prepare must warn but never chmod it —
+        // mirrors server_does_not_chmod_existing_socket_parent_directory.
         std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).expect("loosen perms");
 
         super::prepare_socket_parent(&parent).await.expect("prepare existing parent");
 
         let mode = std::fs::metadata(&parent).expect("parent metadata").permissions().mode() & 0o777;
-        assert_eq!(mode, 0o700, "pre-existing loose parent re-hardened to owner-only");
+        assert_eq!(mode, 0o755, "pre-existing parent mode is left untouched");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn prepare_socket_parent_hardens_a_dir_it_creates_itself() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let parent = dir.path().join("runtime");
+        // Not pre-created: prepare_socket_parent creates it and owns the mode.
+        super::prepare_socket_parent(&parent).await.expect("create and prepare parent");
+
+        let mode = std::fs::metadata(&parent).expect("parent metadata").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "a daemon-created parent is owner-only");
     }
 
     #[test]
