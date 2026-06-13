@@ -2484,16 +2484,18 @@ fn full_reindex_from_repo(repo: &std::path::Path, index: &mut Index) -> std::io:
     index.clear_plaintext_memory_index().map_err(|err| std::io::Error::other(err.to_string()))?;
     let count = entries.len();
     let has_supersession_edges = entries.iter().any(|entry| !entry.memory.frontmatter.supersedes.is_empty());
-    // One transaction across the whole rebuild (one WAL commit cycle instead of
-    // one per memory) and one `is_dropped_triple` probe for the batch.
-    index
-        .batch_upsert_memories_with_file_hash(
-            entries.iter().map(|entry| (&entry.memory, entry.metadata_only, Some(&entry.file_hash))),
-        )
-        .map_err(|err| std::io::Error::other(err.to_string()))?;
-    // Deferred supersession pass: the per-memory upsert FK-guards each edge, so a
-    // bulk walk that visited a supersessor before its target dropped that edge.
-    // Now that every `memories` row exists, re-add the dropped edges.
+    // Per-row upsert (each its own transaction). A single bulk transaction here
+    // is ~40% faster on cold reindex, but it measurably shifts the page-cache
+    // state a subsequent point lookup sees (the `query_by_id` perf gate caught a
+    // ~5µs p50 regression that survived a post-batch WAL checkpoint). Reindex is a
+    // rare bulk op; the steady-state read path is the one with a latency gate, so
+    // the per-row write cost is the right trade. The deferred supersession pass
+    // below still re-adds any FK-guarded edge whose target landed later in the walk.
+    for entry in &entries {
+        index
+            .upsert_memory_with_file_hash(&entry.memory, entry.metadata_only, Some(&entry.file_hash))
+            .map_err(|err| std::io::Error::other(err.to_string()))?;
+    }
     if has_supersession_edges {
         index.resync_supersession_edges().map_err(|err| std::io::Error::other(err.to_string()))?;
     }

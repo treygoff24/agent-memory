@@ -116,6 +116,14 @@ impl Index {
     /// callers that relied on the per-row `resync_supersession_edges` follow-up
     /// must still run it after the batch. On any row error the transaction is
     /// rolled back as a unit.
+    ///
+    /// Intended for SMALL drift sets (the startup phase-6 and encrypted-tier
+    /// incremental sweeps, which batch only the handful of files that actually
+    /// changed). A full-corpus rebuild deliberately does NOT use this: a single
+    /// transaction over thousands of rows leaves a large un-checkpointed WAL that
+    /// measurably slows the immediately-following point reads (a `query_by_id`
+    /// perf-gate regression, unfixed by a post-batch checkpoint), so
+    /// `full_reindex_from_repo` stays per-row. Keep batches here bounded.
     pub fn batch_upsert_memories_with_file_hash<'a, I>(&mut self, memories: I) -> rusqlite::Result<()>
     where
         I: IntoIterator<Item = (&'a Memory, bool, Option<&'a Sha256>)>,
