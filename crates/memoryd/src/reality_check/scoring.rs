@@ -2,10 +2,10 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use memory_substrate::index::Index;
-use memory_substrate::{MemoryStatus, RecallIndexRow, Sensitivity, Substrate, SubstrateResult};
+use memory_substrate::{MemoryStatus, RecallIndexRow, Sensitivity, Substrate, SubstrateResult, VectorError};
 use rusqlite::params_from_iter;
 
-use crate::dynamics::usage::{distinct_sources_for, open_runtime_index, recall_usage_for};
+use crate::dynamics::usage::{distinct_sources_for_conn, recall_usage_for_conn};
 use crate::protocol::ComponentScores;
 use crate::reality_check::types::{ScoreFacts, ScoreWeights, ScoredMemory, ScoringConfig};
 
@@ -30,11 +30,17 @@ pub fn score_memories_at(
         return Ok(Vec::new());
     }
 
-    let index = open_runtime_index(substrate)?;
     let candidate_ids = candidates.iter().map(|row| row.id.as_str()).collect::<Vec<_>>();
-    let recall_counts = recall_usage_for(&index, &candidate_ids, now)?;
-    let static_fields_by_id = indexed_static_fields_by_id(&index, &candidates)?;
-    let distinct_sources_by_id = distinct_sources_for(&index, &candidate_ids)?;
+    let (recall_counts, static_fields_by_id, distinct_sources_by_id) = {
+        let index = substrate.index_handle();
+        let index =
+            index.lock().map_err(|err| VectorError::IndexUnavailable(format!("index mutex poisoned: {err}")))?;
+        let connection = index.connection();
+        let recall_counts = recall_usage_for_conn(connection, &candidate_ids, now)?;
+        let static_fields = indexed_static_fields_by_id(&index, &candidates)?;
+        let distinct_sources = distinct_sources_for_conn(connection, &candidate_ids)?;
+        (recall_counts, static_fields, distinct_sources)
+    };
     let max_recall = candidates
         .iter()
         .map(|row| recall_counts.get(row.id.as_str()).map_or(0, |summary| summary.count))

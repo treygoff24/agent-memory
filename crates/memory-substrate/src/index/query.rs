@@ -2355,11 +2355,14 @@ fn vector_chunk_ref_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Vector
 /// its text-free over-fetch. Reuses the bucketed `IN (...)` plan cache so each
 /// call maps to one of a handful of cached statements.
 fn chunk_texts_by_rowid(connection: &Connection, rowids: &[i64]) -> rusqlite::Result<BTreeMap<i64, String>> {
+    /// Rowid `IN (...)` batch size for survivor chunk-text fetch after KNN.
+    const CHUNK_TEXT_FETCH_BATCH: usize = 256;
+
     let mut texts = BTreeMap::new();
     if rowids.is_empty() {
         return Ok(texts);
     }
-    for chunk in rowids.chunks(MIRROR_HEALTH_PRESENCE_CHUNK) {
+    for chunk in rowids.chunks(CHUNK_TEXT_FETCH_BATCH) {
         let width = bucketed_in_clause_width(chunk.len());
         let sql =
             format!("SELECT chunk_rowid, text FROM memory_chunks WHERE chunk_rowid IN ({})", sql_placeholders(width));

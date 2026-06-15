@@ -95,7 +95,9 @@ impl OsNotificationSink for CommandOsNotificationSink {
                 .arg(&notification.title)
                 .status(),
             OsNotificationTool::NotifySend(path) => {
-                Command::new(path).arg(&notification.title).arg(&notification.body).status()
+                // `--` ends option parsing so a title/body starting with `-` is positional data,
+                // not a notify-send flag (-i/-u/-c/-h).
+                Command::new(path).arg("--").arg(&notification.title).arg(&notification.body).status()
             }
         }
         .map_err(|error| error.to_string())?;

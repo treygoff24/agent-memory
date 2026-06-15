@@ -1504,10 +1504,15 @@ impl Substrate {
 
     /// Update embedding for a chunk.
     pub async fn update_embedding(&self, update: EmbeddingUpdate) -> Result<(), VectorError> {
-        self.index
-            .lock()
-            .map_err(|err| VectorError::IndexUnavailable(format!("index mutex poisoned: {err}")))?
-            .update_embedding(&update)
+        let index = Arc::clone(&self.index);
+        tokio::task::spawn_blocking(move || {
+            index
+                .lock()
+                .map_err(|err| VectorError::IndexUnavailable(format!("index mutex poisoned: {err}")))?
+                .update_embedding(&update)
+        })
+        .await
+        .map_err(|err| VectorError::IndexUnavailable(format!("update-embedding task panicked: {err}")))?
     }
 
     /// Apply a batch of embedding updates, returning one result per input in
@@ -1522,11 +1527,15 @@ impl Substrate {
         &self,
         updates: Vec<EmbeddingUpdate>,
     ) -> Result<Vec<Result<(), VectorError>>, VectorError> {
-        Ok(self
-            .index
-            .lock()
-            .map_err(|err| VectorError::IndexUnavailable(format!("index mutex poisoned: {err}")))?
-            .update_embeddings_batch(&updates))
+        let index = Arc::clone(&self.index);
+        tokio::task::spawn_blocking(move || {
+            Ok(index
+                .lock()
+                .map_err(|err| VectorError::IndexUnavailable(format!("index mutex poisoned: {err}")))?
+                .update_embeddings_batch(&updates))
+        })
+        .await
+        .map_err(|err| VectorError::IndexUnavailable(format!("update-embeddings-batch task panicked: {err}")))?
     }
 
     /// The active embedding triple this substrate was opened with.

@@ -22,7 +22,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 pub use strength::{strength, strength_points, StrengthFacts, StrengthWeights};
-pub use usage::{distinct_sources_for, recall_usage_for, UsageSummary};
+pub use usage::UsageSummary;
 
 /// Default integer-points ceiling for the strength term (spec §3).
 ///

@@ -98,6 +98,24 @@ const SPEC_API_GET_ROUTES: [&str; 12] = [
     "/api/sync-dashboard",
 ];
 
+// Must mirror `protected_routes` in `crates/memoryd-web/src/server.rs` — add every new protected GET here.
+const PROTECTED_GET_ROUTES: [&str; 14] = [
+    "/api/status",
+    "/api/entity-graph",
+    "/api/entity-graph/ent_memorum",
+    "/api/roi",
+    "/api/reality-check",
+    "/api/reality-check/history",
+    "/api/audit/mem_20260501_a1b2c3d4e5f60718_000010",
+    "/api/audit/mem_20260501_a1b2c3d4e5f60718_000010/walk",
+    "/api/audit/mem_20260501_a1b2c3d4e5f60718_000010/temporal",
+    "/api/review",
+    "/api/policy-editor",
+    "/api/sync-dashboard",
+    "/api/recall-hits",
+    "/api/search",
+];
+
 #[tokio::test]
 async fn test_spec_api_get_routes_return_json() {
     let app = fixture_router();
@@ -128,7 +146,7 @@ async fn test_spec_api_get_routes_require_csrf_token() {
     // closing the local cross-process read path require_local_host leaves open.
     let app = fixture_router();
 
-    for route in SPEC_API_GET_ROUTES {
+    for route in PROTECTED_GET_ROUTES {
         let response = app
             .clone()
             .oneshot(Request::builder().uri(route).body(Body::empty()).expect("request builds"))
@@ -143,7 +161,7 @@ async fn test_spec_api_get_routes_require_csrf_token() {
 async fn test_spec_api_get_routes_reject_wrong_csrf_token() {
     let app = fixture_router();
 
-    for route in SPEC_API_GET_ROUTES {
+    for route in PROTECTED_GET_ROUTES {
         let response = app
             .clone()
             .oneshot(
@@ -172,6 +190,12 @@ async fn test_bootstrap_routes_do_not_require_csrf_token() {
         .await
         .expect("request succeeds");
     assert_eq!(index.status(), StatusCode::OK, "/ must not require the bearer token");
+
+    let stream = app
+        .oneshot(Request::builder().uri("/api/notifications/stream").body(Body::empty()).expect("request builds"))
+        .await
+        .expect("request succeeds");
+    assert_ne!(stream.status(), StatusCode::FORBIDDEN, "/api/notifications/stream must not require the bearer token");
 }
 
 #[tokio::test]

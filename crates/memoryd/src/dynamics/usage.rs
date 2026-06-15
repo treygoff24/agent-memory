@@ -12,11 +12,9 @@
 //! and the public names differ.
 
 use std::collections::HashMap;
-use std::path::Path;
 
 use chrono::{DateTime, Duration, Utc};
-use memory_substrate::index::{open_index, Index};
-use memory_substrate::{Substrate, SubstrateResult};
+use memory_substrate::SubstrateResult;
 use rusqlite::{params_from_iter, Connection};
 
 /// SQLite has a default bound-parameter limit (`SQLITE_MAX_VARIABLE_NUMBER`);
@@ -34,36 +32,12 @@ pub struct UsageSummary {
     pub last_recalled_at: Option<DateTime<Utc>>,
 }
 
-/// Open the derived-index connection for a substrate, wrapped in [`Index`].
-///
-/// Both usage consumers (RC scoring and strength hydration) acquire the index
-/// through this one path rather than constructing it inline, so the connection
-/// semantics stay identical.
-pub fn open_runtime_index(substrate: &Substrate) -> SubstrateResult<Index> {
-    open_runtime_index_at(&substrate.roots().runtime)
-}
-
-/// Open the derived-index connection from a runtime root directly.
-pub fn open_runtime_index_at(runtime_root: &Path) -> SubstrateResult<Index> {
-    Ok(Index::new(open_index(&runtime_root.join("index.sqlite"))?))
-}
-
 /// Recall usage for a set of memory ids over the trailing 30 days from `now`.
 ///
 /// This is the exact `events_log WHERE kind='recall_hit'` query that
 /// `reality_check/scoring.rs::recall_counts_30d` shipped (chunked `IN`, covering
 /// index `idx_events_log_kind_memory_ts`), moved here verbatim so both consumers
 /// share it.
-pub fn recall_usage_for(
-    index: &Index,
-    memory_ids: &[&str],
-    now: DateTime<Utc>,
-) -> SubstrateResult<HashMap<String, UsageSummary>> {
-    recall_usage_for_conn(index.connection(), memory_ids, now)
-}
-
-/// As [`recall_usage_for`], reading through a raw [`Connection`] (callers that
-/// already hold a connection rather than an [`Index`] handle).
 pub fn recall_usage_for_conn(
     connection: &Connection,
     memory_ids: &[&str],
@@ -95,7 +69,7 @@ pub fn recall_usage_for_conn(
         let params = std::iter::once(cutoff.as_str()).chain(crate::util::pad_in_clause_ids(chunk, width));
         let rows = statement.query_map(params_from_iter(params), |row| {
             let memory_id: String = row.get(0)?;
-            let count = row.get::<_, i64>(1)? as u32;
+            let count = u32::try_from(row.get::<_, i64>(1)?).unwrap_or(u32::MAX);
             let last_recalled_at = parse_optional_time(row.get::<_, Option<String>>(2)?);
             Ok((memory_id, UsageSummary { count, last_recalled_at }))
         })?;
@@ -113,11 +87,6 @@ pub fn recall_usage_for_conn(
 /// The depth-bounded recursive CTE shipped in
 /// `reality_check/scoring.rs::distinct_sources_by_id`, moved here verbatim. A
 /// count `>= 2` is the binary cross-source corroboration signal (spec §2).
-pub fn distinct_sources_for(index: &Index, memory_ids: &[&str]) -> SubstrateResult<HashMap<String, u32>> {
-    distinct_sources_for_conn(index.connection(), memory_ids)
-}
-
-/// As [`distinct_sources_for`], reading through a raw [`Connection`].
 pub fn distinct_sources_for_conn(
     connection: &Connection,
     memory_ids: &[&str],
@@ -150,7 +119,7 @@ pub fn distinct_sources_for_conn(
         let mut statement = connection.prepare_cached(&query)?;
         let rows = statement.query_map(params_from_iter(crate::util::pad_in_clause_ids(chunk, width)), |db_row| {
             let id: String = db_row.get(0)?;
-            let distinct_sources = db_row.get::<_, i64>(1)? as u32;
+            let distinct_sources = u32::try_from(db_row.get::<_, i64>(1)?).unwrap_or(u32::MAX);
             Ok((id, distinct_sources))
         })?;
 

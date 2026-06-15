@@ -697,7 +697,7 @@ struct StrengthHydrationResult {
 async fn hydrate_strength_for_ranking(
     substrate: &Substrate,
     dynamics: &DynamicsConfig,
-    mut facts: Vec<RecallCandidate>,
+    facts: Vec<RecallCandidate>,
     now: DateTime<Utc>,
 ) -> StrengthHydrationResult {
     if !dynamics.enabled || facts.is_empty() {
@@ -707,11 +707,18 @@ async fn hydrate_strength_for_ranking(
     let index = substrate.index_handle();
     let hydration = StrengthHydration { weights: dynamics.weights, tau_days: dynamics.tau_days };
     let (facts, ok) = tokio::task::spawn_blocking(move || {
-        let ok = hydrate_candidate_strength(&index, &mut facts, &hydration, now);
+        let mut facts = facts;
+        // Catch a hydration panic so a dynamics bug degrades to structural-only ranking
+        // (spec §3 soft-failure) instead of aborting the recall hot path. `facts` is owned
+        // here, so a caught panic still returns the (possibly partially hydrated) candidates.
+        let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            hydrate_candidate_strength(&index, &mut facts, &hydration, now)
+        }))
+        .unwrap_or(false);
         (facts, ok)
     })
     .await
-    .expect("strength hydration blocking task panicked");
+    .expect("strength hydration join (hydration panics are caught inside the task)");
 
     StrengthHydrationResult { facts, alpha_points: dynamics.alpha_points, dynamics_degraded: !ok }
 }

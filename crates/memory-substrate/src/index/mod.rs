@@ -20,7 +20,7 @@ pub use vector::{reconcile_missing, reconcile_orphans, reconcile_pending_jobs, V
 /// responsible for never passing `count == 0`: an empty `IN ()` is invalid SQL,
 /// and an empty filter set means "match nothing", which each caller handles by
 /// short-circuiting before reaching here.
-fn sql_placeholders(count: usize) -> String {
+pub fn sql_placeholders(count: usize) -> String {
     std::iter::repeat_n("?", count).collect::<Vec<_>>().join(",")
 }
 
@@ -38,7 +38,7 @@ const IN_CLAUSE_BUCKETS: [usize; 5] = [1, 4, 16, 64, 256];
 /// distinct size. Callers pad their bindings to the returned width (see
 /// [`pad_in_clause_bindings`]); because `IN` is set membership, repeating a real
 /// id is a no-op that matches the same rows.
-fn bucketed_in_clause_width(count: usize) -> usize {
+pub fn bucketed_in_clause_width(count: usize) -> usize {
     debug_assert!(count > 0, "callers short-circuit on empty id sets before bucketing");
     if let Some(&bucket) = IN_CLAUSE_BUCKETS.iter().find(|&&bucket| count <= bucket) {
         return bucket;
@@ -50,10 +50,10 @@ fn bucketed_in_clause_width(count: usize) -> usize {
 /// Pad `ids` out to `width` by repeating the first id, so the binding count
 /// matches a [`bucketed_in_clause_width`] placeholder count. The repeated id is
 /// already in the set, so it adds no rows to an `IN (...)` match.
-fn pad_in_clause_bindings<'a>(ids: &'a [String], width: usize) -> impl Iterator<Item = &'a str> + 'a {
+pub fn pad_in_clause_bindings<'a, S: AsRef<str>>(ids: &'a [S], width: usize) -> impl Iterator<Item = &'a str> + 'a {
     debug_assert!(!ids.is_empty() && ids.len() <= width, "width must hold the non-empty id set");
-    let first = ids.first().map(String::as_str).unwrap_or("");
-    ids.iter().map(String::as_str).chain(std::iter::repeat_n(first, width - ids.len()))
+    let first = ids.first().map(AsRef::as_ref).unwrap_or("");
+    ids.iter().map(AsRef::as_ref).chain(std::iter::repeat_n(first, width.saturating_sub(ids.len())))
 }
 
 #[cfg(test)]

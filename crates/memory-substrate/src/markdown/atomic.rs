@@ -11,8 +11,7 @@ use crate::frontmatter::{parse_document, serialize_document};
 use crate::model::{DurabilityTier, Memory, OperationId, RepoPath, Sha256, WriteMode, WriteOutcome};
 use crate::watcher::SuppressionLedger;
 
-/// Read a Markdown memory file.
-pub fn read_memory_file(repo: &Path, path: &RepoPath) -> Result<(Memory, Sha256), crate::error::ReadError> {
+fn read_memory_bytes_checked(repo: &Path, path: &RepoPath) -> Result<Vec<u8>, crate::error::ReadError> {
     if !path.is_safe_relative() {
         return Err(crate::error::ReadError::Parse {
             path: path.clone(),
@@ -28,7 +27,12 @@ pub fn read_memory_file(repo: &Path, path: &RepoPath) -> Result<(Memory, Sha256)
             message: "memory path resolves outside repository".to_string(),
         });
     }
-    let bytes = fs::read(&absolute)?;
+    fs::read(&absolute).map_err(Into::into)
+}
+
+/// Read a Markdown memory file.
+pub fn read_memory_file(repo: &Path, path: &RepoPath) -> Result<(Memory, Sha256), crate::error::ReadError> {
+    let bytes = read_memory_bytes_checked(repo, path)?;
     let text = String::from_utf8(bytes.clone())
         .map_err(|err| crate::error::ReadError::Parse { path: path.clone(), message: err.to_string() })?;
     let parsed = parse_document(&text, Some(path.clone())).map_err(crate::error::ReadError::Validation)?;
@@ -44,22 +48,7 @@ pub fn read_memory_file(repo: &Path, path: &RepoPath) -> Result<(Memory, Sha256)
 /// `file_hash` is clean and need not be parsed at all. Applies the identical
 /// path-safety and repo-containment validation as [`read_memory_file`].
 pub fn read_memory_file_hash(repo: &Path, path: &RepoPath) -> Result<Sha256, crate::error::ReadError> {
-    if !path.is_safe_relative() {
-        return Err(crate::error::ReadError::Parse {
-            path: path.clone(),
-            message: "invalid repo-relative memory path".to_string(),
-        });
-    }
-    let absolute = repo.join(path.as_path());
-    let canonical_repo = repo.canonicalize()?;
-    let canonical_path = absolute.canonicalize()?;
-    if !canonical_path.starts_with(&canonical_repo) {
-        return Err(crate::error::ReadError::Parse {
-            path: path.clone(),
-            message: "memory path resolves outside repository".to_string(),
-        });
-    }
-    let bytes = fs::read(&absolute)?;
+    let bytes = read_memory_bytes_checked(repo, path)?;
     Ok(hash_bytes(&bytes))
 }
 

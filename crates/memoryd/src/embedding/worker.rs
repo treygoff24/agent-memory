@@ -26,11 +26,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use memory_substrate::{EmbeddingUpdate, PendingEmbeddingJob, Substrate, VectorError};
+use memory_substrate::{EmbeddingTriple, EmbeddingUpdate, PendingEmbeddingJob, Substrate, VectorError};
 use tokio::sync::watch;
 use tokio::time::sleep;
 
-use super::EmbeddingProvider;
+use super::{EmbeddingError, EmbeddingProvider};
 
 /// How many jobs to pull and embed per drain tick. Bounded so one tick cannot
 /// monopolize a blocking thread for an unbounded backlog; the next tick picks up
@@ -268,13 +268,19 @@ async fn drain_batch_with_budget(
     .await
     {
         Ok(Ok(vectors)) => vectors,
-        Ok(Err(error)) => {
-            // A batch embed failure poisons the whole batch indiscriminately;
-            // charge each live job a retry so a single bad chunk cannot wedge the
-            // batch forever (the per-job retry budget still bounds it).
-            for job in &live_jobs {
-                retry_budget.record_failure(&job.chunk_id, &error);
+        Ok(Err(_error)) => {
+            let mut surviving = Vec::new();
+            for job in live_jobs {
+                let embed_provider = Arc::clone(provider);
+                let text = job.text.clone();
+                match tokio::task::spawn_blocking(move || embed_provider.embed_document(&text)).await {
+                    Ok(Ok(vector)) => surviving.push((job, vector)),
+                    Ok(Err(individual_error)) => retry_budget.record_failure(&job.chunk_id, &individual_error),
+                    Err(join_error) => retry_budget.record_failure(&job.chunk_id, &join_error),
+                }
             }
+            succeeded = succeeded
+                .saturating_add(write_and_record_embedded_jobs(substrate, &triple, surviving, retry_budget).await?);
             return Ok(DrainOutcome { requested, fetched, succeeded });
         }
         Err(join_error) => {
@@ -284,24 +290,46 @@ async fn drain_batch_with_budget(
             return Ok(DrainOutcome { requested, fetched, succeeded });
         }
     };
-    debug_assert_eq!(vectors.len(), live_jobs.len(), "embed_documents must return one vector per input");
+    if vectors.len() != live_jobs.len() {
+        let error = EmbeddingError::Inference(format!(
+            "model returned {} vectors for {} inputs",
+            vectors.len(),
+            live_jobs.len()
+        ));
+        for job in &live_jobs {
+            retry_budget.record_failure(&job.chunk_id, &error);
+        }
+        return Ok(DrainOutcome { requested, fetched, succeeded });
+    }
 
-    // Build one update per (job, vector) pair, then write the whole batch through
-    // a single substrate transaction. Results come back keyed positionally to the
-    // updates, so each job's outcome (success / benign StaleChunk / failure) is
-    // recorded against its own chunk exactly as the per-chunk path did.
-    let updates: Vec<EmbeddingUpdate> = live_jobs
+    let pairs: Vec<(PendingEmbeddingJob, Vec<f32>)> = live_jobs.into_iter().zip(vectors).collect();
+    succeeded =
+        succeeded.saturating_add(write_and_record_embedded_jobs(substrate, &triple, pairs, retry_budget).await?);
+    Ok(DrainOutcome { requested, fetched, succeeded })
+}
+
+async fn write_and_record_embedded_jobs(
+    substrate: &Substrate,
+    triple: &EmbeddingTriple,
+    pairs: Vec<(PendingEmbeddingJob, Vec<f32>)>,
+    retry_budget: &mut JobRetryBudget,
+) -> Result<usize, String> {
+    if pairs.is_empty() {
+        return Ok(0);
+    }
+    let updates: Vec<EmbeddingUpdate> = pairs
         .iter()
-        .zip(vectors)
         .map(|(job, vector)| EmbeddingUpdate {
             chunk_id: job.chunk_id.clone(),
             expected_chunk_hash: job.content_hash.clone(),
             triple: triple.clone(),
-            vector,
+            vector: vector.clone(),
         })
         .collect();
+    let jobs: Vec<&PendingEmbeddingJob> = pairs.iter().map(|(job, _)| job).collect();
     let write_results = substrate.update_embeddings_batch(updates).await.map_err(|err| err.to_string())?;
-    for (job, result) in live_jobs.iter().zip(write_results) {
+    let mut succeeded = 0usize;
+    for (job, result) in jobs.into_iter().zip(write_results) {
         let chunk_id = job.chunk_id.as_str();
         match result {
             Ok(()) => {
@@ -319,7 +347,7 @@ async fn drain_batch_with_budget(
             }
         }
     }
-    Ok(DrainOutcome { requested, fetched, succeeded })
+    Ok(succeeded)
 }
 
 #[cfg(test)]
