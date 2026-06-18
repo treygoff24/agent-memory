@@ -56,14 +56,34 @@
 
 7. Web dashboard:
 
+   The dashboard is auth-gated. `memoryd web enable` mints a bearer token and
+   prints it inside the launch URL as `?auth=<token>`. Opening that URL in a
+   browser authenticates the session (it sets an `HttpOnly` cookie and redirects
+   to the clean URL). Headless `curl` must send the token in the
+   `x-memorum-dashboard-auth` header instead, and protected `/api` reads also
+   require the CSRF token from the dashboard HTML shell.
+
    ```bash
-   memoryd web enable --socket "$MEMORUM_SOCKET"
-   curl -fsS http://127.0.0.1:7137/api/status >/dev/null
-   curl -fsS 'http://127.0.0.1:7137/api/roi?window=90' >/dev/null
-   curl -fsS --max-time 3 -N http://127.0.0.1:7137/api/notifications/stream || true
-   curl -fsS http://127.0.0.1:7137/api/policy-editor >/dev/null
-   open http://127.0.0.1:7137
+   launch_url="$(memoryd web enable --socket "$MEMORUM_SOCKET" --port 7137 | sed -n 's/^Web dashboard enabled at //p')"
+   auth_token="${launch_url#*?auth=}"
+
+   # The CSRF token lives in the shell's <meta name="csrf-token"> tag; the shell
+   # itself needs only the dashboard auth token.
+   csrf_token="$(curl -fsS -H "x-memorum-dashboard-auth: $auth_token" http://127.0.0.1:7137/ \
+     | tr '\n' ' ' | sed -n 's/.*name="csrf-token"[^>]*content="\([^"]*\)".*/\1/p' | head -n1)"
+
+   api() { curl -fsS -H "x-memorum-dashboard-auth: $auth_token" -H "x-memorum-csrf: $csrf_token" "$@"; }
+   api http://127.0.0.1:7137/api/status >/dev/null
+   api 'http://127.0.0.1:7137/api/roi?window=90' >/dev/null
+   api http://127.0.0.1:7137/api/policy-editor >/dev/null
+
+   # The notifications stream is a bootstrap route — only the dashboard auth token is required.
+   curl -fsS -H "x-memorum-dashboard-auth: $auth_token" --max-time 3 -N http://127.0.0.1:7137/api/notifications/stream || true
+
+   open "$launch_url"   # browser authenticates via the ?auth= token, then drops it from the URL
    ```
+
+   The bearer token is printed only by `web enable`, never by `memoryd web status`, so capture it at enable time.
 
    `/api/roi` is not full business ROI. It is the alpha operational metric set
    for promotion/refusal/dream/Reality Check signals, and daemon mode should

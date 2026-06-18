@@ -49,6 +49,19 @@ dogfood_repo="$dogfood_tmp/repo"
 dogfood_runtime="$dogfood_tmp/runtime"
 dogfood_socket="$dogfood_runtime/memoryd.sock"
 memoryd_pid=""
+# The dashboard API is auth-gated: `web enable` mints a bearer token and every
+# request must carry it via the `x-memorum-dashboard-auth` header, a cookie, or
+# a one-shot `?auth=` query (see crates/memoryd-web/src/state.rs and auth.rs).
+# The header is the simplest for a headless smoke — it authenticates GET and
+# POST uniformly without the redirect/cookie-jar bootstrap a browser uses.
+dashboard_auth_header="x-memorum-dashboard-auth"
+dashboard_token=""
+# Protected /api routes additionally require the CSRF token embedded in the
+# dashboard HTML shell's <meta name="csrf-token"> tag. require_csrf is layered
+# on every protected method, GET included (crates/memoryd-web/src/server.rs),
+# so reads need both the dashboard auth header and the CSRF header.
+csrf_header="x-memorum-csrf"
+csrf_token=""
 
 port_is_free() {
   local port="$1"
@@ -91,7 +104,7 @@ cargo_memoryd() {
 }
 
 curl_expect() {
-  curl -fsS "$@"
+  curl -fsS -H "$dashboard_auth_header: $dashboard_token" -H "$csrf_header: $csrf_token" "$@"
 }
 
 assert_file_contains() {
@@ -140,12 +153,34 @@ done
 cargo_memoryd status --socket "$dogfood_socket" >"$dogfood_tmp/status.json"
 
 cargo_memoryd web enable --socket "$dogfood_socket" --port "$dogfood_port" >"$dogfood_tmp/web-enable.json"
+# `web enable` prints "Web dashboard enabled at http://127.0.0.1:<port>/?auth=<token>".
+# The bearer token is only exposed on enable (never by `web status`), so capture
+# it here before any dashboard request.
+dashboard_token="$(sed -n 's/.*[?&]auth=\([0-9A-Fa-f]\{1,\}\).*/\1/p' "$dogfood_tmp/web-enable.json" | head -n 1)"
+if [ -z "$dashboard_token" ]; then
+  echo "alpha daemon dogfood smokes: web enable did not emit a dashboard auth token" >&2
+  cat "$dogfood_tmp/web-enable.json" >&2
+  exit 1
+fi
+# Bootstrap: fetch the dashboard shell (a bootstrap route needing only the
+# dashboard auth token) to read the CSRF token, retrying until the web server is
+# accepting connections. Every protected /api call below needs this token too.
+index_html="$dogfood_tmp/index.html"
 for _ in $(seq 1 60); do
-  if curl_expect "http://127.0.0.1:$dogfood_port/api/status" >"$dogfood_tmp/web-status.json" 2>"$dogfood_tmp/curl-status.err"; then
+  if curl -fsS -H "$dashboard_auth_header: $dashboard_token" "http://127.0.0.1:$dogfood_port/" \
+      >"$index_html" 2>"$dogfood_tmp/curl-index.err"; then
     break
   fi
   sleep 0.5
 done
+curl -fsS -H "$dashboard_auth_header: $dashboard_token" "http://127.0.0.1:$dogfood_port/" >"$index_html"
+csrf_token="$(extract_csrf_token "$index_html")"
+if [ -z "$csrf_token" ]; then
+  echo "alpha daemon dogfood smokes: missing CSRF token in dashboard shell" >&2
+  cat "$index_html" >&2
+  exit 1
+fi
+
 curl_expect "http://127.0.0.1:$dogfood_port/api/status" >"$dogfood_tmp/web-status.json"
 
 phase "daemon-backed ROI smoke"
@@ -155,7 +190,7 @@ assert_file_not_matches "$dogfood_tmp/roi.json" 'deferred|not_implemented|placeh
 
 phase "daemon-backed notifications SSE smoke"
 set +e
-curl -fsS --max-time 3 -N "http://127.0.0.1:$dogfood_port/api/notifications/stream" \
+curl -fsS -H "$dashboard_auth_header: $dashboard_token" --max-time 3 -N "http://127.0.0.1:$dogfood_port/api/notifications/stream" \
   >"$dogfood_tmp/notifications.sse" 2>"$dogfood_tmp/notifications.err"
 notifications_code=$?
 set -e
@@ -186,14 +221,6 @@ assert_file_contains "$dogfood_tmp/source-capture.json" 'local_artifact' "local 
 phase "policy editor GET/validate/write smoke"
 curl_expect "http://127.0.0.1:$dogfood_port/api/policy-editor" >"$dogfood_tmp/policy-get.json"
 assert_file_contains "$dogfood_tmp/policy-get.json" '"writable":true' "policy editor GET smoke"
-index_html="$dogfood_tmp/index.html"
-curl_expect "http://127.0.0.1:$dogfood_port/" >"$index_html"
-csrf_token="$(extract_csrf_token "$index_html")"
-if [ -z "$csrf_token" ]; then
-  echo "policy editor smoke: missing CSRF token in dashboard shell" >&2
-  cat "$index_html" >&2
-  exit 1
-fi
 cat >"$dogfood_tmp/policy-write.json" <<'JSON'
 {
   "file_name": "project-standard.yaml",
@@ -201,7 +228,6 @@ cat >"$dogfood_tmp/policy-write.json" <<'JSON'
 }
 JSON
 curl_expect \
-  -H "x-memorum-csrf: $csrf_token" \
   -H "content-type: application/json" \
   -d @"$dogfood_tmp/policy-write.json" \
   "http://127.0.0.1:$dogfood_port/api/policy-editor" \
@@ -209,7 +235,7 @@ curl_expect \
 assert_file_contains "$dogfood_tmp/policy-post.json" '"accepted":true' "policy editor write smoke"
 
 phase "eval alpha release-set dry run"
-cargo run --quiet -p memorum-eval -- --harness mock --required-release-set alpha --output json \
+cargo run --quiet -p memorum-eval --bin memorum-eval -- --harness mock --required-release-set alpha --output json \
   >"$dogfood_tmp/eval-alpha.json"
 assert_file_not_matches "$dogfood_tmp/eval-alpha.json" '"deferred"[[:space:]]*:[[:space:]]*true' "eval alpha release-set"
 assert_file_not_matches "$dogfood_tmp/eval-alpha.json" 'feature_deferred' "eval alpha release-set"

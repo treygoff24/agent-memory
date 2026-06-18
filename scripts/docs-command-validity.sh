@@ -177,7 +177,7 @@ if ! rg -q 'not full business ROI' docs/api/stream-g-observability-api.md docs/r
 fi
 
 if forbidden_capture_promises="$(
-  rg -n 'browser-rendered|authenticated browser|cookie|screenshot|OCR|pairing|model privacy filter|semantic privacy' README.md docs/getting-started.md docs/mcp-wiring.md docs/api docs/runbooks/dogfooding-day-one.md 2>/dev/null \
+  rg -n 'browser-rendered|authenticated browser|cookie capture|screenshot|OCR|pairing|model privacy filter|semantic privacy' README.md docs/getting-started.md docs/mcp-wiring.md docs/api docs/runbooks/dogfooding-day-one.md 2>/dev/null \
     | rg -vi 'unsupported|out of scope|not implemented|disabled|explicitly|does not support|No cookies|client-supplied|key_path|raw key material|privacy classification' || true
 )"; then
   if [ -n "$forbidden_capture_promises" ]; then
