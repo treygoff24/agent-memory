@@ -129,6 +129,16 @@ runtime_path="$(canonical_path "$runtime")"
 repo_path_xml="$(xml_escape "$repo_path")"
 runtime_path_xml="$(xml_escape "$runtime_path")"
 home_xml="$(xml_escape "$HOME")"
+# launchd resolves ProgramArguments[0] itself and ignores the plist's
+# EnvironmentVariables PATH, so the executable must be an absolute path — a bare
+# "memoryd" fails to spawn with EX_CONFIG. Prefer the resolved on-PATH binary;
+# fall back to the standard cargo-install location.
+memoryd_bin="$(command -v memoryd 2>/dev/null || true)"
+case "$memoryd_bin" in
+  /*) : ;;
+  *) memoryd_bin="$HOME/.cargo/bin/memoryd" ;;
+esac
+memoryd_bin_xml="$(xml_escape "$memoryd_bin")"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 launch_agents="$HOME/Library/LaunchAgents"
 
@@ -137,7 +147,8 @@ render_template() {
   awk \
     -v repo="$repo_path_xml" \
     -v runtime="$runtime_path_xml" \
-    -v home="$home_xml" '
+    -v home="$home_xml" \
+    -v memoryd_bin="$memoryd_bin_xml" '
     function replace_all(s, needle, replacement,    out, pos) {
       out = ""
       while ((pos = index(s, needle)) > 0) {
@@ -150,6 +161,7 @@ render_template() {
       line = replace_all($0, "{{REPO_PATH}}", repo)
       line = replace_all(line, "{{RUNTIME_PATH}}", runtime)
       line = replace_all(line, "{{HOME}}", home)
+      line = replace_all(line, "{{MEMORYD_BIN}}", memoryd_bin)
       print line
     }
   ' "$template"

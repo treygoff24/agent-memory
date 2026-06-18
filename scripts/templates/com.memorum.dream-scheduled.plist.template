@@ -6,7 +6,7 @@
   <string>com.memorum.dream-scheduled</string>
   <key>ProgramArguments</key>
   <array>
-    <string>memoryd</string>
+    <string>{{MEMORYD_BIN}}</string>
     <string>dream</string>
     <string>scheduled</string>
     <string>--repo</string>

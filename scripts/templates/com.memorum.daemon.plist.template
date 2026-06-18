@@ -6,7 +6,7 @@
   <string>com.memorum.daemon</string>
   <key>ProgramArguments</key>
   <array>
-    <string>memoryd</string>
+    <string>{{MEMORYD_BIN}}</string>
     <string>serve</string>
     <string>--repo</string>
     <string>{{REPO_PATH}}</string>

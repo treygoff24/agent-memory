@@ -54,6 +54,15 @@ xml_escape_expected() {
 assert_contains "<string>com.memorum.daemon</string>"
 assert_contains "<string>com.memorum.dream-scheduled</string>"
 assert_contains "<string>serve</string>"
+# ProgramArguments[0] must be an ABSOLUTE path. launchd resolves the executable
+# itself and ignores the plist's EnvironmentVariables PATH, so a bare "memoryd"
+# fails to spawn (EX_CONFIG / exit 78). Regression guard.
+assert_contains "/memoryd</string>"
+if grep -Fq -- "<string>memoryd</string>" "$out"; then
+  echo "plist uses a bare 'memoryd' program name; launchd cannot resolve it" >&2
+  cat "$out" >&2
+  exit 1
+fi
 assert_contains "<string>--repo</string>"
 assert_contains "<string>$repo</string>"
 assert_contains "<string>$runtime/memoryd.sock</string>"
