@@ -133,7 +133,7 @@ memoryd search --socket "$MEMORUM_SOCKET" "local smoke note"
 
 ```bash
 memoryd web enable --socket "$MEMORUM_SOCKET" --port 7137
-open http://localhost:7137
+# Open the launch URL printed by the command.
 memoryd ui --socket "$MEMORUM_SOCKET"
 ```
 

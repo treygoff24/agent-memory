@@ -86,6 +86,8 @@ pub struct RecallIndexQuery {
     pub passive_recall_only: bool,
     pub updated_since: Option<DateTime<Utc>>,
     pub match_terms: Vec<String>,
+    pub hydrate: AuxScope,
+    pub source_identity: bool,
 }
 ```
 
@@ -97,6 +99,8 @@ pub struct RecallIndexQuery {
 - `memory_entities` and `memory_entity_aliases`: deterministic entity list, with entity aliases embedded in each `Entity`.
 
 `match_terms` match existing index projections only: entity id, entity label, entity alias, memory alias, and tag. Rows are returned sorted by memory id so Stream E scoring starts from deterministic input.
+
+`RecallIndexQuery::default()` remains public-API compatible: it hydrates all auxiliary rows (`AuxScope::All`) and projects source/author identity fields (`source_identity = true`). Hot internal readers that do not consume tags, aliases, entities, merge diagnostics, or source identity set `hydrate` and `source_identity` explicitly to avoid unnecessary auxiliary-table scans or per-row JSON extraction.
 
 `Substrate::query_recall_index_including_metadata_only(RecallIndexQuery)` has the same query shape and row shape, but includes encrypted metadata-only rows for Stream G/I scoring and observability consumers that need safe metadata for encrypted memories. It is still an index projection: it never hydrates encrypted envelopes, never decrypts ciphertext, and never returns plaintext body fragments from encrypted rows. Safe fields are limited to indexed frontmatter metadata plus deterministic auxiliary rows (`tags`, `aliases`, `entities`).
 

@@ -704,7 +704,7 @@ async fn hydrate_strength_for_ranking(
         return StrengthHydrationResult { facts, alpha_points: 0, dynamics_degraded: false };
     }
 
-    let index = substrate.index_handle();
+    let substrate = substrate.clone();
     let hydration = StrengthHydration { weights: dynamics.weights, tau_days: dynamics.tau_days };
     let (facts, ok) = tokio::task::spawn_blocking(move || {
         let mut facts = facts;
@@ -712,7 +712,9 @@ async fn hydrate_strength_for_ranking(
         // (spec §3 soft-failure) instead of aborting the recall hot path. `facts` is owned
         // here, so a caught panic still returns the (possibly partially hydrated) candidates.
         let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            hydrate_candidate_strength(&index, &mut facts, &hydration, now)
+            substrate
+                .with_index(|index| Ok(hydrate_candidate_strength(index, &mut facts, &hydration, now)))
+                .unwrap_or(false)
         }))
         .unwrap_or(false);
         (facts, ok)

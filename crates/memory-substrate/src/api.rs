@@ -6,7 +6,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
-    Arc, Mutex,
+    Arc, Mutex, MutexGuard,
 };
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
@@ -59,17 +59,33 @@ impl Substrate {
         &self.startup_reconcile_report
     }
 
-    /// Cloned handle to the substrate's live, already-initialized derived-index
-    /// connection (behind the shared `Mutex`).
+    /// Run a read-only operation against the substrate's live, already-initialized
+    /// derived index.
     ///
     /// Lets read-only recall consumers (e.g. strength hydration on the blocking
     /// pool) reuse this connection instead of calling `open_index` per request —
     /// which would re-run the full `SCHEMA_SQL` DDL batch, the migration version
-    /// probes, and the WAL pragmas on every recall. Callers lock the returned
-    /// handle and read through [`Index::connection`]; the lock is held only for
-    /// the duration of their queries, matching the substrate's own write path.
-    pub fn index_handle(&self) -> Arc<Mutex<Index>> {
-        Arc::clone(&self.index)
+    /// probes, and the WAL pragmas on every recall. SQLite `PRAGMA query_only` is
+    /// enabled around the closure and restored afterward, so accidental writes
+    /// through the live connection fail instead of mutating derived state outside
+    /// the substrate write/reconcile paths.
+    pub fn with_index<T>(&self, operation: impl FnOnce(&Index) -> SubstrateResult<T>) -> SubstrateResult<T> {
+        // Catch a panic from `operation` so the mutex guard is released by normal
+        // scope exit (with `std::thread::panicking()` false) rather than during the
+        // unwind. A guard dropped mid-unwind poisons the shared index mutex, turning
+        // one panicked recall/reality-check request into a daemon-wide outage — every
+        // later `lock_index` would observe the poison. We resume the unwind only after
+        // the guard is cleanly released, preserving the recall hot path's own
+        // `catch_unwind` soft-failure contract (spec §3) while keeping the mutex sound.
+        let outcome = {
+            let index = lock_index(&self.index);
+            let _query_only = QueryOnlyGuard::enable(index.connection())?;
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation(&index)))
+        };
+        match outcome {
+            Ok(result) => result,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
     }
 
     /// Initialize a new memory repository and open it.
@@ -305,17 +321,12 @@ impl Substrate {
     /// so callers with their own disk-walk fallback can branch on it.
     fn resolve_memory_id_to_path_opt(&self, id: &MemoryId) -> Option<RepoPath> {
         let query = MemoryQuery { id: Some(id.clone()), include_metadata_only: true, ..MemoryQuery::default() };
-        // A poisoned lock or a failed lookup is index *unavailability*, not "id
-        // absent": both degrade the read to the O(n) disk-walk fallback. That is
-        // correct but a silent perf cliff, so log it. A successful lookup that
-        // returns no row is the normal "not indexed yet" case and stays quiet.
-        let guard = match self.index.lock() {
-            Ok(guard) => guard,
-            Err(_poisoned) => {
-                tracing::warn!(memory_id = id.as_str(), "index mutex poisoned; degrading read to disk-walk");
-                return None;
-            }
-        };
+        // A failed lookup is index *unavailability*, not "id absent": it degrades
+        // the read to the O(n) disk-walk fallback. That is correct but a silent
+        // perf cliff, so log it. A successful lookup that returns no row is the
+        // normal "not indexed yet" case and stays quiet. (`lock_index` recovers a
+        // poisoned mutex, so poison no longer forces the degraded path.)
+        let guard = lock_index(&self.index);
         match guard.query_memory(&query) {
             Ok(rows) => rows.into_iter().next().map(|hit| hit.path),
             Err(err) => {
@@ -413,10 +424,7 @@ impl Substrate {
             last_error: None,
         };
         let missing_supersession_targets = {
-            let mut index_guard = self.index.lock().map_err(|err| WriteFailure {
-                outcome: outcome.clone(),
-                kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
-            })?;
+            let mut index_guard = lock_index(&self.index);
             match index_guard.upsert_memory_with_file_hash(&request.memory, false, Some(&final_hash)) {
                 Ok(()) => index_guard.missing_supersession_targets(&request.memory.frontmatter.supersedes),
                 Err(err) => Err(err),
@@ -1246,14 +1254,14 @@ impl Substrate {
     /// (see `incremental_reindex_at_open`); this is the explicit operator
     /// "rebuild everything" path.
     pub async fn reindex(&self) -> SubstrateResult<usize> {
-        let mut index = self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?;
+        let mut index = lock_index(&self.index);
         full_reindex_from_repo(&self.roots.repo, &mut index)
             .map_err(|err| SubstrateError::from(OpenError::OperatorRepairRequired(err.to_string())))
     }
 
     /// Query memories.
     pub async fn query_memory(&self, query: MemoryQuery) -> SubstrateResult<Vec<QueryResult>> {
-        self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.query_memory(&query)
+        lock_index(&self.index).query_memory(&query)
     }
 
     /// Query recall-index rows without hydrating memory envelopes.
@@ -1266,11 +1274,9 @@ impl Substrate {
     /// no lock is held across an `.await`.
     pub async fn query_recall_index(&self, query: RecallIndexQuery) -> SubstrateResult<Vec<RecallIndexRow>> {
         let index = Arc::clone(&self.index);
-        tokio::task::spawn_blocking(move || {
-            index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.query_recall_index(&query)
-        })
-        .await
-        .map_err(|err| OpenError::InvalidRoots(format!("recall index query task panicked: {err}")))?
+        tokio::task::spawn_blocking(move || lock_index(&index).query_recall_index(&query))
+            .await
+            .map_err(|err| OpenError::InvalidRoots(format!("recall index query task panicked: {err}")))?
     }
 
     /// Count recall-index rows matching `query` via an index-only `COUNT(*)`,
@@ -1281,11 +1287,9 @@ impl Substrate {
     /// Runs the index scan on a blocking thread (see [`Self::query_recall_index`]).
     pub async fn count_recall_index(&self, query: RecallIndexQuery) -> SubstrateResult<usize> {
         let index = Arc::clone(&self.index);
-        tokio::task::spawn_blocking(move || {
-            index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.count_recall_index(&query)
-        })
-        .await
-        .map_err(|err| OpenError::InvalidRoots(format!("recall index count task panicked: {err}")))?
+        tokio::task::spawn_blocking(move || lock_index(&index).count_recall_index(&query))
+            .await
+            .map_err(|err| OpenError::InvalidRoots(format!("recall index count task panicked: {err}")))?
     }
 
     /// Project the entities (with aliases) for a set of memory ids in one
@@ -1297,7 +1301,7 @@ impl Substrate {
         &self,
         ids: &[String],
     ) -> SubstrateResult<BTreeMap<String, Vec<crate::model::Entity>>> {
-        self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.entities_for_memories(ids)
+        lock_index(&self.index).entities_for_memories(ids)
     }
 
     /// Query recall-index rows, including encrypted metadata-only rows.
@@ -1326,11 +1330,9 @@ impl Substrate {
     /// Runs the scan on a blocking thread (see [`Self::query_recall_index`]).
     pub async fn count_memories_by_status(&self) -> SubstrateResult<Vec<(MemoryStatus, u64)>> {
         let index = Arc::clone(&self.index);
-        tokio::task::spawn_blocking(move || {
-            index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.count_by_status()
-        })
-        .await
-        .map_err(|err| OpenError::InvalidRoots(format!("count-by-status task panicked: {err}")))?
+        tokio::task::spawn_blocking(move || lock_index(&index).count_by_status())
+            .await
+            .map_err(|err| OpenError::InvalidRoots(format!("count-by-status task panicked: {err}")))?
     }
 
     /// Serve the review queue from the derived index: the total count of
@@ -1341,11 +1343,9 @@ impl Substrate {
     /// Runs the scan on a blocking thread (see [`Self::query_recall_index`]).
     pub async fn review_queue(&self, limit: usize) -> SubstrateResult<crate::model::ReviewQueuePage> {
         let index = Arc::clone(&self.index);
-        tokio::task::spawn_blocking(move || {
-            index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.review_queue(limit)
-        })
-        .await
-        .map_err(|err| OpenError::InvalidRoots(format!("review-queue task panicked: {err}")))?
+        tokio::task::spawn_blocking(move || lock_index(&index).review_queue(limit))
+            .await
+            .map_err(|err| OpenError::InvalidRoots(format!("review-queue task panicked: {err}")))?
     }
 
     /// Count memories grouped by `(scope, canonical_namespace_id)` for namespace
@@ -1354,11 +1354,9 @@ impl Substrate {
     /// Runs the scan on a blocking thread (see [`Self::query_recall_index`]).
     pub async fn namespace_counts(&self) -> SubstrateResult<Vec<(Scope, Option<String>, u64)>> {
         let index = Arc::clone(&self.index);
-        tokio::task::spawn_blocking(move || {
-            index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.namespace_counts()
-        })
-        .await
-        .map_err(|err| OpenError::InvalidRoots(format!("namespace-counts task panicked: {err}")))?
+        tokio::task::spawn_blocking(move || lock_index(&index).namespace_counts())
+            .await
+            .map_err(|err| OpenError::InvalidRoots(format!("namespace-counts task panicked: {err}")))?
     }
 
     /// Stream every indexed entity (with aliases) as `(memory_id, Entity)`
@@ -1367,11 +1365,9 @@ impl Substrate {
     /// Runs the scan on a blocking thread (see [`Self::query_recall_index`]).
     pub async fn entity_index_rows(&self) -> SubstrateResult<Vec<(MemoryId, crate::model::Entity)>> {
         let index = Arc::clone(&self.index);
-        tokio::task::spawn_blocking(move || {
-            index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.entity_index_rows()
-        })
-        .await
-        .map_err(|err| OpenError::InvalidRoots(format!("entity-index task panicked: {err}")))?
+        tokio::task::spawn_blocking(move || lock_index(&index).entity_index_rows())
+            .await
+            .map_err(|err| OpenError::InvalidRoots(format!("entity-index task panicked: {err}")))?
     }
 
     /// Recent `recall_hit` events joined to memory summaries, newest-first,
@@ -1384,7 +1380,7 @@ impl Substrate {
         since: Option<DateTime<Utc>>,
         limit: usize,
     ) -> SubstrateResult<Vec<(String, String, i64, String, String, Option<String>)>> {
-        self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.recent_recall_hits(since, limit)
+        lock_index(&self.index).recent_recall_hits(since, limit)
     }
 
     /// Read a bounded, kind-filtered page of events from the derived SQLite
@@ -1404,7 +1400,7 @@ impl Substrate {
     ) -> SubstrateResult<Vec<crate::index::MirrorEvent>> {
         let page =
             crate::index::EventsLogPage { kind_labels, device: Some(self.device_id.as_str()), since_event_id, limit };
-        self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.events_log_page(&page)
+        lock_index(&self.index).events_log_page(&page)
     }
 
     /// Read events from the derived SQLite mirror within a time window, optionally
@@ -1415,33 +1411,29 @@ impl Substrate {
         kind_labels: Option<&[&str]>,
         since: DateTime<Utc>,
     ) -> SubstrateResult<Vec<crate::index::MirrorEvent>> {
-        self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.events_log_window(
-            kind_labels,
-            Some(self.device_id.as_str()),
-            since,
-        )
+        lock_index(&self.index).events_log_window(kind_labels, Some(self.device_id.as_str()), since)
     }
 
     /// Most recent event timestamp for a given kind label from the derived mirror.
     pub fn latest_event_ts_for_kind(&self, kind_label: &str) -> SubstrateResult<Option<DateTime<Utc>>> {
-        self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.latest_event_ts_for_kind(kind_label)
+        lock_index(&self.index).latest_event_ts_for_kind(kind_label)
     }
 
     /// Timestamp of a single event looked up by canonical event id in the mirror.
     pub fn event_ts_by_id(&self, event_id: &str) -> SubstrateResult<Option<DateTime<Utc>>> {
-        self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?.event_ts_by_id(event_id)
+        lock_index(&self.index).event_ts_by_id(event_id)
     }
 
     /// Query chunks.
     pub async fn query_chunks(&self, query: ChunkQuery) -> SubstrateResult<Vec<ChunkResult>> {
         if let (Some(triple), Some(vector)) = (query.triple.as_ref(), query.vector.as_ref()) {
-            let index = self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?;
+            let index = lock_index(&self.index);
             return Ok(index.query_vector_chunks(triple, vector, 20)?);
         }
         let Some(text) = query.text else {
             return Ok(Vec::new());
         };
-        let index = self.index.lock().map_err(|err| OpenError::InvalidRoots(err.to_string()))?;
+        let index = lock_index(&self.index);
         Ok(index.query_chunks(&text)?)
     }
 
@@ -1567,8 +1559,7 @@ impl Substrate {
 
     /// Count pending embedding jobs for the active triple (doctor backlog).
     pub fn pending_embedding_job_count(&self) -> Result<usize, VectorError> {
-        let index =
-            self.index.lock().map_err(|err| VectorError::IndexUnavailable(format!("index mutex poisoned: {err}")))?;
+        let index = lock_index(&self.index);
         let triple = index.active_embedding().clone();
         crate::index::reconcile_pending_jobs(index.connection(), &triple).map_err(Into::into)
     }
@@ -1772,18 +1763,10 @@ impl Substrate {
     }
 
     fn mirror_events_fail_soft(&self, events: &[Event]) {
-        match self.index.lock() {
-            Ok(mut index) => {
-                for event in events {
-                    if let Err(err) = index.mirror_event(event) {
-                        tracing::warn!(event_id = event.id.as_str(), "events_log SQLite mirror write failed: {err}");
-                    }
-                }
-            }
-            Err(err) => {
-                for event in events {
-                    tracing::warn!(event_id = event.id.as_str(), "events_log SQLite mirror lock failed: {err}");
-                }
+        let mut index = lock_index(&self.index);
+        for event in events {
+            if let Err(err) = index.mirror_event(event) {
+                tracing::warn!(event_id = event.id.as_str(), "events_log SQLite mirror write failed: {err}");
             }
         }
     }
@@ -1988,21 +1971,51 @@ impl Substrate {
     }
 
     fn mirror_event_fail_soft(&self, event: &Event) {
-        match self.index.lock() {
-            Ok(mut index) => {
-                if let Err(err) = index.mirror_event(event) {
-                    tracing::warn!(event_id = event.id.as_str(), "events_log SQLite mirror write failed: {err}");
-                }
-            }
-            Err(err) => {
-                tracing::warn!(event_id = event.id.as_str(), "events_log SQLite mirror lock failed: {err}");
-            }
+        let mut index = lock_index(&self.index);
+        if let Err(err) = index.mirror_event(event) {
+            tracing::warn!(event_id = event.id.as_str(), "events_log SQLite mirror write failed: {err}");
         }
     }
 
     fn read_all_event_logs(&self) -> std::io::Result<Vec<Event>> {
         read_all_event_logs_from_repo(&self.roots.repo)
     }
+}
+
+/// Lock the derived index, recovering a poisoned mutex instead of failing.
+///
+/// The guarded SQLite connection holds no Rust-side invariant a panic can tear:
+/// rusqlite `Statement`/`Transaction` are RAII types that finalize and roll back
+/// on unwind, so a connection observed after a panicked holder is still usable.
+/// Recovering from poison therefore keeps a single panicked index operation from
+/// bricking every later read/write daemon-wide. `with_index` additionally catches
+/// closure panics so the read path never poisons in the first place; this recovery
+/// is the backstop for any future holder that does not.
+fn lock_index(index: &Mutex<Index>) -> MutexGuard<'_, Index> {
+    index.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+struct QueryOnlyGuard<'connection> {
+    connection: &'connection rusqlite::Connection,
+    previous: bool,
+}
+
+impl<'connection> QueryOnlyGuard<'connection> {
+    fn enable(connection: &'connection rusqlite::Connection) -> SubstrateResult<Self> {
+        let previous = query_only_enabled(connection)?;
+        connection.pragma_update(None, "query_only", true)?;
+        Ok(Self { connection, previous })
+    }
+}
+
+impl Drop for QueryOnlyGuard<'_> {
+    fn drop(&mut self) {
+        let _ = self.connection.pragma_update(None, "query_only", self.previous);
+    }
+}
+
+fn query_only_enabled(connection: &rusqlite::Connection) -> rusqlite::Result<bool> {
+    connection.query_row("PRAGMA query_only", [], |row| row.get::<_, i64>(0)).map(|value| value != 0)
 }
 
 fn read_all_event_logs_from_repo(repo: &std::path::Path) -> std::io::Result<Vec<Event>> {

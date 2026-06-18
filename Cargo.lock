@@ -3186,6 +3186,7 @@ dependencies = [
  "memory-privacy",
  "memory-source",
  "memory-substrate",
+ "rand 0.8.6",
  "regex",
  "reqwest",
  "rusqlite",

@@ -42,7 +42,8 @@ fn print_web_response(response: anyhow::Result<ResponseEnvelope>, operation: Web
             ResponseResult::Success(ResponsePayload::WebStatus(status)) => {
                 match operation {
                     WebOperation::Enable => {
-                        let url = status.url.as_deref().unwrap_or("http://localhost:7137");
+                        let url =
+                            status.launch_url.as_deref().or(status.url.as_deref()).unwrap_or("http://localhost:7137");
                         println!("Web dashboard enabled at {url}");
                     }
                     WebOperation::Disable => println!("Web dashboard disabled"),

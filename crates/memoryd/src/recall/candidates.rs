@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
 use memory_substrate::index::Index;
@@ -151,7 +150,7 @@ pub struct StrengthHydration {
 /// function returns `false` so the caller can flag `dynamics_degraded` — never a
 /// hard recall failure (spec §3 soft-failure rule).
 pub fn hydrate_candidate_strength(
-    index: &Arc<Mutex<Index>>,
+    index: &Index,
     candidates: &mut [RecallCandidate],
     hydration: &StrengthHydration,
     now: DateTime<Utc>,
@@ -160,17 +159,6 @@ pub fn hydrate_candidate_strength(
         return true;
     }
 
-    // Reuse the substrate's live, already-initialized index connection rather than
-    // opening a fresh one per recall (which would re-run the full SCHEMA_SQL DDL
-    // batch, migration probes, and WAL pragmas every time). The lock is held only
-    // for the two read queries below, matching the substrate's own write path.
-    let index = match index.lock() {
-        Ok(index) => index,
-        Err(error) => {
-            tracing::warn!(%error, "dynamics: index mutex poisoned; ranking structural-only");
-            return false;
-        }
-    };
     let connection = index.connection();
 
     let ids = candidates.iter().map(|candidate| candidate.id.as_str()).collect::<Vec<_>>();

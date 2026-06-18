@@ -12,7 +12,7 @@ use axum::Router;
 use rust_embed::RustEmbed;
 use tokio::net::TcpListener;
 
-use crate::auth::{require_csrf, require_local_host};
+use crate::auth::{require_csrf, require_dashboard_auth, require_local_host};
 use crate::config::WebConfig;
 use crate::routes::{
     audit, audit_temporal, audit_walk, entity_detail, entity_graph, notifications_stream, policy_editor_get,
@@ -39,15 +39,13 @@ pub fn fixture_router() -> Router {
 }
 
 pub fn router_with_state(state: WebState) -> Router {
-    // Every data-bearing endpoint — GET reads and POST mutations alike — sits
-    // behind the per-dashboard bearer token. require_local_host blocks the
-    // browser DNS-rebind/cross-origin path, but loopback reachability alone does
-    // not gate *another local process* (or another user on a shared machine)
-    // from issuing a plain GET with a loopback `Host` and reading memory bodies,
-    // search results, and the audit graph. The TCP listener has no owner
-    // restriction like the daemon's 0o600 Unix socket, so the token is what
-    // closes the local cross-process read path. The token is delivered only to
-    // the legitimately-served dashboard page (injected into index.html).
+    // Every data-bearing endpoint — GET reads, POST mutations, and the live SSE
+    // stream — sits behind a launch-time dashboard auth token. `require_local_host`
+    // blocks the browser DNS-rebind/cross-origin path, but loopback reachability
+    // alone does not gate another local process (or another user on a shared
+    // machine) from issuing a plain GET with a loopback `Host`. The child process
+    // receives the auth token out-of-band from `memoryd web enable`; the token is
+    // never bootstrapped from an unauthenticated HTML response.
     let protected_routes = Router::new()
         .route("/api/status", get(status))
         .route("/api/entity-graph", get(entity_graph))
@@ -66,16 +64,20 @@ pub fn router_with_state(state: WebState) -> Router {
         .route("/api/reality-check/respond", post(reality_check_respond))
         .route("/api/review/action", post(review_action))
         .route("/api/policy-editor", post(policy_editor_post))
-        .route_layer(middleware::from_fn_with_state(state.clone(), require_csrf));
+        .route_layer(middleware::from_fn_with_state(state.clone(), require_csrf))
+        .route_layer(middleware::from_fn_with_state(state.clone(), require_dashboard_auth));
+
+    let authenticated_bootstrap_routes = Router::new()
+        .route("/", get(index))
+        .route("/api/notifications/stream", get(notifications_stream))
+        .route_layer(middleware::from_fn_with_state(state.clone(), require_dashboard_auth));
 
     Router::new()
-        // Bootstrap surfaces that must be reachable *before* the page holds the
-        // token: the HTML shell that carries the token to the browser, its static
-        // assets, and the SSE stream (EventSource cannot attach custom headers).
-        // These remain behind require_local_host but outside the bearer gate.
-        .route("/", get(index))
+        // Static assets are not data-bearing. The HTML shell and SSE stream are
+        // authenticated above; assets remain host-guarded so the browser can load
+        // them after the authenticated bootstrap sets the HttpOnly auth cookie.
         .route("/assets/{*path}", get(asset))
-        .route("/api/notifications/stream", get(notifications_stream))
+        .merge(authenticated_bootstrap_routes)
         .merge(protected_routes)
         // DNS-rebinding / cross-origin guard runs ahead of every route, closing
         // the browser cross-origin read path that the loopback bind alone cannot

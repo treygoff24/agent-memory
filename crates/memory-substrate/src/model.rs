@@ -1267,7 +1267,7 @@ pub enum AuxScope {
 }
 
 /// Read-only query over Stream A's derived recall index.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RecallIndexQuery {
     /// Optional synthetic namespace filter (`me`, `agent`, `project:<id>`, `org:<id>`).
     pub namespace_prefix: Option<String>,
@@ -1285,13 +1285,26 @@ pub struct RecallIndexQuery {
     /// (`source_session_id`, `author_harness`, `author_session_id`,
     /// `merge_diagnostics_json`) onto each row via per-row `json_extract`.
     ///
-    /// Defaults to `false`: the hot recall/ranking path reads none of these and
-    /// pays nothing for them, leaving those `RecallIndexRow` fields `None`. Only
-    /// the Stream I peer-write attribution path and the conflict-list surface,
-    /// which actually consume the identity/merge-diagnostics fields, set this so
-    /// the extra JSON parses run only when a reader needs them. `source_harness`
-    /// is always projected from its materialized column regardless of this flag.
+    /// Defaults to `true` for public API compatibility: historical default recall
+    /// rows projected these fields whenever present. Hot internal readers that do
+    /// not consume identity/diagnostics set this to `false` explicitly.
+    /// `source_harness` is always projected from its materialized column
+    /// regardless of this flag.
     pub source_identity: bool,
+}
+
+impl Default for RecallIndexQuery {
+    fn default() -> Self {
+        Self {
+            namespace_prefix: None,
+            statuses: Vec::new(),
+            passive_recall_only: false,
+            updated_since: None,
+            match_terms: Vec::new(),
+            hydrate: AuxScope::All,
+            source_identity: true,
+        }
+    }
 }
 
 /// Stream E recall-index row projected from SQLite index and auxiliary tables.

@@ -155,6 +155,6 @@ memoryd search "<the missing query>" --socket "$MEMORUM_SOCKET"
 
 - Daemon logs: `$MEMORUM_RUNTIME/logs/` (rotating files).
 - Events log: `$MEMORUM_REPO/events/<device>.jsonl` — append-only audit trail.
-- Reality Check surface (web dashboard): `memoryd web enable --socket "$MEMORUM_SOCKET" --port 7137` and visit `http://localhost:7137`.
+- Reality Check surface (web dashboard): `memoryd web enable --socket "$MEMORUM_SOCKET" --port 7137` and open the launch URL printed by the command.
 - Stream-specific runbooks: `docs/runbooks/`.
 - Project context for agents: `CLAUDE.md`.

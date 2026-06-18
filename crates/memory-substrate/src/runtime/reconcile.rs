@@ -14,7 +14,7 @@ use crate::events::{
     EventKind,
 };
 use crate::index::Index;
-use crate::markdown::{read_memory_file, read_memory_file_hash};
+use crate::markdown::{parse_memory_bytes, read_memory_file, read_memory_file_bytes};
 use crate::model::{EventId, Memory, MemoryId, MemoryStatus, OperationId, RepoPath, Sha256, TrustLevel};
 
 /// Durable pending index operation kind.
@@ -440,30 +440,32 @@ struct IndexConsistencyOutcome {
 /// - On a hash match the file is clean: skip the parse entirely and read its
 ///   quarantine flag straight from the index (which faithfully mirrors the
 ///   frontmatter for an in-sync row).
-/// - Only on a hash drift (or an unindexed file) do we parse via
-///   [`read_memory_file`], upsert, and read the quarantine flag from the parsed
-///   frontmatter.
+/// - Only on a hash drift (or an unindexed file) do we parse the already-read
+///   bytes, upsert, and read the quarantine flag from the parsed frontmatter.
 ///
-/// Drifted memories are collected during the walk and upserted as one batch via
-/// [`Index::batch_upsert_memories_with_file_hash`] — a single WAL commit cycle
-/// and a single `dropped_embedding_triples` probe for the whole drift set,
-/// instead of one transaction + one probe per drifted file. The batch path
-/// FK-guards each row's supersession edges identically to the per-row path, so a
-/// deferred [`Index::resync_supersession_edges`] pass re-adds any edge whose
-/// target landed later in the batch (idempotent `INSERT OR IGNORE`; the open-time
-/// sweep also runs it).
+/// Drifted memories stream into bounded commit chunks ([`REINDEX_COMMIT_CHUNK`])
+/// as they parse, not one transaction over the whole walk: a single commit
+/// spanning a full-corpus cold open leaves a large un-checkpointed WAL that slows
+/// the immediately-following point reads — the same `query_by_id` regression that
+/// keeps `full_reindex_from_repo` per-row. A drift set that fits in one chunk is
+/// still all-or-nothing (the buffer never flushes before a malformed file aborts
+/// the walk); a larger cold/mass-drift set commits incrementally, and because
+/// reindex is idempotent a mid-walk abort just leaves the remaining stale files
+/// for the next open. Process memory stays bounded — at most one chunk is held.
 ///
-/// Behavior-preserving: same files visited, same reindex predicate, same
-/// quarantine conflict set (still sorted+deduped), same final index state. Warm
-/// startup over an unchanged repo now does N cheap hashes instead of N full
-/// parses, one walk not two, and zero writes (no drift → empty batch).
+/// Behavior-preserving for observable outcomes: same files visited, same reindex
+/// predicate, same quarantine conflict set (still sorted+deduped), same final
+/// index state and supersession edges. Warm startup over an unchanged repo does N
+/// cheap hashes instead of N full parses, one walk not two, and zero writes (no
+/// drift → empty batch).
 fn reindex_and_scan_conflicts(
     repo: &Path,
     index: &mut Index,
 ) -> Result<IndexConsistencyOutcome, Box<dyn std::error::Error>> {
     let mut conflicts = Vec::new();
-    // Drifted/unindexed files collected during the walk, upserted as one batch.
-    let mut drifted: Vec<(Memory, Sha256)> = Vec::new();
+    let mut reindexed = 0_u32;
+    let mut has_supersession_edges = false;
+    let mut pending: Vec<(Memory, Sha256)> = Vec::new();
     // Prune `.git` before descent rather than skipping its files post-hoc: git
     // rewrites `.git/objects/**` concurrently (loose-object packing right after a
     // commit), so descending into it races `walkdir`'s readdir against git's
@@ -488,8 +490,9 @@ fn reindex_and_scan_conflicts(
         let Ok(relative_str) = repo_relative.to_str().ok_or("non-utf8 path") else { continue };
         let repo_path = RepoPath::new(relative_str);
 
-        // Cheap raw-bytes hash first; only parse when it tells us the row is stale.
-        let disk_hash = read_memory_file_hash(repo, &repo_path)?;
+        // Raw bytes are read once. Clean files pay only the hash; drifted files
+        // parse from the same bytes instead of reopening and rereading the file.
+        let (bytes, disk_hash) = read_memory_file_bytes(repo, &repo_path)?;
         let indexed = index.file_consistency_state(&repo_path);
         let quarantined = match indexed {
             Some((idx_hash, idx_quarantined)) if idx_hash == disk_hash => {
@@ -497,12 +500,19 @@ fn reindex_and_scan_conflicts(
                 idx_quarantined
             }
             _ => {
-                // Drifted or unindexed: parse, defer the upsert into the batch,
-                // read quarantine from disk.
-                let (memory, parsed_hash) = read_memory_file(repo, &repo_path)?;
+                // Drifted or unindexed: parse from the already-read bytes and buffer
+                // for the next bounded commit.
+                let memory = parse_memory_bytes(&repo_path, &bytes)?;
                 let quarantined = memory.frontmatter.status == MemoryStatus::Quarantined
                     || memory.frontmatter.trust_level == TrustLevel::Quarantined;
-                drifted.push((memory, parsed_hash));
+                if !memory.frontmatter.supersedes.is_empty() {
+                    has_supersession_edges = true;
+                }
+                pending.push((memory, disk_hash));
+                reindexed += 1;
+                if pending.len() >= REINDEX_COMMIT_CHUNK {
+                    flush_reindex_chunk(index, &mut pending)?;
+                }
                 quarantined
             }
         };
@@ -511,16 +521,10 @@ fn reindex_and_scan_conflicts(
             conflicts.push(repo_path.as_str().to_string());
         }
     }
+    flush_reindex_chunk(index, &mut pending)?;
 
-    let reindexed = drifted.len() as u32;
-    let has_supersession_edges = drifted.iter().any(|(memory, _)| !memory.frontmatter.supersedes.is_empty());
-    // One transaction + one dropped-triple probe for the whole drift set.
-    index.batch_upsert_memories_with_file_hash(
-        drifted.iter().map(|(memory, file_hash)| (memory, false, Some(file_hash))),
-    )?;
-    // The batch FK-guards each per-row supersession edge, so a supersessor
-    // upserted before its target dropped that edge; re-add now that every row in
-    // the batch exists (idempotent — open-time sweep runs it again).
+    // FK-guarded per-row supersession upsert can skip edges whose target was not
+    // yet present. Re-add now that every reindexed row is committed.
     if has_supersession_edges {
         index.resync_supersession_edges()?;
     }
@@ -528,6 +532,25 @@ fn reindex_and_scan_conflicts(
     conflicts.sort();
     conflicts.dedup();
     Ok(IndexConsistencyOutcome { reindexed, conflicts })
+}
+
+/// Upper bound on rows committed per reindex transaction.
+///
+/// One transaction over a full-corpus cold open leaves a large un-checkpointed
+/// WAL that slows the immediately-following point reads. Committing in bounded
+/// chunks lets SQLite auto-checkpoint between chunks. Sized comfortably above the
+/// drift set any single warm open is expected to carry, so the common case still
+/// commits exactly once.
+const REINDEX_COMMIT_CHUNK: usize = 512;
+
+/// Commit one buffered chunk of reindexed rows and clear the buffer.
+fn flush_reindex_chunk(index: &mut Index, pending: &mut Vec<(Memory, Sha256)>) -> rusqlite::Result<()> {
+    if pending.is_empty() {
+        return Ok(());
+    }
+    index.batch_upsert_memories_with_file_hash(pending.iter().map(|(memory, hash)| (memory, false, Some(hash))))?;
+    pending.clear();
+    Ok(())
 }
 
 /// Delete or rewrite a pending queue file after replay.

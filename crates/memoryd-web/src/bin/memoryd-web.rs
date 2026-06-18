@@ -1,14 +1,25 @@
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 
-use memoryd_web::{run_with_state, WebConfig, WebState};
+use memoryd_web::{run_with_state, DashboardAuthToken, WebConfig, WebState, DASHBOARD_AUTH_ENV};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse(std::env::args_os().skip(1))?;
+    let auth = dashboard_auth_token()?;
+    // A daemon-spawned child inherits the token via the env var and the daemon
+    // surfaces the launch URL itself. When the binary is run standalone the token
+    // is freshly generated, so we must print its launch URL here or the operator
+    // has no way to authenticate — a silent lockout.
+    if let DashboardAuth::Generated(token) = &auth {
+        eprintln!("memoryd-web: open http://localhost:{}/?auth={}", args.port, token.as_str());
+    }
+    let state = WebState::daemon(args.socket)
+        .with_policy_dir(args.repo.join("policies"))
+        .with_dashboard_auth_token(auth.into_token());
     run_with_state(
         WebConfig { enabled: true, bind_address: IpAddr::V4(Ipv4Addr::LOCALHOST), port: args.port },
-        WebState::daemon(args.socket).with_policy_dir(args.repo.join("policies")),
+        state,
         shutdown_signal(),
     )
     .await
@@ -16,6 +27,33 @@ async fn main() -> anyhow::Result<()> {
 
 async fn shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
+}
+
+/// The dashboard auth token together with how it was obtained. The provenance
+/// matters: a supplied token came from the spawning daemon (which prints its own
+/// launch URL), whereas a generated one is only known to this process and must be
+/// surfaced to the operator.
+enum DashboardAuth {
+    Supplied(DashboardAuthToken),
+    Generated(DashboardAuthToken),
+}
+
+impl DashboardAuth {
+    fn into_token(self) -> DashboardAuthToken {
+        match self {
+            Self::Supplied(token) | Self::Generated(token) => token,
+        }
+    }
+}
+
+fn dashboard_auth_token() -> anyhow::Result<DashboardAuth> {
+    match std::env::var(DASHBOARD_AUTH_ENV) {
+        Ok(value) => DashboardAuthToken::from_hex(value)
+            .map(DashboardAuth::Supplied)
+            .ok_or_else(|| anyhow::anyhow!("{DASHBOARD_AUTH_ENV} must be a 64-character hex token")),
+        Err(std::env::VarError::NotPresent) => Ok(DashboardAuth::Generated(DashboardAuthToken::generate())),
+        Err(error) => Err(error.into()),
+    }
 }
 
 struct Args {

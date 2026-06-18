@@ -12,7 +12,18 @@ use tokio::sync::Mutex;
 use crate::routes::DashboardData;
 
 pub const CSRF_HEADER: &str = "x-memorum-csrf";
+pub const DASHBOARD_AUTH_HEADER: &str = "x-memorum-dashboard-auth";
+pub const DASHBOARD_AUTH_COOKIE: &str = "memorum_web_auth";
+pub const DASHBOARD_AUTH_QUERY: &str = "auth";
+/// Re-exported from `memoryd` so the daemon (which sets this env var) and the
+/// dashboard (which reads it) share exactly one literal. A compile-time alias to
+/// the daemon's canonical const keeps the token handshake from drifting.
+pub const DASHBOARD_AUTH_ENV: &str = memoryd::WEB_AUTH_ENV;
 const CSRF_TOKEN_BYTES: usize = 32;
+const DASHBOARD_AUTH_TOKEN_BYTES: usize = 32;
+
+#[cfg(feature = "dev-fixtures")]
+pub const DEV_FIXTURE_DASHBOARD_AUTH_TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CsrfToken(String);
@@ -53,9 +64,38 @@ impl CsrfToken {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DashboardAuthToken(String);
+
+impl DashboardAuthToken {
+    pub fn generate() -> Self {
+        let mut bytes = [0_u8; DASHBOARD_AUTH_TOKEN_BYTES];
+        rand::thread_rng().fill_bytes(&mut bytes);
+        Self(hex::encode(bytes))
+    }
+
+    pub fn from_hex(value: impl Into<String>) -> Option<Self> {
+        let value = value.into();
+        if value.len() == DASHBOARD_AUTH_TOKEN_BYTES * 2 && value.chars().all(|c| c.is_ascii_hexdigit()) {
+            Some(Self(value))
+        } else {
+            None
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn constant_time_eq(&self, candidate: &str) -> bool {
+        constant_time_token_eq(self.0.as_bytes(), candidate.as_bytes())
+    }
+}
+
 #[derive(Clone)]
 pub struct WebState {
     csrf_token: CsrfToken,
+    dashboard_auth_token: DashboardAuthToken,
     review_actions: Arc<ReviewActionTracker>,
     #[cfg(feature = "dev-fixtures")]
     dashboard_data: Option<Arc<DashboardData>>,
@@ -93,6 +133,7 @@ impl WebState {
     fn fresh(daemon_socket: Option<Arc<PathBuf>>, policy_dir: Option<Arc<PathBuf>>) -> Self {
         Self {
             csrf_token: CsrfToken::generate(),
+            dashboard_auth_token: default_dashboard_auth_token(),
             review_actions: Arc::new(ReviewActionTracker::default()),
             #[cfg(feature = "dev-fixtures")]
             dashboard_data: None,
@@ -108,8 +149,17 @@ impl WebState {
         self
     }
 
+    pub fn with_dashboard_auth_token(mut self, token: DashboardAuthToken) -> Self {
+        self.dashboard_auth_token = token;
+        self
+    }
+
     pub fn csrf_token(&self) -> &CsrfToken {
         &self.csrf_token
+    }
+
+    pub fn dashboard_auth_token(&self) -> &DashboardAuthToken {
+        &self.dashboard_auth_token
     }
 
     pub fn dashboard_data(&self) -> Option<Arc<DashboardData>> {
@@ -183,6 +233,24 @@ impl Default for WebState {
     }
 }
 
+fn default_dashboard_auth_token() -> DashboardAuthToken {
+    #[cfg(feature = "dev-fixtures")]
+    {
+        DashboardAuthToken::from_hex(DEV_FIXTURE_DASHBOARD_AUTH_TOKEN).expect("fixture auth token is valid hex")
+    }
+    #[cfg(not(feature = "dev-fixtures"))]
+    {
+        DashboardAuthToken::generate()
+    }
+}
+
+fn constant_time_token_eq(expected: &[u8], candidate: &[u8]) -> bool {
+    if expected.len() != candidate.len() {
+        return false;
+    }
+    expected.ct_eq(candidate).into()
+}
+
 #[derive(Default)]
 struct ReviewActionTracker {
     active: Mutex<HashSet<String>>,
@@ -244,5 +312,20 @@ mod tests {
         // Length is public and fixed; the constant-time guard relies on it.
         let token = CsrfToken::generate();
         assert_eq!(token.as_str().len(), CSRF_TOKEN_BYTES * 2);
+    }
+
+    #[test]
+    fn dashboard_auth_token_rejects_non_hex_or_wrong_length() {
+        assert!(DashboardAuthToken::from_hex("a".repeat(DASHBOARD_AUTH_TOKEN_BYTES * 2)).is_some());
+        assert!(DashboardAuthToken::from_hex("a".repeat(DASHBOARD_AUTH_TOKEN_BYTES * 2 - 1)).is_none());
+        assert!(DashboardAuthToken::from_hex("z".repeat(DASHBOARD_AUTH_TOKEN_BYTES * 2)).is_none());
+    }
+
+    #[cfg(feature = "dev-fixtures")]
+    #[test]
+    fn dev_fixture_dashboard_auth_token_is_valid() {
+        let token = DashboardAuthToken::from_hex(DEV_FIXTURE_DASHBOARD_AUTH_TOKEN)
+            .expect("fixture dashboard auth token must be valid");
+        assert_eq!(token.as_str().len(), DASHBOARD_AUTH_TOKEN_BYTES * 2);
     }
 }

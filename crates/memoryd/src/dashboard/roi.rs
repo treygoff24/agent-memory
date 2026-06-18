@@ -15,6 +15,7 @@ pub async fn dashboard_roi(substrate: &Substrate, window_days: u16) -> Result<Da
             // ROI aggregation reads only scalar fields plus `row.tags` (to flag
             // dreaming rows); aliases and entities are never read, so skip them.
             hydrate: AuxScope::Tags,
+            source_identity: false,
             ..RecallIndexQuery::default()
         })
         .await

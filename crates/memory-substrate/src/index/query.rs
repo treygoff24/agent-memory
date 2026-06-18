@@ -242,19 +242,26 @@ impl Index {
     /// Batched sibling of [`Self::update_embedding`] for the drain worker.
     ///
     /// Applies a slice of embedding updates, returning one `Result` per input in
-    /// positional order. Each update is validated and committed independently, so
-    /// per-chunk outcomes — including the benign `StaleChunk` skip — are
-    /// byte-identical to calling [`Self::update_embedding`] once per update. The
-    /// only difference is amortization: the per-chunk metadata/job-resolution
-    /// writes share a single SQLite transaction (one WAL commit) instead of one
+    /// positional order. Each chunk's metadata + job resolution runs in its own
+    /// savepoint inside one shared transaction, so a per-chunk failure rolls back
+    /// only that chunk — including the benign `StaleChunk` skip, the per-chunk
+    /// outcome matches calling [`Self::update_embedding`] once per update. The win
+    /// is amortization: one WAL commit for the whole metadata phase instead of one
     /// transaction per chunk.
+    ///
+    /// The one divergence from the per-call path is the outer commit boundary: if
+    /// the final shared `COMMIT` fails (e.g. `SQLITE_FULL`), every savepoint-applied
+    /// chunk rolls back together and is reported `IndexUnavailable`, whereas N
+    /// separate calls would have durably committed the earlier chunks. The drain
+    /// worker treats that as a retryable failure and re-enqueues, so the only cost
+    /// is repeated work — never a lost or phantom embedding.
     ///
     /// Spec §10.2.1 step 4 ordering is preserved: every vector payload is upserted
     /// OUTSIDE the transaction first, then the `chunk_embedding_meta` +
     /// `pending_embedding_jobs` rows for the chunks that upserted cleanly are
-    /// written in one transaction. A chunk whose validation or vector upsert fails
-    /// contributes its error to the result vector and is excluded from the
-    /// transaction, exactly as the per-chunk path would leave it.
+    /// written in the shared transaction. A chunk whose validation or vector upsert
+    /// fails contributes its error to the result vector and is excluded, exactly as
+    /// the per-chunk path would leave it.
     pub fn update_embeddings_batch(&mut self, updates: &[EmbeddingUpdate]) -> Vec<Result<(), VectorError>> {
         let mut results: Vec<Result<(), VectorError>> = Vec::with_capacity(updates.len());
         // Indices of updates that validated and upserted their vector cleanly and
@@ -291,7 +298,7 @@ impl Index {
         // every chunk that upserted cleanly. If opening or committing the txn
         // fails, downgrade the affected entries to that error so callers do not
         // observe a vector without its resolved job.
-        let txn = match self.connection.transaction() {
+        let mut txn = match self.connection.transaction() {
             Ok(txn) => txn,
             Err(err) => {
                 // `VectorError` is not `Clone` (its rusqlite/serde sources are
@@ -306,9 +313,17 @@ impl Index {
         };
         for idx in &committed_indices {
             let update = &updates[*idx];
-            if let Err(err) =
-                upsert_chunk_embedding_meta(&txn, update).and_then(|()| resolve_pending_embedding_job(&txn, update))
-            {
+            // Isolate each chunk in its own savepoint so a failed metadata/job write
+            // rolls back only that chunk — a chunk reported as failed never leaves a
+            // committed `chunk_embedding_meta` row behind, matching `update_embedding`.
+            let outcome = (|| {
+                let savepoint = txn.savepoint()?;
+                upsert_chunk_embedding_meta(&savepoint, update)?;
+                resolve_pending_embedding_job(&savepoint, update)?;
+                savepoint.commit()?;
+                Ok(())
+            })();
+            if let Err(err) = outcome {
                 results[*idx] = Err(err);
             }
         }
@@ -385,15 +400,7 @@ impl Index {
     /// Returns the number of edge rows inserted by this pass (edges already
     /// present, or whose target is still unindexed, contribute zero).
     pub fn resync_supersession_edges(&mut self) -> rusqlite::Result<usize> {
-        let inserted = self.connection.execute(
-            "INSERT OR IGNORE INTO memory_supersession(memory_id, supersedes_id)
-             SELECT memories.id, superseded.value
-             FROM memories, json_each(memories.frontmatter_json, '$.supersedes') AS superseded
-             WHERE superseded.value IS NOT NULL
-               AND EXISTS (SELECT 1 FROM memories AS target WHERE target.id = superseded.value)",
-            [],
-        )?;
-        Ok(inserted)
+        self.connection.execute(resync_supersession_edges_sql(), [])
     }
 
     /// Supersession targets absent from the current `memories` table.
@@ -944,26 +951,7 @@ impl Index {
     /// `is_quarantined` mirrors the prior `scan_blocking_conflicts` predicate:
     /// either `status` or `trust_level` equal to `quarantined`.
     pub fn file_consistency_state(&self, path: &RepoPath) -> Option<(crate::model::Sha256, bool)> {
-        match self.connection.query_row(
-            "SELECT file_hash, status, trust_level FROM memories WHERE path = ?1",
-            [path.as_str()],
-            |row| {
-                let hash: String = row.get(0)?;
-                let status: String = row.get(1)?;
-                let trust_level: String = row.get(2)?;
-                Ok((hash, status, trust_level))
-            },
-        ) {
-            Ok((hash, status, trust_level)) => {
-                let quarantined = status == "quarantined" || trust_level == "quarantined";
-                Some((crate::model::Sha256::new(hash), quarantined))
-            }
-            Err(rusqlite::Error::QueryReturnedNoRows) => None,
-            Err(error) => {
-                tracing::warn!(path = path.as_str(), %error, "index consistency lookup failed; forcing safe reindex");
-                None
-            }
-        }
+        file_consistency_state_in_connection(&self.connection, path)
     }
 
     /// Query memories by structured filter.
@@ -1472,10 +1460,10 @@ fn upsert_vector_payload(
 }
 
 /// Record that a chunk was embedded: upsert `chunk_embedding_meta`.
-fn upsert_chunk_embedding_meta(txn: &Transaction<'_>, update: &EmbeddingUpdate) -> Result<(), VectorError> {
+fn upsert_chunk_embedding_meta(conn: &Connection, update: &EmbeddingUpdate) -> Result<(), VectorError> {
     let vector_table = crate::index::sqlite_vec::vector_table_name(&update.triple);
     let embedded_at = chrono::Utc::now().to_rfc3339();
-    txn.execute(
+    conn.execute(
         "INSERT INTO chunk_embedding_meta(
              chunk_id, provider, model_ref, dimension, vector_table, embedded_at, content_hash
          ) VALUES (?1,?2,?3,?4,?5,?6,?7)
@@ -1497,8 +1485,8 @@ fn upsert_chunk_embedding_meta(txn: &Transaction<'_>, update: &EmbeddingUpdate) 
 }
 
 /// Delete the pending job that triggered this embedding update.
-fn resolve_pending_embedding_job(txn: &Transaction<'_>, update: &EmbeddingUpdate) -> Result<(), VectorError> {
-    txn.execute(
+fn resolve_pending_embedding_job(conn: &Connection, update: &EmbeddingUpdate) -> Result<(), VectorError> {
+    conn.execute(
         "DELETE FROM pending_embedding_jobs
          WHERE chunk_id=?1 AND provider=?2 AND model_ref=?3 AND dimension=?4",
         params![
@@ -1784,6 +1772,37 @@ fn sync_supersession(txn: &Transaction<'_>, memory_id: &str, supersedes: &[Memor
         stmt.execute(params![memory_id, supersedes_id.as_str()])?;
     }
     Ok(())
+}
+
+fn file_consistency_state_in_connection(connection: &Connection, path: &RepoPath) -> Option<(Sha256, bool)> {
+    match connection.query_row(
+        "SELECT file_hash, status, trust_level FROM memories WHERE path = ?1",
+        [path.as_str()],
+        |row| {
+            let hash: String = row.get(0)?;
+            let status: String = row.get(1)?;
+            let trust_level: String = row.get(2)?;
+            Ok((hash, status, trust_level))
+        },
+    ) {
+        Ok((hash, status, trust_level)) => {
+            let quarantined = status == "quarantined" || trust_level == "quarantined";
+            Some((Sha256::new(hash), quarantined))
+        }
+        Err(rusqlite::Error::QueryReturnedNoRows) => None,
+        Err(error) => {
+            tracing::warn!(path = path.as_str(), %error, "index consistency lookup failed; forcing safe reindex");
+            None
+        }
+    }
+}
+
+fn resync_supersession_edges_sql() -> &'static str {
+    "INSERT OR IGNORE INTO memory_supersession(memory_id, supersedes_id)
+     SELECT memories.id, superseded.value
+     FROM memories, json_each(memories.frontmatter_json, '$.supersedes') AS superseded
+     WHERE superseded.value IS NOT NULL
+       AND EXISTS (SELECT 1 FROM memories AS target WHERE target.id = superseded.value)"
 }
 
 /// Delete orphan vectors/meta rows and enqueue missing embeddings for the active triple.

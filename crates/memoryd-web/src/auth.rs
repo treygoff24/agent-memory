@@ -1,12 +1,54 @@
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::{header, HeaderMap, Request, StatusCode};
+use axum::http::{header, HeaderMap, Method, Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
 
-use crate::state::WebState;
+use crate::state::{WebState, DASHBOARD_AUTH_COOKIE, DASHBOARD_AUTH_HEADER, DASHBOARD_AUTH_QUERY};
 
-pub use crate::state::CSRF_HEADER;
+pub use crate::state::{CSRF_HEADER, DASHBOARD_AUTH_HEADER as AUTH_HEADER};
+
+const AUTH_COOKIE_MAX_AGE_SECONDS: u32 = 60 * 60 * 24;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DashboardAuthSource {
+    Cookie,
+    Header,
+    Query,
+}
+
+pub async fn require_dashboard_auth(
+    State(state): State<WebState>,
+    request: Request<Body>,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    let Some(source) = dashboard_auth_source(&state, &request) else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+
+    if source == DashboardAuthSource::Query {
+        // A bearer token in the query string must never ride along on a
+        // state-changing request: it would leak into access logs, the `Referer`
+        // header, and browser history. For GET/HEAD we can recover by
+        // redirecting to a URL without `?auth=` while setting the auth cookie;
+        // for POST/PUT/DELETE/PATCH a redirect would drop the request body, so
+        // we reject outright. The client must authenticate via the
+        // `Authorization`-style header or the cookie instead.
+        if matches!(*request.method(), Method::GET | Method::HEAD) {
+            return dashboard_auth_redirect_response(&state, &request);
+        }
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let mut response = next.run(request).await;
+    // Only a header-authenticated request reaches here without a cookie (query
+    // auth always redirected or was rejected above); mint one so the browser
+    // carries the session forward without re-sending the header.
+    if source == DashboardAuthSource::Header {
+        set_dashboard_auth_cookie(&mut response, state.dashboard_auth_token().as_str())?;
+    }
+    Ok(response)
+}
 
 pub async fn require_csrf(
     State(state): State<WebState>,
@@ -17,6 +59,85 @@ pub async fn require_csrf(
         Ok(next.run(request).await)
     } else {
         Err(StatusCode::FORBIDDEN)
+    }
+}
+
+fn dashboard_auth_source(state: &WebState, request: &Request<Body>) -> Option<DashboardAuthSource> {
+    let expected = state.dashboard_auth_token();
+    if request
+        .headers()
+        .get(DASHBOARD_AUTH_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| expected.constant_time_eq(value))
+    {
+        return Some(DashboardAuthSource::Header);
+    }
+
+    if auth_cookie_value(request.headers()).is_some_and(|value| expected.constant_time_eq(value)) {
+        return Some(DashboardAuthSource::Cookie);
+    }
+
+    if auth_query_value(request.uri().query()).is_some_and(|value| expected.constant_time_eq(value)) {
+        return Some(DashboardAuthSource::Query);
+    }
+
+    None
+}
+
+fn auth_cookie_value(headers: &HeaderMap) -> Option<&str> {
+    headers.get(header::COOKIE).and_then(|value| value.to_str().ok()).and_then(|cookies| {
+        cookies.split(';').find_map(|cookie| {
+            let (name, value) = cookie.trim().split_once('=')?;
+            (name == DASHBOARD_AUTH_COOKIE).then_some(value)
+        })
+    })
+}
+
+fn auth_query_value(query: Option<&str>) -> Option<&str> {
+    query?.split('&').find_map(|pair| {
+        let (name, value) = pair.split_once('=')?;
+        (name == DASHBOARD_AUTH_QUERY).then_some(value)
+    })
+}
+
+fn dashboard_auth_cookie(token: &str) -> String {
+    format!("{DASHBOARD_AUTH_COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={AUTH_COOKIE_MAX_AGE_SECONDS}")
+}
+
+fn dashboard_auth_redirect_response(state: &WebState, request: &Request<Body>) -> Result<Response, StatusCode> {
+    let mut response = Response::builder()
+        .status(StatusCode::SEE_OTHER)
+        .header(header::LOCATION, uri_without_dashboard_auth_query(request))
+        .body(Body::empty())
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    set_dashboard_auth_cookie(&mut response, state.dashboard_auth_token().as_str())?;
+    Ok(response)
+}
+
+fn set_dashboard_auth_cookie(response: &mut Response, token: &str) -> Result<(), StatusCode> {
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        dashboard_auth_cookie(token).parse().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+    );
+    Ok(())
+}
+
+fn uri_without_dashboard_auth_query(request: &Request<Body>) -> String {
+    let path = request.uri().path();
+    let Some(query) = request.uri().query() else {
+        return path.to_owned();
+    };
+    let filtered = query
+        .split('&')
+        .filter(|pair| {
+            pair.split_once('=').map_or(*pair != DASHBOARD_AUTH_QUERY, |(name, _)| name != DASHBOARD_AUTH_QUERY)
+        })
+        .collect::<Vec<_>>()
+        .join("&");
+    if filtered.is_empty() {
+        path.to_owned()
+    } else {
+        format!("{path}?{filtered}")
     }
 }
 
@@ -109,7 +230,9 @@ fn port_suffix_is_valid(suffix: &str) -> bool {
 }
 
 fn is_loopback_host(host: &str) -> bool {
-    matches!(host, "127.0.0.1" | "::1" | "localhost")
+    // Host names are case-insensitive (RFC 3986/7230), so `LOCALHOST` is the
+    // same loopback host as `localhost`. The IP literals stay byte-exact.
+    host == "127.0.0.1" || host == "::1" || host.eq_ignore_ascii_case("localhost")
 }
 
 /// True when a full `Origin`/`Referer` value resolves to a loopback host.
@@ -125,4 +248,36 @@ fn origin_is_loopback(origin: &str) -> bool {
     // Strip any path/query so only the authority remains.
     let authority = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
     is_loopback_authority(authority)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loopback_authority_matches_localhost_case_insensitively() {
+        // Host names are case-insensitive, so an uppercase `LOCALHOST` is still
+        // the loopback host and must be accepted.
+        assert!(is_loopback_authority("LOCALHOST:7137"));
+        assert!(is_loopback_authority("Localhost"));
+        assert!(is_loopback_authority("127.0.0.1:7137"));
+        assert!(is_loopback_authority("[::1]:7137"));
+    }
+
+    #[test]
+    fn loopback_authority_rejects_non_loopback_host() {
+        // No regression / no bypass: a genuinely external host stays rejected,
+        // including look-alikes that merely contain the loopback name.
+        assert!(!is_loopback_authority("evil.com:7137"));
+        assert!(!is_loopback_authority("localhost.evil.com"));
+        assert!(!is_loopback_authority("notlocalhost"));
+        assert!(!is_loopback_authority("10.0.0.1"));
+    }
+
+    #[test]
+    fn origin_loopback_matches_uppercase_localhost() {
+        assert!(origin_is_loopback("http://LOCALHOST:7137"));
+        assert!(!origin_is_loopback("http://evil.com"));
+        assert!(!origin_is_loopback("null"));
+    }
 }

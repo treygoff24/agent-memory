@@ -6,7 +6,7 @@
 
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Request, StatusCode};
-use memoryd_web::fixture_router;
+use memoryd_web::{fixture_router, DEV_FIXTURE_DASHBOARD_AUTH_TOKEN};
 use tower::ServiceExt;
 
 const RESPONSE_LIMIT: usize = 64 * 1024;
@@ -28,13 +28,20 @@ async fn status_for(headers: &[(&str, &str)]) -> StatusCode {
     let app = fixture_router();
     let token = fetch_csrf_token(app.clone()).await;
     let mut with_token: Vec<(&str, &str)> = headers.to_vec();
+    with_token.push(("x-memorum-dashboard-auth", DEV_FIXTURE_DASHBOARD_AUTH_TOKEN));
     with_token.push(("x-memorum-csrf", &token));
     app.oneshot(get_with_headers(DATA_ROUTE, &with_token)).await.expect("request succeeds").status()
 }
 
 async fn fetch_csrf_token(app: axum::Router) -> String {
     let response = app
-        .oneshot(Request::builder().uri("/").body(Body::empty()).expect("request builds"))
+        .oneshot(
+            Request::builder()
+                .uri("/")
+                .header("x-memorum-dashboard-auth", DEV_FIXTURE_DASHBOARD_AUTH_TOKEN)
+                .body(Body::empty())
+                .expect("request builds"),
+        )
         .await
         .expect("request succeeds");
     let bytes = to_bytes(response.into_body(), RESPONSE_LIMIT).await.expect("body bytes");
@@ -118,6 +125,7 @@ async fn test_missing_host_is_allowed_for_loopback_clients() {
         .oneshot(
             Request::builder()
                 .uri("/api/status")
+                .header("x-memorum-dashboard-auth", DEV_FIXTURE_DASHBOARD_AUTH_TOKEN)
                 .header("x-memorum-csrf", token)
                 .body(Body::empty())
                 .expect("request builds"),
@@ -137,6 +145,7 @@ async fn test_csrf_post_still_rejected_under_loopback_host() {
                 .method("POST")
                 .uri("/api/review/action")
                 .header("host", "127.0.0.1:7137")
+                .header("x-memorum-dashboard-auth", DEV_FIXTURE_DASHBOARD_AUTH_TOKEN)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(r#"{"id":"x","action":"approve"}"#))
                 .expect("request builds"),

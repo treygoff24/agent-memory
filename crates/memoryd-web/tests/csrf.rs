@@ -5,7 +5,7 @@
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Request, StatusCode};
 use memoryd_web::config::{WebConfig, WebConfigError};
-use memoryd_web::fixture_router;
+use memoryd_web::{fixture_router, DEV_FIXTURE_DASHBOARD_AUTH_TOKEN};
 use serde_json::json;
 use tower::ServiceExt;
 
@@ -44,10 +44,7 @@ async fn test_post_with_correct_csrf_token_succeeds() {
 #[tokio::test]
 async fn test_csrf_token_in_initial_html() {
     let app = fixture_router();
-    let response = app
-        .oneshot(Request::builder().uri("/").body(Body::empty()).expect("request builds"))
-        .await
-        .expect("request succeeds");
+    let response = app.oneshot(authenticated_get("/")).await.expect("request succeeds");
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = response_body(response).await;
@@ -127,6 +124,7 @@ async fn test_spec_api_get_routes_return_json() {
             .oneshot(
                 Request::builder()
                     .uri(route)
+                    .header("x-memorum-dashboard-auth", DEV_FIXTURE_DASHBOARD_AUTH_TOKEN)
                     .header("x-memorum-csrf", &token)
                     .body(Body::empty())
                     .expect("request builds"),
@@ -140,9 +138,9 @@ async fn test_spec_api_get_routes_return_json() {
 }
 
 #[tokio::test]
-async fn test_spec_api_get_routes_require_csrf_token() {
-    // Loopback reachability alone must not surface memory data. A GET with a
-    // valid loopback Host but no bearer token is rejected before the handler,
+async fn test_spec_api_get_routes_require_dashboard_auth() {
+    // Loopback reachability alone must not surface memory data. A GET without
+    // the launch-time dashboard auth token is rejected before the handler,
     // closing the local cross-process read path require_local_host leaves open.
     let app = fixture_router();
 
@@ -153,7 +151,28 @@ async fn test_spec_api_get_routes_require_csrf_token() {
             .await
             .expect("request succeeds");
 
-        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{route} must require the bearer token");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{route} must require dashboard auth");
+    }
+}
+
+#[tokio::test]
+async fn test_spec_api_get_routes_require_csrf_token_after_dashboard_auth() {
+    let app = fixture_router();
+
+    for route in PROTECTED_GET_ROUTES {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(route)
+                    .header("x-memorum-dashboard-auth", DEV_FIXTURE_DASHBOARD_AUTH_TOKEN)
+                    .body(Body::empty())
+                    .expect("request builds"),
+            )
+            .await
+            .expect("request succeeds");
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{route} must require the CSRF token");
     }
 }
 
@@ -167,6 +186,7 @@ async fn test_spec_api_get_routes_reject_wrong_csrf_token() {
             .oneshot(
                 Request::builder()
                     .uri(route)
+                    .header("x-memorum-dashboard-auth", DEV_FIXTURE_DASHBOARD_AUTH_TOKEN)
                     .header("x-memorum-csrf", "wrong-token")
                     .body(Body::empty())
                     .expect("request builds"),
@@ -179,9 +199,21 @@ async fn test_spec_api_get_routes_reject_wrong_csrf_token() {
 }
 
 #[tokio::test]
-async fn test_bootstrap_routes_do_not_require_csrf_token() {
-    // The HTML shell and the SSE stream must be reachable before the page holds
-    // the token. They stay behind require_local_host but outside the bearer gate.
+async fn test_bootstrap_routes_require_dashboard_auth_but_not_csrf() {
+    // The HTML shell and the SSE stream are not CSRF-gated because they
+    // bootstrap the browser page, but they are still behind the launch-time
+    // dashboard auth token.
+    let app = fixture_router();
+
+    let index = app.clone().oneshot(authenticated_get("/")).await.expect("request succeeds");
+    assert_eq!(index.status(), StatusCode::OK, "/ must accept auth without CSRF");
+
+    let stream = app.oneshot(authenticated_get("/api/notifications/stream")).await.expect("request succeeds");
+    assert_eq!(stream.status(), StatusCode::OK, "/api/notifications/stream must accept auth without CSRF");
+}
+
+#[tokio::test]
+async fn test_bootstrap_routes_do_not_leak_csrf_without_dashboard_auth() {
     let app = fixture_router();
 
     let index = app
@@ -189,13 +221,84 @@ async fn test_bootstrap_routes_do_not_require_csrf_token() {
         .oneshot(Request::builder().uri("/").body(Body::empty()).expect("request builds"))
         .await
         .expect("request succeeds");
-    assert_eq!(index.status(), StatusCode::OK, "/ must not require the bearer token");
+    assert_eq!(index.status(), StatusCode::UNAUTHORIZED);
+    assert!(!response_body(index).await.contains(r#"name="csrf-token""#));
 
     let stream = app
         .oneshot(Request::builder().uri("/api/notifications/stream").body(Body::empty()).expect("request builds"))
         .await
         .expect("request succeeds");
-    assert_ne!(stream.status(), StatusCode::FORBIDDEN, "/api/notifications/stream must not require the bearer token");
+    assert_eq!(stream.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_query_dashboard_auth_redirects_to_cookie_without_leaking_csrf() {
+    let app = fixture_router();
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/?auth={DEV_FIXTURE_DASHBOARD_AUTH_TOKEN}"))
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("request succeeds");
+
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(response.headers().get(header::LOCATION).and_then(|value| value.to_str().ok()), Some("/"));
+    let cookie = response
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .expect("auth cookie is set")
+        .to_owned();
+    assert!(cookie.contains("HttpOnly"), "{cookie}");
+    assert!(cookie.contains("SameSite=Strict"), "{cookie}");
+
+    let cookie_pair = cookie.split(';').next().expect("name=value cookie").to_owned();
+    let follow = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/")
+                .header(header::COOKIE, &cookie_pair)
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("request succeeds");
+    assert_eq!(follow.status(), StatusCode::OK);
+    let html = response_body(follow).await;
+    let csrf = csrf_token_from_html(&html);
+    assert_eq!(csrf.len(), 64);
+
+    let api = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/status")
+                .header(header::COOKIE, &cookie_pair)
+                .header("x-memorum-csrf", csrf)
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("request succeeds");
+    assert_eq!(api.status(), StatusCode::OK);
+    assert_json(api, "/api/status").await;
+
+    let stream = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/notifications/stream")
+                .header(header::COOKIE, &cookie_pair)
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("request succeeds");
+    assert_eq!(stream.status(), StatusCode::OK);
 }
 
 #[tokio::test]
@@ -207,6 +310,7 @@ async fn test_reality_check_post_with_correct_csrf_token_succeeds() {
             Request::builder()
                 .method("POST")
                 .uri("/api/reality-check/respond")
+                .header("x-memorum-dashboard-auth", DEV_FIXTURE_DASHBOARD_AUTH_TOKEN)
                 .header("x-memorum-csrf", token)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(json!({"memory_id": REVIEWABLE_MEMORY_ID, "action": "skip_this_week"}).to_string()))
@@ -226,6 +330,7 @@ async fn test_policy_editor_post_without_csrf_header_returns_403() {
             Request::builder()
                 .method("POST")
                 .uri("/api/policy-editor")
+                .header("x-memorum-dashboard-auth", DEV_FIXTURE_DASHBOARD_AUTH_TOKEN)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(json!({"raw_yaml": "name: project-standard\n"}).to_string()))
                 .expect("request builds"),
@@ -245,6 +350,7 @@ async fn test_policy_editor_post_with_correct_csrf_token_reaches_handler() {
             Request::builder()
                 .method("POST")
                 .uri("/api/policy-editor")
+                .header("x-memorum-dashboard-auth", DEV_FIXTURE_DASHBOARD_AUTH_TOKEN)
                 .header("x-memorum-csrf", token)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
@@ -263,8 +369,11 @@ async fn test_policy_editor_post_with_correct_csrf_token_reaches_handler() {
 }
 
 fn post_review_action(csrf_token: Option<&str>, id: &str) -> Request<Body> {
-    let mut builder =
-        Request::builder().method("POST").uri("/api/review/action").header(header::CONTENT_TYPE, "application/json");
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri("/api/review/action")
+        .header("x-memorum-dashboard-auth", DEV_FIXTURE_DASHBOARD_AUTH_TOKEN)
+        .header(header::CONTENT_TYPE, "application/json");
 
     if let Some(token) = csrf_token {
         builder = builder.header("x-memorum-csrf", token);
@@ -283,12 +392,17 @@ fn post_review_action(csrf_token: Option<&str>, id: &str) -> Request<Body> {
 }
 
 async fn fetch_csrf_token(app: axum::Router) -> String {
-    let response = app
-        .oneshot(Request::builder().uri("/").body(Body::empty()).expect("request builds"))
-        .await
-        .expect("request succeeds");
+    let response = app.oneshot(authenticated_get("/")).await.expect("request succeeds");
     let body = response_body(response).await;
     csrf_token_from_html(&body).to_owned()
+}
+
+fn authenticated_get(uri: &str) -> Request<Body> {
+    Request::builder()
+        .uri(uri)
+        .header("x-memorum-dashboard-auth", DEV_FIXTURE_DASHBOARD_AUTH_TOKEN)
+        .body(Body::empty())
+        .expect("request builds")
 }
 
 async fn assert_json(response: axum::response::Response, route: &str) {

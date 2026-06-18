@@ -1,5 +1,7 @@
 use chrono::{DateTime, Utc};
-use memory_substrate::{AuxScope, MemoryId, MemoryStatus, RecallIndexQuery, Scope, Substrate, SubstrateResult};
+use memory_substrate::{
+    AuxScope, MemoryId, MemoryStatus, OpenError, RecallIndexQuery, Scope, Substrate, SubstrateResult,
+};
 
 use crate::protocol::{RealityCheckCompletion, RealityCheckItem, RealityCheckResponse, RespondRefusalKind};
 use crate::reality_check::{score_memories_at, ScoredMemory, ScoringConfig, DEFAULT_TOP_N};
@@ -227,12 +229,20 @@ impl<'a> RcSessionHandler<'a> {
                 // Reality-check scoring reads only scalar row fields; it never
                 // touches tags/aliases/entities, so skip all hydration.
                 hydrate: AuxScope::None,
+                source_identity: false,
                 ..RecallIndexQuery::default()
             })
             .await?;
         let total_scored = rows.len();
         let config = ScoringConfig::with_top_n(limit.unwrap_or(DEFAULT_TOP_N));
-        let scored = score_memories_at(&rows, self.substrate, &config, now)?;
+        // Run the synchronous SQLite scoring (mutex lock + several queries) on the
+        // blocking pool rather than the async runtime thread, matching the recall
+        // path. A scoring panic surfaces as a join error here instead of aborting the
+        // worker; `with_index` keeps the shared index mutex sound regardless.
+        let substrate = self.substrate.clone();
+        let scored = tokio::task::spawn_blocking(move || score_memories_at(&rows, &substrate, &config, now))
+            .await
+            .map_err(|err| OpenError::InvalidRoots(format!("reality-check scoring task panicked: {err}")))??;
         Ok(RcSessionItems { total_scored, items: scored.into_iter().map(scored_item_to_wire).collect() })
     }
 

@@ -7,7 +7,7 @@ use memory_substrate::{
     TrustLevel, WriteMode, WritePolicy, WriteRequest,
 };
 use memoryd::server::{serve_substrate_with, ServerOptions};
-use memoryd_web::{router_with_state, WebState};
+use memoryd_web::{router_with_state, WebState, DEV_FIXTURE_DASHBOARD_AUTH_TOKEN};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use tokio::net::UnixStream;
@@ -113,7 +113,12 @@ async fn get_json(socket: &std::path::Path, route: &str) -> (StatusCode, Value) 
     let token = fetch_csrf_token(app.clone()).await;
     let response = app
         .oneshot(
-            Request::builder().uri(route).header("x-memorum-csrf", token).body(Body::empty()).expect("request builds"),
+            Request::builder()
+                .uri(route)
+                .header("x-memorum-dashboard-auth", DEV_FIXTURE_DASHBOARD_AUTH_TOKEN)
+                .header("x-memorum-csrf", token)
+                .body(Body::empty())
+                .expect("request builds"),
         )
         .await
         .expect("request succeeds");
@@ -123,7 +128,13 @@ async fn get_json(socket: &std::path::Path, route: &str) -> (StatusCode, Value) 
 
 async fn fetch_csrf_token(app: axum::Router) -> String {
     let response = app
-        .oneshot(Request::builder().uri("/").body(Body::empty()).expect("request builds"))
+        .oneshot(
+            Request::builder()
+                .uri("/")
+                .header("x-memorum-dashboard-auth", DEV_FIXTURE_DASHBOARD_AUTH_TOKEN)
+                .body(Body::empty())
+                .expect("request builds"),
+        )
         .await
         .expect("request succeeds");
     let html = response_body(response).await;

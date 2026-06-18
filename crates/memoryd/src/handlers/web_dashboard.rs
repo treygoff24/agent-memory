@@ -2,13 +2,20 @@
 //! spawned `memoryd-web` process, and the enable/disable/status request handlers.
 
 use super::*;
+use rand::RngCore;
 
 const WEB_DASHBOARD_READY_TIMEOUT: Duration = Duration::from_millis(750);
 const WEB_DASHBOARD_READY_POLL: Duration = Duration::from_millis(25);
+const WEB_AUTH_TOKEN_BYTES: usize = 32;
+/// Canonical name of the env var carrying the dashboard auth token from the
+/// daemon to the spawned `memoryd-web` child. Re-exported as `memoryd::WEB_AUTH_ENV`
+/// and consumed verbatim by `memoryd-web` so both sides of the handshake share one
+/// literal — a one-sided rename would break the token handoff silently.
+pub const WEB_AUTH_ENV: &str = "MEMORUM_WEB_AUTH_TOKEN";
 
 trait WebDashboardLauncher: std::fmt::Debug + Send + Sync {
     fn ensure_port_available(&self, port: u16) -> Result<(), String>;
-    fn spawn(&self, socket_path: &str, port: u16, repo: &Path) -> Result<Box<dyn WebDashboardChild>, String>;
+    fn spawn(&self, config: WebDashboardSpawnConfig<'_>) -> Result<Box<dyn WebDashboardChild>, String>;
     fn wait_until_ready(&self, port: u16, child: &mut dyn WebDashboardChild) -> Result<(), String>;
 }
 
@@ -26,15 +33,16 @@ impl WebDashboardLauncher for OsWebDashboardLauncher {
         ensure_web_dashboard_port_available(port)
     }
 
-    fn spawn(&self, socket_path: &str, port: u16, repo: &Path) -> Result<Box<dyn WebDashboardChild>, String> {
+    fn spawn(&self, config: WebDashboardSpawnConfig<'_>) -> Result<Box<dyn WebDashboardChild>, String> {
         let binary = resolve_memoryd_web_binary()?;
         let child = Command::new(binary)
             .arg("--socket")
-            .arg(socket_path)
+            .arg(config.socket_path)
             .arg("--port")
-            .arg(port.to_string())
+            .arg(config.port.to_string())
             .arg("--repo")
-            .arg(repo)
+            .arg(config.repo)
+            .env(WEB_AUTH_ENV, config.auth_token)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -71,6 +79,7 @@ impl WebDashboardChild for OsWebDashboardChild {
 pub(crate) struct WebDashboardRuntime {
     port: Option<u16>,
     enabled_at: Option<chrono::DateTime<chrono::Utc>>,
+    auth_token: Option<String>,
     child: Option<Box<dyn WebDashboardChild>>,
     launcher: Arc<dyn WebDashboardLauncher>,
 }
@@ -82,16 +91,24 @@ struct WebDashboardLaunchConfig<'a> {
     repo: &'a Path,
 }
 
+#[derive(Clone, Copy)]
+struct WebDashboardSpawnConfig<'a> {
+    socket_path: &'a str,
+    port: u16,
+    repo: &'a Path,
+    auth_token: &'a str,
+}
+
 impl Default for WebDashboardRuntime {
     fn default() -> Self {
-        Self { port: None, enabled_at: None, child: None, launcher: Arc::new(OsWebDashboardLauncher) }
+        Self { port: None, enabled_at: None, auth_token: None, child: None, launcher: Arc::new(OsWebDashboardLauncher) }
     }
 }
 
 impl WebDashboardRuntime {
     #[cfg(test)]
     fn with_launcher(launcher: Arc<dyn WebDashboardLauncher>) -> Self {
-        Self { port: None, enabled_at: None, child: None, launcher }
+        Self { port: None, enabled_at: None, auth_token: None, child: None, launcher }
     }
 
     fn enable(
@@ -102,26 +119,36 @@ impl WebDashboardRuntime {
         if self.child.as_mut().is_some_and(|child| child.try_wait().ok().flatten().is_none())
             && self.port == Some(launch.port)
         {
-            return Ok(self.status(now));
+            return Ok(self.enable_status(now));
         }
         self.stop_child();
         self.launcher.ensure_port_available(launch.port).map_err(HandlerError::port_in_use)?;
-        let mut child =
-            self.launcher.spawn(launch.socket_path, launch.port, launch.repo).map_err(HandlerError::web_unavailable)?;
+        let auth_token = generate_web_auth_token();
+        let mut child = self
+            .launcher
+            .spawn(WebDashboardSpawnConfig {
+                socket_path: launch.socket_path,
+                port: launch.port,
+                repo: launch.repo,
+                auth_token: &auth_token,
+            })
+            .map_err(HandlerError::web_unavailable)?;
         if let Err(error) = self.launcher.wait_until_ready(launch.port, child.as_mut()) {
             terminate_web_dashboard_child(child);
             return Err(HandlerError::web_unavailable(error));
         }
         self.port = Some(launch.port);
         self.enabled_at = Some(now);
+        self.auth_token = Some(auth_token);
         self.child = Some(child);
-        Ok(self.status(now))
+        Ok(self.enable_status(now))
     }
 
     fn disable(&mut self) -> WebDashboardStatus {
         self.stop_child();
         self.port = None;
         self.enabled_at = None;
+        self.auth_token = None;
         WebDashboardStatus::stopped()
     }
 
@@ -136,11 +163,26 @@ impl WebDashboardRuntime {
         WebDashboardStatus::running(port, uptime_seconds)
     }
 
+    fn enable_status(&self, now: chrono::DateTime<chrono::Utc>) -> WebDashboardStatus {
+        let Some(port) = self.port else {
+            return WebDashboardStatus::stopped();
+        };
+        let uptime_seconds = self
+            .enabled_at
+            .map(|started_at| now.signed_duration_since(started_at).num_seconds().max(0) as u64)
+            .unwrap_or(0);
+        match self.auth_token.as_deref() {
+            Some(auth_token) => WebDashboardStatus::running_with_launch_url(port, uptime_seconds, auth_token),
+            None => WebDashboardStatus::running(port, uptime_seconds),
+        }
+    }
+
     fn refresh_status(&mut self, now: chrono::DateTime<chrono::Utc>) -> WebDashboardStatus {
         if self.child.as_mut().and_then(|child| child.try_wait().ok().flatten()).is_some() {
             self.child = None;
             self.port = None;
             self.enabled_at = None;
+            self.auth_token = None;
             return WebDashboardStatus::stopped();
         }
         self.status(now)
@@ -152,6 +194,12 @@ impl WebDashboardRuntime {
         };
         terminate_web_dashboard_child(child);
     }
+}
+
+fn generate_web_auth_token() -> String {
+    let mut bytes = [0_u8; WEB_AUTH_TOKEN_BYTES];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    hex::encode(bytes)
 }
 
 fn ensure_web_dashboard_port_available(port: u16) -> Result<(), String> {
@@ -241,6 +289,7 @@ mod tests {
     struct LaunchRecord {
         program: String,
         args: Vec<String>,
+        auth_token: String,
     }
 
     #[derive(Clone, Debug)]
@@ -303,17 +352,18 @@ mod tests {
             Ok(())
         }
 
-        fn spawn(&self, socket_path: &str, port: u16, repo: &Path) -> Result<Box<dyn WebDashboardChild>, String> {
+        fn spawn(&self, config: WebDashboardSpawnConfig<'_>) -> Result<Box<dyn WebDashboardChild>, String> {
             self.launches.lock().expect("launches lock poisoned").push(LaunchRecord {
                 program: "memoryd-web".to_owned(),
                 args: vec![
                     "--socket".to_owned(),
-                    socket_path.to_owned(),
+                    config.socket_path.to_owned(),
                     "--port".to_owned(),
-                    port.to_string(),
+                    config.port.to_string(),
                     "--repo".to_owned(),
-                    repo.display().to_string(),
+                    config.repo.display().to_string(),
                 ],
+                auth_token: config.auth_token.to_owned(),
             });
             let state = Arc::new(Mutex::new(FakeChildState {
                 running: matches!(self.readiness, FakeReadiness::Ready | FakeReadiness::Timeout),
@@ -384,7 +434,15 @@ mod tests {
 
         assert!(status.running);
         assert_eq!(status.port, Some(port));
-        assert_eq!(status.url.as_deref(), Some(format!("http://localhost:{port}").as_str()));
+        let public_url = format!("http://localhost:{port}");
+        assert_eq!(status.url.as_deref(), Some(public_url.as_str()));
+        let launch_url = status.launch_url.as_deref().expect("enable status includes launch URL");
+        let auth_token = launch_url
+            .strip_prefix(&format!("http://localhost:{port}/?auth="))
+            .expect("launch URL includes auth query");
+        assert_eq!(auth_token.len(), WEB_AUTH_TOKEN_BYTES * 2);
+        assert!(auth_token.chars().all(|character| character.is_ascii_hexdigit()));
+        assert_eq!(runtime.status(chrono::Utc::now()).launch_url, None, "status must not expose bearer token");
         assert_eq!(
             launcher.launches(),
             vec![LaunchRecord {
@@ -397,6 +455,7 @@ mod tests {
                     "--repo".to_owned(),
                     repo.display().to_string(),
                 ],
+                auth_token: auth_token.to_owned(),
             }]
         );
     }
@@ -466,6 +525,9 @@ mod tests {
         assert!(first.running);
         assert!(second.running);
         assert_eq!(second.port, Some(port));
+        assert_eq!(first.url, second.url, "idempotent enable must preserve the same public URL");
+        assert_eq!(first.launch_url, second.launch_url, "idempotent enable must preserve the same launch URL");
+        assert_eq!(runtime.status(chrono::Utc::now()).launch_url, None, "status must not expose bearer token");
         assert_eq!(launcher.launches().len(), 1);
     }
 

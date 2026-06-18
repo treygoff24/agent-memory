@@ -519,6 +519,8 @@ pub struct RecallHitSummary {
 pub struct WebDashboardStatus {
     pub running: bool,
     pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch_url: Option<String>,
     pub port: Option<u16>,
     pub uptime_seconds: Option<u64>,
     pub active_connections: u32,
@@ -526,17 +528,24 @@ pub struct WebDashboardStatus {
 
 impl WebDashboardStatus {
     pub fn stopped() -> Self {
-        Self { running: false, url: None, port: None, uptime_seconds: None, active_connections: 0 }
+        Self { running: false, url: None, launch_url: None, port: None, uptime_seconds: None, active_connections: 0 }
     }
 
     pub fn running(port: u16, uptime_seconds: u64) -> Self {
         Self {
             running: true,
             url: Some(format!("http://localhost:{port}")),
+            launch_url: None,
             port: Some(port),
             uptime_seconds: Some(uptime_seconds),
             active_connections: 0,
         }
+    }
+
+    pub fn running_with_launch_url(port: u16, uptime_seconds: u64, auth_token: &str) -> Self {
+        let mut status = Self::running(port, uptime_seconds);
+        status.launch_url = Some(format!("http://localhost:{port}/?auth={auth_token}"));
+        status
     }
 }
 

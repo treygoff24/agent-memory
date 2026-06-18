@@ -4,7 +4,7 @@
 
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Request, StatusCode};
-use memoryd_web::fixture_router;
+use memoryd_web::{fixture_router, DEV_FIXTURE_DASHBOARD_AUTH_TOKEN};
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
@@ -42,6 +42,7 @@ fn post_review_action(csrf_token: &str, id: &str) -> Request<Body> {
     Request::builder()
         .method("POST")
         .uri("/api/review/action")
+        .header("x-memorum-dashboard-auth", DEV_FIXTURE_DASHBOARD_AUTH_TOKEN)
         .header("x-memorum-csrf", csrf_token)
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(
@@ -57,7 +58,13 @@ fn post_review_action(csrf_token: &str, id: &str) -> Request<Body> {
 
 async fn fetch_csrf_token(app: axum::Router) -> String {
     let response = app
-        .oneshot(Request::builder().uri("/").body(Body::empty()).expect("request builds"))
+        .oneshot(
+            Request::builder()
+                .uri("/")
+                .header("x-memorum-dashboard-auth", DEV_FIXTURE_DASHBOARD_AUTH_TOKEN)
+                .body(Body::empty())
+                .expect("request builds"),
+        )
         .await
         .expect("request succeeds");
     let bytes = to_bytes(response.into_body(), 64 * 1024).await.expect("body bytes are collected");

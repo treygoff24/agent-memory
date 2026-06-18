@@ -2,7 +2,7 @@ use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
 use memory_substrate::{InitOptions, Roots, Substrate};
 use memoryd::server::{serve_substrate_with, ServerOptions};
-use memoryd_web::{router_with_state, WebState};
+use memoryd_web::{router_with_state, WebState, DEV_FIXTURE_DASHBOARD_AUTH_TOKEN};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -44,6 +44,7 @@ async fn test_get_roi_daemon_returns_live_metrics_not_deferred_stub() {
         .oneshot(
             Request::builder()
                 .uri("/api/roi?window=90")
+                .header("x-memorum-dashboard-auth", DEV_FIXTURE_DASHBOARD_AUTH_TOKEN)
                 .header("x-memorum-csrf", token)
                 .body(Body::empty())
                 .expect("request builds"),
@@ -104,6 +105,7 @@ async fn test_post_policy_editor_validates_yaml_and_atomically_writes_policy_fil
             Request::builder()
                 .method("POST")
                 .uri("/api/policy-editor")
+                .header("x-memorum-dashboard-auth", DEV_FIXTURE_DASHBOARD_AUTH_TOKEN)
                 .header("x-memorum-csrf", token)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
@@ -142,6 +144,7 @@ async fn test_post_policy_editor_rejects_invalid_yaml_before_write() {
             Request::builder()
                 .method("POST")
                 .uri("/api/policy-editor")
+                .header("x-memorum-dashboard-auth", DEV_FIXTURE_DASHBOARD_AUTH_TOKEN)
                 .header("x-memorum-csrf", token)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
@@ -169,7 +172,12 @@ async fn get_json(app: axum::Router, route: &str) -> Value {
     let token = fetch_csrf_token(app.clone()).await;
     let response = app
         .oneshot(
-            Request::builder().uri(route).header("x-memorum-csrf", token).body(Body::empty()).expect("request builds"),
+            Request::builder()
+                .uri(route)
+                .header("x-memorum-dashboard-auth", DEV_FIXTURE_DASHBOARD_AUTH_TOKEN)
+                .header("x-memorum-csrf", token)
+                .body(Body::empty())
+                .expect("request builds"),
         )
         .await
         .expect("request succeeds");
@@ -180,7 +188,13 @@ async fn get_json(app: axum::Router, route: &str) -> Value {
 
 async fn fetch_csrf_token(app: axum::Router) -> String {
     let response = app
-        .oneshot(Request::builder().uri("/").body(Body::empty()).expect("request builds"))
+        .oneshot(
+            Request::builder()
+                .uri("/")
+                .header("x-memorum-dashboard-auth", DEV_FIXTURE_DASHBOARD_AUTH_TOKEN)
+                .body(Body::empty())
+                .expect("request builds"),
+        )
         .await
         .expect("request succeeds");
     let html = response_body(response).await;

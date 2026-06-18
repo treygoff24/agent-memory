@@ -2,7 +2,7 @@ use axum::body::{to_bytes, Body};
 use axum::http::{header, Request, StatusCode};
 use memory_substrate::{InitOptions, Roots, Substrate};
 use memoryd::server::{serve_substrate_with, ServerOptions};
-use memoryd_web::{router_with_state, WebState};
+use memoryd_web::{router_with_state, WebState, DEV_FIXTURE_DASHBOARD_AUTH_TOKEN};
 use serde_json::{json, Value};
 use tokio::net::UnixStream;
 use tokio::sync::watch;
@@ -67,6 +67,7 @@ async fn daemon_post_validates_and_persists_policy_file() {
             Request::builder()
                 .method("POST")
                 .uri("/api/policy-editor")
+                .header("x-memorum-dashboard-auth", DEV_FIXTURE_DASHBOARD_AUTH_TOKEN)
                 .header("x-memorum-csrf", token)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(json!({"file_name": "project-standard.yaml", "raw_yaml": updated}).to_string()))
@@ -98,6 +99,7 @@ async fn daemon_post_fresh_repo_creates_complete_policy_set() {
             Request::builder()
                 .method("POST")
                 .uri("/api/policy-editor")
+                .header("x-memorum-dashboard-auth", DEV_FIXTURE_DASHBOARD_AUTH_TOKEN)
                 .header("x-memorum-csrf", token)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(json!({"file_name": "project-standard.yaml", "raw_yaml": updated}).to_string()))
@@ -132,6 +134,7 @@ async fn daemon_post_invalid_yaml_does_not_mutate_policy_file() {
             Request::builder()
                 .method("POST")
                 .uri("/api/policy-editor")
+                .header("x-memorum-dashboard-auth", DEV_FIXTURE_DASHBOARD_AUTH_TOKEN)
                 .header("x-memorum-csrf", token)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
@@ -216,7 +219,12 @@ async fn get_json(socket: &std::path::Path, route: &str) -> (StatusCode, Value) 
     let token = fetch_csrf_token(app.clone()).await;
     let response = app
         .oneshot(
-            Request::builder().uri(route).header("x-memorum-csrf", token).body(Body::empty()).expect("request builds"),
+            Request::builder()
+                .uri(route)
+                .header("x-memorum-dashboard-auth", DEV_FIXTURE_DASHBOARD_AUTH_TOKEN)
+                .header("x-memorum-csrf", token)
+                .body(Body::empty())
+                .expect("request builds"),
         )
         .await
         .expect("request succeeds");
@@ -226,7 +234,13 @@ async fn get_json(socket: &std::path::Path, route: &str) -> (StatusCode, Value) 
 
 async fn fetch_csrf_token(app: axum::Router) -> String {
     let response = app
-        .oneshot(Request::builder().uri("/").body(Body::empty()).expect("request builds"))
+        .oneshot(
+            Request::builder()
+                .uri("/")
+                .header("x-memorum-dashboard-auth", DEV_FIXTURE_DASHBOARD_AUTH_TOKEN)
+                .body(Body::empty())
+                .expect("request builds"),
+        )
         .await
         .expect("request succeeds");
     let html = response_body(response).await;

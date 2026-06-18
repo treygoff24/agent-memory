@@ -2,7 +2,7 @@ use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
 use flate2::write::GzEncoder;
 use flate2::Compression;
-use memoryd_web::{embedded_asset_names, router};
+use memoryd_web::{embedded_asset_names, router, DEV_FIXTURE_DASHBOARD_AUTH_TOKEN};
 use std::io::Write;
 use tower::ServiceExt;
 
@@ -19,7 +19,13 @@ async fn embedded_frontend_serves_vite_index_and_hashed_assets() {
     assert!(assets.iter().any(|path| path.starts_with("assets/") && path.ends_with(".css")), "assets: {assets:#?}");
 
     let response = router()
-        .oneshot(Request::builder().uri("/").body(Body::empty()).expect("request builds"))
+        .oneshot(
+            Request::builder()
+                .uri("/")
+                .header("x-memorum-dashboard-auth", DEV_FIXTURE_DASHBOARD_AUTH_TOKEN)
+                .body(Body::empty())
+                .expect("request builds"),
+        )
         .await
         .expect("request succeeds");
     assert_eq!(response.status(), StatusCode::OK);

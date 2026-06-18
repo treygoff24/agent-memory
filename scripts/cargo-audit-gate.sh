@@ -16,6 +16,14 @@ cd "$repo_root"
 
 lockfiles=(Cargo.lock fuzz/Cargo.lock)
 
+is_advisory_finding() {
+  grep -qiE 'RUSTSEC-[0-9]{4}-[0-9]{4}|(^|[[:space:]])(Crate|Advisory|ID):|[0-9]+ vulnerabilit(y|ies) found|yanked|unmaintained' "$1"
+}
+
+is_advisory_db_refresh_failure() {
+  grep -qiE "could(n't| not) fetch|failed to fetch|error fetching|unable to (update|fetch)|failed to update|network (failure|error)|timed out|could not resolve host|failed to connect|SSL connect|TLS" "$1"
+}
+
 for lockfile in "${lockfiles[@]}"; do
   audit_log="$(mktemp -t cargo-audit.XXXXXX)"
   trap 'rm -f "$audit_log"' EXIT
@@ -30,10 +38,11 @@ for lockfile in "${lockfiles[@]}"; do
     continue
   fi
 
-  # Distinguish "could not refresh the advisory DB" (network problem → skip) from
-  # a real advisory finding (→ fail). cargo-audit prints fetch errors mentioning
-  # the advisory-db repo when it cannot update.
-  if grep -qiE 'couldn'\''t fetch|failed to fetch|error fetching|unable to (update|fetch)|network|timed out|could not resolve host|advisory-db' "$audit_log"; then
+  # Distinguish "could not refresh the advisory DB" (network problem → skip)
+  # from a real dependency finding (→ fail). Real findings may mention the
+  # advisory database path or crates with "network" in their name, so never skip
+  # output that also carries cargo-audit finding markers.
+  if is_advisory_db_refresh_failure "$audit_log" && ! is_advisory_finding "$audit_log"; then
     echo "warning: cargo-audit could not refresh the advisory database for $lockfile; skipping dependency-CVE scan" >&2
     cat "$audit_log" >&2
     rm -f "$audit_log"

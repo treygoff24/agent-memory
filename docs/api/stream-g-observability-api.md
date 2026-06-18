@@ -46,7 +46,7 @@ Panel 8 local keys: `r` run, `s` snooze this week, `h` history, `c` confirm, `k`
 
 ## Web dashboard
 
-`memoryd web enable` starts the embedded localhost dashboard. It must bind only to `127.0.0.1`; `0.0.0.0` is rejected. Static assets are embedded and self-hosted.
+`memoryd web enable` starts the embedded localhost dashboard and prints a launch URL containing the short bootstrap auth token. `memoryd web status` reports only the non-secret base URL. The server must bind only to `127.0.0.1`; `0.0.0.0` is rejected. Static assets are embedded and self-hosted.
 
 Static routes:
 

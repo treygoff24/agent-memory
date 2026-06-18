@@ -90,7 +90,8 @@ run_parallel docs-validity    ./scripts/docs-command-validity.sh
 if command -v cargo-audit >/dev/null 2>&1; then
   run_parallel cargo-audit    ./scripts/cargo-audit-gate.sh
 elif command -v cargo-deny >/dev/null 2>&1; then
-  run_parallel cargo-deny     cargo deny check advisories
+  run_parallel cargo-deny-root cargo deny check advisories
+  run_parallel cargo-deny-fuzz bash -lc 'cd fuzz && cargo deny check advisories'
 else
   echo "warning: neither cargo-audit nor cargo-deny installed; skipping dependency-CVE scan" >&2
 fi

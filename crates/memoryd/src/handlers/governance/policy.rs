@@ -184,6 +184,7 @@ pub(super) async fn active_memory_summaries(substrate: &Substrate) -> Result<Vec
         .query_recall_index(RecallIndexQuery {
             statuses: vec![MemoryStatus::Active],
             hydrate: AuxScope::None,
+            source_identity: false,
             ..RecallIndexQuery::default()
         })
         .await

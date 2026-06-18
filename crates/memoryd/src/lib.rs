@@ -29,3 +29,7 @@ pub mod socket;
 pub mod state;
 pub mod trust_artifact;
 pub(crate) mod util;
+
+/// Env var carrying the web-dashboard auth token from the daemon to its spawned
+/// `memoryd-web` child. Single source of truth for both sides of the handshake.
+pub use handlers::web_dashboard::WEB_AUTH_ENV;

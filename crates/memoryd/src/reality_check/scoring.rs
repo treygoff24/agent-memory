@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use memory_substrate::index::Index;
-use memory_substrate::{MemoryStatus, RecallIndexRow, Sensitivity, Substrate, SubstrateResult, VectorError};
+use memory_substrate::{MemoryStatus, RecallIndexRow, Sensitivity, Substrate, SubstrateResult};
 use rusqlite::params_from_iter;
 
 use crate::dynamics::usage::{distinct_sources_for_conn, recall_usage_for_conn};
@@ -31,16 +31,13 @@ pub fn score_memories_at(
     }
 
     let candidate_ids = candidates.iter().map(|row| row.id.as_str()).collect::<Vec<_>>();
-    let (recall_counts, static_fields_by_id, distinct_sources_by_id) = {
-        let index = substrate.index_handle();
-        let index =
-            index.lock().map_err(|err| VectorError::IndexUnavailable(format!("index mutex poisoned: {err}")))?;
+    let (recall_counts, static_fields_by_id, distinct_sources_by_id) = substrate.with_index(|index| {
         let connection = index.connection();
         let recall_counts = recall_usage_for_conn(connection, &candidate_ids, now)?;
-        let static_fields = indexed_static_fields_by_id(&index, &candidates)?;
+        let static_fields = indexed_static_fields_by_id(index, &candidates)?;
         let distinct_sources = distinct_sources_for_conn(connection, &candidate_ids)?;
-        (recall_counts, static_fields, distinct_sources)
-    };
+        Ok((recall_counts, static_fields, distinct_sources))
+    })?;
     let max_recall = candidates
         .iter()
         .map(|row| recall_counts.get(row.id.as_str()).map_or(0, |summary| summary.count))

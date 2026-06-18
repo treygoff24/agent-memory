@@ -211,6 +211,7 @@ async fn collect_memories(
         .query_recall_index_including_metadata_only(RecallIndexQuery {
             updated_since: since_dt,
             hydrate: AuxScope::None,
+            source_identity: false,
             ..RecallIndexQuery::default()
         })
         .await

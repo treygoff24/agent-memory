@@ -12,7 +12,7 @@ use memoryd::protocol::{
 };
 use memoryd::recall::StartupRequest;
 use memoryd::server::{serve_substrate_with, ServerOptions};
-use memoryd_web::{router, router_with_state, WebState};
+use memoryd_web::{router, router_with_state, WebState, DEV_FIXTURE_DASHBOARD_AUTH_TOKEN};
 
 #[cfg(feature = "dev-fixtures")]
 use memoryd_web::fixture_router;
@@ -223,6 +223,7 @@ async fn test_daemon_backed_reality_check_route_creates_session_and_confirms() {
             Request::builder()
                 .method("POST")
                 .uri("/api/reality-check/respond")
+                .header("x-memorum-dashboard-auth", DEV_FIXTURE_DASHBOARD_AUTH_TOKEN)
                 .header("x-memorum-csrf", token)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
@@ -262,7 +263,7 @@ async fn test_notifications_stream_returns_daemon_notifications() {
     wait_for_socket_path(&socket).await;
 
     let response = router_with_state(WebState::daemon(&socket))
-        .oneshot(Request::builder().uri("/api/notifications/stream").body(Body::empty()).expect("request builds"))
+        .oneshot(authenticated_get("/api/notifications/stream"))
         .await
         .expect("request succeeds");
 
@@ -458,6 +459,7 @@ async fn test_post_reality_check_respond_dispatches_to_daemon() {
             Request::builder()
                 .method("POST")
                 .uri("/api/reality-check/respond")
+                .header("x-memorum-dashboard-auth", DEV_FIXTURE_DASHBOARD_AUTH_TOKEN)
                 .header("x-memorum-csrf", token)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
@@ -485,10 +487,8 @@ async fn test_post_reality_check_respond_dispatches_to_daemon() {
 #[cfg(feature = "dev-fixtures")]
 #[tokio::test]
 async fn test_notifications_stream_returns_sse_heartbeat_snapshot() {
-    let response = fixture_router()
-        .oneshot(Request::builder().uri("/api/notifications/stream").body(Body::empty()).expect("request builds"))
-        .await
-        .expect("request succeeds");
+    let response =
+        fixture_router().oneshot(authenticated_get("/api/notifications/stream")).await.expect("request succeeds");
 
     assert_eq!(response.status(), StatusCode::OK);
     let content_type =
@@ -505,7 +505,7 @@ async fn test_notifications_stream_returns_sse_heartbeat_snapshot() {
 async fn test_daemon_configured_notifications_stream_returns_empty_heartbeat() {
     let missing_socket = tempfile::NamedTempFile::new().expect("missing socket placeholder is created");
     let response = router_with_state(WebState::daemon(missing_socket.path()))
-        .oneshot(Request::builder().uri("/api/notifications/stream").body(Body::empty()).expect("request builds"))
+        .oneshot(authenticated_get("/api/notifications/stream"))
         .await
         .expect("request succeeds");
 
@@ -558,7 +558,12 @@ async fn get_json(route: &str) -> Value {
     let token = fetch_csrf_token(app.clone()).await;
     let response = app
         .oneshot(
-            Request::builder().uri(route).header("x-memorum-csrf", token).body(Body::empty()).expect("request builds"),
+            Request::builder()
+                .uri(route)
+                .header("x-memorum-dashboard-auth", DEV_FIXTURE_DASHBOARD_AUTH_TOKEN)
+                .header("x-memorum-csrf", token)
+                .body(Body::empty())
+                .expect("request builds"),
         )
         .await
         .expect("request succeeds");
@@ -573,6 +578,7 @@ fn review_action_request(csrf_token: &str, id: &str, action: &str) -> Request<Bo
     Request::builder()
         .method("POST")
         .uri("/api/review/action")
+        .header("x-memorum-dashboard-auth", DEV_FIXTURE_DASHBOARD_AUTH_TOKEN)
         .header("x-memorum-csrf", csrf_token)
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(json!({ "id": id, "action": action, "reason": "test" }).to_string()))
@@ -580,10 +586,7 @@ fn review_action_request(csrf_token: &str, id: &str, action: &str) -> Request<Bo
 }
 
 async fn fetch_csrf_token(app: axum::Router) -> String {
-    let response = app
-        .oneshot(Request::builder().uri("/").body(Body::empty()).expect("request builds"))
-        .await
-        .expect("request succeeds");
+    let response = app.oneshot(authenticated_get("/")).await.expect("request succeeds");
     let html = response_body(response).await;
     csrf_token_from_html(&html).to_owned()
 }
@@ -594,10 +597,23 @@ async fn fetch_csrf_token(app: axum::Router) -> String {
 async fn get_with_token(app: axum::Router, uri: &str) -> axum::response::Response {
     let token = fetch_csrf_token(app.clone()).await;
     app.oneshot(
-        Request::builder().uri(uri).header("x-memorum-csrf", token).body(Body::empty()).expect("request builds"),
+        Request::builder()
+            .uri(uri)
+            .header("x-memorum-dashboard-auth", DEV_FIXTURE_DASHBOARD_AUTH_TOKEN)
+            .header("x-memorum-csrf", token)
+            .body(Body::empty())
+            .expect("request builds"),
     )
     .await
     .expect("request succeeds")
+}
+
+fn authenticated_get(uri: &str) -> Request<Body> {
+    Request::builder()
+        .uri(uri)
+        .header("x-memorum-dashboard-auth", DEV_FIXTURE_DASHBOARD_AUTH_TOKEN)
+        .body(Body::empty())
+        .expect("request builds")
 }
 
 async fn json_body(response: axum::response::Response) -> Value {

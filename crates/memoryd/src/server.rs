@@ -273,44 +273,29 @@ async fn serve_with_dispatcher(
     }
 }
 
-/// Bind the daemon's Unix socket so it is never momentarily group/world-connectable.
+/// Bind the daemon's Unix socket and make it owner-only.
 ///
-/// On unix, `UnixListener::bind` creates the socket node with the process umask,
-/// leaving a brief window in which the socket may be group/world-connectable
-/// before a follow-up `chmod 0o600` lands. To eliminate that TOCTOU window we
-/// bind to a unique sibling temp name, tighten its mode to `0o600` while no
-/// well-known path points at it, then atomically `rename` it into the final
-/// socket path. Listeners survive `rename(2)`, so the rebind is seamless.
+/// Binding the final path directly preserves Unix socket exclusivity: if another
+/// daemon wins the path between stale-socket cleanup and bind, this bind fails
+/// with `EADDRINUSE` instead of replacing that live socket — so no temporary
+/// socket or replace-on-rename activation race is introduced.
+///
+/// The socket node is chmodded to `0o600` immediately after bind rather than
+/// relying on a restrictive process umask. `serve_substrate_with` spawns
+/// background tasks (notification dispatcher, embedding worker, schedulers)
+/// before this bind runs, so the daemon is already multi-threaded at bind time;
+/// a process-global umask window could leak its restrictive mode onto unrelated
+/// files those tasks create. A per-node `set_permissions` has no such global
+/// side effect. The sub-millisecond bind-then-chmod window is itself covered for
+/// daemon-created parents by the `0o700` parent directory (see
+/// `harden_created_socket_parent`); `warn_on_loose_socket_parent` surfaces the
+/// residual exposure when the operator supplies a loose pre-existing parent.
 #[cfg(unix)]
 fn bind_owner_only_socket(socket_path: &Path) -> Result<UnixListener> {
-    let temp_path = owner_only_socket_temp_path(socket_path);
-    // A stale temp from a crashed predecessor would make bind fail with EADDRINUSE.
-    let _ = std::fs::remove_file(&temp_path);
-
-    let listener = UnixListener::bind(&temp_path).with_context(|| format!("bind socket {}", temp_path.display()))?;
-
-    if let Err(error) = std::fs::set_permissions(&temp_path, std::fs::Permissions::from_mode(0o600))
-        .with_context(|| format!("chmod owner-only socket {}", temp_path.display()))
-        .and_then(|()| {
-            std::fs::rename(&temp_path, socket_path)
-                .with_context(|| format!("activate owner-only socket {}", socket_path.display()))
-        })
-    {
-        let _ = std::fs::remove_file(&temp_path);
-        return Err(error);
-    }
-
+    let listener = UnixListener::bind(socket_path).with_context(|| format!("bind socket {}", socket_path.display()))?;
+    std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))
+        .with_context(|| format!("chmod owner-only socket {}", socket_path.display()))?;
     Ok(listener)
-}
-
-#[cfg(unix)]
-fn owner_only_socket_temp_path(socket_path: &Path) -> std::path::PathBuf {
-    let mut file_name = socket_path.file_name().map(|name| name.to_os_string()).unwrap_or_default();
-    file_name.push(format!(".tmp.{}", std::process::id()));
-    match socket_path.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => parent.join(file_name),
-        _ => std::path::PathBuf::from(file_name),
-    }
 }
 
 #[cfg(not(unix))]
@@ -614,9 +599,27 @@ mod tests {
             "socket is owner-only the instant it appears at its final path"
         );
 
-        // The bind/chmod/rename dance must leave no group/world-connectable temp behind.
-        let temp_path = super::owner_only_socket_temp_path(&socket_path);
-        assert!(!temp_path.exists(), "temp socket residue removed after rename");
+        assert_eq!(std::fs::read_dir(dir.path()).expect("list socket dir").count(), 1, "only final socket is created");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bind_owner_only_socket_refuses_to_replace_existing_live_socket() {
+        use std::os::unix::fs::FileTypeExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("memoryd.sock");
+        let existing = tokio::net::UnixListener::bind(&socket_path).expect("existing daemon socket binds");
+
+        let error = super::bind_owner_only_socket(&socket_path).expect_err("second bind must fail");
+        let error_text = format!("{error:#}");
+        assert!(error_text.contains("bind socket"), "{error_text}");
+        let metadata = std::fs::symlink_metadata(&socket_path).expect("socket still exists");
+        assert!(metadata.file_type().is_socket(), "existing live socket remains in place");
+
+        let _connection =
+            tokio::net::UnixStream::connect(&socket_path).await.expect("existing listener still reachable");
+        drop(existing);
     }
 
     #[cfg(unix)]

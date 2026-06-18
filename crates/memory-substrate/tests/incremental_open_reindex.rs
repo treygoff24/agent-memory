@@ -80,6 +80,183 @@ async fn warm_open_reindexes_only_modified_plaintext() {
     assert_eq!(hits.len(), 1, "edited body should be searchable after open");
 }
 
+/// Warm open with many drifted plaintext files should reindex every stale row
+/// while streaming repairs through one all-or-nothing index transaction.
+#[tokio::test]
+async fn warm_open_reindexes_large_plaintext_drift_set() {
+    const DRIFTED_MEMORY_COUNT: usize = 70;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let substrate = Substrate::init(
+        roots.clone(),
+        InitOptions { force_unsafe_durability: true, device_id: Some("dev_test".to_string()) },
+    )
+    .await
+    .expect("init");
+
+    let mut memories = (0..DRIFTED_MEMORY_COUNT)
+        .map(|offset| sample_memory(&format!("mem_20260424_a1b2c3d4e5f60718_{:06}", 60_000 + offset)))
+        .collect::<Vec<_>>();
+    for memory in &memories {
+        write_through_api(&substrate, memory).await;
+    }
+    drop(substrate);
+
+    for (offset, memory) in memories.iter_mut().enumerate() {
+        memory.body = format!("batchdriftneedle_{offset:03} offline edit");
+        write_memory_file(&roots, memory);
+    }
+
+    let reopened = Substrate::open(roots).await.expect("reopen");
+
+    assert_eq!(
+        reopened.startup_reconcile_report().reindexed_memories as usize,
+        DRIFTED_MEMORY_COUNT,
+        "every drifted plaintext file reindexes in one commit chunk (70 < REINDEX_COMMIT_CHUNK)"
+    );
+    for offset in [0, 63, 64, DRIFTED_MEMORY_COUNT - 1] {
+        let hits = reopened
+            .query_chunks(ChunkQuery {
+                text: Some(format!("batchdriftneedle_{offset:03}")),
+                triple: None,
+                vector: None,
+            })
+            .await
+            .expect("query reindexed edit");
+        assert_eq!(hits.len(), 1, "edited body should be searchable for batch offset {offset}");
+    }
+}
+
+/// Phase-6 reindex commits drifted rows in bounded chunks (REINDEX_COMMIT_CHUNK).
+/// A drift set larger than one chunk must still reindex every file across the
+/// multiple mid-walk commits and the post-walk supersession resync — the
+/// multi-chunk loop the sub-chunk warm/rollback tests never reach.
+#[tokio::test]
+async fn warm_open_reindexes_drift_set_spanning_multiple_commit_chunks() {
+    // > REINDEX_COMMIT_CHUNK (512): the walk flushes at least one full chunk
+    // mid-loop and a partial chunk after, crossing the boundary 70-file tests miss.
+    const UNINDEXED_MEMORY_COUNT: usize = 600;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let substrate = Substrate::init(
+        roots.clone(),
+        InitOptions { force_unsafe_durability: true, device_id: Some("dev_test".to_string()) },
+    )
+    .await
+    .expect("init");
+    drop(substrate);
+
+    // Write the memory files straight to disk (no API write, so they stay
+    // unindexed); the next open must reindex them through the chunked walk.
+    let memories = (0..UNINDEXED_MEMORY_COUNT)
+        .map(|offset| sample_memory(&format!("mem_20260424_a1b2c3d4e5f60718_{:06}", 80_000 + offset)))
+        .collect::<Vec<_>>();
+    for memory in &memories {
+        write_memory_file(&roots, memory);
+    }
+
+    let reopened = Substrate::open(roots).await.expect("reopen");
+
+    assert_eq!(
+        reopened.startup_reconcile_report().reindexed_memories as usize,
+        UNINDEXED_MEMORY_COUNT,
+        "every file reindexes even when the drift set spans multiple commit chunks"
+    );
+    // Spot-check rows on both sides of the 512 commit boundary.
+    for offset in [0, 511, 512, UNINDEXED_MEMORY_COUNT - 1] {
+        assert_eq!(
+            query_by_id(&reopened, &memories[offset].frontmatter.id).await.len(),
+            1,
+            "memory at chunk offset {offset} should be indexed"
+        );
+    }
+}
+
+/// If a later stale Markdown file is malformed, startup reconciliation must not
+/// leave earlier stale files partially repaired in the derived index. The next
+/// successful open should still count and repair the whole drift set.
+#[tokio::test]
+async fn warm_open_rolls_back_reindex_transaction_when_later_stale_file_is_malformed() {
+    const DRIFTED_MEMORY_COUNT: usize = 70;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let substrate = Substrate::init(
+        roots.clone(),
+        InitOptions { force_unsafe_durability: true, device_id: Some("dev_test".to_string()) },
+    )
+    .await
+    .expect("init");
+
+    let mut memories = (0..DRIFTED_MEMORY_COUNT)
+        .map(|offset| sample_memory(&format!("mem_20260424_a1b2c3d4e5f60718_{:06}", 70_000 + offset)))
+        .collect::<Vec<_>>();
+    for memory in &memories {
+        write_through_api(&substrate, memory).await;
+    }
+    drop(substrate);
+
+    for (offset, memory) in memories.iter_mut().enumerate() {
+        memory.body = format!("rollbackneedle_{offset:03} offline edit");
+        write_memory_file(&roots, memory);
+    }
+    let malformed = memories.last().expect("last memory").path.clone().expect("path");
+    write_malformed_memory_file(&roots, &malformed);
+
+    let error = match Substrate::open(roots.clone()).await {
+        Ok(_) => panic!("malformed stale file should block open"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("operator repair required"), "{error}");
+
+    write_memory_file(&roots, memories.last().expect("last memory"));
+    let reopened = Substrate::open(roots).await.expect("reopen after repair");
+
+    assert_eq!(
+        reopened.startup_reconcile_report().reindexed_memories as usize,
+        DRIFTED_MEMORY_COUNT,
+        "failed open must not partially commit earlier stale-file repairs"
+    );
+    for offset in [0, 63, 64, DRIFTED_MEMORY_COUNT - 1] {
+        let hits = reopened
+            .query_chunks(ChunkQuery { text: Some(format!("rollbackneedle_{offset:03}")), triple: None, vector: None })
+            .await
+            .expect("query reindexed edit");
+        assert_eq!(hits.len(), 1, "edited body should be searchable after repaired open for offset {offset}");
+    }
+}
+
+/// Public `with_index` is for read-only consumers; accidental writes through
+/// the live SQLite connection must fail rather than mutating derived state.
+#[tokio::test]
+async fn with_index_rejects_accidental_live_index_writes() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let substrate =
+        Substrate::init(roots, InitOptions { force_unsafe_durability: true, device_id: Some("dev_test".to_string()) })
+            .await
+            .expect("init");
+    let memory = sample_memory("mem_20260424_a1b2c3d4e5f60718_080001");
+    write_through_api(&substrate, &memory).await;
+
+    let result = substrate.with_index(|index| {
+        index
+            .connection()
+            .execute("DELETE FROM memories WHERE id = ?1", [memory.frontmatter.id.as_str()])
+            .map(drop)
+            .map_err(Into::into)
+    });
+
+    assert!(result.is_err(), "query_only should reject writes through with_index");
+    assert_eq!(
+        query_by_id(&substrate, &memory.frontmatter.id).await.len(),
+        1,
+        "rejected write must leave the index row intact"
+    );
+}
+
 /// (c) A memory deleted on disk → the orphan sweep removes its index row.
 #[tokio::test]
 async fn open_orphan_sweep_removes_row_for_deleted_file() {
@@ -195,6 +372,11 @@ fn write_memory_file(roots: &Roots, memory: &Memory) {
     std::fs::create_dir_all(path.parent().expect("parent")).expect("dirs");
     let text = memory_substrate::frontmatter::serialize_document(memory).expect("serialize");
     std::fs::write(&path, text).expect("write file");
+}
+
+fn write_malformed_memory_file(roots: &Roots, repo_path: &RepoPath) {
+    let path = roots.repo.join(repo_path.as_path());
+    std::fs::write(&path, "---\nid: [unterminated\n---\nmalformed").expect("write malformed file");
 }
 
 async fn query_by_id(substrate: &Substrate, id: &MemoryId) -> Vec<QueryResult> {

@@ -268,25 +268,13 @@ async fn drain_batch_with_budget(
     .await
     {
         Ok(Ok(vectors)) => vectors,
-        Ok(Err(_error)) => {
-            let mut surviving = Vec::new();
-            for job in live_jobs {
-                let embed_provider = Arc::clone(provider);
-                let text = job.text.clone();
-                match tokio::task::spawn_blocking(move || embed_provider.embed_document(&text)).await {
-                    Ok(Ok(vector)) => surviving.push((job, vector)),
-                    Ok(Err(individual_error)) => retry_budget.record_failure(&job.chunk_id, &individual_error),
-                    Err(join_error) => retry_budget.record_failure(&job.chunk_id, &join_error),
-                }
-            }
-            succeeded = succeeded
-                .saturating_add(write_and_record_embedded_jobs(substrate, &triple, surviving, retry_budget).await?);
-            return Ok(DrainOutcome { requested, fetched, succeeded });
-        }
-        Err(join_error) => {
-            for job in &live_jobs {
-                retry_budget.record_failure(&job.chunk_id, &join_error);
-            }
+        // A batch-level inference error (`Ok(Err)`) or a panic in the batched
+        // forward pass (`Err(join_error)`) both fall back to embedding each job
+        // individually, so only chunks that fail on their own burn retry budget —
+        // a single poisoned input never fails the whole batch toward exhaustion.
+        Ok(Err(_)) | Err(_) => {
+            succeeded =
+                succeeded.saturating_add(embed_jobs_individually(provider, live_jobs, substrate, retry_budget).await?);
             return Ok(DrainOutcome { requested, fetched, succeeded });
         }
     };
@@ -306,6 +294,30 @@ async fn drain_batch_with_budget(
     succeeded =
         succeeded.saturating_add(write_and_record_embedded_jobs(substrate, &triple, pairs, retry_budget).await?);
     Ok(DrainOutcome { requested, fetched, succeeded })
+}
+
+/// Per-job fallback for when the batched forward pass fails wholesale (either a
+/// model inference error or a panic in `spawn_blocking`). Embeds each job on its
+/// own so a single bad input only burns its own retry budget, then writes the
+/// survivors and returns how many succeeded.
+async fn embed_jobs_individually(
+    provider: &Arc<dyn EmbeddingProvider>,
+    jobs: Vec<PendingEmbeddingJob>,
+    substrate: &Substrate,
+    retry_budget: &mut JobRetryBudget,
+) -> Result<usize, String> {
+    let triple = provider.triple().clone();
+    let mut surviving = Vec::new();
+    for job in jobs {
+        let embed_provider = Arc::clone(provider);
+        let text = job.text.clone();
+        match tokio::task::spawn_blocking(move || embed_provider.embed_document(&text)).await {
+            Ok(Ok(vector)) => surviving.push((job, vector)),
+            Ok(Err(individual_error)) => retry_budget.record_failure(&job.chunk_id, &individual_error),
+            Err(join_error) => retry_budget.record_failure(&job.chunk_id, &join_error),
+        }
+    }
+    write_and_record_embedded_jobs(substrate, &triple, surviving, retry_budget).await
 }
 
 async fn write_and_record_embedded_jobs(

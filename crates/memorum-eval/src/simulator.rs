@@ -253,7 +253,12 @@ impl SimulatorAgent {
     /// sessions bound to a project dir place memories like real harnesses do.
     fn meta_json_with_session_cwd(&self, meta_json: &str) -> String {
         let trimmed = meta_json.trim();
-        if trimmed.contains("\"cwd\"") {
+        // Match the `cwd` *key* (quoted token followed by a colon), not a bare
+        // `"cwd"` token that could appear inside a string value. `json_escape`
+        // renders any quote inside a value as `\"`, so an embedded value can
+        // never forge the unescaped `"cwd":` sequence; the simulator's meta
+        // objects are all flat, so this matches the top-level key exactly.
+        if trimmed.contains("\"cwd\":") {
             return trimmed.to_owned();
         }
         let rest = trimmed.strip_prefix('{').expect("simulator meta_json is a JSON object");

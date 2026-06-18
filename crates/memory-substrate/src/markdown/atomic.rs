@@ -30,13 +30,23 @@ fn read_memory_bytes_checked(repo: &Path, path: &RepoPath) -> Result<Vec<u8>, cr
     fs::read(&absolute).map_err(Into::into)
 }
 
+pub fn parse_memory_bytes(path: &RepoPath, bytes: &[u8]) -> Result<Memory, crate::error::ReadError> {
+    let text = String::from_utf8(bytes.to_vec())
+        .map_err(|err| crate::error::ReadError::Parse { path: path.clone(), message: err.to_string() })?;
+    parse_document(&text, Some(path.clone())).map(|parsed| parsed.memory).map_err(crate::error::ReadError::Validation)
+}
+
+pub fn read_memory_file_bytes(repo: &Path, path: &RepoPath) -> Result<(Vec<u8>, Sha256), crate::error::ReadError> {
+    let bytes = read_memory_bytes_checked(repo, path)?;
+    let hash = hash_bytes(&bytes);
+    Ok((bytes, hash))
+}
+
 /// Read a Markdown memory file.
 pub fn read_memory_file(repo: &Path, path: &RepoPath) -> Result<(Memory, Sha256), crate::error::ReadError> {
-    let bytes = read_memory_bytes_checked(repo, path)?;
-    let text = String::from_utf8(bytes.clone())
-        .map_err(|err| crate::error::ReadError::Parse { path: path.clone(), message: err.to_string() })?;
-    let parsed = parse_document(&text, Some(path.clone())).map_err(crate::error::ReadError::Validation)?;
-    Ok((parsed.memory, hash_bytes(&bytes)))
+    let (bytes, hash) = read_memory_file_bytes(repo, path)?;
+    let memory = parse_memory_bytes(path, &bytes)?;
+    Ok((memory, hash))
 }
 
 /// Hash a Markdown memory file's raw bytes without parsing frontmatter.

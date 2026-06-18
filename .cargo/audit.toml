@@ -11,7 +11,9 @@ ignore = [
     # fxhash unmaintained — via scraper -> selectors. Hash algorithm for CSS
     # selector matching on web captures; no untrusted-input soundness concern.
     "RUSTSEC-2025-0057",
-    # paste unmaintained — proc-macro, build-time only, via ratatui/metal.
+    # paste unmaintained — proc-macro, build-time only. Current transitive
+    # paths include ratatui, candle/fastembed/tokenizers, and rav1e/image; revisit
+    # on parent bumps and remove once upstream graphs stop pulling paste.
     "RUSTSEC-2024-0436",
     # proc-macro-error2 unmaintained — proc-macro, build-time only.
     "RUSTSEC-2026-0173",
