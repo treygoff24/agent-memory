@@ -5,8 +5,8 @@ use memory_substrate::{DeviceId, EventId, InitOptions, MemoryId, OperationId, Ro
 use rusqlite::Connection;
 
 #[test]
-fn index_supported_schema_version_is_4() {
-    assert_eq!(INDEX_SUPPORTED_SCHEMA_VERSION, 4);
+fn index_supported_schema_version_is_5() {
+    assert_eq!(INDEX_SUPPORTED_SCHEMA_VERSION, 5);
 }
 
 #[test]
@@ -25,7 +25,7 @@ fn fresh_schema_includes_v4_tables_and_original_confidence() {
     let max_version: u32 = conn
         .query_row("SELECT COALESCE(MAX(version), 0) FROM schema_migrations", [], |row| row.get(0))
         .expect("read schema migration version");
-    assert_eq!(max_version, 4);
+    assert_eq!(max_version, 5);
 
     let user_version: u32 = conn.pragma_query_value(None, "user_version", |row| row.get(0)).expect("user_version");
     assert_eq!(user_version, 0, "schema_migrations, not PRAGMA user_version, is canonical");
@@ -37,19 +37,22 @@ fn opening_v3_database_migrates_to_v4_idempotently() {
     let db_path = temp.path().join("index.sqlite");
     {
         let conn = open_index(&db_path).expect("first open");
-        conn.execute("DELETE FROM schema_migrations WHERE version = 4", []).expect("simulate v3 schema");
+        // Simulate a pre-v4 (v3) database: drop every migration row at or above 4
+        // so the reopen actually re-runs migrate_v4 (and migrate_v5) rather than
+        // seeing MAX(version) already at the current head and skipping the DDL.
+        conn.execute("DELETE FROM schema_migrations WHERE version >= 4", []).expect("simulate v3 schema");
         conn.execute("DROP TABLE events_log", []).expect("drop v4 table");
         conn.execute("DROP TABLE memory_supersession", []).expect("drop v4 table");
     }
 
-    let conn = open_index(&db_path).expect("migrate v3 to v4");
+    let conn = open_index(&db_path).expect("migrate v3 forward");
     assert!(table_exists(&conn, "events_log"));
     assert!(table_exists(&conn, "memory_supersession"));
     assert_eq!(column_type(&conn, "memories", "original_confidence").as_deref(), Some("REAL"));
     let max_version: u32 = conn
         .query_row("SELECT COALESCE(MAX(version), 0) FROM schema_migrations", [], |row| row.get(0))
         .expect("read schema migration version");
-    assert_eq!(max_version, 4);
+    assert_eq!(max_version, 5);
     drop(conn);
 
     let reopened = open_index(&db_path).expect("second open idempotent");

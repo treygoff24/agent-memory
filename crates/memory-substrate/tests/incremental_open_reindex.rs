@@ -350,6 +350,80 @@ async fn open_reconciles_pending_embedding_jobs() {
 
 // helpers
 
+/// Regression: two distinct memories with byte-identical bodies must both index
+/// without colliding on `memory_chunks.chunk_id`. Under the old text-only
+/// derivation the second write crashed with `UNIQUE constraint failed:
+/// memory_chunks.chunk_id`; the spec §10.3 derivation folds the memory id and
+/// ordinal into the id so identical text in two memories stays distinct.
+#[tokio::test]
+async fn two_memories_with_identical_body_both_index_and_are_recallable() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let substrate = Substrate::init(
+        roots.clone(),
+        InitOptions { force_unsafe_durability: true, device_id: Some("dev_test".to_string()) },
+    )
+    .await
+    .expect("init");
+
+    let shared_body = "an identical paragraph of body text shared verbatim by two distinct memories";
+    let mut first = sample_memory("mem_20260424_a1b2c3d4e5f60718_020001");
+    first.body = shared_body.to_string();
+    let mut second = sample_memory("mem_20260424_a1b2c3d4e5f60718_020002");
+    second.body = shared_body.to_string();
+
+    // Both writes must succeed — the second is the one that used to crash.
+    write_through_api(&substrate, &first).await;
+    write_through_api(&substrate, &second).await;
+
+    // The shared text is body-indexed and the FTS query returns BOTH memories.
+    let hits = substrate
+        .query_chunks(ChunkQuery { text: Some("verbatim".to_string()), triple: None, vector: None })
+        .await
+        .expect("query chunks");
+    let ids: std::collections::HashSet<&str> = hits.iter().map(|hit| hit.memory_id.as_str()).collect();
+    assert!(ids.contains(first.frontmatter.id.as_str()), "first memory must be recallable");
+    assert!(ids.contains(second.frontmatter.id.as_str()), "second memory must be recallable");
+}
+
+/// migrate_v5 changes the `chunk_id` derivation, so it must force a full body
+/// reindex by invalidating `file_hash`. Simulate a pre-v5 index whose chunk rows
+/// are gone but whose `memories.file_hash` still matches disk (the reconciliation
+/// short-circuit trap), then confirm a normal open rebuilds the chunks.
+#[tokio::test]
+async fn v5_migration_forces_chunk_reindex_on_open() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let substrate = Substrate::init(
+        roots.clone(),
+        InitOptions { force_unsafe_durability: true, device_id: Some("dev_test".to_string()) },
+    )
+    .await
+    .expect("init");
+    let mut memory = sample_memory("mem_20260424_a1b2c3d4e5f60718_020003");
+    memory.body = "a body whose chunks must be rebuilt after the v5 migration forces a reindex".to_string();
+    write_through_api(&substrate, &memory).await;
+    drop(substrate);
+
+    // Simulate a pre-v5 database: drop the v5 migration row and empty the chunk
+    // table, leaving `memories.file_hash` matching disk so a plain reindex would
+    // short-circuit and never repopulate.
+    {
+        let conn = memory_substrate::index::open_index(&roots.runtime.join("index.sqlite")).expect("open index");
+        conn.execute("DELETE FROM schema_migrations WHERE version >= 5", []).expect("simulate pre-v5");
+        conn.execute("DELETE FROM memory_chunks", []).expect("drop chunks");
+    }
+
+    // A normal open runs migrate_v5 (file_hash invalidation) → reconciliation
+    // rechunks every memory → the emptied chunks come back.
+    let reopened = Substrate::open(roots.clone()).await.expect("reopen");
+    let hits = reopened
+        .query_chunks(ChunkQuery { text: Some("rebuilt".to_string()), triple: None, vector: None })
+        .await
+        .expect("query chunks");
+    assert!(!hits.is_empty(), "v5 migration must force a reindex that repopulates memory_chunks");
+}
+
 async fn write_through_api(substrate: &Substrate, memory: &Memory) {
     substrate
         .write_memory(WriteRequest {

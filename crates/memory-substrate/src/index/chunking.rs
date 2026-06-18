@@ -26,10 +26,16 @@ const OVERLAP_TOKENS: usize = 80;
 /// texts concatenate back to the original body text at those byte positions.
 const MAX_CHUNK_BYTES: usize = 4096;
 
+/// Chunker version folded into `chunk_id` (spec §10.3). Bump when the chunking
+/// algorithm changes in a way that should deliberately produce new chunk ids.
+const CHUNKER_VERSION: u32 = 1;
+
 /// Indexed body chunk.
 #[derive(Clone, Debug)]
 pub struct Chunk {
-    /// Chunk id: `chk_<sha256(chunk_text)>` per spec §10.3.
+    /// Chunk id: `chk_<sha256(memory_id || chunker_version || ordinal || chunk_hash)>`
+    /// per spec §10.3. Left empty by the producers and assigned by [`chunk_memory`]
+    /// once the owning memory id and the chunk's ordinal are known.
     pub chunk_id: String,
     /// SHA-256 hash of the chunk text (`sha256:<hex>`).
     pub body_hash: Sha256Text,
@@ -51,7 +57,17 @@ pub fn chunk_memory(memory: &Memory) -> Vec<Chunk> {
         return Vec::new();
     }
     let sections = split_markdown_sections(&body);
-    sections_to_chunks(&sections)
+    let mut chunks = sections_to_chunks(&sections);
+    // Spec §10.3: chunk_id folds in the owning memory id and the chunk's ordinal,
+    // so it is globally unique by construction — two memories sharing identical
+    // text, or one memory repeating a chunk at different ordinals, still get
+    // distinct ids. The producers above leave `chunk_id` empty; assign it here
+    // where the memory id and the stable document-order ordinal are known.
+    let memory_id = memory.frontmatter.id.as_str();
+    for (ordinal, chunk) in chunks.iter_mut().enumerate() {
+        chunk.chunk_id = chunk_id_from_parts(memory_id, CHUNKER_VERSION, ordinal, &chunk.body_hash);
+    }
+    chunks
 }
 
 /// A contiguous run of text under one markdown heading (or preamble).
@@ -126,8 +142,7 @@ fn sections_to_chunks(sections: &[Section<'_>]) -> Vec<Chunk> {
             byte_split_chunk(chunk_text, start_byte, end_byte, &mut chunks);
         } else {
             let hash = hash_text(&chunk_text);
-            let chunk_id = chunk_id_from_text(&chunk_text);
-            chunks.push(Chunk { chunk_id, body_hash: hash, text: chunk_text, start_byte, end_byte });
+            chunks.push(Chunk { chunk_id: String::new(), body_hash: hash, text: chunk_text, start_byte, end_byte });
         }
 
         // Advance with overlap: next chunk starts `OVERLAP_TOKENS` before `end_word`.
@@ -164,8 +179,13 @@ fn byte_split_chunk(text: String, body_start_byte: usize, body_end_byte: usize, 
         let sub_start = body_start_byte + offset;
         let sub_end = body_start_byte + split_at;
         let hash = hash_text(&sub_text);
-        let chunk_id = chunk_id_from_text(&sub_text);
-        out.push(Chunk { chunk_id, body_hash: hash, text: sub_text, start_byte: sub_start, end_byte: sub_end });
+        out.push(Chunk {
+            chunk_id: String::new(),
+            body_hash: hash,
+            text: sub_text,
+            start_byte: sub_start,
+            end_byte: sub_end,
+        });
         offset = split_at;
     }
 }
@@ -233,13 +253,27 @@ fn join_words(words: &[(usize, &str)]) -> String {
     out
 }
 
-/// Derive `chk_<sha256(chunk_text)>` per spec §10.3.
+/// Derive `chk_<sha256(memory_id || chunker_version || ordinal || chunk_hash)>`
+/// per spec §10.3.
 ///
-/// Content-addressable: identical text always produces the same chunk id,
-/// regardless of which memory currently owns the chunk (relevant for merge).
-fn chunk_id_from_text(text: &str) -> String {
-    let digest = hex::encode(Sha256::digest(text.as_bytes()));
-    format!("chk_{digest}")
+/// Folding the owning memory id, the chunker version, and the chunk's ordinal
+/// into the digest makes `chunk_id` globally unique by construction: two memories
+/// that share an identical text chunk — or one memory that repeats a chunk at
+/// different ordinals — still get distinct ids, so the `memory_chunks.chunk_id`
+/// UNIQUE constraint cannot collide. `chunk_hash` is the chunk text's content hash
+/// (the chunk's `body_hash`). Components are separated by a NUL byte, which cannot
+/// appear in a memory id, decimal integer, or `sha256:`-prefixed hash, so distinct
+/// component tuples cannot alias through concatenation.
+fn chunk_id_from_parts(memory_id: &str, chunker_version: u32, ordinal: usize, chunk_hash: &Sha256Text) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(memory_id.as_bytes());
+    hasher.update([0]);
+    hasher.update(chunker_version.to_string().as_bytes());
+    hasher.update([0]);
+    hasher.update(ordinal.to_string().as_bytes());
+    hasher.update([0]);
+    hasher.update(chunk_hash.as_str().as_bytes());
+    format!("chk_{}", hex::encode(hasher.finalize()))
 }
 
 fn hash_text(text: &str) -> Sha256Text {
@@ -340,17 +374,39 @@ mod tests {
     }
 
     #[test]
-    fn identical_text_produces_identical_chunk_id() {
-        let id1 = chunk_id_from_text("hello world");
-        let id2 = chunk_id_from_text("hello world");
-        assert_eq!(id1, id2);
+    fn chunk_id_folds_in_memory_ordinal_and_hash() {
+        // Spec §10.3: chunk_id = chk_<sha256(memory_id || chunker_version || ordinal || chunk_hash)>.
+        let h1 = hash_text("hello world");
+        let h2 = hash_text("hello earth");
+        // Deterministic for a fixed component tuple.
+        assert_eq!(chunk_id_from_parts("mem_a", 1, 0, &h1), chunk_id_from_parts("mem_a", 1, 0, &h1));
+        // Different chunk text → different id.
+        assert_ne!(chunk_id_from_parts("mem_a", 1, 0, &h1), chunk_id_from_parts("mem_a", 1, 0, &h2));
+        // Identical text in a different memory → different id (cross-memory uniqueness).
+        assert_ne!(chunk_id_from_parts("mem_a", 1, 0, &h1), chunk_id_from_parts("mem_b", 1, 0, &h1));
+        // Identical text at a different ordinal → different id (one memory repeating a chunk).
+        assert_ne!(chunk_id_from_parts("mem_a", 1, 0, &h1), chunk_id_from_parts("mem_a", 1, 1, &h1));
     }
 
     #[test]
-    fn different_text_produces_different_chunk_id() {
-        let id1 = chunk_id_from_text("hello world");
-        let id2 = chunk_id_from_text("hello earth");
-        assert_ne!(id1, id2);
+    fn identical_body_in_different_memories_yields_distinct_chunk_ids() {
+        // Two memories with byte-identical bodies must not collide on chunk_id —
+        // the regression that crashed daemon startup under the old text-only
+        // derivation (UNIQUE constraint failed: memory_chunks.chunk_id).
+        let mut a = make_memory("a shared paragraph of memory text used by two memories");
+        a.frontmatter.id = MemoryId::new("mem_20260424_a1b2c3d4e5f60718_000001");
+        let mut b = make_memory("a shared paragraph of memory text used by two memories");
+        b.frontmatter.id = MemoryId::new("mem_20260424_a1b2c3d4e5f60718_000002");
+        let ids_a: Vec<String> = chunk_memory(&a).into_iter().map(|chunk| chunk.chunk_id).collect();
+        let ids_b: Vec<String> = chunk_memory(&b).into_iter().map(|chunk| chunk.chunk_id).collect();
+        assert!(!ids_a.is_empty());
+        assert_eq!(ids_a.len(), ids_b.len());
+        for (ia, ib) in ids_a.iter().zip(&ids_b) {
+            assert_ne!(ia, ib, "identical text in different memories must yield distinct chunk_ids");
+        }
+        // Determinism: re-chunking the same memory yields identical ids.
+        let ids_a_again: Vec<String> = chunk_memory(&a).into_iter().map(|chunk| chunk.chunk_id).collect();
+        assert_eq!(ids_a, ids_a_again);
     }
 
     #[test]

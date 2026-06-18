@@ -340,7 +340,7 @@ fn v1_index_migration_backfills_recall_projection_columns_once() {
         first_open
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get::<_, i64>(0))
             .expect("MAX(version) from schema_migrations"),
-        4
+        5
     );
     assert_recall_governance_columns_exist(&first_open);
     assert_recall_filter_indexes_exist(&first_open);

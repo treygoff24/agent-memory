@@ -12,7 +12,7 @@ use crate::index::schema::SCHEMA_SQL;
 /// Spec §10.1 makes `schema_migrations` the canonical version row; opening a
 /// database whose `MAX(version)` exceeds this constant returns
 /// [`OpenError::IndexSchemaVersionUnsupported`] without applying any DDL.
-pub const INDEX_SUPPORTED_SCHEMA_VERSION: u32 = 4;
+pub const INDEX_SUPPORTED_SCHEMA_VERSION: u32 = 5;
 
 /// Open and migrate an index database, applying spec §10.1 pragmas before any DDL.
 pub fn open_index(path: &Path) -> Result<Connection, OpenError> {
@@ -63,6 +63,9 @@ fn migrate_schema(connection: &mut Connection) -> Result<(), OpenError> {
     }
     if found < 4 {
         migrate_v4(connection).map_err(sqlite_to_open)?;
+    }
+    if found < 5 {
+        migrate_v5(connection).map_err(sqlite_to_open)?;
     }
     Ok(())
 }
@@ -165,6 +168,34 @@ WHERE superseded.value IS NOT NULL
 "#,
     )?;
     tx.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (?1)", params![4_i64])?;
+    tx.commit()
+}
+
+/// v5: `chunk_id` derivation changed to the spec §10.3 form
+/// `chk_<sha256(memory_id || chunker_version || ordinal || chunk_hash)>`.
+///
+/// The shipped chunker had derived `chunk_id` from the chunk text alone, so two
+/// memories sharing an identical chunk (or one memory repeating a chunk)
+/// collided on the `memory_chunks.chunk_id` UNIQUE constraint and crashed startup
+/// reconciliation with `OperatorRepairRequired`. Folding the memory id and
+/// ordinal into the digest makes `chunk_id` globally unique by construction, but
+/// every existing `chunk_id` must be recomputed.
+///
+/// Reconciliation rechunks a memory only when its stored `file_hash` no longer
+/// matches the on-disk file (`runtime::reconcile` file-consistency check), so a
+/// schema-only change would never rebuild the chunks. Invalidate every memory's
+/// `file_hash` (plaintext and encrypted tiers alike) so the next `Substrate::open`
+/// re-walks and rechunks every memory. The per-memory reindex deletes the old
+/// chunk rows (cascading their FTS shadow and `chunk_embedding_meta`) and inserts
+/// rows with the new ids; the chunk-id orphan sweeps reclaim stale
+/// `chunk_vectors`/`pending_embedding_jobs`. This migration only triggers that
+/// rebuild — it writes no chunk rows itself.
+fn migrate_v5(connection: &mut Connection) -> rusqlite::Result<()> {
+    let tx = connection.transaction()?;
+    // Sentinel is not a `sha256:`-prefixed hash, so it can never match a real
+    // file hash — every memory is treated as drifted and rechunked on open.
+    tx.execute("UPDATE memories SET file_hash = 'force-reindex-v5'", [])?;
+    tx.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (?1)", params![5_i64])?;
     tx.commit()
 }
 
