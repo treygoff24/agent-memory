@@ -113,6 +113,13 @@ impl From<NonGitCwdDefault> for NonGitCwdDecision {
             NonGitCwdDefault::Skip => Self::Skip,
             NonGitCwdDefault::Me => Self::Me,
             NonGitCwdDefault::Generate => Self::Generate,
+            // BLOCKED: routing `Project` to a true derive-project disposition on
+            // the `init` path requires a `NonGitCwdDecision` variant plus a
+            // `setup/steps.rs` mapping to `PromptedDisposition::DeriveProject`,
+            // both of which live in the non-owned `crate::setup`. Mapping to
+            // `Me` here keeps `init` non-lossy (memories are still saved, no
+            // file is written) until the setup variant lands.
+            NonGitCwdDefault::Project => Self::Me,
         }
     }
 }

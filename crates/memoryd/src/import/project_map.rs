@@ -55,6 +55,10 @@ pub enum ResolutionKind {
     YamlOverride,
     /// User chose to generate a `.memory-project.yaml` in this non-git cwd.
     PromptedNewProject,
+    /// User chose to derive a project namespace from the cwd path without
+    /// writing any `.memory-project.yaml` — the memory lands project-scoped and
+    /// Active under the default policy (no me-strict review gating).
+    PromptedDerivedProject,
     /// User chose to drop these memories into user scope.
     PromptedDropToMe,
     /// User chose to skip these memories entirely.
@@ -71,6 +75,7 @@ impl ResolutionKind {
             Self::GitRemote => "git_remote",
             Self::YamlOverride => "yaml_override",
             Self::PromptedNewProject => "prompted_new_project",
+            Self::PromptedDerivedProject => "prompted_derived_project",
             Self::PromptedDropToMe => "prompted_drop_to_me",
             Self::PromptedSkip => "prompted_skip",
             Self::UserScope => "user_scope",
@@ -108,6 +113,10 @@ impl ProjectYamlAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptedDisposition {
     GenerateProjectYaml,
+    /// Derive a project namespace from the cwd path and place the memory
+    /// project-scoped + Active under the default policy, writing no
+    /// `.memory-project.yaml` (zero filesystem side effects).
+    DeriveProject,
     DropToMe,
     Skip,
 }
@@ -155,8 +164,12 @@ pub struct InteractivePromptBackend;
 
 impl PromptBackend for InteractivePromptBackend {
     fn prompt_non_git_cwd(&mut self, cwd: &Path, synced_dir: Option<&'static str>) -> PromptResult {
-        let items =
-            ["generate .memory-project.yaml here", "drop these memories into user scope", "skip these memories"];
+        let items = [
+            "create a project for this directory (recommended)",
+            "generate .memory-project.yaml here",
+            "drop these memories into user scope",
+            "skip these memories",
+        ];
         let header = match synced_dir {
             Some(service) => format!(
                 "{path}\n⚠ This directory appears to be synced via {service}. The .memory-project.yaml file will be visible on other machines using that service.",
@@ -167,12 +180,13 @@ impl PromptBackend for InteractivePromptBackend {
         let selection = dialoguer::Select::new()
             .with_prompt(format!("non-git cwd — what to do?\n{header}"))
             .items(&items)
-            .default(1)
+            .default(0)
             .interact()
-            .unwrap_or(2);
+            .unwrap_or(3);
         let disposition = match selection {
-            0 => PromptedDisposition::GenerateProjectYaml,
-            1 => PromptedDisposition::DropToMe,
+            0 => PromptedDisposition::DeriveProject,
+            1 => PromptedDisposition::GenerateProjectYaml,
+            2 => PromptedDisposition::DropToMe,
             _ => PromptedDisposition::Skip,
         };
         PromptResult { disposition, synced_dir_confirmed: synced_dir.map(|_| true) }
@@ -266,6 +280,14 @@ impl ProjectMapper {
                     project_yaml: Some(ProjectYamlDisposition { path: yaml_path, action: yaml_action }),
                 })
             }
+            PromptedDisposition::DeriveProject => Ok(ScopeBinding {
+                scope: Scope::Project,
+                namespace: Some("project".to_string()),
+                namespace_alias: Some(derive_alias_for_dir(cwd)),
+                canonical_namespace_id: Some(derive_canonical_id_for_dir(cwd)),
+                resolution: ResolutionKind::PromptedDerivedProject,
+                project_yaml: None,
+            }),
             PromptedDisposition::DropToMe => Ok(ScopeBinding {
                 scope: Scope::User,
                 namespace: Some("me".to_string()),
@@ -460,6 +482,25 @@ mod tests {
         assert_eq!(binding.scope, Scope::User);
         assert_eq!(binding.resolution, ResolutionKind::PromptedDropToMe);
         assert_eq!(prompts.calls, 1);
+    }
+
+    #[tokio::test]
+    async fn non_git_cwd_derive_project_returns_project_scope_without_yaml() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let cwd = tmp.path();
+        let mut prompts = ScriptedPrompts::new().with(cwd, PromptedDisposition::DeriveProject);
+        let mut mapper = ProjectMapper::new();
+        let binding = mapper.resolve(Some(cwd), &mut prompts).await.expect("resolves");
+        assert_eq!(binding.scope, Scope::Project);
+        assert_eq!(binding.namespace.as_deref(), Some("project"));
+        assert!(binding.canonical_namespace_id.as_deref().is_some_and(|id| id.starts_with("proj_")));
+        assert!(binding.namespace_alias.is_some());
+        assert_eq!(binding.resolution, ResolutionKind::PromptedDerivedProject);
+        assert!(binding.project_yaml.is_none(), "deriving a project must not plan or write any yaml");
+        assert!(
+            !cwd.join(".memory-project.yaml").exists(),
+            "deriving a project must leave the directory untouched on disk",
+        );
     }
 
     #[tokio::test]

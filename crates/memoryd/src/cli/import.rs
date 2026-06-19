@@ -51,12 +51,16 @@ fn prompt_backend(default: Option<NonGitCwdDefault>) -> Box<dyn PromptBackend> {
             NonGitCwdDefault::Skip => PromptedDisposition::Skip,
             NonGitCwdDefault::Me => PromptedDisposition::DropToMe,
             NonGitCwdDefault::Generate => PromptedDisposition::GenerateProjectYaml,
+            NonGitCwdDefault::Project => PromptedDisposition::DeriveProject,
         }));
     }
 
     if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
         Box::new(InteractivePromptBackend)
     } else {
-        Box::new(FixedDispositionBackend::new(PromptedDisposition::Skip))
+        // Non-interactive with no flag (e.g. piped invocation): never lose
+        // memories. Derive a project namespace from the cwd path so they land
+        // project-scoped and Active by default, with no filesystem side effects.
+        Box::new(FixedDispositionBackend::new(PromptedDisposition::DeriveProject))
     }
 }

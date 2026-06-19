@@ -218,12 +218,12 @@ async fn run_import_step<R: SetupStepRuntime>(
     // of every `~/.claude*/projects` profile root, not just the one the wizard
     // surfaced in its detection summary. An explicit `--from-claude` override is
     // honored verbatim instead.
-    let from_claude = if matches!(plan.detection.claude.source, Some(crate::setup::detect::SetupDiscoverySource::FlagOverride))
-    {
-        plan.detection.claude.root.clone().into_iter().collect()
-    } else {
-        Vec::new()
-    };
+    let from_claude =
+        if matches!(plan.detection.claude.source, Some(crate::setup::detect::SetupDiscoverySource::FlagOverride)) {
+            plan.detection.claude.root.clone().into_iter().collect()
+        } else {
+            Vec::new()
+        };
     let request = ImportStepRequest {
         repo: engine.repo(),
         runtime: engine.runtime(),

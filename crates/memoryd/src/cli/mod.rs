@@ -252,9 +252,15 @@ pub enum ImportHarness {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 #[clap(rename_all = "lowercase")]
 pub enum NonGitCwdDefault {
+    /// Drop these memories rather than importing them.
     Skip,
+    /// Place them under user (`me`) scope.
     Me,
+    /// Write a `.memory-project.yaml` in each non-git directory.
     Generate,
+    /// Derive a project namespace for the cwd from its path; no file is
+    /// written, and the memories land active and recall-visible by default.
+    Project,
 }
 
 #[derive(Debug, Args)]

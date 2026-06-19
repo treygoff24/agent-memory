@@ -13,10 +13,14 @@ use serial_test::serial;
 
 #[test]
 #[serial]
-fn absent_non_git_default_skips_and_text_enumerates_cwd() {
+fn absent_non_git_default_derives_active_project_scope() {
     let fixture = ImportFixture::new();
     let report_path = fixture.temp.path().join("report.json");
 
+    // With no `--non-git-cwd-default` flag and no TTY, the default is now to
+    // derive a project namespace from the cwd so the memories are saved and land
+    // active (project scope, default policy) rather than being skipped. `--dry-run`
+    // keeps the test daemon-free while still exercising the disposition path.
     let output = run_import([
         "import",
         "--harness",
@@ -27,25 +31,26 @@ fn absent_non_git_default_skips_and_text_enumerates_cwd() {
         path_arg(&fixture.repo),
         "--report",
         path_arg(&report_path),
+        "--dry-run",
         "--quiet",
     ]);
 
     assert_success(&output);
     let stdout = stdout(&output);
-    assert!(
-        stdout.contains(
-            "1 memories skipped (non-git cwd); re-run with --non-git-cwd-default {me|generate} to place them"
-        ),
-        "skip guidance missing from stdout:\n{stdout}"
-    );
-    assert!(stdout.contains(&fixture.non_git_cwd.display().to_string()), "cwd not enumerated in stdout:\n{stdout}");
+    assert!(!stdout.contains("skipped (non-git cwd)"), "default must no longer skip non-git memories:\n{stdout}");
 
     let report = read_report(&report_path);
     let codex = report.harnesses.get("codex").expect("codex counters");
-    assert_eq!(codex.skipped_by_prompt, 1);
+    assert_eq!(codex.skipped_by_prompt, 0, "nothing is skipped under the derive-project default");
     let disposition = only_cwd_disposition(&report);
-    assert_eq!(disposition.resolution, "prompted_skip");
+    assert_eq!(disposition.resolution, "prompted_derived_project");
     assert_eq!(disposition.cwd.as_deref(), Some(fixture.non_git_cwd.as_path()));
+    assert!(
+        disposition.canonical_namespace_id.as_deref().is_some_and(|id| id.starts_with("proj_")),
+        "derive-project assigns a proj_ namespace"
+    );
+    assert!(disposition.project_yaml.is_none(), "derive-project writes no .memory-project.yaml");
+    assert_eq!(codex.written_new, 1, "dry-run previews the derived-project write");
 }
 
 #[test]
@@ -127,10 +132,11 @@ async fn generate_default_execute_writes_yaml_and_binds_project_scope() {
     let result = run_import_session(
         &fixture.repo,
         ImportOptions {
-            from_claude: None,
+            from_claude: Vec::new(),
             from_codex: Some(fixture.codex_root.clone()),
             harness_filter: Some(HarnessFilter::Codex),
             state: ImportState::default(),
+            quiet: true,
         },
         &mut prompts,
         &mut client,
@@ -169,10 +175,11 @@ async fn generate_default_execute_does_not_write_yaml_when_daemon_write_fails() 
     let error = run_import_session(
         &fixture.repo,
         ImportOptions {
-            from_claude: None,
+            from_claude: Vec::new(),
             from_codex: Some(fixture.codex_root.clone()),
             harness_filter: Some(HarnessFilter::Codex),
             state: ImportState::default(),
+            quiet: true,
         },
         &mut prompts,
         &mut client,
