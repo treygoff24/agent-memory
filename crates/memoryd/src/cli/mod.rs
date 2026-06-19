@@ -210,10 +210,12 @@ pub struct ImportArgs {
     /// requests or touching the state file.
     #[arg(long, default_value_t = false)]
     pub dry_run: bool,
-    /// Override the Claude Code memory directory (default:
-    /// `~/.claude/projects/`).
+    /// Claude Code memory directory to import. Repeatable: pass `--from-claude`
+    /// once per root to import the union of several. Omit to auto-detect the
+    /// union of all Claude profile roots (the precedence root plus any sibling
+    /// `~/.claude-*/projects/`).
     #[arg(long)]
-    pub from_claude: Option<PathBuf>,
+    pub from_claude: Vec<PathBuf>,
     /// Override the Codex CLI memory directory (default: `~/.codex/memories/`).
     #[arg(long)]
     pub from_codex: Option<PathBuf>,

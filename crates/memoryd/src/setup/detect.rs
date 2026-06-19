@@ -71,6 +71,9 @@ impl From<DiscoverySource> for SetupDiscoverySource {
             DiscoverySource::EnvVar => Self::EnvVar,
             DiscoverySource::SettingsFile => Self::SettingsFile,
             DiscoverySource::Default => Self::Default,
+            // Auto-detected sibling profile roots are a default-precedence-adjacent
+            // discovery; the setup report has no distinct rung for them.
+            DiscoverySource::DetectedProfile => Self::Default,
         }
     }
 }

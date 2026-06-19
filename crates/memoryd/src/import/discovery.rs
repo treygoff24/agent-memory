@@ -8,6 +8,7 @@
 //! - Codex: `--from-codex <path>` flag override → `CODEX_HOME` env var →
 //!   default `~/.codex/memories/`.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -44,6 +45,11 @@ pub enum DiscoverySource {
     SettingsFile,
     /// Built-in default (`~/.claude/projects/` or `~/.codex/memories/`).
     Default,
+    /// A sibling Claude profile directory (`~/.claude-*/projects/`) found by
+    /// the multi-root auto-detect scan. Claude memory on a multi-profile
+    /// machine reaches different subsets through per-profile symlinks, so the
+    /// union of these roots is what fully covers the corpus.
+    DetectedProfile,
 }
 
 #[derive(Debug, Deserialize)]
@@ -107,6 +113,92 @@ pub fn discover_claude_memory_root_with_env(
         return Ok(Some(ClaudeMemoryRoot { path: custom, source: DiscoverySource::SettingsFile }));
     }
     Ok(Some(ClaudeMemoryRoot { path: home.join(".claude").join("projects"), source: DiscoverySource::Default }))
+}
+
+/// Locate the UNION of Claude Code memory roots for an import.
+///
+/// When `flag_overrides` is non-empty, every override is honored verbatim and
+/// in order — no scanning. Otherwise the existing single-root precedence root
+/// (`CLAUDE_CONFIG_DIR` → settings.json → `~/.claude/projects/`) is the first
+/// entry, then the home directory is scanned for sibling `.claude*` profile
+/// directories that contain an existing `projects/` subdir, each appended as a
+/// [`DiscoverySource::DetectedProfile`] root.
+///
+/// Roots are deduplicated by canonicalized path so a root reachable two ways
+/// (e.g. the precedence root and a sibling that resolve to the same place)
+/// appears once, with precedence order preserved. Paths that do not exist on
+/// disk cannot be canonicalized; they dedup on their literal form instead,
+/// which is fine because the precedence root is always emitted first.
+pub fn discover_claude_memory_roots(flag_overrides: &[PathBuf]) -> ImportResult<Vec<ClaudeMemoryRoot>> {
+    discover_claude_memory_roots_with_env(flag_overrides, &ProcessEnv)
+}
+
+/// Test seam: same as [`discover_claude_memory_roots`] but with an injectable
+/// `EnvProvider`.
+pub fn discover_claude_memory_roots_with_env(
+    flag_overrides: &[PathBuf],
+    env: &dyn EnvProvider,
+) -> ImportResult<Vec<ClaudeMemoryRoot>> {
+    if !flag_overrides.is_empty() {
+        return Ok(flag_overrides
+            .iter()
+            .map(|path| ClaudeMemoryRoot { path: path.clone(), source: DiscoverySource::FlagOverride })
+            .collect());
+    }
+
+    let mut roots: Vec<ClaudeMemoryRoot> = Vec::new();
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+
+    // The precedence root comes first so it always wins dedup and first-listed
+    // ordering downstream.
+    if let Some(root) = discover_claude_memory_root_with_env(None, env)? {
+        seen.insert(dedup_key(&root.path));
+        roots.push(root);
+    }
+
+    // Then scan the home dir for sibling profile dirs (`.claude`, `.claude-foo`,
+    // …) whose `projects/` subdir exists on disk.
+    if let Some(home) = env.home_dir() {
+        for profile_projects in scan_sibling_profile_projects(&home) {
+            if seen.insert(dedup_key(&profile_projects)) {
+                roots.push(ClaudeMemoryRoot { path: profile_projects, source: DiscoverySource::DetectedProfile });
+            }
+        }
+    }
+
+    Ok(roots)
+}
+
+/// Canonicalize when the path exists (so two symlink routes collapse to one);
+/// fall back to the literal path when it does not, so non-existent roots still
+/// dedup against themselves.
+fn dedup_key(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Enumerate `<home>/.claude*/projects` directories that exist on disk, in a
+/// deterministic (sorted-by-name) order. Returns the `projects/` subdirectory
+/// paths, not the profile roots, so callers can parse them directly.
+fn scan_sibling_profile_projects(home: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(home) else {
+        return Vec::new();
+    };
+    let mut matches: Vec<PathBuf> = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !name.starts_with(".claude") {
+            continue;
+        }
+        let projects = entry.path().join("projects");
+        if projects.is_dir() {
+            matches.push(projects);
+        }
+    }
+    matches.sort();
+    matches
 }
 
 fn read_claude_auto_memory_directory(settings_path: &Path) -> ImportResult<Option<PathBuf>> {
@@ -229,6 +321,70 @@ mod tests {
         let env = FakeEnv::new(None);
         let result = discover_claude_memory_root_with_env(None, &env).expect("discovery ok");
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn claude_multi_root_flag_overrides_returned_verbatim_in_order() {
+        let env = FakeEnv::new(Some(PathBuf::from("/home/u"))).with("CLAUDE_CONFIG_DIR", "/env/claude");
+        let overrides = vec![PathBuf::from("/flag/one"), PathBuf::from("/flag/two")];
+        let roots = discover_claude_memory_roots_with_env(&overrides, &env).expect("discovery ok");
+        assert_eq!(roots.len(), 2);
+        assert_eq!(roots[0].path, PathBuf::from("/flag/one"));
+        assert_eq!(roots[0].source, DiscoverySource::FlagOverride);
+        assert_eq!(roots[1].path, PathBuf::from("/flag/two"));
+        assert_eq!(roots[1].source, DiscoverySource::FlagOverride);
+    }
+
+    #[test]
+    fn claude_multi_root_auto_detect_lists_precedence_root_first() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        // Precedence root (`~/.claude/projects`) exists.
+        std::fs::create_dir_all(tmp.path().join(".claude").join("projects")).expect("mkdir default");
+        let env = FakeEnv::new(Some(tmp.path().to_path_buf()));
+        let roots = discover_claude_memory_roots_with_env(&[], &env).expect("discovery ok");
+        assert!(!roots.is_empty());
+        assert_eq!(roots[0].path, tmp.path().join(".claude").join("projects"));
+        assert_eq!(roots[0].source, DiscoverySource::Default);
+    }
+
+    #[test]
+    fn claude_multi_root_auto_detect_picks_up_sibling_profile_projects() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        // Precedence root exists, plus a sibling `.claude-foo/projects`.
+        std::fs::create_dir_all(tmp.path().join(".claude").join("projects")).expect("mkdir default");
+        std::fs::create_dir_all(tmp.path().join(".claude-foo").join("projects")).expect("mkdir sibling");
+        // A `.claude-bar` without a projects subdir must be ignored.
+        std::fs::create_dir_all(tmp.path().join(".claude-bar")).expect("mkdir no-projects");
+        let env = FakeEnv::new(Some(tmp.path().to_path_buf()));
+        let roots = discover_claude_memory_roots_with_env(&[], &env).expect("discovery ok");
+
+        let sibling = tmp.path().join(".claude-foo").join("projects");
+        let detected: Vec<&ClaudeMemoryRoot> =
+            roots.iter().filter(|r| r.source == DiscoverySource::DetectedProfile).collect();
+        assert_eq!(detected.len(), 1, "exactly one sibling profile detected");
+        assert_eq!(detected[0].path, sibling);
+        assert!(
+            !roots.iter().any(|r| r.path == tmp.path().join(".claude-bar").join("projects")),
+            "a profile dir without a projects subdir is not a root"
+        );
+    }
+
+    #[test]
+    fn claude_multi_root_dedups_precedence_root_against_sibling_scan() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        // The precedence root IS `~/.claude/projects`, which the sibling scan
+        // will also enumerate (`.claude` matches `.claude*`). It must appear
+        // once, as the precedence (Default) entry, not twice.
+        std::fs::create_dir_all(tmp.path().join(".claude").join("projects")).expect("mkdir default");
+        let env = FakeEnv::new(Some(tmp.path().to_path_buf()));
+        let roots = discover_claude_memory_roots_with_env(&[], &env).expect("discovery ok");
+
+        let default_path = tmp.path().join(".claude").join("projects");
+        let canonical = std::fs::canonicalize(&default_path).expect("canonicalize");
+        let occurrences =
+            roots.iter().filter(|r| std::fs::canonicalize(&r.path).map(|c| c == canonical).unwrap_or(false)).count();
+        assert_eq!(occurrences, 1, "precedence root and sibling scan collapse to one entry");
+        assert_eq!(roots[0].source, DiscoverySource::Default, "precedence root stays first");
     }
 
     #[test]

@@ -214,14 +214,25 @@ async fn run_import_step<R: SetupStepRuntime>(
     };
 
     let mut prompts = prompt_backend(plan.decisions.non_git_cwd_default);
+    // An empty `from_claude` makes the importer auto-detect and import the union
+    // of every `~/.claude*/projects` profile root, not just the one the wizard
+    // surfaced in its detection summary. An explicit `--from-claude` override is
+    // honored verbatim instead.
+    let from_claude = if matches!(plan.detection.claude.source, Some(crate::setup::detect::SetupDiscoverySource::FlagOverride))
+    {
+        plan.detection.claude.root.clone().into_iter().collect()
+    } else {
+        Vec::new()
+    };
     let request = ImportStepRequest {
         repo: engine.repo(),
         runtime: engine.runtime(),
         options: ImportOptions {
-            from_claude: plan.detection.claude.root.clone(),
+            from_claude,
             from_codex: plan.detection.codex.root.clone(),
             harness_filter: filter,
             state: ImportState::default(),
+            quiet: true,
         },
         socket: &plan.detection.daemon.socket_path,
         execute_options: ExecuteOptions { dry_run: plan.decisions.print_only, verbose_progress: false },

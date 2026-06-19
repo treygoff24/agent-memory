@@ -14,7 +14,7 @@ use serde_json::Value;
 
 use crate::import::candidate::{Harness, ParsedMemory};
 use crate::import::discovery::{
-    discover_claude_memory_root, discover_codex_memory_root, ClaudeMemoryRoot, CodexMemoryRoot,
+    discover_claude_memory_roots, discover_codex_memory_root, ClaudeMemoryRoot, CodexMemoryRoot,
 };
 use crate::import::project_map::{
     write_generated_project_yaml, ProjectMapper, ProjectYamlAction, PromptBackend, ResolutionKind, ScopeBinding,
@@ -31,12 +31,17 @@ use crate::protocol::{GovernanceRefusalReason, GovernanceStatus, ProtocolError, 
 /// Caller-supplied options for the planning phase.
 #[derive(Debug, Clone, Default)]
 pub struct ImportOptions {
-    /// Override the Claude memory root (T07's `--from-claude` flag).
-    pub from_claude: Option<PathBuf>,
+    /// Explicit Claude memory roots (the repeatable `--from-claude` flag). An
+    /// empty vec means auto-detect the union of profile roots; a non-empty vec
+    /// is honored verbatim, in order, with no scanning.
+    pub from_claude: Vec<PathBuf>,
     /// Override the Codex memory root (`--from-codex`).
     pub from_codex: Option<PathBuf>,
     /// Restrict planning to a single harness; `None` means import everything.
     pub harness_filter: Option<HarnessFilter>,
+    /// Suppress the per-root discovery summary that `plan` prints to stderr.
+    /// Mirrors the CLI `--quiet` flag; defaults to noisy (`false`).
+    pub quiet: bool,
     /// Pre-loaded state for idempotency checks. Disk-backed imports should go
     /// through [`run_import_session`] so the state file is loaded under the
     /// import lock.
@@ -875,11 +880,14 @@ impl ImportEngine {
         let mut parse_errors = Vec::new();
         let mut candidates: Vec<ParsedMemory> = Vec::new();
 
-        // Pass 0: discovery.
-        let claude_root = if options.harness_filter.is_none_or(|f| matches!(f, HarnessFilter::Claude)) {
-            discover_claude_memory_root(options.from_claude.as_deref())?
+        // Pass 0: discovery. Claude resolves to the UNION of profile roots
+        // (the precedence root plus any sibling `.claude*/projects`), so a
+        // multi-profile machine is covered without the operator naming each
+        // root. Codex stays single-root.
+        let claude_roots = if options.harness_filter.is_none_or(|f| matches!(f, HarnessFilter::Claude)) {
+            discover_claude_memory_roots(&options.from_claude)?
         } else {
-            None
+            Vec::new()
         };
         let codex_root = if options.harness_filter.is_none_or(|f| matches!(f, HarnessFilter::Codex)) {
             discover_codex_memory_root(options.from_codex.as_deref())?
@@ -887,16 +895,24 @@ impl ImportEngine {
             None
         };
 
-        // Pass 1: parse.
-        let claude_count = if let Some(root) = &claude_root {
+        // Pass 1: parse. Parse each Claude root, concatenate candidates, then
+        // dedup by `source_key` (the relative path under the root) so a memory
+        // reachable through more than one profile symlink is imported once.
+        // First occurrence wins, and roots are listed precedence-first, so the
+        // precedence root's copy is the survivor.
+        let mut claude_root_summaries: Vec<(PathBuf, usize)> = Vec::with_capacity(claude_roots.len());
+        let mut claude_candidates: Vec<ParsedMemory> = Vec::new();
+        for root in &claude_roots {
             let output = claude::parse(&root.path)?;
-            let count = output.candidates.len();
-            candidates.extend(output.candidates);
+            claude_root_summaries.push((root.path.clone(), output.candidates.len()));
+            claude_candidates.extend(output.candidates);
             parse_errors.extend(output.errors);
-            count
-        } else {
-            0
-        };
+        }
+        let mut seen_claude_keys: HashSet<String> = HashSet::new();
+        claude_candidates.retain(|candidate| seen_claude_keys.insert(candidate.source_key.clone()));
+        let claude_count = claude_candidates.len();
+        candidates.extend(claude_candidates);
+
         let codex_count = if let Some(root) = &codex_root {
             let output = codex::parse(&root.path)?;
             let count = output.candidates.len();
@@ -906,6 +922,18 @@ impl ImportEngine {
         } else {
             0
         };
+
+        if !options.quiet && !claude_roots.is_empty() {
+            let roots_summary = claude_root_summaries
+                .iter()
+                .map(|(path, count)| format!("{} ({count})", path.display()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            eprintln!(
+                "import: discovered {} Claude root(s): {roots_summary}; {claude_count} candidate(s) after source-key dedup",
+                claude_roots.len()
+            );
+        }
 
         // Pass 2: per-cwd project mapping. Walk unique cwds in deterministic
         // order so prompt order is stable across runs.
@@ -965,7 +993,10 @@ impl ImportEngine {
         Ok(ImportPlan {
             actions,
             source_discovery_summary: DiscoverySummary {
-                claude_root,
+                // The report's single-root field carries the precedence root
+                // (first in the union); the full per-root breakdown is the
+                // stderr summary above.
+                claude_root: claude_roots.into_iter().next(),
                 codex_root,
                 claude_candidates: claude_count,
                 codex_candidates: codex_count,
@@ -1432,9 +1463,10 @@ mod tests {
         let plan = engine
             .plan(
                 ImportOptions {
-                    from_claude: Some(claude_root),
+                    from_claude: vec![claude_root],
                     from_codex: Some(PathBuf::from("/does/not/exist")),
                     harness_filter: None,
+                    quiet: true,
                     state: ImportState::default(),
                 },
                 &mut prompts,
@@ -1461,9 +1493,10 @@ mod tests {
         let first_plan = engine
             .plan(
                 ImportOptions {
-                    from_claude: Some(claude_root.clone()),
+                    from_claude: vec![claude_root.clone()],
                     from_codex: Some(PathBuf::from("/no")),
                     harness_filter: None,
+                    quiet: true,
                     state: ImportState::default(),
                 },
                 &mut prompts,
@@ -1492,9 +1525,10 @@ mod tests {
         let plan = engine
             .plan(
                 ImportOptions {
-                    from_claude: Some(claude_root),
+                    from_claude: vec![claude_root],
                     from_codex: Some(PathBuf::from("/no")),
                     harness_filter: None,
+                    quiet: true,
                     state,
                 },
                 &mut prompts2,
@@ -1520,9 +1554,10 @@ mod tests {
         let first_plan = engine
             .plan(
                 ImportOptions {
-                    from_claude: Some(claude_root.clone()),
+                    from_claude: vec![claude_root.clone()],
                     from_codex: Some(PathBuf::from("/no")),
                     harness_filter: None,
+                    quiet: true,
                     state: ImportState::default(),
                 },
                 &mut prompts,
@@ -1634,9 +1669,10 @@ mod tests {
         let plan = engine
             .plan(
                 ImportOptions {
-                    from_claude: Some(claude_root),
+                    from_claude: vec![claude_root],
                     from_codex: Some(PathBuf::from("/no")),
                     harness_filter: None,
+                    quiet: true,
                     state,
                 },
                 &mut prompts,
@@ -1665,9 +1701,10 @@ mod tests {
         let plan = engine
             .plan(
                 ImportOptions {
-                    from_claude: Some(claude_root),
+                    from_claude: vec![claude_root],
                     from_codex: Some(PathBuf::from("/no")),
                     harness_filter: Some(HarnessFilter::Codex),
+                    quiet: true,
                     state: ImportState::default(),
                 },
                 &mut prompts,
@@ -1771,7 +1808,13 @@ mod tests {
 
         let result = run_import_session(
             &repo,
-            ImportOptions { from_claude: None, from_codex: None, harness_filter: None, state: ImportState::default() },
+            ImportOptions {
+                from_claude: Vec::new(),
+                from_codex: None,
+                harness_filter: None,
+                quiet: true,
+                state: ImportState::default(),
+            },
             &mut prompts,
             &mut client,
             ExecuteOptions { dry_run: true, verbose_progress: false },

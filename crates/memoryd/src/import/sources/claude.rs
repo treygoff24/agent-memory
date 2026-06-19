@@ -35,11 +35,15 @@ const BOILERPLATE_HEADINGS: &[&str] =
 
 /// Output bundle for a Claude memory root parse. `candidates` carries the
 /// successful parses; `errors` carries per-file failures so the import report
-/// can surface them without aborting the whole import.
+/// can surface them without aborting the whole import; `recovered` carries the
+/// source keys of files whose frontmatter strict YAML rejected but the lenient
+/// line-scan fallback salvaged, so the report can surface them as soft
+/// recoveries rather than silently dropping real memories.
 #[derive(Debug, Default)]
 pub struct ClaudeParseOutput {
     pub candidates: Vec<ParsedMemory>,
     pub errors: Vec<ImportError>,
+    pub recovered: Vec<String>,
 }
 
 /// Parse a Claude memory root. Walks `<root>/<encoded>/memory/*.md` recursively
@@ -70,11 +74,17 @@ pub fn parse(root: &Path) -> ImportResult<ClaudeParseOutput> {
             continue;
         }
         match parse_topic_file(path, root) {
-            Ok(parsed) => output.candidates.extend(parsed),
+            Ok(parsed) => {
+                if parsed.recovered {
+                    output.recovered.push(source_key_for(path, root));
+                }
+                output.candidates.extend(parsed.memories);
+            }
             Err(error) => output.errors.push(error),
         }
     }
     output.candidates.sort_by(|a, b| a.source_key.cmp(&b.source_key));
+    output.recovered.sort();
     Ok(output)
 }
 
@@ -91,21 +101,38 @@ fn is_topic_file(path: &Path) -> bool {
     name != "MEMORY.md"
 }
 
-fn parse_topic_file(path: &Path, root: &Path) -> ImportResult<Vec<ParsedMemory>> {
+/// Result of parsing one topic file: the candidate memories plus whether the
+/// frontmatter had to be salvaged via the lenient line-scan fallback (because
+/// strict `serde_yaml` rejected an otherwise-valid-intent mapping).
+struct TopicParse {
+    memories: Vec<ParsedMemory>,
+    recovered: bool,
+}
+
+fn parse_topic_file(path: &Path, root: &Path) -> ImportResult<TopicParse> {
     let source_key = source_key_for(path, root);
     let raw = std::fs::read(path).map_err(|error| ImportError::io(path, error))?;
     let text = std::str::from_utf8(&raw)
         .map_err(|error| ImportError::Encoding { source_key: source_key.clone(), reason: error.to_string() })?
         .to_string();
+    // An unterminated `---` frontmatter block is a genuine structural error and
+    // stays hard — we cannot trust where the body begins.
     let (frontmatter, body) = split_frontmatter_and_body(&text)
         .map_err(|reason| ImportError::Parse { source_key: source_key.clone(), reason })?;
-    let frontmatter_hint = parse_frontmatter_hint(&frontmatter, &source_key)?;
+    // Strict YAML first; on a *mapping-parse* failure fall back to a tolerant
+    // line scan rather than dropping a real memory whose frontmatter merely
+    // trips a reserved YAML indicator (`: `, leading backtick, dangling quote).
+    let (frontmatter_hint, recovered) = match parse_frontmatter_hint(&frontmatter, &source_key) {
+        Ok(hint) => (hint, false),
+        Err(ImportError::Parse { .. }) => (lenient_frontmatter_hint(&frontmatter), true),
+        Err(other) => return Err(other),
+    };
     let body = body.trim_end_matches('\n').to_string();
     let cwd = cwd_from_encoded_path(path, root);
     let title = frontmatter_hint.get("name").and_then(Value::as_str).map(str::to_string);
     let sections = collect_substantive_sections(&body);
-    if sections.len() >= 3 {
-        Ok(sections
+    let memories = if sections.len() >= 3 {
+        sections
             .into_iter()
             .map(|section| {
                 build_memory(ClaudeCandidateInput {
@@ -117,10 +144,11 @@ fn parse_topic_file(path: &Path, root: &Path) -> ImportResult<Vec<ParsedMemory>>
                     body: section.body,
                 })
             })
-            .collect())
+            .collect()
     } else {
-        Ok(vec![build_memory(ClaudeCandidateInput { source_key, path, cwd, title, frontmatter_hint, body })])
-    }
+        vec![build_memory(ClaudeCandidateInput { source_key, path, cwd, title, frontmatter_hint, body })]
+    };
+    Ok(TopicParse { memories, recovered })
 }
 
 struct ClaudeCandidateInput<'a> {
@@ -218,6 +246,65 @@ fn parse_frontmatter_hint(yaml: &str, source_key: &str) -> ImportResult<BTreeMap
     Ok(hint)
 }
 
+/// Lenient frontmatter recovery for files that `serde_yaml` rejects but whose
+/// intent is plainly a flat `key: scalar` mapping. Strict YAML rejects values
+/// that happen to contain a reserved indicator — an unquoted `: ` (read as a
+/// nested mapping), a leading backtick or quote, a trailing unquoted run after
+/// a quote. We salvage these by line-scanning: for each `key: rest-of-line`
+/// line we take the rest of the line verbatim as a JSON string, stripping a
+/// surrounding matched quote/backtick pair only when it wraps the *entire*
+/// value. Multi-line / block YAML values are ignored — this is a best-effort
+/// floor that at minimum recovers `name`, `description`, and `type`.
+fn lenient_frontmatter_hint(yaml: &str) -> BTreeMap<String, Value> {
+    let mut hint = BTreeMap::new();
+    for line in yaml.lines() {
+        let Some((key, value)) = split_simple_key_value(line) else {
+            continue;
+        };
+        let value = unwrap_matched_quotes(value.trim());
+        hint.insert(key.to_string(), Value::String(value.to_string()));
+    }
+    hint
+}
+
+/// Match a `^(\w[\w-]*):\s*(.*)$` line and return `(key, rest_of_line)`.
+/// Returns `None` for indented lines, comments, list items, or lines whose key
+/// is not a bare word — those are not simple top-level scalar assignments.
+fn split_simple_key_value(line: &str) -> Option<(&str, &str)> {
+    // Reject indentation: a leading space/tab means this is a nested/block value.
+    if line.starts_with([' ', '\t']) {
+        return None;
+    }
+    let colon = line.find(':')?;
+    let key = &line[..colon];
+    if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        return None;
+    }
+    // The key must start with a word character, mirroring `\w[\w-]*`.
+    let first = key.chars().next()?;
+    if !(first.is_ascii_alphanumeric() || first == '_') {
+        return None;
+    }
+    let rest = line[colon + 1..].trim_start_matches([' ', '\t']);
+    Some((key, rest))
+}
+
+/// Strip a surrounding matched quote or backtick pair only when it wraps the
+/// whole value (length ≥ 2, identical first/last delimiter). Anything else —
+/// including a value that merely *opens* a quote then trails unquoted — is kept
+/// verbatim, since the raw text is the closest thing to the author's intent.
+fn unwrap_matched_quotes(value: &str) -> &str {
+    let bytes = value.as_bytes();
+    if bytes.len() >= 2 {
+        let first = bytes[0];
+        let last = bytes[bytes.len() - 1];
+        if first == last && matches!(first, b'"' | b'\'' | b'`') {
+            return &value[1..value.len() - 1];
+        }
+    }
+    value
+}
+
 #[derive(Debug)]
 struct Section {
     heading: String,
@@ -284,15 +371,24 @@ fn cwd_from_encoded_path(path: &Path, root: &Path) -> Option<PathBuf> {
 /// boundary between segments is either a `/` or a literal `-`. Boundaries are
 /// tried as separators first, matching the historical decode for paths with no
 /// hyphenated segments.
+///
+/// Claude also encodes a leading `.` in a directory name as `-`, so a dotfile
+/// dir like `.config` arrives indistinguishable from a separator + `config`.
+/// For each candidate directory component we therefore probe both the bare name
+/// and a `.`-prefixed variant, letting a real `.config`/`.codex`-style dir
+/// resolve where the bare name would not stat.
 fn resolve_existing_path(base: &Path, segments: &[&str]) -> Option<PathBuf> {
     if segments.is_empty() {
         return Some(base.to_path_buf());
     }
     for end in 1..=segments.len() {
-        let candidate = base.join(segments[..end].join("-"));
-        if candidate.is_dir() {
-            if let Some(resolved) = resolve_existing_path(&candidate, &segments[end..]) {
-                return Some(resolved);
+        let joined = segments[..end].join("-");
+        for component in [joined.clone(), format!(".{joined}")] {
+            let candidate = base.join(&component);
+            if candidate.is_dir() {
+                if let Some(resolved) = resolve_existing_path(&candidate, &segments[end..]) {
+                    return Some(resolved);
+                }
             }
         }
     }
@@ -412,7 +508,11 @@ Promote to prod.\n";
     }
 
     #[test]
-    fn malformed_frontmatter_yields_per_file_error_and_does_not_abort_others() {
+    fn malformed_frontmatter_is_recovered_via_lenient_fallback_not_dropped() {
+        // The old behavior dropped this file with a per-file Parse error; the
+        // lenient line-scan now salvages whatever flat `key: value` lines exist
+        // (here none) but still produces a candidate with the body intact rather
+        // than losing the memory.
         let tmp = tempfile::tempdir().expect("tmp");
         write_fixture(
             tmp.path(),
@@ -421,12 +521,102 @@ Promote to prod.\n";
         );
         write_fixture(tmp.path(), "-Users-u-x/memory/good.md", b"---\nname: Good\n---\nA fine memory.\n");
         let out = run(tmp.path());
-        assert_eq!(out.candidates.len(), 1, "good.md still imported");
+        assert_eq!(out.candidates.len(), 2, "both files imported; bad.md recovered");
+        assert!(out.errors.is_empty(), "lenient recovery does not push a parse error: {:?}", out.errors);
+        let bad = out.candidates.iter().find(|c| c.source_key.contains("bad.md")).expect("bad.md candidate");
+        assert!(bad.body.contains("Body after broken YAML"), "body preserved: {:?}", bad.body);
+        assert!(out.recovered.iter().any(|k| k.contains("bad.md")), "recovered: {:?}", out.recovered);
+    }
+
+    #[test]
+    fn lenient_recovery_handles_colon_space_in_unquoted_value() {
+        // `name: ... — agency: disagree ...` — the inner `: ` makes strict YAML
+        // read a nested mapping. Lenient scan keeps the whole rest-of-line.
+        let tmp = tempfile::tempdir().expect("tmp");
+        let body = b"---\nname: Feedback \xe2\x80\x94 agency: disagree with skill guidance and build anyway\ntype: feedback\n---\nThe agent should push back.\n";
+        write_fixture(tmp.path(), "-Users-u-x/memory/agency.md", body);
+        let out = run(tmp.path());
+        assert_eq!(out.candidates.len(), 1);
+        let c = &out.candidates[0];
+        assert!(c.body.contains("The agent should push back."), "body: {:?}", c.body);
+        assert_eq!(c.title.as_deref(), Some("Feedback — agency: disagree with skill guidance and build anyway"),);
+        assert_eq!(c.frontmatter_hint.get("type").and_then(Value::as_str), Some("feedback"));
+        assert!(out.recovered.iter().any(|k| k.contains("agency.md")), "recovered: {:?}", out.recovered);
+    }
+
+    #[test]
+    fn lenient_recovery_handles_leading_backtick_value() {
+        // A value starting with a backtick is a reserved YAML indicator and is
+        // rejected by strict parsing; the lenient scan keeps it verbatim.
+        let tmp = tempfile::tempdir().expect("tmp");
+        let body =
+            b"---\nname: Browser tooling\ndescription: `agent-browser click` drives the page\n---\nUse the CLI.\n";
+        write_fixture(tmp.path(), "-Users-u-x/memory/backtick.md", body);
+        let out = run(tmp.path());
+        assert_eq!(out.candidates.len(), 1);
+        let c = &out.candidates[0];
+        assert!(c.body.contains("Use the CLI."), "body: {:?}", c.body);
+        assert_eq!(c.title.as_deref(), Some("Browser tooling"));
+        assert_eq!(
+            c.frontmatter_hint.get("description").and_then(Value::as_str),
+            Some("`agent-browser click` drives the page"),
+        );
+        assert!(out.recovered.iter().any(|k| k.contains("backtick.md")), "recovered: {:?}", out.recovered);
+    }
+
+    #[test]
+    fn lenient_recovery_handles_quote_open_then_trailing_unquoted() {
+        // A value that opens a quote then trails unquoted text is malformed YAML;
+        // the unmatched leading quote is kept verbatim (only a *matched* wrap is
+        // stripped) so the author's text survives.
+        let tmp = tempfile::tempdir().expect("tmp");
+        let body = b"---\nname: \"Shape of policy\" doc altitude \xe2\x80\x94 voice calibration\ntype: note\n---\nAltitude matters.\n";
+        write_fixture(tmp.path(), "-Users-u-x/memory/altitude.md", body);
+        let out = run(tmp.path());
+        assert_eq!(out.candidates.len(), 1);
+        let c = &out.candidates[0];
+        assert!(c.body.contains("Altitude matters."), "body: {:?}", c.body);
+        // Leading quote is unmatched (no closing quote at end-of-value) → kept.
+        assert_eq!(c.title.as_deref(), Some("\"Shape of policy\" doc altitude — voice calibration"),);
+        assert_eq!(c.frontmatter_hint.get("type").and_then(Value::as_str), Some("note"));
+        assert!(out.recovered.iter().any(|k| k.contains("altitude.md")), "recovered: {:?}", out.recovered);
+    }
+
+    #[test]
+    fn strict_yaml_success_is_not_marked_recovered() {
+        // Control: a clean frontmatter parses strictly and must not appear in
+        // `recovered`.
+        let tmp = tempfile::tempdir().expect("tmp");
+        write_fixture(
+            tmp.path(),
+            "-Users-u-x/memory/clean.md",
+            b"---\nname: Clean\ndescription: nothing weird here\ntype: reference\n---\nAll good.\n",
+        );
+        let out = run(tmp.path());
+        assert_eq!(out.candidates.len(), 1);
+        assert_eq!(out.candidates[0].title.as_deref(), Some("Clean"));
+        assert!(out.recovered.is_empty(), "clean file not recovered: {:?}", out.recovered);
+    }
+
+    #[test]
+    fn unterminated_frontmatter_still_errors_and_is_not_recovered() {
+        // An unclosed `---` block is a genuine structural error: we cannot trust
+        // where the body begins, so it stays hard and skips.
+        let tmp = tempfile::tempdir().expect("tmp");
+        write_fixture(
+            tmp.path(),
+            "-Users-u-x/memory/unterminated.md",
+            b"---\nname: Truncated\ntype: note\nbody with no closing delimiter\n",
+        );
+        write_fixture(tmp.path(), "-Users-u-x/memory/good.md", b"---\nname: Good\n---\nA fine memory.\n");
+        let out = run(tmp.path());
+        assert_eq!(out.candidates.len(), 1, "only good.md imported");
         assert_eq!(out.candidates[0].title.as_deref(), Some("Good"));
         assert!(out
             .errors
             .iter()
-            .any(|e| matches!(e, ImportError::Parse { source_key, .. } if source_key.contains("bad.md"))));
+            .any(|e| matches!(e, ImportError::Parse { source_key, .. } if source_key.contains("unterminated.md"))));
+        assert!(out.recovered.is_empty(), "structural error is not a soft recovery: {:?}", out.recovered);
     }
 
     #[test]
@@ -440,6 +630,7 @@ Promote to prod.\n";
             .errors
             .iter()
             .any(|e| matches!(e, ImportError::Encoding { source_key, .. } if source_key.contains("binary.md"))));
+        assert!(out.recovered.is_empty(), "non-utf8 is a hard error, not a soft recovery: {:?}", out.recovered);
     }
 
     #[test]
@@ -470,6 +661,23 @@ Promote to prod.\n";
         // Encode the real path the way Claude does: '/' -> '-'.
         let encoded_root = tmp.path().to_str().expect("utf8").replace('/', "-");
         let encoded = format!("{encoded_root}-Code-agent-memory");
+        let segments: Vec<&str> = encoded.trim_start_matches('-').split('-').collect();
+        let resolved = resolve_existing_path(Path::new("/"), &segments).expect("resolves");
+        assert_eq!(resolved, real);
+    }
+
+    #[test]
+    fn resolve_existing_path_recovers_dotfile_directory() {
+        // Claude encodes both `/` and a leading `.` as `-`, so `~/.config/opencode`
+        // arrives as `<root>--config-opencode`. The bare `config` dir does not
+        // exist; only the real `.config` dotfile dir stats.
+        let tmp = tempfile::tempdir().expect("tmp");
+        let real = tmp.path().join(".config").join("opencode");
+        std::fs::create_dir_all(&real).expect("mkdir");
+        let encoded_root = tmp.path().to_str().expect("utf8").replace('/', "-");
+        // The doubled hyphen reflects the `.` that became `-` right after the
+        // separator `-`; split on `-` yields an empty segment we must tolerate.
+        let encoded = format!("{encoded_root}--config-opencode");
         let segments: Vec<&str> = encoded.trim_start_matches('-').split('-').collect();
         let resolved = resolve_existing_path(Path::new("/"), &segments).expect("resolves");
         assert_eq!(resolved, real);
