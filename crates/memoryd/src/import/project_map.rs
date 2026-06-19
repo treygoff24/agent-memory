@@ -370,12 +370,20 @@ fn derive_canonical_id_for_dir(cwd: &Path) -> String {
 }
 
 fn derive_alias_for_dir(cwd: &Path) -> String {
-    let alias = cwd
+    let raw = cwd
         .file_name()
         .and_then(std::ffi::OsStr::to_str)
         .map(str::trim)
         .filter(|alias| !alias.is_empty())
         .unwrap_or("unnamed");
+    // Sanitize to a path-safe charset. Characters outside `[A-Za-z0-9._-]`
+    // are dropped so malformed cwd basenames (e.g. ones carrying prose from
+    // a Codex memory `applies_to` leak) cannot mint hostile on-disk directory
+    // names. `_` is also permitted (common in repo names) even though
+    // `derive_canonical_id_for_dir` drops it — the alias is display-facing,
+    // not part of the hash.
+    let sanitized: String = raw.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')).collect();
+    let alias = if sanitized.is_empty() { "unnamed" } else { &sanitized };
     truncate_to_byte_limit(alias, MAX_GENERATED_PROJECT_FIELD_BYTES).to_string()
 }
 
@@ -599,6 +607,28 @@ mod tests {
             Some("iCloud"),
         );
         assert_eq!(detect_synced_dir(Path::new("/Users/u/Code/atlasos")), None);
+    }
+
+    #[test]
+    fn derive_alias_for_dir_sanitizes_malformed_basename() {
+        // A Codex `applies_to` prose leak could produce a basename like
+        // "`droid`, cmux` on PATH)". The sanitizer must drop all characters
+        // outside [A-Za-z0-9._-] so the result is path-safe.
+        let hostile = Path::new("/some/path/`droid`, cmux` on PATH)");
+        let alias = derive_alias_for_dir(hostile);
+        assert!(
+            alias.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')),
+            "alias must only contain path-safe characters: {alias:?}",
+        );
+        assert!(!alias.is_empty(), "sanitized alias must not be empty");
+    }
+
+    #[test]
+    fn derive_alias_for_dir_passes_clean_basename_unchanged() {
+        // A clean project name like `b4a-plan-site` must survive byte-identical
+        // so existing project directories are not repathed.
+        let clean = Path::new("/Users/u/Code/b4a-plan-site");
+        assert_eq!(derive_alias_for_dir(clean), "b4a-plan-site");
     }
 
     #[test]

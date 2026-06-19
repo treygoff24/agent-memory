@@ -218,8 +218,33 @@ fn applies_to_field(applies_to: &str, key: &str, accept: impl Fn(&str) -> bool) 
     None
 }
 
+/// Extract a leading path-shaped token from a raw `cwd=` field value.
+///
+/// A path-shaped token begins with `/` or `~/` and ends at the first
+/// whitespace, backtick, or comma character. Values that don't begin with
+/// those prefixes (including the sentinel `"unknown"`) produce `None`.
+///
+/// Deliberate trade-off: a real path containing a space (e.g.
+/// `/Users/u/Google Drive/x`) is truncated at the space. This is acceptable
+/// for Codex `applies_to` cwd fields because such paths are rare and the
+/// alternative — admitting malformed prose as cwd values — causes on-disk
+/// `projects/<alias>/` directories with hostile names.
+fn path_shaped_prefix(value: &str) -> Option<&str> {
+    if !value.starts_with('/') && !value.starts_with("~/") {
+        return None;
+    }
+    let end = value.find(|c: char| c.is_ascii_whitespace() || c == '`' || c == ',').unwrap_or(value.len());
+    let token = &value[..end];
+    if token.starts_with('/') || token.starts_with("~/") {
+        Some(token)
+    } else {
+        None
+    }
+}
+
 fn parse_applies_to_cwd(applies_to: &str) -> Option<PathBuf> {
-    applies_to_field(applies_to, "cwd=", |value| !value.is_empty() && value != "unknown").map(PathBuf::from)
+    applies_to_field(applies_to, "cwd=", |value| value != "unknown" && path_shaped_prefix(value).is_some())
+        .and_then(|value| path_shaped_prefix(&value).map(PathBuf::from))
 }
 
 fn parse_applies_to_reuse_rule(applies_to: &str) -> Option<String> {
@@ -507,6 +532,45 @@ body
             .errors
             .iter()
             .any(|e| matches!(e, ImportError::Parse { source_key, .. } if source_key.contains("missing-scope"))));
+    }
+
+    // ── parse_applies_to_cwd path-shape tests ──────────────────────────────
+
+    #[test]
+    fn parse_applies_to_cwd_accepts_absolute_path() {
+        assert_eq!(parse_applies_to_cwd("cwd=/Users/u/Code/atlasos"), Some(PathBuf::from("/Users/u/Code/atlasos")),);
+    }
+
+    #[test]
+    fn parse_applies_to_cwd_accepts_tilde_path() {
+        assert_eq!(parse_applies_to_cwd("cwd=~/Code/x"), Some(PathBuf::from("~/Code/x")),);
+    }
+
+    #[test]
+    fn parse_applies_to_cwd_rejects_unknown() {
+        assert_eq!(parse_applies_to_cwd("cwd=unknown"), None);
+    }
+
+    #[test]
+    fn parse_applies_to_cwd_rejects_prose_with_backtick() {
+        // Real dogfood case: "`droid`, cmux` on PATH)"
+        assert_eq!(parse_applies_to_cwd("cwd=`droid`, cmux` on PATH)"), None);
+    }
+
+    #[test]
+    fn parse_applies_to_cwd_rejects_prose_with_factory_config() {
+        // Real dogfood case: ".factory` config in this environment"
+        assert_eq!(parse_applies_to_cwd("cwd=.factory` config in this environment"), None);
+    }
+
+    #[test]
+    fn parse_applies_to_cwd_semicolon_split_isolates_cwd_from_reuse_rule() {
+        // The `;`-split in applies_to_field already isolates the `cwd=` value from
+        // subsequent fields, so trailing "; reuse_rule=manual" must not leak into
+        // the cwd — and parse_applies_to_reuse_rule must still extract "manual".
+        let applies_to = "cwd=/work; reuse_rule=manual";
+        assert_eq!(parse_applies_to_cwd(applies_to), Some(PathBuf::from("/work")));
+        assert_eq!(parse_applies_to_reuse_rule(applies_to), Some("manual".to_string()));
     }
 
     #[test]

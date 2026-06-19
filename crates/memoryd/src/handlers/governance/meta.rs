@@ -656,11 +656,13 @@ impl GovernanceWriteInput {
     }
 
     fn project_namespace_alias(&self) -> Result<String, HandlerError> {
-        self.meta
+        let raw = self
+            .meta
             .namespace_alias
             .clone()
             .or_else(|| self.meta.canonical_namespace_id.clone())
-            .ok_or_else(project_namespace_identity_error)
+            .ok_or_else(project_namespace_identity_error)?;
+        Ok(sanitize_namespace_alias(&raw))
     }
 
     fn governance_sources(&self) -> Vec<GovernanceSource> {
@@ -801,6 +803,29 @@ impl GovernanceWriteInput {
 
 fn project_namespace_identity_error() -> HandlerError {
     HandlerError::invalid_request(PROJECT_NAMESPACE_IDENTITY_REQUIRED_MESSAGE)
+}
+
+/// Sanitize a namespace alias to the path-safe charset `[A-Za-z0-9._-]`.
+///
+/// Characters outside the charset are dropped. If the result is empty (the
+/// alias was entirely path-hostile) a stable placeholder `"unnamed"` is
+/// returned so the store always gets a valid directory name.
+///
+/// This is a **conservative no-op for clean aliases** — any alias already
+/// composed entirely of `[A-Za-z0-9._-]` passes through byte-identical,
+/// so no existing store is repathed by this sanitizer.
+///
+/// This sanitizer lives in the memoryd handler layer. Do not call it from
+/// within `crates/memory-substrate/` — the substrate path validator has its
+/// own contract.
+fn sanitize_namespace_alias(alias: &str) -> String {
+    let sanitized: String =
+        alias.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')).collect();
+    if sanitized.is_empty() {
+        "unnamed".to_string()
+    } else {
+        sanitized
+    }
 }
 
 #[cfg(test)]
@@ -1071,5 +1096,35 @@ mod tests {
         let payload = serde_json::json!({ "source_kind": "import" });
         let meta: GovernanceMeta = parse_governance_meta(payload, MetaSource::Default).expect("import parses");
         assert!(matches!(meta.source_kind, GovernanceSourceKindMeta::Import));
+    }
+
+    // ── sanitize_namespace_alias chokepoint tests ──────────────────────────
+
+    #[test]
+    fn sanitize_namespace_alias_is_noop_for_clean_aliases() {
+        // All legit aliases used in production must pass through byte-identical
+        // so no existing store is repathed.
+        for alias in &["b4a-plan-site", "atlasos", "policy", "agent-memory", "proj_abc123-deadbeef"] {
+            assert_eq!(super::sanitize_namespace_alias(alias), *alias, "clean alias {alias:?} must be unchanged",);
+        }
+    }
+
+    #[test]
+    fn sanitize_namespace_alias_strips_hostile_characters() {
+        // A Codex prose-leak alias like "`cmux` on PATH)" must become path-safe.
+        let hostile = "`cmux` on PATH)";
+        let result = super::sanitize_namespace_alias(hostile);
+        assert!(
+            result.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')),
+            "sanitized alias must only contain path-safe characters: {result:?}",
+        );
+        assert!(!result.is_empty(), "sanitized alias must not be empty");
+    }
+
+    #[test]
+    fn sanitize_namespace_alias_falls_back_to_unnamed_when_all_chars_stripped() {
+        // If every character is hostile the fallback placeholder is returned.
+        assert_eq!(super::sanitize_namespace_alias("``()"), "unnamed");
+        assert_eq!(super::sanitize_namespace_alias(""), "unnamed");
     }
 }
