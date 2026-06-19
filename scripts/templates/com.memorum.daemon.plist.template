@@ -18,7 +18,9 @@
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>{{PATH}}</string>{{CLAUDE_CONFIG_DIR_ENTRY}}
+    <string>{{PATH}}</string>
+    <key>USER</key>
+    <string>{{USER}}</string>{{CLAUDE_CONFIG_DIR_ENTRY}}
   </dict>
   <key>RunAtLoad</key>
   <true/>

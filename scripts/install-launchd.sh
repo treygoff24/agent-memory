@@ -186,6 +186,13 @@ for tool in claude codex; do
 done
 daemon_path_xml="$(xml_escape "$daemon_path")"
 
+# launchd user agents do not get USER in their environment, but Claude's macOS
+# keychain lookup needs it (without USER, `claude auth status` reports
+# loggedIn:false even with a valid CLAUDE_CONFIG_DIR). Resolve it now so both
+# plists carry it. `id -un` is robust even when $USER is unset.
+user_name="$(id -un)"
+user_name_xml="$(xml_escape "$user_name")"
+
 # Optional CLAUDE_CONFIG_DIR entry, appended to the EnvironmentVariables dict as
 # a single-line key/value pair (empty when --claude-config-dir was not given).
 # Single-line avoids awk's literal-newline handling in -v; plist XML is
@@ -208,6 +215,7 @@ render_template() {
     -v home="$home_xml" \
     -v memoryd_bin="$memoryd_bin_xml" \
     -v daemon_path="$daemon_path_xml" \
+    -v user_name="$user_name_xml" \
     -v ccd_entry="$claude_config_dir_entry" '
     function replace_all(s, needle, replacement,    out, pos) {
       out = ""
@@ -223,6 +231,7 @@ render_template() {
       line = replace_all(line, "{{HOME}}", home)
       line = replace_all(line, "{{MEMORYD_BIN}}", memoryd_bin)
       line = replace_all(line, "{{PATH}}", daemon_path)
+      line = replace_all(line, "{{USER}}", user_name)
       line = replace_all(line, "{{CLAUDE_CONFIG_DIR_ENTRY}}", ccd_entry)
       print line
     }

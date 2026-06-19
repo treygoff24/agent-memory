@@ -27,8 +27,14 @@ pub const DOCUMENTED_ENV_ALLOWLIST: &[&str] = &[
     "OPENAI_API_KEY",
     "PATH",
     "TERM",
+    "USER",
 ];
-pub const CLAUDE_ENV_ALLOWLIST: &[&str] = &["ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR", "HOME", "PATH", "TERM"];
+// `USER` is required: Claude's claude.ai auth token lives in the macOS login
+// keychain, and the keychain lookup keys off `USER`. Without it `claude auth
+// status` reports `loggedIn:false` even with a valid `CLAUDE_CONFIG_DIR`, so the
+// hardened dream subprocess could never authenticate. `USER` is public identity,
+// not a credential, so forwarding it does not weaken the no-secret-leakage intent.
+pub const CLAUDE_ENV_ALLOWLIST: &[&str] = &["ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR", "HOME", "PATH", "TERM", "USER"];
 pub const CODEX_ENV_ALLOWLIST: &[&str] = &["CODEX_HOME", "HOME", "OPENAI_API_KEY", "PATH", "TERM"];
 
 const STDOUT_CAPTURE_LIMIT_BYTES: usize = 16 * 1024 * 1024;

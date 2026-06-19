@@ -73,6 +73,8 @@ assert_contains ".cargo/bin"
 # launchd does not inherit the shell PATH, so the daemon PATH must include the
 # user-local bin dir where `claude` typically resolves. Regression guard.
 assert_contains "/.local/bin"
+# launchd user agents lack USER, which Claude's macOS keychain auth needs.
+assert_contains "<key>USER</key>"
 assert_contains "<string>$runtime/dream-scheduled.out.log</string>"
 
 # All templated placeholders must be rendered away.

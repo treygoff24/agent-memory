@@ -206,6 +206,31 @@ fn adapter_environment_allowlists_do_not_cross_provider_credentials() {
 }
 
 #[test]
+fn claude_allowlist_forwards_user_for_macos_keychain_but_codex_does_not() {
+    // Claude's claude.ai token is in the macOS keychain, whose lookup needs USER;
+    // without it `claude auth status` returns loggedIn:false under the hardened
+    // env. USER must reach the Claude subprocess but stays out of Codex (which
+    // uses file-based auth), and LOGNAME is not forwarded (USER alone suffices).
+    let mut claude_env = MinimalEnvironment::from_pairs([
+        ("PATH", "/bin".to_string()),
+        ("HOME", "/tmp".to_string()),
+        ("USER", "treygoff".to_string()),
+        ("LOGNAME", "treygoff".to_string()),
+    ]);
+    claude_env.retain_keys(CLAUDE_ENV_ALLOWLIST);
+    assert_eq!(claude_env.keys().collect::<Vec<_>>(), ["HOME", "PATH", "TERM", "USER"]);
+
+    let mut codex_env = MinimalEnvironment::from_pairs([
+        ("PATH", "/bin".to_string()),
+        ("HOME", "/tmp".to_string()),
+        ("USER", "treygoff".to_string()),
+        ("CODEX_HOME", "/tmp/codex".to_string()),
+    ]);
+    codex_env.retain_keys(CODEX_ENV_ALLOWLIST);
+    assert_eq!(codex_env.keys().collect::<Vec<_>>(), ["CODEX_HOME", "HOME", "PATH", "TERM"]);
+}
+
+#[test]
 fn hardened_subprocess_timeout_terminates_child() {
     let _guard = lock_subprocess_test();
     run_async(async {

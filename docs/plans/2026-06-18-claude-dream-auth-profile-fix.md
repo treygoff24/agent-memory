@@ -8,6 +8,18 @@
 ## Plan revision history
 
 - v0 (2026-06-18): initial plan. Synthesizes the codex + cursor design opinions and the on-machine ground truth.
+- v1 (2026-06-18): added the third root cause found during live deployment — the macOS keychain `USER` requirement (see "Deployment finding" below). Shipped as a follow-up commit on top of the profile/PATH commit.
+
+## Deployment finding: macOS keychain needs `USER` (third root cause)
+
+Verifying against the live launchd daemon surfaced a third, independent root cause the design phase did not anticipate. Claude's claude.ai auth token is stored in the **macOS login keychain**, not (only) in `CLAUDE_CONFIG_DIR/.credentials.json`, and the keychain lookup keys off the `USER` environment variable. Two facts compounded:
+
+1. memoryd's hardened subprocess `env_clear()`s and forwards only an allowlist, which did not include `USER` — so even a correct `CLAUDE_CONFIG_DIR` produced `loggedIn:false`.
+2. launchd user agents do **not** receive `USER` in their environment at all (confirmed via `launchctl print`: the daemon env had only PATH, CLAUDE_CONFIG_DIR, XPC_SERVICE_NAME).
+
+So the fix needs both halves: add `USER` to `DOCUMENTED_ENV_ALLOWLIST` + `CLAUDE_ENV_ALLOWLIST` (so memoryd forwards it), and inject `USER` into both plists' `EnvironmentVariables` (so the daemon process has it to forward). Codex's auth is file-based (`CODEX_HOME`), so it does not need `USER`; the allowlist keeps `USER` out of the Codex subprocess. `USER` is public identity, not a credential, so forwarding it does not weaken the no-secret-leakage invariant. Bisected empirically: `USER` alone flips `loggedIn` to true; `LOGNAME` alone does not, so only `USER` is added.
+
+Verified live: in the daemon's exact environment (`USER` + `CLAUDE_CONFIG_DIR=$HOME/.claude-personal` + the rendered PATH), `memoryd doctor` reports `healthy: true` with zero harness findings. Without the pin, the resolver correctly fails loud with "multiple authenticated Claude profiles found … set CLAUDE_CONFIG_DIR".
 
 ## Problem
 
