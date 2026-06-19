@@ -83,7 +83,7 @@ fn decisions_from_args(args: &InitArgs) -> SetupDecisions {
     SetupDecisions {
         import_memories: args.import,
         harnesses: args.harness.unwrap_or(InitHarness::Current).into(),
-        non_git_cwd_default: args.non_git_cwd_default.unwrap_or(NonGitCwdDefault::Skip).into(),
+        non_git_cwd_default: args.non_git_cwd_default.unwrap_or(NonGitCwdDefault::Project).into(),
         wire_mcp: args.wire_mcp.unwrap_or(WireMcpMode::Current).into(),
         daemon: args.daemon.unwrap_or(DaemonMode::OnDemand).into(),
         print_only: args.print_only,
@@ -113,13 +113,7 @@ impl From<NonGitCwdDefault> for NonGitCwdDecision {
             NonGitCwdDefault::Skip => Self::Skip,
             NonGitCwdDefault::Me => Self::Me,
             NonGitCwdDefault::Generate => Self::Generate,
-            // BLOCKED: routing `Project` to a true derive-project disposition on
-            // the `init` path requires a `NonGitCwdDecision` variant plus a
-            // `setup/steps.rs` mapping to `PromptedDisposition::DeriveProject`,
-            // both of which live in the non-owned `crate::setup`. Mapping to
-            // `Me` here keeps `init` non-lossy (memories are still saved, no
-            // file is written) until the setup variant lands.
-            NonGitCwdDefault::Project => Self::Me,
+            NonGitCwdDefault::Project => Self::DeriveProject,
         }
     }
 }

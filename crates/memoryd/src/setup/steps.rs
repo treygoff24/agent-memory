@@ -614,6 +614,7 @@ fn harness_detected(harness: &HarnessDetection) -> bool {
 
 fn prompt_backend(decision: NonGitCwdDecision) -> Box<dyn PromptBackend> {
     Box::new(FixedDispositionBackend::new(match decision {
+        NonGitCwdDecision::DeriveProject => PromptedDisposition::DeriveProject,
         NonGitCwdDecision::Skip => PromptedDisposition::Skip,
         NonGitCwdDecision::Me => PromptedDisposition::DropToMe,
         NonGitCwdDecision::Generate => PromptedDisposition::GenerateProjectYaml,
@@ -782,7 +783,6 @@ impl VerificationSignal {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
     use std::ffi::OsString;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -1288,16 +1288,7 @@ mod tests {
     }
 
     fn empty_import_report() -> ImportReport {
-        ImportReport {
-            schema_version: 1,
-            harnesses: BTreeMap::new(),
-            refusals: Vec::new(),
-            dedups: Vec::new(),
-            unresolved_back_edges: Vec::new(),
-            cwd_dispositions: Vec::new(),
-            project_yaml_writes: Vec::new(),
-            parse_errors: Vec::new(),
-        }
+        ImportReport { schema_version: 1, ..Default::default() }
     }
 
     async fn wait_for_socket(socket: &Path) {

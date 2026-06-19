@@ -37,8 +37,7 @@ That is the default invocation, and for the overwhelming majority of users it is
 |---|---|
 | Claude source | Auto-detects and imports the **union of all** `~/.claude*/projects` roots, deduplicated. Covers multi-profile setups with no extra flag. |
 | Codex source | Imports `~/.codex/memories` (Task Group blocks → memories; ad-hoc notes → memories; rollout summaries → evidence refs). |
-| Non-git-cwd memories | Placed in `me` scope (`--non-git-cwd-default me`). Always saved, never silently skipped. |
-| Me-scope activation | Auto-activated — recall-visible immediately, not parked in a review queue. |
+| Non-git-cwd memories | Given a **project namespace derived from the cwd path** (`--non-git-cwd-default project`), no `.memory-project.yaml` written. Saved and **active/recall-visible immediately**, never silently skipped. |
 | Frontmatter | Malformed YAML is recovered leniently; the body always imports. |
 | Re-run | Unchanged sources skipped by content hash. |
 
@@ -61,8 +60,7 @@ memoryd import --repo "$MEMORUM_REPO" --socket "$MEMORUM_SOCKET" \
 memoryd import [--repo <PATH>] [--socket <PATH>]
                [--from-claude <PATH>]... [--from-codex <PATH>]
                [--harness <all|claude|codex>]
-               [--non-git-cwd-default <skip|me|generate>]
-               [--no-activate]
+               [--non-git-cwd-default <project|me|generate|skip>]
                [--dry-run]
                [--report <FILE.json>]
                [--quiet]
@@ -75,29 +73,21 @@ memoryd import [--repo <PATH>] [--socket <PATH>]
 | `--from-claude <PATH>` | auto-detect union of `~/.claude*/projects` | Pin an exact Claude root. **Repeatable.** When present, auto-detect is skipped. |
 | `--from-codex <PATH>` | `~/.codex/memories` | Override the Codex memory root. |
 | `--harness <all\|claude\|codex>` | `all` | Restrict the run to one harness. |
-| `--non-git-cwd-default <skip\|me\|generate>` | `me` | Placement for memories whose cwd is not a git checkout. See below. |
-| `--no-activate` | off (imports auto-activate) | Keep imported me-scope candidates in the review queue instead of activating them. |
+| `--non-git-cwd-default <project\|me\|generate\|skip>` | `project` | Placement for memories whose cwd is not a git checkout. See below. |
 | `--dry-run` | off | Plan and report what would be written; issue zero daemon calls. |
 | `--report <FILE.json>` | none | Write the full reconciliation report as JSON. |
 | `--quiet` | off | Suppress per-item progress lines; still prints the final summary. |
 
 ### `--non-git-cwd-default`
 
-Some prior memories are tied to a directory that is not a git repo (a user's home, a scratch dir). The default `me` captures them all in personal scope with no filesystem side effects.
+Some prior memories are tied to a directory that is not a git repo (a user's home, a scratch dir). The default `project` mints a deterministic project namespace from the cwd path so the memories are saved and land active — no filesystem side effects, nothing dropped, nothing parked in a review queue.
 
-- `me` (default) — assign to `me` scope. Safe, no side effects, nothing dropped.
+- `project` (default) — derive a `proj_<name>-<hash>` namespace from the cwd path. No file written. Memories land **active and recall-visible** under the default policy (not me-strict), so they're usable immediately. The privacy classifier still runs per write, so genuinely sensitive content is still encrypted at rest.
+- `me` — assign to `me` scope instead. Note: me-scope runs through me-strict governance, so these land as **encrypted review-queue candidates** (not in active recall until approved). Use only when the user wants that stricter posture.
+- `generate` — write a `.memory-project.yaml` into each such cwd to mint a persistent project bucket. **This is an opt-in side effect that writes into the user's directories** (it would drop a file into `~` if a memory's cwd was the home directory). Choose it only when the user wants the namespace to persist for future live sessions in that directory.
 - `skip` — drop them. Use only if the user explicitly does not want non-project memories.
-- `generate` — write a `.memory-project.yaml` into each such cwd to mint a project bucket. **This is an opt-in side effect that writes into the user's directories.** Don't choose it without the user's say-so; it would, for example, drop a file into `~` if a memory's cwd was the home directory.
 
-### `--no-activate`
-
-By default, imported me-scope memories auto-activate and become recall-visible immediately. Pass `--no-activate` to land them as review-queue candidates instead — useful when the user wants to vet imports before they affect recall. Activate them later in bulk:
-
-```bash
-memoryd review approve-imports --socket "$MEMORUM_SOCKET"
-```
-
-Governance-quarantined items (contradictions caught at write time) are **never** auto-activated regardless of this flag. They always require explicit review.
+Governance-quarantined items (contradictions caught at write time) are routed to the review queue regardless of placement — they always require explicit review.
 
 ## The reconciliation summary
 
@@ -116,7 +106,7 @@ next: memoryd search "<topic>" --socket /Users/u/memorum/.memoryd/memoryd.sock
 | Field | Meaning | Your read |
 |---|---|---|
 | `imported-active` | Written and recall-visible now. | The success number. Report it. |
-| `queued-for-review` | Candidates awaiting activation. | Nonzero only with `--no-activate` or for quarantined items. Tell the user to run `review approve-imports` if they want them live. |
+| `queued-for-review` | Items the governance layer flagged for a human look. | Nonzero for contradictions caught at write time, or memories explicitly routed to `me` scope. Inspect with `review queue`; accept individually with `review approve <id>`. |
 | `privacy-blocked` | Stream D refused these (PII/contacts/donor-shaped content). | **Expected. Not an error.** Listed in `refusals[]`. Do not retry or flag as failure. |
 | `frontmatter-recovered` | Broken YAML; body imported anyway. | Fine. No action. |
 | `dropped` | Truly unreadable files. | The only real data loss. Name them to the user (listed in the report). |
@@ -192,7 +182,7 @@ memoryd get <id> --socket "$MEMORUM_SOCKET"
 memoryd review queue --socket "$MEMORUM_SOCKET"
 ```
 
-With defaults, both project-scope and me-scope memories are searchable right after import. If you ran `--no-activate`, me-scope memories will not appear in search until you approve them.
+With defaults, every non-git-cwd memory lands in a derived project scope and is searchable right after import. Only memories explicitly routed to `me` scope (or governance-quarantined items) wait in the review queue and won't appear in search until approved.
 
 ## Related commands
 
@@ -203,7 +193,7 @@ With defaults, both project-scope and me-scope memories are searchable right aft
 | `memoryd search "<q>" --socket <sock>` | `--socket` | Recall over the store. |
 | `memoryd get <id> --socket <sock>` | `--socket` | Full body of one memory. |
 | `memoryd review queue --socket <sock>` | `--socket` | List candidates and quarantined items. |
-| `memoryd review approve-imports --socket <sock>` | `--socket` | Bulk-activate import candidates (needed only after `--no-activate`). |
+| `memoryd review approve <id> --socket <sock>` | `--socket` | Approve one queued candidate by id. |
 | `memoryd forget <id> --socket <sock>` | `--socket` | Remove one memory. |
 | `memoryd export --socket <sock>` | `--socket` | Dump the store. |
 
@@ -218,6 +208,6 @@ Note the split: `doctor` reads the substrate directly and is keyed on `--repo`/`
 | Everything reports skipped/unchanged | Corpus already imported | Correct on re-run. No action. |
 | `privacy-blocked` count > 0 | Sensitive content refused by Stream D | Expected. Report the count; don't retry. |
 | `dropped` count > 0 | Unreadable source files | Real loss; name the files (in the report) to the user. |
-| me-scope search returns nothing | Ran with `--no-activate` | `memoryd review approve-imports`. |
+| a memory isn't in search | Routed to `me` scope, or governance-quarantined | `memoryd review queue`, then `memoryd review approve <id>`. |
 
 For anything not covered here, `docs/troubleshooting.md` maps symptoms to fixes and `docs/importer.md` carries the design rationale and re-import semantics.

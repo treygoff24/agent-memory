@@ -216,7 +216,8 @@ impl SetupIo for InteractiveIo {
         println!("Some imported memories may come from sessions whose working directory");
         println!("was not a git checkout, so they can't be tied to a project automatically.");
         let items = &[
-            "Skip them (safe default; re-import later if wanted)",
+            "Create a project for each directory (recommended; saved and recall-active, no file written)",
+            "Skip them (re-import later if wanted)",
             "Keep them under your user scope (me)",
             "Generate a .memory-project.yaml in each non-git directory",
         ];
@@ -227,9 +228,10 @@ impl SetupIo for InteractiveIo {
             .interact()
             .unwrap_or(0);
         let decision = match selection {
-            1 => NonGitCwdDecision::Me,
-            2 => NonGitCwdDecision::Generate,
-            _ => NonGitCwdDecision::Skip,
+            1 => NonGitCwdDecision::Skip,
+            2 => NonGitCwdDecision::Me,
+            3 => NonGitCwdDecision::Generate,
+            _ => NonGitCwdDecision::DeriveProject,
         };
         Ok(decision)
     }

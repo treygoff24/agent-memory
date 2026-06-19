@@ -20,7 +20,7 @@ use crate::import::project_map::{
     write_generated_project_yaml, ProjectMapper, ProjectYamlAction, PromptBackend, ResolutionKind, ScopeBinding,
 };
 use crate::import::report::{
-    BackEdgeEntry, CwdDispositionEntry, CwdProjectYamlEntry, DedupEntry, HarnessCounters, ImportReport,
+    BackEdgeEntry, CandidateEntry, CwdDispositionEntry, CwdProjectYamlEntry, DedupEntry, HarnessCounters, ImportReport,
     ParseErrorEntry, RefusalEntry,
 };
 use crate::import::sources::{claude, codex};
@@ -115,6 +115,14 @@ pub struct ImportPlan {
     pub source_discovery_summary: DiscoverySummary,
     pub unresolved_back_edges: Vec<WikiLinkBackEdge>,
     pub parse_errors: Vec<ImportError>,
+    /// Source keys whose malformed frontmatter the Claude parser lenient-recovered
+    /// rather than dropping. Threaded onto the report so the operator can see
+    /// which memories imported with best-effort frontmatter. Same plumbing as
+    /// `parse_errors`: collected during the parse pass, copied in `from_plan`.
+    pub frontmatter_recovered: Vec<String>,
+    /// The Claude profile roots this plan actually parsed, as string paths.
+    /// Empty when only Codex was in scope or no roots were discovered.
+    pub claude_roots_used: Vec<String>,
     pub state: ImportState,
 }
 
@@ -440,6 +448,12 @@ impl ImportEngine {
                         }
                         other => {
                             counters_mut(&mut report, &harness_key).written_candidate += 1;
+                            push_candidate_entry(
+                                &mut report.candidates,
+                                action,
+                                &harness_key,
+                                supersede.new_id.clone(),
+                            );
                             if opts.verbose_progress {
                                 eprintln!("{progress_prefix} bucket-repair-{:?}: {}", other, action.source_key);
                             }
@@ -540,6 +554,12 @@ impl ImportEngine {
                             }
                             other => {
                                 counters_mut(&mut report, &harness_key).written_candidate += 1;
+                                push_candidate_entry(
+                                    &mut report.candidates,
+                                    action,
+                                    &harness_key,
+                                    supersede.new_id.clone(),
+                                );
                                 if opts.verbose_progress {
                                     eprintln!("{progress_prefix} supersede-{:?}: {}", other, action.source_key);
                                 }
@@ -547,6 +567,7 @@ impl ImportEngine {
                         }
                     } else {
                         counters_mut(&mut report, &harness_key).written_candidate += 1;
+                        push_candidate_entry(&mut report.candidates, action, &harness_key, outcome.id.clone());
                         if let Some(written_id) = outcome.id {
                             record_promoted(&mut state, action, &written_id, None, &mut alias_to_id, &self.state_path)
                                 .map_err(|error| partial_import_error(error, &report, &action.source_key))?;
@@ -561,6 +582,7 @@ impl ImportEngine {
                 }
                 GovernanceStatus::Quarantined => {
                     counters_mut(&mut report, &harness_key).quarantined += 1;
+                    push_candidate_entry(&mut report.quarantined, action, &harness_key, outcome.id.clone());
                     if let Some(written_id) = outcome.id {
                         record_promoted(&mut state, action, &written_id, None, &mut alias_to_id, &self.state_path)
                             .map_err(|error| partial_import_error(error, &report, &action.source_key))?;
@@ -858,6 +880,19 @@ fn completed_write_count(report: &ImportReport) -> usize {
         .sum()
 }
 
+/// Record a review-queue disposition (candidate or quarantine) so the JSON
+/// report maps the source back to its harness and the daemon-assigned memory
+/// id. `memory_id` is `None` when no id came back (e.g. a candidate-without-id
+/// fallback); the counter and the list stay one-to-one regardless.
+fn push_candidate_entry(
+    entries: &mut Vec<CandidateEntry>,
+    action: &PlannedWrite,
+    harness_key: &str,
+    memory_id: Option<String>,
+) {
+    entries.push(CandidateEntry { source_key: action.source_key.clone(), harness: harness_key.to_string(), memory_id });
+}
+
 fn record_unexpected_response(report: &mut ImportReport, harness_key: &str, action: &PlannedWrite, reason: &str) {
     counters_mut(report, harness_key).refused_other += 1;
     report.refusals.push(RefusalEntry {
@@ -902,12 +937,21 @@ impl ImportEngine {
         // precedence root's copy is the survivor.
         let mut claude_root_summaries: Vec<(PathBuf, usize)> = Vec::with_capacity(claude_roots.len());
         let mut claude_candidates: Vec<ParsedMemory> = Vec::new();
+        let mut frontmatter_recovered: Vec<String> = Vec::new();
         for root in &claude_roots {
             let output = claude::parse(&root.path)?;
             claude_root_summaries.push((root.path.clone(), output.candidates.len()));
             claude_candidates.extend(output.candidates);
             parse_errors.extend(output.errors);
+            frontmatter_recovered.extend(output.recovered);
         }
+        // Source-key dedup below can drop duplicate candidates reached through
+        // multiple profile symlinks; dedup the recovered keys the same way so a
+        // memory recovered through two roots is reported once.
+        frontmatter_recovered.sort();
+        frontmatter_recovered.dedup();
+        let claude_roots_used: Vec<String> =
+            claude_root_summaries.iter().map(|(path, _)| path.display().to_string()).collect();
         let mut seen_claude_keys: HashSet<String> = HashSet::new();
         claude_candidates.retain(|candidate| seen_claude_keys.insert(candidate.source_key.clone()));
         let claude_count = claude_candidates.len();
@@ -1003,6 +1047,8 @@ impl ImportEngine {
             },
             unresolved_back_edges: back_edges,
             parse_errors,
+            frontmatter_recovered,
+            claude_roots_used,
             state,
         })
     }
@@ -1198,6 +1244,10 @@ impl ImportReport {
             cwd_dispositions,
             project_yaml_writes,
             parse_errors,
+            frontmatter_recovered: plan.frontmatter_recovered.clone(),
+            candidates: Vec::new(),
+            quarantined: Vec::new(),
+            claude_roots_used: plan.claude_roots_used.clone(),
         }
     }
 }
@@ -1240,6 +1290,8 @@ mod tests {
             source_discovery_summary: DiscoverySummary::default(),
             unresolved_back_edges: Vec::new(),
             parse_errors: Vec::new(),
+            frontmatter_recovered: Vec::new(),
+            claude_roots_used: Vec::new(),
             state: ImportState::default(),
         }
     }
@@ -1616,6 +1668,8 @@ mod tests {
                     source_discovery_summary: DiscoverySummary::default(),
                     unresolved_back_edges: Vec::new(),
                     parse_errors: Vec::new(),
+                    frontmatter_recovered: Vec::new(),
+                    claude_roots_used: Vec::new(),
                     state,
                 },
                 ExecuteOptions::default(),
@@ -1793,6 +1847,8 @@ mod tests {
             source_discovery_summary: DiscoverySummary::default(),
             unresolved_back_edges: Vec::new(),
             parse_errors: Vec::new(),
+            frontmatter_recovered: Vec::new(),
+            claude_roots_used: Vec::new(),
             state: ImportState::default(),
         }
     }
@@ -1986,5 +2042,99 @@ mod tests {
             .map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>())
             .unwrap_or_default();
         assert_eq!(related, vec!["mem_b"], "wiki-link target resolved against in-flight alias map");
+    }
+
+    #[tokio::test]
+    async fn execute_candidate_write_populates_report_candidates_list() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let engine = ImportEngine::new(tmp.path());
+        let actions = vec![make_planned("a", "body a", Vec::new(), PlanAction::WriteNew)];
+        // A Candidate status with an id and no supersede next-action lands the
+        // source in the review queue as a candidate.
+        let mut client = MockDaemonClient::default().push_write(WriteMemoryOutcome {
+            status: GovernanceStatus::Candidate,
+            id: Some("mem_cand".to_string()),
+            existing_id: None,
+            next_actions: Vec::new(),
+            reason: None,
+        });
+        let result = engine
+            .execute(plan_with_actions(actions), ExecuteOptions::default(), &mut client)
+            .await
+            .expect("execute ok");
+        let claude = result.report.harnesses.get("claude-code").expect("bucket");
+        assert_eq!(claude.written_candidate, 1, "counter and list stay one-to-one");
+        assert_eq!(result.report.candidates.len(), 1);
+        assert_eq!(result.report.candidates[0].source_key, "a");
+        assert_eq!(result.report.candidates[0].harness, "claude-code");
+        assert_eq!(result.report.candidates[0].memory_id.as_deref(), Some("mem_cand"));
+        assert!(result.report.quarantined.is_empty());
+    }
+
+    #[tokio::test]
+    async fn execute_quarantined_write_populates_report_quarantined_list() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let engine = ImportEngine::new(tmp.path());
+        let actions = vec![make_planned("a", "body a", Vec::new(), PlanAction::WriteNew)];
+        let mut client = MockDaemonClient::default().push_write(WriteMemoryOutcome {
+            status: GovernanceStatus::Quarantined,
+            id: Some("mem_quar".to_string()),
+            existing_id: None,
+            next_actions: Vec::new(),
+            reason: None,
+        });
+        let result = engine
+            .execute(plan_with_actions(actions), ExecuteOptions::default(), &mut client)
+            .await
+            .expect("execute ok");
+        let claude = result.report.harnesses.get("claude-code").expect("bucket");
+        assert_eq!(claude.quarantined, 1);
+        assert_eq!(result.report.quarantined.len(), 1);
+        assert_eq!(result.report.quarantined[0].source_key, "a");
+        assert_eq!(result.report.quarantined[0].memory_id.as_deref(), Some("mem_quar"));
+        assert!(result.report.candidates.is_empty());
+    }
+
+    #[tokio::test]
+    async fn plan_threads_malformed_frontmatter_into_recovered_and_report() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let claude_root = tmp.path().join("claude");
+        std::fs::create_dir_all(claude_root.join("proj/memory")).expect("mkdir");
+        // Malformed YAML frontmatter the lenient line-scan salvages rather than
+        // dropping — the source key must surface in `frontmatter_recovered`.
+        std::fs::write(
+            claude_root.join("proj/memory/bad.md"),
+            b"---\n: this is not valid yaml ::\n  :: blip\n---\nBody after broken YAML\n",
+        )
+        .expect("write");
+        std::fs::write(claude_root.join("proj/memory/good.md"), b"---\nname: Good\n---\nA fine memory.\n")
+            .expect("write");
+
+        let engine = ImportEngine::new(tmp.path());
+        let mut prompts = NoPrompts;
+        let plan = engine
+            .plan(
+                ImportOptions {
+                    from_claude: vec![claude_root],
+                    from_codex: Some(PathBuf::from("/does/not/exist")),
+                    harness_filter: None,
+                    quiet: true,
+                    state: ImportState::default(),
+                },
+                &mut prompts,
+            )
+            .await
+            .expect("plan ok");
+        assert!(
+            plan.frontmatter_recovered.iter().any(|k| k.contains("bad.md")),
+            "recovered: {:?}",
+            plan.frontmatter_recovered
+        );
+        assert!(!plan.claude_roots_used.is_empty(), "claude roots covered: {:?}", plan.claude_roots_used);
+
+        // from_plan must carry the recovered keys and roots onto the report.
+        let report = ImportReport::from_plan(&plan);
+        assert!(report.frontmatter_recovered.iter().any(|k| k.contains("bad.md")));
+        assert_eq!(report.claude_roots_used, plan.claude_roots_used);
     }
 }

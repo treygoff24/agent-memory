@@ -44,8 +44,7 @@ What that one invocation does, by default:
 
 - **Claude**: auto-detects and imports the **union of all Claude profile roots** (`~/.claude*/projects`). A user with three profiles gets all three — no flag needed.
 - **Codex**: imports from `~/.codex/memories`.
-- **Non-git-cwd memories**: placed in `me` scope (saved, never silently skipped).
-- **Me-scope imports**: auto-activated — recall-visible immediately.
+- **Non-git-cwd memories**: given a project namespace derived from their directory path (no `.memory-project.yaml` written), so they're saved and land **active and recall-visible** — never silently skipped. Override with `--non-git-cwd-default me|generate|skip`.
 - **Malformed YAML frontmatter**: recovered leniently; the body always imports.
 
 Run it once. It's idempotent and non-destructive: source files are never modified, and re-runs skip unchanged sources by content hash. Running it twice is safe and cheap.
@@ -76,7 +75,7 @@ next: memoryd search "<topic>" --socket <sock>
 Read it like this:
 
 - **imported-active** — written and recall-visible now. The win.
-- **queued-for-review** — candidates awaiting activation (only happens with `--no-activate`, or for governance-quarantined items). Activate later with `memoryd review approve-imports`.
+- **queued-for-review** — items the governance layer flagged for a human look (a detected contradiction, or memories you explicitly routed to `me` scope). Inspect with `memoryd review queue` and accept individually with `memoryd review approve <id>`.
 - **privacy-blocked** — Stream D refused these (PII, contacts, donor data). **This is by design, not an error.** They appear in the report's `refusals[]`. Don't retry them or report them as failures.
 - **frontmatter-recovered** — had broken YAML; body imported anyway. Fine.
 - **dropped** — truly unreadable files, listed in the report. The only real data loss; mention them to the user.
@@ -105,8 +104,8 @@ memoryd get <id> --socket "$MEMORUM_SOCKET"
 # See what's queued for review (candidates + quarantine)
 memoryd review queue --socket "$MEMORUM_SOCKET"
 
-# Bulk-activate import candidates (only needed after --no-activate)
-memoryd review approve-imports --socket "$MEMORUM_SOCKET"
+# Approve a specific queued candidate by id
+memoryd review approve <id> --socket "$MEMORUM_SOCKET"
 
 # Remove one memory
 memoryd forget <id> --socket "$MEMORUM_SOCKET"

@@ -152,7 +152,8 @@ pub struct InitArgs {
     pub harness: Option<InitHarness>,
     /// Default placement for imported memories whose cwd is not a git
     /// checkout. Mirrors `memoryd import --non-git-cwd-default`. Omitted:
-    /// prompted by the wizard on a TTY; `skip` on the non-interactive path.
+    /// prompted by the wizard on a TTY; `project` (derive a project namespace;
+    /// saved and active) on the non-interactive path.
     #[arg(long, value_enum)]
     pub non_git_cwd_default: Option<NonGitCwdDefault>,
     /// MCP configs to wire. Omitted: prompted by the wizard on a TTY;
@@ -221,9 +222,9 @@ pub struct ImportArgs {
     pub from_codex: Option<PathBuf>,
     /// Default placement for memories whose cwd is not a git checkout.
     ///
-    /// Omit this flag to preserve the current safe behavior: interactive
-    /// terminals prompt, while non-interactive callers skip these memories and
-    /// receive an enumerated skip summary.
+    /// Omit this flag for the safe default: interactive terminals prompt, while
+    /// non-interactive callers derive a project namespace from the cwd path
+    /// (`project`) so the memories are saved and land active — never skipped.
     #[arg(long, value_enum)]
     pub non_git_cwd_default: Option<NonGitCwdDefault>,
     /// Write a structured JSON report to this path.
@@ -424,6 +425,10 @@ pub struct DoctorArgs {
     /// Rebuild the derived SQLite event-log mirror from canonical JSONL events before reporting health.
     #[arg(long)]
     pub reindex: bool,
+    /// Accepted for command symmetry with the socket-backed subcommands; ignored — `doctor`
+    /// inspects the substrate in-process and does not talk to the daemon.
+    #[arg(long)]
+    pub socket: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]

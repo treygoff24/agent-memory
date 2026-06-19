@@ -18,7 +18,7 @@ impl Default for SetupDecisions {
         Self {
             import_memories: false,
             harnesses: HarnessSelection::Current,
-            non_git_cwd_default: NonGitCwdDecision::Skip,
+            non_git_cwd_default: NonGitCwdDecision::DeriveProject,
             wire_mcp: WireMcpSelection::Current,
             daemon: DaemonStrategy::OnDemand,
             print_only: false,
@@ -41,6 +41,10 @@ pub enum HarnessSelection {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum NonGitCwdDecision {
+    /// Derive a project namespace from the cwd path (no `.memory-project.yaml`
+    /// written) so the memories are saved and land active. The default — it
+    /// never loses memories and keeps them recall-visible.
+    DeriveProject,
     Skip,
     Me,
     Generate,
