@@ -58,7 +58,12 @@ pub fn parse(root: &Path) -> ImportResult<ClaudeParseOutput> {
     // common store (observed live: C-Mux's ~/.claude-shared migration). walkdir
     // detects symlink cycles and reports them as entry errors, which we already
     // collect per-file below.
-    for entry in walkdir::WalkDir::new(root).follow_links(true) {
+    //
+    // filter_entry prunes dream-scratch project directories and their entire
+    // subtrees from the walk. Their `memory/` subdirs are always empty (zero
+    // candidates), so descending into them on every import is pure wasted cost
+    // on machines that dream frequently. filter_entry composes with follow_links.
+    for entry in walkdir::WalkDir::new(root).follow_links(true).into_iter().filter_entry(|e| !is_dream_scratch_dir(e)) {
         let entry = match entry {
             Ok(value) => value,
             Err(error) => {
@@ -363,6 +368,24 @@ fn flush_section(sections: &mut Vec<Section>, heading: String, lines: Vec<&str>)
         return;
     }
     sections.push(Section { heading, body: trimmed.to_string() });
+}
+
+/// Returns `true` when `entry` is a directory whose file name contains the
+/// substring `memoryd-dream-scratch-run`. These are ephemeral scratch
+/// directories created by the dreaming subsystem; their `memory/` subdirs are
+/// always empty, so descending into them yields zero candidates and is pure
+/// walk overhead. Returning `true` here causes `filter_entry` to skip the
+/// entire subtree.
+///
+/// The predicate is safe to apply to every entry including the walk root and
+/// ordinary project dirs: the substring `memoryd-dream-scratch-run` cannot
+/// appear in a normal project directory name (which encodes a file-system path
+/// using only hyphens as separators), so no legitimate directory is ever pruned.
+fn is_dream_scratch_dir(entry: &walkdir::DirEntry) -> bool {
+    if !entry.file_type().is_dir() {
+        return false;
+    }
+    entry.file_name().to_str().map(|name| name.contains("memoryd-dream-scratch-run")).unwrap_or(false)
 }
 
 /// Claude's per-project directories are named like
@@ -775,5 +798,31 @@ Promote to prod.\n";
         let out = run(tmp.path());
         assert_eq!(out.candidates.len(), 1);
         assert_eq!(out.candidates[0].cwd.as_deref(), Some(Path::new("/no/such/root/anywhere/xyz")),);
+    }
+
+    #[test]
+    fn dream_scratch_project_dirs_are_pruned_from_walk() {
+        // A normal project dir's memory is imported; a memoryd-dream-scratch-run-*
+        // dir's memory is skipped entirely (subtree pruned, not just post-hoc
+        // filtered), even though the file under it would otherwise be a valid topic.
+        let tmp = tempfile::tempdir().expect("tmp");
+        write_fixture(
+            tmp.path(),
+            "-Users-u-real-project/memory/topic.md",
+            b"---\nname: Real memory\ntype: reference\n---\nThis should be imported.\n",
+        );
+        write_fixture(
+            tmp.path(),
+            "memoryd-dream-scratch-run-abc123/memory/scratch.md",
+            b"---\nname: Dream scratch\ntype: reference\n---\nThis must never be imported.\n",
+        );
+        let out = run(tmp.path());
+        assert_eq!(out.candidates.len(), 1, "only the real project memory is imported; dream-scratch is pruned");
+        assert_eq!(out.candidates[0].title.as_deref(), Some("Real memory"));
+        assert!(
+            out.candidates.iter().all(|c| !c.source_key.contains("scratch")),
+            "no scratch memory in candidates: {:?}",
+            out.candidates.iter().map(|c| &c.source_key).collect::<Vec<_>>(),
+        );
     }
 }
