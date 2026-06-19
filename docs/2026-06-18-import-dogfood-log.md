@@ -101,6 +101,37 @@ Final state: `doctor healthy, findings: []`; single stable daemon (launchd) + dr
 
 ---
 
+## 2026-06-19 (later) — findings 8, 9, 10 fixed and verified
+
+All three follow-ups above are now fixed on `main` (commits `9639ba9`, `6390ac1`, `6404eac`; plan `docs/plans/2026-06-19-init-and-namespace-hardening.md`; plan-reviewed before build, Grok-reviewed before merge — Codex was rate-limited). A LOW dream-scratch walk-prune refinement shipped alongside. The work was subagent-implemented under rust-engineer discipline; the canonical correctness gate (fmt, clippy `--all-features -D warnings`, full workspace tests, `cargo doc -D warnings`, installer-test, docs-validity, baseline) is green.
+
+**What changed:**
+
+- **Finding 8** — `init` step order is now `ensure_repo → run_import → ensure_daemon → wire_mcp → verify`. The importer's self-managed `TransientImportDaemon` finishes its writes uninterrupted before the persistent (launchd/background) daemon binds a free socket, eliminating the `socket_in_use` crash-loop. `verify_status` gained a bounded retry scoped to the Launchd strategy (its bootstrap is async); Background already blocks on `await_socket_ready`. The index-incompleteness was a *symptom* of the crash-loop (the metadata upsert is synchronous + WAL-committed), so removing the competition fixed it with no reindex bolt-on — confirmed because a post-init `doctor --reindex` changes nothing.
+- **Finding 9** — `DaemonStepRequest` now carries `claude_config_dir` (env `CLAUDE_CONFIG_DIR` first, else the detection root's parent), and `install_launchd` dropped the hardcoded `--daemon` so the script provisions **both** agents and pins `CLAUDE_CONFIG_DIR`. No more manual restore.
+- **Finding 10** — sanitized at three chokepoints: the Codex cwd parser now requires a path-shaped token (the 4 malformed cwds resolve to `None` → me-scope candidates, not ugly dirs); `derive_alias_for_dir` filters to a safe charset; and `project_namespace_alias` (the universal on-disk path chokepoint) gets a conservative sanitizer that is a verified byte-identical no-op for clean aliases.
+
+**Verified two ways (sandbox-then-live, per Trey's choice):**
+
+| Check | Sandbox (`--daemon background`, throwaway repo) | Live (`uninstall --purge` → `init --import --daemon launchd` on `~/memorum`) |
+|---|---|---|
+| init exit code | 0 (was 1) | **0** (was 1) |
+| `socket_in_use` errors | 0 | **0** |
+| step order | `import` before `ensure_daemon` | same |
+| recall without manual reindex | works (`reindex` is a no-op for searchability → index already complete) | works (`delegate droid alias` → 6 hits) |
+| `CLAUDE_CONFIG_DIR` + both agents | plist render-verified | **auto-provisioned by init** (`/Users/treygoff/.claude-personal`; dream agent loaded) |
+| hostile / dream-scratch namespace dirs | 0 / 0 | 0 / 0 |
+| regressions (roots / recovered / parse errors) | 4 / 3 / 0 | 4 / 3 / 0 |
+| MCP wiring | untouched (`--wire-mcp none`) | Codex `mcp_servers.memorum` preserved (uninstall left it; Claude had none) |
+
+The live `~/memorum` was rebuilt fresh on the new binary (552 memories; pre-cycle backup at `~/memorum.bak-init-cycle-20260619`). The recovered `agency: disagree` feedback memory lands `scope: project, status: active`. One non-issue: that memory returns 0 hits for a bare "disagree" query because its dominant semantic signal is *agency/initiative*, not disagreement — `get` returns it and `reindex` doesn't change ranking, so it is not an index gap.
+
+**New operational gotcha discovered during the live swap:** copying a freshly-built `memoryd` into `~/.cargo/bin` invalidates its linker ad-hoc signature, and macOS launchd SIGKILLs it (`last exit reason = OS_REASON_CODESIGNING`, exit `-9`). Fix: `codesign --force --sign - ~/.cargo/bin/memoryd` after any local build/copy, before `launchctl kickstart`.
+
+**Still open (observation, not a tonight-finding):** the Memorum MCP **server** is currently wired only in Codex (`~/.codex/config.toml`); none of the four Claude profiles have it (`claude mcp list` is empty across all). If Claude-side MCP recall is intended, it needs (re)wiring — separate from this work.
+
+---
+
 ## Run log (original 3-root import, 2026-06-18)
 
 Ran the import across all three Claude profile roots + Codex, sequentially, each gated by a `memoryd doctor` health check (halt-on-unhealthy). Flags on every run: `--non-git-cwd-default me --repo /Users/treygoff/memorum --quiet --report <file>`. **No index corruption** — the 6/12 chunk-id class of failure did not recur; store stayed `healthy: true` after every step.
