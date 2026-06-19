@@ -30,7 +30,7 @@ pub fn sql_placeholders(count: usize) -> String {
 /// actual id count.
 const IN_CLAUSE_BUCKETS: [usize; 5] = [1, 4, 16, 64, 256];
 
-/// Round `count` up to the smallest [`IN_CLAUSE_BUCKETS`] width that holds it, or
+/// Round `count` up to the smallest `IN_CLAUSE_BUCKETS` width that holds it, or
 /// the next multiple of the largest bucket for oversized inputs.
 ///
 /// Bucketing the placeholder count means varied id-set sizes collapse onto a
