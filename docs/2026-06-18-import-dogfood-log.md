@@ -78,7 +78,30 @@ Two of these (`~` and `~/Code`) are genuinely user-global. For this import I'll 
 
 ---
 
-## Run log
+## 2026-06-19 re-dogfood (after the hardening shipped)
+
+The 7 findings below were fixed on branch `import-hardening` (merged to `main`, commit `2af7d35`; Codex-reviewed, gate green). Then the full flow was re-dogfooded end to end: `memoryd uninstall --purge` → `memoryd init --non-interactive --import` (fresh store, new release binary) → verify. **Every original finding is fixed on the live store:**
+
+| Finding | Verified fix |
+|---|---|
+| 1 multi-profile under-coverage | `claude_roots_used` = **all 4 profiles** (`.claude-personal`, `.claude`, `.claude-space`, `.claude-work`); 540 Claude candidates parsed in one command. |
+| 2 strict-YAML drops memories | `frontmatter_recovered: 3`, `parse_errors: 0`. Searching "agency disagree…" now returns the once-dropped `feedback-agency-disagree-and-build.md` content. |
+| 3 + 6 non-git skipped / me-scope dormant | Non-git memories land in **derived project scope, active, plaintext** (`projects/Code/…`, `projects/opencode/…`), recall-visible. Review queue is **5** (was 49) — no me-scope flood. |
+| 4 dotfile decode | `~/.config/opencode` imported into an `opencode` namespace (no `//config` mangle, not skipped). |
+| 5 doctor vs `--socket` | `memoryd doctor --socket <sock>` is tolerated (no arg error). |
+| 7 report doesn't enumerate | Report now carries `candidates[]`, `quarantined[]`, `frontmatter_recovered[]`, `claude_roots_used[]` and a reconciliation summary block. |
+
+Final state: `doctor healthy, findings: []`; single stable daemon (launchd) + dream-scheduled job; 548 memories; recall works across project, derived-project, and git-remote scopes.
+
+### New findings surfaced BY the re-dogfood (handoff for follow-up)
+
+- **FINDING 8 (init robustness, HIGH).** During `init --import`, the import runs through its own daemon while `ensure_daemon`'s launchd daemon **crash-loops on `socket_in_use`** until the import releases the socket (`daemon.err.log` shows ~15 such errors). Two consequences: (a) the `verify` step fails to connect and `init` exits **1** even though the system ends healthy; (b) the restart churn left the **search index incomplete** — newly-written memories were on disk and `get`-able but absent from `search` until a `doctor --reindex` rebuilt the index from canonical events. Fix direction: order `ensure_daemon` after `import` (or have the import reuse the launchd daemon instead of starting a second one), and make `verify` wait out the socket handoff / reindex after a bulk import.
+- **FINDING 9 (install parity, MEDIUM).** `init`'s `ensure_daemon` calls `scripts/install-launchd.sh` **without `--claude-config-dir`**, so the regenerated daemon plist drops `CLAUDE_CONFIG_DIR=~/.claude-personal` (the dream-auth env), and the `com.memorum.dream-scheduled` agent is **not** reinstalled (uninstall removes it; init only installs the daemon agent). On a multi-profile machine this silently points dreaming at the wrong Claude profile. Restored manually here via `install-launchd.sh --claude-config-dir …` (installs both agents). Fix direction: `init` should detect the active Claude config dir and pass it through, and provision the dream agent.
+- **FINDING 10 (derive-project × Codex cwd, MEDIUM).** 4 of 13 Codex Task Groups minted **malformed namespace dirs** from prose-fragment cwds — e.g. `` projects/droid`, `cmux` on PATH)/ `` and `` projects/.factory` config in this environment/ ``. The Codex source's `applies_to: cwd=…` extraction grabs trailing prose; before this change those memories hid in me-scope, but derive-project now turns the bad cwd basename into a project alias. Memories are saved and searchable, just in ugly namespaces. Fix direction: tighten the Codex cwd parser (stop at the first path-shaped token) and/or sanitize `derive_alias_for_dir` to reject non-path-like basenames.
+
+---
+
+## Run log (original 3-root import, 2026-06-18)
 
 Ran the import across all three Claude profile roots + Codex, sequentially, each gated by a `memoryd doctor` health check (halt-on-unhealthy). Flags on every run: `--non-git-cwd-default me --repo /Users/treygoff/memorum --quiet --report <file>`. **No index corruption** — the 6/12 chunk-id class of failure did not recur; store stayed `healthy: true` after every step.
 
