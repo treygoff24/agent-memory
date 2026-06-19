@@ -2,6 +2,12 @@
 
 The importer is a non-destructive, idempotent backfill tool that copies your existing Claude Code and OpenAI Codex CLI memories into Memorum. Run it once on a new machine and Memorum starts up with everything you've already taught those tools. Run it again whenever you want — it skips sources whose content hasn't changed.
 
+> **Amendment 2026-06-19 (import-hardening).** Several defaults changed from what the locked-decisions table below records; this note is authoritative where they conflict.
+> - **Multi-profile by default.** With no `--from-claude`, the importer now imports the *union* of every `~/.claude*/projects` profile root (deduped by source key), not just the single `CLAUDE_CONFIG_DIR`-derived root. `--from-claude` is repeatable to pin exact roots.
+> - **Non-git cwds default to derived-project scope, not skip.** The non-interactive default is now `project`: a deterministic `proj_<name>-<hash>` namespace derived from the cwd path, no `.memory-project.yaml` written, landing the memory **active and recall-visible** under the default policy. This supersedes the "prompt per cwd / skip in non-interactive" decision and resolves the review-queue-flooding caveat below for the default path (me-scope is still available via `--non-git-cwd-default me`, with its me-strict candidate behavior). `skip`/`me`/`generate` remain opt-in.
+> - **Malformed frontmatter is recovered, not dropped.** YAML that strict parsing rejects (unquoted `:` in a value, leading backticks, partial quotes) is recovered via a lenient line-scan; the body always imports. Only genuinely unreadable files (non-UTF8, unterminated frontmatter) are dropped, and they are listed in the report.
+> - **Reconciliation summary.** Every run ends with an active / queued-for-review / privacy-blocked / frontmatter-recovered / dropped breakdown; the JSON report adds `candidates[]`, `quarantined[]`, `frontmatter_recovered[]`, and `claude_roots_used[]`. See `docs/agent-import-guide.md` for the agent-facing flow.
+
 ## Quickstart
 
 ```bash
