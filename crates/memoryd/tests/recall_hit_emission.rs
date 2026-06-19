@@ -176,6 +176,7 @@ impl RecallHitFixture {
                 include_recent: true,
                 since_event_id: None,
                 budget_tokens: Some(1024),
+                passive: false,
             },
         )
         .await
@@ -191,6 +192,7 @@ impl RecallHitFixture {
                 harness: "codex".to_owned(),
                 message: message.to_owned(),
                 budget_tokens: Some(8_000),
+                passive: false,
             },
         )
         .await

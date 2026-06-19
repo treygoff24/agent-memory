@@ -175,6 +175,7 @@ async fn timed_delta(
                 harness: "codex".to_owned(),
                 message: message.to_owned(),
                 budget_tokens: Some(400),
+                passive: false,
             },
         )
         .await?;
@@ -203,6 +204,7 @@ async fn timed_delta_with_vector(request: DeltaVectorBench<'_>) -> anyhow::Resul
                 harness: "codex".to_owned(),
                 message: request.message.to_owned(),
                 budget_tokens: Some(400),
+                passive: false,
             },
             VectorRecallContext::new(Some(Arc::clone(request.provider)), VectorRecallConfig::default()),
         )
@@ -236,6 +238,7 @@ async fn startup_response(
             include_recent: true,
             since_event_id: None,
             budget_tokens: Some(3_600),
+            passive: false,
         },
     )
     .await?)

@@ -76,6 +76,7 @@ fn request(cwd: impl AsRef<str>) -> StartupRequest {
         include_recent: true,
         since_event_id: None,
         budget_tokens: None,
+        passive: false,
     }
 }
 

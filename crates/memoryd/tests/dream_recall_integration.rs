@@ -350,6 +350,7 @@ fn startup_request(repo: &Path) -> StartupRequest {
         include_recent: true,
         since_event_id: None,
         budget_tokens: Some(512),
+        passive: false,
     }
 }
 

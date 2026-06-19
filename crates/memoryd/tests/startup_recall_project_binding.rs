@@ -185,6 +185,7 @@ fn request(cwd: impl AsRef<str>, session_id: &str, harness: &str, harness_versio
         include_recent: true,
         since_event_id: None,
         budget_tokens: None,
+        passive: false,
     }
 }
 

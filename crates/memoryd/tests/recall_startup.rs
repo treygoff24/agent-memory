@@ -122,6 +122,7 @@ fn startup_request(cwd: &str) -> StartupRequest {
         include_recent: true,
         since_event_id: None,
         budget_tokens: Some(1024),
+        passive: false,
     }
 }
 

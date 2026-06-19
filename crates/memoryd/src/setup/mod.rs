@@ -15,7 +15,9 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
-pub use decide::{DaemonStrategy, HarnessSelection, NonGitCwdDecision, SetupDecisions, WireMcpSelection};
+pub use decide::{
+    DaemonStrategy, HarnessSelection, NonGitCwdDecision, SetupDecisions, WireHooksSelection, WireMcpSelection,
+};
 pub use detect::{
     DaemonDetection, HarnessDetection, SetupDetection, SetupDetectionOptions, SetupDiscoverySource, SetupSocketState,
 };

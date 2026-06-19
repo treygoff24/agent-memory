@@ -364,6 +364,7 @@ async fn memory_delta_validation_failure_increments_failure_counter_by_code() {
                 harness: "codex".to_owned(),
                 message: " ".to_owned(),
                 budget_tokens: Some(512),
+                passive: false,
             }),
         ),
     )
@@ -394,6 +395,7 @@ fn startup_request(cwd: &str) -> StartupRequest {
         include_recent: true,
         since_event_id: None,
         budget_tokens: Some(512),
+        passive: false,
     }
 }
 
@@ -559,6 +561,7 @@ impl StartupCoordinationFixture {
                     include_recent: false,
                     since_event_id: None,
                     budget_tokens: Some(2048),
+                    passive: false,
                 }),
             ),
         )

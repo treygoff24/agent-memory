@@ -9,6 +9,7 @@ pub struct SetupDecisions {
     pub harnesses: HarnessSelection,
     pub non_git_cwd_default: NonGitCwdDecision,
     pub wire_mcp: WireMcpSelection,
+    pub wire_hooks: WireHooksSelection,
     pub daemon: DaemonStrategy,
     pub print_only: bool,
 }
@@ -20,6 +21,7 @@ impl Default for SetupDecisions {
             harnesses: HarnessSelection::Current,
             non_git_cwd_default: NonGitCwdDecision::DeriveProject,
             wire_mcp: WireMcpSelection::Current,
+            wire_hooks: WireHooksSelection::Current,
             daemon: DaemonStrategy::OnDemand,
             print_only: false,
         }
@@ -54,6 +56,22 @@ pub enum NonGitCwdDecision {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum WireMcpSelection {
+    Current,
+    Claude,
+    Codex,
+    All,
+    None,
+}
+
+/// Harness configs selected for passive-recall hook installation.
+///
+/// Mirrors [`WireMcpSelection`]: installs the `memoryd recall hook` lifecycle
+/// hooks (SessionStart base block + UserPromptSubmit delta + SubagentStart) into
+/// the selected harness config(s). `Current` targets the single detected harness;
+/// `None` skips hook wiring entirely.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WireHooksSelection {
     Current,
     Claude,
     Codex,

@@ -403,6 +403,7 @@ fn step_label(step: SetupStep) -> &'static str {
         SetupStep::EnsureDaemon => "daemon",
         SetupStep::Import => "import",
         SetupStep::WireMcp => "MCP wiring",
+        SetupStep::WireHooks => "hook wiring",
         SetupStep::Verify => "verify",
     }
 }
@@ -491,7 +492,7 @@ fn render_epilogue(report: &SetupReport, repo: &Path, runtime: &Path, socket: &P
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::setup::{SetupDetectionOptions, SetupStepReport};
+    use crate::setup::{SetupDetectionOptions, SetupStepReport, WireHooksSelection};
 
     /// Canned-answer `SetupIo` for unit tests. All fields are public so each
     /// test can set only the decisions it cares about.
@@ -561,6 +562,7 @@ mod tests {
             harness: Some(crate::cli::InitHarness::None),
             non_git_cwd_default: Some(crate::cli::NonGitCwdDefault::Skip),
             wire_mcp: Some(crate::cli::WireMcpMode::None),
+            wire_hooks: Some(crate::cli::WireHooksMode::None),
             daemon: Some(crate::cli::DaemonMode::None),
             print_only: false,
         }
@@ -770,6 +772,7 @@ mod tests {
             harnesses: HarnessSelection::All,
             non_git_cwd_default: NonGitCwdDecision::Skip,
             wire_mcp: WireMcpSelection::All,
+            wire_hooks: WireHooksSelection::All,
             daemon: DaemonStrategy::OnDemand,
             print_only: false,
         };
@@ -806,6 +809,7 @@ mod tests {
             harnesses: HarnessSelection::None,
             non_git_cwd_default: NonGitCwdDecision::Skip,
             wire_mcp: WireMcpSelection::None,
+            wire_hooks: WireHooksSelection::None,
             daemon: DaemonStrategy::None,
             print_only: true,
         };

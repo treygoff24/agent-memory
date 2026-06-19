@@ -1,6 +1,8 @@
 //! Synchronous setup decision I/O.
 
-use super::decide::{DaemonStrategy, HarnessSelection, NonGitCwdDecision, SetupDecisions, WireMcpSelection};
+use super::decide::{
+    DaemonStrategy, HarnessSelection, NonGitCwdDecision, SetupDecisions, WireHooksSelection, WireMcpSelection,
+};
 use super::detect::SetupDetection;
 use super::SetupResult;
 
@@ -10,6 +12,12 @@ pub trait SetupIo {
     fn choose_harnesses(&mut self, detection: &SetupDetection) -> SetupResult<HarnessSelection>;
     fn choose_non_git_cwd_default(&mut self, detection: &SetupDetection) -> SetupResult<NonGitCwdDecision>;
     fn choose_mcp_wiring(&mut self, detection: &SetupDetection) -> SetupResult<WireMcpSelection>;
+    /// Choose which harness config(s) get the passive-recall lifecycle hooks
+    /// installed. Defaulted so frontends opt in incrementally; WS1's decision
+    /// surface overrides it for the interactive and flag-driven paths.
+    fn choose_hook_wiring(&mut self, _detection: &SetupDetection) -> SetupResult<WireHooksSelection> {
+        Ok(WireHooksSelection::Current)
+    }
     fn choose_daemon_strategy(&mut self, detection: &SetupDetection) -> SetupResult<DaemonStrategy>;
     fn print_only(&mut self) -> SetupResult<bool>;
     fn note(&mut self, message: &str) -> SetupResult<()>;
@@ -22,6 +30,7 @@ pub fn collect_setup_decisions(io: &mut dyn SetupIo, detection: &SetupDetection)
         harnesses: io.choose_harnesses(detection)?,
         non_git_cwd_default: io.choose_non_git_cwd_default(detection)?,
         wire_mcp: io.choose_mcp_wiring(detection)?,
+        wire_hooks: io.choose_hook_wiring(detection)?,
         daemon: io.choose_daemon_strategy(detection)?,
         print_only: io.print_only()?,
     })
@@ -59,6 +68,10 @@ impl SetupIo for FlagDrivenIo {
 
     fn choose_mcp_wiring(&mut self, _detection: &SetupDetection) -> SetupResult<WireMcpSelection> {
         Ok(self.decisions.wire_mcp)
+    }
+
+    fn choose_hook_wiring(&mut self, _detection: &SetupDetection) -> SetupResult<WireHooksSelection> {
+        Ok(self.decisions.wire_hooks)
     }
 
     fn choose_daemon_strategy(&mut self, _detection: &SetupDetection) -> SetupResult<DaemonStrategy> {

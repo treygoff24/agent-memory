@@ -90,6 +90,7 @@ mod tests {
             harness: None,
             non_git_cwd_default: Some(NonGitCwdDefault::Skip),
             wire_mcp: None,
+            wire_hooks: None,
             daemon: None,
             print_only: false,
         }

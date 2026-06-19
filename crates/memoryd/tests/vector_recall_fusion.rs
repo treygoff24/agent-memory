@@ -335,6 +335,7 @@ impl TestRepo {
             harness: "codex".to_owned(),
             message: message.to_owned(),
             budget_tokens: Some(8_000),
+            passive: false,
         }
     }
 

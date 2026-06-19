@@ -17,10 +17,10 @@
 //! before producing a report (reason on stderr), while a non-zero exit with a
 //! JSON body on stdout means a setup step failed fatally (details in the body).
 
-use crate::cli::{DaemonMode, InitArgs, InitHarness, NonGitCwdDefault, WireMcpMode};
+use crate::cli::{DaemonMode, InitArgs, InitHarness, NonGitCwdDefault, WireHooksMode, WireMcpMode};
 use crate::setup::{
     DaemonStrategy, FlagDrivenIo, HarnessSelection, NonGitCwdDecision, SetupDecisions, SetupDetection, SetupEngine,
-    SetupReport, SetupStep, SetupStepReport, SetupStepStatus, WireMcpSelection,
+    SetupReport, SetupStep, SetupStepReport, SetupStepStatus, WireHooksSelection, WireMcpSelection,
 };
 
 use super::resolve_repo_runtime;
@@ -85,6 +85,7 @@ fn decisions_from_args(args: &InitArgs) -> SetupDecisions {
         harnesses: args.harness.unwrap_or(InitHarness::Current).into(),
         non_git_cwd_default: args.non_git_cwd_default.unwrap_or(NonGitCwdDefault::Project).into(),
         wire_mcp: args.wire_mcp.unwrap_or(WireMcpMode::Current).into(),
+        wire_hooks: args.wire_hooks.unwrap_or(WireHooksMode::Current).into(),
         daemon: args.daemon.unwrap_or(DaemonMode::OnDemand).into(),
         print_only: args.print_only,
     }
@@ -126,6 +127,18 @@ impl From<WireMcpMode> for WireMcpSelection {
             WireMcpMode::Codex => Self::Codex,
             WireMcpMode::All => Self::All,
             WireMcpMode::None => Self::None,
+        }
+    }
+}
+
+impl From<WireHooksMode> for WireHooksSelection {
+    fn from(mode: WireHooksMode) -> Self {
+        match mode {
+            WireHooksMode::Current => Self::Current,
+            WireHooksMode::Claude => Self::Claude,
+            WireHooksMode::Codex => Self::Codex,
+            WireHooksMode::All => Self::All,
+            WireHooksMode::None => Self::None,
         }
     }
 }

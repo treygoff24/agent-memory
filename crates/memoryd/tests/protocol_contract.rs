@@ -92,6 +92,7 @@ fn protocol_contract_round_trips_request_variants_as_snake_case_json() {
                 include_recent: true,
                 since_event_id: None,
                 budget_tokens: Some(3_600),
+                passive: false,
             }),
         ),
     ];
@@ -438,6 +439,7 @@ fn test_existing_protocol_variants_unchanged() {
                 include_recent: true,
                 since_event_id: None,
                 budget_tokens: Some(3_600),
+                passive: false,
             }))
             .unwrap(),
             serde_json::json!({"startup":{

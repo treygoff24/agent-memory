@@ -96,6 +96,7 @@ impl HydrationFixture {
                 include_recent: true,
                 since_event_id: None,
                 budget_tokens: Some(1024),
+                passive: false,
             },
         )
         .await

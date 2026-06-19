@@ -114,6 +114,7 @@ async fn startup_recall_escapes_identity_and_project_text_fields() {
                 include_recent: true,
                 since_event_id: None,
                 budget_tokens: Some(512),
+                passive: false,
             }),
         ),
     )
@@ -159,6 +160,7 @@ async fn delta_recall_omits_passive_recall_disabled_chunks() {
             harness: "codex".to_owned(),
             message: "shared-delta-needle".to_owned(),
             budget_tokens: Some(512),
+            passive: false,
         },
     )
     .await
@@ -288,6 +290,7 @@ impl PrivacyFixture {
                     include_recent: true,
                     since_event_id: None,
                     budget_tokens: Some(512),
+                    passive: false,
                 }),
             ),
         )

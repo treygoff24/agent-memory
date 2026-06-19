@@ -20,6 +20,7 @@ pub async fn run(args: RecallArgs) -> anyhow::Result<()> {
                     include_recent: args.include_recent && !args.no_include_recent,
                     since_event_id: None,
                     budget_tokens: args.budget_tokens,
+                    passive: false,
                 }),
             )
             .await;
@@ -36,6 +37,7 @@ pub async fn run(args: RecallArgs) -> anyhow::Result<()> {
                     harness: args.harness,
                     message: args.message,
                     budget_tokens: args.budget_tokens,
+                    passive: false,
                 }),
             )
             .await;

@@ -324,6 +324,7 @@ impl CoordinationFixture {
                     harness: harness.to_owned(),
                     message: message.to_owned(),
                     budget_tokens: Some(2_048),
+                    passive: false,
                 }),
             ),
         )

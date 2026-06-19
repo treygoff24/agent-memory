@@ -373,6 +373,7 @@ async fn time_startup_recall(substrate: &Substrate, repo: &Path) -> anyhow::Resu
             include_recent: true,
             since_event_id: None,
             budget_tokens: Some(3_600),
+            passive: false,
         },
     )
     .await?;

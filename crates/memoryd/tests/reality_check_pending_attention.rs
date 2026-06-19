@@ -342,6 +342,7 @@ fn startup_request(repo: &std::path::Path) -> StartupRequest {
         include_recent: true,
         since_event_id: None,
         budget_tokens: Some(512),
+        passive: false,
     }
 }
 

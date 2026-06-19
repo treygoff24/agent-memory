@@ -27,6 +27,12 @@ pub struct StartupRequest {
     pub include_recent: bool,
     pub since_event_id: Option<String>,
     pub budget_tokens: Option<usize>,
+    /// Read-only recall: when `true`, assembly must not mutate substrate or
+    /// ranking state (no surface-marker writes, no recall-hit feedback). Set by
+    /// the passive hook handler, which fires on every session/turn/subagent.
+    /// Stream E §12 read-only-recall contract (2026-06-19 amendment).
+    #[serde(default)]
+    pub passive: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -47,6 +53,10 @@ pub struct DeltaRequest {
     pub harness: String,
     pub message: String,
     pub budget_tokens: Option<usize>,
+    /// Read-only recall: see [`StartupRequest::passive`]. Gates every write on
+    /// the per-turn delta recall path.
+    #[serde(default)]
+    pub passive: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

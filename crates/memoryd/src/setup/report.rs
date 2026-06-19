@@ -93,6 +93,7 @@ pub enum SetupStep {
     EnsureDaemon,
     Import,
     WireMcp,
+    WireHooks,
     Verify,
 }
 

@@ -122,6 +122,7 @@ async fn forward_memory_startup_round_trips_through_live_substrate_daemon() {
             include_recent: true,
             since_event_id: None,
             budget_tokens: Some(3_600),
+            passive: false,
         }),
     )
     .await
@@ -270,5 +271,6 @@ fn startup_request() -> StartupRequest {
         include_recent: true,
         since_event_id: None,
         budget_tokens: Some(3_600),
+        passive: false,
     }
 }

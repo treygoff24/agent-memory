@@ -160,6 +160,11 @@ pub struct InitArgs {
     /// `current` (the single detected harness) on the non-interactive path.
     #[arg(long, value_enum)]
     pub wire_mcp: Option<WireMcpMode>,
+    /// Harness configs to wire the passive-recall lifecycle hooks into.
+    /// Omitted: prompted by the wizard on a TTY; `current` (the single detected
+    /// harness) on the non-interactive path.
+    #[arg(long, value_enum)]
+    pub wire_hooks: Option<WireHooksMode>,
     /// Daemon arrangement to provision during setup. Omitted: prompted by the
     /// wizard on a TTY; `on-demand` on the non-interactive path.
     #[arg(long, value_enum)]
@@ -185,6 +190,17 @@ pub enum InitHarness {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 #[clap(rename_all = "lowercase")]
 pub enum WireMcpMode {
+    Current,
+    Claude,
+    Codex,
+    All,
+    None,
+}
+
+/// Passive-recall hook wiring selection for `memoryd init --wire-hooks`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "lowercase")]
+pub enum WireHooksMode {
     Current,
     Claude,
     Codex,
