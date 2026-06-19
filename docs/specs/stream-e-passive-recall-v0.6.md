@@ -1,7 +1,7 @@
 # Stream E Passive Recall Spec v0.6
 
 **Status:** final implementation contract for Stream E passive recall. Supersedes `stream-e-passive-recall-v0.5.md`.
-**Date:** 2026-04-30 (v0.5); 2026-06-10 (v0.6 fusion bump).
+**Date:** 2026-04-30 (v0.5); 2026-06-10 (v0.6 fusion bump); 2026-06-19 (in-version hook-installation amendment).
 **Sources:** `docs/specs/system-v0.1.md` section 10 and the shipped Stream A-D contracts.
 **Non-source:** older Stream A drafts and Stream C/D review notes are historical unless they describe a still-shipped API surface.
 
@@ -15,6 +15,16 @@
 6. **Adds a §13 latency-impact note:** the existing delta budgets remain binding and are kept intact by the `embedding_timeout` contingency rung; any renegotiation lands as a later dated amendment with measured numbers.
 
 It also fixes the stale "v0.3" self-references that survived in the §15 deferral prose (they now read v0.6, the current version). The version string in policy/manifest/recall-block attributes bumps to `stream-e-v0.6`.
+
+**Amendment (2026-06-19): hook installation shipped for Claude Code and Codex; passive hook recall is read-only.** Approved by Trey 2026-06-19; see `docs/plans/2026-06-19-passive-recall-hooks.md`. This is a dated in-version amendment (no version bump, per Trey's direction — it documents now-shipped behavior and adds no new required wire shape). It updates §12 and §15 below:
+
+1. **Lifts the §15 deferral "automatic hook installation across all harnesses."** `memoryd init` now installs native lifecycle hooks that auto-inject recall: SessionStart → the startup base block, UserPromptSubmit → the delta block, SubagentStart → the subagent base block. Both Claude Code (`settings.json` `hooks`) and Codex (`config.toml` `[hooks]` or `hooks.json`) ship Claude-style hooks with a `hookSpecificOutput.additionalContext` field. The `system-v0.1.md` §10 `.claude/hooks/*.sh` sketch is superseded by these native hook surfaces.
+
+2. **Codifies passive hook recall as read-only.** Hooks fire on every session, turn, and subagent start, so a hook-mode (`passive`) recall request must not mutate substrate or ranking state — no surface-marker writes, no recall-hit ranking feedback. This makes the §15 "persistent recall-count and last-recalled mutation" deferral binding on the hook hot path and tightens §2's read-only intent into an enforced invariant for the hook channel. Observability-only invocation counters may still increment.
+
+3. **Cache-stability contract for the base block.** The SessionStart base block must be byte-deterministic and frozen for the session (identity tuple: memory set, cwd, the cwd project's native `MEMORY.md` head, budget) so it lands in the harness prompt-cache prefix; it must not embed `session_id`, `harness_version`, or wall-clock. The per-turn delta is appended at the uncached tail. This keeps injection cost-neutral on both the Anthropic and OpenAI prompt caches.
+
+4. **Fail-open + size.** A hook invocation never blocks the harness (≤800ms internal deadline; on any failure it emits nothing on stdout *or* stderr and exits 0), and every injected block stays under the harness 10,000-char cap via a hook-specific char/token budget below the §13 startup budget.
 
 **Revision goal (v0.4 → v0.5):** resolve a §9.5 vs hot-path contradiction surfaced by plan-reviewer. v0.4 §9.5 said `<pending-attention>` "may include" a count of operator-repair findings from Stream A doctor, but the implementation plan correctly forbids running `Substrate::doctor()` inside the `memory_startup` request hot path (it's an fsck-grade scan that does not fit the §13 p95 budget) and there is no daemon-cached projection of doctor state today. v0.5 removes the doctor-count line from §9.5 and explicitly defers it. A daemon-cached doctor projection plus the corresponding `<pending-attention>` line item is a post-Stream-E follow-up.
 
@@ -878,21 +888,30 @@ response or a non-`not_implemented` typed error.
 
 ### 12.1 Claude Code
 
-Installer-created hook scripts call:
+`memoryd init` installs Claude Code lifecycle hooks (in `settings.json`,
+`CLAUDE_CONFIG_DIR`-aware) that run the unified `memoryd recall hook` handler with
+harness id `claude-code`:
 
-- `memoryd recall startup-block` on SessionStart;
-- `memoryd recall delta-block` on UserPromptSubmit.
+- SessionStart (matcher `startup|resume|clear|compact`) → the startup base block;
+- UserPromptSubmit → the delta block;
+- SubagentStart → the subagent base block (parent-session scope).
 
-If startup recall fails, the hook prints no recall block and writes a single
-diagnostic line to stderr. It must not block the harness longer than 800ms in
-normal 1k-memory smoke fixtures.
+The handler emits `hookSpecificOutput.additionalContext` and runs in read-only
+(`passive`) mode (amendment 2026-06-19). It is fail-open: on any failure (daemon
+down, timeout, malformed input) it emits nothing on stdout *or* stderr and exits
+0 — never blocking the harness — within a ≤800ms internal deadline on 1k-memory
+smoke fixtures.
 
 ### 12.2 Codex
 
-Installer-created `AGENTS.md` guidance may instruct Codex to call
-`memory_startup` first, but the durable contract is the MCP tool response shape
-in this spec. If a native startup-hook path exists, it must use the same
-`startup-block` output and must not invent a second recall format.
+Codex ships the same Claude-style lifecycle hooks (GA 2026-05); `memoryd init`
+installs them in `~/.codex/config.toml` `[hooks]` (or an existing `hooks.json`),
+harness id `codex`, running the same `memoryd recall hook` handler and
+`additionalContext` shape as Claude Code. Codex requires the user to trust the
+hook once via `/hooks`; the installer reports this ("configured but inactive until
+trusted"). Installer-written `AGENTS.md` guidance instructing Codex to call
+`memory_startup` first remains a valid complementary fallback, and the MCP tool
+response shape stays the durable contract.
 
 ### 12.3 Cursor and generic MCP clients
 
@@ -1079,7 +1098,7 @@ These are intentionally outside Stream E v0.6:
 - persistent recall-count and last-recalled mutation;
 - live peer activity, claim locks, and event subscriptions;
 - LLM summarization or compression during startup;
-- automatic hook installation across all harnesses;
+- ~~automatic hook installation across all harnesses~~ — **shipped 2026-06-19** (see the dated amendment above and `docs/plans/2026-06-19-passive-recall-hooks.md`); the hook channel runs read-only per that amendment;
 - Stream F dream-question surfacing, except future pending-attention counts when
   Stream F creates canonical question memories;
 - dashboard visualizations of recall explanations.
