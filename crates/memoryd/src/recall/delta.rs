@@ -13,13 +13,17 @@ use memory_substrate::{AuxScope, ChunkQuery, MemoryStatus, RecallIndexQuery, Rec
 use crate::recall::error::RecallError;
 use crate::recall::hybrid::{collect_hybrid_recall, HybridRecallDecision, VectorRecallContext};
 use crate::recall::render::escape_xml_text;
-use crate::recall::render::{emit_recall_hits, render_delta_frame, DeltaRecallItem};
+use crate::recall::render::{
+    cap_passive_block, emit_recall_hits, render_delta_frame, render_delta_frame_passive, DeltaRecallItem,
+    RenderedDeltaFrame,
+};
 use crate::recall::source_identity::{
     effective_coordination_level, hydrate_peer_candidate_entities, is_peer_write_row, local_device_id,
     peer_source_identity,
 };
 use crate::recall::types::{
     DeltaPeerDelivery, DeltaRequest, DeltaResponse, SessionBinding, DEFAULT_DELTA_BUDGET_TOKENS,
+    HOOK_DELTA_BUDGET_TOKENS,
 };
 
 const DELTA_PEER_PRESENCE_CAP: usize = 4;
@@ -80,24 +84,39 @@ async fn build_delta_response_inner(
     vector_recall: Option<VectorRecallContext>,
 ) -> Result<DeltaResponse, RecallError> {
     let session_binding = validate_delta_request(&request).await?;
-    let budget_tokens = request.budget_tokens.unwrap_or(DEFAULT_DELTA_BUDGET_TOKENS);
+    let passive = request.passive;
+    // Hook mode with no explicit budget uses the reduced delta budget so the
+    // per-turn injection stays small and under the char cap (plan Decision 8).
+    let budget_tokens =
+        request.budget_tokens.unwrap_or(if passive { HOOK_DELTA_BUDGET_TOKENS } else { DEFAULT_DELTA_BUDGET_TOKENS });
     let message = request.message.trim();
     let (items, vector_recall_degraded) = collect_delta_items(substrate, message, vector_recall.as_ref()).await?;
     let delta_coordination = match coordination {
         Some(context) => build_delta_coordination(substrate, &session_binding, message, context).await?,
         None => DeltaCoordination::default(),
     };
-    let rendered = render_delta_frame(&items, budget_tokens, delta_coordination.insertion.as_ref());
-    emit_recall_hits(substrate, rendered.included_item_ids.iter().map(String::as_str));
+    let rendered = if passive {
+        let frame = render_delta_frame_passive(&items, budget_tokens, delta_coordination.insertion.as_ref());
+        // Enforce the < 10k-char injection guard on the passive delta tail too.
+        RenderedDeltaFrame { block: cap_passive_block(frame.block), ..frame }
+    } else {
+        render_delta_frame(&items, budget_tokens, delta_coordination.insertion.as_ref())
+    };
+    // Read-only recall (plan Decision 10): a passive hook must not append RecallHit
+    // events, record peer-write cooldowns, or write the delivery audit — every one
+    // is recall-path feedback that mutates ranking-adjacent or audit state.
+    if !passive {
+        emit_recall_hits(substrate, rendered.included_item_ids.iter().map(String::as_str));
 
-    let peer_deliveries = delta_coordination
-        .insertion
-        .as_ref()
-        .map(|insertion| rendered_peer_deliveries(insertion, &rendered.block, &session_binding, Utc::now()))
-        .unwrap_or_default();
-    if let Some(context) = coordination {
-        record_surfaced_peer_writes(context.peer_cooldown, &session_binding, &peer_deliveries);
-        record_peer_deliveries(context.delivery_recorder, peer_deliveries);
+        let peer_deliveries = delta_coordination
+            .insertion
+            .as_ref()
+            .map(|insertion| rendered_peer_deliveries(insertion, &rendered.block, &session_binding, Utc::now()))
+            .unwrap_or_default();
+        if let Some(context) = coordination {
+            record_surfaced_peer_writes(context.peer_cooldown, &session_binding, &peer_deliveries);
+            record_peer_deliveries(context.delivery_recorder, peer_deliveries);
+        }
     }
 
     Ok(DeltaResponse {
@@ -470,6 +489,12 @@ async fn validate_delta_request(request: &DeltaRequest) -> Result<SessionBinding
 #[cfg(test)]
 mod tests {
     use crate::recall::render::render_delta_item;
+    use crate::recall::{build_delta_response, DeltaRequest};
+    use memory_substrate::{
+        Author, AuthorKind, ClassificationOutcome, EventContext, Frontmatter, Memory, MemoryId, MemoryStatus,
+        MemoryType, RepoPath, RetrievalPolicy, Roots, Scope, Sensitivity, Source, SourceKind, Substrate, TrustLevel,
+        WriteMode, WritePolicy, WriteRequest,
+    };
 
     #[test]
     fn delta_item_escapes_id_as_xml_attribute() {
@@ -478,5 +503,171 @@ mod tests {
         assert!(rendered.contains("id=\"mem&quot; onclick=&quot;evil\""));
         assert!(rendered.contains("safe &lt;text&gt;"));
         assert!(!rendered.contains("onclick=\"evil"));
+    }
+
+    #[tokio::test]
+    async fn passive_delta_leaves_store_byte_unchanged_while_active_delta_writes() {
+        let fixture = DeltaFixture::new("dev_passivedelta").await;
+        // A distinctive token in the body so the delta message matches via FTS.
+        fixture.write_memory("mem_20260619_aaaaaaaaaaaaaaaa_000001", "passivedeltaneedle recall body fact").await;
+
+        let before = fixture.snapshot();
+        let passive = fixture.delta("passivedeltaneedle", true).await;
+        assert!(!passive.delta_block.is_empty());
+        let after_passive = fixture.snapshot();
+        assert_eq!(before, after_passive, "passive delta must not mutate any on-disk store state");
+
+        // Teeth: the active path records RecallHit events for matched items.
+        let active = fixture.delta("passivedeltaneedle", false).await;
+        assert!(active.delta_block.contains("mem_20260619_aaaaaaaaaaaaaaaa_000001"));
+        let after_active = fixture.snapshot();
+        assert_ne!(before, after_active, "active delta recall is expected to append RecallHit events");
+    }
+
+    struct DeltaFixture {
+        _temp: tempfile::TempDir,
+        roots: Roots,
+        substrate: Substrate,
+    }
+
+    impl DeltaFixture {
+        async fn new(device_id: &str) -> Self {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+            let substrate = Substrate::init(
+                roots.clone(),
+                memory_substrate::InitOptions { force_unsafe_durability: true, device_id: Some(device_id.to_owned()) },
+            )
+            .await
+            .expect("substrate init");
+            Self { _temp: temp, roots, substrate }
+        }
+
+        async fn delta(&self, message: &str, passive: bool) -> crate::recall::DeltaResponse {
+            build_delta_response(
+                &self.substrate,
+                DeltaRequest {
+                    cwd: self.roots.repo.to_string_lossy().into_owned(),
+                    session_id: "sess_delta".to_owned(),
+                    harness: "claude-code".to_owned(),
+                    message: message.to_owned(),
+                    budget_tokens: None,
+                    passive,
+                },
+            )
+            .await
+            .expect("delta recall")
+        }
+
+        async fn write_memory(&self, id: &str, body: &str) {
+            let updated_at = chrono::Utc::now();
+            let memory = Memory {
+                frontmatter: Frontmatter {
+                    schema_version: 1,
+                    id: MemoryId::new(id),
+                    memory_type: MemoryType::Pattern,
+                    scope: Scope::User,
+                    summary: body.to_owned(),
+                    confidence: 0.8,
+                    original_confidence: None,
+                    trust_level: TrustLevel::Trusted,
+                    sensitivity: Sensitivity::Internal,
+                    status: MemoryStatus::Active,
+                    created_at: updated_at,
+                    updated_at,
+                    observed_at: None,
+                    author: Author {
+                        kind: AuthorKind::Agent,
+                        user_handle: None,
+                        harness: Some("claude-code".to_owned()),
+                        harness_version: None,
+                        session_id: Some("sess_seed".to_owned()),
+                        subagent_id: None,
+                        phase: None,
+                        component: Some("passive-delta-test".to_owned()),
+                    },
+                    namespace: None,
+                    canonical_namespace_id: None,
+                    tags: Vec::new(),
+                    entities: Vec::new(),
+                    aliases: Vec::new(),
+                    source: Source {
+                        kind: SourceKind::AgentPrimary,
+                        reference: None,
+                        harness: Some("claude-code".to_owned()),
+                        harness_version: None,
+                        session_id: Some("sess_seed".to_owned()),
+                        subagent_id: None,
+                        device: None,
+                    },
+                    evidence: Vec::new(),
+                    requires_user_confirmation: false,
+                    review_state: None,
+                    supersedes: Vec::new(),
+                    superseded_by: Vec::new(),
+                    related: Vec::new(),
+                    tombstone_events: Vec::new(),
+                    retrieval_policy: RetrievalPolicy {
+                        passive_recall: true,
+                        max_scope: Scope::User,
+                        mask_personal_for_synthesis: false,
+                        index_body: true,
+                        index_embeddings: false,
+                    },
+                    write_policy: WritePolicy {
+                        human_review_required: false,
+                        policy_applied: "passive-delta-test".to_owned(),
+                        expected_base_hash: None,
+                    },
+                    merge_diagnostics: None,
+                    extras: Default::default(),
+                },
+                body: body.to_owned(),
+                path: Some(RepoPath::new(format!("me/{id}.md"))),
+            };
+            self.substrate
+                .write_memory(WriteRequest {
+                    operation_id: None,
+                    memory,
+                    expected_base_hash: None,
+                    write_mode: WriteMode::CreateNew,
+                    index_projection: None,
+                    event_context: EventContext::default(),
+                    allow_best_effort_durability: true,
+                    classification: ClassificationOutcome::Trusted,
+                })
+                .await
+                .expect("write memory");
+        }
+
+        /// Digest of the canonical store state (event JSONL log, memory markdown,
+        /// runtime `state/` markers) that read-only recall must not touch. Git
+        /// plumbing and the derived SQLite index sidecars are volatile and excluded.
+        fn snapshot(&self) -> Vec<(String, Vec<u8>)> {
+            let mut entries = Vec::new();
+            for root in [&self.roots.repo, &self.roots.runtime] {
+                for entry in walkdir::WalkDir::new(root).sort_by_file_name() {
+                    let entry = entry.expect("walk store");
+                    if !entry.file_type().is_file() {
+                        continue;
+                    }
+                    let rel = entry.path().strip_prefix(root).unwrap_or(entry.path()).to_string_lossy().into_owned();
+                    if rel.starts_with(".git/") {
+                        continue;
+                    }
+                    let is_canonical = rel.starts_with("events/")
+                        || rel.ends_with(".md")
+                        || rel.contains("/state/")
+                        || rel.starts_with("state/");
+                    if !is_canonical {
+                        continue;
+                    }
+                    let bytes = std::fs::read(entry.path()).expect("read store file");
+                    entries.push((format!("{}:{rel}", root.display()), bytes));
+                }
+            }
+            entries.sort();
+            entries
+        }
     }
 }

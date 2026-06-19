@@ -19,9 +19,9 @@ use crate::socket::{
 };
 
 use super::{
-    DaemonStrategy, HarnessDetection, HarnessSelection, HarnessTarget, McpServerSpec, NonGitCwdDecision, SetupEngine,
-    SetupIo, SetupPlan, SetupReport, SetupStep, SetupStepReport, SetupStepStatus, VerifyDetail, WireMcpSelection,
-    WireMode, WireOutcome, WireStatus,
+    DaemonStrategy, HarnessDetection, HarnessSelection, HarnessTarget, HookSpec, HookWireOutcome, HookWireStatus,
+    McpServerSpec, NonGitCwdDecision, SetupEngine, SetupIo, SetupPlan, SetupReport, SetupStep, SetupStepReport,
+    SetupStepStatus, VerifyDetail, WireHooksSelection, WireMcpSelection, WireMode, WireOutcome, WireStatus,
 };
 
 pub(crate) async fn run_all(engine: &SetupEngine, plan: &SetupPlan, io: &mut dyn SetupIo, report: &mut SetupReport) {
@@ -51,6 +51,10 @@ async fn run_all_with_runtime<R: SetupStepRuntime>(
     report.restart_required |= wire.restart_required;
     push_completion(report, wire.completion, io);
 
+    let hooks = wire_hooks_step(engine, plan, runtime);
+    report.restart_required |= hooks.restart_required;
+    push_completion(report, hooks.completion, io);
+
     push_completion(report, verify_step(engine, plan, runtime).await, io);
 }
 
@@ -69,6 +73,8 @@ trait SetupStepRuntime {
     ) -> Result<ExecuteResult, String>;
 
     fn wire_mcp(&mut self, target: HarnessTarget, spec: &McpServerSpec, mode: WireMode) -> Result<WireOutcome, String>;
+
+    fn wire_hooks(&mut self, spec: &HookSpec, mode: WireMode) -> Result<HookWireOutcome, String>;
 
     async fn status_request(&mut self, socket: &Path) -> Result<ResponseEnvelope, String>;
 
@@ -134,6 +140,10 @@ impl SetupStepRuntime for SystemSetupRuntime {
 
     fn wire_mcp(&mut self, target: HarnessTarget, spec: &McpServerSpec, mode: WireMode) -> Result<WireOutcome, String> {
         super::wire(target, spec, mode).map_err(|error| error.to_string())
+    }
+
+    fn wire_hooks(&mut self, spec: &HookSpec, mode: WireMode) -> Result<HookWireOutcome, String> {
+        super::wire_hooks(spec, mode).map_err(|error| error.to_string())
     }
 
     async fn status_request(&mut self, socket: &Path) -> Result<ResponseEnvelope, String> {
@@ -274,6 +284,46 @@ fn wire_mcp_step<R: SetupStepRuntime>(engine: &SetupEngine, plan: &SetupPlan, ru
     let outcomes = targets.into_iter().map(|target| runtime.wire_mcp(target, &spec, mode)).collect::<Vec<_>>();
 
     wire_outcome_summary(outcomes)
+}
+
+/// Install the passive-recall lifecycle hooks into the selected harness
+/// config(s). Runs after `wire_mcp` and before `verify`. The installed command
+/// resolves the running `memoryd` via `current_exe()` so an upgrade never pins
+/// an older binary.
+fn wire_hooks_step<R: SetupStepRuntime>(engine: &SetupEngine, plan: &SetupPlan, runtime: &mut R) -> WireStepOutcome {
+    let targets = match selected_hook_targets(plan) {
+        SelectedWireTargets::Run(targets) => targets,
+        SelectedWireTargets::Skip(message) => {
+            return WireStepOutcome::without_restart(StepCompletion::skipped(SetupStep::WireHooks, message));
+        }
+        SelectedWireTargets::Failed(message) => {
+            return WireStepOutcome::without_restart(StepCompletion::failed(SetupStep::WireHooks, message));
+        }
+    };
+
+    let (exe, socket) = match hook_command_paths(plan) {
+        Ok(paths) => paths,
+        Err(message) => return WireStepOutcome::without_restart(StepCompletion::failed(SetupStep::WireHooks, message)),
+    };
+    let mode = if plan.decisions.print_only { WireMode::PrintOnly } else { WireMode::Apply };
+    let outcomes = targets
+        .into_iter()
+        .map(|target| runtime.wire_hooks(&HookSpec::new(exe.clone(), socket.clone(), target), mode))
+        .collect::<Vec<_>>();
+    let _ = engine;
+
+    hook_outcome_summary(outcomes)
+}
+
+/// Resolve the running `memoryd` binary and the absolute daemon socket for the
+/// installed hook command. The exe comes from `current_exe()` (never a PATH
+/// lookup, which could pin an older binary); the socket is made absolute and
+/// rejects a literal `~` exactly like the MCP spec.
+fn hook_command_paths(plan: &SetupPlan) -> Result<(PathBuf, PathBuf), String> {
+    let exe =
+        std::env::current_exe().map_err(|error| format!("could not resolve the running memoryd binary: {error}"))?;
+    let socket = absolute_path(&plan.detection.daemon.socket_path)?;
+    Ok((exe, socket))
 }
 
 async fn verify_step<R: SetupStepRuntime>(engine: &SetupEngine, plan: &SetupPlan, runtime: &mut R) -> StepCompletion {
@@ -600,6 +650,30 @@ where
     }
 }
 
+fn selected_hook_targets(plan: &SetupPlan) -> SelectedWireTargets {
+    selected_hook_targets_with_env(plan, |name| std::env::var_os(name))
+}
+
+fn selected_hook_targets_with_env<F>(plan: &SetupPlan, env: F) -> SelectedWireTargets
+where
+    F: FnMut(&str) -> Option<OsString>,
+{
+    match plan.decisions.wire_hooks {
+        WireHooksSelection::None => {
+            SelectedWireTargets::Skip("--wire-hooks none was chosen; hook wiring skipped".to_string())
+        }
+        WireHooksSelection::Claude => SelectedWireTargets::Run(vec![HarnessTarget::Claude]),
+        WireHooksSelection::Codex => SelectedWireTargets::Run(vec![HarnessTarget::Codex]),
+        WireHooksSelection::All => SelectedWireTargets::Run(vec![HarnessTarget::Claude, HarnessTarget::Codex]),
+        WireHooksSelection::Current => {
+            match resolve_current_harness(plan, env, "--wire-hooks", "--wire-hooks claude|codex|all") {
+                Ok(target) => SelectedWireTargets::Run(vec![target]),
+                Err(message) => SelectedWireTargets::Failed(message),
+            }
+        }
+    }
+}
+
 fn resolve_current_harness<F>(
     plan: &SetupPlan,
     mut env: F,
@@ -755,6 +829,51 @@ fn wire_outcome_summary(outcomes: Vec<Result<WireOutcome, String>>) -> WireStepO
     WireStepOutcome { completion, restart_required }
 }
 
+/// Summarize per-harness hook wiring outcomes into one step completion. Mutating
+/// statuses (`Wired`/`Updated`) set `restart_required` so the harness reloads
+/// config; the Codex trust notice rides along in each Codex outcome's message so
+/// the operator sees the `/hooks` follow-up verbatim.
+fn hook_outcome_summary(outcomes: Vec<Result<HookWireOutcome, String>>) -> WireStepOutcome {
+    let mut messages = Vec::new();
+    let mut failed = false;
+    let mut restart_required = false;
+
+    for outcome in outcomes {
+        match outcome {
+            Ok(outcome) => {
+                restart_required |= matches!(outcome.status, HookWireStatus::Wired | HookWireStatus::Updated);
+                let line = hook_report_line(outcome.target, outcome.status);
+                match outcome.message {
+                    Some(detail) => messages.push(format!("{line} ({detail})")),
+                    None => messages.push(line),
+                }
+            }
+            Err(message) => {
+                failed = true;
+                messages.push(message);
+            }
+        }
+    }
+
+    let message = messages.join("; ");
+    let completion = if failed {
+        StepCompletion::failed(SetupStep::WireHooks, message)
+    } else {
+        StepCompletion::succeeded(SetupStep::WireHooks, message)
+    };
+    WireStepOutcome { completion, restart_required }
+}
+
+fn hook_report_line(target: HarnessTarget, status: HookWireStatus) -> String {
+    let status_text = match status {
+        HookWireStatus::Wired => "hooks wired",
+        HookWireStatus::Updated => "hooks updated",
+        HookWireStatus::AlreadyCurrent => "hooks already current",
+        HookWireStatus::Skipped => "hooks skipped",
+    };
+    format!("{target:?}: {status_text}")
+}
+
 fn push_completion(report: &mut SetupReport, completion: StepCompletion, io: &mut dyn SetupIo) {
     if matches!(completion.status, SetupStepStatus::Expected | SetupStepStatus::Failed) {
         let _ = io.note(&completion.message);
@@ -871,8 +990,14 @@ mod tests {
     #[tokio::test]
     async fn ensure_repo_initializes_real_substrate_idempotently() {
         let fixture = SetupFixture::new("repo-idempotent");
-        let decisions =
-            SetupDecisions { daemon: DaemonStrategy::None, wire_mcp: WireMcpSelection::None, ..Default::default() };
+        // This test drives the real `SystemSetupRuntime`, so pin both wiring
+        // selections to `None` to keep it off the developer's real config files.
+        let decisions = SetupDecisions {
+            daemon: DaemonStrategy::None,
+            wire_mcp: WireMcpSelection::None,
+            wire_hooks: WireHooksSelection::None,
+            ..Default::default()
+        };
         let mut first_io = FlagDrivenIo::new(decisions.clone());
         let mut second_io = FlagDrivenIo::new(decisions);
         let engine = fixture.engine();
@@ -895,8 +1020,14 @@ mod tests {
     #[tokio::test]
     async fn on_demand_dead_socket_is_expected_not_failed() {
         let fixture = SetupFixture::new("on-demand-dead-socket");
-        let decisions =
-            SetupDecisions { daemon: DaemonStrategy::OnDemand, wire_mcp: WireMcpSelection::None, ..Default::default() };
+        // Real `SystemSetupRuntime` path: pin both wiring selections to `None` so
+        // the test never mutates the developer's real Claude/Codex config.
+        let decisions = SetupDecisions {
+            daemon: DaemonStrategy::OnDemand,
+            wire_mcp: WireMcpSelection::None,
+            wire_hooks: WireHooksSelection::None,
+            ..Default::default()
+        };
         let mut io = FlagDrivenIo::new(decisions);
 
         let report = fixture
@@ -1259,6 +1390,7 @@ mod tests {
     struct ScriptedRuntime {
         import_calls: usize,
         wire_calls: usize,
+        hook_calls: usize,
         background_calls: usize,
         launchd_calls: usize,
         import_error: Option<String>,
@@ -1338,6 +1470,15 @@ mod tests {
         ) -> Result<WireOutcome, String> {
             self.wire_calls += 1;
             Ok(WireOutcome { target, status: WireStatus::Wired, message: Some("wired by test".to_string()) })
+        }
+
+        fn wire_hooks(&mut self, spec: &HookSpec, _mode: WireMode) -> Result<HookWireOutcome, String> {
+            self.hook_calls += 1;
+            Ok(HookWireOutcome {
+                target: spec.harness,
+                status: HookWireStatus::Wired,
+                message: Some("hooks wired by test".to_string()),
+            })
         }
 
         async fn status_request(&mut self, socket: &Path) -> Result<ResponseEnvelope, String> {
@@ -1503,17 +1644,18 @@ mod tests {
     }
 
     /// `init` step ordering: `ensure_repo` → `run_import` → `ensure_daemon` →
-    /// `wire_mcp` → `verify`. This pins the new order introduced by finding 8:
-    /// the import's transient daemon must reap before the persistent daemon binds
-    /// so they never compete for the socket.
+    /// `wire_mcp` → `wire_hooks` → `verify`. This pins the order: the import's
+    /// transient daemon reaps before the persistent daemon binds (finding 8), and
+    /// hook wiring lands after MCP wiring but before the verify probe.
     #[tokio::test]
-    async fn run_all_step_order_is_repo_import_daemon_wire_verify() {
+    async fn run_all_step_order_is_repo_import_daemon_wire_hooks_verify() {
         let fixture = SetupFixture::new("step-order");
         let decisions = SetupDecisions {
             daemon: DaemonStrategy::None,
             import_memories: true,
             harnesses: HarnessSelection::All,
             wire_mcp: WireMcpSelection::None,
+            wire_hooks: WireHooksSelection::All,
             ..Default::default()
         };
         let mut io = FlagDrivenIo::new(decisions);
@@ -1527,7 +1669,7 @@ mod tests {
         run_all_with_runtime(&fixture.engine(), &plan, &mut io, &mut report, &mut runtime).await;
 
         let order: Vec<_> = report.steps.iter().map(|s| s.step).collect();
-        // Detect was prepended above; the remaining four must be in this order.
+        // Detect was prepended above; the remaining steps must be in this order.
         let tail: Vec<_> = order.into_iter().skip_while(|s| *s != SetupStep::EnsureRepo).collect();
         assert_eq!(
             tail,
@@ -1536,10 +1678,72 @@ mod tests {
                 SetupStep::Import,
                 SetupStep::EnsureDaemon,
                 SetupStep::WireMcp,
+                SetupStep::WireHooks,
                 SetupStep::Verify,
             ],
-            "step order must be EnsureRepo → Import → EnsureDaemon → WireMcp → Verify"
+            "step order must be EnsureRepo → Import → EnsureDaemon → WireMcp → WireHooks → Verify"
         );
+        assert!(report.steps.iter().any(|s| s.step == SetupStep::WireHooks), "WireHooks step present");
+    }
+
+    /// `--wire-hooks none` skips the hook step entirely.
+    #[tokio::test]
+    async fn wire_hooks_none_reports_skipped() {
+        let fixture = SetupFixture::new("hooks-none");
+        let decisions = SetupDecisions {
+            daemon: DaemonStrategy::None,
+            wire_mcp: WireMcpSelection::None,
+            wire_hooks: WireHooksSelection::None,
+            ..Default::default()
+        };
+        let mut io = FlagDrivenIo::new(decisions);
+        let mut runtime = ScriptedRuntime::default();
+        let detection = crate::setup::SetupDetection::run_with_options(fixture.detection_options()).expect("detect");
+        let decisions = crate::setup::collect_setup_decisions(&mut io, &detection).expect("decisions");
+        let plan = SetupPlan { detection: detection.clone(), decisions: decisions.clone() };
+        let mut report = SetupReport::new(detection, decisions);
+        report.push_step(SetupStepReport::new(SetupStep::Detect, SetupStepStatus::Succeeded));
+
+        run_all_with_runtime(&fixture.engine(), &plan, &mut io, &mut report, &mut runtime).await;
+
+        assert_eq!(runtime.hook_calls, 0, "wire_hooks none must not call the runtime");
+        assert_step(&report, SetupStep::WireHooks, SetupStepStatus::Skipped);
+    }
+
+    /// A full setup run carries the bumped report `schema_version`.
+    #[tokio::test]
+    async fn setup_report_schema_version_is_two() {
+        let fixture = SetupFixture::new("schema-v2");
+        let decisions = SetupDecisions {
+            daemon: DaemonStrategy::None,
+            wire_mcp: WireMcpSelection::None,
+            wire_hooks: WireHooksSelection::None,
+            ..Default::default()
+        };
+        let mut io = FlagDrivenIo::new(decisions);
+        let report =
+            fixture.engine().run_with_options(&mut io, fixture.detection_options()).await.expect("setup run succeeds");
+        assert_eq!(report.schema_version, 2, "report schema bumped to 2 alongside the WireHooks step");
+    }
+
+    #[test]
+    fn selected_hook_targets_map_each_selection() {
+        let plan = selection_plan(HarnessSelection::Current, WireMcpSelection::Current, true, false);
+        let plan =
+            SetupPlan { decisions: SetupDecisions { wire_hooks: WireHooksSelection::All, ..plan.decisions }, ..plan };
+        match selected_hook_targets_with_env(&plan, fake_env(&[])) {
+            SelectedWireTargets::Run(targets) => {
+                assert_eq!(targets, vec![HarnessTarget::Claude, HarnessTarget::Codex])
+            }
+            other => panic!("expected both targets, got {}", selected_wire_debug(&other)),
+        }
+
+        let none_plan =
+            SetupPlan { decisions: SetupDecisions { wire_hooks: WireHooksSelection::None, ..plan.decisions }, ..plan };
+        match selected_hook_targets_with_env(&none_plan, fake_env(&[])) {
+            SelectedWireTargets::Skip(message) => assert!(message.contains("--wire-hooks none")),
+            other => panic!("expected skip, got {}", selected_wire_debug(&other)),
+        }
     }
 
     #[test]

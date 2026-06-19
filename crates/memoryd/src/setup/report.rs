@@ -21,7 +21,9 @@ pub struct SetupReport {
 impl SetupReport {
     pub fn new(detection: SetupDetection, decisions: SetupDecisions) -> Self {
         Self {
-            schema_version: 1,
+            // Schema 2 adds the `wire_hooks` step alongside the existing
+            // `SetupStep::WireHooks` variant (passive-recall hook installer).
+            schema_version: 2,
             detection,
             decisions,
             steps: Vec::new(),

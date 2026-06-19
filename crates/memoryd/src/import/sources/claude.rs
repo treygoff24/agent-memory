@@ -33,6 +33,97 @@ use crate::import::{ImportError, ImportResult};
 const BOILERPLATE_HEADINGS: &[&str] =
     &["why", "how to apply", "how", "when", "why this matters", "references", "links", "context"];
 
+/// Provenance tag stamped into every imported candidate's `frontmatter_hint`.
+/// The import dir *is* the harness's native auto-memory store, so everything
+/// the importer reads is harness-authored auto-memory rather than a
+/// hand-curated note. Downstream ranking uses this to keep imported candidates
+/// below human-authored memory (see [`AUTO_MEMORY_CONFIDENCE`]).
+pub(super) const AUTO_MEMORY_PROVENANCE: &str = "harness-auto-memory";
+
+/// Confidence stamped into imported candidates so recall ranking favors
+/// human-authored content. Below the hand-written baseline (`0.85`) yet above
+/// the Reality Check review floor — same intent the pipeline already encodes,
+/// surfaced here per-candidate so the provenance signal is self-describing.
+pub(super) const AUTO_MEMORY_CONFIDENCE: f64 = 0.7;
+
+/// Memorum recall-block opening markers. The import dir doubles as the
+/// harness's native auto-memory store, and passive recall injects these blocks
+/// into sessions; a harness can write that injected text back into its store,
+/// which the importer would otherwise re-ingest as a fresh user memory — a
+/// re-ingestion loop. These XML-ish wrappers are emitted only by Stream E's
+/// renderer (`recall/render.rs`), never by a hand-written note, so matching a
+/// line that opens one of them is a robust, conservative re-import signal.
+const MEMORUM_BLOCK_OPENERS: &[&str] = &["<memory-recall", "<memory-delta", "<recall-explanation"];
+
+/// Strip Memorum recall blocks out of `body`, returning the surviving content.
+///
+/// Memorum-emitted blocks are bounded XML-ish regions: an opening marker line
+/// (`<memory-recall …>`, `<memory-delta …>`, `<recall-explanation …>`, or the
+/// self-closing `<memory-delta empty="true" />`) through the matching closing
+/// tag on its own line. We drop every line from an opener to its closer
+/// inclusive; a self-closing opener drops just that line. Conservatism: only
+/// lines that *begin* (after trimming leading whitespace) with one of the
+/// known wrapper markers start a skip, so ordinary prose that merely mentions
+/// the word "memory" survives untouched. An unterminated opener (truncated
+/// paste) drops to end-of-input, since the remainder is Memorum tail, not a
+/// user note.
+pub(super) fn strip_memorum_recall_blocks(body: &str) -> String {
+    let mut kept: Vec<&str> = Vec::new();
+    let mut skipping_until: Option<&'static str> = None;
+    for line in body.lines() {
+        let trimmed = line.trim_start();
+        if let Some(closer) = skipping_until {
+            if line.trim_start().starts_with(closer) {
+                skipping_until = None;
+            }
+            continue;
+        }
+        if let Some(closer) = memorum_block_closer(trimmed) {
+            // A self-closing opener (`closer` empty) is a single dropped line;
+            // a paired opener begins a skip run until its closing tag.
+            if !closer.is_empty() {
+                skipping_until = Some(closer);
+            }
+            continue;
+        }
+        kept.push(line);
+    }
+    kept.join("\n")
+}
+
+/// If `trimmed` opens a Memorum recall block, return the closing tag to skip to
+/// (`""` for a self-closing opener that needs no closer). Returns `None` for an
+/// ordinary line.
+fn memorum_block_closer(trimmed: &str) -> Option<&'static str> {
+    if !MEMORUM_BLOCK_OPENERS.iter().any(|opener| trimmed.starts_with(opener)) {
+        return None;
+    }
+    // A self-closing tag (`… />`) carries its own terminator; nothing to skip to.
+    if trimmed.ends_with("/>") {
+        return Some("");
+    }
+    if trimmed.starts_with("<memory-recall") {
+        Some("</memory-recall>")
+    } else if trimmed.starts_with("<memory-delta") {
+        Some("</memory-delta>")
+    } else {
+        Some("</recall-explanation>")
+    }
+}
+
+/// Stamp the auto-memory provenance + confidence hints onto a candidate's
+/// `frontmatter_hint`. Both Claude and Codex sources read from native
+/// auto-memory stores, so both call this. Existing author-supplied keys win:
+/// if a memory already declares its own `confidence`/`source_provenance`, we
+/// don't clobber it. The downstream pipeline reads these to keep imported
+/// candidates below human-authored memory in recall ranking.
+pub(super) fn stamp_auto_memory_provenance(frontmatter_hint: &mut BTreeMap<String, Value>) {
+    frontmatter_hint
+        .entry("source_provenance".to_string())
+        .or_insert_with(|| Value::String(AUTO_MEMORY_PROVENANCE.to_string()));
+    frontmatter_hint.entry("confidence".to_string()).or_insert_with(|| Value::from(AUTO_MEMORY_CONFIDENCE));
+}
+
 /// Output bundle for a Claude memory root parse. `candidates` carries the
 /// successful parses; `errors` carries per-file failures so the import report
 /// can surface them without aborting the whole import; `recovered` carries the
@@ -132,7 +223,16 @@ fn parse_topic_file(path: &Path, root: &Path) -> ImportResult<TopicParse> {
         Err(ImportError::Parse { .. }) => (lenient_frontmatter_hint(&frontmatter), true),
         Err(other) => return Err(other),
     };
+    // Drop any Memorum recall blocks a harness may have written back into its
+    // native store before parsing — they are our own injected text, not a fresh
+    // user memory, and re-ingesting them would amplify a re-ingestion loop.
+    let body = strip_memorum_recall_blocks(&body);
     let body = body.trim_end_matches('\n').to_string();
+    // A topic file that was *entirely* a pasted Memorum block leaves nothing
+    // behind; emit no candidate rather than a hollow one.
+    if body.trim().is_empty() {
+        return Ok(TopicParse { memories: Vec::new(), recovered });
+    }
     let cwd = cwd_from_encoded_path(path, root);
     let title = frontmatter_hint.get("name").and_then(Value::as_str).map(str::to_string);
     let sections = collect_substantive_sections(&body);
@@ -166,7 +266,8 @@ struct ClaudeCandidateInput<'a> {
 }
 
 fn build_memory(input: ClaudeCandidateInput<'_>) -> ParsedMemory {
-    let ClaudeCandidateInput { source_key, path, cwd, title, frontmatter_hint, body } = input;
+    let ClaudeCandidateInput { source_key, path, cwd, title, mut frontmatter_hint, body } = input;
+    stamp_auto_memory_provenance(&mut frontmatter_hint);
     let wiki_links = extract_wiki_links(&body);
     let content_hash = ParsedMemory::compute_content_hash(&frontmatter_hint, &body);
     ParsedMemory {
@@ -825,4 +926,135 @@ Promote to prod.\n";
             out.candidates.iter().map(|c| &c.source_key).collect::<Vec<_>>(),
         );
     }
+
+    #[test]
+    fn pasted_memorum_recall_block_is_skipped_user_note_survives() {
+        // Passive recall injects a `<memory-recall>` base block into the session;
+        // a harness can write that injected text back into its native store
+        // alongside a genuine user note. The importer must drop the recall block
+        // (our own emitted content) but keep the user note.
+        let tmp = tempfile::tempdir().expect("tmp");
+        let body = b"---\nname: Project notes\ntype: reference\n---\n\
+The deploy script lives in scripts/deploy.sh and needs the prod token.\n\
+\n\
+<memory-recall version=\"stream-e/v1\" harness=\"claude-code\" session=\"abc\">\n\
+  <project-state>\n\
+    <memory ref=\"mem_1\" updated=\"2026-06-19\" source=\"import\" confidence=\"0.7\">\n\
+      <summary>injected recall summary</summary>\n\
+      <snippet>injected recall snippet that must not be re-imported</snippet>\n\
+    </memory>\n\
+  </project-state>\n\
+  <recall-explanation policy=\"stream-e/v1\" budget-tokens=\"1800\" used-tokens=\"42\">\n\
+    explanation text\n\
+  </recall-explanation>\n\
+</memory-recall>\n\
+\n\
+Always run the migration before deploying.\n";
+        write_fixture(tmp.path(), "-Users-u-x/memory/notes.md", body);
+        let out = run(tmp.path());
+        assert_eq!(out.candidates.len(), 1, "one candidate from the file");
+        let candidate = &out.candidates[0];
+        assert!(
+            candidate.body.contains("scripts/deploy.sh"),
+            "user note before the block survives: {:?}",
+            candidate.body
+        );
+        assert!(
+            candidate.body.contains("Always run the migration before deploying."),
+            "user note after the block survives: {:?}",
+            candidate.body,
+        );
+        assert!(
+            !candidate.body.contains("injected recall snippet"),
+            "Memorum recall snippet must be stripped: {:?}",
+            candidate.body,
+        );
+        assert!(!candidate.body.contains("<memory-recall"), "no recall wrapper survives: {:?}", candidate.body);
+        assert!(
+            !candidate.body.contains("<recall-explanation"),
+            "no explanation fragment survives: {:?}",
+            candidate.body
+        );
+    }
+
+    #[test]
+    fn file_that_is_entirely_a_memorum_block_yields_no_candidate() {
+        // A topic file that is *only* a pasted recall block (no real user note)
+        // strips down to nothing and must not produce a hollow candidate.
+        let tmp = tempfile::tempdir().expect("tmp");
+        let body = b"---\nname: Pasted\ntype: reference\n---\n\
+<memory-delta>\n\
+  <item id=\"d1\">delta recall text that was written back</item>\n\
+</memory-delta>\n";
+        write_fixture(tmp.path(), "-Users-u-x/memory/pasted.md", body);
+        let out = run(tmp.path());
+        assert!(out.candidates.is_empty(), "pure-recall-block file yields no candidate: {:?}", out.candidates);
+        assert!(out.errors.is_empty(), "stripping a recall block is not an error: {:?}", out.errors);
+    }
+
+    #[test]
+    fn empty_delta_sentinel_is_stripped() {
+        // The self-closing `<memory-delta empty="true" />` sentinel is a single
+        // line drop — it must not leave a stray fragment in the body.
+        let tmp = tempfile::tempdir().expect("tmp");
+        let body = b"---\nname: With sentinel\ntype: reference\n---\n\
+A real fact worth keeping.\n\
+<memory-delta empty=\"true\" />\n\
+Another real fact.\n";
+        write_fixture(tmp.path(), "-Users-u-x/memory/sentinel.md", body);
+        let out = run(tmp.path());
+        assert_eq!(out.candidates.len(), 1);
+        let candidate = &out.candidates[0];
+        assert!(candidate.body.contains("A real fact worth keeping."), "body: {:?}", candidate.body);
+        assert!(candidate.body.contains("Another real fact."), "body: {:?}", candidate.body);
+        assert!(!candidate.body.contains("memory-delta"), "sentinel stripped: {:?}", candidate.body);
+    }
+
+    #[test]
+    fn prose_mentioning_memory_is_not_stripped() {
+        // Conservatism: a user note that merely discusses memory in prose — not
+        // opening a Memorum wrapper tag — must survive untouched.
+        let tmp = tempfile::tempdir().expect("tmp");
+        let body = b"---\nname: Prose\ntype: reference\n---\n\
+The memory subsystem records a recall block on each turn.\n\
+We discussed memory-delta semantics in the design review.\n";
+        write_fixture(tmp.path(), "-Users-u-x/memory/prose.md", body);
+        let out = run(tmp.path());
+        assert_eq!(out.candidates.len(), 1);
+        let candidate = &out.candidates[0];
+        assert!(candidate.body.contains("records a recall block"), "prose survives: {:?}", candidate.body);
+        assert!(candidate.body.contains("memory-delta semantics"), "inline mention survives: {:?}", candidate.body);
+    }
+
+    #[test]
+    fn imported_candidate_carries_auto_memory_provenance_and_confidence() {
+        // The import dir is the native auto-memory store, so every imported
+        // candidate is harness-authored auto-memory; it must carry the
+        // provenance tag and a confidence below the hand-written baseline so
+        // recall ranking favors human-authored memory.
+        let tmp = tempfile::tempdir().expect("tmp");
+        write_fixture(
+            tmp.path(),
+            "-Users-u-x/memory/fact.md",
+            b"---\nname: A fact\ntype: reference\n---\nAuto-memory body.\n",
+        );
+        let out = run(tmp.path());
+        assert_eq!(out.candidates.len(), 1);
+        let hint = &out.candidates[0].frontmatter_hint;
+        assert_eq!(
+            hint.get("source_provenance").and_then(Value::as_str),
+            Some(AUTO_MEMORY_PROVENANCE),
+            "auto-memory provenance stamped: {hint:?}",
+        );
+        let confidence = hint.get("confidence").and_then(Value::as_f64).expect("confidence present");
+        assert!(
+            confidence < HUMAN_AUTHORED_CONFIDENCE_BASELINE,
+            "auto-memory confidence {confidence} must rank below the hand-written baseline {HUMAN_AUTHORED_CONFIDENCE_BASELINE}",
+        );
+    }
+
+    /// The hand-written memory confidence baseline the pipeline encodes
+    /// (`pipeline.rs` comment: "hand-written `0.85` memories"). Used here only
+    /// to assert the relative ordering of auto-memory vs. human-authored.
+    const HUMAN_AUTHORED_CONFIDENCE_BASELINE: f64 = 0.85;
 }

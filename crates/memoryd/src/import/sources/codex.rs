@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+use super::claude::{stamp_auto_memory_provenance, strip_memorum_recall_blocks};
 use super::{extract_wiki_links, slugify};
 use crate::import::candidate::{Harness, ParsedMemory};
 use crate::import::{ImportError, ImportResult};
@@ -58,6 +59,17 @@ fn parse_memory_md(path: &Path, output: &mut CodexParseOutput) {
         }
     };
     let blocks = split_task_groups(&text);
+    // Format-version guard: the parser keys on `# Task Group:` headers. If Codex
+    // changes its memories format, a non-empty file parses to zero task groups
+    // and the importer would silently import nothing. Surface that as a clear
+    // signal instead, routed through the report's parse-error channel.
+    if blocks.is_empty() && !text.trim().is_empty() {
+        output.errors.push(ImportError::Parse {
+            source_key: "codex:memories/MEMORY.md".to_string(),
+            reason: "Codex memories file is non-empty but produced zero task groups; the format may have changed (expected `# Task Group:` headers)".to_string(),
+        });
+        return;
+    }
     for (index, block) in blocks.into_iter().enumerate() {
         match parse_task_group_block(&block, index, path) {
             Ok(parsed) => output.candidates.push(parsed),
@@ -119,8 +131,11 @@ fn parse_task_group_block(block: &TaskGroupBlock, index: usize, source_path: &Pa
         let array: Vec<Value> = evidence_refs.iter().map(EvidenceRef::to_value).collect();
         frontmatter_hint.insert("evidence_refs".to_string(), Value::Array(array));
     }
+    stamp_auto_memory_provenance(&mut frontmatter_hint);
 
-    let body = block.body.trim().to_string();
+    // Drop any Memorum recall blocks written back into the task-group body
+    // before hashing — re-ingesting our own injected text amplifies a loop.
+    let body = strip_memorum_recall_blocks(block.body.trim()).trim().to_string();
     let wiki_links = extract_wiki_links(&body);
     let content_hash = ParsedMemory::compute_content_hash(&frontmatter_hint, &body);
     Ok(ParsedMemory {
@@ -167,10 +182,13 @@ fn parse_ad_hoc_note(path: &Path) -> ImportResult<ParsedMemory> {
     let filename = path.file_name().and_then(std::ffi::OsStr::to_str).unwrap_or("note");
     let source_key = format!("codex:memories/extensions/ad_hoc/notes/{filename}");
     let raw = std::fs::read(path).map_err(|error| ImportError::io(path, error))?;
-    let body = std::str::from_utf8(&raw)
+    let raw_body = std::str::from_utf8(&raw)
         .map_err(|error| ImportError::Encoding { source_key: source_key.clone(), reason: error.to_string() })?
-        .trim()
-        .to_string();
+        .trim();
+    // Drop any Memorum recall blocks pasted into the note — re-ingesting our own
+    // injected text amplifies a loop. A note that was *entirely* such a block
+    // strips to empty and is treated the same as an empty note.
+    let body = strip_memorum_recall_blocks(raw_body).trim().to_string();
     if body.is_empty() {
         return Err(ImportError::Parse { source_key: source_key.clone(), reason: "ad-hoc note is empty".to_string() });
     }
@@ -179,6 +197,7 @@ fn parse_ad_hoc_note(path: &Path) -> ImportResult<ParsedMemory> {
     if let Some(name) = title.clone() {
         frontmatter_hint.insert("name".to_string(), Value::String(name));
     }
+    stamp_auto_memory_provenance(&mut frontmatter_hint);
     let wiki_links = extract_wiki_links(&body);
     let content_hash = ParsedMemory::compute_content_hash(&frontmatter_hint, &body);
     Ok(ParsedMemory {
@@ -589,5 +608,116 @@ See [[Other Topic]] for details.
         let out = parse(tmp.path()).expect("parse ok");
         assert_eq!(out.candidates.len(), 1);
         assert_eq!(out.candidates[0].wiki_links, vec!["Other Topic".to_string()]);
+    }
+
+    #[test]
+    fn non_empty_memory_md_with_zero_task_groups_surfaces_format_warning() {
+        // If Codex changes its memories format, a non-empty MEMORY.md parses to
+        // zero `# Task Group:` blocks. The importer must surface a clear "format
+        // may have changed" signal rather than silently importing nothing.
+        let tmp = tempfile::tempdir().expect("tmp");
+        let body =
+            b"## Memories\n\nsome new format that has no task-group headers at all\n- bullet one\n- bullet two\n";
+        write_file(tmp.path(), "MEMORY.md", body);
+        let out = parse(tmp.path()).expect("parse ok");
+        assert!(out.candidates.is_empty(), "no candidates from an unrecognized format: {:?}", out.candidates);
+        assert!(
+            out.errors.iter().any(|e| matches!(
+                e,
+                ImportError::Parse { source_key, reason }
+                    if source_key == "codex:memories/MEMORY.md" && reason.contains("format may have changed")
+            )),
+            "format-change warning surfaced: {:?}",
+            out.errors,
+        );
+    }
+
+    #[test]
+    fn empty_memory_md_does_not_trigger_format_warning() {
+        // A whitespace-only MEMORY.md is a no-op, not a format change.
+        let tmp = tempfile::tempdir().expect("tmp");
+        write_file(tmp.path(), "MEMORY.md", b"\n   \n\t\n");
+        let out = parse(tmp.path()).expect("parse ok");
+        assert!(out.candidates.is_empty());
+        assert!(out.errors.is_empty(), "empty file is not a format change: {:?}", out.errors);
+    }
+
+    #[test]
+    fn well_formed_memory_md_does_not_trigger_format_warning() {
+        // Control: a file that does yield task groups must not be flagged.
+        let tmp = tempfile::tempdir().expect("tmp");
+        let body = b"\
+# Task Group: ok
+
+scope: a scope
+applies_to: cwd=/w; reuse_rule=cwd
+
+## Task 1: t1
+body
+";
+        write_file(tmp.path(), "MEMORY.md", body);
+        let out = parse(tmp.path()).expect("parse ok");
+        assert_eq!(out.candidates.len(), 1);
+        assert!(out.errors.is_empty(), "well-formed file is clean: {:?}", out.errors);
+    }
+
+    #[test]
+    fn memorum_recall_block_in_task_group_body_is_stripped() {
+        // A `<memory-delta>` block written back into a task group body must be
+        // dropped while the genuine task content survives.
+        let tmp = tempfile::tempdir().expect("tmp");
+        let body = b"\
+# Task Group: deploy runbook
+
+scope: how to deploy
+applies_to: cwd=/work; reuse_rule=cwd-scoped
+
+## Task 1: deploy
+Run the deploy script after the migration.
+
+<memory-delta>
+  <item id=\"d1\">injected delta recall that must not be re-imported</item>
+</memory-delta>
+
+Verify staging before promoting.
+
+### keywords
+- deploy
+";
+        write_file(tmp.path(), "MEMORY.md", body);
+        let out = parse(tmp.path()).expect("parse ok");
+        assert_eq!(out.candidates.len(), 1);
+        let candidate = &out.candidates[0];
+        assert!(candidate.body.contains("Run the deploy script"), "task content survives: {:?}", candidate.body);
+        assert!(candidate.body.contains("Verify staging"), "task content after block survives: {:?}", candidate.body);
+        assert!(!candidate.body.contains("injected delta recall"), "injected recall stripped: {:?}", candidate.body,);
+        assert!(!candidate.body.contains("<memory-delta"), "no recall wrapper survives: {:?}", candidate.body);
+    }
+
+    #[test]
+    fn imported_codex_candidate_carries_auto_memory_provenance_and_confidence() {
+        // Codex Task Groups are native auto-memory too — they must carry the
+        // provenance tag and a below-baseline confidence.
+        let tmp = tempfile::tempdir().expect("tmp");
+        let body = b"\
+# Task Group: a group
+
+scope: a scope
+applies_to: cwd=/w; reuse_rule=cwd
+
+## Task 1: t1
+body content
+";
+        write_file(tmp.path(), "MEMORY.md", body);
+        let out = parse(tmp.path()).expect("parse ok");
+        assert_eq!(out.candidates.len(), 1);
+        let hint = &out.candidates[0].frontmatter_hint;
+        assert_eq!(
+            hint.get("source_provenance").and_then(Value::as_str),
+            Some("harness-auto-memory"),
+            "auto-memory provenance stamped: {hint:?}",
+        );
+        let confidence = hint.get("confidence").and_then(Value::as_f64).expect("confidence present");
+        assert!(confidence < 0.85, "auto-memory confidence {confidence} ranks below the hand-written baseline 0.85");
     }
 }

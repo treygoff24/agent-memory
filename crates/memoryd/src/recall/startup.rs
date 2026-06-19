@@ -15,13 +15,13 @@ use crate::recall::candidates::{
     StrengthHydration,
 };
 use crate::recall::dedup_state::RecallDedupState;
-use crate::recall::dream_questions::{select_pending_attention_questions, CAP_TOTAL};
+use crate::recall::dream_questions::{select_pending_attention_questions, DreamQuestionSelection, CAP_TOTAL};
 use crate::recall::error::RecallError;
 use crate::recall::rank::{select_ranked_candidates, RankingContext};
 use crate::recall::render::{
-    emit_recall_hits, escape_xml_text, render_memory_entry, render_pending_attention_body,
-    render_startup_frame_with_cross_device_updates, CrossDeviceStartupUpdates, RecallEntry, RenderedRecallSection,
-    StartupCoordinationRender,
+    cap_passive_block, emit_recall_hits, escape_xml_text, render_memory_entry, render_memory_entry_passive,
+    render_pending_attention_body, render_startup_frame_passive, render_startup_frame_with_cross_device_updates,
+    CrossDeviceStartupUpdates, RecallEntry, RenderedRecallSection, StartupCoordinationRender,
 };
 use crate::recall::source_identity::{
     effective_coordination_level, hydrate_peer_candidate_entities, is_peer_write_row, local_device_id,
@@ -29,7 +29,7 @@ use crate::recall::source_identity::{
 };
 use crate::recall::types::{
     bounded_omissions, RecallExplanation, RecallSectionExplanation, RecallSectionName, RecallStrength, SessionBinding,
-    StartupRequest, StartupResponse, DEFAULT_STARTUP_BUDGET_TOKENS,
+    StartupRequest, StartupResponse, DEFAULT_STARTUP_BUDGET_TOKENS, HOOK_STARTUP_BUDGET_TOKENS,
 };
 use crate::recall::validate_startup_request;
 use crate::state::DaemonState;
@@ -62,7 +62,14 @@ pub async fn build_startup_response_with_coordination_config(
     coordination_config: CoordinationConfig,
     dedup_state: &RecallDedupState,
 ) -> Result<StartupResponse, RecallError> {
-    let budget_tokens = request.budget_tokens.unwrap_or(DEFAULT_STARTUP_BUDGET_TOKENS);
+    let passive = request.passive;
+    // Hook mode with no explicit budget uses the reduced startup budget so the
+    // rendered block stays under the Claude Code char cap (plan Decision 8).
+    let budget_tokens = request.budget_tokens.unwrap_or(if passive {
+        HOOK_STARTUP_BUDGET_TOKENS
+    } else {
+        DEFAULT_STARTUP_BUDGET_TOKENS
+    });
     let include_recent = request.include_recent;
     let since_event_id = request.since_event_id.clone();
     let session_binding = validate_startup_request(request).await?;
@@ -104,25 +111,47 @@ pub async fn build_startup_response_with_coordination_config(
     );
     let strengths = strength_metadata(&selected);
 
+    // Native auto-memory dedup (plan Decision 8): Claude auto-loads the head of the
+    // active project's `MEMORY.md` every session start, so a passive base block
+    // suppresses recent-memory entries already present there to avoid double
+    // injection. Read once per request and frozen, so the block stays
+    // byte-deterministic for the identity tuple (reconciles with Decision 4).
+    // Best-effort / Claude-only: an absent or unreadable file skips dedup.
+    let native_memory_head = if passive { read_native_memory_head(&session_binding.cwd).await } else { None };
+
+    let recent_candidates = selected
+        .selected
+        .iter()
+        .filter(|candidate| {
+            native_memory_head
+                .as_ref()
+                .is_none_or(|head| !native_head_contains_summary(head, &candidate.candidate.row.summary))
+        })
+        .collect::<Vec<_>>();
+
     let included_memory_ids = if include_recent {
-        selected.selected.iter().map(|candidate| candidate.id().to_owned()).collect::<Vec<_>>()
+        recent_candidates.iter().map(|candidate| candidate.id().to_owned()).collect::<Vec<_>>()
     } else {
         Vec::new()
     };
 
     let recent_body = if include_recent {
-        selected
-            .selected
+        recent_candidates
             .iter()
             .map(|candidate| {
-                render_memory_entry(&RecallEntry {
+                let entry = RecallEntry {
                     id: candidate.id().to_owned(),
                     summary: candidate.candidate.row.summary.clone(),
                     snippet: None,
                     updated: candidate.candidate.row.updated_at.to_rfc3339(),
                     source_kind: candidate.candidate.row.source_kind.to_string(),
                     confidence: format!("{:.2}", candidate.candidate.row.confidence),
-                })
+                };
+                if passive {
+                    render_memory_entry_passive(&entry)
+                } else {
+                    render_memory_entry(&entry)
+                }
             })
             .collect::<Vec<_>>()
             .join("\n")
@@ -134,12 +163,19 @@ pub async fn build_startup_response_with_coordination_config(
     let review_attention_line = (pending_attention_count > 0)
         .then(|| format!("- {pending_attention_count} memory item(s) require review before factual recall."));
     let active_entity_ids = active_entity_ids(&selected);
-    // `select_pending_attention_questions` reads `dreams/questions/**` from disk
-    // (read_dir + per-file read_to_string) and locks this daemon's dedup ring.
-    // Run the whole sync routine on the blocking pool so it never stalls a tokio
-    // worker on the per-prompt recall hot path. Inputs are cloned to satisfy the
-    // 'static bound; the original `namespaces_in_scope` stays borrowable below.
-    let dream_questions = {
+    // Read-only + cache safety (plan Decisions 4 & 10): dream-question selection
+    // reads today's wall-clock date and *records* surfaced novelty hashes into the
+    // daemon's dedup ring, so it both varies across sessions and mutates ranking-
+    // adjacent state. A passive hook skips it entirely and surfaces only the
+    // deterministic review-attention count.
+    let dream_questions = if passive {
+        DreamQuestionSelection { lines: Vec::new(), omitted_total: Default::default() }
+    } else {
+        // `select_pending_attention_questions` reads `dreams/questions/**` from disk
+        // (read_dir + per-file read_to_string) and locks this daemon's dedup ring.
+        // Run the whole sync routine on the blocking pool so it never stalls a tokio
+        // worker on the per-prompt recall hot path. Inputs are cloned to satisfy the
+        // 'static bound; the original `namespaces_in_scope` stays borrowable below.
         let repo = substrate.roots().repo.clone();
         let namespaces_in_scope = session_binding.namespaces_in_scope.clone();
         // Clone the `Arc` (not the store) into the blocking closure so the scan
@@ -152,9 +188,14 @@ pub async fn build_startup_response_with_coordination_config(
         .expect("select_pending_attention_questions blocking task panicked")
     };
     let pending_attention_items = review_attention_line.into_iter().chain(dream_questions.lines).collect::<Vec<_>>();
-    let include_reality_check_due = should_offer_reality_check(substrate, dedup_state, Utc::now()).await;
+    // Read-only + cache safety (plan Decisions 4 & 10): the reality-check-due item
+    // reads the wall clock and mutable daemon state, and surfacing it records a
+    // marker. A passive hook must neither vary across sessions nor write, so it is
+    // omitted entirely (and the marker is never recorded).
+    let include_reality_check_due = !passive && should_offer_reality_check(substrate, dedup_state, Utc::now()).await;
     let rendered_pending_attention = render_pending_attention_body(pending_attention_items, include_reality_check_due);
     if rendered_pending_attention.reality_check_due_emitted {
+        debug_assert!(!passive, "passive recall must never surface the reality-check-due marker");
         record_reality_check_surface(dedup_state, &substrate.roots().runtime, Utc::now()).await;
     }
     let mut pending_attention_omissions = dream_questions.omitted_total;
@@ -164,7 +205,13 @@ pub async fn build_startup_response_with_coordination_config(
     }
 
     let sections = vec![
-        RenderedRecallSection { name: RecallSectionName::Identity, body: identity_body(&session_binding) },
+        RenderedRecallSection {
+            name: RecallSectionName::Identity,
+            // The session id is per-session and must not enter the cached prefix
+            // (plan Decision 4); the passive identity body keys on harness + cwd
+            // only, both of which are part of the identity tuple.
+            body: if passive { passive_identity_body(&session_binding) } else { identity_body(&session_binding) },
+        },
         RenderedRecallSection { name: RecallSectionName::ProjectState, body: project_body(&session_binding) },
         RenderedRecallSection { name: RecallSectionName::EntityRecall, body: String::new() },
         RenderedRecallSection { name: RecallSectionName::RecentMemory, body: recent_body },
@@ -176,8 +223,15 @@ pub async fn build_startup_response_with_coordination_config(
     ];
     let startup_context = startup_context_from_selection(&session_binding, &selected)
         .with_harness_registry(coordination_config.harness_registry());
-    let startup_peer_updates =
-        startup_peer_updates(substrate, &session_binding, &coordination_config, startup_context.clone()).await?;
+    // Cache safety (plan Decision 4): peer-update assembly reads the wall clock and
+    // live peer presence (clock-stamped, session-varying), neither of which is part
+    // of the passive identity tuple — so a passive base block omits coordination
+    // entirely to stay byte-deterministic across sessions.
+    let startup_peer_updates = if passive {
+        StartupPeerUpdates::default()
+    } else {
+        startup_peer_updates(substrate, &session_binding, &coordination_config, startup_context.clone()).await?
+    };
 
     let section_token_estimates = section_token_estimates(&sections);
     let mut omissions = collection.omitted;
@@ -189,7 +243,10 @@ pub async fn build_startup_response_with_coordination_config(
         policy: crate::recall::STREAM_E_POLICY.to_owned(),
         sections: section_explanations(
             &section_token_estimates,
-            selected.selected.iter().map(|candidate| candidate.id().to_owned()).collect(),
+            // Mirror the rendered recent-memory set: for non-passive recall this is
+            // every ranked candidate (dedup is inert), and for passive recall it
+            // drops entries suppressed by the native MEMORY.md dedup.
+            recent_candidates.iter().map(|candidate| candidate.id().to_owned()).collect(),
             bounded.omitted.len() as u32 + bounded.omitted_truncated_count,
         ),
         omitted: bounded.omitted,
@@ -206,8 +263,14 @@ pub async fn build_startup_response_with_coordination_config(
             cross_device: startup_peer_updates.cross_device.as_ref(),
             salient_entities: Some(&startup_context.salient_entities),
         },
+        passive,
     );
-    emit_recall_hits(substrate, included_memory_ids.iter().map(String::as_str));
+    // Read-only recall (plan Decision 10): recording recall hits appends RecallHit
+    // events that feed memory-dynamics ranking. A passive hook fires on every
+    // session/subagent, so it must never write — skip the feedback when passive.
+    if !passive {
+        emit_recall_hits(substrate, included_memory_ids.iter().map(String::as_str));
+    }
 
     Ok(StartupResponse {
         session_binding,
@@ -613,6 +676,57 @@ fn identity_body(session_binding: &SessionBinding) -> String {
     )
 }
 
+/// Session-less identity body for passive (hook-mode) recall. Omits the
+/// per-session id so the cached SessionStart prefix is byte-identical across
+/// sessions for a given `(harness, cwd)` (plan Decision 4).
+fn passive_identity_body(session_binding: &SessionBinding) -> String {
+    format!(
+        "- harness: {}\n- cwd: {}",
+        escape_xml_text(&session_binding.harness),
+        escape_xml_text(&session_binding.cwd)
+    )
+}
+
+/// Bytes of `cwd/MEMORY.md` that Claude auto-loads at session start. The native
+/// auto-load reads the first 200 lines / 25 KB, whichever is smaller; matching
+/// that bound keeps dedup aligned with what is actually double-injected.
+const NATIVE_MEMORY_HEAD_MAX_LINES: usize = 200;
+const NATIVE_MEMORY_HEAD_MAX_BYTES: usize = 25 * 1024;
+
+/// Read and normalize the head of the active project's `MEMORY.md` for passive
+/// dedup (plan Decision 8). Best-effort and Claude-only: an absent or unreadable
+/// file returns `None` so dedup is simply skipped. The head is read once per
+/// request and frozen by the caller, preserving the passive block's byte
+/// determinism (reconciles with Decision 4).
+async fn read_native_memory_head(cwd: &str) -> Option<String> {
+    let path = std::path::Path::new(cwd).join("MEMORY.md");
+    let contents = tokio::fs::read_to_string(&path).await.ok()?;
+    let mut head = String::new();
+    for line in contents.lines().take(NATIVE_MEMORY_HEAD_MAX_LINES) {
+        if head.len() + line.len() + 1 > NATIVE_MEMORY_HEAD_MAX_BYTES {
+            break;
+        }
+        head.push_str(line);
+        head.push('\n');
+    }
+    Some(normalize_for_dedup(&head))
+}
+
+/// `true` when the (normalized) native MEMORY.md head already contains a memory's
+/// summary, meaning Claude will auto-load it and the passive block should suppress
+/// the duplicate. Empty summaries never match.
+fn native_head_contains_summary(normalized_head: &str, summary: &str) -> bool {
+    let needle = normalize_for_dedup(summary);
+    !needle.is_empty() && normalized_head.contains(&needle)
+}
+
+/// Lowercase and collapse interior whitespace so dedup matching is robust to
+/// Markdown list markers, wrapping, and incidental spacing differences while
+/// staying a pure (deterministic) function of its input.
+fn normalize_for_dedup(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_lowercase()
+}
+
 fn project_body(session_binding: &SessionBinding) -> String {
     match &session_binding.project {
         Some(project) => {
@@ -627,29 +741,41 @@ fn project_body(session_binding: &SessionBinding) -> String {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_startup_frame_with_stable_budget(
     session_binding: &SessionBinding,
     explanation: &mut RecallExplanation,
     sections: &[RenderedRecallSection],
     startup_coordination: StartupCoordinationRender<'_>,
+    passive: bool,
 ) -> String {
+    let render = |explanation: &RecallExplanation| {
+        let frame = if passive {
+            render_startup_frame_passive(session_binding, explanation, sections, startup_coordination)
+        } else {
+            render_startup_frame_with_cross_device_updates(session_binding, explanation, sections, startup_coordination)
+        };
+        // Enforce the Claude Code char cap on passive blocks only (plan Decision 8).
+        // Truncation is a deterministic function of the rendered bytes, so it never
+        // destabilizes the budget-convergence loop below.
+        if passive {
+            cap_passive_block(frame)
+        } else {
+            frame
+        }
+    };
+
     for _ in 0..4 {
-        let recall_block = render_startup_frame_with_cross_device_updates(
-            session_binding,
-            explanation,
-            sections,
-            startup_coordination,
-        );
+        let recall_block = render(explanation);
         let measured = estimated_tokens(&recall_block);
         if explanation.budget_used_tokens == measured {
             return recall_block;
         }
         explanation.budget_used_tokens = measured;
     }
-    let recall_block =
-        render_startup_frame_with_cross_device_updates(session_binding, explanation, sections, startup_coordination);
+    let recall_block = render(explanation);
     explanation.budget_used_tokens = estimated_tokens(&recall_block);
-    render_startup_frame_with_cross_device_updates(session_binding, explanation, sections, startup_coordination)
+    render(explanation)
 }
 
 fn section_token_estimates(sections: &[RenderedRecallSection]) -> Vec<(RecallSectionName, usize)> {
@@ -747,6 +873,7 @@ fn map_substrate_error(error: SubstrateError) -> RecallError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::recall::types::HOOK_BLOCK_CHAR_CAP;
     use crate::recall::types::{ProjectBinding, ProjectBindingSource};
 
     #[test]
@@ -782,6 +909,7 @@ mod tests {
             &mut explanation,
             &sections,
             StartupCoordinationRender::default(),
+            false,
         );
 
         assert_eq!(explanation.budget_used_tokens, estimated_tokens(&recall_block));
@@ -838,5 +966,309 @@ mod tests {
         assert_eq!(surfaced, HashSet::from(["mem_20260501_a1b2c3d4e5f60718_000777".to_owned()]));
         assert!(!surfaced.contains("sess_same_device"));
         assert!(!surfaced.contains("same-device summary must not become the cooldown key"));
+    }
+
+    #[test]
+    fn passive_identity_body_omits_session_id() {
+        let mut binding = binding_with_session("sess_secret_123");
+        binding.harness = "claude-code".to_owned();
+        binding.cwd = "/Users/treygoff/Code/agent-memory".to_owned();
+
+        let body = passive_identity_body(&binding);
+
+        assert!(body.contains("- harness: claude-code"));
+        assert!(body.contains("- cwd: /Users/treygoff/Code/agent-memory"));
+        assert!(!body.contains("sess_secret_123"), "passive identity body must not leak the session id");
+        assert!(!body.contains("session"), "passive identity body must not render a session line");
+    }
+
+    #[test]
+    fn native_head_dedup_matches_normalized_summaries() {
+        let head =
+            normalize_for_dedup("# Project\n- Eval-gated merge order: A/B in the worktree first\n- Other note\n");
+
+        assert!(native_head_contains_summary(&head, "Eval-gated merge order: A/B in the worktree first"));
+        // Whitespace/case differences must still match (normalization is robust).
+        assert!(native_head_contains_summary(&head, "EVAL-GATED   merge order:  A/B in the worktree first"));
+        assert!(!native_head_contains_summary(&head, "A summary that is absent from the head"));
+        // An empty summary never matches, so dedup never drops blank entries.
+        assert!(!native_head_contains_summary(&head, ""));
+    }
+
+    #[tokio::test]
+    async fn passive_startup_leaves_store_byte_unchanged_while_active_recall_writes() {
+        let fixture = PassiveFixture::new("dev_passivero").await;
+        fixture.write_memory("mem_20260501_aaaaaaaaaaaaaaaa_000001", "Operational invariant worth recalling.").await;
+        fixture.write_memory("mem_20260501_bbbbbbbbbbbbbbbb_000002", "Second active note for recent memory.").await;
+
+        let before = fixture.snapshot();
+        let passive = fixture.startup(true, None).await;
+        assert!(!passive.recall_block.is_empty());
+        let after_passive = fixture.snapshot();
+        assert_eq!(before, after_passive, "passive startup must not mutate any on-disk store state");
+
+        // Teeth: the active (non-passive) path records RecallHit events, so the
+        // store DOES change — proving the snapshot diff is sensitive.
+        let _active = fixture.startup(false, None).await;
+        let after_active = fixture.snapshot();
+        assert_ne!(before, after_active, "active recall is expected to append RecallHit events");
+    }
+
+    #[tokio::test]
+    async fn passive_startup_block_is_deterministic_across_sessions_and_clock() {
+        let fixture = PassiveFixture::new("dev_passivedet").await;
+        fixture.write_memory("mem_20260501_cccccccccccccccc_000003", "Deterministic recall content under test.").await;
+
+        let first = fixture.startup(true, Some("sess_one")).await;
+        let second = fixture.startup(true, Some("sess_two_different")).await;
+
+        assert_eq!(
+            first.recall_block.as_bytes(),
+            second.recall_block.as_bytes(),
+            "passive base block must be byte-identical across sessions on the same identity tuple"
+        );
+        assert!(!first.recall_block.contains("sess_one"));
+        assert!(!first.recall_block.contains("sess_two_different"));
+        assert!(!first.recall_block.contains("session=\""), "passive frame must omit the session attribute");
+
+        // Changing the budget (part of the identity tuple) changes the block.
+        let smaller_budget = fixture.startup(true, Some("sess_one")).await;
+        assert_eq!(first.recall_block, smaller_budget.recall_block, "same tuple still byte-identical");
+        let rebudgeted = fixture.startup_with_budget(true, "sess_one", 1_024).await;
+        assert_ne!(first.recall_block, rebudgeted.recall_block, "a different budget must change the block");
+    }
+
+    #[tokio::test]
+    async fn passive_startup_block_stays_under_char_cap() {
+        let fixture = PassiveFixture::new("dev_passivecap").await;
+        // Many max-length summaries push toward the cap; the reduced budget plus the
+        // deterministic backstop must keep the block under HOOK_BLOCK_CHAR_CAP.
+        for index in 0..40 {
+            let id = format!("mem_20260501_dddddddddddddddd_{index:06}");
+            fixture.write_memory(&id, &format!("{} {}", "x".repeat(220), index)).await;
+        }
+
+        let passive = fixture.startup(true, Some("sess_cap")).await;
+
+        assert!(
+            passive.recall_block.chars().count() < HOOK_BLOCK_CHAR_CAP,
+            "passive block was {} chars, must stay under {HOOK_BLOCK_CHAR_CAP}",
+            passive.recall_block.chars().count()
+        );
+    }
+
+    #[tokio::test]
+    async fn passive_startup_dedup_suppresses_native_memory_entries_and_stays_deterministic() {
+        let fixture = PassiveFixture::new("dev_passivededup").await;
+        let dup_summary = "This summary already lives in the native MEMORY.md head.";
+        let kept_summary = "This summary is unique to Memorum recall.";
+        fixture.write_memory("mem_20260501_eeeeeeeeeeeeeeee_000004", dup_summary).await;
+        fixture.write_memory("mem_20260501_ffffffffffffffff_000005", kept_summary).await;
+
+        // No native MEMORY.md yet: both entries should render.
+        let without_native = fixture.startup(true, Some("sess_dedup")).await;
+        assert!(without_native.recall_block.contains(dup_summary));
+        assert!(without_native.recall_block.contains(kept_summary));
+
+        // Drop a native MEMORY.md whose head contains the duplicate summary.
+        fixture.write_native_memory_md(&format!("# Project memory\n- {dup_summary}\n"));
+        let with_native_a = fixture.startup(true, Some("sess_dedup")).await;
+        let with_native_b = fixture.startup(true, Some("sess_dedup_other")).await;
+
+        assert!(
+            !with_native_a.recall_block.contains(dup_summary),
+            "entry present in MEMORY.md head must be suppressed"
+        );
+        assert!(with_native_a.recall_block.contains(kept_summary), "unique entry must survive dedup");
+        assert_eq!(
+            with_native_a.recall_block.as_bytes(),
+            with_native_b.recall_block.as_bytes(),
+            "dedup is frozen per request, so the deduped block stays byte-deterministic"
+        );
+    }
+
+    fn binding_with_session(session_id: &str) -> SessionBinding {
+        SessionBinding {
+            session_id: session_id.to_owned(),
+            harness: "claude-code".to_owned(),
+            harness_version: None,
+            cwd: "/tmp".to_owned(),
+            project: None,
+            namespaces_in_scope: vec!["me".to_owned()],
+        }
+    }
+
+    struct PassiveFixture {
+        _temp: tempfile::TempDir,
+        roots: memory_substrate::Roots,
+        substrate: Substrate,
+    }
+
+    impl PassiveFixture {
+        async fn new(device_id: &str) -> Self {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let roots = memory_substrate::Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+            let substrate = Substrate::init(
+                roots.clone(),
+                memory_substrate::InitOptions { force_unsafe_durability: true, device_id: Some(device_id.to_owned()) },
+            )
+            .await
+            .expect("substrate init");
+            Self { _temp: temp, roots, substrate }
+        }
+
+        async fn write_memory(&self, id: &str, summary: &str) {
+            use memory_substrate::{
+                Author, AuthorKind, ClassificationOutcome, EventContext, Frontmatter, Memory, MemoryId, MemoryType,
+                RepoPath, RetrievalPolicy, Scope, Sensitivity, Source, SourceKind, TrustLevel, WriteMode, WritePolicy,
+                WriteRequest,
+            };
+            let updated_at = Utc::now();
+            let memory = Memory {
+                frontmatter: Frontmatter {
+                    schema_version: 1,
+                    id: MemoryId::new(id),
+                    memory_type: MemoryType::Pattern,
+                    scope: Scope::User,
+                    summary: summary.to_owned(),
+                    confidence: 0.8,
+                    original_confidence: None,
+                    trust_level: TrustLevel::Trusted,
+                    sensitivity: Sensitivity::Internal,
+                    status: MemoryStatus::Active,
+                    created_at: updated_at,
+                    updated_at,
+                    observed_at: None,
+                    author: Author {
+                        kind: AuthorKind::Agent,
+                        user_handle: None,
+                        harness: Some("claude-code".to_owned()),
+                        harness_version: None,
+                        session_id: Some("sess_seed".to_owned()),
+                        subagent_id: None,
+                        phase: None,
+                        component: Some("passive-recall-test".to_owned()),
+                    },
+                    namespace: None,
+                    canonical_namespace_id: None,
+                    tags: Vec::new(),
+                    entities: Vec::new(),
+                    aliases: Vec::new(),
+                    source: Source {
+                        kind: SourceKind::AgentPrimary,
+                        reference: None,
+                        harness: Some("claude-code".to_owned()),
+                        harness_version: None,
+                        session_id: Some("sess_seed".to_owned()),
+                        subagent_id: None,
+                        device: None,
+                    },
+                    evidence: Vec::new(),
+                    requires_user_confirmation: false,
+                    review_state: None,
+                    supersedes: Vec::new(),
+                    superseded_by: Vec::new(),
+                    related: Vec::new(),
+                    tombstone_events: Vec::new(),
+                    retrieval_policy: RetrievalPolicy {
+                        passive_recall: true,
+                        max_scope: Scope::User,
+                        mask_personal_for_synthesis: false,
+                        index_body: true,
+                        index_embeddings: false,
+                    },
+                    write_policy: WritePolicy {
+                        human_review_required: false,
+                        policy_applied: "passive-recall-test".to_owned(),
+                        expected_base_hash: None,
+                    },
+                    merge_diagnostics: None,
+                    extras: Default::default(),
+                },
+                body: summary.to_owned(),
+                path: Some(RepoPath::new(format!("me/{id}.md"))),
+            };
+            self.substrate
+                .write_memory(WriteRequest {
+                    operation_id: None,
+                    memory,
+                    expected_base_hash: None,
+                    write_mode: WriteMode::CreateNew,
+                    index_projection: None,
+                    event_context: EventContext::default(),
+                    allow_best_effort_durability: true,
+                    classification: ClassificationOutcome::Trusted,
+                })
+                .await
+                .expect("write memory");
+        }
+
+        fn write_native_memory_md(&self, contents: &str) {
+            std::fs::write(self.roots.repo.join("MEMORY.md"), contents).expect("write native MEMORY.md");
+        }
+
+        async fn startup(&self, passive: bool, session_id: Option<&str>) -> StartupResponse {
+            self.startup_request(passive, session_id.unwrap_or("sess_default"), None).await
+        }
+
+        async fn startup_with_budget(&self, passive: bool, session_id: &str, budget: usize) -> StartupResponse {
+            self.startup_request(passive, session_id, Some(budget)).await
+        }
+
+        async fn startup_request(&self, passive: bool, session_id: &str, budget: Option<usize>) -> StartupResponse {
+            build_startup_response(
+                &self.substrate,
+                StartupRequest {
+                    cwd: self.roots.repo.to_string_lossy().into_owned(),
+                    session_id: session_id.to_owned(),
+                    harness: "claude-code".to_owned(),
+                    harness_version: None,
+                    include_recent: true,
+                    since_event_id: None,
+                    budget_tokens: budget,
+                    passive,
+                },
+            )
+            .await
+            .expect("startup recall")
+        }
+
+        fn snapshot(&self) -> Vec<(String, Vec<u8>)> {
+            snapshot_canonical_store(&self.roots)
+        }
+    }
+
+    /// A content+path digest of the canonical store state that read-only recall
+    /// must not touch: the event JSONL log (where `RecallHit` events land), the
+    /// canonical memory markdown files, and the runtime `state/` markers (where the
+    /// reality-check surface marker lands). Git plumbing and the derived SQLite
+    /// index sidecars are excluded — they are volatile and not the substrate or
+    /// ranking state the invariant protects (the JSONL log is the source of truth
+    /// the index mirrors).
+    pub(super) fn snapshot_canonical_store(roots: &memory_substrate::Roots) -> Vec<(String, Vec<u8>)> {
+        let mut entries = Vec::new();
+        for root in [&roots.repo, &roots.runtime] {
+            for entry in walkdir::WalkDir::new(root).sort_by_file_name() {
+                let entry = entry.expect("walk store");
+                if !entry.file_type().is_file() {
+                    continue;
+                }
+                let rel = entry.path().strip_prefix(root).unwrap_or(entry.path()).to_string_lossy().into_owned();
+                if !is_canonical_store_path(&rel) {
+                    continue;
+                }
+                let bytes = std::fs::read(entry.path()).expect("read store file");
+                entries.push((format!("{}:{rel}", root.display()), bytes));
+            }
+        }
+        entries.sort();
+        entries
+    }
+
+    fn is_canonical_store_path(rel: &str) -> bool {
+        if rel.starts_with(".git/") || rel == ".git" {
+            return false;
+        }
+        rel.starts_with("events/") || rel.ends_with(".md") || rel.contains("/state/") || rel.starts_with("state/")
     }
 }

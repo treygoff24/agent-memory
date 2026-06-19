@@ -835,6 +835,15 @@ pub enum RecallCommand {
     StartupBlock(RecallStartupArgs),
     /// Print a Stream E per-turn delta recall XML block.
     DeltaBlock(RecallDeltaArgs),
+    /// Unified passive-recall hook handler invoked by harness lifecycle events.
+    ///
+    /// Reads one hook-invocation JSON object on stdin, dispatches on
+    /// `hook_event_name`, calls the daemon under a hard deadline, and emits the
+    /// recall block wrapped in `hookSpecificOutput.additionalContext`. Fail-open
+    /// is absolute: any failure produces zero bytes, no stderr, and exit 0 — it
+    /// must never block the agent. Shares no exit path with `StartupBlock`/
+    /// `DeltaBlock` (those exit nonzero on error).
+    Hook(RecallHookArgs),
 }
 
 #[derive(Debug, Args)]
@@ -884,6 +893,20 @@ pub struct RecallDeltaArgs {
     pub message: String,
     #[arg(long)]
     pub budget_tokens: Option<usize>,
+}
+
+#[derive(Debug, Args)]
+pub struct RecallHookArgs {
+    /// Daemon socket plus the `--runtime` fallback used to resolve it. The
+    /// installer always passes `--socket` explicitly; the runtime default is a
+    /// backstop so the handler resolves the same way the other recall
+    /// subcommands do.
+    #[command(flatten)]
+    pub socket: RecallSocketArgs,
+    /// Canonical harness id, exactly `claude-code` or `codex`. Passed verbatim
+    /// into the recall request's `harness` field.
+    #[arg(long)]
+    pub harness: String,
 }
 
 #[derive(Debug, Args)]
@@ -1074,6 +1097,7 @@ pub mod peer_render;
 pub mod privacy;
 pub mod reality_check;
 pub mod recall;
+pub mod recall_hook;
 pub mod review;
 pub mod serve;
 pub mod source;

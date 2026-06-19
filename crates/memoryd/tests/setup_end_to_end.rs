@@ -93,12 +93,14 @@ fn background_onboarding_is_clean_idempotent_and_governance_truthful() {
 
     // EnsureRepo / EnsureDaemon succeed; Import runs and *succeeds as a step*
     // even when individual writes are refused (a refusal is a recorded outcome,
-    // not a step failure); WireMcp is skipped (`--wire-mcp none`); Verify
-    // succeeds because the daemon is live and the substrate is healthy.
+    // not a step failure); WireMcp and WireHooks are skipped (`--wire-mcp none`
+    // / `--wire-hooks none`); Verify succeeds because the daemon is live and the
+    // substrate is healthy.
     assert_step(&report, SetupStep::EnsureRepo, SetupStepStatus::Succeeded);
     assert_step(&report, SetupStep::EnsureDaemon, SetupStepStatus::Succeeded);
     assert_step(&report, SetupStep::Import, SetupStepStatus::Succeeded);
     assert_step(&report, SetupStep::WireMcp, SetupStepStatus::Skipped);
+    assert_step(&report, SetupStep::WireHooks, SetupStepStatus::Skipped);
     assert_step(&report, SetupStep::Verify, SetupStepStatus::Succeeded);
 
     // A real daemon must be bound to the reported socket right now.
@@ -206,11 +208,16 @@ fn assert_second_run_disposition(claude: &HarnessCounters, codex: &HarnessCounte
 /// `restart_required` flag (must be `false` whenever no MCP config was rewritten
 /// under `--wire-mcp none`), and the live-path `Verify` per-probe breakdown.
 fn assert_report_shape(report: &SetupReport) {
-    assert_eq!(report.schema_version, 1, "setup report schema version");
+    assert_eq!(report.schema_version, 2, "setup report schema version");
 
-    for step in
-        [SetupStep::EnsureRepo, SetupStep::EnsureDaemon, SetupStep::Import, SetupStep::WireMcp, SetupStep::Verify]
-    {
+    for step in [
+        SetupStep::EnsureRepo,
+        SetupStep::EnsureDaemon,
+        SetupStep::Import,
+        SetupStep::WireMcp,
+        SetupStep::WireHooks,
+        SetupStep::Verify,
+    ] {
         let count = report.steps.iter().filter(|entry| entry.step == step).count();
         assert_eq!(count, 1, "step {step:?} must appear exactly once; steps: {:?}", report.steps);
     }
@@ -449,6 +456,8 @@ impl TestEnv {
                 "--non-git-cwd-default",
                 "me",
                 "--wire-mcp",
+                "none",
+                "--wire-hooks",
                 "none",
                 "--daemon",
                 "background",

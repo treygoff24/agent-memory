@@ -43,6 +43,10 @@ pub async fn run(args: RecallArgs) -> anyhow::Result<()> {
             .await;
             print_recall_delta(response)?;
         }
+        // The hook handler owns its own failure path — it never routes through
+        // `exit_recall_unavailable`/`exit_protocol_error` and always exits 0
+        // (fail-open). See `recall_hook::run`.
+        RecallCommand::Hook(args) => crate::cli::recall_hook::run(args).await,
     }
     Ok(())
 }

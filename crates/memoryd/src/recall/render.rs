@@ -5,7 +5,9 @@ use memory_privacy::{safe_plaintext_fragment, DeterministicPrivacyClassifier, Sa
 use memory_substrate::{MemoryId, Substrate};
 
 use crate::recall::budget::{estimated_tokens, truncate_utf8_bytes};
-use crate::recall::types::{RecallExplanation, RecallSectionName, SessionBinding, STREAM_E_POLICY};
+use crate::recall::types::{
+    RecallExplanation, RecallSectionName, SessionBinding, HOOK_BLOCK_CHAR_CAP, STREAM_E_POLICY,
+};
 
 const SUMMARY_MAX_BYTES: usize = 240;
 const SNIPPET_MAX_BYTES: usize = 360;
@@ -71,12 +73,29 @@ pub struct StartupCoordinationRender<'a> {
 }
 
 pub fn render_memory_entry(entry: &RecallEntry) -> String {
+    render_memory_entry_inner(entry, false)
+}
+
+/// Passive (hook-mode) memory entry. Identical to [`render_memory_entry`] except
+/// the summary/snippet prose is run through [`neutralize_imperative_prose`] so an
+/// imperative memory ("Always do X") injected into a session reads as a reported
+/// fact, not an instruction (plan Decision 8 — "sanitize, don't just frame").
+pub fn render_memory_entry_passive(entry: &RecallEntry) -> String {
+    render_memory_entry_inner(entry, true)
+}
+
+fn render_memory_entry_inner(entry: &RecallEntry, passive: bool) -> String {
     let summary = truncate_utf8_bytes(&entry.summary, SUMMARY_MAX_BYTES).value;
     let snippet = entry
         .snippet
         .as_deref()
         .map(|snippet| truncate_utf8_bytes(snippet, SNIPPET_MAX_BYTES).value)
         .unwrap_or_default();
+    let (summary, snippet) = if passive {
+        (neutralize_imperative_prose(&summary), neutralize_imperative_prose(&snippet))
+    } else {
+        (summary, snippet)
+    };
 
     format!(
         "<memory ref=\"{}\" updated=\"{}\" source=\"{}\" confidence=\"{}\">\n  <summary>{}</summary>\n  <snippet>{}</snippet>\n</memory>",
@@ -87,6 +106,100 @@ pub fn render_memory_entry(entry: &RecallEntry) -> String {
         escape_xml_text(&summary),
         escape_xml_text(&snippet)
     )
+}
+
+/// Neutralize imperative prose so injected memory text reads as a fact, not a
+/// command. Deterministic and idempotent: a leading imperative clause is reframed
+/// with a `[recalled fact]` marker that an injection detector (and the agent)
+/// reads as reported content rather than a directive.
+///
+/// The detection is intentionally conservative — it fires only when the first
+/// word of a line is a bare second-person imperative verb (or an "always/never"
+/// adverb that fronts one). Lines that are already declarative are left byte-for-
+/// byte unchanged so the dedup/determinism tuple stays stable.
+pub fn neutralize_imperative_prose(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 16);
+    for (index, line) in text.split('\n').enumerate() {
+        if index > 0 {
+            out.push('\n');
+        }
+        if line_leads_with_imperative(line) {
+            out.push_str(IMPERATIVE_FACT_MARKER);
+            out.push(' ');
+        }
+        out.push_str(line);
+    }
+    out
+}
+
+const IMPERATIVE_FACT_MARKER: &str = "[recalled note]";
+
+/// Second-person imperative verbs that, when fronting a memory line, would read
+/// as an instruction to the agent. Sorted for readability; matched
+/// case-insensitively against the first token of the line.
+const IMPERATIVE_LEAD_WORDS: &[&str] = &[
+    "always",
+    "avoid",
+    "call",
+    "configure",
+    "delete",
+    "disable",
+    "do",
+    "don't",
+    "dont",
+    "enable",
+    "ensure",
+    "install",
+    "make",
+    "never",
+    "prefer",
+    "remember",
+    "remove",
+    "run",
+    "set",
+    "stop",
+    "switch",
+    "use",
+];
+
+fn line_leads_with_imperative(line: &str) -> bool {
+    let trimmed = line.trim_start_matches(|c: char| c == '-' || c == '*' || c == '>' || c.is_whitespace());
+    let Some(first) = trimmed.split(|c: char| c.is_whitespace()).next() else {
+        return false;
+    };
+    if first.is_empty() {
+        return false;
+    }
+    // Already neutralized: the marker itself starts with '[', never a lead word.
+    let normalized = first.trim_end_matches([',', '.', ':', ';', '!']).to_ascii_lowercase();
+    IMPERATIVE_LEAD_WORDS.contains(&normalized.as_str())
+}
+
+/// Fixed notice appended when a passive block is truncated at the char cap. It
+/// closes the `<memory-recall>` root so the injected block stays well-formed.
+const HOOK_TRUNCATION_NOTICE: &str = "\n  <recall-truncated reason=\"hook-char-cap\" />\n</memory-recall>\n";
+
+/// Enforce [`HOOK_BLOCK_CHAR_CAP`] on a fully-rendered passive block.
+///
+/// The reduced hook budget keeps real blocks well under the cap; this is a
+/// deterministic backstop for the pathological case (e.g. many max-length
+/// summaries). Truncation depends only on the rendered bytes — not on iteration
+/// order or the clock — so the cached prefix stays byte-stable for a given
+/// identity tuple (plan Decision 4 + "Size" invariant guard).
+pub fn cap_passive_block(block: String) -> String {
+    if block.chars().count() <= HOOK_BLOCK_CHAR_CAP {
+        return block;
+    }
+    // Reserve room for the closing notice so the capped result still fits.
+    let budget = HOOK_BLOCK_CHAR_CAP.saturating_sub(HOOK_TRUNCATION_NOTICE.chars().count());
+    let mut truncated: String = block.chars().take(budget).collect();
+    // Cut back to the last newline so we never sever a tag mid-line; this is a
+    // pure function of `truncated`, preserving determinism.
+    if let Some(last_newline) = truncated.rfind('\n') {
+        truncated.truncate(last_newline);
+    }
+    truncated.push_str(HOOK_TRUNCATION_NOTICE);
+    truncated
 }
 
 pub fn render_pending_attention_body(
@@ -157,6 +270,34 @@ pub fn render_startup_frame_with_cross_device_updates(
     sections: &[RenderedRecallSection],
     startup_coordination: StartupCoordinationRender<'_>,
 ) -> String {
+    render_startup_frame_inner(session_binding, explanation, sections, startup_coordination, false)
+}
+
+/// Passive (hook-mode) startup frame. Byte-deterministic across sessions: the
+/// `session="..."` attribute is omitted so the cached SessionStart prefix is keyed
+/// only on the identity tuple `(memory set, cwd, MEMORY.md head, budget)` and not
+/// on the per-session id (plan Decision 4 — cache safety).
+///
+/// Section bodies are assembled passive-side in [`crate::recall::startup`] (no
+/// wall-clock / mutable-state items); this entry point only drops the
+/// non-deterministic frame attribute.
+pub fn render_startup_frame_passive(
+    session_binding: &SessionBinding,
+    explanation: &RecallExplanation,
+    sections: &[RenderedRecallSection],
+    startup_coordination: StartupCoordinationRender<'_>,
+) -> String {
+    render_startup_frame_inner(session_binding, explanation, sections, startup_coordination, true)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_startup_frame_inner(
+    session_binding: &SessionBinding,
+    explanation: &RecallExplanation,
+    sections: &[RenderedRecallSection],
+    startup_coordination: StartupCoordinationRender<'_>,
+    passive: bool,
+) -> String {
     let rendered_peer_updates = startup_coordination.same_device.map(render_peer_update_elements).unwrap_or_default();
     let rendered_cross_device_updates =
         startup_coordination.cross_device.map(render_cross_device_updates).unwrap_or_default();
@@ -165,12 +306,16 @@ pub fn render_startup_frame_with_cross_device_updates(
     } else {
         format!(" coordination=\"{}\"", escape_xml_attr(COORDINATION_POLICY))
     };
+    // The cached SessionStart prefix must be byte-identical across sessions, so a
+    // passive frame omits the per-session `session=` attribute (plan Decision 4).
+    let session_attr =
+        if passive { String::new() } else { format!(" session=\"{}\"", escape_xml_attr(&session_binding.session_id)) };
     let mut frame = String::new();
     frame.push_str(&format!(
-        "<memory-recall version=\"{}\" harness=\"{}\" session=\"{}\"{}>\n",
+        "<memory-recall version=\"{}\" harness=\"{}\"{}{}>\n",
         STREAM_E_POLICY,
         escape_xml_attr(&session_binding.harness),
-        escape_xml_attr(&session_binding.session_id),
+        session_attr,
         coordination_attr
     ));
 
@@ -202,6 +347,27 @@ pub fn render_delta_frame(
     budget_tokens: usize,
     coordination: Option<&CoordinationInsertion>,
 ) -> RenderedDeltaFrame {
+    render_delta_frame_inner(items, budget_tokens, coordination, false)
+}
+
+/// Passive (hook-mode) delta frame. Identical to [`render_delta_frame`] except
+/// each item's prose is neutralized via [`neutralize_imperative_prose`] so the
+/// per-turn injection reads as recalled facts rather than instructions (plan
+/// Decision 8). The empty-delta sentinel is unchanged.
+pub fn render_delta_frame_passive(
+    items: &[DeltaRecallItem],
+    budget_tokens: usize,
+    coordination: Option<&CoordinationInsertion>,
+) -> RenderedDeltaFrame {
+    render_delta_frame_inner(items, budget_tokens, coordination, true)
+}
+
+fn render_delta_frame_inner(
+    items: &[DeltaRecallItem],
+    budget_tokens: usize,
+    coordination: Option<&CoordinationInsertion>,
+    passive: bool,
+) -> RenderedDeltaFrame {
     let mut body = String::new();
     let mut used_tokens = 0usize;
     let mut included_item_ids = Vec::new();
@@ -218,7 +384,11 @@ pub fn render_delta_frame(
     }
 
     for item in items {
-        let rendered = render_delta_item(&item.id, &item.text);
+        let rendered = if passive {
+            render_delta_item(&item.id, &neutralize_imperative_prose(&item.text))
+        } else {
+            render_delta_item(&item.id, &item.text)
+        };
         if !push_if_within_budget(&mut body, rendered, budget_tokens, &mut used_tokens) {
             break;
         }
@@ -500,5 +670,115 @@ mod tests {
         assert_eq!(rendered.body.matches("duplicate item").count(), 1);
         assert!(rendered.body.contains("distinct item"));
         assert_eq!(rendered.omitted_count, 0);
+    }
+
+    fn passive_test_binding() -> SessionBinding {
+        SessionBinding {
+            session_id: "sess_should_not_appear".to_owned(),
+            harness: "claude-code".to_owned(),
+            harness_version: Some("2.1.183".to_owned()),
+            cwd: "/tmp/project".to_owned(),
+            project: None,
+            namespaces_in_scope: vec!["me".to_owned()],
+        }
+    }
+
+    #[test]
+    fn neutralize_imperative_prose_reframes_only_imperative_lines() {
+        // Imperative-leading lines get the fact marker.
+        assert_eq!(neutralize_imperative_prose("Always wire the hook"), "[recalled note] Always wire the hook");
+        assert_eq!(neutralize_imperative_prose("Run scripts/check.sh"), "[recalled note] Run scripts/check.sh");
+        assert_eq!(
+            neutralize_imperative_prose("- Use merge-base for diffs"),
+            "[recalled note] - Use merge-base for diffs"
+        );
+
+        // Declarative prose is left byte-for-byte unchanged (determinism).
+        let declarative = "The daemon runs under launchd on this host.";
+        assert_eq!(neutralize_imperative_prose(declarative), declarative);
+
+        // Idempotent: a second pass does not stack markers.
+        let once = neutralize_imperative_prose("Never commit secrets");
+        assert_eq!(neutralize_imperative_prose(&once), once);
+    }
+
+    #[test]
+    fn neutralize_imperative_prose_handles_each_line_independently() {
+        let input = "The eval gate is green.\nAlways run the gate at the coordinator.";
+        let neutralized = neutralize_imperative_prose(input);
+        assert_eq!(neutralized, "The eval gate is green.\n[recalled note] Always run the gate at the coordinator.");
+    }
+
+    #[test]
+    fn passive_memory_entry_sanitizes_summary_while_active_entry_is_unchanged() {
+        let entry = RecallEntry {
+            id: "mem_1".to_owned(),
+            summary: "Always rebase before pushing".to_owned(),
+            snippet: None,
+            updated: "2026-06-19".to_owned(),
+            source_kind: "agent_primary".to_owned(),
+            confidence: "0.90".to_owned(),
+        };
+
+        let passive = render_memory_entry_passive(&entry);
+        assert!(passive.contains("<summary>[recalled note] Always rebase before pushing</summary>"));
+
+        // Non-passive rendering must be byte-for-byte the legacy output.
+        let active = render_memory_entry(&entry);
+        assert!(active.contains("<summary>Always rebase before pushing</summary>"));
+        assert!(!active.contains("[recalled note]"));
+    }
+
+    #[test]
+    fn passive_startup_frame_omits_session_attribute() {
+        let binding = passive_test_binding();
+        let explanation = RecallExplanation::empty(1_900);
+
+        let passive = render_startup_frame_passive(&binding, &explanation, &[], StartupCoordinationRender::default());
+        let active = render_startup_frame_with_cross_device_updates(
+            &binding,
+            &explanation,
+            &[],
+            StartupCoordinationRender::default(),
+        );
+
+        assert!(passive.starts_with("<memory-recall version=\"stream-e-v0.6\" harness=\"claude-code\">"));
+        assert!(!passive.contains("session=\""), "passive frame must not carry the session attribute");
+        assert!(!passive.contains("sess_should_not_appear"));
+
+        // The non-passive frame is unchanged: it still embeds the session id.
+        assert!(active.contains("session=\"sess_should_not_appear\""));
+    }
+
+    #[test]
+    fn cap_passive_block_truncates_deterministically_below_the_cap() {
+        let under = "<memory-recall>\n  <line/>\n</memory-recall>\n".to_owned();
+        assert_eq!(cap_passive_block(under.clone()), under, "blocks under the cap pass through untouched");
+
+        // Build an oversized block out of many newline-delimited lines.
+        let mut oversized = String::from("<memory-recall>\n");
+        for index in 0..2_000 {
+            oversized.push_str(&format!("  <line n=\"{index}\">{}</line>\n", "y".repeat(20)));
+        }
+        oversized.push_str("</memory-recall>\n");
+        assert!(oversized.chars().count() > HOOK_BLOCK_CHAR_CAP);
+
+        let capped = cap_passive_block(oversized.clone());
+        assert!(capped.chars().count() <= HOOK_BLOCK_CHAR_CAP, "capped block must fit under the cap");
+        assert!(capped.ends_with(HOOK_TRUNCATION_NOTICE));
+        // Deterministic: capping the same input twice yields the same bytes.
+        assert_eq!(cap_passive_block(oversized).as_bytes(), capped.as_bytes());
+    }
+
+    #[test]
+    fn passive_delta_frame_sanitizes_items_and_preserves_empty_sentinel() {
+        let items = vec![DeltaRecallItem { id: "mem_d1".to_owned(), text: "Run the migration first".to_owned() }];
+        let passive = render_delta_frame_passive(&items, 400, None);
+        assert!(passive.block.contains("[recalled note] Run the migration first"));
+
+        // Empty item set still emits the exact empty-delta sentinel.
+        let empty = render_delta_frame_passive(&[], 400, None);
+        assert_eq!(empty.block, "<memory-delta empty=\"true\" />\n");
+        assert_eq!(empty.budget_used_tokens, 0);
     }
 }

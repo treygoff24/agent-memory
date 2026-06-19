@@ -22,7 +22,8 @@ use std::path::{Path, PathBuf};
 use crate::cli::InitArgs;
 use crate::setup::{
     DaemonStrategy, HarnessDetection, HarnessSelection, NonGitCwdDecision, SetupDetection, SetupDiscoverySource,
-    SetupEngine, SetupIo, SetupReport, SetupResult, SetupSocketState, SetupStep, SetupStepStatus, WireMcpSelection,
+    SetupEngine, SetupIo, SetupReport, SetupResult, SetupSocketState, SetupStep, SetupStepStatus, WireHooksSelection,
+    WireMcpSelection,
 };
 
 use super::resolve_repo_runtime;
@@ -56,6 +57,7 @@ pub struct SeededDecisions {
     pub harnesses: Option<HarnessSelection>,
     pub non_git_cwd: Option<NonGitCwdDecision>,
     pub wire_mcp: Option<WireMcpSelection>,
+    pub wire_hooks: Option<WireHooksSelection>,
     pub daemon: Option<DaemonStrategy>,
     /// `--print-only`: force a dry run even when actions are opted into.
     pub print_only: bool,
@@ -89,6 +91,7 @@ pub struct InteractiveIo {
     chose_import: bool,
     chose_daemon: bool,
     chose_wiring: bool,
+    chose_hooks: bool,
 }
 
 impl InteractiveIo {
@@ -101,6 +104,7 @@ impl InteractiveIo {
                 harnesses: args.harness.map(Into::into),
                 non_git_cwd: args.non_git_cwd_default.map(Into::into),
                 wire_mcp: args.wire_mcp.map(Into::into),
+                wire_hooks: args.wire_hooks.map(Into::into),
                 daemon: args.daemon.map(Into::into),
                 print_only: args.print_only,
             },
@@ -270,6 +274,43 @@ impl SetupIo for InteractiveIo {
         Ok(wire)
     }
 
+    fn choose_hook_wiring(&mut self, _detection: &SetupDetection) -> SetupResult<WireHooksSelection> {
+        if let Some(seeded) = self.seeds.wire_hooks {
+            println!("Hook wiring: {} (--wire-hooks)", wire_hooks_label(seeded));
+            self.chose_hooks = !matches!(seeded, WireHooksSelection::None);
+            return Ok(seeded);
+        }
+        println!();
+        println!("Passive-recall hooks inject relevant memories automatically — a base block");
+        println!("at session start and a prompt-relevant delta on each turn — so the agent");
+        println!("just remembers, with no extra API cost. This edits settings.json (Claude)");
+        println!("and the Codex hooks config; Codex also needs a one-time `/hooks` trust.");
+        let items = &[
+            "Current harness config only (recommended)",
+            "Claude Code config",
+            "Codex CLI config",
+            "All harness configs",
+            "None (skip hook wiring)",
+        ];
+        // Default-on: index 0 (current harness). The magical "it just remembers"
+        // UX is the point, so the safe-but-passive default is to wire, not skip.
+        let selection = dialoguer::Select::new()
+            .with_prompt("Which harness configs should be wired for passive recall?")
+            .items(items)
+            .default(0)
+            .interact()
+            .unwrap_or(0);
+        let wire = match selection {
+            0 => WireHooksSelection::Current,
+            1 => WireHooksSelection::Claude,
+            2 => WireHooksSelection::Codex,
+            3 => WireHooksSelection::All,
+            _ => WireHooksSelection::None,
+        };
+        self.chose_hooks = !matches!(wire, WireHooksSelection::None);
+        Ok(wire)
+    }
+
     fn choose_daemon_strategy(&mut self, _detection: &SetupDetection) -> SetupResult<DaemonStrategy> {
         if let Some(seeded) = self.seeds.daemon {
             println!("Daemon arrangement: {} (--daemon)", daemon_label(seeded));
@@ -325,13 +366,13 @@ impl SetupIo for InteractiveIo {
 
     fn print_only(&mut self) -> SetupResult<bool> {
         // Honor the "declining every prompt is a safe no-op" contract: when the
-        // user opted into nothing — no import, no daemon, no MCP wiring — there
-        // is nothing to provision, so run in dry-run mode and leave the substrate
-        // untouched (equivalent to `--detect-only`). Opting into any action runs
-        // the real steps, unless `--print-only` forces a dry run. `print_only`
-        // is collected last, after every decision, so `self` reflects the full
-        // session.
-        let declined_everything = !self.chose_import && !self.chose_daemon && !self.chose_wiring;
+        // user opted into nothing — no import, no daemon, no MCP wiring, no hook
+        // wiring — there is nothing to provision, so run in dry-run mode and
+        // leave the substrate untouched (equivalent to `--detect-only`). Opting
+        // into any action (including hook wiring) runs the real steps, unless
+        // `--print-only` forces a dry run. `print_only` is collected last, after
+        // every decision, so `self` reflects the full session.
+        let declined_everything = !self.chose_import && !self.chose_daemon && !self.chose_wiring && !self.chose_hooks;
         Ok(self.seeds.print_only || declined_everything)
     }
 
@@ -384,6 +425,16 @@ fn wire_label(selection: WireMcpSelection) -> &'static str {
         WireMcpSelection::Codex => "Codex CLI",
         WireMcpSelection::All => "all harnesses",
         WireMcpSelection::None => "none",
+    }
+}
+
+fn wire_hooks_label(selection: WireHooksSelection) -> &'static str {
+    match selection {
+        WireHooksSelection::Current => "current harness",
+        WireHooksSelection::Claude => "Claude Code",
+        WireHooksSelection::Codex => "Codex CLI",
+        WireHooksSelection::All => "all harnesses",
+        WireHooksSelection::None => "none",
     }
 }
 
@@ -485,6 +536,13 @@ fn render_epilogue(report: &SetupReport, repo: &Path, runtime: &Path, socket: &P
             "  - First round-trip: ask your agent to call memory_write, then memory_search for the same text.",
         );
     }
+    if matches!(report.decisions.wire_hooks, WireHooksSelection::None) {
+        push(&mut out, "  - Wire passive recall later with `memoryd init --wire-hooks <harness>`.");
+    } else if matches!(report.decisions.wire_hooks, WireHooksSelection::Codex | WireHooksSelection::All) {
+        // Codex skips non-managed hooks until they are trusted — surface the
+        // exact one-time step so passive recall actually fires.
+        push(&mut out, "  - Codex hooks are inactive until trusted: open Codex, run `/hooks`, trust the Memorum hook.");
+    }
     push(&mut out, "  - Something off? See docs/troubleshooting.md.");
     out
 }
@@ -492,7 +550,7 @@ fn render_epilogue(report: &SetupReport, repo: &Path, runtime: &Path, socket: &P
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::setup::{SetupDetectionOptions, SetupStepReport, WireHooksSelection};
+    use crate::setup::{SetupDetectionOptions, SetupStepReport};
 
     /// Canned-answer `SetupIo` for unit tests. All fields are public so each
     /// test can set only the decisions it cares about.
@@ -501,6 +559,7 @@ mod tests {
         harnesses: HarnessSelection,
         non_git_cwd: NonGitCwdDecision,
         wire_mcp: WireMcpSelection,
+        wire_hooks: WireHooksSelection,
         daemon: DaemonStrategy,
         print_only: bool,
         notes: Vec<String>,
@@ -513,6 +572,10 @@ mod tests {
                 harnesses: HarnessSelection::None,
                 non_git_cwd: NonGitCwdDecision::Skip,
                 wire_mcp: WireMcpSelection::None,
+                // Default to declining hook wiring so the canned IO preserves
+                // the existing decline-everything semantics; tests that exercise
+                // wiring set this explicitly.
+                wire_hooks: WireHooksSelection::None,
                 daemon: DaemonStrategy::None,
                 print_only: true,
                 notes: Vec::new(),
@@ -535,6 +598,10 @@ mod tests {
 
         fn choose_mcp_wiring(&mut self, _detection: &SetupDetection) -> SetupResult<WireMcpSelection> {
             Ok(self.wire_mcp)
+        }
+
+        fn choose_hook_wiring(&mut self, _detection: &SetupDetection) -> SetupResult<WireHooksSelection> {
+            Ok(self.wire_hooks)
         }
 
         fn choose_daemon_strategy(&mut self, _detection: &SetupDetection) -> SetupResult<DaemonStrategy> {
@@ -631,6 +698,7 @@ mod tests {
                 harnesses: Some(HarnessSelection::All),
                 non_git_cwd: Some(NonGitCwdDecision::Me),
                 wire_mcp: Some(WireMcpSelection::Claude),
+                wire_hooks: Some(WireHooksSelection::Claude),
                 daemon: Some(DaemonStrategy::OnDemand),
                 print_only: false,
             },
@@ -641,6 +709,7 @@ mod tests {
         assert_eq!(io.choose_harnesses(&detection).expect("harnesses"), HarnessSelection::All);
         assert_eq!(io.choose_non_git_cwd_default(&detection).expect("non_git"), NonGitCwdDecision::Me);
         assert_eq!(io.choose_mcp_wiring(&detection).expect("wire"), WireMcpSelection::Claude);
+        assert_eq!(io.choose_hook_wiring(&detection).expect("wire_hooks"), WireHooksSelection::Claude);
         assert_eq!(io.choose_daemon_strategy(&detection).expect("daemon"), DaemonStrategy::OnDemand);
         assert!(!io.print_only().expect("print_only"), "seeded opt-ins must run real steps");
     }
@@ -730,6 +799,7 @@ mod tests {
             harnesses: HarnessSelection::None, // no harness data to import in the scratch env
             non_git_cwd: NonGitCwdDecision::Me,
             wire_mcp: WireMcpSelection::None, // avoid touching real harness configs in CI
+            wire_hooks: WireHooksSelection::None, // ditto: no real harness config edits in CI
             daemon: DaemonStrategy::None,
             print_only: false, // real run: provisions the substrate
             notes: Vec::new(),
@@ -859,6 +929,7 @@ mod tests {
             harnesses: HarnessSelection::All,
             non_git_cwd: NonGitCwdDecision::Generate,
             wire_mcp: WireMcpSelection::All,
+            wire_hooks: WireHooksSelection::All,
             daemon: DaemonStrategy::Background,
             print_only: false,
             notes: Vec::new(),
@@ -868,6 +939,7 @@ mod tests {
         assert_eq!(io.choose_harnesses(&detection).unwrap(), HarnessSelection::All);
         assert_eq!(io.choose_non_git_cwd_default(&detection).unwrap(), NonGitCwdDecision::Generate);
         assert_eq!(io.choose_mcp_wiring(&detection).unwrap(), WireMcpSelection::All);
+        assert_eq!(io.choose_hook_wiring(&detection).unwrap(), WireHooksSelection::All);
         assert_eq!(io.choose_daemon_strategy(&detection).unwrap(), DaemonStrategy::Background);
         assert!(!io.print_only().unwrap());
 

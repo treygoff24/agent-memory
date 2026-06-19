@@ -31,7 +31,8 @@ use serde::Serialize;
 
 use crate::cli::{UninstallArgs, UninstallHarness};
 use crate::setup::{
-    claude_config_path, codex_config_path, remove_memorum_mcp_json, remove_memorum_mcp_toml, SetupStepStatus,
+    claude_config_path, claude_settings_path, codex_config_path, codex_hooks_path, remove_memorum_hooks_json,
+    remove_memorum_hooks_toml, remove_memorum_mcp_json, remove_memorum_mcp_toml, SetupStepStatus,
 };
 use crate::socket::{probe_live_socket, resolve_socket_path, SocketProbe};
 use crate::{
@@ -160,6 +161,7 @@ async fn execute(args: &UninstallArgs, repo: &Path, runtime: &Path, _confirmed: 
     report.push(stop_step);
     report.push(remove_launchd_step(&detection, args.print_only));
     report.extend(unwire_mcp_steps(args, &detection));
+    report.extend(unwire_hooks_steps(args, &detection));
     report.push(purge_data_step(args, &detection, stop_status));
     report.push(verify_step(&socket, &detection, args.purge, args.print_only));
     report
@@ -176,6 +178,12 @@ struct Detection {
     launchd_plists: Vec<PathBuf>,
     claude_config: Option<HarnessConfigDetection>,
     codex_config: Option<HarnessConfigDetection>,
+    /// Claude `settings.json` holding the passive-recall hooks (distinct from the
+    /// `.claude.json` MCP file).
+    claude_hooks: Option<HarnessConfigDetection>,
+    /// Codex hook config — an existing `hooks.json` if present, else the inline
+    /// `[hooks]` in `config.toml`.
+    codex_hooks: Option<HarnessConfigDetection>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -205,8 +213,11 @@ impl From<SocketProbe> for SocketState {
 impl Detection {
     fn probe(args: &UninstallArgs, repo: &Path, runtime: &Path, socket: &Path) -> Self {
         let home = dirs::home_dir();
-        let claude = claude_config_path(std::env::var("CLAUDE_CONFIG_DIR").ok().as_deref(), home.as_deref());
-        let codex = codex_config_path(std::env::var("CODEX_HOME").ok().as_deref(), home.as_deref());
+        let claude_config_dir = std::env::var("CLAUDE_CONFIG_DIR").ok();
+        let codex_home = std::env::var("CODEX_HOME").ok();
+        let claude = claude_config_path(claude_config_dir.as_deref(), home.as_deref());
+        let codex = codex_config_path(codex_home.as_deref(), home.as_deref());
+        let claude_settings = claude_settings_path(claude_config_dir.as_deref(), home.as_deref());
 
         Self {
             repo: repo.to_path_buf(),
@@ -218,6 +229,8 @@ impl Detection {
             launchd_plists: detected_launchd_plists(),
             claude_config: claude.map(|path| harness_config_detection(path, claude_has_memorum_entry)),
             codex_config: codex.map(|path| harness_config_detection(path, codex_has_memorum_entry)),
+            claude_hooks: claude_settings.map(|path| harness_config_detection(path, claude_has_hooks_entry)),
+            codex_hooks: detect_codex_hooks(codex_home.as_deref(), home.as_deref()),
         }
         .with_harness_filter(args.harness)
     }
@@ -231,15 +244,19 @@ impl Detection {
             Some(UninstallHarness::Codex) => (false, true),
             Some(UninstallHarness::None) => (false, false),
             Some(UninstallHarness::Current) => (
-                self.claude_config.as_ref().is_some_and(|c| c.has_memorum_entry),
-                self.codex_config.as_ref().is_some_and(|c| c.has_memorum_entry),
+                self.claude_config.as_ref().is_some_and(|c| c.has_memorum_entry)
+                    || self.claude_hooks.as_ref().is_some_and(|c| c.has_memorum_entry),
+                self.codex_config.as_ref().is_some_and(|c| c.has_memorum_entry)
+                    || self.codex_hooks.as_ref().is_some_and(|c| c.has_memorum_entry),
             ),
         };
         if !want_claude {
             self.claude_config = None;
+            self.claude_hooks = None;
         }
         if !want_codex {
             self.codex_config = None;
+            self.codex_hooks = None;
         }
         self
     }
@@ -256,6 +273,31 @@ fn claude_has_memorum_entry(body: &str) -> bool {
 
 fn codex_has_memorum_entry(body: &str) -> bool {
     remove_memorum_mcp_toml(body).map(|outcome| outcome.removed > 0).unwrap_or(false)
+}
+
+fn claude_has_hooks_entry(body: &str) -> bool {
+    remove_memorum_hooks_json(body).map(|outcome| outcome.removed > 0).unwrap_or(false)
+}
+
+fn codex_has_hooks_json_entry(body: &str) -> bool {
+    remove_memorum_hooks_json(body).map(|outcome| outcome.removed > 0).unwrap_or(false)
+}
+
+fn codex_has_hooks_toml_entry(body: &str) -> bool {
+    remove_memorum_hooks_toml(body).map(|outcome| outcome.removed > 0).unwrap_or(false)
+}
+
+/// Resolve which Codex file holds the recall hooks. An existing `hooks.json`
+/// wins (that is what the installer prefers), so it is detected first; otherwise
+/// the inline `[hooks]` in `config.toml` is used. Returns the detection for the
+/// file the installer would have written, even when no entry is present yet, so
+/// the report and unwire step agree on the target.
+fn detect_codex_hooks(codex_home: Option<&str>, home: Option<&Path>) -> Option<HarnessConfigDetection> {
+    let hooks_json = codex_hooks_path(codex_home, home);
+    if let Some(path) = hooks_json.filter(|path| path.exists()) {
+        return Some(harness_config_detection(path, codex_has_hooks_json_entry));
+    }
+    codex_config_path(codex_home, home).map(|path| harness_config_detection(path, codex_has_hooks_toml_entry))
 }
 
 fn detected_launchd_plists() -> Vec<PathBuf> {
@@ -294,6 +336,16 @@ fn detect_step(detection: &Detection) -> StepReport {
     .collect();
     if !wired.is_empty() {
         notes.push(format!("memorum MCP entry in: {}", wired.join(", ")));
+    }
+    let hooked: Vec<&str> = [
+        detection.claude_hooks.as_ref().filter(|c| c.has_memorum_entry).map(|_| "claude"),
+        detection.codex_hooks.as_ref().filter(|c| c.has_memorum_entry).map(|_| "codex"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if !hooked.is_empty() {
+        notes.push(format!("memorum recall hooks in: {}", hooked.join(", ")));
     }
     StepReport::new(UninstallStep::Detect, SetupStepStatus::Succeeded).with_message(notes.join("; "))
 }
@@ -490,6 +542,34 @@ fn unwire_mcp_steps(args: &UninstallArgs, detection: &Detection) -> Vec<StepRepo
     steps
 }
 
+/// Remove the passive-recall hooks alongside the MCP entries. Claude hooks live
+/// in `settings.json` (JSON); Codex hooks live in either `hooks.json` (JSON) or
+/// the inline `[hooks]` of `config.toml` (TOML), so the Codex unwire function is
+/// chosen by the detected file's extension. Removal keys on the stable `recall
+/// hook` marker — never the absolute binary path — so upgraded paths are still
+/// recognized, and sibling hooks survive.
+fn unwire_hooks_steps(args: &UninstallArgs, detection: &Detection) -> Vec<StepReport> {
+    let mut steps = Vec::new();
+    if let Some(config) = &detection.claude_hooks {
+        steps.push(unwire_one(UninstallStep::UnwireClaudeHooks, config, args.print_only, remove_memorum_hooks_json));
+    }
+    if let Some(config) = &detection.codex_hooks {
+        let unwire = codex_hooks_unwire_fn(&config.path);
+        steps.push(unwire_one(UninstallStep::UnwireCodexHooks, config, args.print_only, unwire));
+    }
+    steps
+}
+
+/// Pick the Codex hooks unwire function by file shape: `hooks.json` is JSON,
+/// `config.toml`'s inline `[hooks]` is TOML.
+fn codex_hooks_unwire_fn(path: &Path) -> UnwireFn {
+    if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+        remove_memorum_hooks_json
+    } else {
+        remove_memorum_hooks_toml
+    }
+}
+
 type UnwireFn = fn(&str) -> Result<crate::setup::ConfigUnwireOutcome, crate::setup::WireError>;
 
 fn unwire_one(step: UninstallStep, config: &HarnessConfigDetection, print_only: bool, unwire: UnwireFn) -> StepReport {
@@ -623,6 +703,12 @@ fn verify_step(socket: &Path, detection: &Detection, purged: bool, print_only: b
     if detection.codex_config.as_ref().is_some_and(config_still_has_memorum) {
         findings.push("codex config still contains a memorum MCP entry".to_string());
     }
+    if detection.claude_hooks.as_ref().is_some_and(config_still_has_hooks) {
+        findings.push("claude settings still contain a memorum recall hook".to_string());
+    }
+    if detection.codex_hooks.as_ref().is_some_and(config_still_has_hooks) {
+        findings.push("codex config still contains a memorum recall hook".to_string());
+    }
 
     let leftover = leftover_binaries();
     let mut message = if findings.is_empty() {
@@ -653,6 +739,19 @@ fn config_still_has_memorum(config: &HarnessConfigDetection) -> bool {
         claude_has_memorum_entry(&body)
     } else {
         codex_has_memorum_entry(&body)
+    }
+}
+
+fn config_still_has_hooks(config: &HarnessConfigDetection) -> bool {
+    let path = &config.path;
+    let Ok(body) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let json = path.extension().and_then(|ext| ext.to_str()) == Some("json");
+    if json {
+        codex_has_hooks_json_entry(&body)
+    } else {
+        codex_has_hooks_toml_entry(&body)
     }
 }
 
@@ -723,6 +822,8 @@ enum UninstallStep {
     UnwireMcp,
     UnwireClaude,
     UnwireCodex,
+    UnwireClaudeHooks,
+    UnwireCodexHooks,
     PurgeData,
     Verify,
 }
@@ -810,5 +911,42 @@ mod tests {
         let detection = Detection::probe(&input, &repo, &runtime, &resolve_socket_path(&runtime));
         assert!(detection.claude_config.is_none());
         assert!(detection.codex_config.is_none());
+        assert!(detection.claude_hooks.is_none(), "hook detection also dropped by harness filter");
+        assert!(detection.codex_hooks.is_none());
+    }
+
+    #[test]
+    fn codex_hooks_unwire_fn_picks_by_extension() {
+        let json = codex_hooks_unwire_fn(Path::new("/home/u/.codex/hooks.json"));
+        // Codex hooks.json nests events under a top-level `hooks` object, like
+        // Claude settings.json; the JSON unwire keys off that shape.
+        let hooks_json = r#"{ "hooks": { "SessionStart": [ { "hooks": [ { "type": "command", "command": "\"/x/memoryd\" recall hook --socket \"/s\" --harness codex" } ] } ] } }"#;
+        assert!(json(hooks_json).expect("unwire json").removed > 0);
+
+        let toml = codex_hooks_unwire_fn(Path::new("/home/u/.codex/config.toml"));
+        let inline = "\
+[[hooks.SessionStart]]\n\
+[[hooks.SessionStart.hooks]]\n\
+type = \"command\"\n\
+command = \"\\\"/x/memoryd\\\" recall hook --socket \\\"/s\\\" --harness codex\"\n";
+        assert!(toml(inline).expect("unwire toml").removed > 0);
+    }
+
+    #[test]
+    fn unwire_hooks_steps_removes_claude_settings_marker() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let settings = temp.path().join("settings.json");
+        std::fs::write(
+            &settings,
+            r#"{ "hooks": { "SessionStart": [ { "matcher": "startup", "hooks": [ { "type": "command", "command": "\"/old/memoryd\" recall hook --socket \"/s\" --harness claude-code", "timeout": 2 } ] } ] } }"#,
+        )
+        .expect("write settings");
+
+        let detection = HarnessConfigDetection { path: settings.clone(), has_memorum_entry: true };
+        let step = unwire_one(UninstallStep::UnwireClaudeHooks, &detection, false, remove_memorum_hooks_json);
+        assert_eq!(step.status, SetupStepStatus::Succeeded);
+
+        let after = std::fs::read_to_string(&settings).expect("read back");
+        assert!(!after.contains("recall hook"), "marker removed");
     }
 }

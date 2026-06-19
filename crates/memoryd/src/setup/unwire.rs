@@ -17,12 +17,17 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value};
 use toml_edit::DocumentMut;
 
+use super::hooks_wire::RECALL_HOOK_MARKER;
 use super::mcp_wire::WireError;
 
 /// The MCP server name setup writes and uninstall removes.
 pub const MEMORUM_SERVER_NAME: &str = "memorum";
 /// The command an entry must carry to be recognized as ours.
 pub const MEMORUM_SERVER_COMMAND: &str = "memoryd";
+
+/// The lifecycle hook events Memorum wires; uninstall scans each for an entry to
+/// remove. Mirrors `hooks_wire`'s event set.
+const HOOK_EVENTS: &[&str] = &["SessionStart", "UserPromptSubmit", "SubagentStart"];
 
 /// In-memory removal result for a single config body.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,6 +140,127 @@ fn codex_entry_is_memorum(item: Option<&toml_edit::Item>) -> bool {
         .and_then(|table| table.get("command"))
         .and_then(toml_edit::Item::as_str)
         == Some(MEMORUM_SERVER_COMMAND)
+}
+
+/// Resolve the Claude settings.json path holding the recall hooks:
+/// `$CLAUDE_CONFIG_DIR/settings.json` else `~/.claude/settings.json`. Distinct
+/// from [`claude_config_path`], which resolves the `.claude.json` MCP file.
+/// Re-exported from `hooks_wire` so uninstall and setup agree on the location.
+pub use super::hooks_wire::claude_settings_path;
+/// Resolve the Codex `hooks.json` path: `$CODEX_HOME/hooks.json` else
+/// `~/.codex/hooks.json`. Re-exported from `hooks_wire`.
+pub use super::hooks_wire::codex_hooks_path;
+
+/// Remove the Memorum recall hooks from a Claude-style `settings.json` body.
+///
+/// Scans each lifecycle event array under the top-level `hooks` object and drops
+/// every matcher group whose command carries the stable [`RECALL_HOOK_MARKER`]
+/// — matching on the marker, not the absolute binary path, so an upgraded path
+/// is still recognized. Sibling (non-Memorum) hooks and unrelated config are
+/// preserved. Empty event arrays and an emptied `hooks` object left behind are
+/// dropped so no empty scaffolding accumulates.
+pub fn remove_memorum_hooks_json(existing: &str) -> Result<ConfigUnwireOutcome, WireError> {
+    let mut document = parse_json_document(existing)?;
+    let root = document
+        .as_object_mut()
+        .ok_or(WireError::InvalidConfigShape("Claude settings config root must be a JSON object"))?;
+
+    let Some(hooks) = root.get_mut("hooks").and_then(Value::as_object_mut) else {
+        return Ok(ConfigUnwireOutcome { removed: 0, body: String::new() });
+    };
+
+    let mut removed = 0;
+    for event in HOOK_EVENTS {
+        removed += remove_marked_groups_from_event(hooks, event);
+    }
+
+    if removed == 0 {
+        return Ok(ConfigUnwireOutcome { removed, body: String::new() });
+    }
+    if hooks.is_empty() {
+        root.remove("hooks");
+    }
+
+    Ok(ConfigUnwireOutcome { removed, body: format!("{}\n", serde_json::to_string_pretty(&document)?) })
+}
+
+/// Drop every Memorum-marked matcher group from one event array, removing the
+/// array entirely when it ends up empty. Returns the number of groups removed.
+fn remove_marked_groups_from_event(hooks: &mut Map<String, Value>, event: &str) -> usize {
+    let Some(array) = hooks.get_mut(event).and_then(Value::as_array_mut) else {
+        return 0;
+    };
+    let before = array.len();
+    array.retain(|group| !json_group_is_memorum(group));
+    let removed = before - array.len();
+    if array.is_empty() {
+        hooks.remove(event);
+    }
+    removed
+}
+
+/// Whether a Claude matcher group carries a Memorum recall command: any inner
+/// `hooks[].command` containing the stable [`RECALL_HOOK_MARKER`].
+fn json_group_is_memorum(group: &Value) -> bool {
+    group.get("hooks").and_then(Value::as_array).is_some_and(|hooks| hooks.iter().any(json_hook_command_is_memorum))
+}
+
+fn json_hook_command_is_memorum(hook: &Value) -> bool {
+    hook.get("command").and_then(Value::as_str).is_some_and(|command| command.contains(RECALL_HOOK_MARKER))
+}
+
+/// Remove the Memorum recall hooks from a Codex `[hooks]` TOML body.
+///
+/// Scans each lifecycle event array under `[hooks]` and drops every group whose
+/// command carries the stable [`RECALL_HOOK_MARKER`]. Sibling hooks and
+/// unrelated top-level config are preserved by `toml_edit`. Empty event arrays
+/// and an emptied `[hooks]` table are dropped.
+pub fn remove_memorum_hooks_toml(existing: &str) -> Result<ConfigUnwireOutcome, WireError> {
+    let mut document = parse_toml_document(existing)?;
+    let Some(hooks) = document.get_mut("hooks").and_then(|item| item.as_table_mut()) else {
+        return Ok(ConfigUnwireOutcome { removed: 0, body: String::new() });
+    };
+
+    let mut removed = 0;
+    for event in HOOK_EVENTS {
+        removed += remove_marked_groups_from_toml_event(hooks, event);
+    }
+
+    if removed == 0 {
+        return Ok(ConfigUnwireOutcome { removed, body: String::new() });
+    }
+    let hooks_now_empty = hooks.is_empty();
+    if hooks_now_empty {
+        document.as_table_mut().remove("hooks");
+    }
+
+    Ok(ConfigUnwireOutcome { removed, body: document.to_string() })
+}
+
+/// Drop every Memorum-marked group from one Codex event array of tables.
+fn remove_marked_groups_from_toml_event(hooks: &mut toml_edit::Table, event: &str) -> usize {
+    let Some(array) = hooks.get_mut(event).and_then(toml_edit::Item::as_array_of_tables_mut) else {
+        return 0;
+    };
+    let before = array.len();
+    array.retain(|group| !toml_group_is_memorum(group));
+    let removed = before - array.len();
+    if array.is_empty() {
+        hooks.remove(event);
+    }
+    removed
+}
+
+/// Whether a Codex inline hook group carries a Memorum recall command.
+fn toml_group_is_memorum(group: &toml_edit::Table) -> bool {
+    group.get("hooks").and_then(toml_edit::Item::as_array_of_tables).is_some_and(|handlers| {
+        handlers.iter().any(|handler| {
+            handler
+                .get("command")
+                .and_then(toml_edit::Item::as_str)
+                .is_some_and(|command| command.contains(RECALL_HOOK_MARKER))
+        })
+    })
 }
 
 fn parse_json_document(existing: &str) -> Result<Value, WireError> {
@@ -274,5 +400,110 @@ args = []\n";
         let other = "[mcp_servers.memorum]\ncommand = \"not-memoryd\"\nargs = []\n";
         let outcome = remove_memorum_mcp_toml(other).expect("unwire");
         assert_eq!(outcome.removed, 0);
+    }
+
+    #[test]
+    fn claude_settings_path_resolves_settings_json() {
+        let path = claude_settings_path(Some("/cfg"), Some(Path::new("/home/u"))).expect("path");
+        assert_eq!(path, PathBuf::from("/cfg/settings.json"));
+        let path = claude_settings_path(None, Some(Path::new("/home/u"))).expect("path");
+        assert_eq!(path, PathBuf::from("/home/u/.claude/settings.json"));
+    }
+
+    #[test]
+    fn removes_marked_hooks_preserving_siblings_and_dropping_empties() {
+        let existing = r#"{
+          "model": "claude-opus",
+          "hooks": {
+            "SessionStart": [
+              { "hooks": [ { "type": "command", "command": "echo sibling" } ] },
+              { "matcher": "startup|resume|clear|compact", "hooks": [ { "type": "command", "command": "\"/v2/memoryd\" recall hook --socket \"/s.sock\" --harness claude-code", "timeout": 2 } ] }
+            ],
+            "UserPromptSubmit": [
+              { "hooks": [ { "type": "command", "command": "\"/v2/memoryd\" recall hook --socket \"/s.sock\" --harness claude-code", "timeout": 2 } ] }
+            ]
+          }
+        }"#;
+
+        let outcome = remove_memorum_hooks_json(existing).expect("unwire");
+        // One from SessionStart, one from UserPromptSubmit.
+        assert_eq!(outcome.removed, 2);
+
+        let parsed: Value = serde_json::from_str(&outcome.body).expect("json");
+        let root = parsed.as_object().expect("root");
+        assert_eq!(root.get("model").and_then(Value::as_str), Some("claude-opus"), "unrelated field preserved");
+
+        let session_start = parsed["hooks"]["SessionStart"].as_array().expect("array");
+        assert_eq!(session_start.len(), 1, "sibling survives, memorum dropped");
+        assert_eq!(session_start[0]["hooks"][0]["command"], "echo sibling");
+
+        // UserPromptSubmit held only the memorum hook; the emptied array is dropped.
+        assert!(parsed["hooks"].as_object().expect("hooks obj").get("UserPromptSubmit").is_none());
+    }
+
+    #[test]
+    fn marked_removal_drops_empty_hooks_object() {
+        let existing = r#"{
+          "hooks": {
+            "SessionStart": [
+              { "hooks": [ { "type": "command", "command": "\"/x/memoryd\" recall hook --socket \"/s\" --harness claude-code" } ] }
+            ]
+          }
+        }"#;
+        let outcome = remove_memorum_hooks_json(existing).expect("unwire");
+        assert_eq!(outcome.removed, 1);
+        let parsed: Value = serde_json::from_str(&outcome.body).expect("json");
+        assert!(parsed.as_object().expect("root").get("hooks").is_none(), "emptied hooks object dropped");
+    }
+
+    #[test]
+    fn marked_removal_is_noop_without_memorum_hooks() {
+        let existing =
+            r#"{ "hooks": { "SessionStart": [ { "hooks": [ { "type": "command", "command": "echo hi" } ] } ] } }"#;
+        let outcome = remove_memorum_hooks_json(existing).expect("unwire");
+        assert_eq!(outcome.removed, 0);
+        assert!(outcome.body.is_empty());
+
+        let outcome = remove_memorum_hooks_json("").expect("unwire empty");
+        assert_eq!(outcome.removed, 0);
+    }
+
+    #[test]
+    fn removes_marked_codex_inline_hooks_preserving_siblings() {
+        let existing = "\
+model = \"gpt\"\n\
+\n\
+[[hooks.SessionStart]]\n\
+[[hooks.SessionStart.hooks]]\n\
+type = \"command\"\n\
+command = \"echo sibling\"\n\
+\n\
+[[hooks.UserPromptSubmit]]\n\
+[[hooks.UserPromptSubmit.hooks]]\n\
+type = \"command\"\n\
+command = \"\\\"/v2/memoryd\\\" recall hook --socket \\\"/s.sock\\\" --harness codex\"\n\
+timeout = 2\n";
+
+        let outcome = remove_memorum_hooks_toml(existing).expect("unwire");
+        assert_eq!(outcome.removed, 1);
+        let document: DocumentMut = outcome.body.parse().expect("toml");
+        assert_eq!(document.get("model").and_then(toml_edit::Item::as_str), Some("gpt"), "unrelated config preserved");
+        let hooks = document.get("hooks").and_then(toml_edit::Item::as_table).expect("hooks table");
+        // Sibling SessionStart hook survives; emptied UserPromptSubmit dropped.
+        assert!(hooks.get("SessionStart").is_some());
+        assert!(hooks.get("UserPromptSubmit").is_none(), "emptied event dropped");
+    }
+
+    #[test]
+    fn codex_inline_removal_drops_empty_hooks_table() {
+        let existing = "\
+[[hooks.SessionStart]]\n\
+[[hooks.SessionStart.hooks]]\n\
+type = \"command\"\n\
+command = \"\\\"/x/memoryd\\\" recall hook --socket \\\"/s\\\" --harness codex\"\n";
+        let outcome = remove_memorum_hooks_toml(existing).expect("unwire");
+        assert_eq!(outcome.removed, 1);
+        let document: DocumentMut = outcome.body.parse().expect("toml");
+        assert!(document.get("hooks").is_none(), "emptied hooks table dropped");
     }
 }

@@ -5,6 +5,7 @@
 
 pub mod decide;
 pub mod detect;
+pub mod hooks_wire;
 pub mod io;
 pub mod mcp_wire;
 pub mod report;
@@ -21,11 +22,15 @@ pub use decide::{
 pub use detect::{
     DaemonDetection, HarnessDetection, SetupDetection, SetupDetectionOptions, SetupDiscoverySource, SetupSocketState,
 };
+pub use hooks_wire::{
+    wire_hooks, HookSpec, HookWireOutcome, HookWireStatus, CODEX_HOOK_TRUST_NOTICE, RECALL_HOOK_MARKER,
+};
 pub use io::{collect_setup_decisions, FlagDrivenIo, SetupIo};
 pub use mcp_wire::{wire, HarnessTarget, McpServerSpec, WireError, WireMode, WireOutcome, WireStatus};
 pub use report::{SetupReport, SetupStep, SetupStepReport, SetupStepStatus, VerifyDetail};
 pub use unwire::{
-    claude_config_path, codex_config_path, remove_memorum_mcp_json, remove_memorum_mcp_toml, ConfigUnwireOutcome,
+    claude_config_path, claude_settings_path, codex_config_path, codex_hooks_path, remove_memorum_hooks_json,
+    remove_memorum_hooks_toml, remove_memorum_mcp_json, remove_memorum_mcp_toml, ConfigUnwireOutcome,
     MEMORUM_SERVER_COMMAND, MEMORUM_SERVER_NAME,
 };
 

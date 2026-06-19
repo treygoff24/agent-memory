@@ -8,6 +8,23 @@ pub const MAX_SERIALIZED_OMISSIONS: usize = 64;
 pub const DEFAULT_STARTUP_BUDGET_TOKENS: usize = 3_600;
 pub const DEFAULT_DELTA_BUDGET_TOKENS: usize = 400;
 
+/// Hook-mode (passive) startup budget. Claude Code caps an injected SessionStart
+/// block at 10k chars; Stream E estimates ~`ceil(bytes/4)` tokens, so the default
+/// 3600-token budget (~14.4 KB) would spill past the cap. A reduced budget keeps
+/// the rendered base block under [`HOOK_BLOCK_CHAR_CAP`] (plan Decision 8).
+pub const HOOK_STARTUP_BUDGET_TOKENS: usize = 1_900;
+
+/// Hook-mode (passive) delta budget. Subagent/per-turn deltas append to the live
+/// tail (no cached prefix), so the channel stays small to keep injections cheap
+/// (plan Decision 8).
+pub const HOOK_DELTA_BUDGET_TOKENS: usize = 360;
+
+/// Hard character cap for any passively-injected block. Claude Code drops a
+/// SessionStart hook's output past 10k chars to a file, which defeats recall —
+/// the passive render path truncates deterministically below this (plan Decision
+/// 8, "Size" invariant guard).
+pub const HOOK_BLOCK_CHAR_CAP: usize = 10_000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntityMatchKind {
     None,
@@ -31,7 +48,10 @@ pub struct StartupRequest {
     /// ranking state (no surface-marker writes, no recall-hit feedback). Set by
     /// the passive hook handler, which fires on every session/turn/subagent.
     /// Stream E §12 read-only-recall contract (2026-06-19 amendment).
-    #[serde(default)]
+    ///
+    /// Additive on the wire: skipped when `false`, so existing serialized
+    /// request shapes stay byte-identical (protocol-contract stable).
+    #[serde(default, skip_serializing_if = "is_false")]
     pub passive: bool,
 }
 
@@ -54,8 +74,9 @@ pub struct DeltaRequest {
     pub message: String,
     pub budget_tokens: Option<usize>,
     /// Read-only recall: see [`StartupRequest::passive`]. Gates every write on
-    /// the per-turn delta recall path.
-    #[serde(default)]
+    /// the per-turn delta recall path. Additive on the wire: skipped when
+    /// `false`.
+    #[serde(default, skip_serializing_if = "is_false")]
     pub passive: bool,
 }
 

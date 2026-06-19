@@ -105,6 +105,7 @@ async fn test_daemon_backed_recall_hits_route_surfaces_live_recall_emission() {
             include_recent: true,
             since_event_id: None,
             budget_tokens: Some(1024),
+            passive: false,
         }),
     )
     .await
