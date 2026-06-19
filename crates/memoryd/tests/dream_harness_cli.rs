@@ -24,6 +24,37 @@ fn lock_subprocess_test() -> std::sync::MutexGuard<'static, ()> {
     SUBPROCESS_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// Scoped process-env override, restoring prior values on drop. Callers must
+/// hold [`lock_subprocess_test`] since this mutates process-global state.
+struct EnvGuard {
+    saved: Vec<(String, Option<std::ffi::OsString>)>,
+}
+
+impl EnvGuard {
+    fn apply(vars: Vec<(&str, Option<std::ffi::OsString>)>) -> Self {
+        let mut saved = Vec::new();
+        for (key, value) in vars {
+            saved.push((key.to_owned(), std::env::var_os(key)));
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+        Self { saved }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        for (key, value) in self.saved.drain(..) {
+            match value {
+                Some(value) => std::env::set_var(&key, value),
+                None => std::env::remove_var(&key),
+            }
+        }
+    }
+}
+
 #[tokio::test]
 #[cfg(feature = "dev-fixtures")]
 async fn echo_cli_replays_canned_outputs_deterministically() {
@@ -672,6 +703,11 @@ exit 64
 #[test]
 fn claude_auth_probe_does_not_fallback_after_supported_auth_status_auth_failure() {
     let _guard = lock_subprocess_test();
+    // Pin HOME to an empty dir so profile resolution finds no sibling
+    // `~/.claude-*` profiles to scan: this test asserts the per-directory command
+    // fallback, not multi-profile resolution.
+    let home = tempfile::tempdir().expect("home dir");
+    let _env = EnvGuard::apply(vec![("HOME", Some(home.path().as_os_str().to_owned())), ("CLAUDE_CONFIG_DIR", None)]);
     run_async(async {
         let bin_dir = tempfile::tempdir().expect("stub bin dir");
         let marker = bin_dir.path().join("called");
@@ -705,6 +741,9 @@ exit 64
 #[test]
 fn claude_auth_probe_does_not_fallback_on_exit_code_alone() {
     let _guard = lock_subprocess_test();
+    // See sibling test above: pin HOME so no `~/.claude-*` profiles are scanned.
+    let home = tempfile::tempdir().expect("home dir");
+    let _env = EnvGuard::apply(vec![("HOME", Some(home.path().as_os_str().to_owned())), ("CLAUDE_CONFIG_DIR", None)]);
     run_async(async {
         let bin_dir = tempfile::tempdir().expect("stub bin dir");
         let marker = bin_dir.path().join("called");

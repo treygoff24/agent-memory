@@ -70,7 +70,27 @@ assert_contains "<key>KeepAlive</key>"
 assert_contains "<string>$runtime/daemon.out.log</string>"
 assert_contains "<string>$runtime/daemon.err.log</string>"
 assert_contains ".cargo/bin"
+# launchd does not inherit the shell PATH, so the daemon PATH must include the
+# user-local bin dir where `claude` typically resolves. Regression guard.
+assert_contains "/.local/bin"
 assert_contains "<string>$runtime/dream-scheduled.out.log</string>"
+
+# All templated placeholders must be rendered away.
+for placeholder in "{{PATH}}" "{{CLAUDE_CONFIG_DIR_ENTRY}}" "{{MEMORYD_BIN}}" "{{HOME}}"; do
+  if grep -Fq -- "$placeholder" "$out"; then
+    echo "unrendered placeholder remained: $placeholder" >&2
+    cat "$out" >&2
+    exit 1
+  fi
+done
+
+# Without --claude-config-dir, no CLAUDE_CONFIG_DIR is injected (the daemon
+# auto-detects). The installer never reads an ambient CLAUDE_CONFIG_DIR.
+if grep -Fq -- "CLAUDE_CONFIG_DIR" "$out"; then
+  echo "CLAUDE_CONFIG_DIR injected without --claude-config-dir flag" >&2
+  cat "$out" >&2
+  exit 1
+fi
 
 daemon_only="$tmp/daemon-only.out"
 bash "$repo_root/scripts/install-launchd.sh" --repo "$repo" --runtime "$runtime" --daemon --dry-run >"$daemon_only"
@@ -132,5 +152,28 @@ expect_rejection "missing-repo-value" "--repo requires a non-empty value" --repo
 expect_rejection "empty-runtime-value" "--runtime requires a non-empty value" --repo "$repo" --runtime "" --dry-run
 expect_rejection "tilde-repo" "literal ~ is not expanded here" --repo '~/memorum' --runtime "$runtime" --dry-run
 expect_rejection "unknown-flag" "unknown argument: --wat" --repo "$repo" --runtime "$runtime" --wat --dry-run
+
+# --claude-config-dir pins CLAUDE_CONFIG_DIR into the EnvironmentVariables dict.
+ccd_out="$tmp/ccd.out"
+ccd_profile="$physical_tmp/profile-personal"
+bash "$repo_root/scripts/install-launchd.sh" \
+  --repo "$repo" \
+  --runtime "$runtime" \
+  --claude-config-dir "$ccd_profile" \
+  --dry-run >"$ccd_out"
+assert_file_contains "$ccd_out" "<key>CLAUDE_CONFIG_DIR</key>" "claude config dir key"
+assert_file_contains "$ccd_out" "<string>$ccd_profile</string>" "claude config dir value"
+# Both agents (daemon + scheduled dream) must carry the pin.
+ccd_key_count="$(grep -c -- "<key>CLAUDE_CONFIG_DIR</key>" "$ccd_out" || true)"
+if [ "$ccd_key_count" -ne 2 ]; then
+  echo "expected CLAUDE_CONFIG_DIR in both agents, found $ccd_key_count" >&2
+  cat "$ccd_out" >&2
+  exit 1
+fi
+
+expect_rejection "tilde-claude-config-dir" "literal ~ is not expanded here" \
+  --repo "$repo" --runtime "$runtime" --claude-config-dir '~/.claude' --dry-run
+expect_rejection "empty-claude-config-dir-value" "--claude-config-dir requires a non-empty value" \
+  --repo "$repo" --runtime "$runtime" --claude-config-dir --dry-run
 
 echo "install-launchd.test.sh: all checks passed"

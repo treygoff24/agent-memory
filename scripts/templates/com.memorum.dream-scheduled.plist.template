@@ -19,7 +19,7 @@
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:{{HOME}}/.cargo/bin</string>
+    <string>{{PATH}}</string>{{CLAUDE_CONFIG_DIR_ENTRY}}
   </dict>
   <key>StartCalendarInterval</key>
   <dict>

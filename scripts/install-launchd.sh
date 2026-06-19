@@ -4,16 +4,25 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage: scripts/install-launchd.sh --repo PATH --runtime PATH [--dry-run]
+                                  [--claude-config-dir PATH]
 
 Installs Memorum launchd agents for the current macOS user.
 By default installs both the daemon auto-restart agent and scheduled dream job.
 Use --daemon or --dream-scheduler to install only one.
 Use --dry-run to print the rendered plist without writing or loading it.
+
+--claude-config-dir pins CLAUDE_CONFIG_DIR in the daemon environment so dreaming
+authenticates against a specific Claude profile (e.g. $HOME/.claude-personal).
+Required when multiple Claude profiles are logged in; otherwise the daemon
+auto-detects a single authenticated profile. The daemon does not inherit your
+shell PATH, so the rendered plist PATH also includes wherever claude/codex
+currently resolve plus $HOME/.local/bin and $HOME/.cargo/bin.
 USAGE
 }
 
 repo=""
 runtime=""
+claude_config_dir=""
 dry_run=0
 install_daemon=0
 install_dream=0
@@ -86,6 +95,11 @@ while [ "$#" -gt 0 ]; do
       runtime="${2:-}"
       shift 2
       ;;
+    --claude-config-dir)
+      require_option_value "$1" "${2:-}"
+      claude_config_dir="${2:-}"
+      shift 2
+      ;;
     --dry-run)
       dry_run=1
       shift
@@ -116,6 +130,9 @@ if [ -z "$repo" ] || [ -z "$runtime" ]; then
 fi
 reject_literal_tilde "$repo"
 reject_literal_tilde "$runtime"
+if [ -n "$claude_config_dir" ]; then
+  reject_literal_tilde "$claude_config_dir"
+fi
 if [ "$install_daemon" -eq 0 ] && [ "$install_dream" -eq 0 ]; then
   install_daemon=1
   install_dream=1
@@ -139,6 +156,47 @@ case "$memoryd_bin" in
   *) memoryd_bin="$HOME/.cargo/bin/memoryd" ;;
 esac
 memoryd_bin_xml="$(xml_escape "$memoryd_bin")"
+
+# Build the daemon PATH. launchd does not inherit the user's shell PATH, so the
+# dream harness cannot find `claude`/`codex` unless their directories are named
+# here explicitly. Resolve them now (bash sees the real binaries on PATH, not the
+# interactive shell-function wrappers) and add the standard user bin locations.
+# Dedup is order-preserving and bash 3.2-safe (no associative arrays).
+daemon_path=""
+append_path_dir() {
+  local dir="$1"
+  [ -z "$dir" ] && return 0
+  case ":$daemon_path:" in
+    *":$dir:"*) return 0 ;;
+  esac
+  if [ -z "$daemon_path" ]; then
+    daemon_path="$dir"
+  else
+    daemon_path="$daemon_path:$dir"
+  fi
+}
+for dir in /opt/homebrew/bin /usr/local/bin /usr/bin /bin /usr/sbin /sbin "$HOME/.cargo/bin" "$HOME/.local/bin"; do
+  append_path_dir "$dir"
+done
+for tool in claude codex; do
+  resolved="$(command -v "$tool" 2>/dev/null || true)"
+  case "$resolved" in
+    /*) append_path_dir "$(cd "$(dirname "$resolved")" && pwd -P)" ;;
+  esac
+done
+daemon_path_xml="$(xml_escape "$daemon_path")"
+
+# Optional CLAUDE_CONFIG_DIR entry, appended to the EnvironmentVariables dict as
+# a single-line key/value pair (empty when --claude-config-dir was not given).
+# Single-line avoids awk's literal-newline handling in -v; plist XML is
+# whitespace-insensitive so the formatting is irrelevant.
+claude_config_dir_entry=""
+if [ -n "$claude_config_dir" ]; then
+  claude_config_dir_path="$(canonical_path "$claude_config_dir")"
+  claude_config_dir_xml="$(xml_escape "$claude_config_dir_path")"
+  claude_config_dir_entry="<key>CLAUDE_CONFIG_DIR</key><string>${claude_config_dir_xml}</string>"
+fi
+
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 launch_agents="$HOME/Library/LaunchAgents"
 
@@ -148,7 +206,9 @@ render_template() {
     -v repo="$repo_path_xml" \
     -v runtime="$runtime_path_xml" \
     -v home="$home_xml" \
-    -v memoryd_bin="$memoryd_bin_xml" '
+    -v memoryd_bin="$memoryd_bin_xml" \
+    -v daemon_path="$daemon_path_xml" \
+    -v ccd_entry="$claude_config_dir_entry" '
     function replace_all(s, needle, replacement,    out, pos) {
       out = ""
       while ((pos = index(s, needle)) > 0) {
@@ -162,6 +222,8 @@ render_template() {
       line = replace_all(line, "{{RUNTIME_PATH}}", runtime)
       line = replace_all(line, "{{HOME}}", home)
       line = replace_all(line, "{{MEMORYD_BIN}}", memoryd_bin)
+      line = replace_all(line, "{{PATH}}", daemon_path)
+      line = replace_all(line, "{{CLAUDE_CONFIG_DIR_ENTRY}}", ccd_entry)
       print line
     }
   ' "$template"

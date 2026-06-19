@@ -45,7 +45,7 @@ pub(super) async fn doctor_response(substrate: &Substrate) -> DoctorResponse {
             findings.push(DoctorFinding {
                 code: "harness_cli_warning".to_string(),
                 message: probe.operator_message(name),
-                repair: Some(format!("Install/authenticate `{name}` or remove it from dream CLI priority.")),
+                repair: Some(harness_repair_hint(name, &probe)),
             });
         }
     }
@@ -55,6 +55,27 @@ pub(super) async fn doctor_response(substrate: &Substrate) -> DoctorResponse {
         guidance: "Doctor reflects Memorum substrate validation, repair state, and dreaming harness availability."
             .to_string(),
     }
+}
+
+/// Actionable repair guidance for a harness that failed its auth probe.
+///
+/// The Claude adapter has two distinct, easily-confused failure modes under
+/// launchd: the binary is not on the daemon's PATH (the daemon does not inherit
+/// the user's shell PATH), or it is found but no logged-in profile is selected.
+/// Generic "install/authenticate" guidance hides both.
+fn harness_repair_hint(name: &str, probe: &crate::dream::harness::AuthProbeResult) -> String {
+    use crate::dream::harness::AuthProbeResult;
+    if name == "claude" {
+        return match probe {
+            AuthProbeResult::CliMissing { .. } => {
+                "`claude` is not on the daemon's PATH (the launchd daemon does not inherit your shell PATH). Reinstall via scripts/install-launchd.sh so the plist PATH includes the claude binary directory (e.g. ~/.local/bin).".to_string()
+            }
+            _ => {
+                "Authenticate Claude (`claude auth login`), or set CLAUDE_CONFIG_DIR in the daemon environment (launchd plist) to a logged-in profile directory such as ~/.claude-personal, then re-run `memoryd doctor`.".to_string()
+            }
+        };
+    }
+    format!("Install/authenticate `{name}` or remove it from dream CLI priority.")
 }
 
 fn doctor_is_healthy(

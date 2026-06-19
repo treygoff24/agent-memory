@@ -11,6 +11,7 @@ use std::{
 };
 
 use sha2::{Digest, Sha256};
+use tokio::sync::OnceCell;
 
 use crate::protocol::PromptTransport;
 
@@ -185,6 +186,25 @@ impl MinimalEnvironment {
         environment
     }
 
+    /// Like [`Self::for_adapter`], but injects explicit key/value overrides after
+    /// allowlist filtering. Overrides whose key is not in `allowlist` are
+    /// dropped, so this can never widen the hardened subprocess environment
+    /// beyond the adapter's allowlist (e.g. only `CLAUDE_CONFIG_DIR` is injected
+    /// for the Claude adapter).
+    pub fn for_adapter_with_overrides(
+        path_env: Option<OsString>,
+        allowlist: &[&str],
+        overrides: &[(&str, OsString)],
+    ) -> Self {
+        let mut environment = Self::for_adapter(path_env, allowlist);
+        for (key, value) in overrides {
+            if allowlist.contains(key) {
+                environment.values.insert((*key).to_owned(), value.clone());
+            }
+        }
+        environment
+    }
+
     pub fn keys(&self) -> impl Iterator<Item = &str> {
         self.values.keys().map(String::as_str)
     }
@@ -280,9 +300,40 @@ impl HarnessCli for EchoCli {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+/// Maximum number of sibling `~/.claude-*` profile directories scanned when no
+/// explicit `CLAUDE_CONFIG_DIR` is set. Bounds the auth-probe budget.
+const MAX_CLAUDE_PROFILE_CANDIDATES: usize = 8;
+
+#[derive(Debug, Default)]
 pub struct ClaudeCodeCli {
     path_env: Option<OsString>,
+    /// Resolved Claude profile, computed once per instance so the auth probe and
+    /// the dream `complete()` call agree on the same profile within a run.
+    resolution: OnceCell<ClaudeResolution>,
+}
+
+/// Outcome of resolving which Claude profile (`CLAUDE_CONFIG_DIR`) the daemon
+/// should use for the auth probe and dream completion.
+#[derive(Debug, Clone)]
+struct ClaudeResolution {
+    /// Profile dir to inject as `CLAUDE_CONFIG_DIR` for completion. `None` means
+    /// forward the ambient environment — either the operator set an explicit
+    /// `CLAUDE_CONFIG_DIR`, or nothing resolved (in which case completion never
+    /// runs because the probe is not `Ok`).
+    config_dir: Option<PathBuf>,
+    /// The auth-probe result to report; already reflects the resolved profile.
+    probe_result: AuthProbeResult,
+}
+
+/// Filesystem/environment inputs for [`resolve_config_dir`], gathered once so the
+/// resolution policy itself stays pure and unit-testable.
+struct ClaudeResolveInputs {
+    /// Explicit operator-set `CLAUDE_CONFIG_DIR`, if any.
+    explicit_config_dir: Option<PathBuf>,
+    /// Default config dir (`$HOME/.claude`), or `None` when `$HOME` is unset.
+    default_config_dir: Option<PathBuf>,
+    /// Sibling `~/.claude-*` profile dirs that carry an auth artifact.
+    sibling_config_dirs: Vec<PathBuf>,
 }
 
 impl ClaudeCodeCli {
@@ -291,7 +342,7 @@ impl ClaudeCodeCli {
     }
 
     pub fn with_path_env(path_env: OsString) -> Self {
-        Self { path_env: Some(path_env) }
+        Self { path_env: Some(path_env), resolution: OnceCell::new() }
     }
 
     pub fn command(&self, _expect_json: bool) -> HarnessCommandPlan {
@@ -309,8 +360,45 @@ impl ClaudeCodeCli {
         ]
     }
 
-    fn adapter_env(&self) -> AdapterEnv {
-        AdapterEnv { installed: self.is_installed(), path_env: self.path_env.clone(), allowlist: CLAUDE_ENV_ALLOWLIST }
+    /// Run the per-directory command-candidate auth probe (`auth status`, then
+    /// the legacy `config get auth.user` only on an unsupported-command surface)
+    /// with `CLAUDE_CONFIG_DIR` set to `config_dir`, or the ambient env when
+    /// `config_dir` is `None`.
+    async fn probe_dir(&self, config_dir: Option<PathBuf>) -> AuthProbeResult {
+        auth_probe_any(self.auth_probe_candidates(), self.path_env.clone(), CLAUDE_ENV_ALLOWLIST, config_dir).await
+    }
+
+    async fn resolved(&self) -> &ClaudeResolution {
+        self.resolution.get_or_init(|| self.resolve_uncached()).await
+    }
+
+    async fn resolve_uncached(&self) -> ClaudeResolution {
+        if !self.is_installed() {
+            return ClaudeResolution {
+                config_dir: None,
+                probe_result: AuthProbeResult::CliMissing {
+                    which: "claude",
+                    path: path_display(self.path_env.as_deref()),
+                },
+            };
+        }
+
+        let home = home_dir();
+        let inputs = ClaudeResolveInputs {
+            explicit_config_dir: explicit_claude_config_dir(),
+            default_config_dir: home.as_ref().map(|home| home.join(".claude")),
+            sibling_config_dirs: home.as_deref().map(enumerate_sibling_config_dirs).unwrap_or_default(),
+        };
+        resolve_config_dir(inputs, |dir| self.probe_dir(dir)).await
+    }
+
+    fn completion_adapter_env(&self, config_dir: Option<PathBuf>) -> AdapterEnv {
+        AdapterEnv {
+            installed: self.is_installed(),
+            path_env: self.path_env.clone(),
+            allowlist: CLAUDE_ENV_ALLOWLIST,
+            config_dir_override: config_dir,
+        }
     }
 }
 
@@ -328,7 +416,7 @@ impl HarnessCli for ClaudeCodeCli {
     }
 
     fn auth_probe(&self) -> HarnessFuture<'_, AuthProbeResult> {
-        Box::pin(probe_external_auth("claude", self.adapter_env(), self.auth_probe_candidates()))
+        Box::pin(async move { self.resolved().await.probe_result.clone() })
     }
 
     fn complete<'a>(
@@ -337,12 +425,119 @@ impl HarnessCli for ClaudeCodeCli {
         expect_json: bool,
         timeout: Duration,
     ) -> HarnessFuture<'a, Result<String, HarnessCliError>> {
-        Box::pin(complete_for_adapter(
-            self.adapter_env(),
-            self.command(expect_json),
-            prompt,
-            PassRunOptions { expect_json, timeout },
-        ))
+        Box::pin(async move {
+            let config_dir = self.resolved().await.config_dir.clone();
+            complete_for_adapter(
+                self.completion_adapter_env(config_dir),
+                self.command(expect_json),
+                prompt,
+                PassRunOptions { expect_json, timeout },
+            )
+            .await
+        })
+    }
+}
+
+fn explicit_claude_config_dir() -> Option<PathBuf> {
+    std::env::var_os("CLAUDE_CONFIG_DIR").filter(|value| !value.is_empty()).map(PathBuf::from)
+}
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").filter(|value| !value.is_empty()).map(PathBuf::from)
+}
+
+/// Enumerate sibling Claude profile directories: existing `~/.claude-*` dirs
+/// (excluding the default `~/.claude`) that contain a `.credentials.json` auth
+/// artifact. Sorted for deterministic ordering, capped, and never recursive.
+/// Skips non-profile dirs (`~/.claude-shared`, empty scaffolds) that lack creds.
+fn enumerate_sibling_config_dirs(home: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(home) else {
+        return Vec::new();
+    };
+    let mut dirs: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            if !name.to_str()?.starts_with(".claude-") {
+                return None;
+            }
+            let path = entry.path();
+            (path.is_dir() && path.join(".credentials.json").exists()).then_some(path)
+        })
+        .collect();
+    dirs.sort();
+    dirs.truncate(MAX_CLAUDE_PROFILE_CANDIDATES);
+    dirs
+}
+
+/// Resolve which Claude profile to use, probing candidates with `probe`.
+///
+/// Precedence: an explicit operator-set `CLAUDE_CONFIG_DIR` is honored fail-closed
+/// (probe it; never scan). Otherwise the default `~/.claude` is tried; on a normal
+/// auth failure there, sibling profiles are scanned. Exactly one authenticated
+/// sibling wins; multiple authenticated siblings are ambiguous and fail loudly so
+/// the daemon never silently dreams against the wrong account.
+///
+/// This is deliberately distinct from [`auth_probe_any`], which is terminal on a
+/// normal auth failure (it only continues on an unsupported-command surface). The
+/// profile loop must instead continue past a logged-out profile to the next one.
+async fn resolve_config_dir<F, Fut>(inputs: ClaudeResolveInputs, mut probe: F) -> ClaudeResolution
+where
+    F: FnMut(Option<PathBuf>) -> Fut,
+    Fut: Future<Output = AuthProbeResult>,
+{
+    // 1. Explicit operator override: probe the ambient (already-forwarded) env,
+    //    fail-closed — the operator chose this profile, so never fall through to
+    //    scanning if it does not authenticate.
+    if inputs.explicit_config_dir.is_some() {
+        return ClaudeResolution { config_dir: None, probe_result: probe(None).await };
+    }
+
+    // 2. Default ~/.claude.
+    let Some(default_dir) = inputs.default_config_dir else {
+        return ClaudeResolution { config_dir: None, probe_result: probe(None).await };
+    };
+    let default_result = probe(Some(default_dir.clone())).await;
+    match &default_result {
+        AuthProbeResult::Ok => {
+            return ClaudeResolution { config_dir: Some(default_dir), probe_result: AuthProbeResult::Ok };
+        }
+        // Only a normal auth failure warrants scanning siblings; a missing binary,
+        // timeout, or hard error stops here with the typed result intact.
+        AuthProbeResult::AuthFailed { .. } => {}
+        _ => return ClaudeResolution { config_dir: None, probe_result: default_result.clone() },
+    }
+
+    // 3. Scan sibling profiles for authenticated ones.
+    let mut authenticated: Vec<PathBuf> = Vec::new();
+    for dir in inputs.sibling_config_dirs {
+        match probe(Some(dir.clone())).await {
+            AuthProbeResult::Ok => authenticated.push(dir),
+            // Preserve a stop-the-world signal; do not mask it as "no profile".
+            AuthProbeResult::Timeout => {
+                return ClaudeResolution { config_dir: None, probe_result: AuthProbeResult::Timeout };
+            }
+            AuthProbeResult::Error { message } => {
+                return ClaudeResolution { config_dir: None, probe_result: AuthProbeResult::Error { message } };
+            }
+            AuthProbeResult::AuthFailed { .. } | AuthProbeResult::CliMissing { .. } => {}
+        }
+    }
+
+    match authenticated.len() {
+        0 => ClaudeResolution { config_dir: None, probe_result: default_result },
+        1 => ClaudeResolution { config_dir: Some(authenticated.remove(0)), probe_result: AuthProbeResult::Ok },
+        _ => {
+            let names = authenticated.iter().map(|path| path.display().to_string()).collect::<Vec<_>>().join(", ");
+            ClaudeResolution {
+                config_dir: None,
+                probe_result: AuthProbeResult::Error {
+                    message: format!(
+                        "multiple authenticated Claude profiles found ({names}); set CLAUDE_CONFIG_DIR in the daemon environment (e.g. the launchd plist) to choose one"
+                    ),
+                },
+            }
+        }
     }
 }
 
@@ -375,7 +570,12 @@ impl CodexCli {
     }
 
     fn adapter_env(&self) -> AdapterEnv {
-        AdapterEnv { installed: self.is_installed(), path_env: self.path_env.clone(), allowlist: CODEX_ENV_ALLOWLIST }
+        AdapterEnv {
+            installed: self.is_installed(),
+            path_env: self.path_env.clone(),
+            allowlist: CODEX_ENV_ALLOWLIST,
+            config_dir_override: None,
+        }
     }
 }
 
@@ -424,6 +624,23 @@ struct AdapterEnv {
     installed: bool,
     path_env: Option<OsString>,
     allowlist: &'static [&'static str],
+    /// When set, inject `CLAUDE_CONFIG_DIR=<dir>` (allowlist-filtered) into the
+    /// hardened subprocess so the auth probe and completion run against the same
+    /// resolved Claude profile. `None` forwards the ambient environment.
+    config_dir_override: Option<PathBuf>,
+}
+
+impl AdapterEnv {
+    fn min_env(&self) -> MinimalEnvironment {
+        match &self.config_dir_override {
+            Some(dir) => MinimalEnvironment::for_adapter_with_overrides(
+                self.path_env.clone(),
+                self.allowlist,
+                &[("CLAUDE_CONFIG_DIR", dir.clone().into_os_string())],
+            ),
+            None => MinimalEnvironment::for_adapter(self.path_env.clone(), self.allowlist),
+        }
+    }
 }
 
 /// Shared `HarnessCli::complete` body for real external adapters: refuse with
@@ -438,7 +655,8 @@ async fn complete_for_adapter(
     if !env.installed {
         return Err(HarnessCliError::NotInstalled);
     }
-    complete_external(plan, MinimalEnvironment::for_adapter(env.path_env, env.allowlist), prompt, options).await
+    let environment = env.min_env();
+    complete_external(plan, environment, prompt, options).await
 }
 
 async fn complete_external(
@@ -466,7 +684,20 @@ async fn complete_external(
     Ok(output.stdout)
 }
 
-async fn auth_probe(plan: HarnessCommandPlan, path_env: Option<OsString>, env_allowlist: &[&str]) -> AuthProbeResult {
+async fn auth_probe(
+    plan: HarnessCommandPlan,
+    path_env: Option<OsString>,
+    env_allowlist: &[&str],
+    config_dir: Option<PathBuf>,
+) -> AuthProbeResult {
+    let environment = match config_dir {
+        Some(dir) => MinimalEnvironment::for_adapter_with_overrides(
+            path_env,
+            env_allowlist,
+            &[("CLAUDE_CONFIG_DIR", dir.into_os_string())],
+        ),
+        None => MinimalEnvironment::for_adapter(path_env, env_allowlist),
+    };
     let result = run_hardened_command(
         HardenedCommand {
             program: PathBuf::from(plan.program),
@@ -476,7 +707,7 @@ async fn auth_probe(plan: HarnessCommandPlan, path_env: Option<OsString>, env_al
             timeout: AUTH_PROBE_TIMEOUT,
             kill_grace: DEFAULT_KILL_GRACE,
             scratch_root: default_scratch_root(),
-            environment: MinimalEnvironment::for_adapter(path_env, env_allowlist),
+            environment,
             redact_stderr: false,
         },
         "",
@@ -504,17 +735,19 @@ async fn probe_external_auth(
     if !env.installed {
         return AuthProbeResult::CliMissing { which, path: path_display(env.path_env.as_deref()) };
     }
-    auth_probe_any(candidates, env.path_env, env.allowlist).await
+    auth_probe_any(candidates, env.path_env, env.allowlist, None).await
 }
 
 async fn auth_probe_any(
     candidates: Vec<AuthProbeCandidate>,
     path_env: Option<OsString>,
     env_allowlist: &[&str],
+    config_dir: Option<PathBuf>,
 ) -> AuthProbeResult {
     auth_probe_any_with_runner(candidates, |plan| {
         let path_env = path_env.clone();
-        async move { auth_probe(plan, path_env, env_allowlist).await }
+        let config_dir = config_dir.clone();
+        async move { auth_probe(plan, path_env, env_allowlist, config_dir).await }
     })
     .await
 }
@@ -1159,5 +1392,150 @@ mod tests {
         assert!(!result.is_ok(), "I/O error on preferred must not fall back");
         assert_eq!(calls.len(), 1, "should only call preferred candidate");
         assert_eq!(calls[0].args, ["login", "status"]);
+    }
+
+    fn auth_failed() -> AuthProbeResult {
+        AuthProbeResult::AuthFailed { exit_code: Some(1), stderr_tail: "loggedIn:false".to_owned() }
+    }
+
+    fn dir_basename(dir: &Option<PathBuf>) -> Option<String> {
+        dir.as_deref()?.file_name()?.to_str().map(str::to_owned)
+    }
+
+    #[tokio::test]
+    async fn resolve_uses_default_when_default_authenticates() {
+        let home = PathBuf::from("/home/u");
+        let inputs = ClaudeResolveInputs {
+            explicit_config_dir: None,
+            default_config_dir: Some(home.join(".claude")),
+            sibling_config_dirs: vec![home.join(".claude-work")],
+        };
+        let mut calls = 0usize;
+        let resolution = resolve_config_dir(inputs, |_dir| {
+            calls += 1;
+            async move { AuthProbeResult::Ok }
+        })
+        .await;
+
+        assert!(resolution.probe_result.is_ok());
+        assert_eq!(resolution.config_dir.as_deref(), Some(home.join(".claude").as_path()));
+        assert_eq!(calls, 1, "an authenticated default must not scan siblings");
+    }
+
+    #[tokio::test]
+    async fn resolve_picks_single_authenticated_sibling_when_default_logged_out() {
+        let home = PathBuf::from("/home/u");
+        let inputs = ClaudeResolveInputs {
+            explicit_config_dir: None,
+            default_config_dir: Some(home.join(".claude")),
+            sibling_config_dirs: vec![home.join(".claude-personal"), home.join(".claude-work")],
+        };
+        let resolution = resolve_config_dir(inputs, |dir| {
+            let authenticated = dir_basename(&dir).as_deref() == Some(".claude-personal");
+            async move {
+                if authenticated {
+                    AuthProbeResult::Ok
+                } else {
+                    auth_failed()
+                }
+            }
+        })
+        .await;
+
+        assert!(resolution.probe_result.is_ok());
+        assert_eq!(resolution.config_dir.as_deref(), Some(home.join(".claude-personal").as_path()));
+    }
+
+    #[tokio::test]
+    async fn resolve_fails_loudly_when_multiple_siblings_authenticate() {
+        let home = PathBuf::from("/home/u");
+        let inputs = ClaudeResolveInputs {
+            explicit_config_dir: None,
+            default_config_dir: Some(home.join(".claude")),
+            sibling_config_dirs: vec![home.join(".claude-personal"), home.join(".claude-work")],
+        };
+        let resolution = resolve_config_dir(inputs, |dir| {
+            let is_sibling = dir_basename(&dir).is_some_and(|name| name != ".claude");
+            async move {
+                if is_sibling {
+                    AuthProbeResult::Ok
+                } else {
+                    auth_failed()
+                }
+            }
+        })
+        .await;
+
+        assert!(!resolution.probe_result.is_ok());
+        assert!(resolution.config_dir.is_none(), "ambiguity must not silently pick a profile");
+        match resolution.probe_result {
+            AuthProbeResult::Error { message } => {
+                assert!(message.contains("multiple authenticated Claude profiles"), "{message}");
+                assert!(message.contains("CLAUDE_CONFIG_DIR"), "{message}");
+            }
+            other => panic!("expected ambiguity Error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_explicit_env_is_fail_closed_and_never_scans() {
+        let home = PathBuf::from("/home/u");
+        let inputs = ClaudeResolveInputs {
+            explicit_config_dir: Some(home.join(".claude-work")),
+            default_config_dir: Some(home.join(".claude")),
+            sibling_config_dirs: vec![home.join(".claude-personal")],
+        };
+        let mut calls: Vec<Option<PathBuf>> = Vec::new();
+        let resolution = resolve_config_dir(inputs, |dir| {
+            calls.push(dir);
+            async move { auth_failed() }
+        })
+        .await;
+
+        assert!(!resolution.probe_result.is_ok(), "explicit-env auth failure must not fall through to scanning");
+        assert!(resolution.config_dir.is_none(), "explicit env forwards ambient; no injected override");
+        assert_eq!(calls, vec![None], "explicit env probes the ambient env exactly once and never scans");
+    }
+
+    #[tokio::test]
+    async fn resolve_default_timeout_does_not_scan_siblings() {
+        let home = PathBuf::from("/home/u");
+        let inputs = ClaudeResolveInputs {
+            explicit_config_dir: None,
+            default_config_dir: Some(home.join(".claude")),
+            sibling_config_dirs: vec![home.join(".claude-personal")],
+        };
+        let mut calls = 0usize;
+        let resolution = resolve_config_dir(inputs, |_dir| {
+            calls += 1;
+            async move { AuthProbeResult::Timeout }
+        })
+        .await;
+
+        assert!(matches!(resolution.probe_result, AuthProbeResult::Timeout));
+        assert_eq!(calls, 1, "a timeout on the default profile must not scan siblings");
+    }
+
+    #[test]
+    fn enumerate_sibling_config_dirs_filters_and_sorts() {
+        let home = tempfile::tempdir().expect("home");
+        let root = home.path();
+        for profile in [".claude-work", ".claude-personal"] {
+            std::fs::create_dir_all(root.join(profile)).expect("profile dir");
+            std::fs::write(root.join(profile).join(".credentials.json"), "{}").expect("creds");
+        }
+        // Default dir (wrong prefix), a credential-less scaffold, and a plain file
+        // must all be excluded.
+        std::fs::create_dir_all(root.join(".claude")).expect("default dir");
+        std::fs::write(root.join(".claude").join(".credentials.json"), "{}").expect("default creds");
+        std::fs::create_dir_all(root.join(".claude-shared")).expect("shared dir");
+        std::fs::write(root.join(".claude-not-a-dir"), "x").expect("decoy file");
+
+        let names: Vec<String> = enumerate_sibling_config_dirs(root)
+            .iter()
+            .map(|dir| dir.file_name().unwrap().to_str().unwrap().to_owned())
+            .collect();
+
+        assert_eq!(names, vec![".claude-personal".to_owned(), ".claude-work".to_owned()]);
     }
 }
