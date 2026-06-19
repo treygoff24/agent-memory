@@ -33,13 +33,13 @@ memoryd import --repo "$MEMORUM_REPO" --socket "$MEMORUM_SOCKET"
 
 That is the default invocation, and for the overwhelming majority of users it is the only one you need. Its default behavior:
 
-| Default | Behavior |
-|---|---|
-| Claude source | Auto-detects and imports the **union of all** `~/.claude*/projects` roots, deduplicated. Covers multi-profile setups with no extra flag. |
-| Codex source | Imports `~/.codex/memories` (Task Group blocks → memories; ad-hoc notes → memories; rollout summaries → evidence refs). |
+| Default              | Behavior                                                                                                                                                                                               |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Claude source        | Auto-detects and imports the **union of all** `~/.claude*/projects` roots, deduplicated. Covers multi-profile setups with no extra flag.                                                               |
+| Codex source         | Imports `~/.codex/memories` (Task Group blocks → memories; ad-hoc notes → memories; rollout summaries → evidence refs).                                                                                |
 | Non-git-cwd memories | Given a **project namespace derived from the cwd path** (`--non-git-cwd-default project`), no `.memory-project.yaml` written. Saved and **active/recall-visible immediately**, never silently skipped. |
-| Frontmatter | Malformed YAML is recovered leniently; the body always imports. |
-| Re-run | Unchanged sources skipped by content hash. |
+| Frontmatter          | Malformed YAML is recovered leniently; the body always imports.                                                                                                                                        |
+| Re-run               | Unchanged sources skipped by content hash.                                                                                                                                                             |
 
 ### Why no `--from-claude` by default
 
@@ -66,17 +66,17 @@ memoryd import [--repo <PATH>] [--socket <PATH>]
                [--quiet]
 ```
 
-| Flag | Default | Meaning |
-|---|---|---|
-| `--repo <PATH>` | `$MEMORUM_REPO` or `~/memorum` | Canonical Memorum repo root. |
-| `--socket <PATH>` | `<repo>/.memoryd/memoryd.sock` | Daemon socket; import writes go through it. |
-| `--from-claude <PATH>` | auto-detect union of `~/.claude*/projects` | Pin an exact Claude root. **Repeatable.** When present, auto-detect is skipped. |
-| `--from-codex <PATH>` | `~/.codex/memories` | Override the Codex memory root. |
-| `--harness <all\|claude\|codex>` | `all` | Restrict the run to one harness. |
-| `--non-git-cwd-default <project\|me\|generate\|skip>` | `project` | Placement for memories whose cwd is not a git checkout. See below. |
-| `--dry-run` | off | Plan and report what would be written; issue zero daemon calls. |
-| `--report <FILE.json>` | none | Write the full reconciliation report as JSON. |
-| `--quiet` | off | Suppress per-item progress lines; still prints the final summary. |
+| Flag                                                  | Default                                    | Meaning                                                                         |
+| ----------------------------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------- |
+| `--repo <PATH>`                                       | `$MEMORUM_REPO` or `~/memorum`             | Canonical Memorum repo root.                                                    |
+| `--socket <PATH>`                                     | `<repo>/.memoryd/memoryd.sock`             | Daemon socket; import writes go through it.                                     |
+| `--from-claude <PATH>`                                | auto-detect union of `~/.claude*/projects` | Pin an exact Claude root. **Repeatable.** When present, auto-detect is skipped. |
+| `--from-codex <PATH>`                                 | `~/.codex/memories`                        | Override the Codex memory root.                                                 |
+| `--harness <all\|claude\|codex>`                      | `all`                                      | Restrict the run to one harness.                                                |
+| `--non-git-cwd-default <project\|me\|generate\|skip>` | `project`                                  | Placement for memories whose cwd is not a git checkout. See below.              |
+| `--dry-run`                                           | off                                        | Plan and report what would be written; issue zero daemon calls.                 |
+| `--report <FILE.json>`                                | none                                       | Write the full reconciliation report as JSON.                                   |
+| `--quiet`                                             | off                                        | Suppress per-item progress lines; still prints the final summary.               |
 
 ### `--non-git-cwd-default`
 
@@ -103,13 +103,13 @@ Memorum import complete.
 next: memoryd search "<topic>" --socket /Users/u/memorum/.memoryd/memoryd.sock
 ```
 
-| Field | Meaning | Your read |
-|---|---|---|
-| `imported-active` | Written and recall-visible now. | The success number. Report it. |
-| `queued-for-review` | Items the governance layer flagged for a human look. | Nonzero for contradictions caught at write time, or memories explicitly routed to `me` scope. Inspect with `review queue`; accept individually with `review approve <id>`. |
-| `privacy-blocked` | Stream D refused these (PII/contacts/donor-shaped content). | **Expected. Not an error.** Listed in `refusals[]`. Do not retry or flag as failure. |
-| `frontmatter-recovered` | Broken YAML; body imported anyway. | Fine. No action. |
-| `dropped` | Truly unreadable files. | The only real data loss. Name them to the user (listed in the report). |
+| Field                   | Meaning                                                     | Your read                                                                                                                                                                  |
+| ----------------------- | ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `imported-active`       | Written and recall-visible now.                             | The success number. Report it.                                                                                                                                             |
+| `queued-for-review`     | Items the governance layer flagged for a human look.        | Nonzero for contradictions caught at write time, or memories explicitly routed to `me` scope. Inspect with `review queue`; accept individually with `review approve <id>`. |
+| `privacy-blocked`       | Stream D refused these (PII/contacts/donor-shaped content). | **Expected. Not an error.** Listed in `refusals[]`. Do not retry or flag as failure.                                                                                       |
+| `frontmatter-recovered` | Broken YAML; body imported anyway.                          | Fine. No action.                                                                                                                                                           |
+| `dropped`               | Truly unreadable files.                                     | The only real data loss. Name them to the user (listed in the report).                                                                                                     |
 
 The `next:` line gives the exact follow-up command to confirm a memory landed.
 
@@ -141,12 +141,8 @@ The JSON report carries the same counters plus per-source detail. Shape:
       "suggested_next_action": null
     }
   ],
-  "frontmatter_recovered": [
-    { "source_key": "claude:projects/.../memory/feedback_x.md", "memory_id": "mem_..." }
-  ],
-  "dropped": [
-    { "source_key": "claude:projects/.../memory/corrupt.md", "reason": "unreadable" }
-  ],
+  "frontmatter_recovered": [{ "source_key": "claude:projects/.../memory/feedback_x.md", "memory_id": "mem_..." }],
+  "dropped": [{ "source_key": "claude:projects/.../memory/corrupt.md", "reason": "unreadable" }],
   "next_action": "memoryd search \"<topic>\" --socket <sock>"
 }
 ```
@@ -186,28 +182,28 @@ With defaults, every non-git-cwd memory lands in a derived project scope and is 
 
 ## Related commands
 
-| Command | Flag convention | Use |
-|---|---|---|
-| `memoryd status --socket <sock>` | `--socket` | Daemon reachable? |
+| Command                                         | Flag convention                             | Use                                              |
+| ----------------------------------------------- | ------------------------------------------- | ------------------------------------------------ |
+| `memoryd status --socket <sock>`                | `--socket`                                  | Daemon reachable?                                |
 | `memoryd doctor --repo <repo> [--runtime <rt>]` | `--repo`/`--runtime` (tolerates `--socket`) | Substrate health. Exits non-zero when unhealthy. |
-| `memoryd search "<q>" --socket <sock>` | `--socket` | Recall over the store. |
-| `memoryd get <id> --socket <sock>` | `--socket` | Full body of one memory. |
-| `memoryd review queue --socket <sock>` | `--socket` | List candidates and quarantined items. |
-| `memoryd review approve <id> --socket <sock>` | `--socket` | Approve one queued candidate by id. |
-| `memoryd forget <id> --socket <sock>` | `--socket` | Remove one memory. |
-| `memoryd export --socket <sock>` | `--socket` | Dump the store. |
+| `memoryd search "<q>" --socket <sock>`          | `--socket`                                  | Recall over the store.                           |
+| `memoryd get <id> --socket <sock>`              | `--socket`                                  | Full body of one memory.                         |
+| `memoryd review queue --socket <sock>`          | `--socket`                                  | List candidates and quarantined items.           |
+| `memoryd review approve <id> --socket <sock>`   | `--socket`                                  | Approve one queued candidate by id.              |
+| `memoryd forget <id> --socket <sock>`           | `--socket`                                  | Remove one memory.                               |
+| `memoryd export --socket <sock>`                | `--socket`                                  | Dump the store.                                  |
 
 Note the split: `doctor` reads the substrate directly and is keyed on `--repo`/`--runtime`; the rest go through the daemon and are keyed on `--socket`. `doctor` now also tolerates `--socket` so a health-gated import loop can pass one consistent set of flags.
 
 ## Troubleshooting quick reference
 
-| Symptom | Likely cause | Action |
-|---|---|---|
-| Non-zero exit, "connection refused" | Daemon not running | Start it; `memoryd status` to confirm. |
-| `AnotherImportInProgress { pid: N }` | Concurrent or hung import | `kill -0 N`; if dead, clear the lock (see `docs/troubleshooting.md`). |
-| Everything reports skipped/unchanged | Corpus already imported | Correct on re-run. No action. |
-| `privacy-blocked` count > 0 | Sensitive content refused by Stream D | Expected. Report the count; don't retry. |
-| `dropped` count > 0 | Unreadable source files | Real loss; name the files (in the report) to the user. |
-| a memory isn't in search | Routed to `me` scope, or governance-quarantined | `memoryd review queue`, then `memoryd review approve <id>`. |
+| Symptom                              | Likely cause                                    | Action                                                                |
+| ------------------------------------ | ----------------------------------------------- | --------------------------------------------------------------------- |
+| Non-zero exit, "connection refused"  | Daemon not running                              | Start it; `memoryd status` to confirm.                                |
+| `AnotherImportInProgress { pid: N }` | Concurrent or hung import                       | `kill -0 N`; if dead, clear the lock (see `docs/troubleshooting.md`). |
+| Everything reports skipped/unchanged | Corpus already imported                         | Correct on re-run. No action.                                         |
+| `privacy-blocked` count > 0          | Sensitive content refused by Stream D           | Expected. Report the count; don't retry.                              |
+| `dropped` count > 0                  | Unreadable source files                         | Real loss; name the files (in the report) to the user.                |
+| a memory isn't in search             | Routed to `me` scope, or governance-quarantined | `memoryd review queue`, then `memoryd review approve <id>`.           |
 
 For anything not covered here, `docs/troubleshooting.md` maps symptoms to fixes and `docs/importer.md` carries the design rationale and re-import semantics.
