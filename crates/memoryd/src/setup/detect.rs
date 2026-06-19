@@ -1,11 +1,12 @@
 //! Detection for the shared setup engine.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
 use crate::import::discovery::{
-    discover_claude_memory_root, discover_codex_memory_root, ClaudeMemoryRoot, CodexMemoryRoot, DiscoverySource,
+    discover_claude_memory_roots, discover_codex_memory_root, ClaudeMemoryRoot, CodexMemoryRoot, DiscoverySource,
 };
 use crate::import::sources::{claude, codex};
 use crate::paths::default_socket;
@@ -37,11 +38,15 @@ impl SetupDetection {
 
     /// Detect setup state with explicit path overrides.
     pub fn run_with_options(options: SetupDetectionOptions) -> SetupResult<Self> {
-        let claude_root = discover_claude_memory_root(options.claude_root_override.as_deref())?;
+        // Detect across the union of all Claude profile roots so the wizard's
+        // candidate count and its "nothing to import" gate match what `import`
+        // will actually parse — not just the single precedence root.
+        let override_roots: Vec<PathBuf> = options.claude_root_override.iter().cloned().collect();
+        let claude_roots = discover_claude_memory_roots(&override_roots)?;
         let codex_root = discover_codex_memory_root(options.codex_root_override.as_deref())?;
         let daemon = detect_daemon(options.socket_path);
 
-        Ok(Self { claude: detect_claude(claude_root)?, codex: detect_codex(codex_root)?, daemon })
+        Ok(Self { claude: detect_claude(&claude_roots)?, codex: detect_codex(codex_root)?, daemon })
     }
 }
 
@@ -104,16 +109,33 @@ impl From<SocketProbe> for SetupSocketState {
     }
 }
 
-fn detect_claude(root: Option<ClaudeMemoryRoot>) -> SetupResult<HarnessDetection> {
-    let Some(root) = root else {
+fn detect_claude(roots: &[ClaudeMemoryRoot]) -> SetupResult<HarnessDetection> {
+    let Some(primary) = roots.first() else {
         return Ok(empty_harness_detection());
     };
-    let output = claude::parse(&root.path)?;
+    // Aggregate candidates across every profile root, deduped the same way the
+    // importer dedups (canonical source path + source_key), so a memory reached
+    // through several symlinked profiles is counted once. The precedence root is
+    // reported for display.
+    let mut seen: HashSet<(PathBuf, String)> = HashSet::new();
+    let mut candidates = 0usize;
+    let mut parse_errors = 0usize;
+    for root in roots {
+        let output = claude::parse(&root.path)?;
+        parse_errors += output.errors.len();
+        for candidate in output.candidates {
+            let canonical =
+                std::fs::canonicalize(&candidate.source_path).unwrap_or_else(|_| candidate.source_path.clone());
+            if seen.insert((canonical, candidate.source_key)) {
+                candidates += 1;
+            }
+        }
+    }
     Ok(HarnessDetection {
-        root: Some(root.path),
-        source: Some(root.source.into()),
-        candidates: output.candidates.len(),
-        parse_errors: output.errors.len(),
+        root: Some(primary.path.clone()),
+        source: Some(primary.source.into()),
+        candidates,
+        parse_errors,
     })
 }
 

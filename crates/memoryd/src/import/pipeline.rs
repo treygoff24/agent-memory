@@ -447,16 +447,10 @@ impl ImportEngine {
                             });
                         }
                         other => {
-                            counters_mut(&mut report, &harness_key).written_candidate += 1;
-                            push_candidate_entry(
-                                &mut report.candidates,
-                                action,
-                                &harness_key,
-                                supersede.new_id.clone(),
-                            );
                             if opts.verbose_progress {
-                                eprintln!("{progress_prefix} bucket-repair-{:?}: {}", other, action.source_key);
+                                eprintln!("{progress_prefix} bucket-repair-{other:?}: {}", action.source_key);
                             }
+                            record_supersede_secondary(&mut report, action, other, supersede.new_id.clone());
                         }
                     }
                     continue;
@@ -553,16 +547,10 @@ impl ImportEngine {
                                 });
                             }
                             other => {
-                                counters_mut(&mut report, &harness_key).written_candidate += 1;
-                                push_candidate_entry(
-                                    &mut report.candidates,
-                                    action,
-                                    &harness_key,
-                                    supersede.new_id.clone(),
-                                );
                                 if opts.verbose_progress {
-                                    eprintln!("{progress_prefix} supersede-{:?}: {}", other, action.source_key);
+                                    eprintln!("{progress_prefix} supersede-{other:?}: {}", action.source_key);
                                 }
+                                record_supersede_secondary(&mut report, action, other, supersede.new_id.clone());
                             }
                         }
                     } else {
@@ -893,6 +881,40 @@ fn push_candidate_entry(
     entries.push(CandidateEntry { source_key: action.source_key.clone(), harness: harness_key.to_string(), memory_id });
 }
 
+/// Route a supersede / bucket-repair outcome whose status is neither `Promoted`
+/// nor `Refused` to the correct reconciliation bucket, so the counters and the
+/// `candidates[]` / `quarantined[]` lists stay one-to-one with the per-status
+/// arms on the primary write path. `Quarantined` lands in the quarantine list,
+/// `Tombstoned` is recorded as a refusal, and everything else (`Candidate`) is a
+/// written candidate.
+fn record_supersede_secondary(
+    report: &mut ImportReport,
+    action: &PlannedWrite,
+    status: GovernanceStatus,
+    new_id: Option<String>,
+) {
+    let harness_key = action.candidate.harness.as_str();
+    match status {
+        GovernanceStatus::Quarantined => {
+            counters_mut(report, harness_key).quarantined += 1;
+            push_candidate_entry(&mut report.quarantined, action, harness_key, new_id);
+        }
+        GovernanceStatus::Tombstoned => {
+            bump_refusal(counters_mut(report, harness_key), "tombstone");
+            report.refusals.push(RefusalEntry {
+                source_key: action.source_key.clone(),
+                harness: harness_key.to_string(),
+                reason: "tombstone".to_string(),
+                suggested_next_action: None,
+            });
+        }
+        _ => {
+            counters_mut(report, harness_key).written_candidate += 1;
+            push_candidate_entry(&mut report.candidates, action, harness_key, new_id);
+        }
+    }
+}
+
 fn record_unexpected_response(report: &mut ImportReport, harness_key: &str, action: &PlannedWrite, reason: &str) {
     counters_mut(report, harness_key).refused_other += 1;
     report.refusals.push(RefusalEntry {
@@ -945,15 +967,27 @@ impl ImportEngine {
             parse_errors.extend(output.errors);
             frontmatter_recovered.extend(output.recovered);
         }
-        // Source-key dedup below can drop duplicate candidates reached through
+        // The canonical-path dedup below collapses a memory reached through
         // multiple profile symlinks; dedup the recovered keys the same way so a
         // memory recovered through two roots is reported once.
         frontmatter_recovered.sort();
         frontmatter_recovered.dedup();
         let claude_roots_used: Vec<String> =
             claude_root_summaries.iter().map(|(path, _)| path.display().to_string()).collect();
-        let mut seen_claude_keys: HashSet<String> = HashSet::new();
-        claude_candidates.retain(|candidate| seen_claude_keys.insert(candidate.source_key.clone()));
+        // Collapse the SAME backing file reached through multiple profile
+        // symlinks (identical canonical path) but keep genuinely distinct files
+        // that happen to share a relative source_key across non-shared profiles,
+        // and keep decomposed sections of one file (same path, distinct
+        // source_key). Keying on source_key alone would silently drop the
+        // second of two same-named-but-different memories from separate
+        // profiles; keying on canonical path alone would collapse a dossier's
+        // sections. Canonicalize so symlinked roots resolve to one shared store.
+        let mut seen_claude: HashSet<(PathBuf, String)> = HashSet::new();
+        claude_candidates.retain(|candidate| {
+            let canonical =
+                std::fs::canonicalize(&candidate.source_path).unwrap_or_else(|_| candidate.source_path.clone());
+            seen_claude.insert((canonical, candidate.source_key.clone()))
+        });
         let claude_count = claude_candidates.len();
         candidates.extend(claude_candidates);
 

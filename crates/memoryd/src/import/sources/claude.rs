@@ -261,10 +261,29 @@ fn lenient_frontmatter_hint(yaml: &str) -> BTreeMap<String, Value> {
         let Some((key, value)) = split_simple_key_value(line) else {
             continue;
         };
-        let value = unwrap_matched_quotes(value.trim());
+        let value = value.trim();
+        // A block-scalar header (`|`, `>`, with optional chomping/indent
+        // indicators) carries its content on the following indented lines, which
+        // this flat line-scan deliberately skips. Recording the sentinel as the
+        // literal value would store a wrong `"|"`; skip the field instead.
+        if is_block_scalar_header(value) {
+            continue;
+        }
+        let value = unwrap_matched_quotes(value);
         hint.insert(key.to_string(), Value::String(value.to_string()));
     }
     hint
+}
+
+/// True for a YAML block-scalar header: `|` or `>` optionally followed by a
+/// chomping indicator (`+`/`-`) and/or an explicit indent digit, with nothing
+/// else on the line. Such a value's content lives on subsequent indented lines.
+fn is_block_scalar_header(value: &str) -> bool {
+    let mut chars = value.chars();
+    if !matches!(chars.next(), Some('|' | '>')) {
+        return false;
+    }
+    chars.all(|c| c == '+' || c == '-' || c.is_ascii_digit())
 }
 
 /// Match a `^(\w[\w-]*):\s*(.*)$` line and return `(key, rest_of_line)`.
@@ -580,6 +599,41 @@ Promote to prod.\n";
         assert_eq!(c.title.as_deref(), Some("\"Shape of policy\" doc altitude — voice calibration"),);
         assert_eq!(c.frontmatter_hint.get("type").and_then(Value::as_str), Some("note"));
         assert!(out.recovered.iter().any(|k| k.contains("altitude.md")), "recovered: {:?}", out.recovered);
+    }
+
+    #[test]
+    fn is_block_scalar_header_matches_pipe_and_fold_with_indicators() {
+        assert!(is_block_scalar_header("|"));
+        assert!(is_block_scalar_header(">"));
+        assert!(is_block_scalar_header("|-"));
+        assert!(is_block_scalar_header(">+"));
+        assert!(is_block_scalar_header("|2"));
+        // Plain values that merely start with these bytes but carry inline text
+        // are not headers — they're kept verbatim.
+        assert!(!is_block_scalar_header("| not a header"));
+        assert!(!is_block_scalar_header("plain"));
+        assert!(!is_block_scalar_header(""));
+    }
+
+    #[test]
+    fn lenient_recovery_skips_block_scalar_value_instead_of_storing_sentinel() {
+        // The `name:` line fails strict YAML (colon in value), forcing the lenient
+        // scan; a `description: |` block header must be skipped, not recorded as
+        // the literal "|" (its content lives on indented lines this scan ignores).
+        let tmp = tempfile::tempdir().expect("tmp");
+        let body = b"---\nname: agency: disagree and build\ndescription: |\ntype: feedback\n---\nThe body.\n";
+        write_fixture(tmp.path(), "-Users-u-x/memory/block.md", body);
+        let out = run(tmp.path());
+        assert_eq!(out.candidates.len(), 1);
+        let c = &out.candidates[0];
+        assert!(c.body.contains("The body."), "body: {:?}", c.body);
+        assert_eq!(c.frontmatter_hint.get("type").and_then(Value::as_str), Some("feedback"));
+        assert!(
+            !c.frontmatter_hint.contains_key("description"),
+            "block-scalar header must be skipped, not stored: {:?}",
+            c.frontmatter_hint.get("description"),
+        );
+        assert!(out.recovered.iter().any(|k| k.contains("block.md")), "recovered: {:?}", out.recovered);
     }
 
     #[test]
