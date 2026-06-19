@@ -430,10 +430,14 @@ impl SlackMockServer {
                     .lock()
                     .expect("slack mock bodies lock")
                     .push(String::from_utf8_lossy(&buffer[..bytes_read]).into_owned());
+                // `Connection: close` forces the reqwest client to open a fresh TCP
+                // connection per retry instead of reusing a keep-alive connection.
+                // The mock counts accept()s and handles one request per connection,
+                // so without this the accept count undercounts attempts under load.
                 let response = match status {
-                    HttpStatus::Ok => "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+                    HttpStatus::Ok => "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
                     HttpStatus::InternalServerError => {
-                        "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n"
+                        "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                     }
                 };
                 stream.write_all(response.as_bytes()).await.expect("slack mock response writes");
