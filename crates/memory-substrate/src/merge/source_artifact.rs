@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use super::{MergeInput, MergeResult};
+use super::{clean_fastpath, ensure_trailing_newline, MergeInput, MergeResult};
 use crate::error::{MergeError, MergeSide};
 
 pub fn merge_source_artifact(input: &MergeInput<'_>) -> Option<Result<MergeResult, MergeError>> {
@@ -104,9 +104,9 @@ fn merge_excerpts(input: &MergeInput<'_>) -> Result<MergeResult, MergeError> {
             }))
             .map_err(|err| MergeError::Serialize { message: err.to_string() })?,
         );
-        return Ok(MergeResult::Quarantine(with_trailing_newline(rows.join("\n"))));
+        return Ok(MergeResult::Quarantine(ensure_trailing_newline(&rows.join("\n"))));
     }
-    Ok(MergeResult::Clean(with_trailing_newline(rows.join("\n"))))
+    Ok(MergeResult::Clean(ensure_trailing_newline(&rows.join("\n"))))
 }
 
 fn merge_extracted(input: &MergeInput<'_>) -> MergeResult {
@@ -120,19 +120,6 @@ fn merge_extracted(input: &MergeInput<'_>) -> MergeResult {
         bounded_sha(input.ours),
         bounded_sha(input.theirs)
     ))
-}
-
-fn clean_fastpath(input: &MergeInput<'_>) -> Option<MergeResult> {
-    if input.ours == input.theirs {
-        return Some(MergeResult::Clean(input.ours.to_string()));
-    }
-    if input.ours == input.base {
-        return Some(MergeResult::Clean(input.theirs.to_string()));
-    }
-    if input.theirs == input.base {
-        return Some(MergeResult::Clean(input.ours.to_string()));
-    }
-    None
 }
 
 fn parse_json_object(side: MergeSide, raw: &str) -> Result<Value, MergeError> {
@@ -178,9 +165,113 @@ fn bounded_sha(text: &str) -> String {
     format!("sha256:{:x}", hasher.finalize())
 }
 
-fn with_trailing_newline(mut text: String) -> String {
-    if !text.ends_with('\n') {
-        text.push('\n');
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---- Golden tests: byte-exact behavior locked before the merge-driver dedup refactor.
+
+    #[test]
+    fn clean_fastpath_ours_equals_theirs_returns_ours_bytes() {
+        let input = MergeInput { base: "BASE", ours: "SAME", theirs: "SAME", path: "p" };
+        assert_eq!(clean_fastpath(&input), Some(MergeResult::Clean("SAME".to_string())));
     }
-    text
+
+    #[test]
+    fn clean_fastpath_ours_equals_base_returns_theirs_bytes() {
+        let input = MergeInput { base: "BASE", ours: "BASE", theirs: "THEIRS", path: "p" };
+        assert_eq!(clean_fastpath(&input), Some(MergeResult::Clean("THEIRS".to_string())));
+    }
+
+    #[test]
+    fn clean_fastpath_theirs_equals_base_returns_ours_bytes() {
+        let input = MergeInput { base: "BASE", ours: "OURS", theirs: "BASE", path: "p" };
+        assert_eq!(clean_fastpath(&input), Some(MergeResult::Clean("OURS".to_string())));
+    }
+
+    #[test]
+    fn clean_fastpath_does_not_normalize_newlines() {
+        // No trailing newline on any side: clean_fastpath must return the bytes
+        // verbatim, never appending or stripping a newline.
+        let input = MergeInput { base: "x", ours: "no-newline", theirs: "no-newline", path: "p" };
+        assert_eq!(clean_fastpath(&input), Some(MergeResult::Clean("no-newline".to_string())));
+        let input = MergeInput { base: "base\n", ours: "base\n", theirs: "theirs-no-nl", path: "p" };
+        assert_eq!(clean_fastpath(&input), Some(MergeResult::Clean("theirs-no-nl".to_string())));
+    }
+
+    #[test]
+    fn clean_fastpath_all_differ_returns_none() {
+        let input = MergeInput { base: "BASE", ours: "OURS", theirs: "THEIRS", path: "p" };
+        assert_eq!(clean_fastpath(&input), None);
+    }
+
+    #[test]
+    fn shared_trailing_newline_appends_when_missing_and_noop_when_present() {
+        // source_artifact now routes through the shared ensure_trailing_newline;
+        // lock the byte behavior it relies on (was the local with_trailing_newline).
+        assert_eq!(ensure_trailing_newline("no-nl"), "no-nl\n");
+        assert_eq!(ensure_trailing_newline("has-nl\n"), "has-nl\n");
+        assert_eq!(ensure_trailing_newline(""), "\n");
+    }
+
+    #[test]
+    fn golden_source_extracted_quarantine_dispatch_bytes() {
+        let input = MergeInput {
+            base: "base text\n",
+            ours: "ours text\n",
+            theirs: "theirs text\n",
+            path: "sources/web/example/extracted.txt",
+        };
+        let result = merge_source_artifact(&input).expect("extracted dispatches").expect("merge ok");
+        // expect-justified: golden test asserts exact dispatch bytes
+        assert_eq!(
+            result,
+            MergeResult::Quarantine(
+                "source_artifact_merge_conflict\n\
+                 path: sources/web/example/extracted.txt\n\
+                 base_sha256: sha256:67859b52532ef63bed5cddf83081670406eeb184a75ea6aaaf077bf6ed78c7c4\n\
+                 ours_sha256: sha256:c29fc27db082ca8c20af0b2b7af92c969c71ebae93e095e5f96546f93fed713d\n\
+                 theirs_sha256: sha256:25bf381f2f4886054efdb58d5376d5cf31cbfd6fdca182a290fa374d9ae095ac\n"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn golden_source_extracted_fastpath_is_clean_verbatim() {
+        // base == theirs -> returns ours bytes verbatim through the shared fast path.
+        let input = MergeInput {
+            base: "same\n",
+            ours: "ours-only\n",
+            theirs: "same\n",
+            path: "sources/web/example/extracted.txt",
+        };
+        let result = merge_source_artifact(&input).expect("extracted dispatches").expect("merge ok");
+        // expect-justified: golden test asserts exact dispatch bytes
+        assert_eq!(result, MergeResult::Clean("ours-only\n".to_string()));
+    }
+
+    #[test]
+    fn golden_source_excerpts_clean_union_sorted_by_id_bytes() {
+        let input = MergeInput {
+            base: "",
+            ours: "{\"excerpt_id\":\"e2\",\"text\":\"ours\"}\n",
+            theirs: "{\"excerpt_id\":\"e1\",\"text\":\"theirs\"}\n",
+            path: "sources/web/example/excerpts.jsonl",
+        };
+        let result = merge_source_artifact(&input).expect("excerpts dispatches").expect("merge ok");
+        // expect-justified: golden test asserts exact dispatch bytes
+        assert_eq!(
+            result,
+            MergeResult::Clean(
+                "{\"excerpt_id\":\"e1\",\"text\":\"theirs\"}\n{\"excerpt_id\":\"e2\",\"text\":\"ours\"}\n".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn golden_source_artifact_returns_none_for_non_source_path() {
+        let input = MergeInput { base: "{}", ours: "{}", theirs: "{}", path: "substrate/dev/2026.jsonl" };
+        assert!(merge_source_artifact(&input).is_none());
+    }
 }

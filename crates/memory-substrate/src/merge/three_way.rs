@@ -1,14 +1,11 @@
 //! Top-level Markdown merge orchestrator (spec §14).
 
-use std::collections::BTreeSet;
-
 use crate::error::{MergeError, MergeSide};
 use crate::frontmatter::{parse_document, serialize_document, ParsedMemory};
 use crate::model::{Memory, MemoryStatus, TrustLevel};
-use serde_json::Value;
 
 use super::body_diff3::{merge_body_diff3, BodyMergeOutcome};
-use super::ensure_trailing_newline;
+use super::clean_fastpath;
 use super::field_rules::{merge_frontmatter_scalars, QuarantineReason, ScalarMergeReport};
 use super::lifecycle::{apply_lifecycle_take, merge_lifecycle, LifecycleOutcome};
 use super::quarantine::{
@@ -16,6 +13,7 @@ use super::quarantine::{
     AddAddAlternate, MergeStatus, UnparsedSide,
 };
 use super::source_artifact::merge_source_artifact;
+use super::stream_f::merge_stream_f_file;
 use super::MERGE_DRIVER_SUPPORTED_SCHEMA_VERSION;
 
 /// Merge input blobs.
@@ -74,235 +72,6 @@ pub fn merge_markdown(input: MergeInput<'_>) -> Result<MergeResult, MergeError> 
 
     let body_outcome = merge_body_diff3(&base.memory.body, &ours.memory.body, &theirs.memory.body);
     finalize_merge(scalar_report, body_outcome, &base.memory, &ours.memory, &theirs.memory)
-}
-
-fn merge_stream_f_file(input: &MergeInput<'_>) -> Option<Result<MergeResult, MergeError>> {
-    let path = input.path;
-    if is_substrate_jsonl(path) {
-        return Some(merge_jsonl(input, substrate_jsonl_sort_key));
-    }
-    if is_dream_question_jsonl(path) || is_journal_lease(path) {
-        return Some(merge_jsonl(input, scope_ts_id_sort_key));
-    }
-    if is_dream_journal_markdown(path) {
-        return Some(Ok(merge_dream_journal_markdown(input)));
-    }
-    if is_cleanup_json(path) {
-        return Some(merge_cleanup_json(input));
-    }
-    None
-}
-
-fn is_substrate_jsonl(path: &str) -> bool {
-    path.ends_with(".jsonl") && (path.starts_with("substrate/") || path.starts_with("encrypted/substrate/"))
-}
-
-fn is_dream_question_jsonl(path: &str) -> bool {
-    path.starts_with("dreams/questions/") && path.ends_with(".jsonl")
-}
-
-fn is_journal_lease(path: &str) -> bool {
-    path == "leases/journal.lease"
-}
-
-fn is_dream_journal_markdown(path: &str) -> bool {
-    path.starts_with("dreams/journal/") && path.ends_with(".md")
-}
-
-fn is_cleanup_json(path: &str) -> bool {
-    path.starts_with("dreams/cleanup/") && path.ends_with(".json")
-}
-
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct JsonlSortKey {
-    primary: String,
-    secondary: String,
-    tertiary: String,
-    canonical: String,
-}
-
-fn merge_jsonl(
-    input: &MergeInput<'_>,
-    sort_key: fn(&Value, &str, &str) -> JsonlSortKey,
-) -> Result<MergeResult, MergeError> {
-    let mut seen = BTreeSet::new();
-    let mut records = Vec::new();
-    for (side, raw) in [(MergeSide::Base, input.base), (MergeSide::Ours, input.ours), (MergeSide::Theirs, input.theirs)]
-    {
-        for value in parse_jsonl_side(side, raw)? {
-            let canonical = serde_json::to_string(&value).map_err(|err| MergeError::Serialize {
-                message: format!("stream-f JSONL row serialization failed: {err}"),
-            })?;
-            if seen.insert(canonical.clone()) {
-                let key = sort_key(&value, input.path, &canonical);
-                records.push((key, canonical));
-            }
-        }
-    }
-    records.sort_by(|left, right| left.0.cmp(&right.0));
-    let mut merged = records.into_iter().map(|(_, canonical)| canonical).collect::<Vec<_>>().join("\n");
-    if !merged.is_empty() {
-        merged.push('\n');
-    }
-    Ok(MergeResult::Clean(merged))
-}
-
-fn parse_jsonl_side(side: MergeSide, raw: &str) -> Result<Vec<Value>, MergeError> {
-    let mut rows = Vec::new();
-    for (index, line) in raw.lines().enumerate() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let value: Value = serde_json::from_str(trimmed).map_err(|err| MergeError::ParseSide {
-            side,
-            message: format!("invalid Stream F JSONL row {}: {err}", index + 1),
-        })?;
-        if !value.is_object() {
-            return Err(MergeError::ParseSide {
-                side,
-                message: format!("Stream F JSONL row {} must be a JSON object", index + 1),
-            });
-        }
-        rows.push(value);
-    }
-    Ok(rows)
-}
-
-fn substrate_jsonl_sort_key(value: &Value, _path: &str, canonical: &str) -> JsonlSortKey {
-    JsonlSortKey {
-        primary: json_field_text(value, "id").unwrap_or_default(),
-        secondary: String::new(),
-        tertiary: String::new(),
-        canonical: canonical.to_string(),
-    }
-}
-
-fn scope_ts_id_sort_key(value: &Value, path: &str, canonical: &str) -> JsonlSortKey {
-    JsonlSortKey {
-        primary: json_field_text(value, "scope").unwrap_or_else(|| dream_scope_from_path(path).unwrap_or_default()),
-        secondary: json_field_text(value, "ts")
-            .or_else(|| json_field_text(value, "acquired_at"))
-            .or_else(|| json_field_text(value, "expires_at"))
-            .or_else(|| dream_date_from_path(path))
-            .unwrap_or_default(),
-        tertiary: json_field_text(value, "id")
-            .or_else(|| json_field_text(value, "run_id"))
-            .unwrap_or_else(|| canonical.to_string()),
-        canonical: canonical.to_string(),
-    }
-}
-
-fn json_field_text(value: &Value, field: &str) -> Option<String> {
-    match value.get(field)? {
-        Value::String(text) => Some(text.clone()),
-        other => Some(other.to_string()),
-    }
-}
-
-fn merge_dream_journal_markdown(input: &MergeInput<'_>) -> MergeResult {
-    if let Some(fastpath) = clean_fastpath(input) {
-        return fastpath;
-    }
-
-    let (scope_path, date) = dream_scope_date_from_path(input.path);
-    let marker = format!(
-        "<!-- stream-f-merge: quarantine contested dream journal\npath: {}\nscope_path: {}\ndate: {}\n-->\n",
-        input.path, scope_path, date
-    );
-    let quarantined = format!(
-        "{marker}\n# Contested Stream F dream journal\n\nTwo devices wrote the same dream journal scope/date. Choose the surviving Pass 1 narrative manually.\n\n<<<<<<< ours\n{}=======\n{}>>>>>>> theirs\n",
-        ensure_trailing_newline(input.ours),
-        ensure_trailing_newline(input.theirs)
-    );
-    MergeResult::Quarantine(quarantined)
-}
-
-fn merge_cleanup_json(input: &MergeInput<'_>) -> Result<MergeResult, MergeError> {
-    if let Some(fastpath) = clean_fastpath(input) {
-        return Ok(fastpath);
-    }
-    let ours = parse_json_object_side(MergeSide::Ours, input.ours)?;
-    let theirs = parse_json_object_side(MergeSide::Theirs, input.theirs)?;
-    let winner =
-        if cleanup_sort_key(&theirs, input.path) >= cleanup_sort_key(&ours, input.path) { theirs } else { ours };
-    let merged = serde_json::to_string(&winner).map_err(|err| MergeError::Serialize {
-        message: format!("stream-f cleanup JSON serialization failed: {err}"),
-    })?;
-    Ok(MergeResult::Clean(merged))
-}
-
-fn parse_json_object_side(side: MergeSide, raw: &str) -> Result<Value, MergeError> {
-    let value: Value = serde_json::from_str(raw.trim())
-        .map_err(|err| MergeError::ParseSide { side, message: format!("invalid Stream F JSON object: {err}") })?;
-    if value.is_object() {
-        Ok(value)
-    } else {
-        Err(MergeError::ParseSide { side, message: "Stream F cleanup file must be a JSON object".to_string() })
-    }
-}
-
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct CleanupSortKey {
-    device_id: String,
-    date: String,
-    last_write: String,
-    canonical: String,
-}
-
-fn cleanup_sort_key(value: &Value, path: &str) -> CleanupSortKey {
-    let (path_device, path_date) = cleanup_device_date_from_path(path);
-    CleanupSortKey {
-        device_id: json_field_text(value, "device_id").unwrap_or(path_device),
-        date: json_field_text(value, "date").unwrap_or(path_date),
-        last_write: json_field_text(value, "completed_at")
-            .or_else(|| json_field_text(value, "updated_at"))
-            .or_else(|| json_field_text(value, "ts"))
-            .unwrap_or_default(),
-        canonical: value.to_string(),
-    }
-}
-
-fn dream_scope_date_from_path(path: &str) -> (String, String) {
-    let Some(rest) = path.strip_prefix("dreams/journal/").or_else(|| path.strip_prefix("dreams/questions/")) else {
-        return (String::new(), String::new());
-    };
-    let mut parts = rest.rsplitn(2, '/');
-    let file = parts.next().unwrap_or_default();
-    let scope_path = parts.next().unwrap_or_default();
-    (scope_path.to_string(), file_stem(file).to_string())
-}
-
-fn dream_scope_from_path(path: &str) -> Option<String> {
-    let (scope_path, _) = dream_scope_date_from_path(path);
-    if scope_path.is_empty() {
-        None
-    } else {
-        Some(scope_path)
-    }
-}
-
-fn dream_date_from_path(path: &str) -> Option<String> {
-    let (_, date) = dream_scope_date_from_path(path);
-    if date.is_empty() {
-        None
-    } else {
-        Some(date)
-    }
-}
-
-fn cleanup_device_date_from_path(path: &str) -> (String, String) {
-    let Some(rest) = path.strip_prefix("dreams/cleanup/") else {
-        return (String::new(), String::new());
-    };
-    let mut parts = rest.split('/');
-    let device = parts.next().unwrap_or_default();
-    let date_file = parts.next().unwrap_or_default();
-    (device.to_string(), file_stem(date_file).to_string())
-}
-
-fn file_stem(file: &str) -> &str {
-    file.rsplit_once('.').map_or(file, |(stem, _)| stem)
 }
 
 /// Reject any side that carries `sensitivity: secret` per Q9.
@@ -378,19 +147,6 @@ fn enforce_post_parse_schema_gate(ours: &ParsedMemory, theirs: &ParsedMemory) ->
         }
     }
     Ok(())
-}
-
-/// Generic 3-way fast paths from spec §14.3.
-fn clean_fastpath(input: &MergeInput<'_>) -> Option<MergeResult> {
-    if input.ours == input.theirs {
-        Some(MergeResult::Clean(input.ours.to_string()))
-    } else if input.base == input.ours {
-        Some(MergeResult::Clean(input.theirs.to_string()))
-    } else if input.base == input.theirs {
-        Some(MergeResult::Clean(input.ours.to_string()))
-    } else {
-        None
-    }
 }
 
 struct ParsedSides {
@@ -764,5 +520,41 @@ mod tests {
     fn secret_sensitivity_prefilter_skips_internal_value() {
         let raw = "---\nschema_version: 1\nsensitivity: internal\n---\nbody\n";
         assert!(!frontmatter_carries_secret_sensitivity(raw));
+    }
+
+    // ---- Golden tests: byte-exact behavior locked before the merge-driver dedup refactor.
+
+    #[test]
+    fn clean_fastpath_ours_equals_theirs_returns_ours_bytes() {
+        let input = MergeInput { base: "BASE", ours: "SAME", theirs: "SAME", path: "p" };
+        assert_eq!(clean_fastpath(&input), Some(MergeResult::Clean("SAME".to_string())));
+    }
+
+    #[test]
+    fn clean_fastpath_base_equals_ours_returns_theirs_bytes() {
+        let input = MergeInput { base: "BASE", ours: "BASE", theirs: "THEIRS", path: "p" };
+        assert_eq!(clean_fastpath(&input), Some(MergeResult::Clean("THEIRS".to_string())));
+    }
+
+    #[test]
+    fn clean_fastpath_base_equals_theirs_returns_ours_bytes() {
+        let input = MergeInput { base: "BASE", ours: "OURS", theirs: "BASE", path: "p" };
+        assert_eq!(clean_fastpath(&input), Some(MergeResult::Clean("OURS".to_string())));
+    }
+
+    #[test]
+    fn clean_fastpath_does_not_normalize_newlines() {
+        // No trailing newline on any side: clean_fastpath must return the bytes
+        // verbatim, never appending or stripping a newline.
+        let input = MergeInput { base: "x", ours: "no-newline", theirs: "no-newline", path: "p" };
+        assert_eq!(clean_fastpath(&input), Some(MergeResult::Clean("no-newline".to_string())));
+        let input = MergeInput { base: "base\n", ours: "base\n", theirs: "theirs-no-nl", path: "p" };
+        assert_eq!(clean_fastpath(&input), Some(MergeResult::Clean("theirs-no-nl".to_string())));
+    }
+
+    #[test]
+    fn clean_fastpath_all_differ_returns_none() {
+        let input = MergeInput { base: "BASE", ours: "OURS", theirs: "THEIRS", path: "p" };
+        assert_eq!(clean_fastpath(&input), None);
     }
 }
