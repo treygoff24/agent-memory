@@ -877,11 +877,8 @@ fn summarize_outcomes<T>(
     }
 
     let message = messages.join("; ");
-    let completion = if failed {
-        StepCompletion::failed(step, message)
-    } else {
-        StepCompletion::succeeded(step, message)
-    };
+    let completion =
+        if failed { StepCompletion::failed(step, message) } else { StepCompletion::succeeded(step, message) };
     WireStepOutcome { completion, restart_required }
 }
 

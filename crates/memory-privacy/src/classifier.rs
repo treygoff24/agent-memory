@@ -112,11 +112,8 @@ fn apply_encryption_downgrade(
     if enforcement.encryption || !resolved_action.requires_encryption() {
         return (resolved_action, false);
     }
-    let encryption_labels: Vec<_> = spans
-        .iter()
-        .filter(|s| s.label.storage_action().requires_encryption())
-        .map(|s| s.label)
-        .collect();
+    let encryption_labels: Vec<_> =
+        spans.iter().filter(|s| s.label.storage_action().requires_encryption()).map(|s| s.label).collect();
     warn!(
         namespace = ?namespace,
         tier = ?tier,

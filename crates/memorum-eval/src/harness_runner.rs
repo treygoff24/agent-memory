@@ -43,8 +43,14 @@ pub struct HarnessRunResult {
 #[derive(Debug)]
 pub enum HarnessRunnerError {
     Io(io::Error),
-    HarnessIncompatibleCli { harness: RealHarness, path: PathBuf, reason: String },
-    UnsupportedMockTest { test_id: u8 },
+    HarnessIncompatibleCli {
+        harness: RealHarness,
+        path: PathBuf,
+        reason: String,
+    },
+    UnsupportedMockTest {
+        test_id: u8,
+    },
     /// A daemon-scaffold Unix socket never began accepting connections within
     /// the readiness deadline. Carries the fully formatted diagnostic so the
     /// message is identical regardless of where it surfaces.

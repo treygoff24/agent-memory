@@ -184,9 +184,7 @@ pub async fn audit_walk(
             )
             .await
             {
-                Ok(artifact) => {
-                    Json(provenance_walk_from_artifact(&id, query, direction, *artifact)).into_response()
-                }
+                Ok(artifact) => Json(provenance_walk_from_artifact(&id, query, direction, *artifact)).into_response(),
                 Err(response) => response,
             }
         }

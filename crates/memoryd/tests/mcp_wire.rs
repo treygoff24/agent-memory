@@ -221,13 +221,9 @@ fn claude_cli_duplicate_add_does_not_write_config_when_nothing_is_stale() {
 
 #[test]
 fn claude_failed_cli_and_invalid_project_json_degrades_to_print_only() {
-    let mut runtime = FakeRuntime::default()
-        .with_file(PathBuf::from("/repo/.mcp.json"), "{not json")
-        .with_claude_add(CommandResult {
-            success: false,
-            stdout: String::new(),
-            stderr: "Claude CLI rejected the request".to_string(),
-        });
+    let mut runtime = FakeRuntime::default().with_file(PathBuf::from("/repo/.mcp.json"), "{not json").with_claude_add(
+        CommandResult { success: false, stdout: String::new(), stderr: "Claude CLI rejected the request".to_string() },
+    );
 
     let outcome = wire_with_runtime(HarnessTarget::Claude, &memorum_spec(), WireMode::Apply, &mut runtime)
         .expect("print-only fallback succeeds");

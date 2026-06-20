@@ -262,7 +262,8 @@ mod tests {
             r#"{"id":"frag_b","ts":"2026-04-30T03:00:00Z","text":"base"}"#,
             r#"{"id":"frag_a","ts":"2026-04-30T03:00:01Z","text":"theirs"}"#,
         ]);
-        let input = MergeInput { base: &base, ours: &ours, theirs: &theirs, path: "substrate/dev_local/2026-04-30.jsonl" };
+        let input =
+            MergeInput { base: &base, ours: &ours, theirs: &theirs, path: "substrate/dev_local/2026-04-30.jsonl" };
         let result = merge_stream_f_file(&input).expect("substrate JSONL dispatches").expect("merge ok");
         // expect-justified: golden test asserts exact dispatch bytes
         assert_eq!(
@@ -323,12 +324,7 @@ mod tests {
     fn golden_stream_f_returns_none_for_source_artifact_path() {
         // Source-artifact paths are dispatched earlier in merge_markdown; the
         // Stream F gate must decline them so dispatch order is preserved.
-        let input = MergeInput {
-            base: "{}",
-            ours: "{}",
-            theirs: "{}",
-            path: "sources/web/example/manifest.json",
-        };
+        let input = MergeInput { base: "{}", ours: "{}", theirs: "{}", path: "sources/web/example/manifest.json" };
         assert!(merge_stream_f_file(&input).is_none());
     }
 }

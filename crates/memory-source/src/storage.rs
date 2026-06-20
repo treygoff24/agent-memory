@@ -154,17 +154,15 @@ impl ArtifactStore {
             }
             ExtractedTextStorage::Encrypted => {
                 let ciphertext = fs::read(dir.join(EXTRACTED_ENCRYPTED_FILE))?;
-                verify_encrypted_blob(
-                    EncryptedBlobCheck {
-                        file_name: EXTRACTED_ENCRYPTED_FILE,
-                        ciphertext: &ciphertext,
-                        expected_hash: manifest.extracted_text_encrypted_sha256.as_deref(),
-                        missing_hash_message: "extracted_text_storage=encrypted missing extracted_text_encrypted_sha256",
-                        expected_byte_len: Some(manifest.extracted_text_encrypted_byte_len),
-                        envelope_present: manifest.encryption_envelope.is_some(),
-                        missing_envelope_message: "encrypted extracted text missing encryption envelope",
-                    },
-                )?;
+                verify_encrypted_blob(EncryptedBlobCheck {
+                    file_name: EXTRACTED_ENCRYPTED_FILE,
+                    ciphertext: &ciphertext,
+                    expected_hash: manifest.extracted_text_encrypted_sha256.as_deref(),
+                    missing_hash_message: "extracted_text_storage=encrypted missing extracted_text_encrypted_sha256",
+                    expected_byte_len: Some(manifest.extracted_text_encrypted_byte_len),
+                    envelope_present: manifest.encryption_envelope.is_some(),
+                    missing_envelope_message: "encrypted extracted text missing encryption envelope",
+                })?;
                 (String::new(), Some(ciphertext))
             }
         };
@@ -198,17 +196,15 @@ impl ArtifactStore {
             }
             RawStorage::Encrypted => {
                 let ciphertext = fs::read(dir.join(RAW_ENCRYPTED_FILE))?;
-                verify_encrypted_blob(
-                    EncryptedBlobCheck {
-                        file_name: RAW_ENCRYPTED_FILE,
-                        ciphertext: &ciphertext,
-                        expected_hash: manifest.raw_encrypted_sha256.as_deref(),
-                        missing_hash_message: "raw_storage=encrypted missing raw_encrypted_sha256",
-                        expected_byte_len: None,
-                        envelope_present: manifest.encryption_envelope.is_some(),
-                        missing_envelope_message: "encrypted raw missing encryption envelope",
-                    },
-                )?;
+                verify_encrypted_blob(EncryptedBlobCheck {
+                    file_name: RAW_ENCRYPTED_FILE,
+                    ciphertext: &ciphertext,
+                    expected_hash: manifest.raw_encrypted_sha256.as_deref(),
+                    missing_hash_message: "raw_storage=encrypted missing raw_encrypted_sha256",
+                    expected_byte_len: None,
+                    envelope_present: manifest.encryption_envelope.is_some(),
+                    missing_envelope_message: "encrypted raw missing encryption envelope",
+                })?;
                 (None, Some(ciphertext))
             }
             RawStorage::OmittedPrivacy | RawStorage::OmittedUnsupported => (None, None),

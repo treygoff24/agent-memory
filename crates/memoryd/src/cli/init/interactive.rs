@@ -379,7 +379,12 @@ fn describe_socket(state: SetupSocketState) -> String {
 /// truth across `--harness`, `--wire-mcp`, and `--wire-hooks`. `default_ix` is
 /// the highlighted choice; `fallback_ix` is used when the prompt cannot run
 /// (e.g. Ctrl-D), matching each caller's prior `unwrap_or` default.
-fn prompt_harness_selection(prompt: &str, items: &[&str; 5], default_ix: usize, fallback_ix: usize) -> HarnessSelection {
+fn prompt_harness_selection(
+    prompt: &str,
+    items: &[&str; 5],
+    default_ix: usize,
+    fallback_ix: usize,
+) -> HarnessSelection {
     let selection =
         dialoguer::Select::new().with_prompt(prompt).items(items).default(default_ix).interact().unwrap_or(fallback_ix);
     match selection {

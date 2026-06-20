@@ -12,8 +12,8 @@ use memory_governance::{GovernanceWriteDecision, PolicySet, PolicySource, Tombst
 use memory_privacy::{FileKeyProvider, PrivacyDecision, PrivacyEncryptor};
 use memory_substrate::{
     events::EventKind, ClassificationOutcome, EncryptedWriteRequest, EventContext, Memory, MemoryContent, MemoryId,
-    MemoryStatus, Substrate, SupersedeRequest as SubstrateSupersedeRequest, TombstoneRequest, TrustLevel,
-    WriteMode, WriteRequest as SubstrateWriteRequest,
+    MemoryStatus, Substrate, SupersedeRequest as SubstrateSupersedeRequest, TombstoneRequest, TrustLevel, WriteMode,
+    WriteRequest as SubstrateWriteRequest,
 };
 use serde_json::{Map, Value};
 
