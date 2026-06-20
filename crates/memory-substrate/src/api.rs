@@ -27,6 +27,7 @@ use crate::ids::next_memory_id;
 use crate::index::{open_index, Index};
 use crate::markdown::{atomic_write, probe_durability, read_memory_file};
 use crate::model::*;
+use crate::path_validation::is_noncanonical_stream_f_repo_path;
 use crate::runtime::reconcile::{
     enqueue_pending_event, reconcile_startup_pre_index_report, replay_pending_repairs_into_report,
     write_startup_marker, PendingEncryptedIndexOp, PendingEventOp, PendingIndexKind, PendingIndexOp, ReconcileReport,

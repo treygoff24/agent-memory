@@ -13,6 +13,7 @@ pub mod index;
 pub mod markdown;
 pub mod merge;
 pub mod model;
+pub(crate) mod path_validation;
 pub mod runtime;
 pub mod tree;
 pub mod watcher;

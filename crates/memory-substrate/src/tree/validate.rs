@@ -8,9 +8,8 @@ use std::sync::LazyLock;
 
 use crate::error::{ValidationError, ValidationWarning};
 use crate::frontmatter::parse_document;
-use crate::model::{
-    is_noncanonical_stream_f_repo_path as model_is_noncanonical_stream_f_repo_path, MemoryId, RepoPath,
-};
+use crate::model::{MemoryId, RepoPath};
+use crate::path_validation::is_noncanonical_stream_f_repo_path;
 use crate::tree::layout::relative_memory_paths;
 
 /// Slug pattern per spec §5.1: `[a-z0-9][a-z0-9-]{0,62}`.
@@ -112,11 +111,6 @@ pub fn validate_tree(root: &Path, mode: TreeValidationMode) -> Result<TreeValida
 /// Return true when a path belongs to Stream F's valid-but-noncanonical file families.
 pub fn is_noncanonical_stream_f_path(path: &Path) -> bool {
     is_noncanonical_stream_f_repo_path(&path.to_string_lossy().replace('\\', "/"))
-}
-
-/// String form of [`is_noncanonical_stream_f_path`] for already-validated [`RepoPath`]s.
-pub fn is_noncanonical_stream_f_repo_path(path: &str) -> bool {
-    model_is_noncanonical_stream_f_repo_path(path)
 }
 
 fn validate_noncanonical_stream_f_files(
