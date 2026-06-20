@@ -53,7 +53,7 @@ pub struct CanonicalEntities {
 impl CanonicalEntities {
     /// Return the stable hash for this canonical entity set.
     ///
-    /// Delegates to [`canonical_entity_hash`] so tombstone keys and the
+    /// Delegates to `canonical_entity_hash` so tombstone keys and the
     /// contradiction-pipeline `CandidateMemory`/`ExistingMemorySummary` hashes
     /// share one fingerprint implementation. Re-canonicalizing the
     /// already-normalized entities is idempotent, so the digest is unchanged.

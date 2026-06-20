@@ -3,14 +3,14 @@
 //! This module is split into focused submodules behind a re-export facade so the
 //! public `dream::harness::*` paths stay byte-identical for external callers:
 //!
-//! - [`env`]: the documented environment allowlists, [`MinimalEnvironment`], and
+//! - `env`: the documented environment allowlists, [`MinimalEnvironment`], and
 //!   the internal `AdapterEnv` execution context.
-//! - [`process`]: the hardened-subprocess machinery ([`HardenedCommand`],
+//! - `process`: the hardened-subprocess machinery ([`HardenedCommand`],
 //!   [`HardenedOutput`], [`run_hardened_command`], the SIGTERM FFI, capture and
 //!   redaction helpers, executable resolution).
-//! - [`auth`]: auth-probe results, candidates, and the probe-racing policy.
-//! - [`adapters`]: the [`HarnessCli`] trait and its concrete implementations
-//!   ([`ClaudeCodeCli`], [`CodexCli`], and the test/fixture [`EchoCli`]).
+//! - `auth`: auth-probe results, candidates, and the probe-racing policy.
+//! - `adapters`: the [`HarnessCli`] trait and its concrete implementations
+//!   ([`ClaudeCodeCli`], [`CodexCli`], and the test/fixture `EchoCli`).
 
 mod adapters;
 mod auth;
