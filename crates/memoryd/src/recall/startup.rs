@@ -47,15 +47,6 @@ pub async fn build_startup_response(
     build_startup_response_with_coordination_config(substrate, request, config, &RecallDedupState::default()).await
 }
 
-pub async fn build_startup_response_with_coordination_level(
-    substrate: &Substrate,
-    request: StartupRequest,
-    default_coordination_level: u8,
-) -> Result<StartupResponse, RecallError> {
-    let config = CoordinationConfig { level: default_coordination_level, ..CoordinationConfig::default() };
-    build_startup_response_with_coordination_config(substrate, request, config, &RecallDedupState::default()).await
-}
-
 pub async fn build_startup_response_with_coordination_config(
     substrate: &Substrate,
     request: StartupRequest,

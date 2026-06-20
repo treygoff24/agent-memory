@@ -43,10 +43,7 @@ pub use render::{
     render_startup_frame_with_coordination, render_startup_frame_with_cross_device_updates, CrossDeviceStartupUpdates,
     DeltaRecallItem, RecallEntry, RenderedDeltaFrame, RenderedRecallSection, StartupCoordinationRender,
 };
-pub use startup::{
-    build_startup_response, build_startup_response_with_coordination_config,
-    build_startup_response_with_coordination_level,
-};
+pub use startup::{build_startup_response, build_startup_response_with_coordination_config};
 pub use types::{
     bounded_omissions, BoundedOmissions, ConcurrentSessionMode, DeltaPeerDelivery, DeltaRequest, DeltaResponse,
     EntityMatchKind, OmissionReason, ProjectBinding, ProjectBindingSource, RecallExplanation, RecallOmission,

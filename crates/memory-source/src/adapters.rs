@@ -14,6 +14,7 @@ use crate::url_safety::{
 
 const MAX_LOCAL_ARTIFACT_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_HTTP_BYTES: usize = 2 * 1024 * 1024;
+const LOCAL_SOURCE_REF: &str = "local:artifact";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FetchedArtifact {
@@ -37,11 +38,10 @@ pub struct LocalArtifactAdapter;
 impl LocalArtifactAdapter {
     pub fn read(path: &Path) -> SourceResult<FetchedArtifact> {
         let bytes = read_bounded_local_artifact(path)?;
-        let source_ref = local_source_ref(path);
         Ok(FetchedArtifact {
             bytes,
-            original_ref: source_ref.clone(),
-            final_ref: source_ref,
+            original_ref: LOCAL_SOURCE_REF.to_string(),
+            final_ref: LOCAL_SOURCE_REF.to_string(),
             redirect_chain: Vec::new(),
             capture_method: CaptureMethod::LocalArtifactV1,
             request: CaptureRequestSnapshot {
@@ -126,10 +126,6 @@ fn unsupported_mode_guidance(mode: CaptureMode) -> &'static str {
             "artifact type is unsupported in alpha; save/export a text/html/PDF artifact and import with --file"
         }
     }
-}
-
-fn local_source_ref(_path: &Path) -> String {
-    "local:artifact".to_string()
 }
 
 fn read_bounded_local_artifact(path: &Path) -> SourceResult<Vec<u8>> {

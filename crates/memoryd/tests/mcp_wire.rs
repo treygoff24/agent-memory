@@ -222,7 +222,6 @@ fn claude_cli_duplicate_add_does_not_write_config_when_nothing_is_stale() {
 #[test]
 fn claude_failed_cli_and_invalid_project_json_degrades_to_print_only() {
     let mut runtime = FakeRuntime::default()
-        .with_current_dir(PathBuf::from("/repo"))
         .with_file(PathBuf::from("/repo/.mcp.json"), "{not json")
         .with_claude_add(CommandResult {
             success: false,
@@ -255,7 +254,6 @@ struct FakeRuntime {
     files: BTreeMap<PathBuf, String>,
     env: HashMap<String, String>,
     home: Option<PathBuf>,
-    current_dir: PathBuf,
     claude_add_result: Option<CommandResult>,
     write_count: usize,
     safe_write_count: usize,
@@ -271,11 +269,6 @@ impl FakeRuntime {
 
     fn with_home(mut self, home: PathBuf) -> Self {
         self.home = Some(home);
-        self
-    }
-
-    fn with_current_dir(mut self, current_dir: PathBuf) -> Self {
-        self.current_dir = current_dir;
         self
     }
 
@@ -315,10 +308,6 @@ impl McpWireRuntime for FakeRuntime {
 
     fn home_dir(&self) -> Option<PathBuf> {
         self.home.clone()
-    }
-
-    fn current_dir(&self) -> Result<PathBuf, WireError> {
-        Ok(self.current_dir.clone())
     }
 
     fn claude_mcp_add(&mut self, _args: &[String]) -> Result<Option<CommandResult>, WireError> {

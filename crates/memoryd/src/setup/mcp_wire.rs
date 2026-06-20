@@ -115,7 +115,6 @@ pub trait McpWireRuntime {
     fn create_dir_all(&mut self, path: &Path) -> Result<(), WireError>;
     fn env_var(&self, key: &str) -> Option<String>;
     fn home_dir(&self) -> Option<PathBuf>;
-    fn current_dir(&self) -> Result<PathBuf, WireError>;
     fn claude_mcp_add(&mut self, args: &[String]) -> Result<Option<CommandResult>, WireError>;
 }
 
@@ -170,9 +169,6 @@ pub enum WireError {
         #[source]
         source: io::Error,
     },
-
-    #[error("failed to resolve current directory: {0}")]
-    CurrentDir(#[source] io::Error),
 
     #[error("failed to run claude MCP command: {0}")]
     ClaudeCommand(#[source] io::Error),
@@ -636,10 +632,6 @@ impl McpWireRuntime for SystemWireRuntime {
         dirs::home_dir()
     }
 
-    fn current_dir(&self) -> Result<PathBuf, WireError> {
-        std::env::current_dir().map_err(WireError::CurrentDir)
-    }
-
     fn claude_mcp_add(&mut self, args: &[String]) -> Result<Option<CommandResult>, WireError> {
         let Ok(claude) = which::which("claude") else {
             return Ok(None);
@@ -872,10 +864,6 @@ mod tests {
 
         fn home_dir(&self) -> Option<PathBuf> {
             self.home.clone()
-        }
-
-        fn current_dir(&self) -> Result<PathBuf, WireError> {
-            Ok(PathBuf::from("/repo"))
         }
 
         fn claude_mcp_add(&mut self, _args: &[String]) -> Result<Option<CommandResult>, WireError> {

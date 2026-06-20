@@ -100,7 +100,7 @@ async fn run_interactive(args: UninstallArgs) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let report = execute(&args, &repo, &runtime, Confirmed::Yes).await;
+    let report = execute(&args, &repo, &runtime).await;
     for step in &report.steps {
         if let Some(message) = &step.message {
             eprintln!("[{:?}] {message}", step.status);
@@ -114,7 +114,7 @@ async fn run_machine(args: UninstallArgs) -> anyhow::Result<()> {
     let (repo, runtime) = resolve_repo_runtime(&args);
     // On the non-interactive path there is no TTY to confirm a purge; the
     // explicit `--purge` flag is the confirmation.
-    let report = execute(&args, &repo, &runtime, Confirmed::Yes).await;
+    let report = execute(&args, &repo, &runtime).await;
 
     let json = serde_json::to_string_pretty(&report)?;
     println!("{json}");
@@ -143,14 +143,8 @@ pub(crate) fn resolve_repo_runtime(args: &UninstallArgs) -> (PathBuf, PathBuf) {
     (repo, runtime)
 }
 
-/// Whether the interactive flow already confirmed a destructive purge.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Confirmed {
-    Yes,
-}
-
 /// Run every teardown step against the resolved paths and collect the report.
-async fn execute(args: &UninstallArgs, repo: &Path, runtime: &Path, _confirmed: Confirmed) -> UninstallReport {
+async fn execute(args: &UninstallArgs, repo: &Path, runtime: &Path) -> UninstallReport {
     let socket = resolve_socket_path(runtime);
     let detection = Detection::probe(args, repo, runtime, &socket);
 

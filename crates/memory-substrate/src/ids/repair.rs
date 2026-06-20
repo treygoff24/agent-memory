@@ -142,8 +142,8 @@ pub fn repair_duplicate_ids(repo: &Path, runtime: &Path, device_id: &str) -> Res
         }
     }
 
-    // Validate the staged future state: all IDs unique, all refs present.
-    validate_staged_state(&staged, &records, &entries).map_err(|err| IdError::InvalidState(err.to_string()))?;
+    // Validate the staged future state: all IDs unique.
+    validate_no_duplicate_ids(&records, &entries).map_err(|err| IdError::InvalidState(err.to_string()))?;
 
     // Phase 4: commit to disk.
     let mut rollback_stack: Vec<(PathBuf, Option<Vec<u8>>)> = Vec::new();
@@ -221,20 +221,16 @@ fn read_memory_records(repo: &Path) -> Result<Vec<(PathBuf, crate::model::Memory
     Ok(records)
 }
 
-/// Validate the staged future state in memory.
+/// Validate that the staged future state contains no duplicate memory IDs.
 ///
-/// Checks that:
-/// - All IDs in the new state are unique.
-/// - No dangling references (all supersedes/superseded_by/related targets exist).
-fn validate_staged_state(
-    _staged: &[(PathBuf, PathBuf, String)],
+/// Enforces only ID uniqueness across the post-repair state. Reference
+/// integrity (supersedes/superseded_by/related targets exist) is deferred to
+/// `validate_tree` by design: pre-existing missing references are tolerated
+/// during repair (PartialSync state) and are caught on FullySynced mode.
+fn validate_no_duplicate_ids(
     original_records: &[(PathBuf, crate::model::Memory)],
     entries: &[RepairEntry],
 ) -> Result<(), ValidationError> {
-    // Build the future ID set.
-    let rename_map: HashMap<MemoryId, MemoryId> =
-        entries.iter().map(|e| (e.old_id.clone(), e.new_id.clone())).collect();
-
     let future_ids: HashSet<MemoryId> = original_records
         .iter()
         .map(|(path, m)| {
@@ -251,25 +247,6 @@ fn validate_staged_state(
     let future_id_count = original_records.len();
     if future_ids.len() != future_id_count {
         return Err(ValidationError::Other("staged repair would produce duplicate IDs".to_string()));
-    }
-
-    // Check references: any ref pointing to an old reminted ID should now
-    // point to the new ID (rewrite_ids handles this). Validate all refs exist.
-    for (_, memory) in original_records {
-        for ref_id in memory
-            .frontmatter
-            .supersedes
-            .iter()
-            .chain(memory.frontmatter.superseded_by.iter())
-            .chain(memory.frontmatter.related.iter())
-        {
-            let resolved = rename_map.get(ref_id).unwrap_or(ref_id);
-            if !future_ids.contains(resolved) {
-                // Missing reference — only an error if the staging introduced it.
-                // Pre-existing missing references are tolerated (PartialSync state).
-                // Don't fail here; validate_tree will catch them on FullySynced mode.
-            }
-        }
     }
 
     Ok(())

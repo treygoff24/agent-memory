@@ -29,4 +29,4 @@ pub use policy::{
     ResolvedPrivacyPolicy,
 };
 pub use privacy_filter::{DisabledPrivacyFilter, FixturePrivacyFilter, PrivacyFilterProvider};
-pub use secret_only_scan::{SecretFinding, SecretOnlyScan};
+pub use secret_only_scan::SecretOnlyScan;
