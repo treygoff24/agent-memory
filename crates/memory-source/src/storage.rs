@@ -11,6 +11,16 @@ use crate::model::{
     ExcerptRecord, ExtractedTextStorage, RawStorage, SourceArtifactId, WebCaptureManifest, WebCaptureSourceRef,
 };
 
+/// Single source of truth for the on-disk file names within a web-capture
+/// artifact directory. `write_web_capture` and `verify_web_capture` both
+/// route through these so a rename is one edit, not three.
+const EXTRACTED_PLAINTEXT_FILE: &str = "extracted.txt";
+const EXTRACTED_ENCRYPTED_FILE: &str = "extracted.enc.age";
+const RAW_STORED_FILE: &str = "raw.bin.zst";
+const RAW_ENCRYPTED_FILE: &str = "raw.enc.age";
+const EXCERPTS_FILE: &str = "excerpts.jsonl";
+const MANIFEST_FILE: &str = "manifest.json";
+
 #[derive(Clone, Debug)]
 pub struct ArtifactStore {
     repo_root: PathBuf,
@@ -77,18 +87,18 @@ impl ArtifactStore {
         let result = (|| -> SourceResult<()> {
             match artifact.manifest.extracted_text_storage {
                 ExtractedTextStorage::Plaintext => {
-                    fs::write(tmp_dir.join("extracted.txt"), artifact.extracted_text.as_bytes())?;
+                    fs::write(tmp_dir.join(EXTRACTED_PLAINTEXT_FILE), artifact.extracted_text.as_bytes())?;
                 }
                 ExtractedTextStorage::Encrypted => {
                     let ciphertext = artifact
                         .encrypted_extracted_bytes
                         .as_ref()
                         .ok_or_else(|| SourceError::integrity("extracted_text_storage=encrypted without ciphertext"))?;
-                    fs::write(tmp_dir.join("extracted.enc.age"), ciphertext)?;
+                    fs::write(tmp_dir.join(EXTRACTED_ENCRYPTED_FILE), ciphertext)?;
                 }
             }
             let excerpts_jsonl = excerpts_jsonl(&artifact.excerpts)?;
-            fs::write(tmp_dir.join("excerpts.jsonl"), excerpts_jsonl.as_bytes())?;
+            fs::write(tmp_dir.join(EXCERPTS_FILE), excerpts_jsonl.as_bytes())?;
             match artifact.manifest.raw_storage {
                 RawStorage::Stored => {
                     let raw = artifact
@@ -96,19 +106,19 @@ impl ArtifactStore {
                         .as_ref()
                         .ok_or_else(|| SourceError::integrity("raw_storage=stored without raw bytes"))?;
                     let compressed = zstd::encode_all(raw.as_slice(), 0)?;
-                    fs::write(tmp_dir.join("raw.bin.zst"), compressed)?;
+                    fs::write(tmp_dir.join(RAW_STORED_FILE), compressed)?;
                 }
                 RawStorage::Encrypted => {
                     let ciphertext = artifact
                         .encrypted_raw_bytes
                         .as_ref()
                         .ok_or_else(|| SourceError::integrity("raw_storage=encrypted without ciphertext"))?;
-                    fs::write(tmp_dir.join("raw.enc.age"), ciphertext)?;
+                    fs::write(tmp_dir.join(RAW_ENCRYPTED_FILE), ciphertext)?;
                 }
                 RawStorage::OmittedPrivacy | RawStorage::OmittedUnsupported => {}
             }
             let manifest = serde_json::to_vec_pretty(&artifact.manifest)?;
-            fs::File::create(tmp_dir.join("manifest.json"))?.write_all(&manifest)?;
+            fs::File::create(tmp_dir.join(MANIFEST_FILE))?.write_all(&manifest)?;
             Ok(())
         })();
         if let Err(error) = result {
@@ -125,13 +135,13 @@ impl ArtifactStore {
 
     pub fn verify_web_capture(&self, artifact_path: &SourceArtifactPath) -> SourceResult<WebCaptureArtifact> {
         let dir = self.repo_root.join(artifact_path.relative());
-        let manifest: WebCaptureManifest = serde_json::from_slice(&fs::read(dir.join("manifest.json"))?)?;
+        let manifest: WebCaptureManifest = serde_json::from_slice(&fs::read(dir.join(MANIFEST_FILE))?)?;
         if !manifest.is_groundable() {
             return Err(SourceError::integrity(format!("artifact {} is not groundable", manifest.artifact_id)));
         }
         let (extracted_text, encrypted_extracted_bytes) = match manifest.extracted_text_storage {
             ExtractedTextStorage::Plaintext => {
-                let extracted_text = fs::read_to_string(dir.join("extracted.txt"))?;
+                let extracted_text = fs::read_to_string(dir.join(EXTRACTED_PLAINTEXT_FILE))?;
                 if manifest.extracted_text_sha256.as_deref()
                     != Some(sha256_prefixed(extracted_text.as_bytes()).as_str())
                 {
@@ -143,26 +153,22 @@ impl ArtifactStore {
                 (extracted_text, None)
             }
             ExtractedTextStorage::Encrypted => {
-                let ciphertext = fs::read(dir.join("extracted.enc.age"))?;
-                let Some(expected_hash) = manifest.extracted_text_encrypted_sha256.as_deref() else {
-                    return Err(SourceError::integrity(
-                        "extracted_text_storage=encrypted missing extracted_text_encrypted_sha256",
-                    ));
-                };
-                if expected_hash != sha256_prefixed(&ciphertext) {
-                    return Err(SourceError::integrity("extracted.enc.age hash mismatch"));
-                }
-                if manifest.extracted_text_encrypted_byte_len != Some(ciphertext.len()) {
-                    return Err(SourceError::integrity("extracted.enc.age byte length mismatch"));
-                }
-                if manifest.encryption_envelope.is_none() {
-                    return Err(SourceError::integrity("encrypted extracted text missing encryption envelope"));
-                }
-                validate_age_ciphertext(&ciphertext, "extracted.enc.age")?;
+                let ciphertext = fs::read(dir.join(EXTRACTED_ENCRYPTED_FILE))?;
+                verify_encrypted_blob(
+                    EncryptedBlobCheck {
+                        file_name: EXTRACTED_ENCRYPTED_FILE,
+                        ciphertext: &ciphertext,
+                        expected_hash: manifest.extracted_text_encrypted_sha256.as_deref(),
+                        missing_hash_message: "extracted_text_storage=encrypted missing extracted_text_encrypted_sha256",
+                        expected_byte_len: Some(manifest.extracted_text_encrypted_byte_len),
+                        envelope_present: manifest.encryption_envelope.is_some(),
+                        missing_envelope_message: "encrypted extracted text missing encryption envelope",
+                    },
+                )?;
                 (String::new(), Some(ciphertext))
             }
         };
-        let excerpts_bytes = fs::read(dir.join("excerpts.jsonl"))?;
+        let excerpts_bytes = fs::read(dir.join(EXCERPTS_FILE))?;
         if manifest.excerpts_sha256 != sha256_prefixed(&excerpts_bytes) {
             return Err(SourceError::integrity("excerpts.jsonl hash mismatch"));
         }
@@ -177,7 +183,7 @@ impl ArtifactStore {
         }
         let (raw_bytes, encrypted_raw_bytes) = match manifest.raw_storage {
             RawStorage::Stored => {
-                let compressed = fs::read(dir.join("raw.bin.zst"))?;
+                let compressed = fs::read(dir.join(RAW_STORED_FILE))?;
                 if manifest.raw_zstd_sha256.as_deref() != Some(sha256_prefixed(&compressed).as_str()) {
                     return Err(SourceError::integrity("raw.bin.zst hash mismatch"));
                 }
@@ -191,17 +197,18 @@ impl ArtifactStore {
                 (Some(raw), None)
             }
             RawStorage::Encrypted => {
-                let ciphertext = fs::read(dir.join("raw.enc.age"))?;
-                let Some(expected_hash) = manifest.raw_encrypted_sha256.as_deref() else {
-                    return Err(SourceError::integrity("raw_storage=encrypted missing raw_encrypted_sha256"));
-                };
-                if expected_hash != sha256_prefixed(&ciphertext) {
-                    return Err(SourceError::integrity("raw.enc.age hash mismatch"));
-                }
-                if manifest.encryption_envelope.is_none() {
-                    return Err(SourceError::integrity("encrypted raw missing encryption envelope"));
-                }
-                validate_age_ciphertext(&ciphertext, "raw.enc.age")?;
+                let ciphertext = fs::read(dir.join(RAW_ENCRYPTED_FILE))?;
+                verify_encrypted_blob(
+                    EncryptedBlobCheck {
+                        file_name: RAW_ENCRYPTED_FILE,
+                        ciphertext: &ciphertext,
+                        expected_hash: manifest.raw_encrypted_sha256.as_deref(),
+                        missing_hash_message: "raw_storage=encrypted missing raw_encrypted_sha256",
+                        expected_byte_len: None,
+                        envelope_present: manifest.encryption_envelope.is_some(),
+                        missing_envelope_message: "encrypted raw missing encryption envelope",
+                    },
+                )?;
                 (None, Some(ciphertext))
             }
             RawStorage::OmittedPrivacy | RawStorage::OmittedUnsupported => (None, None),
@@ -237,6 +244,41 @@ fn validate_age_ciphertext(ciphertext: &[u8], file_name: &str) -> SourceResult<(
         return Ok(());
     }
     Err(SourceError::integrity(format!("{file_name} is not an age ciphertext")))
+}
+
+/// Inputs for the single encrypted-blob verification path shared by the raw and
+/// extracted-text encrypted variants. Both must enforce the same security
+/// invariant — require the `*_encrypted_sha256` field, match the ciphertext
+/// hash, require an encryption envelope, and confirm the age magic header — so
+/// the predicate lives in one place rather than two parallel matches.
+struct EncryptedBlobCheck<'a> {
+    file_name: &'static str,
+    ciphertext: &'a [u8],
+    expected_hash: Option<&'a str>,
+    missing_hash_message: &'static str,
+    /// `Some(field)` enables the byte-length check (extracted text carries an
+    /// `*_encrypted_byte_len`); `None` skips it (raw has no such field).
+    expected_byte_len: Option<Option<usize>>,
+    envelope_present: bool,
+    missing_envelope_message: &'static str,
+}
+
+fn verify_encrypted_blob(check: EncryptedBlobCheck<'_>) -> SourceResult<()> {
+    let Some(expected_hash) = check.expected_hash else {
+        return Err(SourceError::integrity(check.missing_hash_message));
+    };
+    if expected_hash != sha256_prefixed(check.ciphertext) {
+        return Err(SourceError::integrity(format!("{} hash mismatch", check.file_name)));
+    }
+    if let Some(expected_byte_len) = check.expected_byte_len {
+        if expected_byte_len != Some(check.ciphertext.len()) {
+            return Err(SourceError::integrity(format!("{} byte length mismatch", check.file_name)));
+        }
+    }
+    if !check.envelope_present {
+        return Err(SourceError::integrity(check.missing_envelope_message));
+    }
+    validate_age_ciphertext(check.ciphertext, check.file_name)
 }
 
 impl SourceArtifactPath {

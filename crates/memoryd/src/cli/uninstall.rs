@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::cli::{UninstallArgs, UninstallHarness};
+use crate::cli::{HarnessTargetArg, UninstallArgs};
 use crate::setup::{
     claude_config_path, claude_settings_path, codex_config_path, codex_hooks_path, remove_memorum_hooks_json,
     remove_memorum_hooks_toml, remove_memorum_mcp_json, remove_memorum_mcp_toml, SetupStepStatus,
@@ -223,7 +223,7 @@ impl Detection {
             launchd_plists: detected_launchd_plists(),
             claude_config: claude.map(|path| harness_config_detection(path, claude_has_memorum_entry)),
             codex_config: codex.map(|path| harness_config_detection(path, codex_has_memorum_entry)),
-            claude_hooks: claude_settings.map(|path| harness_config_detection(path, claude_has_hooks_entry)),
+            claude_hooks: claude_settings.map(|path| harness_config_detection(path, json_hooks_entry)),
             codex_hooks: detect_codex_hooks(codex_home.as_deref(), home.as_deref()),
         }
         .with_harness_filter(args.harness)
@@ -231,13 +231,13 @@ impl Detection {
 
     /// Drop config detections the `--harness` selection excludes so the report
     /// and the unwire steps agree on what is in scope.
-    fn with_harness_filter(mut self, harness: Option<UninstallHarness>) -> Self {
+    fn with_harness_filter(mut self, harness: Option<HarnessTargetArg>) -> Self {
         let (want_claude, want_codex) = match harness {
-            None | Some(UninstallHarness::All) => (true, true),
-            Some(UninstallHarness::Claude) => (true, false),
-            Some(UninstallHarness::Codex) => (false, true),
-            Some(UninstallHarness::None) => (false, false),
-            Some(UninstallHarness::Current) => (
+            None | Some(HarnessTargetArg::All) => (true, true),
+            Some(HarnessTargetArg::Claude) => (true, false),
+            Some(HarnessTargetArg::Codex) => (false, true),
+            Some(HarnessTargetArg::None) => (false, false),
+            Some(HarnessTargetArg::Current) => (
                 self.claude_config.as_ref().is_some_and(|c| c.has_memorum_entry)
                     || self.claude_hooks.as_ref().is_some_and(|c| c.has_memorum_entry),
                 self.codex_config.as_ref().is_some_and(|c| c.has_memorum_entry)
@@ -269,11 +269,11 @@ fn codex_has_memorum_entry(body: &str) -> bool {
     remove_memorum_mcp_toml(body).map(|outcome| outcome.removed > 0).unwrap_or(false)
 }
 
-fn claude_has_hooks_entry(body: &str) -> bool {
-    remove_memorum_hooks_json(body).map(|outcome| outcome.removed > 0).unwrap_or(false)
-}
-
-fn codex_has_hooks_json_entry(body: &str) -> bool {
+/// Whether a JSON hooks file (Claude `settings.json` or Codex `hooks.json` —
+/// both nest events under a top-level `hooks` object) holds a memorum recall
+/// hook. One predicate because the two file shapes are identical for the
+/// purposes of detection.
+fn json_hooks_entry(body: &str) -> bool {
     remove_memorum_hooks_json(body).map(|outcome| outcome.removed > 0).unwrap_or(false)
 }
 
@@ -289,7 +289,7 @@ fn codex_has_hooks_toml_entry(body: &str) -> bool {
 fn detect_codex_hooks(codex_home: Option<&str>, home: Option<&Path>) -> Option<HarnessConfigDetection> {
     let hooks_json = codex_hooks_path(codex_home, home);
     if let Some(path) = hooks_json.filter(|path| path.exists()) {
-        return Some(harness_config_detection(path, codex_has_hooks_json_entry));
+        return Some(harness_config_detection(path, json_hooks_entry));
     }
     codex_config_path(codex_home, home).map(|path| harness_config_detection(path, codex_has_hooks_toml_entry))
 }
@@ -743,7 +743,7 @@ fn config_still_has_hooks(config: &HarnessConfigDetection) -> bool {
     };
     let json = path.extension().and_then(|ext| ext.to_str()) == Some("json");
     if json {
-        codex_has_hooks_json_entry(&body)
+        json_hooks_entry(&body)
     } else {
         codex_has_hooks_toml_entry(&body)
     }
@@ -901,7 +901,7 @@ mod tests {
         let repo = temp.path().join("repo");
         let runtime = repo.join(".memoryd");
         let mut input = args();
-        input.harness = Some(UninstallHarness::None);
+        input.harness = Some(HarnessTargetArg::None);
         let detection = Detection::probe(&input, &repo, &runtime, &resolve_socket_path(&runtime));
         assert!(detection.claude_config.is_none());
         assert!(detection.codex_config.is_none());

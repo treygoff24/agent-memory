@@ -516,10 +516,11 @@ fn derive_alias_map(memories_src: &Path) -> Result<BTreeMap<String, String>, Qua
     for path in files {
         let text = fs::read_to_string(&path)?;
         let (mut namespace, mut canonical) = (None, None);
-        for line in text.lines() {
-            if line == "---" && namespace.is_some() {
-                break; // out of frontmatter
-            }
+        // Scan only the leading `---` frontmatter fence, independent of field
+        // order: read `namespace:` / `canonical_namespace_id:` keys until the
+        // closing fence, so a body line can never be mistaken for frontmatter
+        // and the two keys may appear in either order.
+        for line in frontmatter_lines(&text) {
             if let Some(rest) = line.strip_prefix("namespace:") {
                 namespace = Some(rest.trim().trim_matches('"').to_string());
             } else if let Some(rest) = line.strip_prefix("canonical_namespace_id:") {
@@ -533,6 +534,18 @@ fn derive_alias_map(memories_src: &Path) -> Result<BTreeMap<String, String>, Qua
         }
     }
     Ok(map)
+}
+
+/// Lines inside the leading `---` … `---` frontmatter fence of a memory file.
+///
+/// Returns the body-free key/value lines between the opening and closing fence;
+/// when there is no opening fence, the iterator is empty. Decoupling the scan
+/// from field order removes the prior `line == "---" && namespace.is_some()`
+/// heuristic and stops body text from ever being read as frontmatter.
+fn frontmatter_lines(text: &str) -> impl Iterator<Item = &str> {
+    let mut lines = text.lines();
+    let opened = lines.next() == Some("---");
+    lines.take_while(move |line| opened && *line != "---")
 }
 
 fn collect_markdown(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -714,6 +727,26 @@ fn dcg_term(gain: f64, rank_index: usize) -> f64 {
 
 // Runner
 
+/// Apply one seam's per-case decision: an abstention case records an
+/// [`AbstentionOutcome`] (kept out of the headline averages), otherwise the
+/// ranked list is folded into the seam accumulator. Shared by the default
+/// two-seam runner and the single-seam fused runner so the abstain-or-add
+/// branch lives in one place.
+#[allow(clippy::too_many_arguments)]
+fn accumulate_or_abstain(
+    acc: &mut SeamAccumulator,
+    abstentions: &mut Vec<AbstentionOutcome>,
+    case: &QueryCase,
+    seam: &str,
+    ranked: &[String],
+) {
+    if case.is_abstention() {
+        abstentions.push(abstention_outcome(case, seam, ranked));
+    } else {
+        acc.add_case(case, ranked);
+    }
+}
+
 /// Run both ranking seams over the golden corpus and produce the full report.
 pub async fn run_quality_report() -> Result<QualityReport, QualityError> {
     Ok(run_quality_report_with_cases_for_root(&GoldenCorpus::fixtures_root()).await?.0)
@@ -737,10 +770,8 @@ pub async fn run_fused_quality_report_for_root(
         let fused_ranked = corpus.rank_via_fused_search(&case.query).await?;
         if case.is_abstention() {
             abstention_count += 1;
-            abstentions.push(abstention_outcome(case, "fused_search", &fused_ranked));
-        } else {
-            fused_acc.add_case(case, &fused_ranked);
         }
+        accumulate_or_abstain(&mut fused_acc, &mut abstentions, case, "fused_search", &fused_ranked);
     }
 
     let active_embedding = corpus
@@ -814,12 +845,9 @@ pub async fn run_quality_report_with_cases_for_root(
 
         if case.is_abstention() {
             abstention_count += 1;
-            abstentions.push(abstention_outcome(case, "search", &search_ranked));
-            abstentions.push(abstention_outcome(case, "startup", &startup_ranked));
-        } else {
-            search_acc.add_case(case, &search_ranked);
-            startup_acc.add_case(case, &startup_ranked);
         }
+        accumulate_or_abstain(&mut search_acc, &mut abstentions, case, "search", &search_ranked);
+        accumulate_or_abstain(&mut startup_acc, &mut abstentions, case, "startup", &startup_ranked);
     }
 
     let mut seams = BTreeMap::new();

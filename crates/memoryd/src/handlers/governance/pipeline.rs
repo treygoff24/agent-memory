@@ -12,7 +12,7 @@ use memory_governance::{GovernanceWriteDecision, PolicySet, PolicySource, Tombst
 use memory_privacy::{FileKeyProvider, PrivacyDecision, PrivacyEncryptor};
 use memory_substrate::{
     events::EventKind, ClassificationOutcome, EncryptedWriteRequest, EventContext, Memory, MemoryContent, MemoryId,
-    MemoryStatus, Scope, Substrate, SupersedeRequest as SubstrateSupersedeRequest, TombstoneRequest, TrustLevel,
+    MemoryStatus, Substrate, SupersedeRequest as SubstrateSupersedeRequest, TombstoneRequest, TrustLevel,
     WriteMode, WriteRequest as SubstrateWriteRequest,
 };
 use serde_json::{Map, Value};
@@ -25,7 +25,8 @@ use super::policy::{
 };
 use super::privacy::{attach_privacy_scan, classify_input_privacy};
 use crate::handlers::{
-    policy_source_string, safe_index_projection, sanitize_forget_reason, HandlerError, HandlerState,
+    namespace_bucket_for_scope, policy_source_string, safe_index_projection, sanitize_forget_reason, HandlerError,
+    HandlerState,
 };
 use crate::protocol::{
     ClaimLockWarning, GovernanceForgetResponse, GovernanceRefusalReason, GovernanceStatus, GovernanceSupersedeResponse,
@@ -298,7 +299,7 @@ fn inherit_supersede_namespace_meta(meta: Value, old: &memory_substrate::Frontma
     let effective_namespace = match fields.get("namespace").and_then(Value::as_str) {
         Some(namespace) => namespace.to_string(),
         None => {
-            let namespace = namespace_for_scope(old.scope);
+            let namespace = namespace_bucket_for_scope(old.scope);
             fields.insert("namespace".to_string(), Value::String(namespace.to_string()));
             namespace.to_string()
         }
@@ -321,14 +322,6 @@ fn inherit_supersede_namespace_meta(meta: Value, old: &memory_substrate::Frontma
     }
 
     Value::Object(fields)
-}
-
-fn namespace_for_scope(scope: Scope) -> &'static str {
-    match scope {
-        Scope::User => "me",
-        Scope::Project | Scope::Org => "project",
-        Scope::Agent | Scope::Subagent => "agent",
-    }
 }
 
 struct MarkOldSuperseded<'a> {
@@ -443,29 +436,29 @@ enum ClaimLockRollback {
     RestorePrevious(ClaimLockInfo),
 }
 
+/// A supersede claim-lock guard. Either `Inactive` (coordination disabled — no
+/// lock was taken and nothing to release or roll back) or `Active`, which owns
+/// the lock identity, the rollback strategy if the supersede fails before
+/// success, and any advisory contention warning to surface on success.
+/// RAII guard for a supersede claim lock. Holds `Some(ActiveClaimLock)` while a
+/// lock is held and `None` when there is nothing to release or roll back.
+/// `release_after_success` and `Drop` `take()` the active state to defuse the
+/// guard — a type that implements `Drop` cannot be destructured to move its
+/// payload out (E0509), so the active state lives behind an `Option` instead.
 struct SupersedeClaimLock<'a> {
-    state: Option<&'a HandlerState>,
-    memory_id: String,
-    harness: String,
-    session_id: String,
-    release_on_success: bool,
+    active: Option<ActiveClaimLock<'a>>,
+}
+
+struct ActiveClaimLock<'a> {
+    state: &'a HandlerState,
+    identity: SupersedeClaimIdentity,
     rollback: ClaimLockRollback,
     warning: Option<ClaimLockWarning>,
-    completed: bool,
 }
 
 impl<'a> SupersedeClaimLock<'a> {
     fn inactive() -> Self {
-        Self {
-            state: None,
-            memory_id: String::new(),
-            harness: String::new(),
-            session_id: String::new(),
-            release_on_success: false,
-            rollback: ClaimLockRollback::None,
-            warning: None,
-            completed: true,
-        }
+        Self { active: None }
     }
 
     fn acquired(state: &'a HandlerState, memory_id: &MemoryId, meta: &GovernanceMeta) -> Self {
@@ -491,26 +484,17 @@ impl<'a> SupersedeClaimLock<'a> {
         rollback: ClaimLockRollback,
         warning: Option<ClaimLockWarning>,
     ) -> Self {
-        Self {
-            state: Some(state),
-            memory_id: identity.memory_id,
-            harness: identity.harness,
-            session_id: identity.session_id,
-            release_on_success: true,
-            rollback,
-            warning,
-            completed: false,
-        }
+        Self { active: Some(ActiveClaimLock { state, identity, rollback, warning }) }
     }
 
     fn release_after_success(mut self) -> Option<ClaimLockWarning> {
-        if self.release_on_success {
-            if let Some(state) = self.state {
-                state.claim_locks.release(&self.memory_id, &self.harness, &self.session_id);
-            }
-        }
-        self.completed = true;
-        self.warning.take()
+        // Take the active state out so the trailing `Drop` sees `None` and skips
+        // rollback: the supersede succeeded, so the lock is released cleanly and
+        // only the advisory warning travels onward.
+        let active = self.active.take()?;
+        let ActiveClaimLock { state, identity, warning, .. } = active;
+        state.claim_locks.release(&identity.memory_id, &identity.harness, &identity.session_id);
+        warning
     }
 }
 
@@ -532,22 +516,19 @@ impl SupersedeClaimIdentity {
 
 impl Drop for SupersedeClaimLock<'_> {
     fn drop(&mut self) {
-        if self.completed {
-            return;
-        }
-
-        let Some(state) = self.state else {
+        let Some(active) = self.active.take() else {
             return;
         };
+        let ActiveClaimLock { state, identity, rollback, .. } = active;
 
-        match &self.rollback {
+        match rollback {
             ClaimLockRollback::None => {}
             ClaimLockRollback::ReleaseAcquired => {
-                state.claim_locks.release(&self.memory_id, &self.harness, &self.session_id);
+                state.claim_locks.release(&identity.memory_id, &identity.harness, &identity.session_id);
             }
             ClaimLockRollback::RestorePrevious(previous_holder) => {
-                state.claim_locks.release(&self.memory_id, &self.harness, &self.session_id);
-                let _restored = state.claim_locks.restore(previous_holder.clone());
+                state.claim_locks.release(&identity.memory_id, &identity.harness, &identity.session_id);
+                let _restored = state.claim_locks.restore(previous_holder);
             }
         }
     }

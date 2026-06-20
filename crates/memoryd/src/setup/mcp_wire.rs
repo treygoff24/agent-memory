@@ -458,7 +458,10 @@ fn codex_config_path(runtime: &dyn McpWireRuntime) -> Result<PathBuf, WireError>
         .ok_or(WireError::MissingHome { target: HarnessTarget::Codex })
 }
 
-fn parse_json_document(existing: &str) -> Result<Value, WireError> {
+/// Tolerant parse of a possibly-empty JSON config body. Empty/whitespace-only
+/// input yields an empty object so callers can merge into a fresh config.
+/// Shared with `hooks_wire` so the two wire paths parse identically.
+pub(crate) fn parse_json_document(existing: &str) -> Result<Value, WireError> {
     if existing.trim().is_empty() {
         Ok(Value::Object(Map::new()))
     } else {
@@ -534,7 +537,10 @@ fn claude_server_value(spec: &McpServerSpec) -> Value {
     Value::Object(server)
 }
 
-fn parse_toml_document(existing: &str) -> Result<DocumentMut, WireError> {
+/// Tolerant parse of a possibly-empty TOML config body. Empty/whitespace-only
+/// input yields an empty `DocumentMut`. Shared with `hooks_wire` so the two wire
+/// paths parse identically.
+pub(crate) fn parse_toml_document(existing: &str) -> Result<DocumentMut, WireError> {
     if existing.trim().is_empty() {
         Ok(DocumentMut::new())
     } else {

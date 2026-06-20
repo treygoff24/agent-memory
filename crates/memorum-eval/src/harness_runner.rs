@@ -45,6 +45,10 @@ pub enum HarnessRunnerError {
     Io(io::Error),
     HarnessIncompatibleCli { harness: RealHarness, path: PathBuf, reason: String },
     UnsupportedMockTest { test_id: u8 },
+    /// A daemon-scaffold Unix socket never began accepting connections within
+    /// the readiness deadline. Carries the fully formatted diagnostic so the
+    /// message is identical regardless of where it surfaces.
+    SocketNotReady(String),
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -355,6 +359,7 @@ impl fmt::Display for HarnessRunnerError {
                 write!(formatter, "HARNESS_INCOMPATIBLE_CLI for {harness:?} at {}: {reason}", path.display())
             }
             Self::UnsupportedMockTest { test_id } => write!(formatter, "unsupported MockHarness test #{test_id}"),
+            Self::SocketNotReady(message) => formatter.write_str(message),
         }
     }
 }
@@ -365,6 +370,7 @@ impl std::error::Error for HarnessRunnerError {
             Self::Io(error) => Some(error),
             Self::HarnessIncompatibleCli { .. } => None,
             Self::UnsupportedMockTest { .. } => None,
+            Self::SocketNotReady(_) => None,
         }
     }
 }

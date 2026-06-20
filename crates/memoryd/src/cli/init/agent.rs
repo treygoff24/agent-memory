@@ -17,10 +17,10 @@
 //! before producing a report (reason on stderr), while a non-zero exit with a
 //! JSON body on stdout means a setup step failed fatally (details in the body).
 
-use crate::cli::{DaemonMode, InitArgs, InitHarness, NonGitCwdDefault, WireHooksMode, WireMcpMode};
+use crate::cli::{DaemonMode, HarnessTargetArg, InitArgs, NonGitCwdDefault};
 use crate::setup::{
     DaemonStrategy, FlagDrivenIo, HarnessSelection, NonGitCwdDecision, SetupDecisions, SetupDetection, SetupEngine,
-    SetupReport, SetupStep, SetupStepReport, SetupStepStatus, WireHooksSelection, WireMcpSelection,
+    SetupReport, SetupStep, SetupStepReport, SetupStepStatus,
 };
 
 use super::resolve_repo_runtime;
@@ -82,28 +82,29 @@ async fn run_setup(args: InitArgs) -> anyhow::Result<()> {
 fn decisions_from_args(args: &InitArgs) -> SetupDecisions {
     SetupDecisions {
         import_memories: args.import,
-        harnesses: args.harness.unwrap_or(InitHarness::Current).into(),
+        harnesses: args.harness.unwrap_or(HarnessTargetArg::Current).into(),
         non_git_cwd_default: args.non_git_cwd_default.unwrap_or(NonGitCwdDefault::Project).into(),
-        wire_mcp: args.wire_mcp.unwrap_or(WireMcpMode::Current).into(),
-        wire_hooks: args.wire_hooks.unwrap_or(WireHooksMode::Current).into(),
+        wire_mcp: args.wire_mcp.unwrap_or(HarnessTargetArg::Current).into(),
+        wire_hooks: args.wire_hooks.unwrap_or(HarnessTargetArg::Current).into(),
         daemon: args.daemon.unwrap_or(DaemonMode::OnDemand).into(),
         print_only: args.print_only,
     }
 }
 
-// CLI selector enums are 1:1 with their engine counterparts (same variants, same
-// order). The `From` impls keep the mapping at the type boundary and stay
+// The CLI harness-target enum is 1:1 with its engine counterpart (same variants,
+// same order). The `From` impl keeps the mapping at the type boundary and stays
 // total-match, so adding a variant on either side without updating the other is
-// a compile error.
+// a compile error. `--harness`, `--wire-mcp`, and `--wire-hooks` all share it
+// because they target the same `HarnessSelection` semantics.
 
-impl From<InitHarness> for HarnessSelection {
-    fn from(harness: InitHarness) -> Self {
-        match harness {
-            InitHarness::Current => Self::Current,
-            InitHarness::Claude => Self::Claude,
-            InitHarness::Codex => Self::Codex,
-            InitHarness::All => Self::All,
-            InitHarness::None => Self::None,
+impl From<HarnessTargetArg> for HarnessSelection {
+    fn from(target: HarnessTargetArg) -> Self {
+        match target {
+            HarnessTargetArg::Current => Self::Current,
+            HarnessTargetArg::Claude => Self::Claude,
+            HarnessTargetArg::Codex => Self::Codex,
+            HarnessTargetArg::All => Self::All,
+            HarnessTargetArg::None => Self::None,
         }
     }
 }
@@ -115,30 +116,6 @@ impl From<NonGitCwdDefault> for NonGitCwdDecision {
             NonGitCwdDefault::Me => Self::Me,
             NonGitCwdDefault::Generate => Self::Generate,
             NonGitCwdDefault::Project => Self::DeriveProject,
-        }
-    }
-}
-
-impl From<WireMcpMode> for WireMcpSelection {
-    fn from(mode: WireMcpMode) -> Self {
-        match mode {
-            WireMcpMode::Current => Self::Current,
-            WireMcpMode::Claude => Self::Claude,
-            WireMcpMode::Codex => Self::Codex,
-            WireMcpMode::All => Self::All,
-            WireMcpMode::None => Self::None,
-        }
-    }
-}
-
-impl From<WireHooksMode> for WireHooksSelection {
-    fn from(mode: WireHooksMode) -> Self {
-        match mode {
-            WireHooksMode::Current => Self::Current,
-            WireHooksMode::Claude => Self::Claude,
-            WireHooksMode::Codex => Self::Codex,
-            WireHooksMode::All => Self::All,
-            WireHooksMode::None => Self::None,
         }
     }
 }

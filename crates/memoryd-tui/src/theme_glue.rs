@@ -82,61 +82,17 @@ fn ansi_to_ratatui(color: AnsiColor) -> Color {
 }
 
 pub fn border_set(glyphs: BorderGlyphs) -> border::Set {
+    // `BorderGlyphs` and ratatui's `border::Set` both store `&'static str`, so the
+    // glyph alphabet defined in memorum-theme copies straight across — no lookup
+    // table, no `'?'` corruption arm for glyphs the table forgot.
     border::Set {
-        top_left: glyph_to_static(glyphs.top_left),
-        top_right: glyph_to_static(glyphs.top_right),
-        bottom_left: glyph_to_static(glyphs.bottom_left),
-        bottom_right: glyph_to_static(glyphs.bottom_right),
-        vertical_left: glyph_to_static(glyphs.vertical_left),
-        vertical_right: glyph_to_static(glyphs.vertical_right),
-        horizontal_top: glyph_to_static(glyphs.horizontal_top),
-        horizontal_bottom: glyph_to_static(glyphs.horizontal_bottom),
-    }
-}
-
-fn glyph_to_static(glyph: char) -> &'static str {
-    match glyph {
-        '-' => "-",
-        '|' => "|",
-        '+' => "+",
-        '─' => "─",
-        '│' => "│",
-        '┌' => "┌",
-        '┐' => "┐",
-        '└' => "└",
-        '┘' => "┘",
-        '╭' => "╭",
-        '╮' => "╮",
-        '╰' => "╰",
-        '╯' => "╯",
-        '├' => "├",
-        '┤' => "┤",
-        '┬' => "┬",
-        '┴' => "┴",
-        '═' => "═",
-        '║' => "║",
-        '╔' => "╔",
-        '╗' => "╗",
-        '╚' => "╚",
-        '╝' => "╝",
-        '╠' => "╠",
-        '╣' => "╣",
-        '╦' => "╦",
-        '╩' => "╩",
-        '━' => "━",
-        '┃' => "┃",
-        '┏' => "┏",
-        '┓' => "┓",
-        '┗' => "┗",
-        '┛' => "┛",
-        '┣' => "┣",
-        '┫' => "┫",
-        '┳' => "┳",
-        '┻' => "┻",
-        '╌' => "╌",
-        '╎' => "╎",
-        '╍' => "╍",
-        '╏' => "╏",
-        _ => "?",
+        top_left: glyphs.top_left,
+        top_right: glyphs.top_right,
+        bottom_left: glyphs.bottom_left,
+        bottom_right: glyphs.bottom_right,
+        vertical_left: glyphs.vertical_left,
+        vertical_right: glyphs.vertical_right,
+        horizontal_top: glyphs.horizontal_top,
+        horizontal_bottom: glyphs.horizontal_bottom,
     }
 }

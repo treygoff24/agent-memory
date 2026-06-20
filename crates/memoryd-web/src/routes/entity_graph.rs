@@ -6,8 +6,8 @@ use serde::ser::SerializeStruct;
 use serde::{Serialize, Serializer};
 use std::collections::BTreeSet;
 
-use crate::routes::status::daemon_error;
-use crate::state::{backend_unavailable, WebState};
+use crate::routes::daemon::daemon_call;
+use crate::state::{backend_unavailable, Backend, WebState};
 
 #[derive(Clone, Debug, Serialize)]
 pub struct EntityGraphResponse {
@@ -152,53 +152,45 @@ impl EntityDetailResponse {
 }
 
 pub async fn entity_graph(State(state): State<WebState>) -> impl IntoResponse {
-    let Some(data) = state.dashboard_data() else {
-        if let Some(socket_path) = state.daemon_socket() {
-            return match inspect_entities(socket_path, None).await {
-                Ok(entities) => Json(graph_from_entities(&entities)).into_response(),
-                Err(error) => error.into_response(),
-            };
-        }
-        return backend_unavailable("entity_graph").into_response();
-    };
-    Json(data.entity_graph.clone()).into_response()
+    match state.backend() {
+        #[cfg(feature = "dev-fixtures")]
+        Backend::Fixture(data) => Json(data.entity_graph.clone()).into_response(),
+        Backend::Daemon(socket_path) => match inspect_entities(socket_path, None).await {
+            Ok(entities) => Json(graph_from_entities(&entities)).into_response(),
+            Err(error) => error.into_response(),
+        },
+        Backend::Unavailable => backend_unavailable("entity_graph").into_response(),
+    }
 }
 
 pub async fn entity_detail(State(state): State<WebState>, Path(entity_id): Path<String>) -> impl IntoResponse {
-    let Some(data) = state.dashboard_data() else {
-        if let Some(socket_path) = state.daemon_socket() {
-            return match inspect_entities(socket_path, Some(entity_id.clone())).await {
-                Ok(entities) => Json(detail_from_entities(socket_path, &entity_id, &entities).await).into_response(),
-                Err(error) => error.into_response(),
-            };
+    match state.backend() {
+        #[cfg(feature = "dev-fixtures")]
+        Backend::Fixture(data) => {
+            let mut detail = data.entity_detail.clone();
+            detail.entity_id = entity_id;
+            Json(detail).into_response()
         }
-        return backend_unavailable("entity_detail").into_response();
-    };
-    let mut detail = data.entity_detail.clone();
-    detail.entity_id = entity_id;
-    Json(detail).into_response()
+        Backend::Daemon(socket_path) => match inspect_entities(socket_path, Some(entity_id.clone())).await {
+            Ok(entities) => Json(detail_from_entities(socket_path, &entity_id, &entities).await).into_response(),
+            Err(error) => error.into_response(),
+        },
+        Backend::Unavailable => backend_unavailable("entity_detail").into_response(),
+    }
 }
 
 async fn inspect_entities(
     socket_path: &std::path::Path,
     prefix: Option<String>,
 ) -> Result<Vec<EntitySummary>, axum::response::Response> {
-    match memoryd::client::request(
+    daemon_call::<memoryd::protocol::InspectEntitiesResponse>(
         socket_path,
+        "entity_graph",
         "web-entity-graph",
         RequestPayload::InspectEntities { limit: None, prefix },
     )
     .await
-    {
-        Ok(response) => match response.result {
-            ResponseResult::Success(ResponsePayload::InspectEntities(response)) => Ok(response.entities),
-            ResponseResult::Error(error) => {
-                Err(daemon_error("entity_graph", error.code, error.message).into_response())
-            }
-            other => Err(daemon_error("entity_graph", "unexpected_response", format!("{other:?}")).into_response()),
-        },
-        Err(error) => Err(daemon_error("entity_graph", "daemon_unavailable", error.to_string()).into_response()),
-    }
+    .map(|response| response.entities)
 }
 
 fn graph_from_entities(entities: &[EntitySummary]) -> EntityGraphResponse {

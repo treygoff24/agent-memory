@@ -25,7 +25,7 @@ use crate::recall::render::{
 };
 use crate::recall::source_identity::{
     effective_coordination_level, hydrate_peer_candidate_entities, is_peer_write_row, local_device_id,
-    peer_source_identity,
+    peer_write_candidates, project_scoped_candidate_paths, recency_cutoff,
 };
 use crate::recall::types::{
     bounded_omissions, RecallExplanation, RecallSectionExplanation, RecallSectionName, RecallStrength, SessionBinding,
@@ -404,7 +404,7 @@ async fn same_device_updates(
     let recency_cutoff = recency_cutoff(evaluation.now, config.relevance_gate.recency_window_seconds);
     let rows = rows.into_iter().filter(|row| row.indexed_at >= recency_cutoff).collect::<Vec<_>>();
     let mut session = evaluation.startup_context.clone();
-    let candidates = peer_write_candidates(evaluation.session_binding, rows);
+    let candidates = peer_write_candidates(evaluation.session_binding, rows, project_scoped_candidate_paths);
     let insertion = RelevanceGate::new(config).evaluate(&mut session, &candidates, evaluation.now);
     non_empty_insertion(insertion)
 }
@@ -434,7 +434,7 @@ async fn cross_device_updates(
     for id in already_surfaced {
         session.record_surfaced_peer_write(id);
     }
-    let candidates = peer_write_candidates(evaluation.session_binding, rows);
+    let candidates = peer_write_candidates(evaluation.session_binding, rows, project_scoped_candidate_paths);
     let insertion = RelevanceGate::new(config).evaluate(&mut session, &candidates, evaluation.now);
     let mut peer_updates = insertion.peer_updates;
     if peer_updates.is_empty() {
@@ -445,10 +445,6 @@ async fn cross_device_updates(
     }
 
     Some(CrossDeviceStartupUpdates { from_sync_date: from_sync_date(&candidates, &peer_updates), peer_updates })
-}
-
-fn recency_cutoff(now: DateTime<Utc>, seconds: u64) -> DateTime<Utc> {
-    now - chrono::Duration::try_seconds(seconds as i64).unwrap_or(chrono::Duration::MAX)
 }
 
 fn non_empty_insertion(insertion: CoordinationInsertion) -> Option<CoordinationInsertion> {
@@ -500,56 +496,6 @@ fn startup_salient_entities(
     }
 
     entities
-}
-
-fn peer_write_candidates(session_binding: &SessionBinding, rows: Vec<RecallIndexRow>) -> Vec<PeerWriteCandidate> {
-    let mut candidates = Vec::new();
-    // Consume the already-filtered rows by value: each surviving row moves into
-    // its `PeerWriteCandidate` rather than being deep-cloned (including its
-    // `Vec<Entity>`) a second time.
-    for row in rows {
-        let identity = peer_source_identity(&row);
-        if identity.matches_session(session_binding) {
-            continue;
-        }
-        candidates.push(PeerWriteCandidate {
-            memory_id: row.id.clone(),
-            paths: candidate_paths(&row),
-            harness: identity.harness,
-            session_id: identity.session_id,
-            namespace: namespace_for_row(&row),
-            row,
-            embedding: None,
-        });
-    }
-    candidates
-}
-
-fn candidate_paths(row: &RecallIndexRow) -> Vec<String> {
-    if row.scope == Scope::Project {
-        if let Some(canonical_id) = &row.canonical_namespace_id {
-            return vec![format!("project:{canonical_id}")];
-        }
-    }
-    vec![row.path.as_str().to_owned()]
-}
-
-fn namespace_for_row(row: &RecallIndexRow) -> String {
-    match row.scope {
-        Scope::User => "me".to_owned(),
-        Scope::Agent => "agent".to_owned(),
-        Scope::Subagent => "agent".to_owned(),
-        Scope::Project => row
-            .canonical_namespace_id
-            .as_ref()
-            .map(|namespace| format!("project:{namespace}"))
-            .unwrap_or_else(|| "project".to_owned()),
-        Scope::Org => row
-            .canonical_namespace_id
-            .as_ref()
-            .map(|namespace| format!("org:{namespace}"))
-            .unwrap_or_else(|| "org".to_owned()),
-    }
 }
 
 fn from_sync_date(candidates: &[PeerWriteCandidate], peer_updates: &[PeerUpdateEntry]) -> String {

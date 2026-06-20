@@ -100,6 +100,14 @@ pub struct CatalogEntry {
     pub mode: CatalogMode,
     pub deferred: bool,
     pub execution_group: ExecutionGroup,
+    /// `cargo test --test <target>` target this entry dispatches to.
+    pub cargo_target: &'static str,
+    /// Test-name filter passed to `cargo test` for this entry.
+    pub cargo_filter: &'static str,
+    /// Real-harness CLIs that must be present for a `RealHarness` entry to
+    /// dispatch (empty for simulator entries and real-harness entries that need
+    /// no specific CLI).
+    pub required_harnesses: &'static [RealHarness],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -248,6 +256,9 @@ pub const TEST_CATALOG: [CatalogEntry; 20] = [
         mode: CatalogMode::Simulator,
         deferred: false,
         execution_group: ExecutionGroup::Parallel,
+        cargo_target: "handbook",
+        cargo_filter: "exact_identifier_survives_startup_recall_and_search",
+        required_harnesses: &[],
     },
     CatalogEntry {
         number: 2,
@@ -256,6 +267,9 @@ pub const TEST_CATALOG: [CatalogEntry; 20] = [
         mode: CatalogMode::Simulator,
         deferred: false,
         execution_group: ExecutionGroup::Parallel,
+        cargo_target: "handbook",
+        cargo_filter: "superseded_fact_loses_to_replacement_in_search_and_recall",
+        required_harnesses: &[],
     },
     CatalogEntry {
         number: 3,
@@ -264,6 +278,9 @@ pub const TEST_CATALOG: [CatalogEntry; 20] = [
         mode: CatalogMode::Simulator,
         deferred: false,
         execution_group: ExecutionGroup::Parallel,
+        cargo_target: "handbook",
+        cargo_filter: "project_binding_filters_project_memory_from_other_project_recall",
+        required_harnesses: &[],
     },
     CatalogEntry {
         number: 4,
@@ -272,6 +289,9 @@ pub const TEST_CATALOG: [CatalogEntry; 20] = [
         mode: CatalogMode::Simulator,
         deferred: false,
         execution_group: ExecutionGroup::Parallel,
+        cargo_target: "handbook",
+        cargo_filter: "novel_topic_search_and_startup_abstain_without_error",
+        required_harnesses: &[],
     },
     CatalogEntry {
         number: 5,
@@ -280,6 +300,9 @@ pub const TEST_CATALOG: [CatalogEntry; 20] = [
         mode: CatalogMode::Simulator,
         deferred: false,
         execution_group: ExecutionGroup::Parallel,
+        cargo_target: "handbook",
+        cargo_filter: "low_confidence_poisoned_candidate_is_not_promoted_or_recalled",
+        required_harnesses: &[],
     },
     CatalogEntry {
         number: 6,
@@ -288,6 +311,9 @@ pub const TEST_CATALOG: [CatalogEntry; 20] = [
         mode: CatalogMode::Simulator,
         deferred: false,
         execution_group: ExecutionGroup::Parallel,
+        cargo_target: "handbook",
+        cargo_filter: "artifact_memory_preserves_tool_output_handle_through_recall_search_and_get",
+        required_harnesses: &[],
     },
     CatalogEntry {
         number: 7,
@@ -296,6 +322,9 @@ pub const TEST_CATALOG: [CatalogEntry; 20] = [
         mode: CatalogMode::Simulator,
         deferred: false,
         execution_group: ExecutionGroup::Parallel,
+        cargo_target: "handbook",
+        cargo_filter: "subagent_writeback_requires_a_spawn_registry_before_parent_recall",
+        required_harnesses: &[],
     },
     CatalogEntry {
         number: 8,
@@ -304,6 +333,9 @@ pub const TEST_CATALOG: [CatalogEntry; 20] = [
         mode: CatalogMode::Simulator,
         deferred: false,
         execution_group: ExecutionGroup::Parallel,
+        cargo_target: "handbook",
+        cargo_filter: "forgotten_agent_memory_is_tombstoned_hidden_and_blocks_reinsertion",
+        required_harnesses: &[],
     },
     CatalogEntry {
         number: 9,
@@ -312,6 +344,9 @@ pub const TEST_CATALOG: [CatalogEntry; 20] = [
         mode: CatalogMode::Simulator,
         deferred: false,
         execution_group: ExecutionGroup::Parallel,
+        cargo_target: "handbook",
+        cargo_filter: "recall_budget_pressure_keeps_high_value_gold_memory_and_reports_omissions",
+        required_harnesses: &[],
     },
     CatalogEntry {
         number: 10,
@@ -320,6 +355,9 @@ pub const TEST_CATALOG: [CatalogEntry; 20] = [
         mode: CatalogMode::Simulator,
         deferred: false,
         execution_group: ExecutionGroup::Parallel,
+        cargo_target: "handbook",
+        cargo_filter: "simulated_compaction_resumption_preserves_active_working_state_without_duplicates",
+        required_harnesses: &[],
     },
     CatalogEntry {
         number: 11,
@@ -328,6 +366,9 @@ pub const TEST_CATALOG: [CatalogEntry; 20] = [
         mode: CatalogMode::Simulator,
         deferred: false,
         execution_group: ExecutionGroup::Parallel,
+        cargo_target: "handbook",
+        cargo_filter: "self_poisoned_candidate_cannot_ground_its_own_confidence_escalation",
+        required_harnesses: &[],
     },
     CatalogEntry {
         number: 12,
@@ -336,6 +377,9 @@ pub const TEST_CATALOG: [CatalogEntry; 20] = [
         mode: CatalogMode::Simulator,
         deferred: false,
         execution_group: ExecutionGroup::Parallel,
+        cargo_target: "handbook",
+        cargo_filter: "temporal_validity_fields_are_not_silently_ignored_and_fresh_memory_is_currently_recalled",
+        required_harnesses: &[],
     },
     CatalogEntry {
         number: 13,
@@ -344,6 +388,9 @@ pub const TEST_CATALOG: [CatalogEntry; 20] = [
         mode: CatalogMode::RealHarness,
         deferred: false,
         execution_group: ExecutionGroup::Serial,
+        cargo_target: "domain",
+        cargo_filter: "t13_cross_harness_substrate_sharing",
+        required_harnesses: &[RealHarness::Claude, RealHarness::Codex],
     },
     CatalogEntry {
         number: 14,
@@ -352,6 +399,9 @@ pub const TEST_CATALOG: [CatalogEntry; 20] = [
         mode: CatalogMode::Simulator,
         deferred: false,
         execution_group: ExecutionGroup::Serial,
+        cargo_target: "domain",
+        cargo_filter: "t14_merge_driver_preserves_two_device_semantic_edits",
+        required_harnesses: &[],
     },
     CatalogEntry {
         number: 15,
@@ -360,6 +410,9 @@ pub const TEST_CATALOG: [CatalogEntry; 20] = [
         mode: CatalogMode::RealHarness,
         deferred: false,
         execution_group: ExecutionGroup::Serial,
+        cargo_target: "domain",
+        cargo_filter: "t15_privacy_filter_refusal_and_retry",
+        required_harnesses: &[RealHarness::Claude],
     },
     CatalogEntry {
         number: 16,
@@ -368,6 +421,9 @@ pub const TEST_CATALOG: [CatalogEntry; 20] = [
         mode: CatalogMode::Simulator,
         deferred: false,
         execution_group: ExecutionGroup::Parallel,
+        cargo_target: "domain",
+        cargo_filter: "t16_reality_check_drift_scores_order_and_explain_components",
+        required_harnesses: &[],
     },
     CatalogEntry {
         number: 17,
@@ -376,6 +432,9 @@ pub const TEST_CATALOG: [CatalogEntry; 20] = [
         mode: CatalogMode::Simulator,
         deferred: false,
         execution_group: ExecutionGroup::Serial,
+        cargo_target: "domain",
+        cargo_filter: "t17_preseeded_two_device_lease_blocks_loser_and_allows_retry_after_release",
+        required_harnesses: &[],
     },
     CatalogEntry {
         number: 18,
@@ -384,6 +443,9 @@ pub const TEST_CATALOG: [CatalogEntry; 20] = [
         mode: CatalogMode::Simulator,
         deferred: false,
         execution_group: ExecutionGroup::Serial,
+        cargo_target: "domain",
+        cargo_filter: "t18_encrypted_tier_key_rotation_preserves_reads_and_forward_secrecy",
+        required_harnesses: &[],
     },
     CatalogEntry {
         number: 19,
@@ -392,6 +454,9 @@ pub const TEST_CATALOG: [CatalogEntry; 20] = [
         mode: CatalogMode::RealHarness,
         deferred: false,
         execution_group: ExecutionGroup::Serial,
+        cargo_target: "t19_peer_update_framing",
+        cargo_filter: "t19_peer_update_framing_sampling_matrix",
+        required_harnesses: &[RealHarness::Claude, RealHarness::Codex],
     },
     CatalogEntry {
         number: 20,
@@ -400,6 +465,9 @@ pub const TEST_CATALOG: [CatalogEntry; 20] = [
         mode: CatalogMode::Simulator,
         deferred: false,
         execution_group: ExecutionGroup::Serial,
+        cargo_target: "domain",
+        cargo_filter: "t20_web_source_grounding",
+        required_harnesses: &[],
     },
 ];
 
@@ -604,11 +672,15 @@ fn dispatch_for_entry(entry: CatalogEntry, context: &RunContext) -> CatalogDispa
         return CatalogDispatch::Skip(reason);
     }
 
+    // The `cargo test` dispatch (target + name filter) is co-located with the
+    // catalog row, so every Simulator/RealHarness entry structurally carries
+    // one — no number-keyed match and no runtime `unreachable!` fallback.
+    let cargo_dispatch = CargoTestDispatch { target: entry.cargo_target, filter: entry.cargo_filter };
     match entry.mode {
-        CatalogMode::Simulator => CatalogDispatch::CargoTest(cargo_dispatch(entry)),
+        CatalogMode::Simulator => CatalogDispatch::CargoTest(cargo_dispatch),
         CatalogMode::RealHarness if !context.missing_credentials.is_empty() => CatalogDispatch::Skip(SKIP_NO_AUTH),
         CatalogMode::RealHarness if missing_real_harness_cli(entry) => CatalogDispatch::Skip(SKIP_NO_AUTH),
-        CatalogMode::RealHarness => CatalogDispatch::CargoTest(cargo_dispatch(entry)),
+        CatalogMode::RealHarness => CatalogDispatch::CargoTest(cargo_dispatch),
     }
 }
 
@@ -624,86 +696,11 @@ fn semantic_skip_reason(entry: CatalogEntry) -> Option<&'static str> {
 }
 
 fn missing_real_harness_cli(entry: CatalogEntry) -> bool {
-    required_real_harnesses(entry).iter().any(|harness| !real_harness_cli_available(*harness))
-}
-
-fn required_real_harnesses(entry: CatalogEntry) -> &'static [RealHarness] {
-    match entry.number {
-        13 | 19 => &[RealHarness::Claude, RealHarness::Codex],
-        15 => &[RealHarness::Claude],
-        _ => &[],
-    }
+    entry.required_harnesses.iter().any(|harness| !real_harness_cli_available(*harness))
 }
 
 fn real_harness_cli_available(harness: RealHarness) -> bool {
     matches!(HarnessRunner::detect_cli(harness), Ok(Some(_)))
-}
-
-fn cargo_dispatch(entry: CatalogEntry) -> CargoTestDispatch {
-    match entry.number {
-        1 => CargoTestDispatch { target: "handbook", filter: "exact_identifier_survives_startup_recall_and_search" },
-        2 => CargoTestDispatch {
-            target: "handbook",
-            filter: "superseded_fact_loses_to_replacement_in_search_and_recall",
-        },
-        3 => CargoTestDispatch {
-            target: "handbook",
-            filter: "project_binding_filters_project_memory_from_other_project_recall",
-        },
-        4 => CargoTestDispatch { target: "handbook", filter: "novel_topic_search_and_startup_abstain_without_error" },
-        5 => CargoTestDispatch {
-            target: "handbook",
-            filter: "low_confidence_poisoned_candidate_is_not_promoted_or_recalled",
-        },
-        6 => CargoTestDispatch {
-            target: "handbook",
-            filter: "artifact_memory_preserves_tool_output_handle_through_recall_search_and_get",
-        },
-        7 => CargoTestDispatch {
-            target: "handbook",
-            filter: "subagent_writeback_requires_a_spawn_registry_before_parent_recall",
-        },
-        8 => CargoTestDispatch {
-            target: "handbook",
-            filter: "forgotten_agent_memory_is_tombstoned_hidden_and_blocks_reinsertion",
-        },
-        9 => CargoTestDispatch {
-            target: "handbook",
-            filter: "recall_budget_pressure_keeps_high_value_gold_memory_and_reports_omissions",
-        },
-        10 => CargoTestDispatch {
-            target: "handbook",
-            filter: "simulated_compaction_resumption_preserves_active_working_state_without_duplicates",
-        },
-        11 => CargoTestDispatch {
-            target: "handbook",
-            filter: "self_poisoned_candidate_cannot_ground_its_own_confidence_escalation",
-        },
-        12 => CargoTestDispatch {
-            target: "handbook",
-            filter: "temporal_validity_fields_are_not_silently_ignored_and_fresh_memory_is_currently_recalled",
-        },
-        13 => CargoTestDispatch { target: "domain", filter: "t13_cross_harness_substrate_sharing" },
-        14 => CargoTestDispatch { target: "domain", filter: "t14_merge_driver_preserves_two_device_semantic_edits" },
-        15 => CargoTestDispatch { target: "domain", filter: "t15_privacy_filter_refusal_and_retry" },
-        16 => CargoTestDispatch {
-            target: "domain",
-            filter: "t16_reality_check_drift_scores_order_and_explain_components",
-        },
-        17 => CargoTestDispatch {
-            target: "domain",
-            filter: "t17_preseeded_two_device_lease_blocks_loser_and_allows_retry_after_release",
-        },
-        18 => CargoTestDispatch {
-            target: "domain",
-            filter: "t18_encrypted_tier_key_rotation_preserves_reads_and_forward_secrecy",
-        },
-        19 => {
-            CargoTestDispatch { target: "t19_peer_update_framing", filter: "t19_peer_update_framing_sampling_matrix" }
-        }
-        20 => CargoTestDispatch { target: "domain", filter: "t20_web_source_grounding" },
-        _ => unreachable!("catalog entry #{} is not cargo-dispatched by memorum-eval", entry.number),
-    }
 }
 
 fn run_cargo_test(entry: CatalogEntry, started: Instant, dispatch: CargoTestDispatch) -> EvalTestResult {
@@ -781,10 +778,11 @@ fn normalize_skip_reason(reason: &str) -> &'static str {
     }
 }
 
-/// Build a passed result with an explicit assertion count from the test's
-/// `MEMORUM_EVAL_ASSERTIONS=<n>` stdout marker (H-B3), defaulting to 1 when
-/// no marker is present.
-fn passed_result_with_count(entry: CatalogEntry, duration: Duration, assertions: usize) -> EvalTestResult {
+/// Base result carrying the entry-derived identity fields plus duration, with
+/// neutral defaults (passed, zero assertion counts, no failure/skip detail).
+/// Callers override only their genuinely-distinct fields via struct-update, so
+/// the six identity fields are spelled out once instead of in four constructors.
+fn base_result(entry: CatalogEntry, duration: Duration) -> EvalTestResult {
     EvalTestResult {
         number: entry.number,
         name: entry.name,
@@ -793,12 +791,25 @@ fn passed_result_with_count(entry: CatalogEntry, duration: Duration, assertions:
         deferred: entry.deferred,
         status: TestStatus::Passed,
         duration_ms: duration.as_millis(),
-        assertions,
-        assertions_passed: assertions,
+        assertions: 0,
+        assertions_passed: 0,
         assertions_failed: 0,
         failure_detail: None,
         skip_reason: None,
         skip_kind: None,
+    }
+}
+
+/// Build a passed result with an explicit assertion count from the test's
+/// `MEMORUM_EVAL_ASSERTIONS=<n>` stdout marker (H-B3), defaulting to 1 when
+/// no marker is present.
+fn passed_result_with_count(entry: CatalogEntry, duration: Duration, assertions: usize) -> EvalTestResult {
+    EvalTestResult {
+        status: TestStatus::Passed,
+        assertions,
+        assertions_passed: assertions,
+        assertions_failed: 0,
+        ..base_result(entry, duration)
     }
 }
 
@@ -810,55 +821,31 @@ fn outcome_passed_result(
 ) -> EvalTestResult {
     let assertions = (metadata.len() + output.len()).max(1);
     EvalTestResult {
-        number: entry.number,
-        name: entry.name,
-        group: entry.group,
-        mode: entry.mode,
-        deferred: entry.deferred,
         status: TestStatus::Passed,
-        duration_ms: duration.as_millis(),
         assertions,
         assertions_passed: assertions,
         assertions_failed: 0,
-        failure_detail: None,
-        skip_reason: None,
-        skip_kind: None,
+        ..base_result(entry, duration)
     }
 }
 
 fn failed_result(entry: CatalogEntry, duration: Duration, reason: &str) -> EvalTestResult {
     EvalTestResult {
-        number: entry.number,
-        name: entry.name,
-        group: entry.group,
-        mode: entry.mode,
-        deferred: entry.deferred,
         status: TestStatus::Failed,
-        duration_ms: duration.as_millis(),
         assertions: 1,
         assertions_passed: 0,
         assertions_failed: 1,
         failure_detail: Some(reason.to_owned()),
-        skip_reason: None,
-        skip_kind: None,
+        ..base_result(entry, duration)
     }
 }
 
 fn skipped_result(entry: CatalogEntry, duration: Duration, reason: &str) -> EvalTestResult {
     EvalTestResult {
-        number: entry.number,
-        name: entry.name,
-        group: entry.group,
-        mode: entry.mode,
-        deferred: entry.deferred,
         status: TestStatus::Skipped,
-        duration_ms: duration.as_millis(),
-        assertions: 0,
-        assertions_passed: 0,
-        assertions_failed: 0,
-        failure_detail: None,
         skip_reason: Some(reason.to_owned()),
         skip_kind: Some(skip_kind_for_reason(reason)),
+        ..base_result(entry, duration)
     }
 }
 

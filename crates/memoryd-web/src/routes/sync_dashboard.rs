@@ -1,11 +1,12 @@
 use axum::extract::State;
 use axum::response::IntoResponse;
 use axum::Json;
-use memoryd::protocol::{ClaimLockInfo, PeerSessionStatus, RequestPayload, ResponsePayload, ResponseResult};
+use memoryd::protocol::{ClaimLockInfo, PeerSessionStatus, RequestPayload};
 use serde::Serialize;
 
-use crate::routes::status::{daemon_error, SyncStatus};
-use crate::state::{backend_unavailable, WebState};
+use crate::routes::daemon::daemon_call;
+use crate::routes::status::SyncStatus;
+use crate::state::{backend_unavailable, Backend, WebState};
 
 #[derive(Clone, Debug, Serialize)]
 pub struct SyncDashboardResponse {
@@ -30,82 +31,82 @@ pub struct ClaimLockSummary {
 }
 
 pub async fn sync_dashboard(State(state): State<WebState>) -> impl IntoResponse {
-    if let Some(data) = state.dashboard_data() {
-        return Json(SyncDashboardResponse {
-            sync: data.status.sync.clone(),
-            last_commit: Some("fixture-sync-commit".to_owned()),
-            peer_presence: PeerPresenceSummary {
-                coordination_level: 3,
-                active_session_count: data.status.active_sessions.len(),
-                active_sessions: data
-                    .status
-                    .active_sessions
-                    .iter()
-                    .map(|session| PeerSessionStatus {
-                        session_id: session.session_id.clone(),
-                        harness: session.harness.clone(),
-                        namespace: "project:agent-memory".to_owned(),
-                        salient_entities: Vec::new(),
-                        started_at: None,
-                        last_heartbeat_age_seconds: 0,
-                    })
-                    .collect(),
-                recent_delivery_count: data.status.recall.peer_update_snapshot_count as usize,
-            },
-            claim_locks: ClaimLockSummary {
-                active_count: data
-                    .audit_artifact
-                    .sync_state
-                    .claim_lock_status
-                    .iter()
-                    .filter(|status| status.starts_with("held by "))
-                    .count(),
-                locks: Vec::new(),
-            },
-        })
-        .into_response();
-    }
-
-    let Some(socket_path) = state.daemon_socket() else {
-        return backend_unavailable("sync_dashboard").into_response();
+    let socket_path = match state.backend() {
+        #[cfg(feature = "dev-fixtures")]
+        Backend::Fixture(data) => {
+            return Json(SyncDashboardResponse {
+                sync: data.status.sync.clone(),
+                last_commit: Some("fixture-sync-commit".to_owned()),
+                peer_presence: PeerPresenceSummary {
+                    coordination_level: 3,
+                    active_session_count: data.status.active_sessions.len(),
+                    active_sessions: data
+                        .status
+                        .active_sessions
+                        .iter()
+                        .map(|session| PeerSessionStatus {
+                            session_id: session.session_id.clone(),
+                            harness: session.harness.clone(),
+                            namespace: "project:agent-memory".to_owned(),
+                            salient_entities: Vec::new(),
+                            started_at: None,
+                            last_heartbeat_age_seconds: 0,
+                        })
+                        .collect(),
+                    recent_delivery_count: data.status.recall.peer_update_snapshot_count as usize,
+                },
+                claim_locks: ClaimLockSummary {
+                    active_count: data
+                        .audit_artifact
+                        .sync_state
+                        .claim_lock_status
+                        .iter()
+                        .filter(|status| status.starts_with("held by "))
+                        .count(),
+                    locks: Vec::new(),
+                },
+            })
+            .into_response();
+        }
+        Backend::Daemon(socket_path) => socket_path,
+        Backend::Unavailable => return backend_unavailable("sync_dashboard").into_response(),
     };
 
-    let status = match memoryd::client::request(socket_path, "web-sync-dashboard-status", RequestPayload::Status).await
+    let status = match daemon_call::<memoryd::protocol::StatusResponse>(
+        socket_path,
+        "sync_dashboard",
+        "web-sync-dashboard-status",
+        RequestPayload::Status,
+    )
+    .await
     {
-        Ok(response) => match response.result {
-            ResponseResult::Success(ResponsePayload::Status(status)) => {
-                crate::routes::status::StatusDashboardResponse::from_daemon(status).sync
-            }
-            ResponseResult::Error(error) => {
-                return daemon_error("sync_dashboard", error.code, error.message).into_response()
-            }
-            other => {
-                return daemon_error("sync_dashboard", "unexpected_response", format!("{other:?}")).into_response()
-            }
-        },
-        Err(error) => return daemon_error("sync_dashboard", "daemon_unavailable", error.to_string()).into_response(),
+        Ok(status) => crate::routes::status::StatusDashboardResponse::from_daemon(status).sync,
+        Err(response) => return response,
     };
 
-    match memoryd::client::request(socket_path, "web-sync-dashboard-peers", RequestPayload::PeerStatus).await {
-        Ok(response) => match response.result {
-            ResponseResult::Success(ResponsePayload::PeerStatus(peer_status)) => {
-                let active_count = peer_status.claim_locks.len();
-                Json(SyncDashboardResponse {
-                    sync: status,
-                    last_commit: None,
-                    peer_presence: PeerPresenceSummary {
-                        coordination_level: peer_status.coordination_level,
-                        active_session_count: peer_status.active_sessions.len(),
-                        active_sessions: peer_status.active_sessions,
-                        recent_delivery_count: peer_status.recent_deliveries.len(),
-                    },
-                    claim_locks: ClaimLockSummary { active_count, locks: peer_status.claim_locks },
-                })
-                .into_response()
-            }
-            ResponseResult::Error(error) => daemon_error("sync_dashboard", error.code, error.message).into_response(),
-            other => daemon_error("sync_dashboard", "unexpected_response", format!("{other:?}")).into_response(),
-        },
-        Err(error) => daemon_error("sync_dashboard", "daemon_unavailable", error.to_string()).into_response(),
+    match daemon_call::<memoryd::protocol::PeerStatusResponse>(
+        socket_path,
+        "sync_dashboard",
+        "web-sync-dashboard-peers",
+        RequestPayload::PeerStatus,
+    )
+    .await
+    {
+        Ok(peer_status) => {
+            let active_count = peer_status.claim_locks.len();
+            Json(SyncDashboardResponse {
+                sync: status,
+                last_commit: None,
+                peer_presence: PeerPresenceSummary {
+                    coordination_level: peer_status.coordination_level,
+                    active_session_count: peer_status.active_sessions.len(),
+                    active_sessions: peer_status.active_sessions,
+                    recent_delivery_count: peer_status.recent_deliveries.len(),
+                },
+                claim_locks: ClaimLockSummary { active_count, locks: peer_status.claim_locks },
+            })
+            .into_response()
+        }
+        Err(response) => response,
     }
 }

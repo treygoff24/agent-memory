@@ -68,8 +68,9 @@ pub async fn capture_web_source_with_resolver(
     if request.excerpts.is_empty() {
         return Err(SourceError::ExcerptNotFound("at least one excerpt is required".to_string()));
     }
+    let classifier = DeterministicPrivacyClassifier::new();
     for excerpt in &request.excerpts {
-        if !raw_text_is_plaintext_safe(excerpt) {
+        if !is_plaintext_safe(&classifier, excerpt) {
             return Err(SourceError::privacy("source capture excerpts must be safe plaintext"));
         }
     }
@@ -95,13 +96,13 @@ pub async fn capture_web_source_with_resolver(
         ));
     }
 
-    let extracted_policy = classify_extracted_text(&extracted.text)?;
+    let extracted_policy = classify_extracted_text(&classifier, &extracted.text)?;
     let excerpts = create_excerpt_records(&artifact_id, &extracted.text, &request.excerpts, captured_at)?;
     let excerpts_jsonl = excerpts_jsonl(&excerpts)?;
     let extracted_artifact = prepare_extracted_text(&extracted.text, extracted_policy, key_provider.as_ref())?;
 
     let raw_text = raw_textual_projection(content_type.as_deref(), &raw_bytes);
-    let raw_is_safe = raw_text.as_deref().is_some_and(raw_text_is_plaintext_safe);
+    let raw_is_safe = raw_text.as_deref().is_some_and(|text| is_plaintext_safe(&classifier, text));
     let raw_artifact = prepare_raw_artifact(&raw_bytes, raw_is_safe, key_provider.as_ref())?;
 
     let mut warnings = Vec::new();
@@ -199,8 +200,10 @@ struct ExtractedArtifactStorage {
     envelope: Option<EncryptionEnvelope>,
 }
 
-fn classify_extracted_text(text: &str) -> SourceResult<PrivacyStorageAction> {
-    let classifier = DeterministicPrivacyClassifier::new();
+fn classify_extracted_text(
+    classifier: &DeterministicPrivacyClassifier,
+    text: &str,
+) -> SourceResult<PrivacyStorageAction> {
     let decision = classifier
         .classify(text, PrivacyNamespace::Project, None)
         .map_err(|err| SourceError::privacy(format!("classify extracted text: {err}")))?;
@@ -311,8 +314,10 @@ fn encryption_envelope_from_payload(envelope: &serde_json::Value) -> SourceResul
     Ok(EncryptionEnvelope::age_x25519(recipient))
 }
 
-fn raw_text_is_plaintext_safe(text: &str) -> bool {
-    let classifier = DeterministicPrivacyClassifier::new();
+/// The single privacy-gate predicate: a text is "plaintext safe" when the
+/// classifier routes it to `Plaintext` storage. Shared by the excerpt pre-check
+/// and the raw-projection check so the predicate is defined once.
+fn is_plaintext_safe(classifier: &DeterministicPrivacyClassifier, text: &str) -> bool {
     classifier
         .classify(text, PrivacyNamespace::Project, None)
         .is_ok_and(|decision| matches!(decision.storage_action, PrivacyStorageAction::Plaintext))

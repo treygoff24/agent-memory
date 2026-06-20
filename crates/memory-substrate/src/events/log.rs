@@ -251,13 +251,11 @@ fn append_event_inner(path: &Path, event: &Event, sync: bool) -> std::io::Result
     append_events_inner(path, std::slice::from_ref(event), sync)
 }
 
-fn append_events_inner(path: &Path, events: &[Event], sync: bool) -> std::io::Result<()> {
-    if events.is_empty() {
-        return Ok(());
-    }
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
+/// Serialize, frame, and 64-KiB-guard each event into one contiguous byte
+/// buffer (spec §12.3 step 1). The output bytes are identical to framing each
+/// event individually and concatenating them in order, so both the append and
+/// rewrite paths share one copy of the load-bearing encode loop.
+fn encode_event_lines(events: &[Event]) -> std::io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
     for event in events {
         let value = serde_json::to_value(event).map_err(std::io::Error::other)?;
@@ -270,6 +268,17 @@ fn append_events_inner(path: &Path, events: &[Event], sync: bool) -> std::io::Re
         }
         bytes.extend_from_slice(line.as_bytes());
     }
+    Ok(bytes)
+}
+
+fn append_events_inner(path: &Path, events: &[Event], sync: bool) -> std::io::Result<()> {
+    if events.is_empty() {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let bytes = encode_event_lines(events)?;
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
     file.write_all(&bytes)?;
     if sync {
@@ -331,18 +340,7 @@ pub fn rewrite_events(path: &Path, events: &[Event]) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let mut bytes = Vec::new();
-    for event in events {
-        let value = serde_json::to_value(event).map_err(std::io::Error::other)?;
-        let line = encode_event_line(&value)?;
-        if line.len() > MAX_LINE_BYTES {
-            return Err(std::io::Error::other(format!(
-                "event line too long: {} bytes (max {MAX_LINE_BYTES})",
-                line.len()
-            )));
-        }
-        bytes.extend_from_slice(line.as_bytes());
-    }
+    let bytes = encode_event_lines(events)?;
     fs::write(path, bytes)
 }
 

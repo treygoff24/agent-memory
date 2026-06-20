@@ -7,8 +7,8 @@
 //! because its seed is randomized per process).
 //!
 //! `#[allow(dead_code)]` covers `#[path]`-included integration tests that only
-//! pull in one of the consumer modules (e.g. `tombstone_contract.rs` does not
-//! reference `canonical_entity_hash`).
+//! pull in one of the consumer modules, leaving the other hashing helpers
+//! unreferenced in that build.
 #![allow(dead_code)]
 
 use std::collections::BTreeSet;
@@ -45,18 +45,24 @@ pub(crate) fn stable_hash(value: &str) -> String {
     format!("fnv64:{:016x}", hasher.finish())
 }
 
-#[derive(Default)]
+/// FNV-1a 64-bit offset basis; the hasher's initial state.
+const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+/// FNV-1a 64-bit prime.
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
 struct StableHasher(u64);
+
+impl Default for StableHasher {
+    fn default() -> Self {
+        Self(FNV_OFFSET_BASIS)
+    }
+}
 
 impl Hasher for StableHasher {
     fn write(&mut self, bytes: &[u8]) {
-        if self.0 == 0 {
-            self.0 = 0xcbf2_9ce4_8422_2325;
-        }
-
         for byte in bytes {
             self.0 ^= u64::from(*byte);
-            self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
+            self.0 = self.0.wrapping_mul(FNV_PRIME);
         }
     }
 

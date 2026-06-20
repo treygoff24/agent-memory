@@ -1,5 +1,7 @@
 //! Owned setup decisions gathered by interactive or flag-driven frontends.
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 /// Complete decision bundle for a setup run.
@@ -28,7 +30,11 @@ impl Default for SetupDecisions {
     }
 }
 
-/// Harness set selected for import.
+/// One conceptual "which harness(es) does this decision target" type, shared by
+/// import-harness selection, MCP wiring, and passive-recall hook wiring. The
+/// frontends and the engine treat all three identically; the [`WireMcpSelection`]
+/// and [`WireHooksSelection`] aliases name the same type at each call site for
+/// readability.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum HarnessSelection {
@@ -37,6 +43,26 @@ pub enum HarnessSelection {
     Codex,
     All,
     None,
+}
+
+impl HarnessSelection {
+    /// Human label used in wizard echoes (`--harness`, `--wire-mcp`,
+    /// `--wire-hooks`). Distinct from the kebab-case serde representation.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Current => "current harness",
+            Self::Claude => "Claude Code",
+            Self::Codex => "Codex CLI",
+            Self::All => "all harnesses",
+            Self::None => "none",
+        }
+    }
+}
+
+impl fmt::Display for HarnessSelection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
 }
 
 /// Default disposition for imported memories with non-git working directories.
@@ -52,32 +78,19 @@ pub enum NonGitCwdDecision {
     Generate,
 }
 
-/// Harness configs selected for MCP wiring.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum WireMcpSelection {
-    Current,
-    Claude,
-    Codex,
-    All,
-    None,
-}
+/// Harness configs selected for MCP wiring. Same conceptual type as
+/// [`HarnessSelection`] (same variants, same kebab-case serde); aliased for
+/// call-site readability.
+pub type WireMcpSelection = HarnessSelection;
 
 /// Harness configs selected for passive-recall hook installation.
 ///
-/// Mirrors [`WireMcpSelection`]: installs the `memoryd recall hook` lifecycle
-/// hooks (SessionStart base block + UserPromptSubmit delta + SubagentStart) into
-/// the selected harness config(s). `Current` targets the single detected harness;
-/// `None` skips hook wiring entirely.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum WireHooksSelection {
-    Current,
-    Claude,
-    Codex,
-    All,
-    None,
-}
+/// Installs the `memoryd recall hook` lifecycle hooks (SessionStart base block +
+/// UserPromptSubmit delta + SubagentStart) into the selected harness config(s).
+/// `Current` targets the single detected harness; `None` skips hook wiring
+/// entirely. Same conceptual type as [`HarnessSelection`]; aliased for
+/// call-site readability.
+pub type WireHooksSelection = HarnessSelection;
 
 /// Daemon arrangement selected for setup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

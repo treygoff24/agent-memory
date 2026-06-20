@@ -7,7 +7,8 @@ use memoryd::protocol::{ResponsePayload, ResponseResult};
 use serde::Serialize;
 use serde_json::json;
 
-use crate::state::{backend_unavailable, WebState};
+use crate::routes::daemon::daemon_call;
+use crate::state::{backend_unavailable, Backend, WebState};
 
 #[derive(Clone, Debug, Serialize)]
 pub struct StatusDashboardResponse {
@@ -117,33 +118,37 @@ impl StatusDashboardResponse {
 }
 
 pub async fn status(State(state): State<WebState>) -> impl IntoResponse {
-    if let Some(data) = state.dashboard_data() {
-        return Json(data.status.clone()).into_response();
-    }
-    let Some(socket_path) = state.daemon_socket() else {
-        return backend_unavailable("status").into_response();
-    };
-    match memoryd::client::request(socket_path, "web-status", memoryd::protocol::RequestPayload::Status).await {
-        Ok(response) => match response.result {
-            ResponseResult::Success(ResponsePayload::Status(status)) => {
-                Json(StatusDashboardResponse::from_daemon(status)).into_response()
+    match state.backend() {
+        #[cfg(feature = "dev-fixtures")]
+        Backend::Fixture(data) => Json(data.status.clone()).into_response(),
+        Backend::Daemon(socket_path) => {
+            match daemon_call::<memoryd::protocol::StatusResponse>(
+                socket_path,
+                "status",
+                "web-status",
+                memoryd::protocol::RequestPayload::Status,
+            )
+            .await
+            {
+                Ok(status) => Json(StatusDashboardResponse::from_daemon(status)).into_response(),
+                Err(response) => response,
             }
-            ResponseResult::Error(error) => daemon_error("status", error.code, error.message).into_response(),
-            other => daemon_error("status", "unexpected_response", format!("{other:?}")).into_response(),
-        },
-        Err(error) => daemon_error("status", "daemon_unavailable", error.to_string()).into_response(),
+        }
+        Backend::Unavailable => backend_unavailable("status").into_response(),
     }
 }
 
 pub async fn notifications_stream(State(state): State<WebState>) -> Response {
-    if let Some(data) = state.dashboard_data() {
-        return notifications_heartbeat(json!({
-            "kind": "heartbeat",
-            "notifications": data.notifications.clone(),
-        }));
-    }
-    let Some(socket_path) = state.daemon_socket() else {
-        return backend_unavailable("notifications_stream").into_response();
+    let socket_path = match state.backend() {
+        #[cfg(feature = "dev-fixtures")]
+        Backend::Fixture(data) => {
+            return notifications_heartbeat(json!({
+                "kind": "heartbeat",
+                "notifications": data.notifications.clone(),
+            }));
+        }
+        Backend::Daemon(socket_path) => socket_path,
+        Backend::Unavailable => return backend_unavailable("notifications_stream").into_response(),
     };
 
     let payload = match memoryd::client::request(

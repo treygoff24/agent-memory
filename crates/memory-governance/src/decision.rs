@@ -50,12 +50,10 @@ pub enum GovernanceRefusalReason {
 }
 
 impl GovernanceRefusalReason {
-    /// Stable snake_case code for this reason: the canonical `as_str` spelling,
-    /// kept in sync by hand with two other copies of the same mapping — `FromStr`
-    /// (its exact inverse) and the `#[serde(rename_all = "snake_case")]` derive.
-    /// Adding a variant means editing both this match and `FromStr`; keep them
-    /// aligned (a future `strum`/table-driven consolidation could make one of
-    /// them the literal single source).
+    /// Stable snake_case code for this reason — the canonical runtime accessor.
+    /// `FromStr` is its exact inverse and the `#[serde(rename_all = "snake_case")]`
+    /// derive its serialization; the `as_str_matches_serde_and_roundtrips` test
+    /// locks all three together so a new variant cannot silently diverge.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Grounding => "grounding",
@@ -72,6 +70,9 @@ impl GovernanceRefusalReason {
 impl FromStr for GovernanceRefusalReason {
     type Err = GovernanceError;
 
+    /// Parse a stable snake_case reason code. This is the inverse of the
+    /// `#[serde(rename_all = "snake_case")]` derive on the enum, kept aligned by
+    /// hand; adding a variant means extending this match too.
     fn from_str(reason_code: &str) -> Result<Self, Self::Err> {
         match reason_code {
             "grounding" => Ok(Self::Grounding),
@@ -144,5 +145,34 @@ impl GovernanceDecision {
         }
 
         self
+    }
+}
+
+#[cfg(test)]
+mod refusal_reason_contract {
+    use super::*;
+
+    /// Lock the three hand-aligned representations of GovernanceRefusalReason
+    /// together so a new variant cannot silently diverge: `as_str` (runtime
+    /// accessor), the `#[serde(rename_all = "snake_case")]` serialization, and
+    /// `FromStr` (the inverse). Every variant must round-trip through all three.
+    #[test]
+    fn as_str_matches_serde_and_roundtrips() {
+        let variants = [
+            GovernanceRefusalReason::Grounding,
+            GovernanceRefusalReason::Policy,
+            GovernanceRefusalReason::Tombstone,
+            GovernanceRefusalReason::Contradiction,
+            GovernanceRefusalReason::Privacy,
+            GovernanceRefusalReason::Superseded,
+            GovernanceRefusalReason::ReviewRequired,
+        ];
+        for variant in variants {
+            // expect-justified: contract test asserts the canonical reason code.
+            let serde_code = serde_json::to_value(variant).expect("serialize").as_str().expect("string").to_owned();
+            assert_eq!(variant.as_str(), serde_code, "as_str must equal the serde rename");
+            // expect-justified: contract test asserts FromStr is the inverse.
+            assert_eq!(GovernanceRefusalReason::from_str(variant.as_str()).expect("parse"), variant);
+        }
     }
 }

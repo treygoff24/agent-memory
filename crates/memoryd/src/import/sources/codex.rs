@@ -13,8 +13,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use super::claude::{stamp_auto_memory_provenance, strip_memorum_recall_blocks};
-use super::{extract_wiki_links, slugify};
+use super::{extract_wiki_links, slugify, stamp_auto_memory_provenance, strip_memorum_recall_blocks};
 use crate::import::candidate::{Harness, ParsedMemory};
 use crate::import::{ImportError, ImportResult};
 

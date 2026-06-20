@@ -363,43 +363,25 @@ impl Substrate {
         let operation_id = request.operation_id.clone().unwrap_or_else(new_operation_id);
         let outcome = WriteOutcome::not_committed(operation_id.clone(), self.durability);
         // Pre-disk refusal gates emit `WriteRefused` audit events per spec §8.7 step 6.
-        self.guard_with_refusal_audit(
+        let audit_ctx = RefusalAuditContext {
+            id: request.memory.frontmatter.id.clone(),
+            path: request.memory.path.clone(),
+            classification: request.classification,
+            operation_id: operation_id.clone(),
+        };
+        self.run_gate(
+            &audit_ctx,
             self.enforce_best_effort_opt_in(request.allow_best_effort_durability, outcome.clone()),
-            request.memory.frontmatter.id.clone(),
-            request.memory.path.clone(),
-            request.classification,
-            &operation_id,
         )?;
-        self.guard_with_refusal_audit(
-            self.enforce_plaintext_classification(&request, outcome.clone()),
-            request.memory.frontmatter.id.clone(),
-            request.memory.path.clone(),
-            request.classification,
-            &operation_id,
-        )?;
-        self.guard_with_refusal_audit(
-            self.validate_memory_path(&request.memory, outcome.clone()),
-            request.memory.frontmatter.id.clone(),
-            request.memory.path.clone(),
-            request.classification,
-            &operation_id,
-        )?;
-        self.guard_with_refusal_audit(
-            enforce_no_dream_prose_sources(&request.memory, outcome.clone()),
-            request.memory.frontmatter.id.clone(),
-            request.memory.path.clone(),
-            request.classification,
-            &operation_id,
-        )?;
-        self.guard_with_refusal_audit(
+        self.run_gate(&audit_ctx, self.enforce_plaintext_classification(&request, outcome.clone()))?;
+        self.run_gate(&audit_ctx, self.validate_memory_path(&request.memory, outcome.clone()))?;
+        self.run_gate(&audit_ctx, enforce_no_dream_prose_sources(&request.memory, outcome.clone()))?;
+        self.run_gate(
+            &audit_ctx,
             validate_frontmatter(&request.memory.frontmatter).map_err(|err| WriteFailure {
                 outcome: outcome.clone(),
                 kind: WriteFailureKind::ValidationTyped(ValidationError::Other(err.to_string())),
             }),
-            request.memory.frontmatter.id.clone(),
-            request.memory.path.clone(),
-            request.classification,
-            &operation_id,
         )?;
         let final_hash = atomic_write(crate::markdown::AtomicWrite {
             repo: &self.roots.repo,
@@ -414,9 +396,7 @@ impl Substrate {
         let pending_index_op = || PendingIndexOp {
             op_id: operation_id.clone(),
             kind: PendingIndexKind::UpsertPath,
-            path: request.memory.path.clone().unwrap_or_else(|| {
-                RepoPath::new(format!("agent/patterns/{}.md", request.memory.frontmatter.id.as_str()))
-            }),
+            path: request.memory.path.clone().unwrap_or_else(|| default_memory_path(&request.memory)),
             memory_id: Some(request.memory.frontmatter.id.clone()),
             expected_file_hash: Some(final_hash.clone()),
             enqueued_at: Utc::now(),
@@ -457,82 +437,10 @@ impl Substrate {
         }
         let write_event_kind = EventKind::WriteCommitted {
             id: request.memory.frontmatter.id.clone(),
-            path: request.memory.path.clone().unwrap_or_else(|| {
-                RepoPath::new(format!("agent/patterns/{}.md", request.memory.frontmatter.id.as_str()))
-            }),
+            path: request.memory.path.clone().unwrap_or_else(|| default_memory_path(&request.memory)),
             classification: request.classification,
         };
-        let device = DeviceId::try_new(&self.device_id).map_err(|err| WriteFailure {
-            outcome: outcome.clone(),
-            kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
-        })?;
-        let seq =
-            reserve_event_sequence(&self.roots.runtime, &self.event_log, &device).map_err(|err| WriteFailure {
-                outcome: outcome.clone(),
-                kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
-            })?;
-        let event = Event {
-            schema: crate::SUBSTRATE_SCHEMA_VERSION,
-            id: EventId::new(format!("evt_{}", uuid::Uuid::new_v4())),
-            at: Utc::now(),
-            device,
-            seq,
-            operation_id: Some(operation_id.clone()),
-            kind: write_event_kind,
-            crc32c: 0,
-        };
-        if let Err(err) = self.append_event_and_mirror(&event, false) {
-            let pending = PendingEventOp {
-                op_id: operation_id.clone(),
-                event_id: event.id.clone(),
-                event,
-                enqueued_at: Utc::now(),
-                attempts: 0,
-                last_error: Some(err.to_string()),
-            };
-            if enqueue_pending_event(&self.roots.runtime, &pending).is_ok() {
-                return Ok(WriteOutcome {
-                    committed: true,
-                    indexed: true,
-                    event_recorded: false,
-                    durability: self.durability,
-                    repair_required: Some(RepairRequired::PendingEvent),
-                    operation_id,
-                });
-            }
-            if write_startup_marker(&self.roots.runtime, "pending event enqueue failed").is_ok() {
-                return Err(WriteFailure {
-                    outcome: WriteOutcome {
-                        committed: true,
-                        indexed: true,
-                        event_recorded: false,
-                        durability: self.durability,
-                        repair_required: Some(RepairRequired::FullStartupScan),
-                        operation_id: operation_id.clone(),
-                    },
-                    kind: WriteFailureKind::RepairQueueFailed,
-                });
-            }
-            return Err(WriteFailure {
-                outcome: WriteOutcome {
-                    committed: true,
-                    indexed: true,
-                    event_recorded: false,
-                    durability: self.durability,
-                    repair_required: Some(RepairRequired::OperatorRequired("repair state not durable".to_string())),
-                    operation_id: operation_id.clone(),
-                },
-                kind: WriteFailureKind::RepairStateNotDurable,
-            });
-        }
-        Ok(WriteOutcome {
-            committed: true,
-            indexed: true,
-            event_recorded: true,
-            durability: self.durability,
-            repair_required: None,
-            operation_id,
-        })
+        self.commit_lifecycle_event(write_event_kind, &operation_id, "pending event enqueue failed", &outcome)
     }
 
     /// Supersede an existing memory with a replacement memory.
@@ -599,14 +507,15 @@ impl Substrate {
     pub async fn write_encrypted(&self, request: EncryptedWriteRequest) -> Result<WriteOutcome, WriteFailure> {
         let operation_id = request.operation_id.clone().unwrap_or_else(new_operation_id);
         let outcome = WriteOutcome::not_committed(operation_id.clone(), self.durability);
-        let mem_id = request.metadata_memory.frontmatter.id.clone();
-        let mem_path = request.metadata_memory.path.clone();
-        self.guard_with_refusal_audit(
+        let audit_ctx = RefusalAuditContext {
+            id: request.metadata_memory.frontmatter.id.clone(),
+            path: request.metadata_memory.path.clone(),
+            classification: request.classification,
+            operation_id: operation_id.clone(),
+        };
+        self.run_gate(
+            &audit_ctx,
             self.enforce_best_effort_opt_in(request.allow_best_effort_durability, outcome.clone()),
-            mem_id.clone(),
-            mem_path.clone(),
-            request.classification,
-            &operation_id,
         )?;
         let classification_check = match request.classification {
             ClassificationOutcome::RequiresEncryption => Ok(()),
@@ -617,27 +526,9 @@ impl Substrate {
                 Err(WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::EncryptionRequired })
             }
         };
-        self.guard_with_refusal_audit(
-            classification_check,
-            mem_id.clone(),
-            mem_path.clone(),
-            request.classification,
-            &operation_id,
-        )?;
-        self.guard_with_refusal_audit(
-            self.validate_memory_path(&request.metadata_memory, outcome.clone()),
-            mem_id.clone(),
-            mem_path.clone(),
-            request.classification,
-            &operation_id,
-        )?;
-        self.guard_with_refusal_audit(
-            enforce_no_dream_prose_sources(&request.metadata_memory, outcome.clone()),
-            mem_id.clone(),
-            mem_path.clone(),
-            request.classification,
-            &operation_id,
-        )?;
+        self.run_gate(&audit_ctx, classification_check)?;
+        self.run_gate(&audit_ctx, self.validate_memory_path(&request.metadata_memory, outcome.clone()))?;
+        self.run_gate(&audit_ctx, enforce_no_dream_prose_sources(&request.metadata_memory, outcome.clone()))?;
         validate_frontmatter(&request.metadata_memory.frontmatter).map_err(|err| WriteFailure {
             outcome: outcome.clone(),
             kind: WriteFailureKind::ValidationTyped(ValidationError::Other(err.to_string())),
@@ -730,77 +621,12 @@ impl Substrate {
             path,
             classification: request.classification,
         };
-        let device = DeviceId::try_new(&self.device_id).map_err(|err| WriteFailure {
-            outcome: outcome.clone(),
-            kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
-        })?;
-        let seq =
-            reserve_event_sequence(&self.roots.runtime, &self.event_log, &device).map_err(|err| WriteFailure {
-                outcome: outcome.clone(),
-                kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
-            })?;
-        let event = Event {
-            schema: crate::SUBSTRATE_SCHEMA_VERSION,
-            id: EventId::new(format!("evt_{}", uuid::Uuid::new_v4())),
-            at: Utc::now(),
-            device,
-            seq,
-            operation_id: Some(operation_id.clone()),
-            kind: encrypted_event_kind,
-            crc32c: 0,
-        };
-        if let Err(err) = self.append_event_and_mirror(&event, false) {
-            let pending = PendingEventOp {
-                op_id: operation_id.clone(),
-                event_id: event.id.clone(),
-                event,
-                enqueued_at: Utc::now(),
-                attempts: 0,
-                last_error: Some(err.to_string()),
-            };
-            if enqueue_pending_event(&self.roots.runtime, &pending).is_ok() {
-                return Ok(WriteOutcome {
-                    committed: true,
-                    indexed: true,
-                    event_recorded: false,
-                    durability: self.durability,
-                    repair_required: Some(RepairRequired::PendingEvent),
-                    operation_id,
-                });
-            }
-            if write_startup_marker(&self.roots.runtime, "pending encrypted event enqueue failed").is_ok() {
-                return Err(WriteFailure {
-                    outcome: WriteOutcome {
-                        committed: true,
-                        indexed: true,
-                        event_recorded: false,
-                        durability: self.durability,
-                        repair_required: Some(RepairRequired::FullStartupScan),
-                        operation_id: operation_id.clone(),
-                    },
-                    kind: WriteFailureKind::RepairQueueFailed,
-                });
-            }
-            return Err(WriteFailure {
-                outcome: WriteOutcome {
-                    committed: true,
-                    indexed: true,
-                    event_recorded: false,
-                    durability: self.durability,
-                    repair_required: Some(RepairRequired::OperatorRequired("repair state not durable".to_string())),
-                    operation_id: operation_id.clone(),
-                },
-                kind: WriteFailureKind::RepairStateNotDurable,
-            });
-        }
-        Ok(WriteOutcome {
-            committed: true,
-            indexed: true,
-            event_recorded: true,
-            durability: self.durability,
-            repair_required: None,
-            operation_id,
-        })
+        self.commit_lifecycle_event(
+            encrypted_event_kind,
+            &operation_id,
+            "pending encrypted event enqueue failed",
+            &outcome,
+        )
     }
 
     /// Update encrypted memory metadata without decrypting or replacing the ciphertext body.
@@ -979,14 +805,7 @@ impl Substrate {
             classification: request.classification,
         };
         self.record_event(event_kind, &operation_id).map_err(|err| WriteFailure {
-            outcome: WriteOutcome {
-                committed: true,
-                indexed: true,
-                event_recorded: false,
-                durability: self.durability,
-                repair_required: Some(RepairRequired::PendingEvent),
-                operation_id: operation_id.clone(),
-            },
+            outcome: committed_pending_event(operation_id.clone(), self.durability),
             kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
         })?;
 
@@ -1103,10 +922,7 @@ impl Substrate {
             kind: WriteFailureKind::ValidationTyped(ValidationError::Other(err.to_string())),
         })?;
         let mut memory = envelope.metadata;
-        let path = memory
-            .path
-            .clone()
-            .unwrap_or_else(|| RepoPath::new(format!("agent/patterns/{}.md", memory.frontmatter.id.as_str())));
+        let path = memory.path.clone().unwrap_or_else(|| default_memory_path(&memory));
         let prior_status = memory.frontmatter.status;
         memory.frontmatter.status = MemoryStatus::Tombstoned;
         memory.frontmatter.updated_at = Utc::now();
@@ -1169,77 +985,12 @@ impl Substrate {
                 }
                 .into_failure()
             })?;
-        let device = DeviceId::try_new(&self.device_id).map_err(|err| WriteFailure {
-            outcome: outcome.clone(),
-            kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
-        })?;
-        let seq =
-            reserve_event_sequence(&self.roots.runtime, &self.event_log, &device).map_err(|err| WriteFailure {
-                outcome: outcome.clone(),
-                kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
-            })?;
-        let event = Event {
-            schema: crate::SUBSTRATE_SCHEMA_VERSION,
-            id: EventId::new(format!("evt_{}", uuid::Uuid::new_v4())),
-            at: Utc::now(),
-            device,
-            seq,
-            operation_id: Some(operation_id.clone()),
-            kind: EventKind::TombstoneCommitted { id: request.id },
-            crc32c: 0,
-        };
-        if let Err(err) = self.append_event_and_mirror(&event, false) {
-            let pending = PendingEventOp {
-                op_id: operation_id.clone(),
-                event_id: event.id.clone(),
-                event,
-                enqueued_at: Utc::now(),
-                attempts: 0,
-                last_error: Some(err.to_string()),
-            };
-            if enqueue_pending_event(&self.roots.runtime, &pending).is_ok() {
-                return Ok(WriteOutcome {
-                    committed: true,
-                    indexed: true,
-                    event_recorded: false,
-                    durability: self.durability,
-                    repair_required: Some(RepairRequired::PendingEvent),
-                    operation_id,
-                });
-            }
-            if write_startup_marker(&self.roots.runtime, "pending tombstone event enqueue failed").is_ok() {
-                return Err(WriteFailure {
-                    outcome: WriteOutcome {
-                        committed: true,
-                        indexed: true,
-                        event_recorded: false,
-                        durability: self.durability,
-                        repair_required: Some(RepairRequired::FullStartupScan),
-                        operation_id: operation_id.clone(),
-                    },
-                    kind: WriteFailureKind::RepairQueueFailed,
-                });
-            }
-            return Err(WriteFailure {
-                outcome: WriteOutcome {
-                    committed: true,
-                    indexed: true,
-                    event_recorded: false,
-                    durability: self.durability,
-                    repair_required: Some(RepairRequired::OperatorRequired("repair state not durable".to_string())),
-                    operation_id: operation_id.clone(),
-                },
-                kind: WriteFailureKind::RepairStateNotDurable,
-            });
-        }
-        Ok(WriteOutcome {
-            committed: true,
-            indexed: true,
-            event_recorded: true,
-            durability: self.durability,
-            repair_required: None,
-            operation_id,
-        })
+        self.commit_lifecycle_event(
+            EventKind::TombstoneCommitted { id: request.id },
+            &operation_id,
+            "pending tombstone event enqueue failed",
+            &outcome,
+        )
     }
 
     /// Allocate next memory id.
@@ -1838,10 +1589,7 @@ impl Substrate {
     }
 
     fn validate_memory_path(&self, memory: &Memory, outcome: WriteOutcome) -> Result<(), WriteFailure> {
-        let path = memory
-            .path
-            .clone()
-            .unwrap_or_else(|| RepoPath::new(format!("agent/patterns/{}.md", memory.frontmatter.id.as_str())));
+        let path = memory.path.clone().unwrap_or_else(|| default_memory_path(memory));
         if !path.is_safe_relative() {
             return Err(WriteFailure {
                 outcome,
@@ -1895,6 +1643,21 @@ impl Substrate {
         }
     }
 
+    /// Run a single pre-disk refusal gate against the per-write audit context.
+    ///
+    /// Thin wrapper over [`Self::guard_with_refusal_audit`] that sources the
+    /// invariant audit fields (id, path, classification, operation id) from `ctx`
+    /// so each gate at a call site reads as `self.run_gate(&ctx, <gate result>)?`.
+    fn run_gate(&self, ctx: &RefusalAuditContext, result: Result<(), WriteFailure>) -> Result<(), WriteFailure> {
+        self.guard_with_refusal_audit(
+            result,
+            ctx.id.clone(),
+            ctx.path.clone(),
+            ctx.classification,
+            &ctx.operation_id,
+        )
+    }
+
     /// Wrap a refusal-gate result so a refusal emits a `WriteRefused` event before
     /// returning to the caller (spec §8.7 step 6, §12.2 `WriteRefused`).
     ///
@@ -1923,6 +1686,61 @@ impl Substrate {
                 Err(failure)
             }
         }
+    }
+
+    /// Append a post-commit lifecycle event, running the spec §8.7 durability
+    /// ladder once for all write paths.
+    ///
+    /// On success returns the fully-committed `WriteOutcome`. If the event append
+    /// fails, the three-tier fallback runs: enqueue a `PendingEvent` repair (still
+    /// `Ok`, the canonical write is durable); else write a startup marker keyed by
+    /// `marker_reason` (`FullStartupScan` + `RepairQueueFailed`); else surface
+    /// `OperatorRequired` (`RepairStateNotDurable`). `not_committed` supplies the
+    /// outcome reported if event assembly itself fails before any append.
+    #[allow(clippy::too_many_arguments)]
+    fn commit_lifecycle_event(
+        &self,
+        kind: EventKind,
+        operation_id: &OperationId,
+        marker_reason: &str,
+        not_committed: &WriteOutcome,
+    ) -> Result<WriteOutcome, WriteFailure> {
+        let event = self.build_recorded_event(kind, operation_id).map_err(|err| WriteFailure {
+            outcome: not_committed.clone(),
+            kind: WriteFailureKind::IoTyped { kind: std::io::ErrorKind::Other, context: err.to_string() },
+        })?;
+        if let Err(err) = self.append_event_and_mirror(&event, false) {
+            let pending = PendingEventOp {
+                op_id: operation_id.clone(),
+                event_id: event.id.clone(),
+                event,
+                enqueued_at: Utc::now(),
+                attempts: 0,
+                last_error: Some(err.to_string()),
+            };
+            if enqueue_pending_event(&self.roots.runtime, &pending).is_ok() {
+                return Ok(committed_pending_event(operation_id.clone(), self.durability));
+            }
+            if write_startup_marker(&self.roots.runtime, marker_reason).is_ok() {
+                return Err(WriteFailure {
+                    outcome: committed_event_repair(
+                        operation_id.clone(),
+                        self.durability,
+                        RepairRequired::FullStartupScan,
+                    ),
+                    kind: WriteFailureKind::RepairQueueFailed,
+                });
+            }
+            return Err(WriteFailure {
+                outcome: committed_event_repair(
+                    operation_id.clone(),
+                    self.durability,
+                    RepairRequired::OperatorRequired("repair state not durable".to_string()),
+                ),
+                kind: WriteFailureKind::RepairStateNotDurable,
+            });
+        }
+        Ok(committed_indexed_recorded(operation_id.clone(), self.durability))
     }
 
     fn build_recorded_event(&self, kind: EventKind, operation_id: &OperationId) -> std::io::Result<Event> {
@@ -2308,11 +2126,67 @@ fn atomic_write_bytes(args: BinaryWrite<'_>) -> std::io::Result<()> {
     }
 }
 
+/// Invariant audit context shared by every pre-disk refusal gate of a single write.
+///
+/// Built once per write so each gate stops re-spelling the id/path/classification/
+/// operation-id quadruple (spec §8.7 step 6 `WriteRefused` audit trail).
+struct RefusalAuditContext {
+    id: MemoryId,
+    path: Option<RepoPath>,
+    classification: ClassificationOutcome,
+    operation_id: OperationId,
+}
+
+/// Fully-committed write outcome: canonical file, index, and audit event all durable.
+fn committed_indexed_recorded(operation_id: OperationId, durability: DurabilityTier) -> WriteOutcome {
+    WriteOutcome {
+        committed: true,
+        indexed: true,
+        event_recorded: true,
+        durability,
+        repair_required: None,
+        operation_id,
+    }
+}
+
+/// Committed + indexed, audit event deferred to the `PendingEvent` repair queue.
+fn committed_pending_event(operation_id: OperationId, durability: DurabilityTier) -> WriteOutcome {
+    WriteOutcome {
+        committed: true,
+        indexed: true,
+        event_recorded: false,
+        durability,
+        repair_required: Some(RepairRequired::PendingEvent),
+        operation_id,
+    }
+}
+
+/// Committed + indexed, audit event unrecorded, carrying an explicit repair requirement.
+fn committed_event_repair(
+    operation_id: OperationId,
+    durability: DurabilityTier,
+    repair: RepairRequired,
+) -> WriteOutcome {
+    WriteOutcome {
+        committed: true,
+        indexed: true,
+        event_recorded: false,
+        durability,
+        repair_required: Some(repair),
+        operation_id,
+    }
+}
+
+/// Default canonical repo path for a memory that carries no explicit `path`.
+///
+/// Single source for the `agent/patterns/<id>.md` layout fallback so the default
+/// namespace lives in one place rather than smeared across the write paths.
+fn default_memory_path(memory: &Memory) -> RepoPath {
+    RepoPath::new(format!("agent/patterns/{}.md", memory.frontmatter.id.as_str()))
+}
+
 fn encrypted_ciphertext_path(memory: &Memory) -> Result<RepoPath, String> {
-    let original = memory
-        .path
-        .clone()
-        .unwrap_or_else(|| RepoPath::new(format!("agent/patterns/{}.md", memory.frontmatter.id.as_str())));
+    let original = memory.path.clone().unwrap_or_else(|| default_memory_path(memory));
     if !original.is_safe_relative() {
         return Err(format!("invalid repo path: {}", original.as_str()));
     }

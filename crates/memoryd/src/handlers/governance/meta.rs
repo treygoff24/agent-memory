@@ -149,6 +149,41 @@ enum GovernanceNamespace {
     Agent,
 }
 
+impl GovernanceNamespace {
+    /// Wire/response label for this namespace (`me` / `project` / `agent`).
+    fn response_label(self) -> &'static str {
+        match self {
+            Self::Me => "me",
+            Self::Project => "project",
+            Self::Agent => "agent",
+        }
+    }
+
+    fn governance_scope(self) -> GovernanceScope {
+        match self {
+            Self::Me => GovernanceScope::Me,
+            Self::Project => GovernanceScope::Project,
+            Self::Agent => GovernanceScope::Agent,
+        }
+    }
+
+    fn privacy_namespace(self) -> PrivacyNamespace {
+        match self {
+            Self::Me => PrivacyNamespace::Me,
+            Self::Project => PrivacyNamespace::Project,
+            Self::Agent => PrivacyNamespace::Agent,
+        }
+    }
+
+    fn substrate_scope(self) -> Scope {
+        match self {
+            Self::Me => Scope::User,
+            Self::Project => Scope::Project,
+            Self::Agent => Scope::Agent,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum GovernanceMemoryType {
@@ -593,27 +628,15 @@ impl GovernanceWriteInput {
     }
 
     pub(super) fn response_namespace(&self) -> String {
-        match self.meta.namespace {
-            GovernanceNamespace::Me => "me".to_string(),
-            GovernanceNamespace::Project => "project".to_string(),
-            GovernanceNamespace::Agent => "agent".to_string(),
-        }
+        self.meta.namespace.response_label().to_string()
     }
 
     fn governance_scope(&self) -> GovernanceScope {
-        match self.meta.namespace {
-            GovernanceNamespace::Me => GovernanceScope::Me,
-            GovernanceNamespace::Project => GovernanceScope::Project,
-            GovernanceNamespace::Agent => GovernanceScope::Agent,
-        }
+        self.meta.namespace.governance_scope()
     }
 
     pub(super) fn privacy_namespace(&self) -> PrivacyNamespace {
-        match self.meta.namespace {
-            GovernanceNamespace::Me => PrivacyNamespace::Me,
-            GovernanceNamespace::Project => PrivacyNamespace::Project,
-            GovernanceNamespace::Agent => PrivacyNamespace::Agent,
-        }
+        self.meta.namespace.privacy_namespace()
     }
 
     pub(super) fn caller_sensitivity(&self) -> Option<CallerSensitivity> {
@@ -641,11 +664,7 @@ impl GovernanceWriteInput {
     }
 
     fn substrate_scope(&self) -> Scope {
-        match self.meta.namespace {
-            GovernanceNamespace::Me => Scope::User,
-            GovernanceNamespace::Project => Scope::Project,
-            GovernanceNamespace::Agent => Scope::Agent,
-        }
+        self.meta.namespace.substrate_scope()
     }
 
     fn substrate_namespace(&self) -> Result<Option<String>, HandlerError> {

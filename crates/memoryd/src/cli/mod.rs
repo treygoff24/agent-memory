@@ -108,13 +108,16 @@ pub struct UninstallArgs {
     pub purge: bool,
     /// Harness configs to unwire. Omitted: all detected harnesses.
     #[arg(long, value_enum)]
-    pub harness: Option<UninstallHarness>,
+    pub harness: Option<HarnessTargetArg>,
 }
 
-/// Harness selection for `memoryd uninstall --harness`.
+/// Harness target selection shared by every "which harness(es) does this flag
+/// target" surface: `--harness`, `--wire-mcp`, `--wire-hooks` on `init`, and
+/// `--harness` on `uninstall`. One conceptual type, one clap value surface
+/// (`current`/`claude`/`codex`/`all`/`none`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 #[clap(rename_all = "lowercase")]
-pub enum UninstallHarness {
+pub enum HarnessTargetArg {
     Current,
     Claude,
     Codex,
@@ -149,7 +152,7 @@ pub struct InitArgs {
     /// Harness set to import. Omitted: prompted by the wizard on a TTY;
     /// `current` (the single detected harness) on the non-interactive path.
     #[arg(long, value_enum)]
-    pub harness: Option<InitHarness>,
+    pub harness: Option<HarnessTargetArg>,
     /// Default placement for imported memories whose cwd is not a git
     /// checkout. Mirrors `memoryd import --non-git-cwd-default`. Omitted:
     /// prompted by the wizard on a TTY; `project` (derive a project namespace;
@@ -159,12 +162,12 @@ pub struct InitArgs {
     /// MCP configs to wire. Omitted: prompted by the wizard on a TTY;
     /// `current` (the single detected harness) on the non-interactive path.
     #[arg(long, value_enum)]
-    pub wire_mcp: Option<WireMcpMode>,
+    pub wire_mcp: Option<HarnessTargetArg>,
     /// Harness configs to wire the passive-recall lifecycle hooks into.
     /// Omitted: prompted by the wizard on a TTY; `current` (the single detected
     /// harness) on the non-interactive path.
     #[arg(long, value_enum)]
-    pub wire_hooks: Option<WireHooksMode>,
+    pub wire_hooks: Option<HarnessTargetArg>,
     /// Daemon arrangement to provision during setup. Omitted: prompted by the
     /// wizard on a TTY; `on-demand` on the non-interactive path.
     #[arg(long, value_enum)]
@@ -173,39 +176,6 @@ pub struct InitArgs {
     /// import, print-only MCP wiring).
     #[arg(long, default_value_t = false)]
     pub print_only: bool,
-}
-
-/// Harness selection for `memoryd init --harness`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-#[clap(rename_all = "lowercase")]
-pub enum InitHarness {
-    Current,
-    Claude,
-    Codex,
-    All,
-    None,
-}
-
-/// MCP wiring selection for `memoryd init --wire-mcp`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-#[clap(rename_all = "lowercase")]
-pub enum WireMcpMode {
-    Current,
-    Claude,
-    Codex,
-    All,
-    None,
-}
-
-/// Passive-recall hook wiring selection for `memoryd init --wire-hooks`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-#[clap(rename_all = "lowercase")]
-pub enum WireHooksMode {
-    Current,
-    Claude,
-    Codex,
-    All,
-    None,
 }
 
 /// Daemon arrangement for `memoryd init --daemon`.

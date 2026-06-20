@@ -2,13 +2,14 @@ use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use memoryd::protocol::{RequestPayload, ResponsePayload, ResponseResult};
+use memoryd::protocol::{RequestPayload, ResponseResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::time::{sleep, Duration};
 
+use crate::routes::daemon::daemon_call;
 use crate::routes::status::daemon_error;
-use crate::state::{backend_unavailable, ReviewActionRecord, WebState};
+use crate::state::{backend_unavailable, Backend, ReviewActionRecord, WebState};
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct ReviewQueueQuery {
@@ -44,63 +45,66 @@ pub struct ReviewActionRequest {
 }
 
 pub async fn review_queue(State(state): State<WebState>, Query(query): Query<ReviewQueueQuery>) -> impl IntoResponse {
-    let Some(data) = state.dashboard_data() else {
-        if let Some(socket_path) = state.daemon_socket() {
-            return match memoryd::client::request(
+    match state.backend() {
+        #[cfg(feature = "dev-fixtures")]
+        Backend::Fixture(data) => {
+            let offset = query.offset.unwrap_or(0);
+            let limit = query.limit.unwrap_or(50);
+            let status = query.status.unwrap_or_else(|| "candidate".to_owned());
+            let namespace = query.namespace.unwrap_or_else(|| "project:agent-memory".to_owned());
+            let mut items = data
+                .reviewable_memory_ids
+                .iter()
+                .map(|id| ReviewQueueItem {
+                    id: id.clone(),
+                    summary: "Review Stream G dashboard contract".to_owned(),
+                    status: status.clone(),
+                    namespace: namespace.clone(),
+                    policy_applied: "project-standard@v2".to_owned(),
+                    reason: Some("review_required".to_owned()),
+                    next_actions: vec![
+                        "approve".to_owned(),
+                        "reject".to_owned(),
+                        "forget".to_owned(),
+                        "quarantine".to_owned(),
+                    ],
+                })
+                .collect::<Vec<_>>();
+            items = items.into_iter().skip(offset).take(limit).collect();
+            Json(ReviewQueueResponse { items, limit, offset }).into_response()
+        }
+        Backend::Daemon(socket_path) => {
+            match daemon_call::<memoryd::protocol::ReviewQueueResponse>(
                 socket_path,
+                "review_queue",
                 "web-review-queue",
                 RequestPayload::ReviewQueue { limit: query.limit },
             )
             .await
             {
-                Ok(response) => match response.result {
-                    ResponseResult::Success(ResponsePayload::ReviewQueue(queue)) => Json(ReviewQueueResponse {
-                        items: queue
-                            .items
-                            .into_iter()
-                            .map(|item| ReviewQueueItem {
-                                id: item.id,
-                                summary: item.summary,
-                                status: item.status,
-                                namespace: query.namespace.clone().unwrap_or_else(|| "daemon".to_owned()),
-                                policy_applied: item.policy_applied,
-                                reason: item.reason,
-                                next_actions: item.next_actions,
-                            })
-                            .collect(),
-                        limit: query.limit.unwrap_or(50),
-                        offset: query.offset.unwrap_or(0),
-                    })
-                    .into_response(),
-                    ResponseResult::Error(error) => {
-                        daemon_error("review_queue", error.code, error.message).into_response()
-                    }
-                    other => daemon_error("review_queue", "unexpected_response", format!("{other:?}")).into_response(),
-                },
-                Err(error) => daemon_error("review_queue", "daemon_unavailable", error.to_string()).into_response(),
-            };
+                Ok(queue) => Json(ReviewQueueResponse {
+                    items: queue
+                        .items
+                        .into_iter()
+                        .map(|item| ReviewQueueItem {
+                            id: item.id,
+                            summary: item.summary,
+                            status: item.status,
+                            namespace: query.namespace.clone().unwrap_or_else(|| "daemon".to_owned()),
+                            policy_applied: item.policy_applied,
+                            reason: item.reason,
+                            next_actions: item.next_actions,
+                        })
+                        .collect(),
+                    limit: query.limit.unwrap_or(50),
+                    offset: query.offset.unwrap_or(0),
+                })
+                .into_response(),
+                Err(response) => response,
+            }
         }
-        return backend_unavailable("review_queue").into_response();
-    };
-    let offset = query.offset.unwrap_or(0);
-    let limit = query.limit.unwrap_or(50);
-    let status = query.status.unwrap_or_else(|| "candidate".to_owned());
-    let namespace = query.namespace.unwrap_or_else(|| "project:agent-memory".to_owned());
-    let mut items = data
-        .reviewable_memory_ids
-        .iter()
-        .map(|id| ReviewQueueItem {
-            id: id.clone(),
-            summary: "Review Stream G dashboard contract".to_owned(),
-            status: status.clone(),
-            namespace: namespace.clone(),
-            policy_applied: "project-standard@v2".to_owned(),
-            reason: Some("review_required".to_owned()),
-            next_actions: vec!["approve".to_owned(), "reject".to_owned(), "forget".to_owned(), "quarantine".to_owned()],
-        })
-        .collect::<Vec<_>>();
-    items = items.into_iter().skip(offset).take(limit).collect();
-    Json(ReviewQueueResponse { items, limit, offset }).into_response()
+        Backend::Unavailable => backend_unavailable("review_queue").into_response(),
+    }
 }
 
 pub async fn review_action(

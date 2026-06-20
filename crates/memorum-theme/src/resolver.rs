@@ -99,23 +99,11 @@ impl Resolver {
 }
 
 fn nearest_xterm_256(r: u8, g: u8, b: u8) -> u8 {
-    let mut best = 0u8;
-    let mut best_distance = u32::MAX;
-    for index in 16u8..=231 {
-        let distance = distance_squared((r, g, b), xterm_color(index));
-        if distance < best_distance {
-            best = index;
-            best_distance = distance;
-        }
-    }
-    for index in 232u8..=255 {
-        let distance = distance_squared((r, g, b), xterm_color(index));
-        if distance < best_distance {
-            best = index;
-            best_distance = distance;
-        }
-    }
-    best
+    // `xterm_color` covers the full 16..=255 palette (color cube + grayscale ramp),
+    // so a single contiguous scan finds the same nearest index the two split loops
+    // did: on a tie `min_by_key` keeps the lower index, matching the strict-`<`
+    // running-best the loops used.
+    (16u8..=255).min_by_key(|&index| distance_squared((r, g, b), xterm_color(index))).unwrap_or(16)
 }
 
 fn xterm_color(index: u8) -> (u8, u8, u8) {

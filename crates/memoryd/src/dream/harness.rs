@@ -211,6 +211,24 @@ impl MinimalEnvironment {
         environment
     }
 
+    /// Build the hardened adapter environment, optionally pinning the Claude
+    /// profile via `CLAUDE_CONFIG_DIR`. When `config_dir` is `Some`, the directory
+    /// is injected as an (allowlist-filtered) override so the auth probe and
+    /// completion run against the same resolved profile; `None` forwards the
+    /// allowlisted ambient environment unchanged.
+    pub fn for_adapter_with_optional_config_dir(
+        path_env: Option<OsString>,
+        allowlist: &[&str],
+        config_dir: Option<PathBuf>,
+    ) -> Self {
+        match config_dir {
+            Some(dir) => {
+                Self::for_adapter_with_overrides(path_env, allowlist, &[("CLAUDE_CONFIG_DIR", dir.into_os_string())])
+            }
+            None => Self::for_adapter(path_env, allowlist),
+        }
+    }
+
     pub fn keys(&self) -> impl Iterator<Item = &str> {
         self.values.keys().map(String::as_str)
     }
@@ -638,14 +656,11 @@ struct AdapterEnv {
 
 impl AdapterEnv {
     fn min_env(&self) -> MinimalEnvironment {
-        match &self.config_dir_override {
-            Some(dir) => MinimalEnvironment::for_adapter_with_overrides(
-                self.path_env.clone(),
-                self.allowlist,
-                &[("CLAUDE_CONFIG_DIR", dir.clone().into_os_string())],
-            ),
-            None => MinimalEnvironment::for_adapter(self.path_env.clone(), self.allowlist),
-        }
+        MinimalEnvironment::for_adapter_with_optional_config_dir(
+            self.path_env.clone(),
+            self.allowlist,
+            self.config_dir_override.clone(),
+        )
     }
 }
 
@@ -696,14 +711,7 @@ async fn auth_probe(
     env_allowlist: &[&str],
     config_dir: Option<PathBuf>,
 ) -> AuthProbeResult {
-    let environment = match config_dir {
-        Some(dir) => MinimalEnvironment::for_adapter_with_overrides(
-            path_env,
-            env_allowlist,
-            &[("CLAUDE_CONFIG_DIR", dir.into_os_string())],
-        ),
-        None => MinimalEnvironment::for_adapter(path_env, env_allowlist),
-    };
+    let environment = MinimalEnvironment::for_adapter_with_optional_config_dir(path_env, env_allowlist, config_dir);
     let result = run_hardened_command(
         HardenedCommand {
             program: PathBuf::from(plan.program),

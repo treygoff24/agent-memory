@@ -21,7 +21,7 @@ use crate::socket::{
 use super::{
     DaemonStrategy, HarnessDetection, HarnessSelection, HarnessTarget, HookSpec, HookWireOutcome, HookWireStatus,
     McpServerSpec, NonGitCwdDecision, SetupEngine, SetupIo, SetupPlan, SetupReport, SetupStep, SetupStepReport,
-    SetupStepStatus, VerifyDetail, WireHooksSelection, WireMcpSelection, WireMode, WireOutcome, WireStatus,
+    SetupStepStatus, VerifyDetail, WireMode, WireOutcome, WireStatus,
 };
 
 pub(crate) async fn run_all(engine: &SetupEngine, plan: &SetupPlan, io: &mut dyn SetupIo, report: &mut SetupReport) {
@@ -634,20 +634,14 @@ fn selected_wire_targets_with_env<F>(plan: &SetupPlan, env: F) -> SelectedWireTa
 where
     F: FnMut(&str) -> Option<OsString>,
 {
-    match plan.decisions.wire_mcp {
-        WireMcpSelection::None => {
-            SelectedWireTargets::Skip("--wire-mcp none was chosen; MCP wiring skipped".to_string())
-        }
-        WireMcpSelection::Claude => SelectedWireTargets::Run(vec![HarnessTarget::Claude]),
-        WireMcpSelection::Codex => SelectedWireTargets::Run(vec![HarnessTarget::Codex]),
-        WireMcpSelection::All => SelectedWireTargets::Run(vec![HarnessTarget::Claude, HarnessTarget::Codex]),
-        WireMcpSelection::Current => {
-            match resolve_current_harness(plan, env, "--wire-mcp", "--wire-mcp claude|codex|all") {
-                Ok(target) => SelectedWireTargets::Run(vec![target]),
-                Err(message) => SelectedWireTargets::Failed(message),
-            }
-        }
-    }
+    resolve_selection(
+        plan,
+        plan.decisions.wire_mcp,
+        env,
+        "--wire-mcp none was chosen; MCP wiring skipped",
+        "--wire-mcp",
+        "--wire-mcp claude|codex|all",
+    )
 }
 
 fn selected_hook_targets(plan: &SetupPlan) -> SelectedWireTargets {
@@ -658,19 +652,42 @@ fn selected_hook_targets_with_env<F>(plan: &SetupPlan, env: F) -> SelectedWireTa
 where
     F: FnMut(&str) -> Option<OsString>,
 {
-    match plan.decisions.wire_hooks {
-        WireHooksSelection::None => {
-            SelectedWireTargets::Skip("--wire-hooks none was chosen; hook wiring skipped".to_string())
-        }
-        WireHooksSelection::Claude => SelectedWireTargets::Run(vec![HarnessTarget::Claude]),
-        WireHooksSelection::Codex => SelectedWireTargets::Run(vec![HarnessTarget::Codex]),
-        WireHooksSelection::All => SelectedWireTargets::Run(vec![HarnessTarget::Claude, HarnessTarget::Codex]),
-        WireHooksSelection::Current => {
-            match resolve_current_harness(plan, env, "--wire-hooks", "--wire-hooks claude|codex|all") {
-                Ok(target) => SelectedWireTargets::Run(vec![target]),
-                Err(message) => SelectedWireTargets::Failed(message),
-            }
-        }
+    resolve_selection(
+        plan,
+        plan.decisions.wire_hooks,
+        env,
+        "--wire-hooks none was chosen; hook wiring skipped",
+        "--wire-hooks",
+        "--wire-hooks claude|codex|all",
+    )
+}
+
+/// Map one [`HarnessSelection`] (MCP wiring or hook wiring; structurally
+/// identical) onto the concrete harness targets to act on. `skip_message` is the
+/// surface-specific text used when `none` is chosen; `flag`/`rerun_hint` thread
+/// the surface-specific strings into the `current` resolution error so MCP and
+/// hooks report against their own flag.
+#[allow(clippy::too_many_arguments)]
+fn resolve_selection<F>(
+    plan: &SetupPlan,
+    selection: HarnessSelection,
+    env: F,
+    skip_message: &'static str,
+    flag: &'static str,
+    rerun_hint: &'static str,
+) -> SelectedWireTargets
+where
+    F: FnMut(&str) -> Option<OsString>,
+{
+    match selection {
+        HarnessSelection::None => SelectedWireTargets::Skip(skip_message.to_string()),
+        HarnessSelection::Claude => SelectedWireTargets::Run(vec![HarnessTarget::Claude]),
+        HarnessSelection::Codex => SelectedWireTargets::Run(vec![HarnessTarget::Codex]),
+        HarnessSelection::All => SelectedWireTargets::Run(vec![HarnessTarget::Claude, HarnessTarget::Codex]),
+        HarnessSelection::Current => match resolve_current_harness(plan, env, flag, rerun_hint) {
+            Ok(target) => SelectedWireTargets::Run(vec![target]),
+            Err(message) => SelectedWireTargets::Failed(message),
+        },
     }
 }
 
@@ -803,30 +820,12 @@ fn reject_literal_tilde(path: &Path) -> Result<(), String> {
 }
 
 fn wire_outcome_summary(outcomes: Vec<Result<WireOutcome, String>>) -> WireStepOutcome {
-    let mut messages = Vec::new();
-    let mut failed = false;
-    let mut restart_required = false;
-
-    for outcome in outcomes {
-        match outcome {
-            Ok(outcome) => {
-                restart_required |= matches!(outcome.status, WireStatus::Wired | WireStatus::Updated);
-                messages.push(crate::setup::mcp_wire::wire_report_line(outcome.target, outcome.status));
-            }
-            Err(message) => {
-                failed = true;
-                messages.push(message);
-            }
-        }
-    }
-
-    let message = messages.join("; ");
-    let completion = if failed {
-        StepCompletion::failed(SetupStep::WireMcp, message)
-    } else {
-        StepCompletion::succeeded(SetupStep::WireMcp, message)
-    };
-    WireStepOutcome { completion, restart_required }
+    summarize_outcomes(
+        outcomes,
+        SetupStep::WireMcp,
+        |outcome| matches!(outcome.status, WireStatus::Wired | WireStatus::Updated),
+        |outcome| crate::setup::mcp_wire::wire_report_line(outcome.target, outcome.status),
+    )
 }
 
 /// Summarize per-harness hook wiring outcomes into one step completion. Mutating
@@ -834,6 +833,32 @@ fn wire_outcome_summary(outcomes: Vec<Result<WireOutcome, String>>) -> WireStepO
 /// config; the Codex trust notice rides along in each Codex outcome's message so
 /// the operator sees the `/hooks` follow-up verbatim.
 fn hook_outcome_summary(outcomes: Vec<Result<HookWireOutcome, String>>) -> WireStepOutcome {
+    summarize_outcomes(
+        outcomes,
+        SetupStep::WireHooks,
+        |outcome| matches!(outcome.status, HookWireStatus::Wired | HookWireStatus::Updated),
+        |outcome| {
+            let line = hook_report_line(outcome.target, outcome.status);
+            match &outcome.message {
+                Some(detail) => format!("{line} ({detail})"),
+                None => line,
+            }
+        },
+    )
+}
+
+/// Fold per-target wire outcomes into one [`WireStepOutcome`]: a mutating
+/// outcome (per `is_mutating`) sets `restart_required`, each `Ok` contributes a
+/// `report_line`, each `Err` contributes its message and marks the step failed,
+/// and the lines join with `; ` into a succeeded-or-failed `StepCompletion` for
+/// `step`. Shared by MCP and hook wiring, which differ only in those two
+/// closures and the `SetupStep`.
+fn summarize_outcomes<T>(
+    outcomes: Vec<Result<T, String>>,
+    step: SetupStep,
+    is_mutating: impl Fn(&T) -> bool,
+    report_line: impl Fn(&T) -> String,
+) -> WireStepOutcome {
     let mut messages = Vec::new();
     let mut failed = false;
     let mut restart_required = false;
@@ -841,12 +866,8 @@ fn hook_outcome_summary(outcomes: Vec<Result<HookWireOutcome, String>>) -> WireS
     for outcome in outcomes {
         match outcome {
             Ok(outcome) => {
-                restart_required |= matches!(outcome.status, HookWireStatus::Wired | HookWireStatus::Updated);
-                let line = hook_report_line(outcome.target, outcome.status);
-                match outcome.message {
-                    Some(detail) => messages.push(format!("{line} ({detail})")),
-                    None => messages.push(line),
-                }
+                restart_required |= is_mutating(&outcome);
+                messages.push(report_line(&outcome));
             }
             Err(message) => {
                 failed = true;
@@ -857,9 +878,9 @@ fn hook_outcome_summary(outcomes: Vec<Result<HookWireOutcome, String>>) -> WireS
 
     let message = messages.join("; ");
     let completion = if failed {
-        StepCompletion::failed(SetupStep::WireHooks, message)
+        StepCompletion::failed(step, message)
     } else {
-        StepCompletion::succeeded(SetupStep::WireHooks, message)
+        StepCompletion::succeeded(step, message)
     };
     WireStepOutcome { completion, restart_required }
 }
@@ -979,6 +1000,7 @@ mod tests {
     use tokio::task::JoinHandle;
     use tokio::time::{sleep, timeout};
 
+    use super::super::{WireHooksSelection, WireMcpSelection};
     use super::*;
     use crate::import::report::ImportReport;
     use crate::protocol::{DoctorResponse, StatusResponse};

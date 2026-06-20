@@ -7,46 +7,56 @@ use std::path::{Path, PathBuf};
 pub const SUBSTRATE_MARKER_DIR: &str = ".memorum";
 const SUBSTRATE_MARKER_FILE: &str = "substrate";
 
-/// Canonical `.gitattributes` body emitted by `git::init` per spec §13.1 step 2.
-/// The driver name `memory-merge-driver` is the value resolved by
+/// Single source of truth for the substrate-managed `.gitattributes` rules:
+/// the `(pattern, attributes)` pairs `git::init` emits (spec §13.1 step 2) and
+/// the patterns `reconcile_gitattributes` treats as substrate-owned. The driver
+/// name `memory-merge-driver` is the value resolved by
 /// `decisions/open-questions-resolved.md` Q3.
-const GITATTRIBUTES_BODY: &str = "* text eol=lf\n\
-*.md merge=memory-merge-driver\n\
-events/*.jsonl merge=union\n\
-substrate/**/*.jsonl merge=memory-merge-driver\n\
-encrypted/substrate/**/*.jsonl merge=memory-merge-driver\n\
-dreams/questions/**/*.jsonl merge=memory-merge-driver\n\
-dreams/cleanup/**/*.json merge=memory-merge-driver\n\
-dreams/journal/**/*.md merge=memory-merge-driver\n\
-dreams/calibration/*.jsonl merge=union\n\
-leases/journal.lease merge=memory-merge-driver\n\
-tombstones/*.jsonl merge=union\n\
-sources/web/**/manifest.json merge=memory-merge-driver\n\
-sources/web/**/excerpts.jsonl merge=memory-merge-driver\n\
-sources/web/**/extracted.txt merge=memory-merge-driver\n\
-sources/web/**/raw.bin.zst binary\n\
-sources/web/**/extracted.enc.age binary\n\
-sources/web/**/raw.enc.age binary\n";
-
-const MANAGED_GITATTRIBUTES_PATTERNS: &[&str] = &[
-    "*",
-    "*.md",
-    "events/*.jsonl",
-    "substrate/**/*.jsonl",
-    "encrypted/substrate/**/*.jsonl",
-    "dreams/questions/**/*.jsonl",
-    "dreams/cleanup/**/*.json",
-    "dreams/journal/**/*.md",
-    "dreams/calibration/*.jsonl",
-    "leases/journal.lease",
-    "tombstones/*.jsonl",
-    "sources/web/**/manifest.json",
-    "sources/web/**/excerpts.jsonl",
-    "sources/web/**/extracted.txt",
-    "sources/web/**/raw.bin.zst",
-    "sources/web/**/extracted.enc.age",
-    "sources/web/**/raw.enc.age",
+///
+/// The emitted body ([`gitattributes_body`]) and the managed-pattern check
+/// ([`is_managed_gitattributes_pattern`]) are both derived from this one table,
+/// so routing a new path is a single edit that cannot desync the writer from the
+/// reconciler. Order is load-bearing: it fixes the emitted byte sequence.
+const MANAGED_GITATTRIBUTES: &[(&str, &str)] = &[
+    ("*", "text eol=lf"),
+    ("*.md", "merge=memory-merge-driver"),
+    ("events/*.jsonl", "merge=union"),
+    ("substrate/**/*.jsonl", "merge=memory-merge-driver"),
+    ("encrypted/substrate/**/*.jsonl", "merge=memory-merge-driver"),
+    ("dreams/questions/**/*.jsonl", "merge=memory-merge-driver"),
+    ("dreams/cleanup/**/*.json", "merge=memory-merge-driver"),
+    ("dreams/journal/**/*.md", "merge=memory-merge-driver"),
+    ("dreams/calibration/*.jsonl", "merge=union"),
+    ("leases/journal.lease", "merge=memory-merge-driver"),
+    ("tombstones/*.jsonl", "merge=union"),
+    ("sources/web/**/manifest.json", "merge=memory-merge-driver"),
+    ("sources/web/**/excerpts.jsonl", "merge=memory-merge-driver"),
+    ("sources/web/**/extracted.txt", "merge=memory-merge-driver"),
+    ("sources/web/**/raw.bin.zst", "binary"),
+    ("sources/web/**/extracted.enc.age", "binary"),
+    ("sources/web/**/raw.enc.age", "binary"),
 ];
+
+/// Patterns `reconcile_gitattributes` treats as substrate-managed. Derived from
+/// [`MANAGED_GITATTRIBUTES`] so it can never drift from the emitted body.
+fn is_managed_gitattributes_pattern(pattern: &str) -> bool {
+    MANAGED_GITATTRIBUTES.iter().any(|(managed, _)| *managed == pattern)
+}
+
+/// Canonical `.gitattributes` body emitted by `git::init` per spec §13.1 step 2.
+///
+/// Rendered from [`MANAGED_GITATTRIBUTES`] as `"{pattern} {attributes}\n"` per
+/// row, preserving the exact byte sequence the merge-driver routing depends on.
+fn gitattributes_body() -> String {
+    let mut body = String::new();
+    for (pattern, attributes) in MANAGED_GITATTRIBUTES {
+        body.push_str(pattern);
+        body.push(' ');
+        body.push_str(attributes);
+        body.push('\n');
+    }
+    body
+}
 
 /// Directories that should exist after init/adoption.
 pub fn memory_dirs() -> Vec<&'static str> {
@@ -207,7 +217,7 @@ fn reconcile_gitattributes(path: &Path) -> std::io::Result<()> {
     if !reconciled.is_empty() && !reconciled.ends_with('\n') {
         reconciled.push('\n');
     }
-    reconciled.push_str(GITATTRIBUTES_BODY);
+    reconciled.push_str(&gitattributes_body());
 
     if existing != reconciled {
         std::fs::write(path, reconciled)?;
@@ -227,7 +237,7 @@ fn reconcile_existing_gitattributes_line(line: &str) -> Option<String> {
     if pattern == "*" {
         return reconcile_global_gitattributes_line(line, fields);
     }
-    (!MANAGED_GITATTRIBUTES_PATTERNS.contains(&pattern)).then(|| line.to_string())
+    (!is_managed_gitattributes_pattern(pattern)).then(|| line.to_string())
 }
 
 fn reconcile_global_gitattributes_line(line: &str, attributes: std::str::SplitWhitespace<'_>) -> Option<String> {

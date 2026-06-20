@@ -3,15 +3,15 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use chrono::{DateTime, Utc};
-use memoryd::protocol::{RequestPayload, ResponsePayload, ResponseResult};
+use memoryd::protocol::RequestPayload;
 use memoryd::trust_artifact::{
     PolicyDecision, PrivacyScan, ProvenanceEvent, SupersessionLink, SyncState, TrustArtifact,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::routes::status::daemon_error;
-use crate::state::{backend_unavailable, WebState};
+use crate::routes::daemon::daemon_call;
+use crate::state::{backend_unavailable, Backend, WebState};
 
 #[derive(Clone, Debug, Serialize)]
 pub struct AuditMemoryResponse {
@@ -139,27 +139,25 @@ pub struct TemporalStateResponse {
 }
 
 pub async fn audit(State(state): State<WebState>, Path(id): Path<String>) -> impl IntoResponse {
-    if let Some(data) = state.dashboard_data() {
-        return Json(AuditMemoryResponse::from_artifact(id.clone(), data.audit_for(&id))).into_response();
-    }
-    let Some(socket_path) = state.daemon_socket() else {
-        return backend_unavailable("audit").into_response();
-    };
-    match memoryd::client::request(
-        socket_path,
-        format!("web-audit-{id}"),
-        RequestPayload::TrustArtifact { id: id.clone() },
-    )
-    .await
-    {
-        Ok(response) => match response.result {
-            ResponseResult::Success(ResponsePayload::TrustArtifact(artifact)) => {
-                Json(AuditMemoryResponse::from_artifact(id, *artifact)).into_response()
+    match state.backend() {
+        #[cfg(feature = "dev-fixtures")]
+        Backend::Fixture(data) => {
+            Json(AuditMemoryResponse::from_artifact(id.clone(), data.audit_for(&id))).into_response()
+        }
+        Backend::Daemon(socket_path) => {
+            match daemon_call::<Box<TrustArtifact>>(
+                socket_path,
+                "audit",
+                format!("web-audit-{id}"),
+                RequestPayload::TrustArtifact { id: id.clone() },
+            )
+            .await
+            {
+                Ok(artifact) => Json(AuditMemoryResponse::from_artifact(id, *artifact)).into_response(),
+                Err(response) => response,
             }
-            ResponseResult::Error(error) => daemon_error("audit", error.code, error.message).into_response(),
-            other => daemon_error("audit", "unexpected_response", format!("{other:?}")).into_response(),
-        },
-        Err(error) => daemon_error("audit", "daemon_unavailable", error.to_string()).into_response(),
+        }
+        Backend::Unavailable => backend_unavailable("audit").into_response(),
     }
 }
 
@@ -172,27 +170,27 @@ pub async fn audit_walk(
         Ok(direction) => direction,
         Err(message) => return invalid_query("audit_walk", message).into_response(),
     };
-    if let Some(data) = state.dashboard_data() {
-        return Json(provenance_walk_from_artifact(&id, query, direction, data.audit_for(&id))).into_response();
-    }
-    let Some(socket_path) = state.daemon_socket() else {
-        return backend_unavailable("audit_walk").into_response();
-    };
-    match memoryd::client::request(
-        socket_path,
-        format!("web-audit-walk-{id}"),
-        RequestPayload::TrustArtifact { id: id.clone() },
-    )
-    .await
-    {
-        Ok(response) => match response.result {
-            ResponseResult::Success(ResponsePayload::TrustArtifact(artifact)) => {
-                Json(provenance_walk_from_artifact(&id, query, direction, *artifact)).into_response()
+    match state.backend() {
+        #[cfg(feature = "dev-fixtures")]
+        Backend::Fixture(data) => {
+            Json(provenance_walk_from_artifact(&id, query, direction, data.audit_for(&id))).into_response()
+        }
+        Backend::Daemon(socket_path) => {
+            match daemon_call::<Box<TrustArtifact>>(
+                socket_path,
+                "audit_walk",
+                format!("web-audit-walk-{id}"),
+                RequestPayload::TrustArtifact { id: id.clone() },
+            )
+            .await
+            {
+                Ok(artifact) => {
+                    Json(provenance_walk_from_artifact(&id, query, direction, *artifact)).into_response()
+                }
+                Err(response) => response,
             }
-            ResponseResult::Error(error) => daemon_error("audit_walk", error.code, error.message).into_response(),
-            other => daemon_error("audit_walk", "unexpected_response", format!("{other:?}")).into_response(),
-        },
-        Err(error) => daemon_error("audit_walk", "daemon_unavailable", error.to_string()).into_response(),
+        }
+        Backend::Unavailable => backend_unavailable("audit_walk").into_response(),
     }
 }
 
@@ -201,37 +199,35 @@ pub async fn audit_temporal(
     Path(id): Path<String>,
     Query(query): Query<TemporalQuery>,
 ) -> impl IntoResponse {
-    if let Some(data) = state.dashboard_data() {
-        return Json(TemporalStateResponse {
+    match state.backend() {
+        #[cfg(feature = "dev-fixtures")]
+        Backend::Fixture(data) => Json(TemporalStateResponse {
             memory_id: id.clone(),
             at: query.at,
             viewing_historical_state: true,
             artifact: data.audit_for(&id),
         })
-        .into_response();
-    }
-    let Some(socket_path) = state.daemon_socket() else {
-        return backend_unavailable("audit_temporal").into_response();
-    };
-    match memoryd::client::request(
-        socket_path,
-        format!("web-audit-temporal-{id}"),
-        RequestPayload::TrustArtifact { id: id.clone() },
-    )
-    .await
-    {
-        Ok(response) => match response.result {
-            ResponseResult::Success(ResponsePayload::TrustArtifact(artifact)) => Json(TemporalStateResponse {
-                memory_id: id,
-                at: query.at,
-                viewing_historical_state: true,
-                artifact: *artifact,
-            })
-            .into_response(),
-            ResponseResult::Error(error) => daemon_error("audit_temporal", error.code, error.message).into_response(),
-            other => daemon_error("audit_temporal", "unexpected_response", format!("{other:?}")).into_response(),
-        },
-        Err(error) => daemon_error("audit_temporal", "daemon_unavailable", error.to_string()).into_response(),
+        .into_response(),
+        Backend::Daemon(socket_path) => {
+            match daemon_call::<Box<TrustArtifact>>(
+                socket_path,
+                "audit_temporal",
+                format!("web-audit-temporal-{id}"),
+                RequestPayload::TrustArtifact { id: id.clone() },
+            )
+            .await
+            {
+                Ok(artifact) => Json(TemporalStateResponse {
+                    memory_id: id,
+                    at: query.at,
+                    viewing_historical_state: true,
+                    artifact: *artifact,
+                })
+                .into_response(),
+                Err(response) => response,
+            }
+        }
+        Backend::Unavailable => backend_unavailable("audit_temporal").into_response(),
     }
 }
 

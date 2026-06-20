@@ -1,5 +1,7 @@
 //! Stream B daemon and MCP bridge foundation.
 
+/// Shared numeric/path helpers for the per-stream benchmark binaries.
+pub mod bench_harness;
 pub mod cli;
 pub mod client;
 pub mod coordination_config;

@@ -1,5 +1,7 @@
+use chrono::{DateTime, Utc};
+use memorum_coordination::PeerWriteCandidate;
 use memory_substrate::config::load_local_device_config;
-use memory_substrate::{RecallIndexRow, SourceKind, Substrate};
+use memory_substrate::{RecallIndexRow, Scope, SourceKind, Substrate};
 
 use crate::recall::error::RecallError;
 use crate::recall::types::{ConcurrentSessionMode, SessionBinding};
@@ -83,4 +85,85 @@ pub(crate) fn local_device_id(substrate: &Substrate) -> Result<String, RecallErr
         .map_err(RecallError::substrate_error)?
         .map(|config| config.device.id)
         .ok_or_else(|| RecallError::substrate_error("local device identity missing"))
+}
+
+/// The recency cutoff for peer-write candidates: `now` minus a window in
+/// seconds, saturating to `Duration::MAX` when the window overflows an `i64`.
+/// Shared by the startup and delta peer-coordination passes so the cutoff math
+/// can never silently drift between the two entry points.
+pub(crate) fn recency_cutoff(now: DateTime<Utc>, seconds: u64) -> DateTime<Utc> {
+    now - chrono::Duration::try_seconds(seconds as i64).unwrap_or(chrono::Duration::MAX)
+}
+
+/// The coordination namespace a peer-write row belongs to, derived from its
+/// scope (and canonical namespace id for Project/Org). Shared by both recall
+/// entry points so the namespace rules stay identical.
+pub(crate) fn namespace_for_row(row: &RecallIndexRow) -> String {
+    match row.scope {
+        Scope::User => "me".to_owned(),
+        Scope::Agent | Scope::Subagent => "agent".to_owned(),
+        Scope::Project => row
+            .canonical_namespace_id
+            .as_ref()
+            .map(|namespace| format!("project:{namespace}"))
+            .unwrap_or_else(|| "project".to_owned()),
+        Scope::Org => row
+            .canonical_namespace_id
+            .as_ref()
+            .map(|namespace| format!("org:{namespace}"))
+            .unwrap_or_else(|| "org".to_owned()),
+    }
+}
+
+/// Build the peer-write candidates from already-filtered index rows, dropping
+/// any row whose source identity matches the current session.
+///
+/// `paths_for_row` selects each candidate's `paths` field: the startup path
+/// special-cases Project scope into `project:<canonical_id>` (see
+/// [`project_scoped_candidate_paths`]), while the delta path passes the row's
+/// plain path. The selector keeps that one divergence caller-owned so the rest
+/// of the candidate-assembly logic (identity match, namespace, row move) stays
+/// shared.
+///
+/// Rows are consumed by value: each surviving row moves into its
+/// `PeerWriteCandidate` rather than being deep-cloned (including its
+/// `Vec<Entity>`) a second time.
+pub(crate) fn peer_write_candidates(
+    session_binding: &SessionBinding,
+    rows: Vec<RecallIndexRow>,
+    paths_for_row: fn(&RecallIndexRow) -> Vec<String>,
+) -> Vec<PeerWriteCandidate> {
+    let mut candidates = Vec::new();
+    for row in rows {
+        let identity = peer_source_identity(&row);
+        if identity.matches_session(session_binding) {
+            continue;
+        }
+        candidates.push(PeerWriteCandidate {
+            memory_id: row.id.clone(),
+            paths: paths_for_row(&row),
+            harness: identity.harness,
+            session_id: identity.session_id,
+            namespace: namespace_for_row(&row),
+            row,
+            embedding: None,
+        });
+    }
+    candidates
+}
+
+/// Startup `paths_for_row` selector: Project-scope rows resolve to their
+/// canonical `project:<id>` path, everything else to the row's plain path.
+pub(crate) fn project_scoped_candidate_paths(row: &RecallIndexRow) -> Vec<String> {
+    if row.scope == Scope::Project {
+        if let Some(canonical_id) = &row.canonical_namespace_id {
+            return vec![format!("project:{canonical_id}")];
+        }
+    }
+    vec![row.path.as_str().to_owned()]
+}
+
+/// Delta `paths_for_row` selector: always the row's plain path.
+pub(crate) fn plain_candidate_paths(row: &RecallIndexRow) -> Vec<String> {
+    vec![row.path.as_str().to_owned()]
 }

@@ -4,11 +4,11 @@ use std::time::{Duration as StdDuration, Instant};
 use chrono::{DateTime, Utc};
 use memorum_coordination::presence::ActivePeerQuery;
 use memorum_coordination::{
-    ClaimLockRegistry, CoordinationConfig, CoordinationInsertion, PeerPresenceEntry, PeerUpdateEntry,
-    PeerWriteCandidate, PresenceRegistry, RelevanceGate, SessionContext,
+    ClaimLockRegistry, CoordinationConfig, CoordinationInsertion, PeerPresenceEntry, PeerUpdateEntry, PresenceRegistry,
+    RelevanceGate, SessionContext,
 };
 use memory_privacy::{safe_plaintext_fragment, DeterministicPrivacyClassifier, SafeFragmentDecision};
-use memory_substrate::{AuxScope, ChunkQuery, MemoryStatus, RecallIndexQuery, RecallIndexRow, Scope, Substrate};
+use memory_substrate::{AuxScope, ChunkQuery, MemoryStatus, RecallIndexQuery, RecallIndexRow, Substrate};
 
 use crate::recall::error::RecallError;
 use crate::recall::hybrid::{collect_hybrid_recall, HybridRecallDecision, VectorRecallContext};
@@ -19,7 +19,7 @@ use crate::recall::render::{
 };
 use crate::recall::source_identity::{
     effective_coordination_level, hydrate_peer_candidate_entities, is_peer_write_row, local_device_id,
-    peer_source_identity,
+    peer_write_candidates, plain_candidate_paths, recency_cutoff,
 };
 use crate::recall::types::{
     DeltaPeerDelivery, DeltaRequest, DeltaResponse, SessionBinding, DEFAULT_DELTA_BUDGET_TOKENS,
@@ -178,9 +178,7 @@ async fn build_delta_coordination(
     if session.is_observe_only_harness() {
         return Ok(DeltaCoordination::default());
     }
-    let recency_cutoff = now
-        - chrono::Duration::try_seconds(context.config.relevance_gate.recency_window_seconds as i64)
-            .unwrap_or(chrono::Duration::MAX);
+    let recency_cutoff = recency_cutoff(now, context.config.relevance_gate.recency_window_seconds);
     let rows = delta_peer_candidate_rows(substrate, session_binding)
         .await?
         .into_iter()
@@ -191,7 +189,7 @@ async fn build_delta_coordination(
     }
     let mut insertion = RelevanceGate::new(context.config.clone()).evaluate(
         &mut session,
-        &peer_write_candidates(session_binding, rows),
+        &peer_write_candidates(session_binding, rows, plain_candidate_paths),
         now,
     );
     attach_claim_locks(&mut insertion.peer_updates, context.claim_locks);
@@ -293,45 +291,6 @@ fn insert_normalized(values: &mut HashSet<String>, value: &str) {
 fn normalized_non_empty(value: &str) -> Option<String> {
     let trimmed = value.trim().to_ascii_lowercase();
     (!trimmed.is_empty()).then_some(trimmed)
-}
-
-fn peer_write_candidates(session_binding: &SessionBinding, rows: Vec<RecallIndexRow>) -> Vec<PeerWriteCandidate> {
-    let mut candidates = Vec::new();
-    // Consume the already-filtered rows by value so each surviving row moves
-    // into its `PeerWriteCandidate` rather than being deep-cloned.
-    for row in rows {
-        let identity = peer_source_identity(&row);
-        if identity.matches_session(session_binding) {
-            continue;
-        }
-        candidates.push(PeerWriteCandidate {
-            memory_id: row.id.clone(),
-            paths: vec![row.path.as_str().to_owned()],
-            harness: identity.harness,
-            session_id: identity.session_id,
-            namespace: namespace_for_row(&row),
-            row,
-            embedding: None,
-        });
-    }
-    candidates
-}
-
-fn namespace_for_row(row: &RecallIndexRow) -> String {
-    match row.scope {
-        Scope::User => "me".to_owned(),
-        Scope::Agent | Scope::Subagent => "agent".to_owned(),
-        Scope::Project => row
-            .canonical_namespace_id
-            .as_ref()
-            .map(|namespace| format!("project:{namespace}"))
-            .unwrap_or_else(|| "project".to_owned()),
-        Scope::Org => row
-            .canonical_namespace_id
-            .as_ref()
-            .map(|namespace| format!("org:{namespace}"))
-            .unwrap_or_else(|| "org".to_owned()),
-    }
 }
 
 fn attach_claim_locks(peer_updates: &mut [PeerUpdateEntry], claim_locks: &ClaimLockRegistry) {

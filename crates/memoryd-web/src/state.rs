@@ -180,6 +180,24 @@ impl WebState {
         self.daemon_socket.as_deref().map(PathBuf::as_path)
     }
 
+    /// Resolve which backend a dashboard route should read from.
+    ///
+    /// Collapses the `dashboard_data() -> daemon_socket() -> unavailable` ladder
+    /// every handler used to inline. Fixture data wins (dev/test only), then a
+    /// daemon socket, otherwise the route has no backend. The `Fixture` arm only
+    /// exists under `dev-fixtures`; release builds resolve to `Daemon` or
+    /// `Unavailable`.
+    pub fn backend(&self) -> Backend<'_> {
+        #[cfg(feature = "dev-fixtures")]
+        if let Some(data) = self.dashboard_data() {
+            return Backend::Fixture(data);
+        }
+        match self.daemon_socket() {
+            Some(socket) => Backend::Daemon(socket),
+            None => Backend::Unavailable,
+        }
+    }
+
     pub fn policy_dir(&self) -> Option<&FsPath> {
         self.policy_dir.as_deref().map(PathBuf::as_path)
     }
@@ -264,6 +282,18 @@ impl ReviewActionTracker {
     async fn release(&self, id: &str) {
         self.active.lock().await.remove(id);
     }
+}
+
+/// The backend a dashboard route reads from, resolved once via [`WebState::backend`].
+///
+/// `Fixture` carries in-process dev/test data and only exists under the
+/// `dev-fixtures` feature; release builds only ever produce `Daemon` or
+/// `Unavailable`.
+pub enum Backend<'a> {
+    #[cfg(feature = "dev-fixtures")]
+    Fixture(Arc<DashboardData>),
+    Daemon(&'a FsPath),
+    Unavailable,
 }
 
 pub fn backend_unavailable(route: &'static str) -> (StatusCode, Json<Value>) {

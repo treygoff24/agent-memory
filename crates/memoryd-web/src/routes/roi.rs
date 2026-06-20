@@ -3,11 +3,11 @@ use std::collections::BTreeMap;
 use axum::extract::{Query, State};
 use axum::response::IntoResponse;
 use axum::Json;
-use memoryd::protocol::{RequestPayload, ResponsePayload, ResponseResult};
+use memoryd::protocol::RequestPayload;
 use serde::{Deserialize, Serialize};
 
-use crate::routes::status::daemon_error;
-use crate::state::{backend_unavailable, WebState};
+use crate::routes::daemon::daemon_call;
+use crate::state::{backend_unavailable, Backend, WebState};
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct RoiQuery {
@@ -89,26 +89,22 @@ impl From<memoryd::protocol::DashboardRoiResponse> for RoiResponse {
 
 pub async fn roi(State(state): State<WebState>, Query(query): Query<RoiQuery>) -> impl IntoResponse {
     let window_days = query.window.unwrap_or(90);
-    let Some(data) = state.dashboard_data() else {
-        if let Some(socket_path) = state.daemon_socket() {
-            return match memoryd::client::request(
+    match state.backend() {
+        #[cfg(feature = "dev-fixtures")]
+        Backend::Fixture(data) => Json(data.roi_for_window(window_days)).into_response(),
+        Backend::Daemon(socket_path) => {
+            match daemon_call::<memoryd::protocol::DashboardRoiResponse>(
                 socket_path,
+                "roi",
                 "web-dashboard-roi",
                 RequestPayload::DashboardRoi { window_days },
             )
             .await
             {
-                Ok(response) => match response.result {
-                    ResponseResult::Success(ResponsePayload::DashboardRoi(roi)) => {
-                        Json(RoiResponse::from(roi)).into_response()
-                    }
-                    ResponseResult::Error(error) => daemon_error("roi", error.code, error.message).into_response(),
-                    other => daemon_error("roi", "unexpected_response", format!("{other:?}")).into_response(),
-                },
-                Err(error) => daemon_error("roi", "daemon_unavailable", error.to_string()).into_response(),
-            };
+                Ok(roi) => Json(RoiResponse::from(roi)).into_response(),
+                Err(response) => response,
+            }
         }
-        return backend_unavailable("roi").into_response();
-    };
-    Json(data.roi_for_window(window_days)).into_response()
+        Backend::Unavailable => backend_unavailable("roi").into_response(),
+    }
 }

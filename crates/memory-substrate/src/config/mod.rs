@@ -182,7 +182,7 @@ impl Eq for DreamsConfig {}
 impl Default for DreamsConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: default_true(),
             prompt_version: default_prompt_version(),
             default_cli_priority: default_cli_priority(),
             scope_overrides: BTreeMap::new(),

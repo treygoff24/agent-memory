@@ -24,9 +24,11 @@
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
-use toml_edit::{value, DocumentMut, Item, Table};
+use toml_edit::{value, Item, Table};
 
-use super::mcp_wire::{write_config_file_safely, HarnessTarget, WireError, WireMode};
+use super::mcp_wire::{
+    parse_json_document, parse_toml_document, write_config_file_safely, HarnessTarget, WireError, WireMode,
+};
 
 /// The stable marker substring identifying a Memorum recall hook command.
 ///
@@ -498,22 +500,6 @@ fn write_config(runtime: &mut dyn HookWireRuntime, path: &Path, body: &str) -> R
     runtime.write_config_file(path, body)
 }
 
-fn parse_json_document(existing: &str) -> Result<Value, WireError> {
-    if existing.trim().is_empty() {
-        Ok(Value::Object(Map::new()))
-    } else {
-        Ok(serde_json::from_str(existing)?)
-    }
-}
-
-fn parse_toml_document(existing: &str) -> Result<DocumentMut, WireError> {
-    if existing.trim().is_empty() {
-        Ok(DocumentMut::new())
-    } else {
-        Ok(existing.parse()?)
-    }
-}
-
 #[derive(Debug, Default)]
 struct SystemHookWireRuntime;
 
@@ -546,6 +532,8 @@ impl HookWireRuntime for SystemHookWireRuntime {
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, HashMap};
+
+    use toml_edit::DocumentMut;
 
     use super::*;
 

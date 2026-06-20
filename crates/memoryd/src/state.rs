@@ -198,15 +198,10 @@ impl RcSessionStore {
 
     pub fn load_if_recent(&self, now: DateTime<Utc>) -> std::io::Result<Option<RcSessionState>> {
         let path = self.session_path();
-        let text = match fs::read_to_string(&path) {
-            Ok(text) => text,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(_) => return Ok(None),
-        };
-
-        let session = match serde_json::from_str::<RcSessionState>(&text) {
-            Ok(session) if session.version == STATE_SCHEMA_VERSION => session,
-            Ok(_) | Err(_) => {
+        let session = match load_versioned_json_result::<RcSessionState>(&path) {
+            Ok(Some(session)) => session,
+            Ok(None) | Err(StateLoadFailure::Read { .. }) => return Ok(None),
+            Err(StateLoadFailure::Parse { .. } | StateLoadFailure::VersionMismatch { .. }) => {
                 rename_corrupt_session(&path)?;
                 return Ok(None);
             }

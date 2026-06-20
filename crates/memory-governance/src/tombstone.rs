@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::hash::{canonical_claim_hash, canonical_text, stable_hash};
+use crate::hash::{canonical_claim_hash, canonical_entity_hash, canonical_text};
 use crate::{GovernanceDecision, GovernanceRefusalReason, NextAction};
 use serde::{Deserialize, Serialize};
 
@@ -52,8 +52,13 @@ pub struct CanonicalEntities {
 
 impl CanonicalEntities {
     /// Return the stable hash for this canonical entity set.
+    ///
+    /// Delegates to [`canonical_entity_hash`] so tombstone keys and the
+    /// contradiction-pipeline `CandidateMemory`/`ExistingMemorySummary` hashes
+    /// share one fingerprint implementation. Re-canonicalizing the
+    /// already-normalized entities is idempotent, so the digest is unchanged.
     pub fn entity_hash(&self) -> String {
-        stable_hash(&self.entities.iter().cloned().collect::<Vec<_>>().join("\n"))
+        canonical_entity_hash(&self.entities.iter().cloned().collect::<Vec<_>>())
     }
 }
 
@@ -251,4 +256,24 @@ fn jsonl_paths(path: &Path) -> Result<Vec<PathBuf>, TombstoneLoadError> {
             Err(source) => Some(Err(TombstoneLoadError::ReadDir { path: path.to_path_buf(), source })),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CanonicalEntities;
+    use crate::hash::canonical_entity_hash;
+
+    /// Tombstone keys and contradiction-pipeline candidate hashes must share one
+    /// fingerprint implementation. This pins both paths to byte-identical digests
+    /// so any future drift in either canonicalization is a compile/test failure.
+    #[test]
+    fn canonical_entities_hash_matches_canonical_entity_hash() {
+        let entity_ids =
+            vec!["Project:Atlas".to_owned(), "User:Trey".to_owned(), "Memory:Stream-C".to_owned(), String::new()];
+
+        let via_canonical_entities = CanonicalEntities::from(entity_ids.iter().map(String::as_str)).entity_hash();
+        let via_hash_fn = canonical_entity_hash(&entity_ids);
+
+        assert_eq!(via_canonical_entities, via_hash_fn);
+    }
 }

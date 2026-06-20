@@ -11,6 +11,7 @@ use memory_substrate::index::{open_index, Index};
 use memory_substrate::{
     InitOptions, MemoryId, MemoryStatus, RecallIndexRow, RepoPath, Roots, Scope, Sensitivity, SourceKind, Substrate,
 };
+use memoryd::bench_harness::{guard_immutable_baseline_path, millis, round3};
 use memoryd::notifications::PassiveQueue;
 use memoryd::reality_check::{score_memories_at, ScoredMemory, ScoringConfig};
 use rusqlite::params;
@@ -150,7 +151,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     if let Some(output_path) = args.output.as_ref() {
-        guard_baseline_path(output_path)?;
+        guard_immutable_baseline_path(output_path, "Stream G")?;
         enforce_budgets(&report)?;
         let destination = output_destination(output_path, args.promote_canonical);
         write_report(&destination, &report)?;
@@ -575,14 +576,6 @@ fn percentile(mut durations: Vec<Duration>, statistic: Statistic) -> Duration {
     durations[index.min(durations.len().saturating_sub(1))]
 }
 
-fn millis(duration: Duration) -> f64 {
-    duration.as_secs_f64() * 1_000.0
-}
-
-fn round3(value: f64) -> f64 {
-    (value * 1_000.0).round() / 1_000.0
-}
-
 fn enforce_budgets(report: &BenchReport) -> anyhow::Result<()> {
     let failures = report
         .measurements
@@ -641,17 +634,6 @@ fn output_destination(path: &Path, promote_canonical: bool) -> PathBuf {
     } else {
         proposed_baseline_path(path)
     }
-}
-
-fn guard_baseline_path(path: &Path) -> anyhow::Result<()> {
-    if path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.starts_with("baseline.") && name.ends_with(".json"))
-    {
-        bail!("refusing to write Stream G output to immutable baseline path {}", path.display());
-    }
-    Ok(())
 }
 
 fn validate_baseline_contract(baseline: &BenchReport, current: &BenchReport, path: &Path) -> anyhow::Result<()> {
@@ -764,13 +746,13 @@ fn insert_scoring_rows(index: &Index, rows: &[RecallIndexRow], now: DateTime<Utc
             memory_statement.execute(params![
                 row.id.as_str(),
                 row.path.as_str(),
-                scope_str(row.scope),
+                row.scope.as_db_str(),
                 row.canonical_namespace_id.as_deref(),
                 row.summary.as_str(),
                 row.confidence,
                 original_confidence(index),
-                sensitivity_str(row.sensitivity),
-                status_str(row.status),
+                row.sensitivity.as_db_str(),
+                row.status.as_db_str(),
                 row.updated_at.to_rfc3339(),
                 row.updated_at.to_rfc3339(),
                 observed_at.to_rfc3339(),
@@ -782,7 +764,7 @@ fn insert_scoring_rows(index: &Index, rows: &[RecallIndexRow], now: DateTime<Utc
                 metadata_only(index) as i64,
                 row.passive_recall as i64,
                 row.index_body as i64,
-                scope_str(row.max_scope),
+                row.max_scope.as_db_str(),
             ])?;
 
             for hit_index in 0..(index % 7) {
@@ -889,37 +871,6 @@ fn source_device(index: usize) -> Option<&'static str> {
         0 => Some("macbook-pro"),
         1 => Some("mac-studio"),
         _ => None,
-    }
-}
-
-fn scope_str(value: Scope) -> &'static str {
-    match value {
-        Scope::User => "user",
-        Scope::Project => "project",
-        Scope::Org => "org",
-        Scope::Agent => "agent",
-        Scope::Subagent => "subagent",
-    }
-}
-
-fn sensitivity_str(value: Sensitivity) -> &'static str {
-    match value {
-        Sensitivity::Public => "public",
-        Sensitivity::Internal => "internal",
-        Sensitivity::Confidential => "confidential",
-        Sensitivity::Personal => "personal",
-    }
-}
-
-fn status_str(value: MemoryStatus) -> &'static str {
-    match value {
-        MemoryStatus::Candidate => "candidate",
-        MemoryStatus::Active => "active",
-        MemoryStatus::Pinned => "pinned",
-        MemoryStatus::Superseded => "superseded",
-        MemoryStatus::Archived => "archived",
-        MemoryStatus::Tombstoned => "tombstoned",
-        MemoryStatus::Quarantined => "quarantined",
     }
 }
 

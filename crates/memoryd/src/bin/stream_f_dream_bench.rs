@@ -6,7 +6,7 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, bail, Context};
+use anyhow::{anyhow, Context};
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use memory_privacy::{DeterministicPrivacyClassifier, PrivacyClassifier, PrivacyNamespace, PrivacySpan};
@@ -18,6 +18,7 @@ use memory_substrate::{
     Scope, Sensitivity, Source, SourceKind, Substrate, SubstrateFragmentAppendRequest, SubstrateFragmentPayload,
     SubstrateFragmentRecord, TrustLevel, WriteMode, WritePolicy, WriteRequest,
 };
+use memoryd::bench_harness::{guard_immutable_baseline_path, millis, round3};
 use memoryd::dream::cleanup::{run_cleanup, CleanupConfig};
 use memoryd::dream::harness::EchoCli;
 use memoryd::dream::lease::{acquire_manual_lease, LeaseAcquireRequest};
@@ -134,7 +135,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     if let Some(output_path) = args.write_output.as_ref() {
-        guard_immutable_baseline_path(output_path)?;
+        guard_immutable_baseline_path(output_path, "Stream F")?;
         enforce_budgets(&report).context("refusing to write failing Stream F benchmark baseline")?;
         write_report(output_path, &report)?;
     }
@@ -441,14 +442,6 @@ fn p95(mut durations: Vec<Duration>) -> Duration {
     durations[index.min(durations.len().saturating_sub(1))]
 }
 
-fn millis(duration: Duration) -> f64 {
-    duration.as_secs_f64() * 1_000.0
-}
-
-fn round3(value: f64) -> f64 {
-    (value * 1_000.0).round() / 1_000.0
-}
-
 fn enforce_budgets(report: &BenchReport) -> anyhow::Result<()> {
     let failures = report
         .measurements
@@ -479,17 +472,6 @@ fn write_report(path: &Path, report: &BenchReport) -> anyhow::Result<()> {
     }
     fs::write(path, format!("{}\n", serde_json::to_string_pretty(report)?))
         .with_context(|| format!("write {}", path.display()))
-}
-
-fn guard_immutable_baseline_path(path: &Path) -> anyhow::Result<()> {
-    if path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.starts_with("baseline.") && name.ends_with(".json"))
-    {
-        bail!("refusing to write Stream F output to immutable baseline path {}", path.display());
-    }
-    Ok(())
 }
 
 fn validate_baseline_contract(baseline: &BenchReport, current: &BenchReport, path: &Path) -> anyhow::Result<()> {

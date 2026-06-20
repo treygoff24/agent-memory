@@ -7,6 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::harness_runner::HarnessRunnerError;
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DaemonScaffoldConfig;
 
@@ -289,7 +291,11 @@ fn wait_for_socket(socket_path: &Path) {
         .unwrap_or_else(|error| panic!("{error}"));
 }
 
-fn wait_for_socket_for(socket_path: &Path, timeout: Duration, poll_interval: Duration) -> Result<(), String> {
+fn wait_for_socket_for(
+    socket_path: &Path,
+    timeout: Duration,
+    poll_interval: Duration,
+) -> Result<(), HarnessRunnerError> {
     let deadline = std::time::Instant::now() + timeout;
     let mut last_error = None;
     while std::time::Instant::now() < deadline {
@@ -299,12 +305,12 @@ fn wait_for_socket_for(socket_path: &Path, timeout: Duration, poll_interval: Dur
         }
         std::thread::sleep(poll_interval);
     }
-    Err(format!(
+    Err(HarnessRunnerError::SocketNotReady(format!(
         "memoryd socket did not accept connections within {:?}: {}{}",
         timeout,
         socket_path.display(),
         last_error.map(|error| format!(" ({error})")).unwrap_or_default()
-    ))
+    )))
 }
 
 fn new_ulid_like_id() -> String {
@@ -340,7 +346,8 @@ mod tests {
         fs::write(&socket_path, b"not a socket").expect("write placeholder");
 
         let error = wait_for_socket_for(&socket_path, Duration::from_millis(20), Duration::from_millis(1))
-            .expect_err("regular file must not be treated as socket readiness");
+            .expect_err("regular file must not be treated as socket readiness")
+            .to_string();
 
         assert!(error.contains("did not accept connections"), "{error}");
         let _ = fs::remove_file(socket_path);

@@ -14,6 +14,7 @@ use memoryd::trust_artifact::{
 };
 
 pub mod audit;
+pub(crate) mod daemon;
 pub mod entity_graph;
 pub mod policy_editor;
 pub mod reality_check;

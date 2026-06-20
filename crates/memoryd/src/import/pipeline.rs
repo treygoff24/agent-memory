@@ -23,7 +23,7 @@ use crate::import::report::{
     BackEdgeEntry, CandidateEntry, CwdDispositionEntry, CwdProjectYamlEntry, DedupEntry, HarnessCounters, ImportReport,
     ParseErrorEntry, RefusalEntry,
 };
-use crate::import::sources::{claude, codex};
+use crate::import::sources::{candidate_aliases, claude, codex};
 use crate::import::state::{ImportLockGuard, ImportRecord, ImportState, SupersededRecord};
 use crate::import::{ImportError, ImportResult};
 use crate::protocol::{GovernanceRefusalReason, GovernanceStatus, ProtocolError, ResponsePayload, ResponseResult};
@@ -405,54 +405,27 @@ impl ImportEngine {
                     continue;
                 }
                 PlanAction::RepairBucket { prior_memory_id, .. } => {
-                    let related = resolve_related_ids(action, &alias_to_id);
-                    let supersede_meta =
-                        build_write_meta(action, &related, Some(std::slice::from_ref(prior_memory_id)));
                     if opts.dry_run {
                         counters_mut(&mut report, &harness_key).superseded += 1;
                         continue;
                     }
-                    let supersede = client
-                        .supersede(SupersedeRequest {
-                            old_id: prior_memory_id.clone(),
-                            content: action.candidate.body.clone(),
-                            reason: "import bucket repair".to_string(),
-                            meta: supersede_meta,
-                        })
-                        .await
-                        .map_err(|error| partial_import_error(error, &report, &action.source_key))?;
-                    match supersede.status {
-                        GovernanceStatus::Promoted => {
-                            let new_id = supersede.new_id.unwrap_or_else(|| prior_memory_id.clone());
-                            counters_mut(&mut report, &harness_key).superseded += 1;
-                            record_promoted(
-                                &mut state,
-                                action,
-                                &new_id,
-                                Some(prior_memory_id.as_str()),
-                                &mut alias_to_id,
-                                &self.state_path,
-                            )
-                            .map_err(|error| partial_import_error(error, &report, &action.source_key))?;
-                        }
-                        GovernanceStatus::Refused => {
-                            let reason =
-                                supersede.reason.map_or("refused".to_string(), |reason| reason.as_str().to_string());
-                            bump_refusal(counters_mut(&mut report, &harness_key), &reason);
-                            report.refusals.push(RefusalEntry {
-                                source_key: action.source_key.clone(),
-                                harness: harness_key.clone(),
-                                reason,
-                                suggested_next_action: Some("inspect bucket repair refusal".to_string()),
-                            });
-                        }
-                        other => {
-                            if opts.verbose_progress {
-                                eprintln!("{progress_prefix} bucket-repair-{other:?}: {}", action.source_key);
-                            }
-                            record_supersede_secondary(&mut report, action, other, supersede.new_id.clone());
-                        }
-                    }
+                    let related = resolve_related_ids(action, &alias_to_id);
+                    self.apply_supersede(
+                        client,
+                        action,
+                        &related,
+                        prior_memory_id,
+                        "import bucket repair",
+                        "inspect bucket repair refusal",
+                        "bucket-repair",
+                        &progress_prefix,
+                        &harness_key,
+                        &opts,
+                        &mut state,
+                        &mut report,
+                        &mut alias_to_id,
+                    )
+                    .await?;
                     continue;
                 }
                 PlanAction::WriteNew | PlanAction::Supersede { .. } => {}
@@ -509,50 +482,22 @@ impl ImportEngine {
                             );
                             continue;
                         };
-                        let supersede_meta =
-                            build_write_meta(action, &related, Some(std::slice::from_ref(&existing_id)));
-                        let supersede = client
-                            .supersede(SupersedeRequest {
-                                old_id: existing_id.clone(),
-                                content: action.candidate.body.clone(),
-                                reason: "import supersede".to_string(),
-                                meta: supersede_meta,
-                            })
-                            .await
-                            .map_err(|error| partial_import_error(error, &report, &action.source_key))?;
-                        match supersede.status {
-                            GovernanceStatus::Promoted => {
-                                let new_id = supersede.new_id.unwrap_or_else(|| existing_id.clone());
-                                counters_mut(&mut report, &harness_key).superseded += 1;
-                                record_promoted(
-                                    &mut state,
-                                    action,
-                                    &new_id,
-                                    Some(existing_id.as_str()),
-                                    &mut alias_to_id,
-                                    &self.state_path,
-                                )
-                                .map_err(|error| partial_import_error(error, &report, &action.source_key))?;
-                            }
-                            GovernanceStatus::Refused => {
-                                let reason = supersede
-                                    .reason
-                                    .map_or("refused".to_string(), |reason| reason.as_str().to_string());
-                                bump_refusal(counters_mut(&mut report, &harness_key), &reason);
-                                report.refusals.push(RefusalEntry {
-                                    source_key: action.source_key.clone(),
-                                    harness: harness_key.clone(),
-                                    reason,
-                                    suggested_next_action: Some("inspect supersede refusal".to_string()),
-                                });
-                            }
-                            other => {
-                                if opts.verbose_progress {
-                                    eprintln!("{progress_prefix} supersede-{other:?}: {}", action.source_key);
-                                }
-                                record_supersede_secondary(&mut report, action, other, supersede.new_id.clone());
-                            }
-                        }
+                        self.apply_supersede(
+                            client,
+                            action,
+                            &related,
+                            &existing_id,
+                            "import supersede",
+                            "inspect supersede refusal",
+                            "supersede",
+                            &progress_prefix,
+                            &harness_key,
+                            &opts,
+                            &mut state,
+                            &mut report,
+                            &mut alias_to_id,
+                        )
+                        .await?;
                     } else {
                         counters_mut(&mut report, &harness_key).written_candidate += 1;
                         push_candidate_entry(&mut report.candidates, action, &harness_key, outcome.id.clone());
@@ -614,6 +559,70 @@ impl ImportEngine {
         }
         Ok(ExecuteResult { report, state })
     }
+
+    /// Issue one supersede write against `old_id` and reconcile its outcome.
+    ///
+    /// Both the bucket-repair path (a content-identical re-import into a new
+    /// namespace bucket) and the candidate-supersede path (the daemon asked us
+    /// to supersede an existing memory) run the identical Promoted/Refused/other
+    /// state machine; only the `reason` sent to the daemon, the
+    /// `suggested_next_action` recorded on a refusal, and the verbose-progress
+    /// label differ per call site. Callers gate `dry_run` themselves before
+    /// reaching here — this method always issues the daemon write.
+    #[expect(clippy::too_many_arguments, reason = "shared supersede state machine threads both call sites' context")]
+    async fn apply_supersede<C: DaemonClient>(
+        &self,
+        client: &mut C,
+        action: &PlannedWrite,
+        related: &[String],
+        old_id: &str,
+        reason: &str,
+        suggested_action: &str,
+        verbose_label: &str,
+        progress_prefix: &str,
+        harness_key: &str,
+        opts: &ExecuteOptions,
+        state: &mut ImportState,
+        report: &mut ImportReport,
+        alias_to_id: &mut HashMap<String, String>,
+    ) -> ImportResult<()> {
+        let old_id = old_id.to_string();
+        let supersede_meta = build_write_meta(action, related, Some(std::slice::from_ref(&old_id)));
+        let supersede = client
+            .supersede(SupersedeRequest {
+                old_id: old_id.clone(),
+                content: action.candidate.body.clone(),
+                reason: reason.to_string(),
+                meta: supersede_meta,
+            })
+            .await
+            .map_err(|error| partial_import_error(error, report, &action.source_key))?;
+        match supersede.status {
+            GovernanceStatus::Promoted => {
+                let new_id = supersede.new_id.unwrap_or_else(|| old_id.clone());
+                counters_mut(report, harness_key).superseded += 1;
+                record_promoted(state, action, &new_id, Some(old_id.as_str()), alias_to_id, &self.state_path)
+                    .map_err(|error| partial_import_error(error, report, &action.source_key))?;
+            }
+            GovernanceStatus::Refused => {
+                let reason = supersede.reason.map_or("refused".to_string(), |reason| reason.as_str().to_string());
+                bump_refusal(counters_mut(report, harness_key), &reason);
+                report.refusals.push(RefusalEntry {
+                    source_key: action.source_key.clone(),
+                    harness: harness_key.to_string(),
+                    reason,
+                    suggested_next_action: Some(suggested_action.to_string()),
+                });
+            }
+            other => {
+                if opts.verbose_progress {
+                    eprintln!("{progress_prefix} {verbose_label}-{other:?}: {}", action.source_key);
+                }
+                record_supersede_secondary(report, action, other, supersede.new_id.clone());
+            }
+        }
+        Ok(())
+    }
 }
 
 fn materialize_planned_project_yamls(report: &mut ImportReport, plan: &ImportPlan) -> ImportResult<()> {
@@ -652,14 +661,8 @@ fn resolve_related_ids(action: &PlannedWrite, alias_to_id: &HashMap<String, Stri
 }
 
 fn register_aliases_for(candidate: &ParsedMemory, id: &str, alias_to_id: &mut HashMap<String, String>) {
-    if let Some(title) = &candidate.title {
-        alias_to_id.entry(title.to_ascii_lowercase()).or_insert_with(|| id.to_string());
-    }
-    if let Some(short) = candidate.source_key.rsplit('/').next() {
-        alias_to_id.entry(short.to_ascii_lowercase()).or_insert_with(|| id.to_string());
-        if let Some(stem) = short.rsplit_once('.').map(|(s, _)| s) {
-            alias_to_id.entry(stem.to_ascii_lowercase()).or_insert_with(|| id.to_string());
-        }
+    for alias in candidate_aliases(candidate) {
+        alias_to_id.entry(alias).or_insert_with(|| id.to_string());
     }
 }
 
@@ -1100,17 +1103,14 @@ fn topo_sort(actions: Vec<PlannedWrite>) -> (Vec<PlannedWrite>, Vec<WikiLinkBack
     let mut sorted_keys: Vec<String> = actions.iter().map(|w| w.source_key.clone()).collect();
     sorted_keys.sort();
     let key_order: HashMap<String, usize> = sorted_keys.iter().enumerate().map(|(i, k)| (k.clone(), i)).collect();
+    // Aliases come from each candidate's title (for Codex Task Groups: the
+    // header; for Claude: the topic name) plus the short source-key segment and
+    // its stem, so `[[file.md]]`-style links resolve against file-named
+    // candidates. `PlannedWrite::source_key` mirrors `candidate.source_key`, so
+    // the shared deriver yields the same short/stem segments this loop did.
     for write in &actions {
-        if let Some(title) = &write.candidate.title {
-            alias_to_key.entry(title.to_ascii_lowercase()).or_insert_with(|| write.source_key.clone());
-        }
-        // Also index by short source-key segment so `[[file.md]]` style links
-        // resolve against file-named candidates.
-        if let Some(short) = write.source_key.rsplit('/').next() {
-            alias_to_key.entry(short.to_ascii_lowercase()).or_insert_with(|| write.source_key.clone());
-            if let Some(stem) = short.rsplit_once('.').map(|(s, _)| s) {
-                alias_to_key.entry(stem.to_ascii_lowercase()).or_insert_with(|| write.source_key.clone());
-            }
+        for alias in candidate_aliases(&write.candidate) {
+            alias_to_key.entry(alias).or_insert_with(|| write.source_key.clone());
         }
     }
 

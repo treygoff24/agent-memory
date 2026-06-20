@@ -43,24 +43,11 @@ impl ClaimLockAcquireRequest {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ClaimLockRenewRequest {
-    pub memory_id: String,
-    pub session_id: String,
-    pub harness: String,
-    pub ttl: Duration,
-}
-
-impl ClaimLockRenewRequest {
-    pub fn new(
-        memory_id: impl Into<String>,
-        session_id: impl Into<String>,
-        harness: impl Into<String>,
-        ttl: Duration,
-    ) -> Self {
-        Self { memory_id: memory_id.into(), session_id: session_id.into(), harness: harness.into(), ttl }
-    }
-}
+/// Renew requests are structurally identical to acquire requests (same four
+/// fields, same constructor, no serde/wire surface). The alias keeps the
+/// `ClaimLockRenewRequest::new(...)` name and `renew_at(...)` signature stable
+/// for callers while collapsing the duplicated definition.
+pub type ClaimLockRenewRequest = ClaimLockAcquireRequest;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ClaimLockAcquireResult {

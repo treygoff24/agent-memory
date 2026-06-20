@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use super::{extract_wiki_links, slugify};
+use super::{extract_wiki_links, slugify, stamp_auto_memory_provenance, strip_memorum_recall_blocks};
 use crate::import::candidate::{Harness, ParsedMemory};
 use crate::import::{ImportError, ImportResult};
 
@@ -32,97 +32,6 @@ use crate::import::{ImportError, ImportResult};
 /// a dossier worth decomposing.
 const BOILERPLATE_HEADINGS: &[&str] =
     &["why", "how to apply", "how", "when", "why this matters", "references", "links", "context"];
-
-/// Provenance tag stamped into every imported candidate's `frontmatter_hint`.
-/// The import dir *is* the harness's native auto-memory store, so everything
-/// the importer reads is harness-authored auto-memory rather than a
-/// hand-curated note. Downstream ranking uses this to keep imported candidates
-/// below human-authored memory (see [`AUTO_MEMORY_CONFIDENCE`]).
-pub(super) const AUTO_MEMORY_PROVENANCE: &str = "harness-auto-memory";
-
-/// Confidence stamped into imported candidates so recall ranking favors
-/// human-authored content. Below the hand-written baseline (`0.85`) yet above
-/// the Reality Check review floor — same intent the pipeline already encodes,
-/// surfaced here per-candidate so the provenance signal is self-describing.
-pub(super) const AUTO_MEMORY_CONFIDENCE: f64 = 0.7;
-
-/// Memorum recall-block opening markers. The import dir doubles as the
-/// harness's native auto-memory store, and passive recall injects these blocks
-/// into sessions; a harness can write that injected text back into its store,
-/// which the importer would otherwise re-ingest as a fresh user memory — a
-/// re-ingestion loop. These XML-ish wrappers are emitted only by Stream E's
-/// renderer (`recall/render.rs`), never by a hand-written note, so matching a
-/// line that opens one of them is a robust, conservative re-import signal.
-const MEMORUM_BLOCK_OPENERS: &[&str] = &["<memory-recall", "<memory-delta", "<recall-explanation"];
-
-/// Strip Memorum recall blocks out of `body`, returning the surviving content.
-///
-/// Memorum-emitted blocks are bounded XML-ish regions: an opening marker line
-/// (`<memory-recall …>`, `<memory-delta …>`, `<recall-explanation …>`, or the
-/// self-closing `<memory-delta empty="true" />`) through the matching closing
-/// tag on its own line. We drop every line from an opener to its closer
-/// inclusive; a self-closing opener drops just that line. Conservatism: only
-/// lines that *begin* (after trimming leading whitespace) with one of the
-/// known wrapper markers start a skip, so ordinary prose that merely mentions
-/// the word "memory" survives untouched. An unterminated opener (truncated
-/// paste) drops to end-of-input, since the remainder is Memorum tail, not a
-/// user note.
-pub(super) fn strip_memorum_recall_blocks(body: &str) -> String {
-    let mut kept: Vec<&str> = Vec::new();
-    let mut skipping_until: Option<&'static str> = None;
-    for line in body.lines() {
-        let trimmed = line.trim_start();
-        if let Some(closer) = skipping_until {
-            if line.trim_start().starts_with(closer) {
-                skipping_until = None;
-            }
-            continue;
-        }
-        if let Some(closer) = memorum_block_closer(trimmed) {
-            // A self-closing opener (`closer` empty) is a single dropped line;
-            // a paired opener begins a skip run until its closing tag.
-            if !closer.is_empty() {
-                skipping_until = Some(closer);
-            }
-            continue;
-        }
-        kept.push(line);
-    }
-    kept.join("\n")
-}
-
-/// If `trimmed` opens a Memorum recall block, return the closing tag to skip to
-/// (`""` for a self-closing opener that needs no closer). Returns `None` for an
-/// ordinary line.
-fn memorum_block_closer(trimmed: &str) -> Option<&'static str> {
-    if !MEMORUM_BLOCK_OPENERS.iter().any(|opener| trimmed.starts_with(opener)) {
-        return None;
-    }
-    // A self-closing tag (`… />`) carries its own terminator; nothing to skip to.
-    if trimmed.ends_with("/>") {
-        return Some("");
-    }
-    if trimmed.starts_with("<memory-recall") {
-        Some("</memory-recall>")
-    } else if trimmed.starts_with("<memory-delta") {
-        Some("</memory-delta>")
-    } else {
-        Some("</recall-explanation>")
-    }
-}
-
-/// Stamp the auto-memory provenance + confidence hints onto a candidate's
-/// `frontmatter_hint`. Both Claude and Codex sources read from native
-/// auto-memory stores, so both call this. Existing author-supplied keys win:
-/// if a memory already declares its own `confidence`/`source_provenance`, we
-/// don't clobber it. The downstream pipeline reads these to keep imported
-/// candidates below human-authored memory in recall ranking.
-pub(super) fn stamp_auto_memory_provenance(frontmatter_hint: &mut BTreeMap<String, Value>) {
-    frontmatter_hint
-        .entry("source_provenance".to_string())
-        .or_insert_with(|| Value::String(AUTO_MEMORY_PROVENANCE.to_string()));
-    frontmatter_hint.entry("confidence".to_string()).or_insert_with(|| Value::from(AUTO_MEMORY_CONFIDENCE));
-}
 
 /// Output bundle for a Claude memory root parse. `candidates` carries the
 /// successful parses; `errors` carries per-file failures so the import report
@@ -540,6 +449,7 @@ fn resolve_existing_path(base: &Path, segments: &[&str]) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::AUTO_MEMORY_PROVENANCE;
     use super::*;
 
     fn write_fixture(dir: &Path, name: &str, body: &[u8]) -> PathBuf {

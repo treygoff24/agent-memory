@@ -174,15 +174,15 @@ async fn archive_expired_fragments(
     })
 }
 
-async fn archive_stale_candidates(
-    substrate: &Substrate,
-    config: &CleanupConfig,
-    mutated_files: &mut BTreeSet<String>,
-    findings: &mut Vec<CleanupFinding>,
-) -> Result<usize, CleanupError> {
-    let repo = substrate.roots().repo.as_path();
-    let cutoff = config.now - Duration::days(config.candidate_stale_days);
-    let mut archived = 0usize;
+/// Walk every memory under `repo`, loading each via [`read_memory_at`] and
+/// routing path-resolution and read failures into `memory_lint` findings (in
+/// directory-walk order). For each successfully loaded memory the body is invoked
+/// with its repo path, parsed [`Memory`], and base hash. Shared prologue for the
+/// per-memory cleanup passes so the path/read error funnel lives in one place.
+fn for_each_loaded_memory<F>(repo: &Path, findings: &mut Vec<CleanupFinding>, mut body: F)
+where
+    F: FnMut(RepoPath, Memory, Sha256, &mut Vec<CleanupFinding>),
+{
     for path in relative_memory_paths(repo) {
         let repo_path = match repo_path_from_relative(&path) {
             Ok(repo_path) => repo_path,
@@ -196,16 +196,33 @@ async fn archive_stale_candidates(
                 continue;
             }
         };
-        let (mut memory, base_hash) = match read_memory_at(repo, &repo_path) {
+        let (memory, base_hash) = match read_memory_at(repo, &repo_path) {
             Ok(memory) => memory,
             Err(err) => {
                 findings.push(CleanupFinding::new("memory_lint", repo_path.as_str(), None, err.to_string()));
                 continue;
             }
         };
-        if !is_stale_candidate(&memory, cutoff) {
-            continue;
+        body(repo_path, memory, base_hash, findings);
+    }
+}
+
+async fn archive_stale_candidates(
+    substrate: &Substrate,
+    config: &CleanupConfig,
+    mutated_files: &mut BTreeSet<String>,
+    findings: &mut Vec<CleanupFinding>,
+) -> Result<usize, CleanupError> {
+    let repo = substrate.roots().repo.as_path();
+    let cutoff = config.now - Duration::days(config.candidate_stale_days);
+    let mut archived = 0usize;
+    let mut pending = Vec::new();
+    for_each_loaded_memory(repo, findings, |repo_path, memory, base_hash, _| {
+        if is_stale_candidate(&memory, cutoff) {
+            pending.push((repo_path, memory, base_hash));
         }
+    });
+    for (repo_path, mut memory, base_hash) in pending {
         memory.frontmatter.status = MemoryStatus::Archived;
         memory.frontmatter.review_state = Some("archived".to_string());
         memory.frontmatter.updated_at = config.now;
@@ -317,34 +334,16 @@ async fn refresh_observed_at(
 ) -> Result<usize, CleanupError> {
     let repo = substrate.roots().repo.as_path();
     let mut refreshed = 0usize;
-    for path in relative_memory_paths(repo) {
-        let repo_path = match repo_path_from_relative(&path) {
-            Ok(repo_path) => repo_path,
-            Err(err) => {
-                findings.push(CleanupFinding::new(
-                    "memory_lint",
-                    path.to_string_lossy().into_owned(),
-                    None,
-                    err.to_string(),
-                ));
-                continue;
-            }
-        };
-        let (mut memory, base_hash) = match read_memory_at(repo, &repo_path) {
-            Ok(memory) => memory,
-            Err(err) => {
-                findings.push(CleanupFinding::new("memory_lint", repo_path.as_str(), None, err.to_string()));
-                continue;
-            }
-        };
+    let mut pending = Vec::new();
+    for_each_loaded_memory(repo, findings, |repo_path, memory, base_hash, findings| {
         let Some(source_ref) = memory.frontmatter.source.reference.as_deref() else {
-            continue;
+            return;
         };
         let Ok(source_path) = resolve_repo_relative_file_ref(repo, source_ref) else {
-            continue;
+            return;
         };
         if !source_path.is_file() {
-            continue;
+            return;
         }
         let metadata = match fs::metadata(&source_path) {
             Ok(metadata) => metadata,
@@ -355,7 +354,7 @@ async fn refresh_observed_at(
                     Some(memory.frontmatter.id.as_str().to_string()),
                     err.to_string(),
                 ));
-                continue;
+                return;
             }
         };
         let modified = match metadata.modified() {
@@ -367,13 +366,16 @@ async fn refresh_observed_at(
                     Some(memory.frontmatter.id.as_str().to_string()),
                     err.to_string(),
                 ));
-                continue;
+                return;
             }
         };
         let mtime = DateTime::<Utc>::from(modified);
         if memory.frontmatter.observed_at == Some(mtime) {
-            continue;
+            return;
         }
+        pending.push((repo_path, memory, base_hash, mtime));
+    });
+    for (repo_path, mut memory, base_hash, mtime) in pending {
         memory.frontmatter.observed_at = Some(mtime);
         memory.frontmatter.updated_at = config.now;
         if let Err(err) =

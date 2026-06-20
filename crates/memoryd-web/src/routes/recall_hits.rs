@@ -3,15 +3,15 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use chrono::{DateTime, Utc};
-use memoryd::protocol::{RequestPayload, ResponsePayload, ResponseResult};
+use memoryd::protocol::RequestPayload;
 
 #[cfg(feature = "dev-fixtures")]
 use memoryd::protocol::RecallHitSummary;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::routes::status::daemon_error;
-use crate::state::{backend_unavailable, WebState};
+use crate::routes::daemon::daemon_call;
+use crate::state::{backend_unavailable, Backend, WebState};
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct RecallHitsQuery {
@@ -24,32 +24,31 @@ pub async fn recall_hits(State(state): State<WebState>, Query(query): Query<Reca
         Ok(since) => since,
         Err(message) => return invalid_query(message).into_response(),
     };
-    if let Some(data) = state.dashboard_data() {
-        let mut hits = data.recall_hits.clone();
-        if let Some(since) = since {
-            hits.retain(|hit| hit.recalled_at > since);
+    match state.backend() {
+        #[cfg(feature = "dev-fixtures")]
+        Backend::Fixture(data) => {
+            let mut hits = data.recall_hits.clone();
+            if let Some(since) = since {
+                hits.retain(|hit| hit.recalled_at > since);
+            }
+            let limit = query.limit.unwrap_or(hits.len()).clamp(1, 500);
+            hits.truncate(limit);
+            Json(memoryd::protocol::RecallHitsResponse { since, limit, hits }).into_response()
         }
-        let limit = query.limit.unwrap_or(hits.len()).clamp(1, 500);
-        hits.truncate(limit);
-        return Json(memoryd::protocol::RecallHitsResponse { since, limit, hits }).into_response();
-    }
-
-    let Some(socket_path) = state.daemon_socket() else {
-        return backend_unavailable("recall_hits").into_response();
-    };
-    match memoryd::client::request(
-        socket_path,
-        "web-recall-hits",
-        RequestPayload::RecallHits { since, limit: query.limit },
-    )
-    .await
-    {
-        Ok(response) => match response.result {
-            ResponseResult::Success(ResponsePayload::RecallHits(response)) => Json(response).into_response(),
-            ResponseResult::Error(error) => daemon_error("recall_hits", error.code, error.message).into_response(),
-            other => daemon_error("recall_hits", "unexpected_response", format!("{other:?}")).into_response(),
-        },
-        Err(error) => daemon_error("recall_hits", "daemon_unavailable", error.to_string()).into_response(),
+        Backend::Daemon(socket_path) => {
+            match daemon_call::<memoryd::protocol::RecallHitsResponse>(
+                socket_path,
+                "recall_hits",
+                "web-recall-hits",
+                RequestPayload::RecallHits { since, limit: query.limit },
+            )
+            .await
+            {
+                Ok(response) => Json(response).into_response(),
+                Err(response) => response,
+            }
+        }
+        Backend::Unavailable => backend_unavailable("recall_hits").into_response(),
     }
 }
 

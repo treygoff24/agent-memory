@@ -183,7 +183,7 @@ impl SetupIo for InteractiveIo {
     fn choose_harnesses(&mut self, _detection: &SetupDetection) -> SetupResult<HarnessSelection> {
         if let Some(seeded) = self.seeds.harnesses {
             if self.chose_import {
-                println!("Harnesses to import: {} (--harness)", harness_label(seeded));
+                println!("Harnesses to import: {seeded} (--harness)");
             }
             return Ok(seeded);
         }
@@ -193,20 +193,7 @@ impl SetupIo for InteractiveIo {
             return Ok(HarnessSelection::None);
         }
         let items = &["Current harness only", "Claude Code", "Codex CLI", "All harnesses", "None (skip import)"];
-        let selection = dialoguer::Select::new()
-            .with_prompt("Which harness memories should be imported?")
-            .items(items)
-            .default(0)
-            .interact()
-            .unwrap_or(4);
-        let harness = match selection {
-            0 => HarnessSelection::Current,
-            1 => HarnessSelection::Claude,
-            2 => HarnessSelection::Codex,
-            3 => HarnessSelection::All,
-            _ => HarnessSelection::None,
-        };
-        Ok(harness)
+        Ok(prompt_harness_selection("Which harness memories should be imported?", items, 0, 4))
     }
 
     fn choose_non_git_cwd_default(&mut self, _detection: &SetupDetection) -> SetupResult<NonGitCwdDecision> {
@@ -242,7 +229,7 @@ impl SetupIo for InteractiveIo {
 
     fn choose_mcp_wiring(&mut self, _detection: &SetupDetection) -> SetupResult<WireMcpSelection> {
         if let Some(seeded) = self.seeds.wire_mcp {
-            println!("MCP wiring: {} (--wire-mcp)", wire_label(seeded));
+            println!("MCP wiring: {seeded} (--wire-mcp)");
             self.chose_wiring = !matches!(seeded, WireMcpSelection::None);
             return Ok(seeded);
         }
@@ -257,26 +244,14 @@ impl SetupIo for InteractiveIo {
             "All harness configs",
             "None (skip MCP wiring)",
         ];
-        let selection = dialoguer::Select::new()
-            .with_prompt("Which MCP harness configs should be wired to Memorum?")
-            .items(items)
-            .default(4)
-            .interact()
-            .unwrap_or(4);
-        let wire = match selection {
-            0 => WireMcpSelection::Current,
-            1 => WireMcpSelection::Claude,
-            2 => WireMcpSelection::Codex,
-            3 => WireMcpSelection::All,
-            _ => WireMcpSelection::None,
-        };
+        let wire = prompt_harness_selection("Which MCP harness configs should be wired to Memorum?", items, 4, 4);
         self.chose_wiring = !matches!(wire, WireMcpSelection::None);
         Ok(wire)
     }
 
     fn choose_hook_wiring(&mut self, _detection: &SetupDetection) -> SetupResult<WireHooksSelection> {
         if let Some(seeded) = self.seeds.wire_hooks {
-            println!("Hook wiring: {} (--wire-hooks)", wire_hooks_label(seeded));
+            println!("Hook wiring: {seeded} (--wire-hooks)");
             self.chose_hooks = !matches!(seeded, WireHooksSelection::None);
             return Ok(seeded);
         }
@@ -294,19 +269,7 @@ impl SetupIo for InteractiveIo {
         ];
         // Default-on: index 0 (current harness). The magical "it just remembers"
         // UX is the point, so the safe-but-passive default is to wire, not skip.
-        let selection = dialoguer::Select::new()
-            .with_prompt("Which harness configs should be wired for passive recall?")
-            .items(items)
-            .default(0)
-            .interact()
-            .unwrap_or(0);
-        let wire = match selection {
-            0 => WireHooksSelection::Current,
-            1 => WireHooksSelection::Claude,
-            2 => WireHooksSelection::Codex,
-            3 => WireHooksSelection::All,
-            _ => WireHooksSelection::None,
-        };
+        let wire = prompt_harness_selection("Which harness configs should be wired for passive recall?", items, 0, 0);
         self.chose_hooks = !matches!(wire, WireHooksSelection::None);
         Ok(wire)
     }
@@ -408,33 +371,23 @@ fn describe_socket(state: SetupSocketState) -> String {
     }
 }
 
-fn harness_label(selection: HarnessSelection) -> &'static str {
+/// Present the shared 5-item harness-target `Select` (Current/Claude/Codex/All/
+/// None, in that order) and map the chosen index to a [`HarnessSelection`].
+///
+/// `items` must list the five choices in the same Current→None order; the
+/// index→variant mapping lives here so that ordering is a single source of
+/// truth across `--harness`, `--wire-mcp`, and `--wire-hooks`. `default_ix` is
+/// the highlighted choice; `fallback_ix` is used when the prompt cannot run
+/// (e.g. Ctrl-D), matching each caller's prior `unwrap_or` default.
+fn prompt_harness_selection(prompt: &str, items: &[&str; 5], default_ix: usize, fallback_ix: usize) -> HarnessSelection {
+    let selection =
+        dialoguer::Select::new().with_prompt(prompt).items(items).default(default_ix).interact().unwrap_or(fallback_ix);
     match selection {
-        HarnessSelection::Current => "current harness",
-        HarnessSelection::Claude => "Claude Code",
-        HarnessSelection::Codex => "Codex CLI",
-        HarnessSelection::All => "all harnesses",
-        HarnessSelection::None => "none",
-    }
-}
-
-fn wire_label(selection: WireMcpSelection) -> &'static str {
-    match selection {
-        WireMcpSelection::Current => "current harness",
-        WireMcpSelection::Claude => "Claude Code",
-        WireMcpSelection::Codex => "Codex CLI",
-        WireMcpSelection::All => "all harnesses",
-        WireMcpSelection::None => "none",
-    }
-}
-
-fn wire_hooks_label(selection: WireHooksSelection) -> &'static str {
-    match selection {
-        WireHooksSelection::Current => "current harness",
-        WireHooksSelection::Claude => "Claude Code",
-        WireHooksSelection::Codex => "Codex CLI",
-        WireHooksSelection::All => "all harnesses",
-        WireHooksSelection::None => "none",
+        0 => HarnessSelection::Current,
+        1 => HarnessSelection::Claude,
+        2 => HarnessSelection::Codex,
+        3 => HarnessSelection::All,
+        _ => HarnessSelection::None,
     }
 }
 
@@ -626,10 +579,10 @@ mod tests {
             json: false,
             detect_only: false,
             import: false,
-            harness: Some(crate::cli::InitHarness::None),
+            harness: Some(crate::cli::HarnessTargetArg::None),
             non_git_cwd_default: Some(crate::cli::NonGitCwdDefault::Skip),
-            wire_mcp: Some(crate::cli::WireMcpMode::None),
-            wire_hooks: Some(crate::cli::WireHooksMode::None),
+            wire_mcp: Some(crate::cli::HarnessTargetArg::None),
+            wire_hooks: Some(crate::cli::HarnessTargetArg::None),
             daemon: Some(crate::cli::DaemonMode::None),
             print_only: false,
         }

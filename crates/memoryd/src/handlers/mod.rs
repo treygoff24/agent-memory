@@ -411,14 +411,17 @@ fn events_log_page_response(
         .events_log_page(filter_labels.as_deref(), since.as_ref().map(|cursor| cursor.as_str()), limit)
         .map_err(HandlerError::substrate)?
         .into_iter()
-        .map(|event| EventLogEntry {
-            event_id: event.event_id,
-            ts: event.at,
-            device: event.device,
-            seq: event.seq,
-            memory_id: memory_id_from_event_kind(&event.kind),
-            summary: event_kind_summary(&event.kind),
-            kind: event.kind,
+        .map(|event| {
+            let view = event_kind_view(&event.kind);
+            EventLogEntry {
+                event_id: event.event_id,
+                ts: event.at,
+                device: event.device,
+                seq: event.seq,
+                memory_id: view.memory_id,
+                summary: view.summary,
+                kind: event.kind,
+            }
         })
         .collect::<Vec<_>>();
     let next_since = entries.last().map(|entry| entry.event_id.clone());
@@ -557,87 +560,129 @@ fn first_policy_yaml(repo: &Path) -> Option<String> {
     paths.into_iter().next().and_then(|path| std::fs::read_to_string(path).ok())
 }
 
-fn memory_id_from_event_kind(kind: &EventKind) -> Option<MemoryId> {
-    match kind {
-        EventKind::WriteCommitted { id, .. }
-        | EventKind::EncryptedWriteCommitted { id, .. }
-        | EventKind::TombstoneCommitted { id }
-        | EventKind::RecallHit { id, .. }
-        | EventKind::RealityCheckConfirmed { id, .. }
-        | EventKind::RealityCheckForgotten { id, .. }
-        | EventKind::RealityCheckNotRelevant { id, .. } => Some(id.clone()),
-        EventKind::DuplicateIdRepaired { new_id, .. } => Some(new_id.clone()),
-        EventKind::ClaimLockContention { memory_id, .. } => Some(memory_id.clone()),
-        EventKind::EmbeddingModelChanged { .. }
-        | EventKind::StartupReconciliationCompleted { .. }
-        | EventKind::OperatorRepairRequired { .. }
-        | EventKind::GitPushFailed { .. }
-        | EventKind::WriteRefused { .. }
-        | EventKind::EncryptedContentRevealed { .. }
-        | EventKind::SubstrateFragmentWritten { .. }
-        | EventKind::DeviceKeysRotated { .. }
-        | EventKind::PolicyChanged { .. } => None,
-    }
+/// All three presentation facets of an `EventKind`, derived from a single match
+/// so a new or renamed variant can't pick up a `label` without a `summary`, or a
+/// `summary` that disagrees with the extracted `memory_id`. `label` feeds the
+/// SQL kind filter and must stay byte-identical to the historical mapping.
+struct EventKindView {
+    memory_id: Option<MemoryId>,
+    summary: String,
+    label: &'static str,
 }
 
-fn event_kind_summary(kind: &EventKind) -> String {
+fn event_kind_view(kind: &EventKind) -> EventKindView {
     match kind {
-        EventKind::WriteCommitted { id, .. } => format!("memory write committed: {id}"),
-        EventKind::EncryptedWriteCommitted { id, .. } => format!("encrypted memory write committed: {id}"),
-        EventKind::TombstoneCommitted { id } => format!("memory tombstoned: {id}"),
-        EventKind::DuplicateIdRepaired { old_id, new_id } => format!("duplicate id repaired: {old_id} -> {new_id}"),
-        EventKind::EmbeddingModelChanged { chunks_requeued } => {
-            format!("embedding model changed; {chunks_requeued} chunks requeued")
+        EventKind::WriteCommitted { id, .. } => EventKindView {
+            memory_id: Some(id.clone()),
+            summary: format!("memory write committed: {id}"),
+            label: "write_committed",
+        },
+        EventKind::EncryptedWriteCommitted { id, .. } => EventKindView {
+            memory_id: Some(id.clone()),
+            summary: format!("encrypted memory write committed: {id}"),
+            label: "encrypted_write_committed",
+        },
+        EventKind::TombstoneCommitted { id } => EventKindView {
+            memory_id: Some(id.clone()),
+            summary: format!("memory tombstoned: {id}"),
+            label: "tombstone_committed",
+        },
+        EventKind::DuplicateIdRepaired { old_id, new_id } => EventKindView {
+            memory_id: Some(new_id.clone()),
+            summary: format!("duplicate id repaired: {old_id} -> {new_id}"),
+            label: "duplicate_id_repaired",
+        },
+        EventKind::EmbeddingModelChanged { chunks_requeued } => EventKindView {
+            memory_id: None,
+            summary: format!("embedding model changed; {chunks_requeued} chunks requeued"),
+            label: "embedding_model_changed",
+        },
+        EventKind::StartupReconciliationCompleted { reindexed, repaired_events } => EventKindView {
+            memory_id: None,
+            summary: format!("startup reconciliation completed; reindexed={reindexed}, repaired_events={repaired_events}"),
+            label: "startup_reconciliation_completed",
+        },
+        EventKind::OperatorRepairRequired { reason } => EventKindView {
+            memory_id: None,
+            summary: reason.clone(),
+            label: "operator_repair_required",
+        },
+        EventKind::GitPushFailed { reason } => {
+            EventKindView { memory_id: None, summary: reason.clone(), label: "git_push_failed" }
         }
-        EventKind::StartupReconciliationCompleted { reindexed, repaired_events } => {
-            format!("startup reconciliation completed; reindexed={reindexed}, repaired_events={repaired_events}")
-        }
-        EventKind::OperatorRepairRequired { reason }
-        | EventKind::GitPushFailed { reason }
-        | EventKind::EncryptedContentRevealed { reason, .. } => reason.clone(),
-        EventKind::WriteRefused { reason, .. } => format!("write refused: {reason}"),
-        EventKind::SubstrateFragmentWritten { id, path, .. } => format!("substrate fragment written: {id} at {path}"),
-        EventKind::RecallHit { id, .. } => format!("memory recalled: {id}"),
-        EventKind::RealityCheckConfirmed { id, .. } => format!("reality check confirmed: {id}"),
-        EventKind::RealityCheckForgotten { id, .. } => format!("reality check forgot: {id}"),
-        EventKind::RealityCheckNotRelevant { id, .. } => format!("reality check not relevant: {id}"),
-        EventKind::ClaimLockContention { memory_id, .. } => format!("claim-lock contention: {memory_id}"),
-        EventKind::DeviceKeysRotated { active_recipient, .. } => {
-            format!("device keys rotated: active recipient {active_recipient}")
-        }
-        EventKind::PolicyChanged { file_name } => format!("policy changed: {file_name}"),
+        EventKind::WriteRefused { reason, .. } => EventKindView {
+            memory_id: None,
+            summary: format!("write refused: {reason}"),
+            label: "write_refused",
+        },
+        EventKind::EncryptedContentRevealed { reason, .. } => EventKindView {
+            memory_id: None,
+            summary: reason.clone(),
+            label: "encrypted_content_revealed",
+        },
+        EventKind::SubstrateFragmentWritten { id, path, .. } => EventKindView {
+            memory_id: None,
+            summary: format!("substrate fragment written: {id} at {path}"),
+            label: "substrate_fragment_written",
+        },
+        EventKind::RecallHit { id, .. } => EventKindView {
+            memory_id: Some(id.clone()),
+            summary: format!("memory recalled: {id}"),
+            label: "recall_hit",
+        },
+        EventKind::RealityCheckConfirmed { id, .. } => EventKindView {
+            memory_id: Some(id.clone()),
+            summary: format!("reality check confirmed: {id}"),
+            label: "reality_check_confirmed",
+        },
+        EventKind::RealityCheckForgotten { id, .. } => EventKindView {
+            memory_id: Some(id.clone()),
+            summary: format!("reality check forgot: {id}"),
+            label: "reality_check_forgotten",
+        },
+        EventKind::RealityCheckNotRelevant { id, .. } => EventKindView {
+            memory_id: Some(id.clone()),
+            summary: format!("reality check not relevant: {id}"),
+            label: "reality_check_not_relevant",
+        },
+        EventKind::ClaimLockContention { memory_id, .. } => EventKindView {
+            memory_id: Some(memory_id.clone()),
+            summary: format!("claim-lock contention: {memory_id}"),
+            label: "claim_lock_contention",
+        },
+        EventKind::DeviceKeysRotated { active_recipient, .. } => EventKindView {
+            memory_id: None,
+            summary: format!("device keys rotated: active recipient {active_recipient}"),
+            label: "device_keys_rotated",
+        },
+        EventKind::PolicyChanged { file_name } => EventKindView {
+            memory_id: None,
+            summary: format!("policy changed: {file_name}"),
+            label: "policy_changed",
+        },
     }
 }
 
 fn event_kind_label(kind: &EventKind) -> &'static str {
-    match kind {
-        EventKind::WriteCommitted { .. } => "write_committed",
-        EventKind::EncryptedWriteCommitted { .. } => "encrypted_write_committed",
-        EventKind::TombstoneCommitted { .. } => "tombstone_committed",
-        EventKind::DuplicateIdRepaired { .. } => "duplicate_id_repaired",
-        EventKind::EmbeddingModelChanged { .. } => "embedding_model_changed",
-        EventKind::StartupReconciliationCompleted { .. } => "startup_reconciliation_completed",
-        EventKind::OperatorRepairRequired { .. } => "operator_repair_required",
-        EventKind::GitPushFailed { .. } => "git_push_failed",
-        EventKind::WriteRefused { .. } => "write_refused",
-        EventKind::EncryptedContentRevealed { .. } => "encrypted_content_revealed",
-        EventKind::SubstrateFragmentWritten { .. } => "substrate_fragment_written",
-        EventKind::RecallHit { .. } => "recall_hit",
-        EventKind::RealityCheckConfirmed { .. } => "reality_check_confirmed",
-        EventKind::RealityCheckForgotten { .. } => "reality_check_forgotten",
-        EventKind::RealityCheckNotRelevant { .. } => "reality_check_not_relevant",
-        EventKind::ClaimLockContention { .. } => "claim_lock_contention",
-        EventKind::DeviceKeysRotated { .. } => "device_keys_rotated",
-        EventKind::PolicyChanged { .. } => "policy_changed",
-    }
+    event_kind_view(kind).label
 }
 
-fn governance_namespace_meta(frontmatter: &Frontmatter) -> &'static str {
-    match frontmatter.scope {
+/// Coarse governance bucket for a substrate `Scope`: the three-way
+/// `me` / `project` / `agent` grouping that collapses `Org` into `project` and
+/// `Subagent` into `agent`. Single source of truth for the inverse of
+/// `policy::scopes_for_namespace`. Distinct from `namespace_label`, which is the
+/// per-memory *display* path and keeps `Org`/`Project` separate as `org:{id}` /
+/// `project:{id}`.
+fn namespace_bucket_for_scope(scope: Scope) -> &'static str {
+    match scope {
         Scope::User => "me",
         Scope::Project | Scope::Org => "project",
         Scope::Agent | Scope::Subagent => "agent",
     }
+}
+
+fn governance_namespace_meta(frontmatter: &Frontmatter) -> &'static str {
+    namespace_bucket_for_scope(frontmatter.scope)
 }
 
 fn governance_type_meta(memory_type: MemoryType) -> &'static str {
@@ -795,12 +840,7 @@ fn policy_source_string(source: PolicySource) -> String {
 }
 
 fn namespace_for_frontmatter(frontmatter: &Frontmatter) -> String {
-    match frontmatter.scope {
-        Scope::Project => "project".to_string(),
-        Scope::Agent | Scope::Subagent => "agent".to_string(),
-        Scope::User => "me".to_string(),
-        Scope::Org => "project".to_string(),
-    }
+    namespace_bucket_for_scope(frontmatter.scope).to_string()
 }
 
 fn entity_ids(frontmatter: &Frontmatter) -> Vec<String> {

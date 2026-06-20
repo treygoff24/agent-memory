@@ -472,16 +472,7 @@ fn healthy_status() -> StatusResponse {
             pid: std::process::id(),
             uptime_seconds: None,
         }),
-        dashboard_warnings: Vec::new(),
-        recall: Default::default(),
-        dreams: Default::default(),
-        passive_notifications: Default::default(),
-        index_stats: None,
-        review_queue_counts: None,
-        conflicts_count: None,
-        peer_sessions: Vec::new(),
-        peer_update_count: None,
-        compact_dream_status: None,
+        ..StatusResponse::default()
     }
 }
 
