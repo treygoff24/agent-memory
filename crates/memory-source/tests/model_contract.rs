@@ -127,3 +127,17 @@ fn excerpt_record_shape_is_stable() {
     assert_eq!(value["locator"]["kind"], "byte_range");
     assert_eq!(value["match_kind"], "exact");
 }
+
+#[test]
+fn capture_status_as_str_matches_serde_wire_string() {
+    for status in
+        [CaptureStatus::Complete, CaptureStatus::CompleteTextOnly, CaptureStatus::Partial, CaptureStatus::Failed]
+    {
+        let serde_repr = serde_json::to_value(status).unwrap();
+        assert_eq!(
+            serde_json::Value::String(status.as_str().to_string()),
+            serde_repr,
+            "CaptureStatus::as_str must match the serde wire string for {status:?}"
+        );
+    }
+}

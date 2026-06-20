@@ -131,6 +131,20 @@ pub enum CaptureStatus {
     Failed,
 }
 
+impl CaptureStatus {
+    /// Canonical snake_case wire string. Byte-identical to the `serde`
+    /// representation; `model_contract` locks the two together so the
+    /// `capture_status` manifest field has a single source of truth.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CaptureStatus::Complete => "complete",
+            CaptureStatus::CompleteTextOnly => "complete_text_only",
+            CaptureStatus::Partial => "partial",
+            CaptureStatus::Failed => "failed",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CaptureMethod {

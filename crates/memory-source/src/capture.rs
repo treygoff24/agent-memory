@@ -171,7 +171,7 @@ pub async fn capture_web_source_with_resolver(
         source_refs,
         final_url: artifact.manifest.final_url.clone(),
         captured_at,
-        capture_status: capture_status_name(artifact.manifest.capture_status).to_string(),
+        capture_status: artifact.manifest.capture_status.as_str().to_string(),
         warnings: artifact.manifest.warnings,
     })
 }
@@ -321,13 +321,4 @@ fn is_plaintext_safe(classifier: &DeterministicPrivacyClassifier, text: &str) ->
     classifier
         .classify(text, PrivacyNamespace::Project, None)
         .is_ok_and(|decision| matches!(decision.storage_action, PrivacyStorageAction::Plaintext))
-}
-
-fn capture_status_name(status: CaptureStatus) -> &'static str {
-    match status {
-        CaptureStatus::Complete => "complete",
-        CaptureStatus::CompleteTextOnly => "complete_text_only",
-        CaptureStatus::Partial => "partial",
-        CaptureStatus::Failed => "failed",
-    }
 }
