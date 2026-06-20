@@ -1,11 +1,17 @@
 //! Derived SQLite index, chunk, and vector helpers.
 
 mod chunking;
+mod embedding;
 mod events_read;
+mod fts;
 mod migrations;
 mod query;
+mod read;
 mod schema;
+mod search;
 pub mod sqlite_vec;
+mod upsert;
+mod util;
 mod vector;
 
 pub use chunking::{chunk_memory, Chunk};

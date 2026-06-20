@@ -12,19 +12,16 @@ use memorum_coordination::{
     PeerHeartbeatOptions, PresenceConfig, PresenceRegistry,
 };
 use memory_governance::review::REVIEW_QUEUE_DOGFOOD_THRESHOLD;
-use memory_governance::{
-    CandidateContext, GovernanceRefusalReason, PolicySet, PolicySource, ReviewMemoryEnvelope, ReviewQueue,
-    Scope as GovernanceScope,
-};
+use memory_governance::{GovernanceRefusalReason, PolicySource, ReviewMemoryEnvelope, ReviewQueue};
 use memory_privacy::{
-    safe_descriptor_projection, safe_plaintext_fragment, DeterministicPrivacyClassifier, EncryptedPayload,
-    FileKeyProvider, PrivacyDecision, PrivacyEncryptor, PrivacyNamespace, PrivacyStorageAction, SafeFragmentDecision,
+    safe_descriptor_projection, DeterministicPrivacyClassifier, EncryptedPayload, FileKeyProvider, PrivacyDecision,
+    PrivacyEncryptor, PrivacyNamespace, PrivacyStorageAction,
 };
-use memory_source::{capture_web_source, CaptureMode, CaptureWebSourceRequest, SourceError};
+use memory_source::{capture_web_source, CaptureMode, CaptureWebSourceRequest};
 use memory_substrate::{
-    events::EventKind, Author, AuthorKind, AuxScope, ChunkQuery, ClassificationOutcome, EncryptedSubstrateDescriptor,
-    EventContext, Frontmatter, IndexProjection, Memory, MemoryContent, MemoryId, MemoryStatus, MemoryType, ObserveKind,
-    PrivacySpanRecord, RecallIndexQuery, RepoPath, RetrievalPolicy, Scope, Sensitivity, Source, SourceKind, Substrate,
+    events::EventKind, Author, AuthorKind, ChunkQuery, ClassificationOutcome, EncryptedSubstrateDescriptor,
+    EventContext, Frontmatter, Memory, MemoryContent, MemoryId, MemoryStatus, MemoryType, ObserveKind,
+    PrivacySpanRecord, RepoPath, RetrievalPolicy, Scope, Sensitivity, Source, SourceKind, Substrate,
     SubstrateFragmentAppendRequest, SubstrateFragmentEncryption, SubstrateFragmentPayload, TrustLevel, WriteMode,
     WritePolicy, WriteRequest as SubstrateWriteRequest,
 };
@@ -33,34 +30,45 @@ use tokio::sync::{broadcast, Mutex};
 
 use crate::dream::rehydration;
 use crate::protocol::{
-    CaptureSourceMode, CaptureSourceResponse, CompactDreamStatus, ConflictSummary, ConflictsListResponse,
-    DaemonProcessStatus, EntitySummary, EventLogEntry, EventsLogPageResponse, GetProvenance, GetResponse,
-    GovernancePolicySnapshot, GovernancePolicySummary, GovernanceStatus, IndexStats, InjectableEventKind,
-    InspectEntitiesResponse, NamespaceNode, NamespaceTreeResponse, NotificationEvent, NotificationsRecentResponse,
-    ObserveResponse, ObserveTarget, PassiveNotificationStatus, PeerActivityResponse, PeerDeliveryAuditEntry,
-    PeerReleaseLockResponse, PeerReleaseLockStatus, PeerSessionStatus, PeerStatusResponse, RealityCheckAction,
-    RealityCheckHistorySession, RealityCheckRequest, RealityCheckResponse, RequestEnvelope, RequestPayload,
-    RespondRefusalKind, ResponseEnvelope, ResponsePayload, RevealResponse, ReviewDecisionResponse, ReviewQueueCounts,
-    ReviewQueueItemResponse, ReviewQueueResponse, SearchHit, SearchResponse, SourceCapturePayload, StatusResponse,
-    WebDashboardStatus, WriteNoteResponse, MAX_FRAME_BYTES, NOTIFICATION_CHANNEL_CAPACITY,
+    CaptureSourceMode, CaptureSourceResponse, CompactDreamStatus, DaemonProcessStatus, GetProvenance, GetResponse,
+    GovernanceStatus, IndexStats, NotificationEvent, ObserveResponse, ObserveTarget, PassiveNotificationStatus,
+    PeerActivityResponse, PeerDeliveryAuditEntry, PeerReleaseLockResponse, PeerReleaseLockStatus, PeerSessionStatus,
+    PeerStatusResponse, RealityCheckAction, RealityCheckHistorySession, RealityCheckRequest, RealityCheckResponse,
+    RequestEnvelope, RequestPayload, RespondRefusalKind, ResponseEnvelope, ResponsePayload, RevealResponse,
+    ReviewDecisionResponse, ReviewQueueCounts, ReviewQueueItemResponse, ReviewQueueResponse, SearchHit, SearchResponse,
+    SourceCapturePayload, StatusResponse, WebDashboardStatus, WriteNoteResponse, MAX_FRAME_BYTES,
+    NOTIFICATION_CHANNEL_CAPACITY,
 };
 use crate::reality_check::{RcAdvanceRequest, RcRunRequest, RcSessionAdvance, RcSessionHandler};
 use crate::recall::{
     build_startup_response_with_coordination_config, ConcurrentSessionMode, DeltaCoordinationContext,
     DeltaPeerCooldownStore, DeltaPeerDelivery, DeltaPeerDeliveryRecorder, OmissionReason, RecallDedupState,
-    RecallError, SessionBinding, SharedRecallCounters, StartupResponse,
+    SessionBinding, SharedRecallCounters, StartupResponse,
 };
 
 mod doctor;
 pub(crate) mod dream;
+mod error;
 pub(crate) mod governance;
+mod inspect;
 pub(crate) mod memory_ops;
 pub(crate) mod peer;
+mod privacy_text;
 pub(crate) mod reality_check;
 pub(crate) mod review;
 pub(crate) mod source;
 pub(crate) mod status;
 pub(crate) mod web_dashboard;
+
+// Re-export the moved items back into the `handlers` module namespace so the
+// historical paths stay valid: the sibling handler modules pull them in through
+// `use super::*`, and `governance::*` reaches them via `crate::handlers::…`.
+pub(crate) use error::HandlerError;
+pub(crate) use inspect::event_kind_label;
+pub(crate) use privacy_text::{
+    contains_secret_or_pii_marker, insert_safe_descriptor, is_safe_plaintext_for_indexing, safe_index_projection,
+    sanitize_reason,
+};
 
 use doctor::doctor_response;
 use dream::{dream_now_response, dream_status_response, DreamNowRequest};
@@ -268,7 +276,7 @@ async fn dispatch(
             .map(ResponsePayload::DashboardRoi)
             .map_err(HandlerError::substrate),
         RequestPayload::NotificationsRecent { limit } => {
-            Ok(ResponsePayload::NotificationsRecent(notifications_recent_response(state, limit)))
+            Ok(ResponsePayload::NotificationsRecent(inspect::notifications_recent_response(state, limit)))
         }
         RequestPayload::PolicyValidate { raw_yaml, file_name } => {
             crate::policy_editor::validate(substrate.roots().repo.as_path(), &raw_yaml, file_name.as_deref())
@@ -280,7 +288,7 @@ async fn dispatch(
                 .map(ResponsePayload::PolicyWrite)
                 .map_err(|error| HandlerError::invalid_request(format!("invalid governance policy: {error}")))
         }
-        RequestPayload::RecallHits { since, limit } => recall_hits_response(substrate, since, limit).await,
+        RequestPayload::RecallHits { since, limit } => inspect::recall_hits_response(substrate, since, limit).await,
         RequestPayload::Reveal { id, reason } => reveal_response(substrate, &id, &reason).await,
         RequestPayload::WriteNote { text } => write_note_response(substrate, &text).await,
         RequestPayload::WriteMemory { body, title, tags, meta } => {
@@ -325,346 +333,23 @@ async fn dispatch(
         RequestPayload::WebDisable => web_disable_response(state),
         RequestPayload::WebStatus => web_status_response(state),
         RequestPayload::RealityCheck(request) => reality_check_response(substrate, state, request).await,
-        RequestPayload::InspectEntities { limit, prefix } => inspect_entities_response(substrate, limit, prefix).await,
+        RequestPayload::InspectEntities { limit, prefix } => {
+            inspect::inspect_entities_response(substrate, limit, prefix).await
+        }
         RequestPayload::EventsLogPage { since, limit, kind_filter } => {
-            events_log_page_response(substrate, since, limit, kind_filter)
+            inspect::events_log_page_response(substrate, since, limit, kind_filter)
         }
-        RequestPayload::NamespaceTree { root, depth } => namespace_tree_response(substrate, root, depth).await,
-        RequestPayload::GovernancePolicyDump => governance_policy_dump_response(substrate),
-        RequestPayload::ConflictsList { limit } => conflicts_list_response(substrate, limit).await,
+        RequestPayload::NamespaceTree { root, depth } => inspect::namespace_tree_response(substrate, root, depth).await,
+        RequestPayload::GovernancePolicyDump => inspect::governance_policy_dump_response(substrate),
+        RequestPayload::ConflictsList { limit } => inspect::conflicts_list_response(substrate, limit).await,
         RequestPayload::TestInjectEvent { kind, memory_id, ts, harness, session_id } => {
-            test_inject_event_response(substrate, TestInjectEventRequest { kind, memory_id, ts, harness, session_id })
-                .await
+            inspect::test_inject_event_response(
+                substrate,
+                inspect::TestInjectEventRequest { kind, memory_id, ts, harness, session_id },
+            )
+            .await
         }
     }
-}
-
-fn notifications_recent_response(state: &HandlerState, limit: Option<usize>) -> NotificationsRecentResponse {
-    NotificationsRecentResponse { notifications: state.passive_notifications.recent_snapshots(limit) }
-}
-
-async fn recall_hits_response(
-    substrate: &Substrate,
-    since: Option<chrono::DateTime<chrono::Utc>>,
-    limit: Option<usize>,
-) -> Result<ResponsePayload, HandlerError> {
-    crate::recall_hits::recent_recall_hits(substrate, since, limit)
-        .map(ResponsePayload::RecallHits)
-        .map_err(HandlerError::substrate)
-}
-
-async fn inspect_entities_response(
-    substrate: &Substrate,
-    limit: Option<usize>,
-    prefix: Option<String>,
-) -> Result<ResponsePayload, HandlerError> {
-    // Read only the entity tables (id-ordered), instead of loading and fully
-    // hydrating every recall-index row. Same iteration order as the prior
-    // `for row { for entity in row.entities }`, so aggregation is identical.
-    let entity_rows = substrate.entity_index_rows().await.map_err(HandlerError::substrate)?;
-    let prefix = prefix.map(|value| value.to_ascii_lowercase());
-    let mut by_id: BTreeMap<String, EntitySummary> = BTreeMap::new();
-    for (memory_id, entity) in entity_rows {
-        if prefix.as_ref().is_some_and(|prefix| !entity_matches_prefix(&entity, prefix)) {
-            continue;
-        }
-        let entry = by_id.entry(entity.id.clone()).or_insert_with(|| EntitySummary {
-            entity_id: entity.id.clone(),
-            label: entity.label.clone(),
-            aliases: Vec::new(),
-            memory_count: 0,
-            recent_memory_ids: Vec::new(),
-        });
-        entry.memory_count += 1;
-        entry.recent_memory_ids.push(memory_id);
-        for alias in entity.aliases {
-            if !entry.aliases.contains(&alias) {
-                entry.aliases.push(alias);
-            }
-        }
-    }
-    let mut entities = by_id.into_values().collect::<Vec<_>>();
-    entities.sort_by(|left, right| {
-        right.memory_count.cmp(&left.memory_count).then_with(|| left.entity_id.cmp(&right.entity_id))
-    });
-    entities.truncate(limit.unwrap_or(50).min(200));
-    Ok(ResponsePayload::InspectEntities(InspectEntitiesResponse { entities }))
-}
-
-fn entity_matches_prefix(entity: &memory_substrate::Entity, prefix: &str) -> bool {
-    entity.id.to_ascii_lowercase().starts_with(prefix)
-        || entity.label.to_ascii_lowercase().starts_with(prefix)
-        || entity.aliases.iter().any(|alias| alias.to_ascii_lowercase().starts_with(prefix))
-}
-
-fn events_log_page_response(
-    substrate: &Substrate,
-    since: Option<crate::protocol::EventId>,
-    limit: usize,
-    kind_filter: Option<Vec<EventKind>>,
-) -> Result<ResponsePayload, HandlerError> {
-    // Push the kind filter, cursor, ORDER BY, and LIMIT into the events_log
-    // mirror so a page costs an index seek + <=200 rows, not a full JSONL parse.
-    let limit = limit.min(200);
-    let filter_labels = kind_filter.map(|kinds| kinds.iter().map(|kind| event_kind_label(kind)).collect::<Vec<_>>());
-    let entries = substrate
-        .events_log_page(filter_labels.as_deref(), since.as_ref().map(|cursor| cursor.as_str()), limit)
-        .map_err(HandlerError::substrate)?
-        .into_iter()
-        .map(|event| {
-            let view = event_kind_view(&event.kind);
-            EventLogEntry {
-                event_id: event.event_id,
-                ts: event.at,
-                device: event.device,
-                seq: event.seq,
-                memory_id: view.memory_id,
-                summary: view.summary,
-                kind: event.kind,
-            }
-        })
-        .collect::<Vec<_>>();
-    let next_since = entries.last().map(|entry| entry.event_id.clone());
-    Ok(ResponsePayload::EventsLogPage(EventsLogPageResponse { entries, next_since }))
-}
-
-async fn namespace_tree_response(
-    substrate: &Substrate,
-    root: Option<String>,
-    depth: Option<usize>,
-) -> Result<ResponsePayload, HandlerError> {
-    let root = root.unwrap_or_else(|| "all".to_string());
-    let include_children = depth.unwrap_or(1) > 0;
-    // Aggregate scope/namespace counts in SQL (GROUP BY) instead of loading and
-    // fully hydrating every recall-index row only to count namespaces in Rust.
-    let namespace_counts = substrate.namespace_counts().await.map_err(HandlerError::substrate)?;
-    let mut counts = BTreeMap::<String, usize>::new();
-    for (scope, canonical_namespace_id, count) in namespace_counts {
-        let namespace = namespace_label(scope, canonical_namespace_id.as_deref());
-        if root != "all" && !namespace.starts_with(&root) {
-            continue;
-        }
-        *counts.entry(namespace).or_default() += count as usize;
-    }
-    let children = if include_children {
-        counts
-            .into_iter()
-            .map(|(path, memory_count)| NamespaceNode {
-                name: leaf_name(&path),
-                path,
-                memory_count,
-                children: Vec::new(),
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
-    let memory_count = children.iter().map(|child: &NamespaceNode| child.memory_count).sum();
-    Ok(ResponsePayload::NamespaceTree(NamespaceTreeResponse {
-        root: NamespaceNode { name: leaf_name(&root), path: root, memory_count, children },
-    }))
-}
-
-fn governance_policy_dump_response(substrate: &Substrate) -> Result<ResponsePayload, HandlerError> {
-    match crate::policy_editor::snapshot(substrate.roots().repo.as_path()) {
-        Ok(snapshot) => Ok(ResponsePayload::GovernancePolicyDump(snapshot)),
-        Err(_) => {
-            let (policies, source) = load_policy_set(substrate.roots().repo.as_path())?;
-            Ok(ResponsePayload::GovernancePolicyDump(GovernancePolicySnapshot {
-                source: policy_source_string(source),
-                raw_yaml: first_policy_yaml(substrate.roots().repo.as_path()),
-                policies: summarize_governance_policy_set(&policies)?,
-                current_file: None,
-                files: Vec::new(),
-                writable: false,
-            }))
-        }
-    }
-}
-
-fn summarize_governance_policy_set(policies: &PolicySet) -> Result<Vec<GovernancePolicySummary>, HandlerError> {
-    let scopes = [GovernanceScope::Me, GovernanceScope::Project, GovernanceScope::Agent, GovernanceScope::Dreaming];
-    scopes
-        .into_iter()
-        .map(|scope| {
-            let policy =
-                policies.policy_for_scope(scope).map_err(|error| HandlerError::invalid_request(error.to_string()))?;
-            let preview = policy.dry_run(&CandidateContext::new(scope).with_confidence(0.0).with_grounding(false));
-            Ok(GovernancePolicySummary {
-                scope: format!("{scope:?}").to_ascii_lowercase(),
-                selected_policy: preview.selected_policy,
-                policy_source: format!("{:?}", preview.policy_source).to_ascii_lowercase(),
-                confidence_floor: preview.confidence_floor,
-                review_gates: preview.triggered_review_gates,
-                requires_grounding: preview.requires_grounding,
-            })
-        })
-        .collect()
-}
-
-async fn conflicts_list_response(substrate: &Substrate, limit: Option<usize>) -> Result<ResponsePayload, HandlerError> {
-    // Served entirely from the SQLite recall index: `summary`, `updated_at`, and
-    // `_merge_diagnostics` are all projected from indexed columns / frontmatter
-    // JSON, so no per-row canonical-file read+parse is needed (avoids the prior
-    // N+1 over up to 200 quarantined rows). Metadata-only/encrypted quarantined
-    // rows are included to match the historical `include_metadata_only: true`.
-    let rows = substrate
-        .query_recall_index_including_metadata_only(RecallIndexQuery {
-            statuses: vec![MemoryStatus::Quarantined],
-            hydrate: AuxScope::None,
-            // Reads `merge_diagnostics_json` per row to render the conflict reason.
-            source_identity: true,
-            ..RecallIndexQuery::default()
-        })
-        .await
-        .map_err(HandlerError::substrate)?;
-    let conflicts = rows
-        .into_iter()
-        .take(limit.unwrap_or(50).min(200))
-        .map(|row| ConflictSummary {
-            id: row.id,
-            path: row.path.to_string(),
-            summary: bounded(&row.summary, REVIEW_QUEUE_SUMMARY_MAX),
-            // `merge_diagnostics_json` is the raw stored JSON for `_merge_diagnostics`;
-            // bounding it matches the prior `Value::to_string()` rendering.
-            reason: row.merge_diagnostics_json.map(|value| bounded(&value, 240)),
-            updated_at: row.updated_at,
-        })
-        .collect();
-    Ok(ResponsePayload::ConflictsList(ConflictsListResponse { conflicts }))
-}
-
-fn namespace_label(scope: Scope, canonical_namespace_id: Option<&str>) -> String {
-    match scope {
-        Scope::User => "me".to_string(),
-        Scope::Agent => "agent".to_string(),
-        Scope::Subagent => "subagent".to_string(),
-        Scope::Project => format!("project:{}", canonical_namespace_id.unwrap_or("unknown")),
-        Scope::Org => format!("org:{}", canonical_namespace_id.unwrap_or("unknown")),
-    }
-}
-
-fn leaf_name(path: &str) -> String {
-    path.rsplit([':', '/']).next().filter(|name| !name.is_empty()).unwrap_or(path).to_string()
-}
-
-fn first_policy_yaml(repo: &Path) -> Option<String> {
-    let policy_dir = repo.join("policies");
-    let mut paths = std::fs::read_dir(policy_dir)
-        .ok()?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|extension| extension == "yaml"))
-        .collect::<Vec<_>>();
-    paths.sort();
-    paths.into_iter().next().and_then(|path| std::fs::read_to_string(path).ok())
-}
-
-/// All three presentation facets of an `EventKind`, derived from a single match
-/// so a new or renamed variant can't pick up a `label` without a `summary`, or a
-/// `summary` that disagrees with the extracted `memory_id`. `label` feeds the
-/// SQL kind filter and must stay byte-identical to the historical mapping.
-struct EventKindView {
-    memory_id: Option<MemoryId>,
-    summary: String,
-    label: &'static str,
-}
-
-fn event_kind_view(kind: &EventKind) -> EventKindView {
-    match kind {
-        EventKind::WriteCommitted { id, .. } => EventKindView {
-            memory_id: Some(id.clone()),
-            summary: format!("memory write committed: {id}"),
-            label: "write_committed",
-        },
-        EventKind::EncryptedWriteCommitted { id, .. } => EventKindView {
-            memory_id: Some(id.clone()),
-            summary: format!("encrypted memory write committed: {id}"),
-            label: "encrypted_write_committed",
-        },
-        EventKind::TombstoneCommitted { id } => EventKindView {
-            memory_id: Some(id.clone()),
-            summary: format!("memory tombstoned: {id}"),
-            label: "tombstone_committed",
-        },
-        EventKind::DuplicateIdRepaired { old_id, new_id } => EventKindView {
-            memory_id: Some(new_id.clone()),
-            summary: format!("duplicate id repaired: {old_id} -> {new_id}"),
-            label: "duplicate_id_repaired",
-        },
-        EventKind::EmbeddingModelChanged { chunks_requeued } => EventKindView {
-            memory_id: None,
-            summary: format!("embedding model changed; {chunks_requeued} chunks requeued"),
-            label: "embedding_model_changed",
-        },
-        EventKind::StartupReconciliationCompleted { reindexed, repaired_events } => EventKindView {
-            memory_id: None,
-            summary: format!("startup reconciliation completed; reindexed={reindexed}, repaired_events={repaired_events}"),
-            label: "startup_reconciliation_completed",
-        },
-        EventKind::OperatorRepairRequired { reason } => EventKindView {
-            memory_id: None,
-            summary: reason.clone(),
-            label: "operator_repair_required",
-        },
-        EventKind::GitPushFailed { reason } => {
-            EventKindView { memory_id: None, summary: reason.clone(), label: "git_push_failed" }
-        }
-        EventKind::WriteRefused { reason, .. } => EventKindView {
-            memory_id: None,
-            summary: format!("write refused: {reason}"),
-            label: "write_refused",
-        },
-        EventKind::EncryptedContentRevealed { reason, .. } => EventKindView {
-            memory_id: None,
-            summary: reason.clone(),
-            label: "encrypted_content_revealed",
-        },
-        EventKind::SubstrateFragmentWritten { id, path, .. } => EventKindView {
-            memory_id: None,
-            summary: format!("substrate fragment written: {id} at {path}"),
-            label: "substrate_fragment_written",
-        },
-        EventKind::RecallHit { id, .. } => EventKindView {
-            memory_id: Some(id.clone()),
-            summary: format!("memory recalled: {id}"),
-            label: "recall_hit",
-        },
-        EventKind::RealityCheckConfirmed { id, .. } => EventKindView {
-            memory_id: Some(id.clone()),
-            summary: format!("reality check confirmed: {id}"),
-            label: "reality_check_confirmed",
-        },
-        EventKind::RealityCheckForgotten { id, .. } => EventKindView {
-            memory_id: Some(id.clone()),
-            summary: format!("reality check forgot: {id}"),
-            label: "reality_check_forgotten",
-        },
-        EventKind::RealityCheckNotRelevant { id, .. } => EventKindView {
-            memory_id: Some(id.clone()),
-            summary: format!("reality check not relevant: {id}"),
-            label: "reality_check_not_relevant",
-        },
-        EventKind::ClaimLockContention { memory_id, .. } => EventKindView {
-            memory_id: Some(memory_id.clone()),
-            summary: format!("claim-lock contention: {memory_id}"),
-            label: "claim_lock_contention",
-        },
-        EventKind::DeviceKeysRotated { active_recipient, .. } => EventKindView {
-            memory_id: None,
-            summary: format!("device keys rotated: active recipient {active_recipient}"),
-            label: "device_keys_rotated",
-        },
-        EventKind::PolicyChanged { file_name } => EventKindView {
-            memory_id: None,
-            summary: format!("policy changed: {file_name}"),
-            label: "policy_changed",
-        },
-    }
-}
-
-fn event_kind_label(kind: &EventKind) -> &'static str {
-    event_kind_view(kind).label
 }
 
 /// Coarse governance bucket for a substrate `Scope`: the three-way
@@ -707,125 +392,8 @@ fn governance_type_meta(memory_type: MemoryType) -> &'static str {
     }
 }
 
-/// Redact a caller-supplied reason field (forget, reveal, …) to `[redacted]` when it is
-/// empty or carries secret/PII content; otherwise return it trimmed and bounded to
-/// `max_chars`. Reason fields are persisted verbatim into the canonical event log, so this
-/// is the single policy that keeps a secret out of the plaintext audit trail (invariant 1).
-///
-/// The primary gate is the privacy classifier's entropy/structure detector
-/// (`is_safe_plaintext_for_indexing` → `SecretOnlyScan`: credential regexes,
-/// Luhn-valid cards, SSNs, and high-entropy tokens). That catches credential-shaped
-/// content regardless of whether the operator happened to type a marker word like
-/// "secret" or "token" alongside it. `contains_secret_or_pii_marker` is kept only as
-/// an additive belt for short marker-laden phrases the structural detector underweights;
-/// it is never the sole line of defense.
-fn sanitize_reason(reason: &str, max_chars: usize) -> String {
-    let trimmed = reason.trim();
-    if trimmed.is_empty() {
-        return REDACTED_REASON.to_owned();
-    }
-    // Primary: structural/entropy classifier. Belt: keyword denylist.
-    if !is_safe_plaintext_for_indexing(trimmed) || contains_secret_or_pii_marker(trimmed) {
-        return REDACTED_REASON.to_owned();
-    }
-    trimmed.chars().take(max_chars).collect()
-}
-
 fn sanitize_forget_reason(reason: &str) -> String {
     sanitize_reason(reason, FORGET_REASON_MAX_CHARS)
-}
-
-fn contains_secret_or_pii_marker(text: &str) -> bool {
-    let lower = text.to_ascii_lowercase();
-    lower.contains("sk-")
-        || lower.contains("api key")
-        || lower.contains("secret")
-        || lower.contains("token")
-        || contains_email_like_token(text)
-        || contains_phone_like_token(text)
-}
-
-fn contains_email_like_token(text: &str) -> bool {
-    text.split_whitespace().any(|token| {
-        let token = token.trim_matches(|ch: char| ch.is_ascii_punctuation() && ch != '@' && ch != '.');
-        token.contains('@') && token.contains('.')
-    })
-}
-
-fn contains_phone_like_token(text: &str) -> bool {
-    let digit_count = text.chars().filter(|ch| ch.is_ascii_digit()).count();
-    digit_count >= 7 && text.chars().any(|ch| matches!(ch, '-' | '(' | ')' | '+' | '.'))
-}
-
-/// Inject a synthetic event-log entry with a controlled timestamp.
-///
-/// This handler is only functional when `memoryd` is compiled with the
-/// `test-utils` feature flag; without it, the protocol variant still exists
-/// (so the crate compiles) but the handler returns `method_not_allowed`. This
-/// keeps the test-only surface invisible in production daemon builds while
-/// letting Stream H eval tests exercise events-log-derived metrics
-/// deterministically. (H-R1)
-#[cfg_attr(not(feature = "test-utils"), allow(dead_code))]
-struct TestInjectEventRequest {
-    kind: InjectableEventKind,
-    memory_id: MemoryId,
-    ts: chrono::DateTime<chrono::Utc>,
-    harness: Option<String>,
-    session_id: Option<String>,
-}
-
-async fn test_inject_event_response(
-    substrate: &Substrate,
-    request: TestInjectEventRequest,
-) -> Result<ResponsePayload, HandlerError> {
-    #[cfg(not(feature = "test-utils"))]
-    {
-        let _ = (substrate, request);
-        Err(HandlerError::invalid_request(
-            "TestInjectEvent requires the memoryd `test-utils` feature; \
-             this daemon was compiled without it",
-        ))
-    }
-
-    #[cfg(feature = "test-utils")]
-    {
-        let event_kind = match request.kind {
-            InjectableEventKind::RecallHit => {
-                EventKind::RecallHit { id: request.memory_id.clone(), recalled_at: request.ts }
-            }
-            InjectableEventKind::WriteCommitted => {
-                // Synthetic WriteCommitted: we use a placeholder path derived from the
-                // memory_id since we don't re-query the substrate for the actual file path.
-                // The cross_source_corroboration metric only counts distinct devices/harnesses
-                // that produced WriteCommitted events for a given memory_id; the path field
-                // is not used for scoring. Source attribution (harness) is available in the
-                // harness parameter but WriteCommitted's schema does not carry it (§12.1).
-                let synthetic_path =
-                    memory_substrate::RepoPath::new(format!("synthetic-test-inject/{}.md", request.memory_id.as_str()));
-                EventKind::WriteCommitted {
-                    id: request.memory_id.clone(),
-                    path: synthetic_path,
-                    classification: memory_substrate::ClassificationOutcome::Trusted,
-                }
-            }
-        };
-        let _ = (request.harness, request.session_id); // reserved for future provenance embedding
-        substrate.record_event_best_effort(event_kind).map_err(HandlerError::substrate)?;
-        let event_id = format!("injected-{}-{}", kind_label(request.kind), request.memory_id.as_str());
-        Ok(ResponsePayload::TestInjectEvent(crate::protocol::TestInjectEventResponse {
-            event_id,
-            injected_kind: request.kind,
-            memory_id: request.memory_id,
-        }))
-    }
-}
-
-#[cfg(feature = "test-utils")]
-fn kind_label(kind: InjectableEventKind) -> &'static str {
-    match kind {
-        InjectableEventKind::RecallHit => "recall-hit",
-        InjectableEventKind::WriteCommitted => "write-committed",
-    }
 }
 
 fn serialized_payload_len(payload: &ResponsePayload) -> usize {
@@ -917,16 +485,6 @@ fn candidate_memory(id: MemoryId, text: &str, storage_action: PrivacyStorageActi
     }
 }
 
-fn insert_safe_descriptor(object: &mut serde_json::Map<String, Value>, key: &str, value: Option<&str>) {
-    if let Some(value) = value.filter(|value| is_safe_plaintext_for_indexing(value)) {
-        object.insert(key.to_string(), Value::String(value.to_string()));
-    }
-}
-
-fn is_safe_plaintext_for_indexing(text: &str) -> bool {
-    matches!(safe_plaintext_fragment(&DeterministicPrivacyClassifier::new(), text), SafeFragmentDecision::Allow)
-}
-
 /// Compute the spec §6.5 `quote_norm_hash` over an evidence quote: whitespace-collapse
 /// to single spaces then SHA-256 the result, formatted as `sha256:<hex>`.
 fn compute_quote_norm_hash(quote: &str) -> String {
@@ -934,38 +492,6 @@ fn compute_quote_norm_hash(quote: &str) -> String {
     let normalized = quote.split_whitespace().collect::<Vec<_>>().join(" ");
     let digest = Sha256::digest(normalized.as_bytes());
     format!("sha256:{}", hex::encode(digest))
-}
-
-fn safe_index_projection(memory: &Memory) -> Option<IndexProjection> {
-    let mut fragments = Vec::new();
-    if !memory.frontmatter.summary.starts_with("encrypted ") {
-        fragments.push(memory.frontmatter.summary.clone());
-    }
-    fragments.extend(memory.frontmatter.tags.iter().cloned());
-    if let Some(reference) = &memory.frontmatter.source.reference {
-        if reference != "memoryd.governance" && reference != "memoryd.write_note" {
-            fragments.push(reference.clone());
-        }
-    }
-    if let Some(descriptors) = memory.frontmatter.extras.get("privacy_descriptors") {
-        collect_descriptor_strings(descriptors, &mut fragments);
-    }
-    let safe_body = fragments
-        .into_iter()
-        .map(|fragment| fragment.trim().to_string())
-        .filter(|fragment| !fragment.is_empty() && is_safe_plaintext_for_indexing(fragment))
-        .collect::<Vec<_>>()
-        .join("\n");
-    (!safe_body.is_empty()).then_some(IndexProjection { safe_body: Some(safe_body) })
-}
-
-fn collect_descriptor_strings(value: &Value, output: &mut Vec<String>) {
-    match value {
-        Value::String(value) => output.push(value.clone()),
-        Value::Array(values) => values.iter().for_each(|value| collect_descriptor_strings(value, output)),
-        Value::Object(values) => values.values().for_each(|value| collect_descriptor_strings(value, output)),
-        Value::Null | Value::Bool(_) | Value::Number(_) => {}
-    }
 }
 
 fn bounded(text: &str, max_chars: usize) -> String {
@@ -977,116 +503,6 @@ fn bounded_with_truncation(text: &str, max_chars: usize) -> (String, bool) {
     let bounded: String = chars.by_ref().take(max_chars).collect();
     let truncated = chars.next().is_some();
     (bounded, truncated)
-}
-
-#[derive(Debug)]
-pub(crate) struct HandlerError {
-    code: String,
-    message: String,
-    retryable: bool,
-}
-
-impl HandlerError {
-    fn invalid_request(message: impl Into<String>) -> Self {
-        Self { code: "invalid_request".to_string(), message: message.into(), retryable: false }
-    }
-
-    /// Parse a caller-supplied id string into a canonical [`MemoryId`], mapping
-    /// the validation error to an `invalid_request` handler error.
-    fn parse_memory_id(id: impl Into<String>) -> Result<MemoryId, Self> {
-        MemoryId::try_new(id.into()).map_err(|err| Self::invalid_request(err.to_string()))
-    }
-
-    fn dream_unavailable(message: impl Into<String>) -> Self {
-        Self { code: "dream_unavailable".to_string(), message: message.into(), retryable: true }
-    }
-
-    fn dream_disabled(message: impl Into<String>) -> Self {
-        Self { code: "dream_disabled".to_string(), message: message.into(), retryable: false }
-    }
-
-    fn web_unavailable(message: impl Into<String>) -> Self {
-        Self { code: "web_unavailable".to_string(), message: message.into(), retryable: false }
-    }
-
-    fn port_in_use(message: impl Into<String>) -> Self {
-        Self { code: "port_in_use".to_string(), message: message.into(), retryable: false }
-    }
-
-    fn substrate(error: impl std::fmt::Display) -> Self {
-        Self { code: "substrate_error".to_string(), message: error.to_string(), retryable: true }
-    }
-
-    /// Typed refusal for a review approval blocked by grounding rehydration: the
-    /// dream candidate's cited evidence drifted, aged out, or went missing since
-    /// capture, so the approval is refused (and the memory quarantined) instead of
-    /// promoting stale evidence to Active. Carries the stable
-    /// `grounding_rehydration_failed` code so the review UI can show *why*.
-    fn grounding_rehydration(error: &crate::dream::rehydration::GroundingRehydrationError) -> Self {
-        Self { code: error.code().to_string(), message: bounded(&error.to_string(), 240), retryable: false }
-    }
-
-    fn privacy(error: impl std::fmt::Display) -> Self {
-        Self { code: "privacy_error".to_string(), message: bounded(&error.to_string(), 240), retryable: false }
-    }
-
-    fn source_capture(error: SourceError) -> Self {
-        let code = match &error {
-            SourceError::InvalidId(_)
-            | SourceError::InvalidSourceRef(_)
-            | SourceError::UrlSafety(_)
-            | SourceError::Privacy(_)
-            | SourceError::ExcerptNotFound(_) => "invalid_request",
-            SourceError::Unsupported(_) => "unsupported",
-            SourceError::Io(_) | SourceError::Json(_) | SourceError::Integrity(_) | SourceError::CaptureFailed(_) => {
-                "source_capture_failed"
-            }
-        };
-        Self { code: code.to_string(), message: bounded(&error.to_string(), 240), retryable: false }
-    }
-
-    fn trust_artifact(error: crate::trust_artifact::TrustArtifactError) -> Self {
-        match error {
-            crate::trust_artifact::TrustArtifactError::MemoryNotFound(memory_id) => Self {
-                code: "not_found".to_string(),
-                message: format!("memory {} was not found", memory_id.as_str()),
-                retryable: false,
-            },
-            crate::trust_artifact::TrustArtifactError::ReadMemory {
-                id,
-                source: memory_substrate::ReadError::NotFound(_),
-            } => Self {
-                code: "not_found".to_string(),
-                message: format!("memory {} was not found", id.as_str()),
-                retryable: false,
-            },
-            other => Self {
-                code: "trust_artifact_error".to_string(),
-                message: bounded(&other.to_string(), 240),
-                retryable: true,
-            },
-        }
-    }
-
-    fn from_recall(error: RecallError) -> Self {
-        Self {
-            code: error.protocol_code().to_owned(),
-            message: bounded(error.message(), 240),
-            retryable: error.retryable(),
-        }
-    }
-
-    fn from_dream(error: crate::dream::types::DreamError) -> Self {
-        Self { code: error.code().to_string(), message: bounded(&error.to_string(), 240), retryable: false }
-    }
-
-    fn from_lease(error: crate::dream::lease::LeaseError) -> Self {
-        let retryable = matches!(
-            error,
-            crate::dream::lease::LeaseError::Held { .. } | crate::dream::lease::LeaseError::Unavailable { .. }
-        );
-        Self { code: error.code().to_string(), message: bounded(&error.to_string(), 240), retryable }
-    }
 }
 
 #[cfg(test)]
