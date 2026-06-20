@@ -33,6 +33,7 @@ crates/memorum-eval/fixtures/golden/
 .claude/
 .clawpatch/
 .delegate/
+.quality-pass/
 .tldr/
 .wright/
 .code-briefcase/
