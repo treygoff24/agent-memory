@@ -887,7 +887,7 @@ impl Index {
         bindings.push(rusqlite::types::Value::Blob(blob));
         bindings.push(rusqlite::types::Value::Integer(knn_k as i64));
         for scope in scopes {
-            bindings.push(rusqlite::types::Value::Text(scope_str(*scope).to_string()));
+            bindings.push(rusqlite::types::Value::Text(scope.as_db_str().to_string()));
         }
 
         let mut stmt = self.connection.prepare_cached(&sql)?;
@@ -912,7 +912,7 @@ impl Index {
             if !seen.insert(memory_id.clone()) {
                 continue;
             }
-            let scope = scope_from_str(&scope_text)?;
+            let scope = Scope::from_db_str(&scope_text).ok_or_else(|| invalid_column_value("scope", &scope_text))?;
             out.push(crate::model::SimilarMemory {
                 memory_id: MemoryId::new(memory_id),
                 scope,
@@ -1017,7 +1017,9 @@ impl Index {
         while let Some(row) = rows.next()? {
             let status_text: String = row.get(0)?;
             let count: i64 = row.get(1)?;
-            counts.push((memory_status_from_str(&status_text)?, count.max(0) as u64));
+            let status =
+                MemoryStatus::from_db_str(&status_text).ok_or_else(|| invalid_column_value("status", &status_text))?;
+            counts.push((status, count.max(0) as u64));
         }
         Ok(counts)
     }
@@ -1094,7 +1096,8 @@ impl Index {
             let scope_text: String = row.get(0)?;
             let canonical_namespace_id: Option<String> = row.get(1)?;
             let count: i64 = row.get(2)?;
-            counts.push((scope_from_str(&scope_text)?, canonical_namespace_id, count.max(0) as u64));
+            let scope = Scope::from_db_str(&scope_text).ok_or_else(|| invalid_column_value("scope", &scope_text))?;
+            counts.push((scope, canonical_namespace_id, count.max(0) as u64));
         }
         Ok(counts)
     }
@@ -1539,13 +1542,13 @@ fn upsert_memory_row_in_txn(
     active_embedding_dropped: bool,
 ) -> rusqlite::Result<()> {
     let path = resolve_memory_path(memory);
-    let sensitivity = sensitivity_str(memory.frontmatter.sensitivity);
-    let memory_type = memory_type_str(&memory.frontmatter.memory_type);
-    let scope = scope_str(memory.frontmatter.scope);
-    let trust_level = trust_level_str(memory.frontmatter.trust_level);
-    let status = status_str(memory.frontmatter.status);
-    let author = author_kind_str(memory.frontmatter.author.kind);
-    let source_kind = source_kind_str(memory.frontmatter.source.kind);
+    let sensitivity = memory.frontmatter.sensitivity.as_db_str();
+    let memory_type = memory.frontmatter.memory_type.as_db_str();
+    let scope = memory.frontmatter.scope.as_db_str();
+    let trust_level = memory.frontmatter.trust_level.as_db_str();
+    let status = memory.frontmatter.status.as_db_str();
+    let author = memory.frontmatter.author.kind.as_db_str();
+    let source_kind = memory.frontmatter.source.kind.as_db_str();
     let body_hash = hash_bytes(memory.body.as_bytes()).to_string();
     let frontmatter_json = serde_json::to_string(&memory.frontmatter).unwrap_or_else(|_| "{}".to_string());
     let file_hash = options.file_hash.map_or_else(|| body_hash.clone(), ToString::to_string);
@@ -1558,7 +1561,7 @@ fn upsert_memory_row_in_txn(
     let passive_recall = memory.frontmatter.retrieval_policy.passive_recall as i64;
     let index_body = memory.frontmatter.retrieval_policy.index_body as i64;
     let human_review_required = memory.frontmatter.write_policy.human_review_required as i64;
-    let max_scope = scope_str(memory.frontmatter.retrieval_policy.max_scope);
+    let max_scope = memory.frontmatter.retrieval_policy.max_scope.as_db_str();
 
     txn.execute(
         "INSERT INTO memories(
@@ -1904,7 +1907,7 @@ fn append_memory_query_filters(
     }
     if let Some(status) = query.status {
         filters.push("memories.status = ?".to_string());
-        bindings.push(rusqlite::types::Value::Text(status_str(status).to_string()));
+        bindings.push(rusqlite::types::Value::Text(status.as_db_str().to_string()));
     }
     append_namespace_filter(query.namespace_prefix.as_deref(), filters, bindings)?;
     if query.passive_recall_only {
@@ -1931,7 +1934,7 @@ fn append_recall_index_filters(
         let placeholders = sql_placeholders(query.statuses.len());
         filters.push(format!("memories.status IN ({placeholders})"));
         for status in &query.statuses {
-            bindings.push(rusqlite::types::Value::Text(status_str(*status).to_string()));
+            bindings.push(rusqlite::types::Value::Text(status.as_db_str().to_string()));
         }
     }
     if query.passive_recall_only {
@@ -2063,26 +2066,33 @@ fn row_to_recall_index_row(row: &rusqlite::Row<'_>, source_identity: bool) -> ru
     } else {
         (None, None, None, None)
     };
+    let status_text: String = row.get(3)?;
+    let scope_text: String = row.get(4)?;
+    let source_kind_text: String = row.get(9)?;
+    let sensitivity_text: String = row.get(11)?;
+    let max_scope_text: String = row.get(17)?;
     Ok(RecallIndexRow {
         id: MemoryId::new(row.get::<_, String>(0)?),
         // `from_unchecked`: path was validated at index-write time; hydrating from DB row.
         path: RepoPath::from_unchecked(row.get::<_, String>(1)?),
         summary: row.get(2)?,
-        status: memory_status_from_str(row.get::<_, String>(3)?.as_str())?,
-        scope: scope_from_str(row.get::<_, String>(4)?.as_str())?,
+        status: MemoryStatus::from_db_str(&status_text).ok_or_else(|| invalid_column_value("status", &status_text))?,
+        scope: Scope::from_db_str(&scope_text).ok_or_else(|| invalid_column_value("scope", &scope_text))?,
         canonical_namespace_id: row.get(5)?,
         updated_at: parse_index_time(row.get::<_, String>(6)?.as_str())?,
         indexed_at: parse_index_time(row.get::<_, String>(7)?.as_str())?,
         confidence: row.get(8)?,
-        source_kind: source_kind_from_str(row.get::<_, String>(9)?.as_str())?,
+        source_kind: SourceKind::from_db_str(&source_kind_text)
+            .ok_or_else(|| invalid_column_value("source_kind", &source_kind_text))?,
         source_device: row.get(10)?,
-        sensitivity: sensitivity_from_str(row.get::<_, String>(11)?.as_str())?,
+        sensitivity: Sensitivity::from_db_str(&sensitivity_text)
+            .ok_or_else(|| invalid_column_value("sensitivity", &sensitivity_text))?,
         passive_recall: row.get::<_, i64>(12)? != 0,
         index_body: row.get::<_, i64>(13)? != 0,
         requires_user_confirmation: row.get::<_, i64>(14)? != 0,
         review_state: row.get(15)?,
         human_review_required: row.get::<_, i64>(16)? != 0,
-        max_scope: scope_from_str(row.get::<_, String>(17)?.as_str())?,
+        max_scope: Scope::from_db_str(&max_scope_text).ok_or_else(|| invalid_column_value("scope", &max_scope_text))?,
         source_harness: row.get(18)?,
         source_session_id,
         author_harness,
@@ -2272,47 +2282,6 @@ fn resolve_memory_path(memory: &Memory) -> String {
         .map_or_else(|| format!("agent/patterns/{}.md", memory.frontmatter.id.as_str()), |p| p.as_str().to_string())
 }
 
-fn sensitivity_str(s: Sensitivity) -> &'static str {
-    match s {
-        Sensitivity::Public => "public",
-        Sensitivity::Internal => "internal",
-        Sensitivity::Confidential => "confidential",
-        Sensitivity::Personal => "personal",
-    }
-}
-
-fn sensitivity_from_str(value: &str) -> rusqlite::Result<Sensitivity> {
-    match value {
-        "public" => Ok(Sensitivity::Public),
-        "internal" => Ok(Sensitivity::Internal),
-        "confidential" => Ok(Sensitivity::Confidential),
-        "personal" => Ok(Sensitivity::Personal),
-        _ => Err(invalid_column_value("sensitivity", value)),
-    }
-}
-
-fn memory_type_str(t: &crate::model::MemoryType) -> &'static str {
-    match t {
-        crate::model::MemoryType::Project => "project",
-        crate::model::MemoryType::Person => "person",
-        crate::model::MemoryType::Procedure => "procedure",
-        crate::model::MemoryType::Episode => "episode",
-        crate::model::MemoryType::Claim => "claim",
-        crate::model::MemoryType::Artifact => "artifact",
-        crate::model::MemoryType::Prospective => "prospective",
-        crate::model::MemoryType::Pattern => "pattern",
-        crate::model::MemoryType::Playbook => "playbook",
-        crate::model::MemoryType::Postmortem => "postmortem",
-        crate::model::MemoryType::AntiPattern => "anti-pattern",
-        crate::model::MemoryType::Heuristic => "heuristic",
-        crate::model::MemoryType::Regression => "regression",
-        crate::model::MemoryType::Correction => "correction",
-        crate::model::MemoryType::Invariant => "invariant",
-        crate::model::MemoryType::Decision => "decision",
-        crate::model::MemoryType::OpenQuestion => "open-question",
-    }
-}
-
 struct Bm25ChunkHit {
     memory_id: String,
     text: String,
@@ -2480,103 +2449,6 @@ fn compare_optional_similarity(left: Option<f32>, right: Option<f32>) -> std::cm
 /// corrected here.
 fn cosine_from_l2_distance(distance: f64) -> f32 {
     (1.0 - (distance * distance) / 2.0).clamp(-1.0, 1.0) as f32
-}
-
-fn scope_str(s: crate::model::Scope) -> &'static str {
-    match s {
-        crate::model::Scope::User => "user",
-        crate::model::Scope::Project => "project",
-        crate::model::Scope::Org => "org",
-        crate::model::Scope::Agent => "agent",
-        crate::model::Scope::Subagent => "subagent",
-    }
-}
-
-fn scope_from_str(value: &str) -> rusqlite::Result<Scope> {
-    match value {
-        "user" => Ok(Scope::User),
-        "project" => Ok(Scope::Project),
-        "org" => Ok(Scope::Org),
-        "agent" => Ok(Scope::Agent),
-        "subagent" => Ok(Scope::Subagent),
-        _ => Err(invalid_column_value("scope", value)),
-    }
-}
-
-fn trust_level_str(t: crate::model::TrustLevel) -> &'static str {
-    match t {
-        crate::model::TrustLevel::Trusted => "trusted",
-        crate::model::TrustLevel::Untrusted => "untrusted",
-        crate::model::TrustLevel::Candidate => "candidate",
-        crate::model::TrustLevel::Quarantined => "quarantined",
-        crate::model::TrustLevel::Pinned => "pinned",
-    }
-}
-
-fn status_str(s: crate::model::MemoryStatus) -> &'static str {
-    match s {
-        crate::model::MemoryStatus::Candidate => "candidate",
-        crate::model::MemoryStatus::Active => "active",
-        crate::model::MemoryStatus::Pinned => "pinned",
-        crate::model::MemoryStatus::Superseded => "superseded",
-        crate::model::MemoryStatus::Archived => "archived",
-        crate::model::MemoryStatus::Tombstoned => "tombstoned",
-        crate::model::MemoryStatus::Quarantined => "quarantined",
-    }
-}
-
-fn memory_status_from_str(value: &str) -> rusqlite::Result<MemoryStatus> {
-    match value {
-        "candidate" => Ok(MemoryStatus::Candidate),
-        "active" => Ok(MemoryStatus::Active),
-        "pinned" => Ok(MemoryStatus::Pinned),
-        "superseded" => Ok(MemoryStatus::Superseded),
-        "archived" => Ok(MemoryStatus::Archived),
-        "tombstoned" => Ok(MemoryStatus::Tombstoned),
-        "quarantined" => Ok(MemoryStatus::Quarantined),
-        _ => Err(invalid_column_value("status", value)),
-    }
-}
-
-fn author_kind_str(k: crate::model::AuthorKind) -> &'static str {
-    match k {
-        crate::model::AuthorKind::User => "user",
-        crate::model::AuthorKind::Agent => "agent",
-        crate::model::AuthorKind::Subagent => "subagent",
-        crate::model::AuthorKind::Dreaming => "dreaming",
-        crate::model::AuthorKind::System => "system",
-    }
-}
-
-fn source_kind_str(k: SourceKind) -> &'static str {
-    match k {
-        SourceKind::User => "user",
-        SourceKind::AgentPrimary => "agent-primary",
-        SourceKind::AgentSubagent => "agent-subagent",
-        SourceKind::Tool => "tool",
-        SourceKind::Web => "web",
-        SourceKind::Email => "email",
-        SourceKind::File => "file",
-        SourceKind::Synthesis => "synthesis",
-        SourceKind::Import => "import",
-        SourceKind::System => "system",
-    }
-}
-
-fn source_kind_from_str(value: &str) -> rusqlite::Result<SourceKind> {
-    match value {
-        "user" => Ok(SourceKind::User),
-        "agent-primary" => Ok(SourceKind::AgentPrimary),
-        "agent-subagent" => Ok(SourceKind::AgentSubagent),
-        "tool" => Ok(SourceKind::Tool),
-        "web" => Ok(SourceKind::Web),
-        "email" => Ok(SourceKind::Email),
-        "file" => Ok(SourceKind::File),
-        "synthesis" => Ok(SourceKind::Synthesis),
-        "import" => Ok(SourceKind::Import),
-        "system" => Ok(SourceKind::System),
-        _ => Err(invalid_column_value("source_kind", value)),
-    }
 }
 
 fn parse_index_time(value: &str) -> rusqlite::Result<DateTime<Utc>> {

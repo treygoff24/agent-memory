@@ -134,6 +134,31 @@ pub enum Sensitivity {
     Personal,
 }
 
+impl Sensitivity {
+    /// Canonical on-disk string for the SQLite index. Byte-identical to the
+    /// serde representation used in frontmatter YAML; the `model` tests lock the
+    /// two together. See [`Sensitivity::from_db_str`] for the inverse.
+    pub fn as_db_str(&self) -> &'static str {
+        match self {
+            Self::Public => "public",
+            Self::Internal => "internal",
+            Self::Confidential => "confidential",
+            Self::Personal => "personal",
+        }
+    }
+
+    /// Parse a canonical on-disk string back into the variant, `None` if unknown.
+    pub fn from_db_str(value: &str) -> Option<Self> {
+        match value {
+            "public" => Some(Self::Public),
+            "internal" => Some(Self::Internal),
+            "confidential" => Some(Self::Confidential),
+            "personal" => Some(Self::Personal),
+            _ => None,
+        }
+    }
+}
+
 /// Memory status.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -154,6 +179,37 @@ pub enum MemoryStatus {
     Quarantined,
 }
 
+impl MemoryStatus {
+    /// Canonical on-disk string for the SQLite index. Byte-identical to the
+    /// serde representation; the `model` tests lock the two together. See
+    /// [`MemoryStatus::from_db_str`] for the inverse.
+    pub fn as_db_str(&self) -> &'static str {
+        match self {
+            Self::Candidate => "candidate",
+            Self::Active => "active",
+            Self::Pinned => "pinned",
+            Self::Superseded => "superseded",
+            Self::Archived => "archived",
+            Self::Tombstoned => "tombstoned",
+            Self::Quarantined => "quarantined",
+        }
+    }
+
+    /// Parse a canonical on-disk string back into the variant, `None` if unknown.
+    pub fn from_db_str(value: &str) -> Option<Self> {
+        match value {
+            "candidate" => Some(Self::Candidate),
+            "active" => Some(Self::Active),
+            "pinned" => Some(Self::Pinned),
+            "superseded" => Some(Self::Superseded),
+            "archived" => Some(Self::Archived),
+            "tombstoned" => Some(Self::Tombstoned),
+            "quarantined" => Some(Self::Quarantined),
+            _ => None,
+        }
+    }
+}
+
 /// Trust level.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -168,6 +224,20 @@ pub enum TrustLevel {
     Quarantined,
     /// Pinned.
     Pinned,
+}
+
+impl TrustLevel {
+    /// Canonical on-disk string for the SQLite index. Byte-identical to the
+    /// serde representation; the `model` tests lock the two together.
+    pub fn as_db_str(&self) -> &'static str {
+        match self {
+            Self::Trusted => "trusted",
+            Self::Untrusted => "untrusted",
+            Self::Candidate => "candidate",
+            Self::Quarantined => "quarantined",
+            Self::Pinned => "pinned",
+        }
+    }
 }
 
 /// Memory type.
@@ -212,6 +282,33 @@ pub enum MemoryType {
     OpenQuestion,
 }
 
+impl MemoryType {
+    /// Canonical on-disk string for the SQLite index. Byte-identical to the
+    /// serde representation (note `anti-pattern`/`open-question` overrides); the
+    /// `model` tests lock the two together.
+    pub fn as_db_str(&self) -> &'static str {
+        match self {
+            Self::Project => "project",
+            Self::Person => "person",
+            Self::Procedure => "procedure",
+            Self::Episode => "episode",
+            Self::Claim => "claim",
+            Self::Artifact => "artifact",
+            Self::Prospective => "prospective",
+            Self::Pattern => "pattern",
+            Self::Playbook => "playbook",
+            Self::Postmortem => "postmortem",
+            Self::AntiPattern => "anti-pattern",
+            Self::Heuristic => "heuristic",
+            Self::Regression => "regression",
+            Self::Correction => "correction",
+            Self::Invariant => "invariant",
+            Self::Decision => "decision",
+            Self::OpenQuestion => "open-question",
+        }
+    }
+}
+
 /// Memory scope.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -226,6 +323,33 @@ pub enum Scope {
     Agent,
     /// Subagent scope.
     Subagent,
+}
+
+impl Scope {
+    /// Canonical on-disk string for the SQLite index. Byte-identical to the
+    /// serde representation; the `model` tests lock the two together. See
+    /// [`Scope::from_db_str`] for the inverse.
+    pub fn as_db_str(&self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Project => "project",
+            Self::Org => "org",
+            Self::Agent => "agent",
+            Self::Subagent => "subagent",
+        }
+    }
+
+    /// Parse a canonical on-disk string back into the variant, `None` if unknown.
+    pub fn from_db_str(value: &str) -> Option<Self> {
+        match value {
+            "user" => Some(Self::User),
+            "project" => Some(Self::Project),
+            "org" => Some(Self::Org),
+            "agent" => Some(Self::Agent),
+            "subagent" => Some(Self::Subagent),
+            _ => None,
+        }
+    }
 }
 
 /// Structured author principal.
@@ -263,6 +387,20 @@ pub enum AuthorKind {
     Dreaming,
     /// System principal.
     System,
+}
+
+impl AuthorKind {
+    /// Canonical on-disk string for the SQLite index. Byte-identical to the
+    /// serde representation; the `model` tests lock the two together.
+    pub fn as_db_str(&self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Agent => "agent",
+            Self::Subagent => "subagent",
+            Self::Dreaming => "dreaming",
+            Self::System => "system",
+        }
+    }
 }
 
 /// Source metadata.
@@ -311,9 +449,13 @@ pub enum SourceKind {
     System,
 }
 
-impl std::fmt::Display for SourceKind {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(match self {
+impl SourceKind {
+    /// Canonical on-disk string for the SQLite index. Byte-identical to the
+    /// serde representation (note `agent-primary`/`agent-subagent`); the `model`
+    /// tests lock the two together. `Display` delegates here. See
+    /// [`SourceKind::from_db_str`] for the inverse.
+    pub fn as_db_str(&self) -> &'static str {
+        match self {
             Self::User => "user",
             Self::AgentPrimary => "agent-primary",
             Self::AgentSubagent => "agent-subagent",
@@ -324,7 +466,30 @@ impl std::fmt::Display for SourceKind {
             Self::Synthesis => "synthesis",
             Self::Import => "import",
             Self::System => "system",
-        })
+        }
+    }
+
+    /// Parse a canonical on-disk string back into the variant, `None` if unknown.
+    pub fn from_db_str(value: &str) -> Option<Self> {
+        match value {
+            "user" => Some(Self::User),
+            "agent-primary" => Some(Self::AgentPrimary),
+            "agent-subagent" => Some(Self::AgentSubagent),
+            "tool" => Some(Self::Tool),
+            "web" => Some(Self::Web),
+            "email" => Some(Self::Email),
+            "file" => Some(Self::File),
+            "synthesis" => Some(Self::Synthesis),
+            "import" => Some(Self::Import),
+            "system" => Some(Self::System),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for SourceKind {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_db_str())
     }
 }
 
@@ -1669,5 +1834,125 @@ mod tests {
         RepoPath::try_new(".gitattributes").expect("root file"); // expect-justified: test
         RepoPath::try_new(".gitignore").expect("root file"); // expect-justified: test
         RepoPath::try_new("config.yaml").expect("root file"); // expect-justified: test
+    }
+
+    // ---------------------------------------------------------------------
+    // On-disk string contract.
+    //
+    // The SQLite index stores these enums as strings via `as_db_str`. Those
+    // spellings MUST equal the serde representation used in frontmatter YAML —
+    // a divergence silently desyncs the index from canonical files. Each test
+    // enumerates every variant explicitly (so adding a variant without updating
+    // the method is caught) and asserts `as_db_str` equals the serde form. The
+    // four enums with a parser also assert `from_db_str` round-trips.
+    // ---------------------------------------------------------------------
+
+    /// The serde string for a unit enum variant, via JSON (always a bare string).
+    fn serde_db_str<T: Serialize>(value: &T) -> String {
+        serde_json::to_value(value)
+            .expect("enum serializes") // expect-justified: test
+            .as_str()
+            .expect("unit variant serializes to a string") // expect-justified: test
+            .to_string()
+    }
+
+    #[test]
+    fn sensitivity_db_str_matches_serde() {
+        for variant in [Sensitivity::Public, Sensitivity::Internal, Sensitivity::Confidential, Sensitivity::Personal] {
+            assert_eq!(variant.as_db_str(), serde_db_str(&variant));
+            assert_eq!(Sensitivity::from_db_str(variant.as_db_str()), Some(variant));
+        }
+    }
+
+    #[test]
+    fn memory_status_db_str_matches_serde() {
+        for variant in [
+            MemoryStatus::Candidate,
+            MemoryStatus::Active,
+            MemoryStatus::Pinned,
+            MemoryStatus::Superseded,
+            MemoryStatus::Archived,
+            MemoryStatus::Tombstoned,
+            MemoryStatus::Quarantined,
+        ] {
+            assert_eq!(variant.as_db_str(), serde_db_str(&variant));
+            assert_eq!(MemoryStatus::from_db_str(variant.as_db_str()), Some(variant));
+        }
+    }
+
+    #[test]
+    fn trust_level_db_str_matches_serde() {
+        for variant in [
+            TrustLevel::Trusted,
+            TrustLevel::Untrusted,
+            TrustLevel::Candidate,
+            TrustLevel::Quarantined,
+            TrustLevel::Pinned,
+        ] {
+            assert_eq!(variant.as_db_str(), serde_db_str(&variant));
+        }
+    }
+
+    #[test]
+    fn memory_type_db_str_matches_serde() {
+        for variant in [
+            MemoryType::Project,
+            MemoryType::Person,
+            MemoryType::Procedure,
+            MemoryType::Episode,
+            MemoryType::Claim,
+            MemoryType::Artifact,
+            MemoryType::Prospective,
+            MemoryType::Pattern,
+            MemoryType::Playbook,
+            MemoryType::Postmortem,
+            MemoryType::AntiPattern,
+            MemoryType::Heuristic,
+            MemoryType::Regression,
+            MemoryType::Correction,
+            MemoryType::Invariant,
+            MemoryType::Decision,
+            MemoryType::OpenQuestion,
+        ] {
+            assert_eq!(variant.as_db_str(), serde_db_str(&variant));
+        }
+    }
+
+    #[test]
+    fn scope_db_str_matches_serde() {
+        for variant in [Scope::User, Scope::Project, Scope::Org, Scope::Agent, Scope::Subagent] {
+            assert_eq!(variant.as_db_str(), serde_db_str(&variant));
+            assert_eq!(Scope::from_db_str(variant.as_db_str()), Some(variant));
+        }
+    }
+
+    #[test]
+    fn author_kind_db_str_matches_serde() {
+        for variant in
+            [AuthorKind::User, AuthorKind::Agent, AuthorKind::Subagent, AuthorKind::Dreaming, AuthorKind::System]
+        {
+            assert_eq!(variant.as_db_str(), serde_db_str(&variant));
+        }
+    }
+
+    #[test]
+    fn source_kind_db_str_matches_serde() {
+        for variant in [
+            SourceKind::User,
+            SourceKind::AgentPrimary,
+            SourceKind::AgentSubagent,
+            SourceKind::Tool,
+            SourceKind::Web,
+            SourceKind::Email,
+            SourceKind::File,
+            SourceKind::Synthesis,
+            SourceKind::Import,
+            SourceKind::System,
+        ] {
+            assert_eq!(variant.as_db_str(), serde_db_str(&variant));
+            assert_eq!(SourceKind::from_db_str(variant.as_db_str()), Some(variant));
+            // `Display` delegates to `as_db_str`; lock that too.
+            assert_eq!(variant.to_string(), variant.as_db_str());
+        }
     }
 }
