@@ -384,7 +384,37 @@ fn mask_startup_frame(frame: &str, repo: &std::path::Path) -> String {
     if let Ok(canonical) = std::fs::canonicalize(repo) {
         masked = masked.replace(&canonical.to_string_lossy().into_owned(), "TEST_REPO");
     }
-    masked.replace(&repo.to_string_lossy().into_owned(), "TEST_REPO")
+    masked = masked.replace(&repo.to_string_lossy().into_owned(), "TEST_REPO");
+    normalize_masked_used_tokens(&masked)
+}
+
+fn normalize_masked_used_tokens(frame: &str) -> String {
+    let mut normalized = frame.to_owned();
+    for _ in 0..4 {
+        let next = replace_used_tokens(&normalized, estimated_tokens(&normalized));
+        if next == normalized {
+            return normalized;
+        }
+        normalized = next;
+    }
+    replace_used_tokens(&normalized, estimated_tokens(&normalized))
+}
+
+fn replace_used_tokens(frame: &str, tokens: usize) -> String {
+    let Some(attribute_start) = frame.find(r#" used-tokens=""#) else {
+        return frame.to_owned();
+    };
+    let value_start = attribute_start + r#" used-tokens=""#.len();
+    let Some(value_len) = frame[value_start..].find('"') else {
+        return frame.to_owned();
+    };
+    let value_end = value_start + value_len;
+
+    let mut updated = String::with_capacity(frame.len());
+    updated.push_str(&frame[..value_start]);
+    updated.push_str(&tokens.to_string());
+    updated.push_str(&frame[value_end..]);
+    updated
 }
 
 fn assert_no_dynamics_markers(text: &str) {

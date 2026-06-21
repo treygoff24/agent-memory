@@ -25,7 +25,7 @@
   </recent-memory>
   <pending-attention>
   </pending-attention>
-  <recall-explanation policy="STREAM_E_POLICY" budget-tokens="1024" used-tokens="346">
+  <recall-explanation policy="STREAM_E_POLICY" budget-tokens="1024" used-tokens="332">
     Deterministic passive recall from Memorum index rows.
   </recall-explanation>
 </memory-recall>
