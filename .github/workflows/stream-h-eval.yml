@@ -56,7 +56,7 @@ jobs:
 
       - name: Run eval harness (mock harness — always runs)
         run: |
-          cargo run --release -p memorum-eval -- \
+          cargo run --release -p memorum-eval --bin memorum-eval -- \
             --harness mock \
             --required-release-set alpha \
             --output json \
@@ -70,7 +70,7 @@ jobs:
           (github.event_name == 'workflow_dispatch' && inputs.harness_mode != 'mock')
         run: |
           HARNESS_MODE="${{ github.event_name == 'workflow_dispatch' && inputs.harness_mode || 'all' }}"
-          cargo run --release -p memorum-eval -- \
+          cargo run --release -p memorum-eval --bin memorum-eval -- \
             --harness "$HARNESS_MODE" \
             --required-release-set alpha \
             --output json \
