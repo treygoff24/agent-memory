@@ -1233,6 +1233,7 @@ fn install_origin(repo: &Path, temp_root: &Path) {
     commit_dirty_fixture_files(repo);
     let origin = temp_root.join("origin.git");
     command_in(temp_root, "git", ["init", "--bare", origin.to_str().expect("origin path")]);
+    command_in(repo, "git", ["branch", "-M", "main"]);
     command_in(repo, "git", ["remote", "add", "origin", origin.to_str().expect("origin path")]);
     command_in(repo, "git", ["push", "-u", "origin", "main"]);
 }
