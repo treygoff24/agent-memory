@@ -8,12 +8,13 @@
 //!
 //! ## Device selection
 //!
-//! Metal GPU offload (`Device::new_metal(0)`) is the wired but
+//! On macOS, Metal GPU offload (`Device::new_metal(0)`) is the wired but
 //! lightly-documented fastembed path; we smoke-test it at load and fall back to
 //! CPU when it is unavailable or errors, recording which device won in
-//! [`FastembedProvider::device`] so the daemon can log it. The `accelerate`
-//! cargo feature gives an Apple-BLAS CPU path; this code does not require it but
-//! benefits from it transparently when compiled in.
+//! [`FastembedProvider::device`] so the daemon can log it. Other targets load
+//! CPU directly so Linux CI can run `--all-features` without Apple-only deps.
+//! The `accelerate` cargo feature gives an Apple-BLAS CPU path; this code does
+//! not require it but benefits from it transparently when compiled in.
 //!
 //! ## Model acquisition
 //!
@@ -116,6 +117,7 @@ impl FastembedProvider {
 
     /// Load `repo_id` for `triple`, trying Metal then CPU.
     fn load(repo_id: &str, triple: EmbeddingTriple) -> Result<Self, EmbeddingError> {
+        #[cfg(target_os = "macos")]
         match Self::load_on(repo_id, &triple, LoadedDevice::Metal) {
             Ok(provider) => Ok(provider),
             Err(error @ EmbeddingError::DimensionMismatch { .. }) => Err(error),
@@ -127,15 +129,17 @@ impl FastembedProvider {
                 Self::load_on(repo_id, &triple, LoadedDevice::Cpu)
             }
         }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            Self::load_on(repo_id, &triple, LoadedDevice::Cpu)
+        }
     }
 
     fn load_on(repo_id: &str, triple: &EmbeddingTriple, lane: LoadedDevice) -> Result<Self, EmbeddingError> {
         // Device and dtype are one decision: Metal runs fp16, CPU runs fp32.
         let (device, dtype) = match lane {
-            LoadedDevice::Metal => (
-                Device::new_metal(0).map_err(|err| EmbeddingError::Load(format!("{} device: {err}", lane.label())))?,
-                DType::F16,
-            ),
+            LoadedDevice::Metal => metal_device(lane)?,
             LoadedDevice::Cpu => (Device::Cpu, DType::F32),
         };
         let model = Qwen3TextEmbedding::from_hf(repo_id, &device, dtype, MAX_SEQUENCE_LENGTH)
@@ -178,6 +182,19 @@ impl FastembedProvider {
         }
         Ok(vectors)
     }
+}
+
+#[cfg(target_os = "macos")]
+fn metal_device(lane: LoadedDevice) -> Result<(Device, DType), EmbeddingError> {
+    Ok((
+        Device::new_metal(0).map_err(|err| EmbeddingError::Load(format!("{} device: {err}", lane.label())))?,
+        DType::F16,
+    ))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn metal_device(lane: LoadedDevice) -> Result<(Device, DType), EmbeddingError> {
+    Err(EmbeddingError::Load(format!("{} device is only supported on macOS", lane.label())))
 }
 
 fn probe_model_dimension(model: &Qwen3TextEmbedding, triple: &EmbeddingTriple) -> Result<(), EmbeddingError> {

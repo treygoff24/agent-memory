@@ -13,13 +13,12 @@ clap.workspace = true
 dialoguer = { version = "0.11", default-features = false }
 dirs = "5"
 # Production embedding inference (Stream B). Qwen3-Embedding-0.6B via the
-# fastembed candle backend with Metal GPU offload; the `accelerate` feature
-# (Apple BLAS, CPU) is the documented fallback if Metal misbehaves on a host.
+# fastembed candle backend. macOS adds Metal GPU offload below; Linux CI must
+# not enable fastembed/metal because that pulls objc2, which is Apple-only.
 # `ort-download-binaries-native-tls` is required because fastembed links the
 # ONNX runtime unconditionally even on the candle-only path.
 fastembed = { version = "=5.16.0", default-features = false, features = [
     "qwen3",
-    "metal",
     "hf-hub-native-tls",
     "ort-download-binaries-native-tls",
 ] }
@@ -51,6 +50,11 @@ ulid.workspace = true
 walkdir.workspace = true
 which.workspace = true
 zstd.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Keep Trey's local production path on Metal-capable Macs while letting Linux
+# `--all-features` CI resolve without Apple-only objc2 crates.
+fastembed = { version = "=5.16.0", default-features = false, features = ["metal"] }
 
 [features]
 # test-utils: enables the TestInjectEvent daemon protocol variant used by Stream H
