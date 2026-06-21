@@ -126,7 +126,9 @@ fn should_suppress(root: &Path, path: &Path, suppression: Option<&Arc<Mutex<Supp
         return false;
     };
     let relative = relative.to_string_lossy().replace('\\', "/");
-    let repo_path = RepoPath::new(relative);
+    let Ok(repo_path) = RepoPath::try_new(relative) else {
+        return false;
+    };
     let Ok(bytes) = std::fs::read(path) else {
         return false;
     };
@@ -136,4 +138,20 @@ fn should_suppress(root: &Path, path: &Path, suppression: Option<&Arc<Mutex<Supp
         panic!("suppression ledger mutex not poisoned");
     };
     ledger.should_suppress(&repo_path, &hash)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn suppression_ignores_invalid_repo_paths_without_panicking() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        let policies_dir = root.join("policies");
+        std::fs::create_dir(&policies_dir).expect("create policies dir");
+        let ledger = Arc::new(Mutex::new(SuppressionLedger::default()));
+
+        assert!(!should_suppress(root, &policies_dir, Some(&ledger)));
+    }
 }
