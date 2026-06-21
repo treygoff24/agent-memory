@@ -145,13 +145,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn suppression_ignores_invalid_repo_paths_without_panicking() {
-        let temp = tempfile::tempdir().expect("tempdir");
+    fn suppression_ignores_invalid_repo_paths_without_panicking() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
         let root = temp.path();
         let policies_dir = root.join("policies");
-        std::fs::create_dir(&policies_dir).expect("create policies dir");
+        std::fs::create_dir(&policies_dir)?;
         let ledger = Arc::new(Mutex::new(SuppressionLedger::default()));
 
         assert!(!should_suppress(root, &policies_dir, Some(&ledger)));
+        Ok(())
     }
 }
