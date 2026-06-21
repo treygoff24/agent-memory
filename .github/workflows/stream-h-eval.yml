@@ -26,6 +26,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Configure Git author for temporary substrate commits
+        run: |
+          git config --global user.name "Memorum CI"
+          git config --global user.email "ci@memorum.local"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 

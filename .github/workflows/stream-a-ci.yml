@@ -7,6 +7,8 @@ on:
 jobs:
   ci:
     runs-on: ubuntu-latest
+    env:
+      TEST_FIXTURE_FEATURES: memoryd-web/dev-fixtures,memoryd/dev-fixtures
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -19,7 +21,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - run: cargo test --workspace
+      - run: cargo test --workspace --features "$TEST_FIXTURE_FEATURES"
       - run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
       - run: pnpm run format:check
       - run: pnpm run lint
