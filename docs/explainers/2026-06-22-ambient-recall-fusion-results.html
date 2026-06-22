@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Ambient Recall v1.0 — fusion results &amp; decisions</title>
+<style>
+  :root{
+    --bg:#0d0b09;
+    --bg-raise:#16130f;
+    --bg-card:#161310;
+    --ink:#ece4d6;
+    --ink-dim:#a89a86;
+    --ink-faint:#766a59;
+    --lamp:#e6a95b;
+    --lamp-2:#f0c389;
+    --lamp-soft:rgba(230,169,91,.14);
+    --desk:#79b4ab;
+    --desk-soft:rgba(121,180,171,.12);
+    --warn:#d98a6a;
+    --warn-soft:rgba(217,138,106,.13);
+    --line:rgba(236,228,214,.09);
+    --line-strong:rgba(236,228,214,.16);
+    --serif:'Iowan Old Style','Palatino Linotype',Palatino,Georgia,'Times New Roman',serif;
+    --sans:system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+    --mono:'SF Mono',ui-monospace,'JetBrains Mono',Menlo,Consolas,monospace;
+    --col:min(780px,92vw);
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0;background:var(--bg);color:var(--ink);
+    font-family:var(--sans);font-size:18px;line-height:1.62;
+    -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+    overflow-x:hidden;
+  }
+  body::before{
+    content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+    background:
+      radial-gradient(120vw 70vh at 50% -25vh, rgba(230,169,91,.10), transparent 60%),
+      radial-gradient(80vw 40vh at 85% 8vh, rgba(121,180,171,.05), transparent 55%);
+  }
+  .wrap{position:relative;z-index:1}
+  .col{width:var(--col);margin-inline:auto}
+  ::selection{background:var(--lamp-soft);color:#fff}
+  #bar{position:fixed;top:0;left:0;height:2px;width:0;z-index:10;
+    background:linear-gradient(90deg,var(--lamp),var(--lamp-2));box-shadow:0 0 12px var(--lamp-soft)}
+
+  /* hero */
+  header{padding:18vh 0 9vh}
+  .kicker{font-family:var(--mono);font-size:13px;letter-spacing:.22em;text-transform:uppercase;
+    color:var(--lamp);margin-bottom:26px}
+  h1{font-family:var(--serif);font-weight:600;font-size:clamp(36px,6.4vw,62px);line-height:1.05;
+    letter-spacing:-.015em;margin:0 0 28px}
+  h1 em{font-style:italic;color:var(--lamp-2)}
+  .lede{font-size:clamp(18px,2.3vw,22px);color:var(--ink-dim);max-width:36em;line-height:1.6}
+  .lede b{color:var(--ink);font-weight:600}
+
+  /* scoreboard */
+  .score{display:flex;flex-wrap:wrap;gap:14px;margin:38px 0 6px}
+  .chip{border:1px solid var(--line-strong);border-radius:12px;padding:14px 18px;background:var(--bg-raise);
+    min-width:120px;flex:1 1 120px}
+  .chip .big{font-family:var(--serif);font-size:34px;line-height:1;color:var(--lamp-2)}
+  .chip .lbl{font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;
+    color:var(--ink-faint);margin-top:9px}
+  .chip.verdict .big{font-size:20px;font-family:var(--sans);font-weight:650;color:var(--desk);line-height:1.2}
+
+  /* sections */
+  section{padding:8vh 0;border-top:1px solid var(--line)}
+  .eyebrow{font-family:var(--mono);font-size:12.5px;letter-spacing:.2em;text-transform:uppercase;
+    color:var(--ink-faint);margin-bottom:18px;display:flex;gap:12px;align-items:center}
+  .eyebrow::before{content:"";width:26px;height:1px;background:var(--lamp);opacity:.7}
+  h2{font-family:var(--serif);font-weight:600;font-size:clamp(27px,4.2vw,40px);line-height:1.1;
+    letter-spacing:-.01em;margin:0 0 22px}
+  h2 em{font-style:italic;color:var(--lamp-2)}
+  p{margin:0 0 18px;color:var(--ink-dim)}
+  p strong,li strong{color:var(--ink);font-weight:600}
+  .lead{font-size:20px;color:var(--ink)}
+  a{color:var(--lamp-2);text-decoration-color:var(--lamp-soft)}
+
+  .pull{font-family:var(--serif);font-size:clamp(22px,3.3vw,31px);line-height:1.34;color:var(--ink);
+    font-style:italic;border-left:2px solid var(--lamp);padding:6px 0 6px 26px;margin:32px 0;letter-spacing:-.005em}
+  .pull b{font-style:normal;color:var(--lamp-2);font-weight:600}
+
+  /* legend */
+  .legend{display:flex;flex-wrap:wrap;gap:10px;margin:28px 0 6px}
+  .tag{font-family:var(--mono);font-size:11px;letter-spacing:.13em;text-transform:uppercase;
+    padding:4px 10px;border-radius:7px;display:inline-block;font-weight:600;white-space:nowrap}
+  .tag.decide{color:#1c150c;background:var(--lamp)}
+  .tag.fix{color:var(--desk);background:var(--desk-soft);border:1px solid rgba(121,180,171,.3)}
+  .tag.verify{color:var(--warn);background:var(--warn-soft);border:1px solid rgba(217,138,106,.3)}
+  .tag.defer{color:var(--ink-faint);background:rgba(236,228,214,.05);border:1px solid var(--line-strong)}
+  .legend .tag{cursor:default}
+  .legend .note{font-size:13.5px;color:var(--ink-faint);align-self:center}
+
+  /* option A/B */
+  .ba{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin:30px 0}
+  @media(max-width:680px){.ba{grid-template-columns:1fr}}
+  .opt{border:1px solid var(--line);border-radius:16px;padding:24px;background:var(--bg-raise);position:relative}
+  .opt.win{border-color:rgba(230,169,91,.4);box-shadow:0 0 0 1px var(--lamp-soft)}
+  .opt .badge{position:absolute;top:-11px;left:22px;font-family:var(--mono);font-size:10.5px;
+    letter-spacing:.14em;text-transform:uppercase;padding:4px 11px;border-radius:7px;
+    background:var(--lamp);color:#1c150c;font-weight:700}
+  .opt h3{font-family:var(--serif);font-size:23px;margin:4px 0 4px;color:var(--ink);font-weight:600}
+  .opt .who{font-family:var(--mono);font-size:11.5px;letter-spacing:.1em;color:var(--ink-faint);
+    text-transform:uppercase;margin-bottom:16px}
+  .opt p{font-size:15.5px;margin:0 0 14px;line-height:1.55}
+  .opt ul{margin:0;padding-left:18px;font-size:14.5px;color:var(--ink-faint);line-height:1.5}
+  .opt ul li{margin-bottom:6px}
+  .opt .verdict-line{margin-top:16px;padding-top:14px;border-top:1px solid var(--line);
+    font-size:14.5px;color:var(--ink-dim)}
+  .opt.win .verdict-line b{color:var(--lamp-2)}
+
+  /* issue cards */
+  .issue{border:1px solid var(--line);border-left:3px solid var(--line-strong);border-radius:14px;
+    background:var(--bg-card);padding:22px 24px;margin:16px 0;overflow:hidden}
+  .issue.b-fix{border-left-color:var(--desk)}
+  .issue.b-decide{border-left-color:var(--lamp)}
+  .issue.b-verify{border-left-color:var(--warn)}
+  .issue.b-defer{border-left-color:var(--ink-faint)}
+  .issue .head{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+  .issue .id{font-family:var(--mono);font-size:12.5px;letter-spacing:.1em;color:var(--lamp);font-weight:600}
+  .issue h3{font-size:18.5px;margin:0;color:var(--ink);font-weight:650;letter-spacing:-.005em;flex:1 1 auto;min-width:60%}
+  .issue .rows{display:grid;grid-template-columns:auto 1fr;gap:9px 16px;font-size:15px;margin-top:4px}
+  .issue .rows dt{font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;
+    color:var(--ink-faint);padding-top:3px;white-space:nowrap}
+  .issue .rows dd{margin:0;color:var(--ink-dim);line-height:1.5}
+  .issue .rows dd.reco{color:var(--ink)}
+  .issue .rows dd.reco b{color:var(--lamp-2);font-weight:600}
+  code,.mono{font-family:var(--mono);font-size:.86em;color:var(--lamp-2);
+    background:rgba(230,169,91,.07);padding:1px 5px;border-radius:5px}
+  .issue .rows dd code{color:var(--desk);background:var(--desk-soft)}
+
+  /* compact list for risks/nits */
+  .compact{margin:24px 0}
+  .row2{display:grid;grid-template-columns:auto 1fr auto;gap:8px 16px;padding:15px 0;
+    border-top:1px solid var(--line);align-items:start}
+  .row2:first-child{border-top:none}
+  .row2 .rid{font-family:var(--mono);font-size:12px;color:var(--lamp);font-weight:600;padding-top:2px}
+  .row2 .body{font-size:15px;color:var(--ink-dim);line-height:1.5}
+  .row2 .body b{color:var(--ink)}
+  .row2 .body .r{color:var(--lamp-2);display:block;margin-top:5px;font-size:14px}
+  .row2 .body .r::before{content:"→ ";color:var(--lamp)}
+  .row2 .t{align-self:start}
+  @media(max-width:680px){
+    .row2{grid-template-columns:auto 1fr;gap:6px 12px}
+    .row2 .t{grid-column:1 / -1;justify-self:start}
+  }
+
+  /* the path */
+  .path{counter-reset:step;margin:30px 0}
+  .step{position:relative;border:1px solid var(--line);border-radius:13px;background:var(--bg-raise);
+    padding:20px 24px 20px 64px;margin:14px 0}
+  .step::before{counter-increment:step;content:counter(step);position:absolute;left:20px;top:18px;
+    font-family:var(--serif);font-style:italic;font-size:30px;color:var(--lamp);line-height:1}
+  .step h4{margin:0 0 6px;font-size:17.5px;color:var(--ink);font-weight:650}
+  .step p{margin:0;font-size:15px;color:var(--ink-dim);line-height:1.5}
+  .step .gate{font-family:var(--mono);font-size:11.5px;color:var(--desk);margin-top:8px;display:block}
+
+  footer{padding:10vh 0 14vh;border-top:1px solid var(--line);color:var(--ink-faint);font-size:14px}
+  footer a{color:var(--ink-dim)}
+  footer .small{font-family:var(--mono);font-size:11.5px;letter-spacing:.06em;line-height:1.8;margin-top:18px}
+</style>
+</head>
+<body>
+<div id="bar"></div>
+<div class="wrap">
+
+<header class="col">
+  <div class="kicker">Fusion council · 4 families + external judge</div>
+  <h1>Ambient Recall v1.0:<br>what <em>broke</em>, and what you decide.</h1>
+  <p class="lede">Four model families pressure-tested the redesign independently, cross-critiqued each
+  other blind, then a fifth family judged the result. <b>The direction is right.</b> But the build
+  order and center of gravity are wrong, and several mechanisms are unsafe as written. Here is every
+  issue, the call it forces, the tradeoff, and what I'd do.</p>
+
+  <div class="score">
+    <div class="chip verdict"><div class="big">Ratify with corrections</div><div class="lbl">Judge verdict</div></div>
+    <div class="chip"><div class="big">1</div><div class="lbl">Architecture decision</div></div>
+    <div class="chip"><div class="big">8</div><div class="lbl">Blockers</div></div>
+    <div class="chip"><div class="big">8</div><div class="lbl">Risks</div></div>
+    <div class="chip"><div class="big">7</div><div class="lbl">Nits</div></div>
+  </div>
+</header>
+
+<section class="col">
+  <div class="eyebrow">The verdict in one breath</div>
+  <h2>You diagnosed v0.5 correctly. The cure goes too far.</h2>
+  <p class="lead">v0.5 failed by surfacing recency-ranked noise the agent learned to ignore. v1.0
+  fixes the rendering and ranking — those wins are real and should land. But its risky center, the
+  <strong>continuity loop</strong> (closeout-writes-startup, the maintained continuity-state object,
+  use-driven decay), inverts the failure mode from <em>noisy irrelevance</em> (ignorable) to
+  <strong>confident wrongness</strong> — recall the agent <em>trusts</em>, because it's prose,
+  attributed, small, and desk-anchored. That is a worse failure, not a better one.</p>
+  <div class="pull">The cheapest, most trustworthy 80% of this feature needs <b>none</b> of the
+  machinery that creates the hazards. Ship that first.</div>
+  <p>Every family, working blind, sketched the same continuity-free core: <strong>read the desk
+  first</strong> (local git), run a <strong>relevance-keyed query</strong> over the index, render
+  <strong>prose recollections</strong> on a byte budget. ~40–50% of the build, none of the
+  merge/poisoning/read-only hazards. The fight is only over whether to stop there.</p>
+</section>
+
+<section class="col">
+  <div class="eyebrow">How to read the tags</div>
+  <h2>Four kinds of action</h2>
+  <div class="legend">
+    <span class="tag decide">Decide</span>
+    <span class="tag fix">Fix now</span>
+    <span class="tag verify">Verify first</span>
+    <span class="tag defer">Defer</span>
+  </div>
+  <p style="margin-top:18px;font-size:15.5px">
+    <strong>Decide</strong> — a genuine product/architecture call only you can make.
+    <strong>Fix now</strong> — the call is already settled; just correct it, regardless of which
+    architecture you pick. <strong>Verify first</strong> — confirm one fact about the real harness/repo
+    before sizing the fix. <strong>Defer</strong> — only bites if you build the continuity object;
+    irrelevant under the simpler path.</p>
+</section>
+
+<section class="col">
+  <div class="eyebrow">The one decision that drives everything</div>
+  <h2>Defer the continuity engine, or build it now?</h2>
+  <p>The synthesis first called this a "convergence." The judge corrected that — it's a real split,
+  and a manual pinned note is <em>not</em> the same artifact as an automated, system-maintained
+  continuity state. This is your call; it decides whether five of the eight blockers are "fix before
+  Phase 3" or simply "not yet relevant."</p>
+
+  <div class="ba">
+    <div class="opt win">
+      <span class="badge">My recommendation</span>
+      <h3>Option A — Defer &amp; simplify</h3>
+      <div class="who">Codex · Cursor</div>
+      <p>Ship the continuity-free channel first: desk-first orientation, relevance-gated delta, prose
+      rendering. Prove agents actually use it. Defer the <code>ContinuityState</code> struct, the
+      closeout protocol, and dream-maintenance until their hazards are specified away.</p>
+      <ul>
+        <li>Delivers most user-visible value at ~half the build.</li>
+        <li>Sidesteps B2, B3, B5, B7, R5 entirely — they don't exist without the loop.</li>
+        <li>Lets adoption data, not a guess, justify the cathedral.</li>
+      </ul>
+      <div class="verdict-line"><b>Why I'd lead here:</b> every Option-B hazard is still unresolved.
+      You can always add continuity once it's earned and safe; you can't easily un-poison startup
+      orientation once a hallucinated "current focus" is pinned.</div>
+    </div>
+    <div class="opt">
+      <h3>Option B — Continuity first</h3>
+      <div class="who">Grok · DeepSeek</div>
+      <p>A prettier recency channel is a cosmetic bandage. The point is
+      <em>remembered-not-retrieved</em> — so build a minimal maintained continuity model
+      (skeleton + volatile) early and treat the hazards as work to do, not reasons to wait.</p>
+      <ul>
+        <li>Goes straight at the actual ambition of the redesign.</li>
+        <li>Risk: makes B1, B2, B3, B7 hard pre-requisites, not deferrals.</li>
+        <li>Risk: ships the "confident wrongness" failure mode before the safety gates exist.</li>
+      </ul>
+      <div class="verdict-line">Defensible <em>only</em> if you commit to solving the merge,
+      acceptance-gate, read-only, and governance problems <b>before</b> the loop touches startup.</div>
+    </div>
+  </div>
+  <p style="font-size:15px;color:var(--ink-faint)"><strong>Common ground both camps accept:</strong>
+  the desk read ships early, and the full <code>ContinuityState</code> + closeout + dream-maintenance
+  must not ship before B1/B2/B3 are solved. A single human- or agent-authored <em>pinned focus note</em>
+  (via the existing <code>memory_note</code> surface) is the cheapest bridge — minimal continuity for
+  the B camp, no new machinery for the A camp.</p>
+</section>
+
+<section class="col">
+  <div class="eyebrow">Must-fix · the 8 blockers</div>
+  <h2>Design is wrong or will break as specified</h2>
+
+  <div class="issue b-fix">
+    <div class="head"><span class="id">B1</span><h3>Recall claims to be read-only but writes anyway</h3><span class="tag fix">Fix now</span></div>
+    <dl class="rows">
+      <dt>Problem</dt><dd>Recall is declared read-only (inv §12.1), yet <code>PassiveSurfaced</code>/<code>RecallUsed</code> event appends and <code>StagedNote.consumed</code> clearing are writes <em>caused by</em> recall. This was the council's correlated blind spot — no proposer caught it; it surfaced only at critique.</dd>
+      <dt>Tradeoff</dt><dd>The synthesis floated "or narrow the invariant to allow deterministic telemetry writes." The judge <strong>overrode that</strong>: relaxing read-only breaks concurrency safety, testability, and prompt-cache stability. Not worth it.</dd>
+      <dt class="reco">Reco</dt><dd class="reco"><b>Keep recall strictly read-only.</b> Execute all telemetry/consume writes out-of-band — harness-driven, or a separate decoupled async post-render daemon endpoint — with zero side effects on the read path. This is the single highest-confidence finding in the run.</dd>
+    </dl>
+  </div>
+
+  <div class="issue b-decide">
+    <div class="head"><span class="id">B2</span><h3>Closeout can poison startup with a hollow snapshot</h3><span class="tag defer">Defer (A)</span></div>
+    <dl class="rows">
+      <dt>Problem</dt><dd>T0 renders continuity-state as authoritative prose. When the agent writes no summary (the common case), fail-open closeout writes a <em>fresh-timestamped</em> but <em>hollow</em> auto-snapshot — so a freshness/<code>updated_at</code> gate is defeated by design.</dd>
+      <dt>Tradeoff</dt><dd>Under Option A this can't happen — there's no closeout. Under Option B it's a hard pre-requisite before continuity touches startup.</dd>
+      <dt class="reco">Reco</dt><dd class="reco">If you build continuity: gate on <b>substance, not a timestamp</b> — require non-empty volatile / minimum evidence or an explicit <code>degraded:true</code> flag, add a desk-contradiction check, and frame the block as <b>"remembered, not verified."</b> Ship before Phase 3.</dd>
+    </dl>
+  </div>
+
+  <div class="issue b-decide">
+    <div class="head"><span class="id">B3</span><h3>Two devices closing out at once is a merge graveyard</h3><span class="tag defer">Defer (A)</span></div>
+    <dl class="rows">
+      <dt>Problem</dt><dd>Cross-device merge of a single monolithic continuity-state object is unspecified (the spec's own §14.5 open question). Concurrent supersedes from two clones need item-level deterministic merge or the open-loop list silently corrupts.</dd>
+      <dt>Tradeoff</dt><dd>Doesn't exist under Option A. Under Option B, "confirm it fits canonical-content equality" is <em>not</em> enough.</dd>
+      <dt class="reco">Reco</dt><dd class="reco">If you build continuity: give <code>open_loops</code>/<code>staged_notes</code> <b>stable item-level IDs</b>, consume events, and version reconciliation; ship a <b>two-device concurrent-closeout merge test</b> as a Phase 3 gate.</dd>
+    </dl>
+  </div>
+
+  <div class="issue b-fix">
+    <div class="head"><span class="id">B4</span><h3>The desk read makes blocking subprocess/network calls on the hot path</h3><span class="tag fix">Fix now</span></div>
+    <dl class="rows">
+      <dt>Problem</dt><dd><code>gh pr view</code> + CI (§8.1) are network calls on the synchronous T0/T2 path — a direct violation of inv §12.10. The judge generalized it: even <code>git status --porcelain</code> can block on <code>.git/index.lock</code> (a concurrent IDE/editor) or take seconds in a monorepo, blowing the 150 ms budget and starving big-repo users of desk context entirely.</dd>
+      <dt>Tradeoff</dt><dd>A cached projection adds a background watcher thread; that's cheap next to blocking every session start.</dd>
+      <dt class="reco">Reco</dt><dd class="reco">Make the desk read a <b>daemon-cached background projection</b> (file-watcher → in-memory desk state) read in O(1) by the hooks. No synchronous subprocesses in the hook; drop PR/CI from the sync path or move them to that projection.</dd>
+    </dl>
+  </div>
+
+  <div class="issue b-fix">
+    <div class="head"><span class="id">B5</span><h3>"Use" decay cools exactly the recollections that worked</h3><span class="tag fix">Fix now</span></div>
+    <dl class="rows">
+      <dt>Problem</dt><dd>§5.3 decays recollections when the agent <em>doesn't</em> call <code>memory_get</code> on them. But ambient recall succeeds precisely when the agent acts on the self-contained prose <em>without</em> fetching the source. Absence ≠ unused. Phase 4 acceptance makes this live, not deferred.</dd>
+      <dt>Tradeoff</dt><dd>None worth keeping — the negative inference is backwards. (Whether <code>memory_get</code> adoption ever yields usable signal is a separate empirical question for telemetry.)</dd>
+      <dt class="reco">Reco</dt><dd class="reco">Make <code>memory_get</code> a <b>positive-only</b> signal. Never infer disuse from its absence. Gate any negative-decay signal on validation data first.</dd>
+    </dl>
+  </div>
+
+  <div class="issue b-decide">
+    <div class="head"><span class="id">B6</span><h3>The friction pre-gate is lexical, silent, and untestable</h3><span class="tag decide">Decide</span></div>
+    <dl class="rows">
+      <dt>Problem</dt><dd>A purely lexical gate (errors / keywords / novel entities) silently misses exactly the turns where memory matters most — procedural reuse ("same fix in billing"), social ("reply to Adam"), status continuations. Because the gate is unlogged, the false-negatives are <strong>unfalsifiable in production</strong>, making T1 untestable. <em>(Judge elevated this from risk to blocker.)</em></dd>
+      <dt>Tradeoff</dt><dd>A permissive gate surfaces more (some noise) but stays measurable; a tight gate stays quiet but blind. You can't tune what you can't see.</dd>
+      <dt class="reco">Reco</dt><dd class="reco"><b>Restrict the pre-gate to obvious no-ops</b> and run the relevance gate on substantive prompts regardless of friction words. Add a <b>miss-signal</b> (a <code>memory_search</code> shortly after a silent T1 = gate miss) and a <b>deterministic self-test</b> (force surfacing on ~1% of turns, keyed by session-id so byte-stability holds) to measure precision without a labeled set.</dd>
+    </dl>
+  </div>
+
+  <div class="issue b-decide">
+    <div class="head"><span class="id">B7</span><h3>The governance carve-out is an un-governed poisoning backdoor</h3><span class="tag defer">Defer (A)</span></div>
+    <dl class="rows">
+      <dt>Problem</dt><dd>The §11 carve-out lets system-authored continuity updates skip Stream C <code>dream_source</code> confidence gating — a direct violation of invariant #7 (Stream C stays authoritative). A dream-synthesized hallucination can be promoted straight to pinned, authoritative startup orientation. <em>(Judge elevated this from risk to blocker.)</em></dd>
+      <dt>Tradeoff</dt><dd>Irrelevant under Option A (no system-authored continuity writes). Under Option B it's the actual poisoning vector and must be closed first.</dd>
+      <dt class="reco">Reco</dt><dd class="reco">If you build continuity: do <b>not</b> exempt system writes from Stream C gating. Add <b>claim-level provenance</b> so system-derived vs user-authored is distinguishable in the surface.</dd>
+    </dl>
+  </div>
+
+  <div class="issue b-verify">
+    <div class="head"><span class="id">B8</span><h3>Per-turn recall injection can shatter the prompt cache</h3><span class="tag verify">Verify first</span></div>
+    <dl class="rows">
+      <dt>Problem</dt><dd>If a cue-driven T1 block (0–3 memories, changing every turn) lands in the <em>cached prefix</em>, it invalidates prefix caching for the whole session — every turn becomes a full uncached re-eval (latency + compounding cost). This defeats the spec's own cacheability rationale even though each block is byte-deterministic. <em>(Judge — missed by the entire council.)</em></dd>
+      <dt>Verify</dt><dd>Severity depends on where each harness places hook output. If UserPromptSubmit hooks already append at the <em>bottom</em> of context, the prefix is safe. The real defect: the spec doesn't specify injection position at all. Confirm against actual Claude/Codex hook placement before sizing.</dd>
+      <dt class="reco">Reco</dt><dd class="reco">Mandate that dynamic T1/T2 blocks render at the <b>bottom of context</b> (immediately before the latest user prompt), isolated from the static prefix.</dd>
+    </dl>
+  </div>
+</section>
+
+<section class="col">
+  <div class="eyebrow">Watch-outs · the 8 risks</div>
+  <h2>Real hazards that need an explicit mitigation</h2>
+  <div class="compact">
+    <div class="row2"><span class="rid">R2</span><span class="body"><b>Cold-start is undefined.</b> The spec never says what T0 does with no continuity-state (first session, or a deleted object). If it falls back to a recency dump, the core bet fails on first contact.<span class="r">Define cold-start explicitly: desk + pinned invariants, no continuity object.</span></span><span class="t"><span class="tag fix">Fix now</span></span></div>
+    <div class="row2"><span class="rid">R4</span><span class="body"><b>The relevance floor is uncalibrated and gates the whole feature.</b> A wrong threshold either floods or starves.<span class="r">Ship T1 gating behind a flag with a permissive floor; tighten via a labeled Stream H "should-surface?" set before default-on.</span></span><span class="t"><span class="tag fix">Fix now</span></span></div>
+    <div class="row2"><span class="rid">R5</span><span class="body"><b>Continuity claims never decay.</b> The disuse loop covers recollections, not T0 orientation claims — a wrong "current focus" lives forever.<span class="r">Add staleness/contradiction invalidation for continuity claims (desk mismatch, superseded refs).</span></span><span class="t"><span class="tag defer">Defer (A)</span></span></div>
+    <div class="row2"><span class="rid">R6</span><span class="body"><b>The strength score is inclusion-polluted.</b> The base ranking's strength term counts <code>RecallHit</code> (inclusion), and the passive path emits none — so Phase 2 eval calibrates on a miscalibrated base.<span class="r">Calibrate explicitly on the structural-only base, or sequence the feedback-signal fix before gating calibration.</span></span><span class="t"><span class="tag fix">Fix now</span></span></div>
+    <div class="row2"><span class="rid">R7</span><span class="body"><b>Privacy partial-drop can invert meaning.</b> Dropping a fragment can flip a claim ("don't mention X until legal" → "don't mention until legal").<span class="r">A partially-classified object carries a degraded flag and must not silently supersede last-known-good.</span></span><span class="t"><span class="tag fix">Fix now</span></span></div>
+    <div class="row2"><span class="rid">R8</span><span class="body"><b>Phase 1 is oversold.</b> "This phase alone makes the channel trustworthy" exceeds the evidence — relevance, gating, feedback, and continuity safety are all deferred. Code inspection confirms Phase 1 can't distill "conclusions" for imported-doc chunks.<span class="r">Scope the claim to "stops the noise."</span></span><span class="t"><span class="tag fix">Fix now</span></span></div>
+    <div class="row2"><span class="rid">R9</span><span class="body"><b>Rephrasing isn't injection safety.</b> Neutralizing imperative prose is incomplete — a poisoned memory still steers as a reported fact ("the standing practice has been to run script X"). <em>(Restored by the judge.)</em><span class="r">Frame system-derived / low-confidence recall as external evidence ("A prior memory reports…"), not internal fact.</span></span><span class="t"><span class="tag fix">Fix now</span></span></div>
+    <div class="row2"><span class="rid">R10</span><span class="body"><b>The T2 "desk delta" has nowhere to store its baseline.</b> Disk = second persistence layer; memory = read-only violation; in-process = stateful daemon that drifts on restart. Every option breaks an invariant. <em>(Judge — missed by the council.)</em><span class="r">Render the <em>current absolute</em> desk state, not a delta. The baseline disappears and both invariants hold.</span></span><span class="t"><span class="tag fix">Fix now</span></span></div>
+  </div>
+</section>
+
+<section class="col">
+  <div class="eyebrow">Polish · the 7 nits</div>
+  <h2>Small, but worth folding into v1.1</h2>
+  <div class="compact">
+    <div class="row2"><span class="rid">N1</span><span class="body"><b>§7.1 wording.</b> "Conclusions, not pointers" → "conclusions in body; pointer in attribute for traceability." Don't over-advertise <code>memory_get &lt;ref&gt;</code> into card-catalog behavior. (Keep the opaque ref — do <em>not</em> add a human-readable alias; it diverges across devices and breaks eval-fixture stability.)</span><span class="t"><span class="tag fix">Fix now</span></span></div>
+    <div class="row2"><span class="rid">N2</span><span class="body"><b>Typo:</b> <code>ClosoutSummary</code> → <code>CloseoutSummary</code> (§11).</span><span class="t"><span class="tag fix">Fix now</span></span></div>
+    <div class="row2"><span class="rid">N3</span><span class="body"><b>Dedup is too aggressive.</b> Add a turn-distance threshold so a recollection can re-surface after a meaningful gap / topic shift, instead of permanent intra-session suppression.</span><span class="t"><span class="tag fix">Fix now</span></span></div>
+    <div class="row2"><span class="rid">N4</span><span class="body"><b>Underspecified score ranges.</b> §6.2 needs testable ranges for <code>relevance_to_cue</code> and <code>lesson_boost</code>, or ranking behavior is untestable.</span><span class="t"><span class="tag fix">Fix now</span></span></div>
+    <div class="row2"><span class="rid">N5</span><span class="body"><b>Empty-wrapper exactness.</b> Specify the exact empty-wrapper form per trigger so harness parsers don't invent variants.</span><span class="t"><span class="tag fix">Fix now</span></span></div>
+    <div class="row2"><span class="rid">N6</span><span class="body"><b>Protective-recall coupling.</b> <code>lesson_boost</code> fires only when the friction pre-gate fires — so a missed decision point kills protective recall even when the relevance gate would have selected the lesson. Give it an independent path or document the coupling.</span><span class="t"><span class="tag fix">Fix now</span></span></div>
+    <div class="row2"><span class="rid">N7</span><span class="body"><b>O1 conflates two relevances.</b> "Relevance over recency" bundles cue-relevance (T1, semantic match) and project-salience (T0, stakes ordering) under one slogan; they have different signals and failure modes. Separate them in the objective text.</span><span class="t"><span class="tag fix">Fix now</span></span></div>
+  </div>
+</section>
+
+<section class="col">
+  <div class="eyebrow">The path I'd take</div>
+  <h2>If it were my call</h2>
+  <p>Pick <strong>Option A</strong>, then sequence the work so nothing unsafe ships before its gate exists.</p>
+  <div class="path">
+    <div class="step">
+      <h4>Correct the cross-cutting bugs first — they're independent of the architecture choice</h4>
+      <p>B1 (read-only writes go out-of-band), B4 (desk read becomes a daemon-cached projection),
+      B5 (<code>memory_get</code> positive-only), B8 (inject at bottom of context, after you verify
+      harness placement), plus R7/R9/R10 and the nits. None of these depend on continuity.</p>
+    </div>
+    <div class="step">
+      <h4>Ship the continuity-free channel — the design all four families sketched</h4>
+      <p>Desk-first T0 orientation (local git, cached), the existing delta path plus a relevance-to-cue
+      term, a conservative pre-gate, prose units on a byte budget, and the discoverable guidance string.
+      Optionally one pinned focus note via <code>memory_note</code>. Resolve R2 (cold-start) and R4
+      (relevance floor behind a flag) here.</p>
+      <span class="gate">Gate: Stream H shows agents act on surfaced prose — adoption, not just emission.</span>
+    </div>
+    <div class="step">
+      <h4>Make the friction gate measurable before you trust it</h4>
+      <p>B6 — narrow the pre-gate to no-ops, add the miss-signal and deterministic self-test. Calibrate
+      against the labeled set (R4) and the structural-only strength base (R6).</p>
+      <span class="gate">Gate: a precision number you can actually defend, not a vibe.</span>
+    </div>
+    <div class="step">
+      <h4>Only now earn the continuity engine — if adoption data says it's worth it</h4>
+      <p>Solve B2 (substance gate + "remembered, not verified"), B3 (item-level merge + two-device test),
+      B7 (no Stream C carve-out, claim-level provenance), and R5 (continuity-claim invalidation)
+      <em>before</em> the loop touches startup. If adoption never materializes, you saved the whole
+      cathedral.</p>
+      <span class="gate">Gate: B2 + B3 + B7 + R5 all closed before ContinuityState renders at T0.</span>
+    </div>
+  </div>
+  <div class="pull">Net: <b>fix six things now, ship the simple channel, prove it's used, and let
+  that data — not a guess — decide whether the continuity engine is worth its hazards.</b></div>
+</section>
+
+<footer class="col">
+  <p><strong>Source:</strong> <code>docs/reviews/2026-06-22-ambient-recall-v1-fusion.md</code> —
+  the full council review (verdict, disagreement map, complete punch list, preserved dissent).
+  <strong>Spec under review:</strong> <code>docs/specs/stream-e-ambient-recall-v1.0.md</code> (not edited).</p>
+  <p class="small">
+    Proposers — Codex (OpenAI) · Cursor/Composer (Anysphere) · Grok-4.3 (xAI) · DeepSeek-V4-Pro.<br>
+    Synthesizer — Opus (Anthropic). External judge — Gemini-3.5 (Google), a family absent from
+    proposers and spine.<br>
+    Kimi (Moonshot) was the planned 4th proposer; its lane failed to launch and DeepSeek-V4-Pro
+    replaced it to preserve four distinct families.<br>
+    Method — propose → blind cross-critique → defend → select-and-graft synthesis → external judge.
+  </p>
+</footer>
+
+</div>
+<script>
+  const bar=document.getElementById('bar');
+  addEventListener('scroll',()=>{const h=document.documentElement;
+    const p=h.scrollTop/(h.scrollHeight-h.clientHeight);bar.style.width=(p*100)+'%';},{passive:true});
+</script>
+</body>
+</html>
