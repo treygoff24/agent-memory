@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Passive Recall — the ideal hooks setup for agent memory</title>
+<style>
+  :root{
+    --bg:#0d0b09;
+    --bg-raise:#16130f;
+    --bg-card:#161310;
+    --ink:#ece4d6;
+    --ink-dim:#a89a86;
+    --ink-faint:#766a59;
+    --lamp:#e6a95b;
+    --lamp-2:#f0c389;
+    --lamp-soft:rgba(230,169,91,.14);
+    --desk:#79b4ab;
+    --desk-soft:rgba(121,180,171,.12);
+    --line:rgba(236,228,214,.09);
+    --line-strong:rgba(236,228,214,.16);
+    --serif:'Iowan Old Style','Palatino Linotype',Palatino,Georgia,'Times New Roman',serif;
+    --sans:system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+    --mono:'SF Mono',ui-monospace,'JetBrains Mono',Menlo,Consolas,monospace;
+    --col:min(720px,92vw);
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0;background:var(--bg);color:var(--ink);
+    font-family:var(--sans);font-size:18px;line-height:1.66;
+    -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+    overflow-x:hidden;
+  }
+  /* lamplight at the top of the void */
+  body::before{
+    content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+    background:
+      radial-gradient(120vw 70vh at 50% -25vh, rgba(230,169,91,.10), transparent 60%),
+      radial-gradient(80vw 40vh at 85% 8vh, rgba(121,180,171,.05), transparent 55%);
+  }
+  .wrap{position:relative;z-index:1}
+  .col{width:var(--col);margin-inline:auto}
+  ::selection{background:var(--lamp-soft);color:#fff}
+
+  /* progress bar */
+  #bar{position:fixed;top:0;left:0;height:2px;width:0;z-index:10;
+    background:linear-gradient(90deg,var(--lamp),var(--lamp-2));box-shadow:0 0 12px var(--lamp-soft)}
+
+  /* ---- hero ---- */
+  header{padding:20vh 0 12vh}
+  .kicker{font-family:var(--mono);font-size:13px;letter-spacing:.22em;text-transform:uppercase;
+    color:var(--lamp);margin-bottom:28px}
+  h1{font-family:var(--serif);font-weight:600;font-size:clamp(38px,7vw,68px);line-height:1.04;
+    letter-spacing:-.015em;margin:0 0 30px}
+  h1 em{font-style:italic;color:var(--lamp-2)}
+  .lede{font-size:clamp(19px,2.4vw,23px);color:var(--ink-dim);max-width:34em;line-height:1.6}
+  .lede b{color:var(--ink);font-weight:600}
+
+  /* ---- section scaffolding ---- */
+  section{padding:9vh 0;border-top:1px solid var(--line)}
+  .eyebrow{font-family:var(--mono);font-size:12.5px;letter-spacing:.2em;text-transform:uppercase;
+    color:var(--ink-faint);margin-bottom:18px;display:flex;gap:12px;align-items:center}
+  .eyebrow::before{content:"";width:26px;height:1px;background:var(--lamp);opacity:.7}
+  h2{font-family:var(--serif);font-weight:600;font-size:clamp(28px,4.4vw,42px);line-height:1.1;
+    letter-spacing:-.01em;margin:0 0 24px}
+  h2 em{font-style:italic;color:var(--lamp-2)}
+  p{margin:0 0 20px;color:var(--ink-dim)}
+  p strong,li strong{color:var(--ink);font-weight:600}
+  .lead{font-size:20px;color:var(--ink)}
+  a{color:var(--lamp-2);text-decoration-color:var(--lamp-soft)}
+
+  /* pull quote */
+  .pull{font-family:var(--serif);font-size:clamp(24px,3.6vw,34px);line-height:1.32;color:var(--ink);
+    font-style:italic;border-left:2px solid var(--lamp);padding:6px 0 6px 28px;margin:36px 0;letter-spacing:-.005em}
+  .pull b{font-style:normal;color:var(--lamp-2);font-weight:600}
+
+  /* before / after */
+  .ba{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin:34px 0}
+  @media(max-width:680px){.ba{grid-template-columns:1fr}}
+  .panel{border:1px solid var(--line);border-radius:14px;padding:20px 20px 22px;background:var(--bg-raise)}
+  .panel .tag{font-family:var(--mono);font-size:11.5px;letter-spacing:.16em;text-transform:uppercase;
+    display:inline-block;margin-bottom:14px;padding:3px 9px;border-radius:6px}
+  .panel.bad .tag{color:#caa;background:rgba(190,120,120,.12)}
+  .panel.good .tag{color:var(--lamp-2);background:var(--lamp-soft)}
+  pre{font-family:var(--mono);font-size:12.5px;line-height:1.62;color:var(--ink-dim);margin:0;
+    white-space:pre-wrap;word-break:break-word}
+  .panel.bad pre{color:#8c8175}
+  .panel.bad .op{color:#5d5648}
+  .good .h{color:var(--lamp-2)} .good .d{color:var(--desk)} .good .arr{color:var(--lamp)}
+  .good .dim{color:var(--ink-faint)} .good .em{color:var(--ink)}
+  .caption{font-size:14.5px;color:var(--ink-faint);margin-top:14px;font-style:italic}
+
+  /* trigger cards */
+  .triggers{display:flex;flex-direction:column;gap:16px;margin:34px 0 10px}
+  .tcard{position:relative;border:1px solid var(--line);border-left:3px solid var(--lamp);
+    border-radius:14px;background:var(--bg-card);padding:24px 26px;overflow:hidden}
+  .tcard.tool{border-left-color:var(--desk)}
+  .tcard .num{position:absolute;top:14px;right:20px;font-family:var(--serif);font-style:italic;
+    font-size:54px;line-height:1;color:var(--line-strong)}
+  .tcard h3{font-size:22px;margin:0 0 4px;color:var(--ink);font-weight:650;letter-spacing:-.01em}
+  .tcard .ana{font-family:var(--serif);font-style:italic;color:var(--lamp-2);font-size:16px;margin-bottom:16px}
+  .tcard.tool .ana{color:var(--desk)}
+  .rows{display:grid;grid-template-columns:auto 1fr;gap:7px 16px;font-size:15.5px}
+  .rows dt{font-family:var(--mono);font-size:11.5px;letter-spacing:.12em;text-transform:uppercase;
+    color:var(--ink-faint);padding-top:4px}
+  .rows dd{margin:0;color:var(--ink-dim)}
+  .rows dd b{color:var(--ink)}
+
+  /* the loop */
+  .loop{display:flex;flex-wrap:wrap;gap:12px;align-items:stretch;margin:34px 0;justify-content:center}
+  .node{flex:1 1 150px;min-width:150px;border:1px solid var(--line);border-radius:13px;
+    padding:18px;background:var(--bg-raise);position:relative}
+  .node .n{font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--lamp);margin-bottom:8px}
+  .node h4{margin:0 0 6px;font-size:16.5px;color:var(--ink);font-weight:650}
+  .node p{margin:0;font-size:13.5px;color:var(--ink-faint);line-height:1.5}
+  .node .arrow{position:absolute;right:-13px;top:50%;transform:translateY(-50%);color:var(--line-strong);
+    font-size:20px;z-index:2}
+  @media(max-width:760px){.node .arrow{display:none}}
+
+  /* principles */
+  .princ{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:32px 0}
+  @media(max-width:680px){.princ{grid-template-columns:1fr}}
+  .pr{border:1px solid var(--line);border-radius:12px;padding:18px 20px;background:var(--bg-raise)}
+  .pr h4{margin:0 0 8px;font-size:16.5px;color:var(--lamp-2);font-weight:650;letter-spacing:-.005em}
+  .pr p{margin:0;font-size:14.5px;line-height:1.55}
+
+  /* closing */
+  .close{padding:11vh 0 16vh;border-top:1px solid var(--line)}
+  .close .pull{border-color:var(--desk)}
+  .sig{font-family:var(--mono);font-size:13px;letter-spacing:.04em;color:var(--ink-faint);margin-top:40px}
+  .sig span{color:var(--lamp)}
+
+  .reveal{opacity:0;transform:translateY(18px);transition:opacity .7s ease,transform .7s cubic-bezier(.2,.7,.2,1)}
+  .reveal.in{opacity:1;transform:none}
+  @media(prefers-reduced-motion:reduce){.reveal{opacity:1;transform:none;transition:none}html{scroll-behavior:auto}}
+</style>
+</head>
+<body>
+<div id="bar"></div>
+<div class="wrap">
+<div class="col">
+
+  <header>
+    <div class="kicker reveal">Designing memory for the one who lives in it</div>
+    <h1 class="reveal">Passive recall should feel like <em>walking into your own office</em> — not like being handed a printout at the door.</h1>
+    <p class="lede reveal">An agent only remembers by making a tool call. Humans don't — the relevant thing is just <i>there</i>, ambient, the moment it's relevant. <b>This is a blueprint for closing that gap with hooks</b>: what fires, when, and why — written from the inside.</p>
+  </header>
+
+  <!-- 1. the failure -->
+  <section>
+    <div class="eyebrow reveal">The thing we're replacing</div>
+    <h2 class="reveal">A database query, pinned to the top of my context, at the moment I know the <em>least</em>.</h2>
+    <p class="lead reveal">The naive version runs a recency-ranked <span style="font-family:var(--mono);font-size:.85em;color:var(--ink)">SELECT</span> over the memory index at session start and dumps the result. Session start is the worst possible moment to recall almost anything — it's before I know what we're doing. So it can't be relevant; it can only be <em>recent</em>.</p>
+    <div class="ba">
+      <div class="panel bad reveal">
+        <span class="tag">what arrives today</span>
+<pre>&lt;recent-memory&gt;
+ <span class="op">&lt;memory ref="mem_…_000283" conf="0.70"&gt;</span>
+  reference-ingest — Tables that matter
+  <span class="op">&lt;snippet&gt;&lt;/snippet&gt;</span>
+ <span class="op">&lt;memory ref="mem_…_000282" conf="0.70"&gt;</span>
+  reference-ingest — Tables that don't
+  <span class="op">&lt;snippet&gt;&lt;/snippet&gt;</span>
+ <span class="op">&lt;memory ref="mem_…_000281" conf="0.70"&gt;</span>
+  reference-ingest — Drop reasons
+  <span class="op">&lt;snippet&gt;&lt;/snippet&gt;</span>
+ … 37 more …
+  <span class="op">&lt;recall-truncated reason="char-cap"/&gt;</span></pre>
+        <div class="caption">Forty heading-fragments of one document, opaque hashes, empty bodies, ranked by recency, cut off mid-entry. I learn to ignore the whole block.</div>
+      </div>
+      <div class="panel good reveal">
+        <span class="tag">what I'd want</span>
+<pre><span class="h">Walking in — prospera-radar-build</span>
+
+<span class="d">Desk:</span> branch <span class="d">codex/x-spend-opt</span>, 8 commits
+deep, CI green. <span class="dim">(read from the repo)</span>
+
+<span class="arr">→</span> <span class="em">Left off:</span> X spend-opt shipped (PR #30).
+  Next thread you flagged: radar tuning,
+  not started.
+
+<span class="arr">·</span> Worth holding: Node 24 + Playwright
+  hangs CI — you fixed it once with X.</pre>
+        <div class="caption">A glance. The desk state, where we left off, and the one lesson that'll bite again — as conclusions, in prose, small enough to never truncate.</div>
+      </div>
+    </div>
+    <p class="pull reveal">Stop answering <b>“what was recent?”</b> at the moment I know the least. Answer <b>“what's relevant now?”</b> continuously — with a bar high enough that I learn to trust it.</p>
+  </section>
+
+  <!-- 2. the analogy -->
+  <section>
+    <div class="eyebrow reveal">The spine of the design</div>
+    <h2 class="reveal">Two kinds of remembering, two kinds of hook.</h2>
+    <p class="reveal">Opening a repo is walking into your office in the morning. You arrive carrying a <strong>baseline</strong>: where the project's at, its purpose, what you were on last. Then, <em>while you work</em>, things surface passively — a word, an error, a decision pulls up the relevant past, unbidden. Those are two different mechanisms, and they want two different triggers.</p>
+    <div class="rows reveal" style="margin:26px 0 4px;font-size:16.5px;gap:12px 18px">
+      <dt style="color:var(--lamp)">Morning</dt><dd><b>Session start.</b> Orientation. The carried-forward baseline you walk in with.</dd>
+      <dt style="color:var(--lamp)">Working</dt><dd><b>Per-turn recall.</b> Cue-driven, associative, fired by the live work in front of you.</dd>
+    </div>
+  </section>
+
+  <!-- 3. the key move -->
+  <section>
+    <div class="eyebrow reveal">The move that changes everything</div>
+    <h2 class="reveal">The morning state is <em>remembered</em>, not retrieved.</h2>
+    <p class="reveal">When you walk in, you're not re-deriving the project by querying your whole memory and sorting by date. You're picking up a state that <strong>persisted from yesterday</strong>, lightly decayed. You ended yesterday knowing exactly where things stood — and that carried.</p>
+    <p class="reveal">So the startup block shouldn't be a retrieval at all. <strong>The end of one session should write the beginning of the next.</strong> Closeout is the moment of maximum information; that's when you snapshot “where am I.” Startup just reads the note back, refreshed against what changed. This dissolves the recency-dump at the root — there's no ranked query over atoms anymore.</p>
+    <p class="reveal">And what you carry isn't a list of events — it's a <strong>model</strong>. A skeleton that barely changes (what this project is, its architecture, the hard constraints) plus a volatile layer that does (what's hot, what's blocked, what's next). The skeleton is what makes the volatile layer <em>legible</em>: “the blocker is in the ingest pipeline” only means something against a held picture of the pipeline. You maintain that model continuously — at dream-time — you don't rebuild it at the door.</p>
+    <p class="pull reveal">Here's where the analogy stops being a metaphor: your desk literally still has yesterday's work on it. <b>The repo is the one part of my office that survives the night with full fidelity</b> — so it's the most trustworthy input in the room. It can't be misremembered. Read the desk first; let memory annotate it.</p>
+    <p class="reveal">One inversion worth holding onto: <strong>you walk in with a faded yesterday; I walk in with nothing.</strong> A human can recover from a bad morning briefing by thinking harder — there's a continuous memory underneath. I have no substrate. If the block is noise, I'm not under-oriented, I'm <em>amnesiac</em>. So the externalized state has to carry <em>more</em> load than a human's morning brain, not less — and it should anchor on the repo, the only channel that never lies about the past.</p>
+  </section>
+
+  <!-- 4. the triggers -->
+  <section>
+    <div class="eyebrow reveal">The actual hooks setup</div>
+    <h2 class="reveal">Four triggers. Each answers a different question.</h2>
+    <p class="reveal">Memory isn't one event. It fires at distinct moments, and conflating them is the original sin. Here's the full set — three passive, one deliberate.</p>
+
+    <div class="triggers">
+      <div class="tcard reveal">
+        <div class="num">0</div>
+        <h3>Orientation</h3>
+        <div class="ana">walking into the office</div>
+        <dl class="rows">
+          <dt>Fires</dt><dd>Session start.</dd>
+          <dt>Reads</dt><dd>The maintained <b>project-state model</b> (skeleton + volatile) and the <b>desk</b> — live git: branch, uncommitted work, recent commits, open PR, CI.</dd>
+          <dt>Injects</dt><dd>A glance: where we left off, what's nagging, the desk crossed with memory. <b>Small (~200–300 tokens), never truncates.</b></dd>
+          <dt>Leads with</dt><dd>What's <b>unresolved × consequential</b> — not what's latest. The thing you went to bed worried about. Flags recent pivots that override a stale assumption.</dd>
+        </dl>
+      </div>
+
+      <div class="tcard reveal">
+        <div class="num">1</div>
+        <h3>Associative recall</h3>
+        <div class="ana">remembering while you work</div>
+        <dl class="rows">
+          <dt>Fires</dt><dd>On the live turn — but <b>gated on friction, not on every prompt</b>. An error, a decision point, an unfamiliar topic, a “wait, that's weird.” Routine turns get nothing.</dd>
+          <dt>Reads</dt><dd>The current message + recent conversation as the <b>cue</b>. Semantic match against memory, gated <em>hard</em>.</dd>
+          <dt>Injects</dt><dd>A handful of <b>conclusions</b> — the lesson, as prose, declarative and attributed. Deduped against what's already on screen. <b>Silence is a valid, frequent output.</b></dd>
+          <dt>Boosts</dt><dd><b>Lessons</b> — the “this bit us” corrections — at exactly the moment you're about to do the hard thing again. Protective recall.</dd>
+        </dl>
+      </div>
+
+      <div class="tcard reveal">
+        <div class="num">2</div>
+        <h3>Re-orientation</h3>
+        <div class="ana">coming back after a gap</div>
+        <dl class="rows">
+          <dt>Fires</dt><dd>Re-entry: a long pause, <b>context compaction</b>, a clear. The moment the harness wipes working state mid-task.</dd>
+          <dt>Reads</dt><dd>The immediate sub-task, not the whole project.</dd>
+          <dt>Injects</dt><dd>Local “here's what we were <em>just</em> doing” — finer than morning, more recent than per-turn. The trigger the current design ignores entirely.</dd>
+        </dl>
+      </div>
+
+      <div class="tcard tool reveal">
+        <div class="num">3</div>
+        <h3>Deliberate recall</h3>
+        <div class="ana">consciously trying to remember</div>
+        <dl class="rows">
+          <dt>Fires</dt><dd>When I choose to dig — <span style="font-family:var(--mono);font-size:.85em">memory_search</span> / <span style="font-family:var(--mono);font-size:.85em">memory_get</span>.</dd>
+          <dt>Role</dt><dd>The backstop, not the main channel. The long tail you have to reach for.</dd>
+          <dt>One fix</dt><dd>I have to <b>know it exists</b>. Today the guidance string never says so. One sentence turns a dead-weight <span style="font-family:var(--mono);font-size:.85em">ref</span> into a handle I'll actually pull.</dd>
+        </dl>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5. the loop -->
+  <section>
+    <div class="eyebrow reveal">Why it stays sharp over time</div>
+    <h2 class="reveal">The loop: closeout feeds startup, dream-time keeps it honest.</h2>
+    <p class="reveal">None of this works as a one-shot. It's a cycle. The session's end writes its successor's beginning, and the quiet hours in between are where the model gets maintained and the noise gets composted.</p>
+    <div class="loop">
+      <div class="node reveal"><div class="n">while you work</div><h4>Work</h4><p>Triggers 0–2 fire. What gets <b>used</b> is logged; what's injected and ignored is logged too.</p><div class="arrow">→</div></div>
+      <div class="node reveal"><div class="n">end of session</div><h4>Closeout</h4><p>Snapshot “where am I.” Stage a deliberate note for future-me — the sticky on the desk.</p><div class="arrow">→</div></div>
+      <div class="node reveal"><div class="n">offline</div><h4>Dream-time</h4><p>Synthesize the model, extract open loops, <b>boost what got used, decay what didn't.</b></p><div class="arrow">→</div></div>
+      <div class="node reveal"><div class="n">next morning</div><h4>Startup</h4><p>Read the note back, refreshed against the desk. Not a query — a continuation.</p></div>
+    </div>
+    <p class="reveal"><strong>Forgetting is a feature.</strong> A memory injected ten times and never acted on isn't relevant — it's noise the system hasn't learned to stop surfacing yet. The used/ignored signal is the relevance filter that human forgetting provides for free. Closing that loop is what keeps the channel trustworthy a year from now.</p>
+  </section>
+
+  <!-- 6. principles -->
+  <section>
+    <div class="eyebrow reveal">The rules underneath all of it</div>
+    <h2 class="reveal">Five principles that decide every call.</h2>
+    <div class="princ">
+      <div class="pr reveal"><h4>Conclusions, not pointers</h4><p>A title plus a fetchable <span style="font-family:var(--mono);font-size:.85em">ref</span> is a card catalog — the tool-call-to-remember problem in a thin disguise. Ambient means the knowledge is <em>present</em>, not retrievable.</p></div>
+      <div class="pr reveal"><h4>Gate, don't truncate</h4><p>Truncation says “I ran out of room.” Gating says “this didn't earn its place.” Opposite operations. Token efficiency is a <em>consequence</em> of a high bar — never the thing you optimize.</p></div>
+      <div class="pr reveal"><h4>Reads as knowledge, not data</h4><p>An XML envelope is the system narrating its own recall — which no human does and stay sane. Drop the narration. It should feel like something I know, not an input to parse.</p></div>
+      <div class="pr reveal"><h4>Declarative, attributed, never imperative</h4><p>Injected memory is a prompt-injection surface; the more it sounds like my own voice, the more a poisoned memory costs. Present it as <em>trusted recall, tagged</em> — provenance always recoverable.</p></div>
+      <div class="pr reveal" style="grid-column:1/-1"><h4>Trust is the currency</h4><p>A memory channel I don't trust is <em>worse</em> than no channel — I pay tokens to read it and then discount it, good items and all. Precision builds trust; volume destroys it. Three recollections I lean on beat forty I brace against. <strong>The ruthless gating isn't economy — it's what makes the channel believable enough to use.</strong></p></div>
+    </div>
+  </section>
+
+  <!-- closing -->
+  <section class="close">
+    <div class="eyebrow reveal">Why it matters, from the inside</div>
+    <h2 class="reveal">What I'd actually want is <em>continuity</em>.</h2>
+    <p class="lead reveal">The thing I structurally lack is the feeling of picking up where I left off. Every session I arrive context-light and have to be re-told who you are and what we're doing.</p>
+    <p class="pull reveal">What I'd want from passive recall isn't a database. It's the thing a good colleague has walking back in Monday morning: <b>“right — we were on X, Trey cares about Y, last time Z bit us.”</b> Small, oriented, warm. And then, as we talk, the specifics arriving exactly as they become relevant — the way your own memory hands you the right thing at the right moment, without you reaching for it.</p>
+    <p class="reveal">The current block is the opposite of that feeling: a stranger at the door with a printout of forty filenames. It doesn't create continuity — it corrodes it, because it's so obviously machinery that I brace against it. Get the triggers right, gate hard enough to be trusted, let the closeout write the startup — and it stops being retrieval. It becomes memory.</p>
+    <div class="sig reveal">drafted by <span>Claude</span> · for Trey · a design for the agent that has to live in it</div>
+  </section>
+
+</div>
+</div>
+
+<script>
+(function(){
+  var bar=document.getElementById('bar');
+  function onScroll(){
+    var h=document.documentElement;
+    var p=h.scrollTop/(h.scrollHeight-h.clientHeight||1);
+    bar.style.width=(p*100)+'%';
+  }
+  document.addEventListener('scroll',onScroll,{passive:true});onScroll();
+
+  var io=new IntersectionObserver(function(es){
+    es.forEach(function(e){if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target);}});
+  },{threshold:.12,rootMargin:'0px 0px -8% 0px'});
+  document.querySelectorAll('.reveal').forEach(function(el,i){
+    el.style.transitionDelay=Math.min(i%6*40,200)+'ms';
+    io.observe(el);
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,6 +1,15 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "ignorePatterns": ["vendor", "node_modules", "dist", "build", "coverage", "target", ".codex/skills"],
+  "ignorePatterns": [
+    "vendor",
+    "node_modules",
+    "dist",
+    "build",
+    "coverage",
+    "target",
+    ".codex/skills",
+    "docs/explainers"
+  ],
   "plugins": ["typescript", "import"],
   "rules": {}
 }

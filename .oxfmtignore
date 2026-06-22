@@ -15,7 +15,7 @@ llms-install.md
 docs/importer.md
 docs/runbooks/init-wizard.md
 docs/runbooks/agent-onboarding-smoke.md
-docs/explainers/*.html
+docs/explainers/
 docs/reviews/2026-05-28-main-rs-refactor-review.md
 docs/reviews/2026-06-05-elegance-audit.md
 docs/reviews/2026-06-10-vector-recall-fusion-run-record.md

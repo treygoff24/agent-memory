@@ -37,6 +37,7 @@
     "docs/plans",
     "docs/specs",
     "docs/reference",
+    "docs/explainers",
     "docs/handoff-2026-04-23.md"
   ],
   "sortPackageJson": false,
