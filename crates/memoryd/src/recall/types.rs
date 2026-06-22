@@ -25,6 +25,16 @@ pub const HOOK_DELTA_BUDGET_TOKENS: usize = 360;
 /// 8, "Size" invariant guard).
 pub const HOOK_BLOCK_CHAR_CAP: usize = 10_000;
 
+/// Maximum `recent-memory` entries surfaced in a passive (hook-mode) block.
+///
+/// The token budget alone admits ~30 scaffolding-heavy entries that overflow
+/// [`HOOK_BLOCK_CHAR_CAP`] and truncate mid-entry, so the hook also caps the
+/// section by entry *count* to a small, high-signal set. Applied only to the
+/// passive path; the active startup path is unbounded as before. The cap is a
+/// pure prefix of the rank-ordered input, so the passive block stays
+/// byte-deterministic (cache-safety invariant).
+pub const HOOK_RECENT_MEMORY_MAX_ENTRIES: usize = 8;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntityMatchKind {
     None,
@@ -188,6 +198,10 @@ pub struct RecallOmission {
 #[serde(rename_all = "snake_case")]
 pub enum OmissionReason {
     BudgetExhausted,
+    /// Dropped by the passive hook's fixed entry cap ([`crate::recall::types::HOOK_RECENT_MEMORY_MAX_ENTRIES`]),
+    /// distinct from token-`BudgetExhausted` so it does not inflate the
+    /// budget-exhaustion metric.
+    HookEntryCap,
     StatusExcluded,
     PassiveRecallDisabled,
     ReviewPending,
@@ -256,6 +270,7 @@ impl OmissionReason {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::BudgetExhausted => "budget_exhausted",
+            Self::HookEntryCap => "hook_entry_cap",
             Self::StatusExcluded => "status_excluded",
             Self::PassiveRecallDisabled => "passive_recall_disabled",
             Self::ReviewPending => "review_pending",

@@ -146,7 +146,7 @@ fn rendering_is_byte_identical_and_uses_stable_xml_escaping() {
     });
     assert_eq!(
         entry,
-        "<memory ref=\"mem&lt;&amp;&gt;\" updated=\"2026-04-30\" source=\"agent&amp;tool\" confidence=\"1.00\">\n  <summary>use &lt;xml&gt; &amp; plain text</summary>\n  <snippet></snippet>\n</memory>"
+        "<memory ref=\"mem&lt;&amp;&gt;\" updated=\"2026-04-30\" source=\"agent&amp;tool\" confidence=\"1.00\">\n  <summary>use &lt;xml&gt; &amp; plain text</summary>\n</memory>"
     );
 }
 

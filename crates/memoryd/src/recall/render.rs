@@ -86,25 +86,36 @@ pub fn render_memory_entry_passive(entry: &RecallEntry) -> String {
 
 fn render_memory_entry_inner(entry: &RecallEntry, passive: bool) -> String {
     let summary = truncate_utf8_bytes(&entry.summary, SUMMARY_MAX_BYTES).value;
+    // An optional `<snippet>` is omitted entirely when empty or whitespace-only
+    // rather than rendered as a hollow `<snippet></snippet>`: the empty tag is
+    // pure scaffolding that also implies content the recall index never carried.
+    // A present snippet (Tier 2 / direct callers) renders verbatim — the trim is
+    // only the emptiness test, never applied to the rendered value, so meaningful
+    // leading/trailing whitespace survives. Omission is a pure function of the
+    // entry, so the passive block stays byte-deterministic (cache-safety invariant).
     let snippet = entry
         .snippet
         .as_deref()
-        .map(|snippet| truncate_utf8_bytes(snippet, SNIPPET_MAX_BYTES).value)
-        .unwrap_or_default();
+        .filter(|snippet| !snippet.trim().is_empty())
+        .map(|snippet| truncate_utf8_bytes(snippet, SNIPPET_MAX_BYTES).value);
     let (summary, snippet) = if passive {
-        (neutralize_imperative_prose(&summary), neutralize_imperative_prose(&snippet))
+        (neutralize_imperative_prose(&summary), snippet.map(|snippet| neutralize_imperative_prose(&snippet)))
     } else {
         (summary, snippet)
     };
+    let snippet_element = match &snippet {
+        Some(snippet) => format!("\n  <snippet>{}</snippet>", escape_xml_text(snippet)),
+        None => String::new(),
+    };
 
     format!(
-        "<memory ref=\"{}\" updated=\"{}\" source=\"{}\" confidence=\"{}\">\n  <summary>{}</summary>\n  <snippet>{}</snippet>\n</memory>",
+        "<memory ref=\"{}\" updated=\"{}\" source=\"{}\" confidence=\"{}\">\n  <summary>{}</summary>{}\n</memory>",
         escape_xml_attr(&entry.id),
         escape_xml_attr(&entry.updated),
         escape_xml_attr(&entry.source_kind),
         escape_xml_attr(&entry.confidence),
         escape_xml_text(&summary),
-        escape_xml_text(&snippet)
+        snippet_element,
     )
 }
 
@@ -727,6 +738,34 @@ mod tests {
         let active = render_memory_entry(&entry);
         assert!(active.contains("<summary>Always rebase before pushing</summary>"));
         assert!(!active.contains("[recalled note]"));
+    }
+
+    #[test]
+    fn render_memory_entry_omits_empty_snippet_and_renders_present_one() {
+        let base = RecallEntry {
+            id: "mem_snip".to_owned(),
+            summary: "A standalone fact.".to_owned(),
+            snippet: None,
+            updated: "2026-06-21".to_owned(),
+            source_kind: "agent_primary".to_owned(),
+            confidence: "0.70".to_owned(),
+        };
+
+        // None / empty / whitespace-only snippet → no <snippet> element at all.
+        for empty in [None, Some(String::new()), Some("   ".to_owned())] {
+            let entry = RecallEntry { snippet: empty, ..base.clone() };
+            let rendered = render_memory_entry(&entry);
+            assert!(!rendered.contains("<snippet"), "empty snippet must not render an element: {rendered}");
+            assert!(rendered.ends_with("<summary>A standalone fact.</summary>\n</memory>"));
+        }
+
+        // A present snippet renders verbatim — leading/trailing whitespace is
+        // preserved (trim is only the emptiness test, never applied to the value).
+        let entry = RecallEntry { snippet: Some("  padded body  ".to_owned()), ..base };
+        let rendered = render_memory_entry(&entry);
+        assert!(
+            rendered.contains("<summary>A standalone fact.</summary>\n  <snippet>  padded body  </snippet>\n</memory>")
+        );
     }
 
     #[test]

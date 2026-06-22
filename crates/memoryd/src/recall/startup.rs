@@ -17,7 +17,7 @@ use crate::recall::candidates::{
 use crate::recall::dedup_state::RecallDedupState;
 use crate::recall::dream_questions::{select_pending_attention_questions, DreamQuestionSelection, CAP_TOTAL};
 use crate::recall::error::RecallError;
-use crate::recall::rank::{select_ranked_candidates, RankingContext};
+use crate::recall::rank::{select_ranked_candidates, RankedRecallCandidate, RankingContext};
 use crate::recall::render::{
     cap_passive_block, emit_recall_hits, escape_xml_text, render_memory_entry, render_memory_entry_passive,
     render_pending_attention_body, render_startup_frame_passive, render_startup_frame_with_cross_device_updates,
@@ -28,8 +28,9 @@ use crate::recall::source_identity::{
     peer_write_candidates, project_scoped_candidate_paths, recency_cutoff,
 };
 use crate::recall::types::{
-    bounded_omissions, RecallExplanation, RecallSectionExplanation, RecallSectionName, RecallStrength, SessionBinding,
-    StartupRequest, StartupResponse, DEFAULT_STARTUP_BUDGET_TOKENS, HOOK_STARTUP_BUDGET_TOKENS,
+    bounded_omissions, OmissionReason, RecallExplanation, RecallOmission, RecallSectionExplanation, RecallSectionName,
+    RecallStrength, SessionBinding, StartupRequest, StartupResponse, DEFAULT_STARTUP_BUDGET_TOKENS,
+    HOOK_RECENT_MEMORY_MAX_ENTRIES, HOOK_STARTUP_BUDGET_TOKENS,
 };
 use crate::recall::validate_startup_request;
 use crate::state::DaemonState;
@@ -110,7 +111,7 @@ pub async fn build_startup_response_with_coordination_config(
     // Best-effort / Claude-only: an absent or unreadable file skips dedup.
     let native_memory_head = if passive { read_native_memory_head(&session_binding.cwd).await } else { None };
 
-    let recent_candidates = selected
+    let ranked_recent = selected
         .selected
         .iter()
         .filter(|candidate| {
@@ -119,6 +120,19 @@ pub async fn build_startup_response_with_coordination_config(
                 .is_none_or(|head| !native_head_contains_summary(head, &candidate.candidate.row.summary))
         })
         .collect::<Vec<_>>();
+
+    // Hook display reduction: a passive block caps the section to a small,
+    // high-signal set (see `cap_recent_for_hook`); the active startup path stays
+    // unbounded. Dropped entries are recorded as omissions below so the recall
+    // explanation stays truthful.
+    let mut hook_dropped: Vec<&RankedRecallCandidate> = Vec::new();
+    let recent_candidates = if passive {
+        let (kept, dropped) = cap_recent_for_hook(&ranked_recent);
+        hook_dropped = dropped;
+        kept
+    } else {
+        ranked_recent
+    };
 
     let included_memory_ids = if include_recent {
         recent_candidates.iter().map(|candidate| candidate.id().to_owned()).collect::<Vec<_>>()
@@ -227,6 +241,13 @@ pub async fn build_startup_response_with_coordination_config(
     let section_token_estimates = section_token_estimates(&sections);
     let mut omissions = collection.omitted;
     omissions.extend(selected.omitted);
+    omissions.extend(hook_dropped.iter().map(|candidate| RecallOmission {
+        id: Some(candidate.id().to_owned()),
+        section: RecallSectionName::RecentMemory,
+        reason: OmissionReason::HookEntryCap,
+        alias: None,
+        colliding_ids: Vec::new(),
+    }));
     let bounded = bounded_omissions(omissions);
     let mut explanation = RecallExplanation {
         budget_tokens,
@@ -664,6 +685,27 @@ fn normalize_for_dedup(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_lowercase()
 }
 
+/// Cap a rank-ordered `recent-memory` set for a passive (hook-mode) block to
+/// [`HOOK_RECENT_MEMORY_MAX_ENTRIES`].
+///
+/// The token budget alone admits enough scaffolding-heavy entries to overflow
+/// [`crate::recall::types::HOOK_BLOCK_CHAR_CAP`] and truncate mid-entry, so the
+/// hook bounds the section by entry count. The cap is a pure prefix of the
+/// rank-ordered input (preserving byte-determinism), returning `(kept, dropped)`
+/// so the caller records the dropped entries as omissions.
+///
+/// Collapsing the importer's per-heading dossier siblings (`"<parent> — <section>"`)
+/// is deliberately *not* done here: a summary-prefix heuristic also matches
+/// standalone summaries that contain `" — "` and would silently hide distinct
+/// memories. Safe collapse needs the importer's parent source key projected into
+/// the recall index — deferred to a later change.
+fn cap_recent_for_hook<'a>(
+    ranked: &[&'a RankedRecallCandidate],
+) -> (Vec<&'a RankedRecallCandidate>, Vec<&'a RankedRecallCandidate>) {
+    let split = ranked.len().min(HOOK_RECENT_MEMORY_MAX_ENTRIES);
+    (ranked[..split].to_vec(), ranked[split..].to_vec())
+}
+
 fn project_body(session_binding: &SessionBinding) -> String {
     match &session_binding.project {
         Some(project) => {
@@ -1022,6 +1064,45 @@ mod tests {
             with_native_b.recall_block.as_bytes(),
             "dedup is frozen per request, so the deduped block stays byte-deterministic"
         );
+    }
+
+    #[tokio::test]
+    async fn passive_recall_caps_entry_count_and_records_dropped_as_omissions() {
+        let fixture = PassiveFixture::new("dev_capentries").await;
+        let total = HOOK_RECENT_MEMORY_MAX_ENTRIES + 5;
+        for index in 0..total {
+            let id = format!("mem_20260501_4444444444444444_{index:06}");
+            fixture.write_memory(&id, &format!("Distinct standalone fact {index}")).await;
+        }
+
+        let passive = fixture.startup(true, Some("sess_cap_entries")).await;
+
+        assert_eq!(
+            passive.recall_block.matches("<memory ref=").count(),
+            HOOK_RECENT_MEMORY_MAX_ENTRIES,
+            "passive recent-memory must cap at the hook entry limit"
+        );
+        // Over-cap drops are recorded with the entry-cap reason — never mislabeled
+        // as token-budget exhaustion (which feeds a separate metric).
+        let cap_omissions = passive
+            .recall_explanation
+            .omitted
+            .iter()
+            .filter(|omission| omission.reason == OmissionReason::HookEntryCap)
+            .count();
+        assert_eq!(cap_omissions, 5, "over-cap entries must be recorded as HookEntryCap omissions");
+        assert!(
+            passive
+                .recall_explanation
+                .omitted
+                .iter()
+                .all(|omission| omission.reason != OmissionReason::BudgetExhausted),
+            "entry-cap drops must not inflate the budget-exhaustion metric"
+        );
+
+        // The active path is unbounded: the same store renders every entry.
+        let active = fixture.startup(false, Some("sess_cap_active")).await;
+        assert_eq!(active.recall_block.matches("<memory ref=").count(), total);
     }
 
     fn binding_with_session(session_id: &str) -> SessionBinding {

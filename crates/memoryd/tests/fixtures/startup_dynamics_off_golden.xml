@@ -12,20 +12,17 @@
   <recent-memory>
     <memory ref="mem_20260501_aaaaaaaaaaaaaaaa_000001" updated="2026-05-01T12:00:00+00:00" source="agent-primary" confidence="0.80">
       <summary>Pinned operational invariant remains in off mode.</summary>
-      <snippet></snippet>
     </memory>
     <memory ref="mem_20260501_cccccccccccccccc_000003" updated="2026-05-01T12:00:00+00:00" source="agent-primary" confidence="0.80">
       <summary>Lightly recalled user note keeps the off-state fixture non-empty.</summary>
-      <snippet></snippet>
     </memory>
     <memory ref="mem_20260501_bbbbbbbbbbbbbbbb_000002" updated="2026-05-01T12:00:00+00:00" source="agent-primary" confidence="0.80">
       <summary>Frequently recalled agent note is still structurally rendered.</summary>
-      <snippet></snippet>
     </memory>
   </recent-memory>
   <pending-attention>
   </pending-attention>
-  <recall-explanation policy="STREAM_E_POLICY" budget-tokens="1024" used-tokens="332">
+  <recall-explanation policy="STREAM_E_POLICY" budget-tokens="1024" used-tokens="312">
     Deterministic passive recall from Memorum index rows.
   </recall-explanation>
 </memory-recall>
