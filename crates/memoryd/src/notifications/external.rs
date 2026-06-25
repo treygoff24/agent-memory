@@ -426,5 +426,6 @@ fn external_summary(event: &NotificationEvent) -> String {
         }
         NotificationEvent::LeakedSecretDetected { .. } => "Blocked secret write attempt detected.".to_owned(),
         NotificationEvent::BlockingMergeConflict { .. } => "Sync is blocked by a merge conflict.".to_owned(),
+        NotificationEvent::OperatorActionRequired { message } => message.clone(),
     }
 }

@@ -2,9 +2,9 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
 use chrono::NaiveDate;
-use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, ArgGroup, Args, Parser, Subcommand, ValueEnum};
 
-use crate::protocol::{PeerActivityFormat, RealityCheckRequest, RequestPayload};
+use crate::protocol::{PeerActivityFormat, QuarantineResolutionMode, RealityCheckRequest, RequestPayload};
 
 #[derive(Debug, Parser)]
 #[command(name = "memoryd", version)]
@@ -40,6 +40,8 @@ pub enum Command {
     Forget(ForgetArgs),
     /// Admin review queue commands.
     Review(ReviewArgs),
+    /// Merge-quarantine inspection and resolution commands.
+    Quarantine(QuarantineArgs),
     /// Passive recall hook commands.
     Recall(RecallArgs),
     /// Stream F dreaming admin commands.
@@ -592,6 +594,65 @@ pub struct ReviewRejectArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct QuarantineArgs {
+    #[command(subcommand)]
+    pub command: QuarantineCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum QuarantineCommand {
+    /// List quarantined memories blocking sync.
+    List(QuarantineListArgs),
+    /// Resolve one quarantined memory after operator review.
+    Resolve(QuarantineResolveArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct QuarantineListArgs {
+    /// Unix socket path used to reach memoryd.
+    #[arg(long)]
+    pub socket: Option<PathBuf>,
+    /// Maximum number of quarantined memories to return.
+    #[arg(long)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Args)]
+#[command(group(
+    ArgGroup::new("resolution")
+        .args(["accept_ours", "accept_theirs", "edited"])
+        .multiple(false)
+))]
+pub struct QuarantineResolveArgs {
+    /// Unix socket path used to reach memoryd.
+    #[arg(long)]
+    pub socket: Option<PathBuf>,
+    /// Memory id to resolve.
+    pub id: String,
+    /// Accept this side's current quarantined content as the resolution.
+    #[arg(long)]
+    pub accept_ours: bool,
+    /// Accept the other side's current quarantined content as the resolution.
+    #[arg(long)]
+    pub accept_theirs: bool,
+    /// Mark the current file as manually edited and resolved.
+    #[arg(long)]
+    pub edited: bool,
+}
+
+impl QuarantineResolveArgs {
+    pub fn mode(&self) -> QuarantineResolutionMode {
+        if self.accept_ours {
+            QuarantineResolutionMode::AcceptOurs
+        } else if self.accept_theirs {
+            QuarantineResolutionMode::AcceptTheirs
+        } else {
+            QuarantineResolutionMode::Edited
+        }
+    }
+}
+
+#[derive(Debug, Args)]
 pub struct RecallArgs {
     #[command(subcommand)]
     pub command: RecallCommand,
@@ -1065,6 +1126,7 @@ pub(crate) mod output;
 pub mod peer;
 pub mod peer_render;
 pub mod privacy;
+pub mod quarantine;
 pub mod reality_check;
 pub mod recall;
 pub mod recall_hook;

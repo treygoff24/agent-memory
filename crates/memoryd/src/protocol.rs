@@ -170,6 +170,10 @@ pub enum RequestPayload {
     ConflictsList {
         limit: Option<usize>,
     },
+    QuarantineResolve {
+        id: String,
+        mode: QuarantineResolutionMode,
+    },
 
     /// Inject a synthetic event-log entry with a controlled timestamp.
     ///
@@ -315,6 +319,7 @@ pub enum ResponsePayload {
     NamespaceTree(NamespaceTreeResponse),
     GovernancePolicyDump(GovernancePolicySnapshot),
     ConflictsList(ConflictsListResponse),
+    QuarantineResolve(QuarantineResolveResponse),
     TestInjectEvent(TestInjectEventResponse),
 }
 
@@ -486,6 +491,33 @@ pub struct ConflictsListResponse {
     pub conflicts: Vec<ConflictSummary>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
+#[serde(rename_all = "snake_case")]
+#[clap(rename_all = "kebab-case")]
+pub enum QuarantineResolutionMode {
+    AcceptOurs,
+    AcceptTheirs,
+    Edited,
+}
+
+impl QuarantineResolutionMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AcceptOurs => "accept_ours",
+            Self::AcceptTheirs => "accept_theirs",
+            Self::Edited => "edited",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuarantineResolveResponse {
+    pub id: String,
+    pub path: String,
+    pub mode: QuarantineResolutionMode,
+    pub remaining_blocking_conflicts: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecallHitsResponse {
     pub since: Option<DateTime<Utc>>,
@@ -644,6 +676,7 @@ pub enum RespondRefusalKind {
 pub enum NotificationEvent {
     LeakedSecretDetected { memory_id: MemoryId },
     BlockingMergeConflict { path: String },
+    OperatorActionRequired { message: String },
     ReviewQueueOverThreshold { count: usize, threshold: usize },
     DreamRunCompleted { scope: String, promoted: usize, queued: usize, dropped: usize },
     RealityCheckDue { due_at: DateTime<Utc> },

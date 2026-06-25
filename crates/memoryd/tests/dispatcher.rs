@@ -34,6 +34,48 @@ async fn test_passive_queue_receives_all_events() {
 }
 
 #[tokio::test]
+async fn restart_does_not_duplicate_blocking_conflict_notification() {
+    let passive = PassiveQueue::new();
+    let dispatcher = test_dispatcher(passive.clone(), NotificationConfig::default());
+
+    dispatcher.dispatch_event(blocking_conflict_event()).await;
+    dispatcher.dispatch_event(blocking_conflict_event()).await;
+    dispatcher
+        .dispatch_event(NotificationEvent::BlockingMergeConflict {
+            path: "memories/project/other-conflict.md".to_owned(),
+        })
+        .await;
+    dispatcher
+        .dispatch_event(NotificationEvent::BlockingMergeConflict {
+            path: "memories/project/other-conflict.md".to_owned(),
+        })
+        .await;
+
+    let messages = passive.messages();
+    let first_path_count = messages.iter().filter(|message| message.contains("memories/project/conflict.md")).count();
+    let second_path_count =
+        messages.iter().filter(|message| message.contains("memories/project/other-conflict.md")).count();
+
+    assert_eq!(first_path_count, 1, "{messages:#?}");
+    assert_eq!(second_path_count, 1, "{messages:#?}");
+}
+
+#[tokio::test]
+async fn restart_does_not_duplicate_operator_action_required_notification() {
+    let passive = PassiveQueue::new();
+    let dispatcher = test_dispatcher(passive.clone(), NotificationConfig::default());
+
+    let event = || NotificationEvent::OperatorActionRequired {
+        message: "Startup recovery is required: resolve the in-progress merge.".to_owned(),
+    };
+    dispatcher.dispatch_event(event()).await;
+    dispatcher.dispatch_event(event()).await; // simulated daemon restart re-emit
+
+    let count = passive.messages().iter().filter(|message| message.contains("Startup recovery is required")).count();
+    assert_eq!(count, 1, "operator-action-required must dedup across restart (I-F3.1)");
+}
+
+#[tokio::test]
 async fn test_passive_queue_drops_oldest_when_full() {
     let queue = PassiveQueue::new();
 

@@ -69,7 +69,7 @@ pub async fn serve_substrate_with(
     let substrate = Arc::new(substrate);
     let state = Arc::new(state_for_substrate(substrate.as_ref())?);
     spawn_notification_dispatcher(&state);
-    emit_startup_blocking_conflicts(&substrate, &state);
+    emit_startup_reconcile_notifications(&substrate, &state);
     spawn_coordination_cleanup_for_state(state.clone(), shutdown.clone());
     fire_reality_check_due_on_startup(&substrate, &state);
     spawn_reality_check_scheduler(substrate.clone(), state.clone(), shutdown.clone());
@@ -91,8 +91,14 @@ fn spawn_notification_dispatcher(state: &HandlerState) {
     tokio::spawn(dispatcher.run(receiver));
 }
 
-fn emit_startup_blocking_conflicts(substrate: &Substrate, state: &HandlerState) {
-    for path in &substrate.startup_reconcile_report().blocking_conflicts {
+fn emit_startup_reconcile_notifications(substrate: &Substrate, state: &HandlerState) {
+    let report = substrate.startup_reconcile_report();
+    if report.recovery_required {
+        state.emit_notification(NotificationEvent::OperatorActionRequired {
+            message: "Startup recovery is required: a crash marker or in-progress git merge was found; resolve it manually before relying on sync.".to_string(),
+        });
+    }
+    for path in &report.blocking_conflicts {
         state.emit_notification(NotificationEvent::BlockingMergeConflict { path: path.clone() });
     }
 }

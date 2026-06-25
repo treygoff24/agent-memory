@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
@@ -13,6 +13,8 @@ const PASSIVE_QUEUE_CAPACITY: usize = 100;
 pub struct PassiveNotification {
     pub message: String,
     pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    pub dedup_key: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -26,15 +28,44 @@ impl PassiveQueue {
     }
 
     pub fn append(&self, message: impl Into<String>) {
-        self.append_at(message, Utc::now());
+        self.append_with_key(message, None);
     }
 
     pub fn append_at(&self, message: impl Into<String>, created_at: DateTime<Utc>) {
+        self.append_at_with_key(message, created_at, None);
+    }
+
+    pub fn append_with_key(&self, message: impl Into<String>, dedup_key: Option<String>) {
+        self.append_at_with_key(message, Utc::now(), dedup_key);
+    }
+
+    pub fn append_at_with_key(&self, message: impl Into<String>, created_at: DateTime<Utc>, dedup_key: Option<String>) {
         let mut entries = self.inner.lock().expect("passive notification queue lock poisoned");
+        if let Some(key) = dedup_key.as_deref() {
+            if entries.iter().any(|entry| entry.dedup_key.as_deref() == Some(key)) {
+                return;
+            }
+        }
         if entries.len() == PASSIVE_QUEUE_CAPACITY {
             entries.pop_front();
         }
-        entries.push_back(PassiveNotification { message: message.into(), created_at });
+        entries.push_back(PassiveNotification { message: message.into(), created_at, dedup_key });
+    }
+
+    pub fn clear_by_key(&self, key: &str) {
+        self.inner
+            .lock()
+            .expect("passive notification queue lock poisoned")
+            .retain(|entry| entry.dedup_key.as_deref() != Some(key));
+    }
+
+    pub fn dedup_keys(&self) -> BTreeSet<String> {
+        self.inner
+            .lock()
+            .expect("passive notification queue lock poisoned")
+            .iter()
+            .filter_map(|entry| entry.dedup_key.clone())
+            .collect()
     }
 
     pub fn entries(&self) -> Vec<PassiveNotification> {

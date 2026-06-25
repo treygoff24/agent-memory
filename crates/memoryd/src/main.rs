@@ -29,6 +29,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Supersede(args) => cli::memory::run_supersede(args).await?,
         Command::Forget(args) => cli::memory::run_forget(args).await?,
         Command::Review(args) => cli::review::run(args).await?,
+        Command::Quarantine(args) => cli::quarantine::run(args).await?,
         Command::Recall(args) => cli::recall::run(args).await?,
         Command::Dream(args) => cli::dream::run(args).await?,
         Command::Peer(args) => cli::peer::run(args).await?,

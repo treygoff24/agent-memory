@@ -378,6 +378,7 @@ pub async fn forward_payload_to_daemon(
         | RequestPayload::NamespaceTree { .. }
         | RequestPayload::GovernancePolicyDump
         | RequestPayload::ConflictsList { .. }
+        | RequestPayload::QuarantineResolve { .. }
         | RequestPayload::PeerHeartbeat(_)
         | RequestPayload::PeerStatus
         | RequestPayload::PeerActivity { .. }

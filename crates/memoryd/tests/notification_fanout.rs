@@ -16,7 +16,9 @@ use memoryd::notifications::external::ExternalNotifier;
 use memoryd::notifications::os::OsNotifier;
 use memoryd::notifications::passive::PassiveQueue;
 use memoryd::notifications::triggers::{notification_for, EventKind};
-use memoryd::protocol::{NotificationEvent, RequestPayload, ResponsePayload, ResponseResult, StatusResponse};
+use memoryd::protocol::{
+    NotificationEvent, QuarantineResolutionMode, RequestPayload, ResponsePayload, ResponseResult, StatusResponse,
+};
 use memoryd::reality_check::RcScheduler;
 use memoryd::state::RealityCheckState;
 use tokio::time::sleep;
@@ -94,6 +96,89 @@ async fn startup_reconcile_quarantine_report_fans_out_blocking_merge_notificatio
         status.passive_notifications.iter().any(|notification| notification.message.contains("merge conflict")),
         "{:#?}",
         status.passive_notifications
+    );
+
+    shutdown(shutdown_tx, server, &socket).await;
+}
+
+#[tokio::test]
+async fn recovery_required_emits_operator_finding() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let initialized = Substrate::init(
+        roots.clone(),
+        InitOptions { force_unsafe_durability: true, device_id: Some("dev_recovery".to_string()) },
+    )
+    .await
+    .expect("substrate init");
+    drop(initialized);
+
+    std::fs::write(roots.runtime.join("startup-reconcile.required"), "test recovery marker")
+        .expect("write startup recovery marker");
+    let substrate = Substrate::open(roots).await.expect("reopen with recovery marker");
+    assert!(substrate.startup_reconcile_report().recovery_required);
+
+    let socket = unique_socket_path("notify", "recovery-required");
+    let (shutdown_tx, server) = spawn_daemon(&socket, substrate);
+    wait_for_socket(&socket).await;
+
+    let status = wait_for_passive_notification(&socket, "recovery is required").await;
+    assert!(
+        status.passive_notifications.iter().any(|notification| notification.message.contains("recovery is required")),
+        "{:#?}",
+        status.passive_notifications
+    );
+
+    shutdown(shutdown_tx, server, &socket).await;
+}
+
+#[tokio::test]
+async fn quarantine_resolve_clears_sync_blocked_without_restart() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let initialized = Substrate::init(
+        roots.clone(),
+        InitOptions { force_unsafe_durability: true, device_id: Some("dev_quarantineresolve".to_string()) },
+    )
+    .await
+    .expect("substrate init");
+    drop(initialized);
+
+    let memory_id = "mem_20260508_a1b2c3d4e5f60718_000002";
+    let conflict_path = write_quarantined_memory(&roots, memory_id);
+    let substrate = Substrate::open(roots).await.expect("reopen with quarantined memory");
+    assert_eq!(substrate.startup_reconcile_report().blocking_conflicts, vec![conflict_path.clone()]);
+
+    let socket = unique_socket_path("notify", "quarantine-resolve");
+    let (shutdown_tx, server) = spawn_daemon(&socket, substrate);
+    wait_for_socket(&socket).await;
+    let blocked = wait_for_merge_conflict_passive_notification(&socket).await;
+    assert!(
+        blocked.passive_notifications.iter().any(|notification| notification.message.contains(&conflict_path)),
+        "{:#?}",
+        blocked.passive_notifications
+    );
+
+    let response = client::request(
+        &socket,
+        "quarantine-resolve",
+        RequestPayload::QuarantineResolve { id: memory_id.to_owned(), mode: QuarantineResolutionMode::Edited },
+    )
+    .await
+    .expect("quarantine resolve reaches daemon");
+    match response.result {
+        ResponseResult::Success(ResponsePayload::QuarantineResolve(resolve)) => {
+            assert_eq!(resolve.id, memory_id);
+            assert!(resolve.remaining_blocking_conflicts.is_empty(), "{resolve:#?}");
+        }
+        other => panic!("expected quarantine resolve response, got {other:?}"),
+    }
+
+    let clear = wait_for_no_passive_notification(&socket, "Sync is blocked").await;
+    assert!(
+        clear.passive_notifications.iter().all(|notification| !notification.message.contains("Sync is blocked")),
+        "{:#?}",
+        clear.passive_notifications
     );
 
     shutdown(shutdown_tx, server, &socket).await;
@@ -230,10 +315,28 @@ fn sample_memory(id: &str) -> Memory {
 }
 
 async fn wait_for_merge_conflict_passive_notification(socket: &Path) -> StatusResponse {
+    wait_for_passive_notification(socket, "merge conflict").await
+}
+
+async fn wait_for_passive_notification(socket: &Path, needle: &str) -> StatusResponse {
     let deadline = tokio::time::Instant::now() + StdDuration::from_secs(2);
     loop {
         let status = status(socket).await;
-        if status.passive_notifications.iter().any(|notification| notification.message.contains("merge conflict")) {
+        if status.passive_notifications.iter().any(|notification| notification.message.contains(needle)) {
+            return status;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return status;
+        }
+        sleep(StdDuration::from_millis(25)).await;
+    }
+}
+
+async fn wait_for_no_passive_notification(socket: &Path, needle: &str) -> StatusResponse {
+    let deadline = tokio::time::Instant::now() + StdDuration::from_secs(2);
+    loop {
+        let status = status(socket).await;
+        if status.passive_notifications.iter().all(|notification| !notification.message.contains(needle)) {
             return status;
         }
         if tokio::time::Instant::now() >= deadline {

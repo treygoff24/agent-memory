@@ -6,7 +6,7 @@ use super::*;
 pub(crate) async fn status_response(substrate: &Substrate, state: &HandlerState) -> StatusResponse {
     let mut dashboard_warnings = Vec::new();
     let status_counts = substrate.count_memories_by_status().await;
-    let (index_stats, review_queue_counts) = match status_counts {
+    let (index_stats, review_queue_counts, conflicts_count) = match status_counts {
         Ok(counts) => {
             let index_stats = match live_index_stats(substrate, &counts) {
                 Ok(stats) => Some(stats),
@@ -15,19 +15,16 @@ pub(crate) async fn status_response(substrate: &Substrate, state: &HandlerState)
                     None
                 }
             };
-            (index_stats, Some(live_review_queue_counts(&counts)))
+            // Blocking conflicts are quarantined memories; read the LIVE count so an
+            // in-daemon `quarantine resolve` is reflected immediately (consistent with
+            // the pruned notification), not the stale `Substrate::open` reconcile snapshot.
+            let conflicts_count = u32::try_from(status_count(&counts, MemoryStatus::Quarantined)).ok();
+            (index_stats, Some(live_review_queue_counts(&counts)), conflicts_count)
         }
         Err(error) => {
             let error = HandlerError::substrate(error);
             dashboard_warnings.push(format!("status_counts_unavailable: {}", bounded(&error.message, 160)));
-            (None, None)
-        }
-    };
-    let conflicts_count = match live_conflicts_count(substrate) {
-        Ok(count) => Some(count),
-        Err(error) => {
-            dashboard_warnings.push(format!("conflicts_count_unavailable: {}", bounded(&error.message, 160)));
-            None
+            (None, None, None)
         }
     };
     let compact_dream_status = match live_compact_dream_status(substrate, chrono::Utc::now()) {
@@ -86,11 +83,6 @@ fn live_review_queue_counts(counts: &[(MemoryStatus, u64)]) -> ReviewQueueCounts
 
 fn status_count(counts: &[(MemoryStatus, u64)], status: MemoryStatus) -> u64 {
     counts.iter().find(|(candidate, _)| *candidate == status).map(|(_, count)| *count).unwrap_or(0)
-}
-
-fn live_conflicts_count(substrate: &Substrate) -> Result<u32, HandlerError> {
-    let count = substrate.startup_reconcile_report().blocking_conflicts.len();
-    count.try_into().map_err(|_| HandlerError::substrate("conflict count exceeds u32"))
 }
 
 fn live_compact_dream_status(

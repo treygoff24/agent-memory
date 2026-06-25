@@ -19,9 +19,9 @@ use memory_privacy::{
 };
 use memory_source::{capture_web_source, CaptureMode, CaptureWebSourceRequest};
 use memory_substrate::{
-    events::EventKind, Author, AuthorKind, ChunkQuery, ClassificationOutcome, EncryptedSubstrateDescriptor,
+    events::EventKind, Author, AuthorKind, AuxScope, ChunkQuery, ClassificationOutcome, EncryptedSubstrateDescriptor,
     EventContext, Frontmatter, Memory, MemoryContent, MemoryId, MemoryStatus, MemoryType, ObserveKind,
-    PrivacySpanRecord, RepoPath, RetrievalPolicy, Scope, Sensitivity, Source, SourceKind, Substrate,
+    PrivacySpanRecord, RecallIndexQuery, RepoPath, RetrievalPolicy, Scope, Sensitivity, Source, SourceKind, Substrate,
     SubstrateFragmentAppendRequest, SubstrateFragmentEncryption, SubstrateFragmentPayload, TrustLevel, WriteMode,
     WritePolicy, WriteRequest as SubstrateWriteRequest,
 };
@@ -33,11 +33,11 @@ use crate::protocol::{
     CaptureSourceMode, CaptureSourceResponse, CompactDreamStatus, DaemonProcessStatus, GetProvenance, GetResponse,
     GovernanceStatus, IndexStats, NotificationEvent, ObserveResponse, ObserveTarget, PassiveNotificationStatus,
     PeerActivityResponse, PeerDeliveryAuditEntry, PeerReleaseLockResponse, PeerReleaseLockStatus, PeerSessionStatus,
-    PeerStatusResponse, RealityCheckAction, RealityCheckHistorySession, RealityCheckRequest, RealityCheckResponse,
-    RequestEnvelope, RequestPayload, RespondRefusalKind, ResponseEnvelope, ResponsePayload, RevealResponse,
-    ReviewDecisionResponse, ReviewQueueCounts, ReviewQueueItemResponse, ReviewQueueResponse, SearchHit, SearchResponse,
-    SourceCapturePayload, StatusResponse, WebDashboardStatus, WriteNoteResponse, MAX_FRAME_BYTES,
-    NOTIFICATION_CHANNEL_CAPACITY,
+    PeerStatusResponse, QuarantineResolutionMode, QuarantineResolveResponse, RealityCheckAction,
+    RealityCheckHistorySession, RealityCheckRequest, RealityCheckResponse, RequestEnvelope, RequestPayload,
+    RespondRefusalKind, ResponseEnvelope, ResponsePayload, RevealResponse, ReviewDecisionResponse, ReviewQueueCounts,
+    ReviewQueueItemResponse, ReviewQueueResponse, SearchHit, SearchResponse, SourceCapturePayload, StatusResponse,
+    WebDashboardStatus, WriteNoteResponse, MAX_FRAME_BYTES, NOTIFICATION_CHANNEL_CAPACITY,
 };
 use crate::reality_check::{RcAdvanceRequest, RcRunRequest, RcSessionAdvance, RcSessionHandler};
 use crate::recall::{
@@ -54,6 +54,7 @@ mod inspect;
 pub(crate) mod memory_ops;
 pub(crate) mod peer;
 mod privacy_text;
+pub(crate) mod quarantine;
 pub(crate) mod reality_check;
 pub(crate) mod review;
 pub(crate) mod source;
@@ -84,6 +85,7 @@ use peer::{
     peer_activity_response, peer_heartbeat_response, peer_release_lock_response, peer_status_response,
     PeerDeliveryAudit, PeerUpdateCooldowns,
 };
+use quarantine::quarantine_resolve_response;
 use reality_check::reality_check_response;
 use review::{review_decision_response, review_queue_response, ReviewDecision};
 use source::{capture_source_response, trust_artifact_response};
@@ -342,6 +344,7 @@ async fn dispatch(
         RequestPayload::NamespaceTree { root, depth } => inspect::namespace_tree_response(substrate, root, depth).await,
         RequestPayload::GovernancePolicyDump => inspect::governance_policy_dump_response(substrate),
         RequestPayload::ConflictsList { limit } => inspect::conflicts_list_response(substrate, limit).await,
+        RequestPayload::QuarantineResolve { id, mode } => quarantine_resolve_response(substrate, state, id, mode).await,
         RequestPayload::TestInjectEvent { kind, memory_id, ts, harness, session_id } => {
             inspect::test_inject_event_response(
                 substrate,

@@ -159,6 +159,7 @@ fn response_payload_kind(payload: &ResponsePayload) -> &'static str {
         ResponsePayload::NamespaceTree(_) => "NamespaceTree",
         ResponsePayload::GovernancePolicyDump(_) => "GovernancePolicyDump",
         ResponsePayload::ConflictsList(_) => "ConflictsList",
+        ResponsePayload::QuarantineResolve(_) => "QuarantineResolve",
         ResponsePayload::TestInjectEvent(_) => "TestInjectEvent",
     }
 }
