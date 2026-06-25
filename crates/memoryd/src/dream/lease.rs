@@ -10,7 +10,7 @@ use memory_substrate::config::load_local_device_config;
 use memory_substrate::git::LeaseCommitAction;
 use serde::{Deserialize, Serialize};
 
-use crate::dream::git::{LeaseGit, NativeLeaseGit};
+use crate::dream::git::{origin_remote_configured, LeaseGit, NativeLeaseGit};
 // `LeaseCommit` and `LeaseError` are defined alongside the `LeaseGit` trait in
 // `crate::dream::git` (the git layer is their producer). Re-exported here so the
 // historical `crate::dream::lease::{LeaseCommit, LeaseError}` paths keep resolving.
@@ -121,12 +121,28 @@ pub fn acquire_manual_lease_with_git(
 
     for attempt in 0..=MAX_PUSH_RETRIES {
         git.fetch_origin(&request.repo)?;
+        let mut evict_stale_self_lease = false;
         if !request.force {
             if let Some(active) = active_lease(&lease_path, &request.scope, request.now)? {
-                if active.device == device_id {
+                if active.device != device_id {
+                    return Err(LeaseError::Held { scope: request.scope, by_device: active.device });
+                }
+                // A still-active self-owned lease.
+                //
+                // With a remote, multi-device election owns refresh, so re-entrancy
+                // stays byte-identical: reuse the record (I-F2.1).
+                //
+                // With no remote (spec §8.2), a self-owned active record can only be
+                // an abandoned lease from a crashed/interrupted prior run — a live
+                // holder never re-acquires. Reusing it would run the dream under a
+                // lease that may expire mid-run, so evict it: supersede with a fresh
+                // full-window acquire. The eviction append is deferred to *after* the
+                // dirty-tree gate below, so a dirty-tree abort never leaves an
+                // uncommitted release record stranded in the journal.
+                if origin_remote_configured(&request.repo)? {
                     return Ok(LeaseAcquired { record: active, report: stub_report(&request) });
                 }
-                return Err(LeaseError::Held { scope: request.scope, by_device: active.device });
+                evict_stale_self_lease = true;
             }
         }
         let dirty = git.dirty_user_work_paths(&request.repo)?;
@@ -134,6 +150,13 @@ pub fn acquire_manual_lease_with_git(
             return Err(LeaseError::DirtyTree { message: dirty_tree_message(&dirty) });
         }
 
+        // Evict the abandoned self-owned lease (append a release) only now that the
+        // tree is clean and we are committed to acquiring — release and acquire are
+        // appended together and committed in one lease commit, so a push-race
+        // rollback reverts both atomically.
+        if evict_stale_self_lease {
+            append_lease_record(&lease_path, &release_record(&request, &device_id))?;
+        }
         let record = lease_record(&request, &device_id);
         append_lease_record(&lease_path, &record)?;
         git.commit_lease(

@@ -73,6 +73,12 @@ pub struct NativeLeaseGit;
 
 impl LeaseGit for NativeLeaseGit {
     fn fetch_origin(&mut self, repo: &Path) -> Result<(), LeaseError> {
+        // Local-first (spec §2/F2): with no origin remote there is nothing to fetch,
+        // so the lease election runs entirely locally. A *configured* remote that
+        // fails still errors below (I-F2.4) — only the no-remote case no-ops.
+        if !origin_remote_configured(repo)? {
+            return Ok(());
+        }
         run_git(repo, &["fetch", "origin"]).map(|_| ()).map_err(|err| LeaseError::unavailable(err.to_string()))
     }
 
@@ -89,6 +95,12 @@ impl LeaseGit for NativeLeaseGit {
     }
 
     fn push(&mut self, repo: &Path) -> Result<(), LeaseError> {
+        // Local-first (spec §2/F2): no origin remote → the local commit is the
+        // durable record, so the push no-ops. A configured remote still pushes
+        // and surfaces failures (I-F2.4).
+        if !origin_remote_configured(repo)? {
+            return Ok(());
+        }
         push(repo).map_err(|err| LeaseError::unavailable(err.to_string()))
     }
 
@@ -163,6 +175,22 @@ impl LeaseGit for ScriptedLeaseGit {
         let new_text = if records.is_empty() { String::new() } else { format!("{}\n", records.join("\n")) };
         std::fs::write(lease_path, new_text).map_err(|err| LeaseError::unavailable(err.to_string()))
     }
+}
+
+/// Whether `repo` has an `origin` remote configured — the synchronous sibling of
+/// the async `git_origin_remote` in `recall/project.rs` (not extracted from it
+/// because [`LeaseGit`] is sync and an async helper would block a runtime thread).
+///
+/// Probes with `git remote`, which lists configured remote names and exits 0 even
+/// when there are none. Membership of `origin` is therefore a version-robust signal,
+/// unlike `git remote get-url origin`, whose "no such remote" exit code is not
+/// stable across git builds. Runs through [`run_git`] so the probe inherits the same
+/// `GIT_DIR`/`GIT_WORK_TREE` sanitization as every other git call, and a real failure
+/// (not a git repo, unreadable config) surfaces as `Err` — a broken remote is never
+/// silently collapsed into "local-only" (I-F2.4).
+pub(crate) fn origin_remote_configured(repo: &Path) -> Result<bool, LeaseError> {
+    let remotes = run_git(repo, &["remote"]).map_err(|err| LeaseError::unavailable(err.to_string()))?;
+    Ok(remotes.lines().any(|name| name.trim() == "origin"))
 }
 
 fn dirty_user_work_paths(repo: &Path) -> Result<Vec<String>, LeaseError> {

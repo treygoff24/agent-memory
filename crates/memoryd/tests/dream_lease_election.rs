@@ -95,8 +95,39 @@ fn active_same_device_lease_is_reentrant_without_force() {
 }
 
 #[test]
-fn unavailable_fetch_without_origin_returns_lease_unavailable_and_cli_exits_5() {
+fn local_clean_tree_lease_acquire_succeeds_without_origin() {
+    // F2: a local-only repo (no origin remote) grants the lease with zero network —
+    // fetch/push no-op, all local lease logic (held-check, dirty guard, local commit)
+    // still runs. This is the P0.1 gate: clean-tree lease acquire on a no-remote install.
     let env = GitLeaseEnv::new_without_origin("dev_local");
+
+    let acquired = acquire_manual_lease(LeaseAcquireRequest {
+        repo: env.repo.clone(),
+        runtime: env.runtime.clone(),
+        scope: "me".to_string(),
+        force: false,
+        now: fixed_now(),
+        lease_window_seconds: 3_600,
+        cli_used: None,
+    })
+    .expect("local-only repo (no origin) grants the lease — local-first, no network");
+
+    assert_eq!(acquired.record.device, "dev_local");
+    assert_eq!(env.git(["log", "-1", "--format=%s"]), "dream: lease acquire me on dev_local");
+    assert_eq!(
+        env.git(["show", "--name-only", "--format=", "HEAD"]).lines().collect::<Vec<_>>(),
+        ["leases/journal.lease"]
+    );
+    assert_eq!(env.git(["status", "--short"]), "", "local lease acquire leaves a clean tree");
+}
+
+#[test]
+fn configured_origin_with_fetch_failure_still_unavailable() {
+    // I-F2.4: "no remote by design" is not "broken remote". A *configured* origin
+    // whose fetch fails must still surface lease_unavailable — never be silently
+    // treated as a local-only install.
+    let env = GitLeaseEnv::new("dev_local");
+    env.git(["remote", "set-url", "origin", "/nonexistent/memorum-origin.git"]);
 
     let err = acquire_manual_lease(LeaseAcquireRequest {
         repo: env.repo.clone(),
@@ -107,13 +138,101 @@ fn unavailable_fetch_without_origin_returns_lease_unavailable_and_cli_exits_5() 
         lease_window_seconds: 3_600,
         cli_used: None,
     })
-    .expect_err("missing origin fails fast");
+    .expect_err("a configured-but-broken origin must not be silently treated as no-remote");
     assert!(matches!(err, LeaseError::Unavailable { .. }));
+}
 
-    let output =
-        env.memoryd(["dream", "now", "--repo", env.repo_str(), "--runtime", env.runtime_str(), "--scope", "me"]);
-    assert_eq!(output.status.code(), Some(5));
-    assert!(stderr(&output).contains("lease_unavailable"), "stderr was: {}", stderr(&output));
+#[test]
+fn foreign_active_lease_blocks_with_no_remote() {
+    // I-F2.3: no-remote mode does not relax held-semantics. A foreign active lease
+    // still blocks, exactly as it would with a remote.
+    let env = GitLeaseEnv::new_without_origin("dev_local");
+    env.append_lease(LeaseRecord {
+        device: "dev_foreign".to_string(),
+        scope: "me".to_string(),
+        acquired_at: fixed_now() - Duration::minutes(1),
+        expires_at: fixed_now() + Duration::days(1),
+        run_id: "run_foreign".to_string(),
+    });
+
+    let err = acquire_manual_lease(LeaseAcquireRequest {
+        repo: env.repo.clone(),
+        runtime: env.runtime.clone(),
+        scope: "me".to_string(),
+        force: false,
+        now: fixed_now(),
+        lease_window_seconds: 3_600,
+        cli_used: None,
+    })
+    .expect_err("a foreign active lease blocks even with no remote");
+    assert!(matches!(err, LeaseError::Held { by_device, .. } if by_device == "dev_foreign"));
+}
+
+#[test]
+fn stale_self_owned_lease_is_evicted_for_fresh_acquire_with_no_remote() {
+    // spec §8.2: with no remote there is no fetch to refresh a stale journal, so a
+    // crashed prior run can leave a still-active self-owned lease. Eviction supersedes
+    // it and grants a fresh full-window lease rather than reusing one about to expire.
+    let env = GitLeaseEnv::new_without_origin("dev_local");
+    env.append_lease(LeaseRecord {
+        device: "dev_local".to_string(),
+        scope: "me".to_string(),
+        acquired_at: fixed_now() - Duration::minutes(59),
+        expires_at: fixed_now() + Duration::minutes(1), // crashed run, about to expire
+        run_id: "run_crashed".to_string(),
+    });
+
+    let acquired = acquire_manual_lease(LeaseAcquireRequest {
+        repo: env.repo.clone(),
+        runtime: env.runtime.clone(),
+        scope: "me".to_string(),
+        force: false,
+        now: fixed_now(),
+        lease_window_seconds: 3_600,
+        cli_used: None,
+    })
+    .expect("a stale self-owned lease is evicted and a fresh lease acquired with no remote");
+
+    assert_eq!(acquired.record.device, "dev_local");
+    assert_ne!(acquired.record.run_id, "run_crashed", "fresh acquire, not a reuse of the crashed record");
+    assert_eq!(
+        acquired.record.expires_at,
+        fixed_now() + Duration::seconds(3_600),
+        "fresh full-window lease, not the about-to-expire crashed one",
+    );
+    assert_eq!(env.git(["status", "--short"]), "", "eviction + acquire leaves a clean tree");
+}
+
+#[test]
+fn dirty_tree_with_stale_self_owned_lease_aborts_without_mutating_journal() {
+    // The §8.2 eviction must run *after* the dirty-tree gate: a dirty-tree abort
+    // must leave the journal byte-identical (no orphan release record), not
+    // half-evicted. Regression guard for the eviction-before-dirty-guard bug.
+    let env = GitLeaseEnv::new_without_origin("dev_local");
+    env.append_lease(LeaseRecord {
+        device: "dev_local".to_string(),
+        scope: "me".to_string(),
+        acquired_at: fixed_now() - Duration::minutes(59),
+        expires_at: fixed_now() + Duration::minutes(1),
+        run_id: "run_crashed".to_string(),
+    });
+    let journal_before = std::fs::read_to_string(env.repo.join("leases/journal.lease")).expect("journal before");
+    env.write("me/user-work.md", "uncommitted user work\n");
+
+    let err = acquire_manual_lease(LeaseAcquireRequest {
+        repo: env.repo.clone(),
+        runtime: env.runtime.clone(),
+        scope: "me".to_string(),
+        force: false,
+        now: fixed_now(),
+        lease_window_seconds: 3_600,
+        cli_used: None,
+    })
+    .expect_err("a dirty tree blocks the lease even when a stale self-owned lease would be evicted");
+    assert!(matches!(err, LeaseError::DirtyTree { .. }));
+
+    let journal_after = std::fs::read_to_string(env.repo.join("leases/journal.lease")).expect("journal after");
+    assert_eq!(journal_before, journal_after, "dirty-tree abort must not append an eviction release record");
 }
 
 #[test]
