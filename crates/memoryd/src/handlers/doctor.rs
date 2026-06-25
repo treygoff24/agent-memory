@@ -1,38 +1,54 @@
-use memory_substrate::Substrate;
+use std::path::Path;
 
-use crate::protocol::{DoctorFinding, DoctorResponse};
+use chrono::{DateTime, Duration, Utc};
+use memory_substrate::config::{DreamsConfig, SubstrateConfig};
+use memory_substrate::{MemoryStatus, Substrate};
 
-pub(super) async fn doctor_response(substrate: &Substrate) -> DoctorResponse {
+use crate::handlers::HandlerState;
+use crate::protocol::{DoctorFinding, DoctorResponse, DoctorSeverity, PassStatus};
+
+fn fatal_finding(code: &str, message: String, repair: Option<String>) -> DoctorFinding {
+    DoctorFinding { code: code.to_string(), message, repair, severity: DoctorSeverity::Fatal }
+}
+
+fn advisory_finding(code: &str, message: String, repair: Option<String>) -> DoctorFinding {
+    DoctorFinding { code: code.to_string(), message, repair, severity: DoctorSeverity::Advisory }
+}
+
+pub(super) async fn doctor_response(substrate: &Substrate, state: &HandlerState) -> DoctorResponse {
     let report = substrate.doctor().await;
     let mut findings = report
         .warnings
         .into_iter()
-        .map(|message| DoctorFinding { code: "warning".to_string(), message, repair: None })
-        .chain(report.repairs_required.into_iter().map(|message| DoctorFinding {
-            code: "repair_required".to_string(),
-            message,
-            repair: Some("Run substrate repair before relying on daemon recall.".to_string()),
+        .map(|message| fatal_finding("warning", message, None))
+        .chain(report.repairs_required.into_iter().map(|message| {
+            fatal_finding(
+                "repair_required",
+                message,
+                Some("Run substrate repair before relying on daemon recall.".to_string()),
+            )
         }))
         .collect::<Vec<_>>();
     if let Ok(health) = substrate.events_log_mirror_health() {
         let stale_count = health.lag.max(health.missing_count);
         if stale_count > 0 {
             let plural = if stale_count == 1 { "" } else { "s" };
-            findings.push(DoctorFinding {
-                code: "events_log_mirror_lag".to_string(),
-                message: format!(
+            findings.push(fatal_finding(
+                "events_log_mirror_lag",
+                format!(
                     "{stale_count} event{plural} not mirrored to SQLite - drift scoring may be stale; run `memoryd doctor --reindex`"
                 ),
-                repair: Some("memoryd doctor --reindex".to_string()),
-            });
+                Some("memoryd doctor --reindex".to_string()),
+            ));
         }
     }
-    let has_substrate_findings = !findings.is_empty();
     // Embedding-pipeline findings are advisory: recall still works via FTS bm25
-    // without vectors, so a backlog or empty vector table is surfaced but does
-    // not flip doctor unhealthy (a freshly-initialized substrate legitimately
-    // has a backlog before the worker first drains).
+    // without vectors (a freshly-initialized substrate legitimately has a backlog
+    // before the worker first drains).
     findings.extend(embedding_health_findings(substrate).await);
+    // Foundation-loop checks (F4 D1-D4): dream freshness (advisory), sync/quarantine
+    // (fatal), stale uncommitted substrate (fatal), recall budget pressure (advisory).
+    findings.extend(foundation_loop_findings(substrate, state).await);
     let registry = crate::dream::registry::HarnessCliRegistry::builtin_v0_2();
     let mut enabled_harness_count = 0usize;
     let mut authenticated_harness_count = 0usize;
@@ -42,19 +58,155 @@ pub(super) async fn doctor_response(substrate: &Substrate) -> DoctorResponse {
         if probe.is_ok() {
             authenticated_harness_count += 1;
         } else {
-            findings.push(DoctorFinding {
-                code: "harness_cli_warning".to_string(),
-                message: probe.operator_message(name),
-                repair: Some(harness_repair_hint(name, &probe)),
-            });
+            findings.push(advisory_finding(
+                "harness_cli_warning",
+                probe.operator_message(name),
+                Some(harness_repair_hint(name, &probe)),
+            ));
         }
     }
     DoctorResponse {
-        healthy: doctor_is_healthy(has_substrate_findings, enabled_harness_count, authenticated_harness_count),
+        healthy: doctor_is_healthy(&findings, enabled_harness_count, authenticated_harness_count),
         findings,
-        guidance: "Doctor reflects Memorum substrate validation, repair state, and dreaming harness availability."
+        guidance: "Doctor reflects Memorum substrate validation, repair state, dreaming harness availability, and the runtime loop (dream freshness, sync, uncommitted substrate, recall budget)."
             .to_string(),
     }
+}
+
+/// F4 foundation-loop checks D1-D4. D5 (capture freshness) is deferred to v3.0-P2.
+async fn foundation_loop_findings(substrate: &Substrate, state: &HandlerState) -> Vec<DoctorFinding> {
+    let mut findings = Vec::new();
+    // Config errors are already surfaced by `substrate.doctor()`; if it cannot load,
+    // skip the threshold-driven checks rather than guess.
+    let Ok(config) = memory_substrate::config::load_config(&substrate.roots().repo, &substrate.roots().runtime, None)
+    else {
+        return findings;
+    };
+    let now = Utc::now();
+    let repo = substrate.roots().repo.as_path();
+    findings.extend(dream_freshness_finding(repo, &config.synced.dreams, now)); // D1
+    findings.extend(sync_conflict_finding(substrate, repo).await); // D2
+    findings.extend(stale_uncommitted_finding(repo, &config.synced.substrate, now)); // D3
+    findings.extend(budget_pressure_finding(state, &config.synced.dreams)); // D4
+    findings
+}
+
+/// D1 (advisory): dreaming has missed `doctor_missed_threshold` consecutive scheduled
+/// runs, or its last successful run is older than 48h. A fresh install with no runs is
+/// NOT a finding.
+fn dream_freshness_finding(repo: &Path, dreams: &DreamsConfig, now: DateTime<Utc>) -> Option<DoctorFinding> {
+    let summaries = crate::dream::status::collect_last_runs(repo).ok()?;
+    if summaries.is_empty() {
+        return None;
+    }
+    let max_missed = summaries.iter().map(|summary| summary.consecutive_missed_runs).max().unwrap_or(0);
+    let latest_success = summaries
+        .iter()
+        .filter(|summary| summary.last_run_outcome == Some(PassStatus::Success))
+        .filter_map(|summary| summary.last_run_at)
+        .max();
+    let stale_success = latest_success.is_some_and(|at| now - at > Duration::hours(48));
+    if max_missed < dreams.doctor_missed_threshold && !stale_success {
+        return None;
+    }
+    let detail = if max_missed >= dreams.doctor_missed_threshold {
+        format!("{max_missed} consecutive scheduled run(s) missed (threshold {})", dreams.doctor_missed_threshold)
+    } else {
+        "no successful dream run in over 48h".to_string()
+    };
+    Some(advisory_finding(
+        "dream_stale",
+        format!("Dreaming may be stalled: {detail}. Check `memoryd dream status` and the launchd dream schedule."),
+        Some("Run `memoryd dream now` and check daemon/launchd logs.".to_string()),
+    ))
+}
+
+/// D2 (fatal): an active blocking conflict (live quarantined memories) or a stranded
+/// in-progress merge. Reads LIVE state, not the stale `Substrate::open` snapshot, so an
+/// in-daemon `quarantine resolve` or a manual merge-abort clears it.
+async fn sync_conflict_finding(substrate: &Substrate, repo: &Path) -> Option<DoctorFinding> {
+    let merge_head = repo.join(".git").join("MERGE_HEAD").exists();
+    let quarantined = substrate
+        .count_memories_by_status()
+        .await
+        .ok()
+        .map(|counts| counts.iter().find(|(status, _)| *status == MemoryStatus::Quarantined).map_or(0, |(_, c)| *c))
+        .unwrap_or(0);
+    if quarantined == 0 && !merge_head {
+        return None;
+    }
+    let mut parts = Vec::new();
+    if quarantined > 0 {
+        let plural = if quarantined == 1 { "y" } else { "ies" };
+        parts.push(format!("{quarantined} quarantined memor{plural}"));
+    }
+    if merge_head {
+        parts.push("a stranded in-progress git merge (.git/MERGE_HEAD)".to_string());
+    }
+    Some(fatal_finding(
+        "sync_blocked",
+        format!(
+            "Sync is blocked: {}. Resolve with `memoryd quarantine list`/`resolve` (or finish/abort the merge).",
+            parts.join(" and ")
+        ),
+        Some("memoryd quarantine list".to_string()),
+    ))
+}
+
+/// D3 (fatal): daemon-managed substrate has been uncommitted longer than
+/// `commit_debounce_ms + commit_stale_grace_ms` — F1's commit worker is not keeping up.
+/// Measures the OLDEST uncommitted path's mtime so it does not flap during the normal
+/// debounce window.
+fn stale_uncommitted_finding(repo: &Path, substrate: &SubstrateConfig, now: DateTime<Utc>) -> Option<DoctorFinding> {
+    let paths = memory_substrate::git::uncommitted_substrate_paths(repo).ok()?;
+    if paths.is_empty() {
+        return None;
+    }
+    let threshold =
+        Duration::milliseconds(i64::from(substrate.commit_debounce_ms) + i64::from(substrate.commit_stale_grace_ms));
+    let oldest = paths
+        .iter()
+        .filter_map(|path| std::fs::metadata(repo.join(path)).ok())
+        .filter_map(|meta| meta.modified().ok())
+        .map(DateTime::<Utc>::from)
+        .min()?;
+    if now - oldest <= threshold {
+        return None;
+    }
+    let age_seconds = (now - oldest).num_seconds();
+    Some(fatal_finding(
+        "substrate_uncommitted_stale",
+        format!(
+            "{} daemon-managed file(s) uncommitted for {age_seconds}s (> debounce+grace {}ms) - the substrate commit worker is not committing writes.",
+            paths.len(),
+            threshold.num_milliseconds()
+        ),
+        Some("Check daemon logs for substrate commit worker errors and that `memoryd serve` is running.".to_string()),
+    ))
+}
+
+/// D4 (advisory): cumulative recall budget exhaustion for any section exceeds
+/// `doctor_budget_exhausted_threshold` (since daemon start).
+fn budget_pressure_finding(state: &HandlerState, dreams: &DreamsConfig) -> Option<DoctorFinding> {
+    let snapshot = state.recall.snapshot();
+    let over = snapshot
+        .budget_exhausted_total
+        .iter()
+        .filter(|(_, &count)| count > dreams.doctor_budget_exhausted_threshold)
+        .map(|(section, &count)| format!("{section}={count}"))
+        .collect::<Vec<_>>();
+    if over.is_empty() {
+        return None;
+    }
+    Some(advisory_finding(
+        "recall_budget_pressure",
+        format!(
+            "Recall budget exhausted repeatedly (cumulative, threshold {}): {}. Recall is dropping content under budget pressure.",
+            dreams.doctor_budget_exhausted_threshold,
+            over.join(", ")
+        ),
+        None,
+    ))
 }
 
 /// Actionable repair guidance for a harness that failed its auth probe.
@@ -79,11 +231,12 @@ fn harness_repair_hint(name: &str, probe: &crate::dream::harness::AuthProbeResul
 }
 
 fn doctor_is_healthy(
-    has_substrate_findings: bool,
+    findings: &[DoctorFinding],
     enabled_harness_count: usize,
     authenticated_harness_count: usize,
 ) -> bool {
-    !has_substrate_findings && (enabled_harness_count == 0 || authenticated_harness_count > 0)
+    findings.iter().all(|finding| finding.severity != DoctorSeverity::Fatal)
+        && (enabled_harness_count == 0 || authenticated_harness_count > 0)
 }
 
 /// Embedding-pipeline health: pending-job backlog and an empty active-triple
@@ -116,6 +269,7 @@ async fn embedding_health_findings(substrate: &Substrate) -> Vec<DoctorFinding> 
                     crate::embedding::FASTEMBED_CANDLE_PROVIDER
                 ),
                 repair: Some("Switch active_embedding.provider to the fastembed candle lane or run a daemon that supports the configured provider.".to_string()),
+                severity: DoctorSeverity::Advisory,
             });
         }
     }
@@ -127,6 +281,7 @@ async fn embedding_health_findings(substrate: &Substrate) -> Vec<DoctorFinding> 
                 "embedding model load is failing and the daemon is retrying on a slow backoff; vector recall is FTS-only until a retry succeeds. Last error: {error}"
             ),
             repair: Some("Check network/model-cache availability and daemon logs; no restart is required after connectivity recovers.".to_string()),
+            severity: DoctorSeverity::Advisory,
         });
     }
 
@@ -139,6 +294,7 @@ async fn embedding_health_findings(substrate: &Substrate) -> Vec<DoctorFinding> 
                 "{exhausted} embedding job{plural} exhausted this daemon process's retry budget and will be skipped until restart so newer jobs can drain."
             ),
             repair: Some("Inspect daemon logs for the poisoned chunk ids; restart memoryd to retry them after fixing the cause.".to_string()),
+            severity: DoctorSeverity::Advisory,
         });
     }
 
@@ -153,6 +309,7 @@ async fn embedding_health_findings(substrate: &Substrate) -> Vec<DoctorFinding> 
                 "{backlog} embedding job(s) pending and the active-triple ({model}) vector table is empty - the embedding worker is not producing vectors; recall is FTS-only. Check daemon logs for model-load retries or provider-lane guards."
             ),
             repair: Some("Start `memoryd serve` and check daemon logs for an embedding model load or provider-lane error.".to_string()),
+            severity: DoctorSeverity::Advisory,
         });
     } else if backlog > 0 {
         let plural = if backlog == 1 { "" } else { "s" };
@@ -162,6 +319,7 @@ async fn embedding_health_findings(substrate: &Substrate) -> Vec<DoctorFinding> 
                 "{backlog} embedding job{plural} pending - vector recall is incomplete until the background worker drains them."
             ),
             repair: None,
+            severity: DoctorSeverity::Advisory,
         });
     }
     findings
@@ -170,13 +328,50 @@ async fn embedding_health_findings(substrate: &Substrate) -> Vec<DoctorFinding> 
 #[cfg(test)]
 mod tests {
     use super::doctor_is_healthy;
+    use crate::protocol::{DoctorFinding, DoctorSeverity};
+
+    fn finding(severity: DoctorSeverity) -> DoctorFinding {
+        DoctorFinding { code: "t".to_string(), message: String::new(), repair: None, severity }
+    }
 
     #[test]
-    fn doctor_health_requires_clean_substrate_and_available_harness() {
-        assert!(doctor_is_healthy(false, 2, 1), "one authenticated enabled harness keeps doctor healthy");
-        assert!(!doctor_is_healthy(false, 2, 0), "zero authenticated enabled harnesses is unhealthy");
-        assert!(!doctor_is_healthy(true, 2, 2), "substrate findings are unhealthy regardless of harnesses");
-        assert!(!doctor_is_healthy(true, 0, 0), "substrate findings are unhealthy even with empty registry");
-        assert!(doctor_is_healthy(false, 0, 0), "empty registry is trivially healthy when substrate is clean");
+    fn doctor_health_requires_no_fatal_finding_and_available_harness() {
+        let advisory = [finding(DoctorSeverity::Advisory)];
+        let fatal = [finding(DoctorSeverity::Fatal)];
+        assert!(doctor_is_healthy(&advisory, 2, 1), "advisory-only with an authenticated harness is healthy");
+        assert!(!doctor_is_healthy(&advisory, 2, 0), "no authenticated harness is unhealthy");
+        assert!(!doctor_is_healthy(&fatal, 2, 2), "a fatal finding is unhealthy regardless of harnesses");
+        assert!(!doctor_is_healthy(&fatal, 0, 0), "a fatal finding is unhealthy even with an empty registry");
+        assert!(doctor_is_healthy(&[], 0, 0), "no findings + empty registry is trivially healthy");
+    }
+
+    #[test]
+    fn d3_stale_uncommitted_fires_only_after_debounce_plus_grace() {
+        use std::process::Command;
+
+        use chrono::Duration;
+        use memory_substrate::config::SubstrateConfig;
+        use memory_substrate::tree::bootstrap_repo_tree;
+
+        let repo = tempfile::tempdir().expect("tempdir"); // expect-justified: test setup
+        bootstrap_repo_tree(repo.path()).expect("bootstrap"); // expect-justified: test setup
+        Command::new("git").args(["init"]).current_dir(repo.path()).output().expect("git init"); // expect-justified: test setup
+        std::fs::create_dir_all(repo.path().join("me/identity")).expect("dir"); // expect-justified: test setup
+        std::fs::write(repo.path().join("me/identity/fact.md"), "---\nsummary: f\n---\nbody\n").expect("write"); // expect-justified: test setup
+
+        let cfg = SubstrateConfig { commit_debounce_ms: 2000, commit_stale_grace_ms: 5000 };
+        let mtime: chrono::DateTime<chrono::Utc> = std::fs::metadata(repo.path().join("me/identity/fact.md"))
+            .expect("meta") // expect-justified: test setup
+            .modified()
+            .expect("mtime") // expect-justified: test setup
+            .into();
+
+        // Within debounce+grace (7s): no D3 finding — must not flap during the normal window.
+        assert!(super::stale_uncommitted_finding(repo.path(), &cfg, mtime + Duration::seconds(1)).is_none());
+        // Past the threshold: a fatal D3 finding.
+        let finding = super::stale_uncommitted_finding(repo.path(), &cfg, mtime + Duration::seconds(10))
+            .expect("stale uncommitted fires past the threshold"); // expect-justified: test assertion
+        assert_eq!(finding.code, "substrate_uncommitted_stale");
+        assert_eq!(finding.severity, DoctorSeverity::Fatal);
     }
 }

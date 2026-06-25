@@ -925,11 +925,26 @@ pub struct DoctorResponse {
     pub guidance: String,
 }
 
+/// Severity of a doctor finding (F4 / I-F4.2). `Fatal` findings flip `healthy`
+/// false (the loop is broken); `Advisory` findings keep `healthy` true but still
+/// surface in `findings`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DoctorSeverity {
+    /// A cut seam: the runtime loop is broken.
+    Fatal,
+    /// Surfaced but non-blocking; the loop still runs.
+    #[default]
+    Advisory,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DoctorFinding {
     pub code: String,
     pub message: String,
     pub repair: Option<String>,
+    #[serde(default)]
+    pub severity: DoctorSeverity,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

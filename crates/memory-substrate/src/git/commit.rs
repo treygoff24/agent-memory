@@ -100,12 +100,26 @@ pub fn commit_substrate_writes(repo: &Path, write_count: usize) -> Result<Commit
     Ok(CommitOutcome::Committed { sha })
 }
 
-/// Count changed paths a substrate write commit would be allowed to stage.
-pub fn count_substrate_write_changes(repo: &Path) -> Result<usize, GitError> {
+/// Repo-relative daemon-managed paths a substrate write commit would stage —
+/// the staged namespaces, untracked included, with `leases/journal.lease` excluded
+/// (it is committed only by `commit_lease_file`). Returned so callers like the
+/// doctor's D3 stale-uncommitted check can stat their mtimes without re-deriving
+/// the namespace + journal-exclusion logic.
+pub fn uncommitted_substrate_paths(repo: &Path) -> Result<Vec<String>, GitError> {
     let mut args = vec!["status", "--porcelain=v1", "--untracked-files=all", "--"];
     args.extend(staged_paths());
     let output = run_git(repo, &args)?;
-    Ok(output.lines().filter_map(status_path).filter(|path| *path != "leases/journal.lease").count())
+    Ok(output
+        .lines()
+        .filter_map(status_path)
+        .filter(|path| *path != "leases/journal.lease")
+        .map(str::to_string)
+        .collect())
+}
+
+/// Count changed paths a substrate write commit would be allowed to stage.
+pub fn count_substrate_write_changes(repo: &Path) -> Result<usize, GitError> {
+    Ok(uncommitted_substrate_paths(repo)?.len())
 }
 
 /// Commit only `leases/journal.lease` with the fixed Stream F lease-bot identity.

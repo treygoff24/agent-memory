@@ -156,6 +156,15 @@ pub struct DreamsConfig {
     /// Scheduled dream retry window.
     #[serde(default = "default_dream_retry_window_minutes")]
     pub dream_retry_window_minutes: u32,
+    /// Doctor D1: consecutive missed scheduled dreams before an advisory finding.
+    #[serde(default = "default_doctor_missed_threshold")]
+    pub doctor_missed_threshold: u32,
+    /// Doctor D4: cumulative per-section recall budget-exhaustion count before an advisory finding.
+    #[serde(default = "default_doctor_budget_exhausted_threshold")]
+    pub doctor_budget_exhausted_threshold: u64,
+    /// Doctor D5 (reserved for v3.0-P2; unused by P0 doctor): capture-drought days before a finding.
+    #[serde(default = "default_capture_drought_days")]
+    pub capture_drought_days: u32,
 }
 
 impl PartialEq for DreamsConfig {
@@ -177,6 +186,9 @@ impl PartialEq for DreamsConfig {
             && self.cleanup_run_hour_utc == other.cleanup_run_hour_utc
             && self.lease_window_seconds == other.lease_window_seconds
             && self.dream_retry_window_minutes == other.dream_retry_window_minutes
+            && self.doctor_missed_threshold == other.doctor_missed_threshold
+            && self.doctor_budget_exhausted_threshold == other.doctor_budget_exhausted_threshold
+            && self.capture_drought_days == other.capture_drought_days
     }
 }
 
@@ -202,6 +214,9 @@ impl Default for DreamsConfig {
             cleanup_run_hour_utc: default_cleanup_run_hour_utc(),
             lease_window_seconds: default_lease_window_seconds(),
             dream_retry_window_minutes: default_dream_retry_window_minutes(),
+            doctor_missed_threshold: default_doctor_missed_threshold(),
+            doctor_budget_exhausted_threshold: default_doctor_budget_exhausted_threshold(),
+            capture_drought_days: default_capture_drought_days(),
         }
     }
 }
@@ -212,11 +227,17 @@ pub struct SubstrateConfig {
     /// Debounce window for background git commits of daemon-managed writes.
     #[serde(default = "default_commit_debounce_ms")]
     pub commit_debounce_ms: u32,
+    /// Doctor D3 grace beyond the debounce before uncommitted substrate is "stale".
+    #[serde(default = "default_commit_stale_grace_ms")]
+    pub commit_stale_grace_ms: u32,
 }
 
 impl Default for SubstrateConfig {
     fn default() -> Self {
-        Self { commit_debounce_ms: default_commit_debounce_ms() }
+        Self {
+            commit_debounce_ms: default_commit_debounce_ms(),
+            commit_stale_grace_ms: default_commit_stale_grace_ms(),
+        }
     }
 }
 
@@ -323,6 +344,10 @@ fn validate_synced_config(config: &SyncedConfig) -> Result<(), String> {
     validate_range("dreams.lease_window_seconds", config.dreams.lease_window_seconds, 60, 14400)?;
     validate_range("dreams.dream_retry_window_minutes", config.dreams.dream_retry_window_minutes, 0, 720)?;
     validate_range("substrate.commit_debounce_ms", config.substrate.commit_debounce_ms, 0, 30000)?;
+    validate_range("substrate.commit_stale_grace_ms", config.substrate.commit_stale_grace_ms, 0, 60000)?;
+    validate_range("dreams.doctor_missed_threshold", config.dreams.doctor_missed_threshold, 0, 100)?;
+    validate_range("dreams.capture_drought_days", config.dreams.capture_drought_days, 0, 365)?;
+    // dreams.doctor_budget_exhausted_threshold is an unbounded cumulative count; no range gate.
     validate_range("events.compaction_days", config.events.compaction_days, 7, 730)?;
     if config.dreams.pending_attention_per_scope_cap > config.dreams.pending_attention_total_cap {
         return Err(format!(
@@ -468,4 +493,20 @@ fn default_events_compaction_days() -> u32 {
 
 fn default_commit_debounce_ms() -> u32 {
     2000
+}
+
+fn default_commit_stale_grace_ms() -> u32 {
+    5000
+}
+
+fn default_doctor_missed_threshold() -> u32 {
+    2
+}
+
+fn default_doctor_budget_exhausted_threshold() -> u64 {
+    500
+}
+
+fn default_capture_drought_days() -> u32 {
+    3
 }

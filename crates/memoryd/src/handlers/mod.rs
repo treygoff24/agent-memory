@@ -266,7 +266,7 @@ async fn dispatch(
 ) -> Result<ResponsePayload, HandlerError> {
     match request {
         RequestPayload::Status => Ok(ResponsePayload::Status(status_response(substrate, state).await)),
-        RequestPayload::Doctor => Ok(ResponsePayload::Doctor(doctor_response(substrate).await)),
+        RequestPayload::Doctor => Ok(ResponsePayload::Doctor(doctor_response(substrate, state).await)),
         RequestPayload::Search { query, limit, include_body } => {
             search_response(substrate, state, SearchResponseRequest { query: &query, limit, include_body }).await
         }
