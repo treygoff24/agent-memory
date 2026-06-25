@@ -39,6 +39,9 @@ pub struct SyncedConfig {
     /// Stream F dreaming configuration.
     #[serde(default)]
     pub dreams: DreamsConfig,
+    /// Substrate daemon configuration.
+    #[serde(default)]
+    pub substrate: SubstrateConfig,
     /// Event-log maintenance configuration.
     #[serde(default)]
     pub events: EventsConfig,
@@ -203,6 +206,20 @@ impl Default for DreamsConfig {
     }
 }
 
+/// Daemon substrate write configuration.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SubstrateConfig {
+    /// Debounce window for background git commits of daemon-managed writes.
+    #[serde(default = "default_commit_debounce_ms")]
+    pub commit_debounce_ms: u32,
+}
+
+impl Default for SubstrateConfig {
+    fn default() -> Self {
+        Self { commit_debounce_ms: default_commit_debounce_ms() }
+    }
+}
+
 /// Event-log maintenance config.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct EventsConfig {
@@ -256,6 +273,7 @@ pub fn load_config(repo: &Path, runtime: &Path, explicit_roots: Option<Roots>) -
         active_embedding: None,
         paths: None,
         dreams: DreamsConfig::default(),
+        substrate: SubstrateConfig::default(),
         events: EventsConfig::default(),
     });
     let local = load_local_device_config(runtime)?;
@@ -304,6 +322,7 @@ fn validate_synced_config(config: &SyncedConfig) -> Result<(), String> {
     validate_range("dreams.cleanup_run_hour_utc", config.dreams.cleanup_run_hour_utc, 0, 23)?;
     validate_range("dreams.lease_window_seconds", config.dreams.lease_window_seconds, 60, 14400)?;
     validate_range("dreams.dream_retry_window_minutes", config.dreams.dream_retry_window_minutes, 0, 720)?;
+    validate_range("substrate.commit_debounce_ms", config.substrate.commit_debounce_ms, 0, 30000)?;
     validate_range("events.compaction_days", config.events.compaction_days, 7, 730)?;
     if config.dreams.pending_attention_per_scope_cap > config.dreams.pending_attention_total_cap {
         return Err(format!(
@@ -445,4 +464,8 @@ fn default_dream_retry_window_minutes() -> u32 {
 
 fn default_events_compaction_days() -> u32 {
     90
+}
+
+fn default_commit_debounce_ms() -> u32 {
+    2000
 }

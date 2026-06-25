@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::substrate_git_lock::flush_substrate_writes;
 use chrono::{DateTime, Utc};
 use memory_substrate::{Roots, Substrate};
 
@@ -71,6 +72,7 @@ async fn run_manual_dream(args: crate::cli::DreamNowArgs) -> anyhow::Result<Drea
         eprintln!("dream_disabled: dreaming is disabled on this device");
         std::process::exit(1);
     }
+    flush_substrate_writes(&args.repo, &args.runtime)?;
     let cli_used = args.cli_used();
     let now = chrono::Utc::now();
     let result = crate::dream::lease::acquire_manual_lease(crate::dream::lease::LeaseAcquireRequest {
@@ -101,6 +103,7 @@ async fn run_manual_dream(args: crate::cli::DreamNowArgs) -> anyhow::Result<Drea
     }
     .await;
 
+    let post_flush = flush_substrate_writes(&args.repo, &args.runtime);
     if let Err(error) = &run_result {
         let _ = crate::dream::lease::release_manual_lease(crate::dream::lease::LeaseAcquireRequest {
             repo: args.repo,
@@ -123,6 +126,7 @@ async fn run_manual_dream(args: crate::cli::DreamNowArgs) -> anyhow::Result<Drea
             _ => {}
         }
     }
+    post_flush?;
 
     run_result
 }
@@ -138,6 +142,7 @@ async fn run_scheduled_dream(
 
     let now = Utc::now();
     let cli_used = args.cli_used();
+    flush_substrate_writes(&args.repo, &args.runtime)?;
     let request = crate::dream::lease::ScheduledLeaseRequest {
         acquire: crate::dream::lease::LeaseAcquireRequest {
             repo: args.repo.clone(),
@@ -162,22 +167,31 @@ async fn run_scheduled_dream(
             let dreams = config.synced.dreams.clone();
             let cli_used = cli_used.clone();
             async move {
-                execute_dream_run(DreamRunInvocation {
-                    repo,
-                    runtime,
+                let run_result = execute_dream_run(DreamRunInvocation {
+                    repo: repo.clone(),
+                    runtime: runtime.clone(),
                     raw_scope: scope,
                     run_id: lease.record.run_id,
                     run_date: now.date_naive(),
                     dreams,
                     cli_used,
                 })
-                .await
-                .map_err(dream_run_error_to_lease_error)
+                .await;
+                let flush_result = flush_substrate_writes(&repo, &runtime)
+                    .map_err(|error| crate::dream::lease::LeaseError::unavailable(error.to_string()));
+                match (run_result, flush_result) {
+                    (Ok(report), Ok(())) => Ok(report),
+                    (Ok(_), Err(error)) => Err(error),
+                    (Err(error), _) => Err(dream_run_error_to_lease_error(error)),
+                }
             }
         })
         .await;
     match report {
-        Ok(report) => Ok(report),
+        Ok(report) => {
+            flush_substrate_writes(&args.repo, &args.runtime)?;
+            Ok(report)
+        }
         Err(error) => exit_dream_error(error),
     }
 }
@@ -271,4 +285,206 @@ fn parse_cleanup_now(raw: Option<String>) -> anyhow::Result<DateTime<Utc>> {
 
 fn dream_report_failed(report: &DreamRunReport) -> bool {
     [report.pass_1.status, report.pass_2.status, report.pass_3.status].contains(&PassStatus::Failed)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    use chrono::Utc;
+    use memory_substrate::git::{commit_substrate_writes, count_substrate_write_changes};
+    use memory_substrate::tree::bootstrap_repo_tree;
+    use memory_substrate::{
+        ClassificationOutcome, ObserveKind, Roots, Substrate, SubstrateFragmentAppendRequest, SubstrateFragmentPayload,
+    };
+    use tempfile::TempDir;
+
+    use super::{flush_substrate_writes, run_manual_dream, run_scheduled_dream};
+
+    #[tokio::test]
+    async fn pre_dream_flush_in_manual_dream_leaves_clean_tree() {
+        let env = DreamFlushEnv::new("dev_manualpre").await;
+        env.write("sources/web/pre-manual/manifest.json", "{}\n");
+
+        let report = run_manual_dream(env.now_args("me")).await.expect("manual dream succeeds");
+
+        assert_eq!(report.scope, "me");
+        assert_eq!(env.git(["status", "--porcelain"]), "");
+        assert!(
+            env.git(["log", "--format=%s"]).lines().any(|subject| subject.starts_with("substrate: commit")),
+            "pre-dream substrate flush should commit before lease acquisition"
+        );
+    }
+
+    #[tokio::test]
+    async fn pre_dream_flush_in_scheduled_dream_leaves_clean_tree() {
+        let env = DreamFlushEnv::new("dev_scheduledpre").await;
+        env.write("sources/web/pre-scheduled/manifest.json", "{}\n");
+
+        let report = run_scheduled_dream(env.scheduled_args("me")).await.expect("scheduled dream succeeds");
+
+        assert_eq!(report.outcome, crate::dream::lease::ScheduledLeaseOutcome::Success);
+        assert_eq!(env.git(["status", "--porcelain"]), "");
+    }
+
+    #[tokio::test]
+    async fn post_dream_flush_commits_candidate_writes_before_return() {
+        let env = DreamFlushEnv::new("dev_candidatepost").await;
+        env.append_fragment("agent").await;
+
+        let report = run_manual_dream(env.now_args("agent")).await.expect("manual dream succeeds");
+
+        assert!(report.pass_2.candidate_results.iter().any(|result| result.accepted), "{report:?}");
+        let candidate = env
+            .first_file_under("agent/decisions")
+            .unwrap_or_else(|| panic!("candidate file missing under agent/decisions"));
+        env.git(["ls-files", "--error-unmatch", candidate.as_str()]);
+        assert_eq!(env.git(["status", "--porcelain"]), "");
+    }
+
+    #[tokio::test]
+    async fn partial_dream_writes_committed_before_release_on_error() {
+        let env = DreamFlushEnv::new("dev_partialerror").await;
+        crate::dream::lease::acquire_manual_lease(env.lease_request("me")).expect("lease acquired");
+        env.write("me/knowledge/partial-candidate.md", "---\nsummary: partial\n---\npartial\n");
+
+        flush_substrate_writes(&env.repo, &env.runtime).expect("post-dream flush");
+        crate::dream::lease::release_manual_lease(env.lease_request("me")).expect("lease released");
+
+        let subjects = env.git(["log", "-3", "--format=%s"]);
+        let mut lines = subjects.lines();
+        assert!(lines.next().expect("release commit").starts_with("dream: lease release"), "{subjects}");
+        assert!(lines.next().expect("substrate commit").starts_with("substrate: commit"), "{subjects}");
+        env.git(["ls-files", "--error-unmatch", "me/knowledge/partial-candidate.md"]);
+        assert_eq!(env.git(["status", "--porcelain"]), "");
+    }
+
+    struct DreamFlushEnv {
+        _temp: TempDir,
+        repo: PathBuf,
+        runtime: PathBuf,
+    }
+
+    impl DreamFlushEnv {
+        async fn new(device: &str) -> Self {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let repo = temp.path().join("repo");
+            let runtime = temp.path().join("runtime");
+            bootstrap_repo_tree(&repo).expect("bootstrap repo");
+            std::fs::write(
+                repo.join("config.yaml"),
+                "schema_version: 1\nactive_embedding:\n  provider: synthetic\n  model_ref: stream-a-test\n  dimension: 32\nsubstrate:\n  commit_debounce_ms: 10\n",
+            )
+            .expect("config");
+            command(&repo, "git", ["init"]);
+            commit_substrate_writes(&repo, 1).expect("baseline commit");
+            std::fs::create_dir_all(&runtime).expect("runtime");
+            std::fs::write(
+                runtime.join("local-device.yaml"),
+                format!("schema_version: 1\ndevice:\n  id: {device}\n  name: local\n  shard: test\n"),
+            )
+            .expect("local device");
+            let substrate = Substrate::open(Roots::new(repo.clone(), runtime.clone())).await.expect("open substrate");
+            drop(substrate);
+            let write_count = count_substrate_write_changes(&repo).expect("post-open count");
+            if write_count > 0 {
+                commit_substrate_writes(&repo, write_count).expect("post-open commit");
+            }
+            Self { _temp: temp, repo, runtime }
+        }
+
+        fn now_args(&self, scope: &str) -> crate::cli::DreamNowArgs {
+            crate::cli::DreamNowArgs {
+                repo: self.repo.clone(),
+                runtime: self.runtime.clone(),
+                scope: scope.to_string(),
+                force: false,
+                cli_override: Some("echo".to_string()),
+                json: true,
+            }
+        }
+
+        fn scheduled_args(&self, scope: &str) -> crate::cli::DreamScheduledArgs {
+            crate::cli::DreamScheduledArgs {
+                repo: self.repo.clone(),
+                runtime: self.runtime.clone(),
+                scope: scope.to_string(),
+                cli_override: Some("echo".to_string()),
+                json: true,
+            }
+        }
+
+        fn lease_request(&self, scope: &str) -> crate::dream::lease::LeaseAcquireRequest {
+            crate::dream::lease::LeaseAcquireRequest {
+                repo: self.repo.clone(),
+                runtime: self.runtime.clone(),
+                scope: scope.to_string(),
+                force: false,
+                now: Utc::now(),
+                lease_window_seconds: 3_600,
+                cli_used: Some("echo".to_string()),
+            }
+        }
+
+        async fn append_fragment(&self, scope: &str) {
+            let substrate = Substrate::open(Roots::new(self.repo.clone(), self.runtime.clone())).await.expect("open");
+            substrate
+                .append_substrate_fragment(SubstrateFragmentAppendRequest {
+                    id: None,
+                    at: Utc::now(),
+                    session: Some("sess_flush".to_string()),
+                    harness: Some("codex".to_string()),
+                    scope: scope.to_string(),
+                    entities: vec!["ent_flush".to_string()],
+                    kind: ObserveKind::Observation,
+                    source_ref: None,
+                    privacy_spans: Vec::new(),
+                    payload: SubstrateFragmentPayload::Plaintext { text: "flush candidate evidence".to_string() },
+                    classification: ClassificationOutcome::Trusted,
+                    operation_id: None,
+                })
+                .await
+                .expect("append fragment");
+        }
+
+        fn write(&self, relative: &str, text: &str) {
+            let path = self.repo.join(relative);
+            std::fs::create_dir_all(path.parent().expect("relative path has parent")).expect("parent dir");
+            std::fs::write(path, text).expect("write file");
+        }
+
+        fn first_file_under(&self, relative: &str) -> Option<String> {
+            let root = self.repo.join(relative);
+            let mut stack = vec![root];
+            while let Some(path) = stack.pop() {
+                let entries = std::fs::read_dir(path).ok()?;
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        stack.push(path);
+                    } else if path.extension().is_some_and(|ext| ext == "md") {
+                        return path.strip_prefix(&self.repo).ok()?.to_str().map(str::to_string);
+                    }
+                }
+            }
+            None
+        }
+
+        fn git<const N: usize>(&self, args: [&str; N]) -> String {
+            command(&self.repo, "git", args)
+        }
+    }
+
+    fn command<const N: usize>(cwd: &Path, program: &str, args: [&str; N]) -> String {
+        let output = Command::new(program).args(args).current_dir(cwd).output().expect("command starts");
+        assert!(
+            output.status.success(),
+            "{program} failed in {}\nstdout:\n{}\nstderr:\n{}",
+            cwd.display(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
 }

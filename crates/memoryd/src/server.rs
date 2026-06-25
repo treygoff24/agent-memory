@@ -1,9 +1,11 @@
 use std::path::Path;
 use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use memorum_coordination::spawn_stale_session_cleanup_task;
+use memory_substrate::git::{commit_substrate_writes, count_substrate_write_changes, CommitOutcome};
 use memory_substrate::Substrate;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
@@ -72,6 +74,7 @@ pub async fn serve_substrate_with(
     fire_reality_check_due_on_startup(&substrate, &state);
     spawn_reality_check_scheduler(substrate.clone(), state.clone(), shutdown.clone());
     spawn_embedding_worker(substrate.clone(), state.embedding_provider_slot(), shutdown.clone());
+    spawn_substrate_commit_worker(substrate.clone(), shutdown.clone());
     serve_with_dispatcher(socket_path.as_ref(), Dispatch::Substrate { substrate, state }, options, shutdown).await
 }
 
@@ -222,6 +225,88 @@ async fn sleep_or_shutdown(shutdown: &mut watch::Receiver<bool>, duration: Durat
         _ = shutdown.changed() => true,
         _ = tokio::time::sleep(duration) => false,
     }
+}
+
+fn spawn_substrate_commit_worker(substrate: Arc<Substrate>, mut shutdown: watch::Receiver<bool>) {
+    let repo = substrate.roots().repo.clone();
+    let runtime = substrate.roots().runtime.clone();
+    let debounce = substrate_commit_debounce(substrate.as_ref());
+    let _worker = thread::spawn(move || {
+        loop {
+            if wait_or_shutdown(&mut shutdown, debounce) {
+                flush_substrate_commits(&repo, &runtime);
+                return;
+            }
+
+            // Do not use `Substrate::watch()`: daemon-authored writes are
+            // self-suppressed by watcher/subscription.rs, and those are exactly
+            // the writes this worker must commit.
+            match count_substrate_write_changes(&repo) {
+                Ok(0) => {}
+                Ok(write_count) => flush_substrate_commit_count(&repo, &runtime, write_count),
+                Err(error) => tracing::warn!(%error, "substrate commit worker status poll failed"),
+            }
+        }
+    });
+}
+
+fn substrate_commit_debounce(substrate: &Substrate) -> Duration {
+    let debounce_ms = memory_substrate::config::load_config(&substrate.roots().repo, &substrate.roots().runtime, None)
+        .map(|config| config.synced.substrate.commit_debounce_ms)
+        .unwrap_or_else(|error| {
+            tracing::warn!(%error, "using default substrate commit debounce");
+            2000
+        });
+    Duration::from_millis(u64::from(debounce_ms.max(10)))
+}
+
+fn wait_or_shutdown(shutdown: &mut watch::Receiver<bool>, duration: Duration) -> bool {
+    let deadline = std::time::Instant::now() + duration;
+    loop {
+        if shutdown_requested(shutdown) {
+            return true;
+        }
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return false;
+        }
+        thread::sleep((deadline - now).min(Duration::from_millis(50)));
+    }
+}
+
+fn shutdown_requested(shutdown: &mut watch::Receiver<bool>) -> bool {
+    if *shutdown.borrow() {
+        return true;
+    }
+    match shutdown.has_changed() {
+        Ok(true) => *shutdown.borrow_and_update(),
+        Ok(false) => false,
+        Err(_) => true,
+    }
+}
+
+fn flush_substrate_commits(repo: &Path, runtime: &Path) {
+    match count_substrate_write_changes(repo) {
+        Ok(0) => {}
+        Ok(write_count) => flush_substrate_commit_count(repo, runtime, write_count),
+        Err(error) => tracing::warn!(%error, "substrate commit worker final status poll failed"),
+    }
+}
+
+fn flush_substrate_commit_count(repo: &Path, runtime: &Path, write_count: usize) {
+    let lock = match crate::substrate_git_lock::acquire_substrate_git_lock(runtime) {
+        Ok(lock) => lock,
+        Err(error) => {
+            tracing::warn!(%error, "substrate commit worker could not acquire git lock");
+            return;
+        }
+    };
+    match commit_substrate_writes(repo, write_count) {
+        Ok(CommitOutcome::Committed { sha }) => tracing::info!(%sha, write_count, "committed substrate writes"),
+        Ok(CommitOutcome::NoChanges) => {}
+        Err(error) => tracing::warn!(%error, "substrate commit worker commit failed; will retry"),
+    }
+    drop(lock);
 }
 
 fn spawn_reality_check_scheduler(

@@ -11,6 +11,7 @@ use memory_substrate::git::LeaseCommitAction;
 use serde::{Deserialize, Serialize};
 
 use crate::dream::git::{origin_remote_configured, LeaseGit, NativeLeaseGit};
+use crate::substrate_git_lock::acquire_substrate_git_lock;
 // `LeaseCommit` and `LeaseError` are defined alongside the `LeaseGit` trait in
 // `crate::dream::git` (the git layer is their producer). Re-exported here so the
 // historical `crate::dream::lease::{LeaseCommit, LeaseError}` paths keep resolving.
@@ -115,6 +116,14 @@ pub fn acquire_manual_lease_with_git(
     git: &mut impl LeaseGit,
     request: LeaseAcquireRequest,
 ) -> Result<LeaseAcquired, LeaseError> {
+    // Hold the repo-level substrate git lock for the whole lease transaction
+    // (append → commit → push → rollback). Acquired here in the generic function —
+    // not the `acquire_manual_lease` wrapper — so the SCHEDULED dream path, which
+    // drives this function directly via `run_scheduled_lease_*`, is also serialized
+    // against the daemon commit worker (I-F1.5). The lock spans one transaction and
+    // releases on return, so scheduled retries sleep WITHOUT holding it.
+    let _git_lock = acquire_substrate_git_lock(&request.runtime)
+        .map_err(|err| LeaseError::unavailable(format!("substrate git lock: {err}")))?;
     validate_scope(&request.scope)?;
     let device_id = load_device_id(&request.runtime)?;
     let lease_path = request.repo.join("leases/journal.lease");
@@ -179,6 +188,10 @@ pub fn acquire_manual_lease_with_git(
 }
 
 pub fn release_manual_lease_with_git(git: &mut impl LeaseGit, request: LeaseAcquireRequest) -> Result<(), LeaseError> {
+    // Same repo-level lock as acquire (see `acquire_manual_lease_with_git`): the
+    // release append+commit+push is one transaction serialized against the worker.
+    let _git_lock = acquire_substrate_git_lock(&request.runtime)
+        .map_err(|err| LeaseError::unavailable(format!("substrate git lock: {err}")))?;
     validate_scope(&request.scope)?;
     let device_id = load_device_id(&request.runtime)?;
     let lease_path = request.repo.join("leases/journal.lease");

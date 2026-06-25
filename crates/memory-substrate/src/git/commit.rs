@@ -20,6 +20,7 @@ const STAGED_NAMESPACES: &[&str] = &[
     "tombstones/",
     "policies/",
     "leases/",
+    "sources/",
 ];
 
 /// Root-level bootstrap files that are always tracked.
@@ -79,6 +80,32 @@ pub fn auto_commit_with_outcome(repo: &Path, message: &str) -> Result<CommitOutc
 
     let sha = run_commit(repo, message)?;
     Ok(CommitOutcome::Committed { sha })
+}
+
+/// Commit daemon substrate writes with the fixed write-bot identity.
+///
+/// This stages only daemon-managed substrate namespaces, explicitly excludes the
+/// lease journal, and never pushes.
+pub fn commit_substrate_writes(repo: &Path, write_count: usize) -> Result<CommitOutcome, GitError> {
+    stage_spec_namespaces(repo)?;
+    run_git(repo, &["reset", "-q", "--", "leases/journal.lease"])?;
+
+    if nothing_to_commit(repo)? {
+        return Ok(CommitOutcome::NoChanges);
+    }
+
+    let message = format!("substrate: commit {write_count} write(s)");
+    run_write_bot_commit(repo, &message)?;
+    let sha = run_git(repo, &["rev-parse", "--short", "HEAD"])?.trim().to_string();
+    Ok(CommitOutcome::Committed { sha })
+}
+
+/// Count changed paths a substrate write commit would be allowed to stage.
+pub fn count_substrate_write_changes(repo: &Path) -> Result<usize, GitError> {
+    let mut args = vec!["status", "--porcelain=v1", "--untracked-files=all", "--"];
+    args.extend(staged_paths());
+    let output = run_git(repo, &args)?;
+    Ok(output.lines().filter_map(status_path).filter(|path| *path != "leases/journal.lease").count())
 }
 
 /// Commit only `leases/journal.lease` with the fixed Stream F lease-bot identity.
@@ -166,11 +193,53 @@ fn run_lease_commit(repo: &Path, message: &str) -> Result<(), GitError> {
     }
 }
 
+fn run_write_bot_commit(repo: &Path, message: &str) -> Result<(), GitError> {
+    let args = vec![
+        "commit".to_string(),
+        "--author".to_string(),
+        "memoryd write-bot <noreply@memoryd.local>".to_string(),
+        "-m".to_string(),
+        message.to_string(),
+    ];
+    let mut command = Command::new("git");
+    command
+        .args(&args)
+        .current_dir(repo)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_OBJECT_DIRECTORY")
+        .env_remove("GIT_NAMESPACE")
+        .env("GIT_AUTHOR_NAME", "memoryd write-bot")
+        .env("GIT_AUTHOR_EMAIL", "noreply@memoryd.local")
+        .env("GIT_COMMITTER_NAME", "memoryd write-bot")
+        .env("GIT_COMMITTER_EMAIL", "noreply@memoryd.local");
+
+    let output = command.output()?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(GitError::CommandFailed {
+            program: "git".to_string(),
+            args,
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        })
+    }
+}
+
 fn staged_paths() -> Vec<&'static str> {
     let mut paths = Vec::with_capacity(STAGED_NAMESPACES.len() + STAGED_ROOT_FILES.len());
     paths.extend_from_slice(STAGED_NAMESPACES);
     paths.extend_from_slice(STAGED_ROOT_FILES);
     paths
+}
+
+fn status_path(line: &str) -> Option<&str> {
+    let path = line.get(3..)?.trim();
+    if path.is_empty() {
+        return None;
+    }
+    Some(path.rsplit(" -> ").next().unwrap_or(path).trim_matches('"'))
 }
 
 #[cfg(test)]
@@ -179,7 +248,9 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::{auto_commit_with_outcome, CommitOutcome};
+    use super::{
+        auto_commit_with_outcome, commit_lease_file, commit_substrate_writes, CommitOutcome, LeaseCommitAction,
+    };
     use crate::tree::bootstrap_repo_tree;
 
     #[test]
@@ -199,8 +270,10 @@ mod tests {
         let outcome = auto_commit_with_outcome(repo.path(), "Stream A auto-commit").expect("auto commit"); // expect-justified: test assertion
 
         assert_eq!(outcome, CommitOutcome::NoChanges);
-        assert_eq!(git(repo.path(), &["rev-parse", "--short", "HEAD"]).expect("head sha"), baseline_sha);
-        // expect-justified: test assertion
+        assert_eq!(
+            git(repo.path(), &["rev-parse", "--short", "HEAD"]).expect("head sha"), // expect-justified: test assertion
+            baseline_sha
+        );
     }
 
     #[test]
@@ -219,6 +292,125 @@ mod tests {
         let outcome = auto_commit_with_outcome(repo.path(), "Stream A auto-commit").expect("auto commit"); // expect-justified: test assertion
 
         assert!(matches!(outcome, CommitOutcome::Committed { .. }));
+    }
+
+    #[test]
+    fn commit_succeeds_on_unconfigured_git_identity() {
+        let repo = tempdir().expect("tempdir"); // expect-justified: test setup
+        bootstrap_repo_tree(repo.path()).expect("bootstrap"); // expect-justified: test setup
+        git(repo.path(), &["init"]).expect("git init"); // expect-justified: test setup
+
+        let outcome = commit_substrate_writes(repo.path(), 1).expect("write-bot commit succeeds without repo identity"); // expect-justified: test assertion
+
+        assert!(matches!(outcome, CommitOutcome::Committed { .. }));
+        assert_eq!(
+            git(repo.path(), &["log", "-1", "--format=%an <%ae>"]).expect("author"), // expect-justified: test assertion
+            "memoryd write-bot <noreply@memoryd.local>"
+        );
+        assert_eq!(
+            git(repo.path(), &["log", "-1", "--format=%cn <%ce>"]).expect("committer"), // expect-justified: test assertion
+            "memoryd write-bot <noreply@memoryd.local>"
+        );
+        assert_eq!(
+            git(repo.path(), &["log", "-1", "--format=%s"]).expect("subject"), // expect-justified: test assertion
+            "substrate: commit 1 write(s)"
+        );
+    }
+
+    #[test]
+    fn sources_web_write_is_tracked_after_commit() {
+        let repo = tempdir().expect("tempdir"); // expect-justified: test setup
+        bootstrap_repo_tree(repo.path()).expect("bootstrap"); // expect-justified: test setup
+        git(repo.path(), &["init"]).expect("git init"); // expect-justified: test setup
+        commit_substrate_writes(repo.path(), 1).expect("baseline commit"); // expect-justified: test setup
+        let source_dir = repo.path().join("sources/web/example");
+        fs::create_dir_all(&source_dir).expect("source dir"); // expect-justified: test setup
+        fs::write(source_dir.join("manifest.json"), "{}\n").expect("source manifest"); // expect-justified: test setup
+
+        let outcome = commit_substrate_writes(repo.path(), 1).expect("source commit"); // expect-justified: test assertion
+
+        assert!(matches!(outcome, CommitOutcome::Committed { .. }));
+        git(repo.path(), &["ls-files", "--error-unmatch", "sources/web/example/manifest.json"])
+            .expect("source file tracked"); // expect-justified: test assertion
+        assert_eq!(
+            git(repo.path(), &["status", "--porcelain", "--", "sources/"]).expect("source status"), // expect-justified: test assertion
+            ""
+        );
+    }
+
+    #[test]
+    fn broad_flush_between_lease_append_and_commit_does_not_corrupt_lease() {
+        let repo = tempdir().expect("tempdir"); // expect-justified: test setup
+        bootstrap_repo_tree(repo.path()).expect("bootstrap"); // expect-justified: test setup
+        git(repo.path(), &["init"]).expect("git init"); // expect-justified: test setup
+        commit_substrate_writes(repo.path(), 1).expect("baseline commit"); // expect-justified: test setup
+        let lease_record = r#"{"device":"dev_local","scope":"me","run_id":"run_1"}"#;
+        fs::write(repo.path().join("leases/journal.lease"), format!("{lease_record}\n")).expect("lease write"); // expect-justified: test setup
+        fs::create_dir_all(repo.path().join("me/identity")).expect("identity dir"); // expect-justified: test setup
+        fs::write(repo.path().join("me/identity/fact.md"), "---\nsummary: fact\n---\nbody\n").expect("memory write"); // expect-justified: test setup
+
+        let outcome = commit_substrate_writes(repo.path(), 2).expect("broad substrate commit"); // expect-justified: test assertion
+
+        assert!(matches!(outcome, CommitOutcome::Committed { .. }));
+        let files =
+            git(repo.path(), &["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"]).expect("last commit files"); // expect-justified: test assertion
+        assert!(files.lines().any(|path| path == "me/identity/fact.md"), "{files}");
+        assert!(!files.lines().any(|path| path == "leases/journal.lease"), "{files}");
+        assert_eq!(
+            fs::read_to_string(repo.path().join("leases/journal.lease")).expect("lease text"), // expect-justified: test assertion
+            format!("{lease_record}\n")
+        );
+        assert!(
+            !git(repo.path(), &["status", "--porcelain", "--", "leases/journal.lease"])
+                .expect("lease dirty status") // expect-justified: test assertion
+                .is_empty(),
+            "lease append must stay uncommitted for the lease-specific commit"
+        );
+
+        let lease_outcome =
+            commit_lease_file(repo.path(), LeaseCommitAction::Acquire, "me", "dev_local").expect("lease commit"); // expect-justified: test assertion
+        assert!(matches!(lease_outcome, CommitOutcome::Committed { .. }));
+        assert_eq!(
+            fs::read_to_string(repo.path().join("leases/journal.lease")).expect("lease text"), // expect-justified: test assertion
+            format!("{lease_record}\n")
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn commit_failure_does_not_lose_write() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let repo = tempdir().expect("tempdir"); // expect-justified: test setup
+        bootstrap_repo_tree(repo.path()).expect("bootstrap"); // expect-justified: test setup
+        git(repo.path(), &["init"]).expect("git init"); // expect-justified: test setup
+        commit_substrate_writes(repo.path(), 1).expect("baseline commit"); // expect-justified: test setup
+        let hook = repo.path().join(".git/hooks/pre-commit");
+        fs::write(&hook, "#!/bin/sh\necho blocked >&2\nexit 1\n").expect("hook write"); // expect-justified: test setup
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).expect("hook chmod"); // expect-justified: test setup
+        let path = repo.path().join("me/identity/retry.md");
+        let parent = path.parent().expect("path has parent"); // expect-justified: test setup
+        fs::create_dir_all(parent).expect("identity dir"); // expect-justified: test setup
+        fs::write(&path, "---\nsummary: retry\n---\nbody\n").expect("memory write"); // expect-justified: test setup
+
+        let error = commit_substrate_writes(repo.path(), 1).expect_err("hook blocks commit");
+
+        assert!(error.to_string().contains("blocked"), "{error}");
+        assert!(path.is_file(), "failed commit must not delete the write");
+        assert!(
+            !git(repo.path(), &["status", "--porcelain", "--", "me/identity/retry.md"])
+                .expect("dirty status") // expect-justified: test assertion
+                .is_empty(),
+            "failed commit must leave the write retryable"
+        );
+
+        fs::remove_file(hook).expect("remove hook"); // expect-justified: test setup
+        let retry = commit_substrate_writes(repo.path(), 1).expect("retry commit"); // expect-justified: test assertion
+        assert!(matches!(retry, CommitOutcome::Committed { .. }));
+        assert_eq!(
+            git(repo.path(), &["status", "--porcelain", "--", "me/identity/retry.md"]).expect("clean"), // expect-justified: test assertion
+            ""
+        );
     }
 
     fn git(repo: &std::path::Path, args: &[&str]) -> Result<String, String> {

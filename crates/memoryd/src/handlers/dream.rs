@@ -32,6 +32,13 @@ pub(crate) async fn dream_now_response(
     let scope = crate::dream::scope::DreamScope::parse(&scope).map_err(HandlerError::from_dream)?;
     validate_dream_cli_override(cli_override.as_deref())?;
     let now = chrono::Utc::now();
+    // Pre-dream flush (F1): commit pending daemon substrate writes before acquiring
+    // the lease, so the lease dirty-tree guard does not block on the daemon's own
+    // uncommitted writes (Wall 2). The CLI dream paths do the same; this in-daemon
+    // trigger must too or a socket-driven `dream now` wedges whenever the commit
+    // worker has pending writes.
+    crate::substrate_git_lock::flush_substrate_writes(&substrate.roots().repo, &substrate.roots().runtime)
+        .map_err(HandlerError::substrate)?;
     let acquired = crate::dream::lease::acquire_manual_lease(crate::dream::lease::LeaseAcquireRequest {
         repo: substrate.roots().repo.clone(),
         runtime: substrate.roots().runtime.clone(),
@@ -74,6 +81,10 @@ pub(crate) async fn dream_now_response(
     }
     .await;
 
+    // Post-dream flush (F1): commit the dream's own pass-2 candidate writes before
+    // returning or releasing the lease, on success AND error.
+    let post_flush =
+        crate::substrate_git_lock::flush_substrate_writes(&substrate.roots().repo, &substrate.roots().runtime);
     if result.is_err() {
         let _ = crate::dream::lease::release_manual_lease(crate::dream::lease::LeaseAcquireRequest {
             repo: substrate.roots().repo.clone(),
@@ -85,6 +96,7 @@ pub(crate) async fn dream_now_response(
             cli_used: cli_override,
         });
     }
+    post_flush.map_err(HandlerError::substrate)?;
 
     result
 }

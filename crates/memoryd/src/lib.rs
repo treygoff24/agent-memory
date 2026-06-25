@@ -29,6 +29,7 @@ pub mod setup;
 pub mod slash_commands;
 pub mod socket;
 pub mod state;
+pub mod substrate_git_lock;
 pub mod trust_artifact;
 pub(crate) mod util;
 

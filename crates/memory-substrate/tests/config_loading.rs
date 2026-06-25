@@ -1,4 +1,6 @@
-use memory_substrate::config::{load_config, load_local_device_config, load_synced_config, DreamsConfig, SyncedConfig};
+use memory_substrate::config::{
+    load_config, load_local_device_config, load_synced_config, DreamsConfig, SubstrateConfig, SyncedConfig,
+};
 use memory_substrate::tree::bootstrap_repo_tree;
 use memory_substrate::Roots;
 use std::sync::LazyLock;
@@ -140,6 +142,7 @@ active_embedding:
     assert_eq!(synced.dreams.cleanup_run_hour_utc, 3);
     assert_eq!(synced.dreams.lease_window_seconds, 3600);
     assert_eq!(synced.dreams.dream_retry_window_minutes, 180);
+    assert_eq!(synced.substrate.commit_debounce_ms, 2000);
     assert_eq!(synced.events.compaction_days, 90);
 }
 
@@ -148,6 +151,7 @@ fn synced_and_dreams_config_retain_eq_contract() {
     fn assert_eq_bound<T: Eq>() {}
 
     assert_eq_bound::<DreamsConfig>();
+    assert_eq_bound::<SubstrateConfig>();
     assert_eq_bound::<SyncedConfig>();
 }
 
@@ -239,6 +243,23 @@ dreams:
 }
 
 #[test]
+fn substrate_config_rejects_out_of_range_commit_debounce() {
+    let err = load_synced_config_from_text(
+        r#"schema_version: 1
+active_embedding:
+  provider: synthetic
+  model_ref: stream-a-test
+  dimension: 32
+substrate:
+  commit_debounce_ms: 30001
+"#,
+    )
+    .expect_err("out of range substrate debounce rejected");
+
+    assert!(err.contains("substrate.commit_debounce_ms"), "actual error: {err}");
+}
+
+#[test]
 fn dreams_config_parses_all_v0_2_keys_and_preserves_values() {
     let synced = load_synced_config_from_text(
         r#"schema_version: 1
@@ -269,6 +290,8 @@ dreams:
   dream_retry_window_minutes: 240
 events:
   compaction_days: 180
+substrate:
+  commit_debounce_ms: 123
 "#,
     )
     .expect("valid dreams config");
@@ -292,6 +315,7 @@ events:
     assert_eq!(synced.dreams.cleanup_run_hour_utc, 11);
     assert_eq!(synced.dreams.lease_window_seconds, 7200);
     assert_eq!(synced.dreams.dream_retry_window_minutes, 240);
+    assert_eq!(synced.substrate.commit_debounce_ms, 123);
     assert_eq!(synced.events.compaction_days, 180);
 }
 
