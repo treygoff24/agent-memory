@@ -6,6 +6,8 @@ Implementation home for the agent-memory system. Ships as **Memorum** (Latin gen
 
 Streams A–I are shipped. The alpha-readiness arc is substantively shipped: latest in-flight plan is `docs/plans/2026-05-25-alpha-core-gap-closeout.md` (8/10 Done, 2 Partial) with audit closeout at `docs/reviews/2026-05-26-alpha-gap-audit.md`. Stream H live real-harness validation remains environment-dependent on authenticated Claude/Codex CLIs.
 
+**Runtime-loop foundation (2026-06-25, in flight — not started):** a 6-day single-device dogfood found the runtime loop never closes end-to-end (writes never git-commit → dreaming dead on a no-remote install → no ambient capture → doctor blind). Diagnosis, the local-first/redesign-first decisions, and the P0 fix set (F1 commit-on-write, F2 single-device lease, F3 recovery/dedup, F4 doctor) are specced at `docs/specs/memorum-runtime-loop-foundation-v0.1.md` with a reviewed, ready-to-execute plan at `docs/plans/2026-06-25-runtime-loop-foundation-implementation.md` (read its top "Session-resume kickoff" first). These three deliverables (+ the explainer `docs/explainers/2026-06-25-runtime-loop-foundation-plan.html`) are **uncommitted on `main`**. This foundation is Phase 0 of the v3.0 ambient-recall redesign (`docs/specs/stream-e-ambient-recall-v3.0.md`).
+
 For narrative history: `git log`. For per-stream state: read the live spec/plan listed in **Authoritative documents** below. For runtime ground truth: `git status`, `git worktree list`, `git log --oneline -20`, and the latest plan's task list — don't infer current state from older docs.
 
 ## Stream model (one-liners)

@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Memorum — closing the runtime loop</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400..600;1,9..144,400&family=DM+Sans:opsz,wght@9..40,400..600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0d0b09; --bg-raise:#16130f; --bg-card:#161310;
+    --ink:#ece4d6; --ink-dim:#a89a86; --ink-faint:#766a59;
+    --lamp:#e6a95b; --lamp-2:#f0c389; --lamp-soft:rgba(230,169,91,.13);
+    --desk:#79b4ab; --desk-soft:rgba(121,180,171,.12);
+    --warn:#d98a6a; --warn-soft:rgba(217,138,106,.13);
+    --danger:#e0654f; --danger-soft:rgba(224,101,79,.13);
+    --line:rgba(236,228,214,.09); --line-strong:rgba(236,228,214,.17);
+    --serif:'Fraunces',Georgia,'Times New Roman',serif;
+    --sans:'DM Sans',system-ui,-apple-system,'Segoe UI',sans-serif;
+    --mono:'JetBrains Mono','SF Mono',ui-monospace,Menlo,Consolas,monospace;
+    --col:min(880px,92vw);
+  }
+  *{margin:0;padding:0;box-sizing:border-box;min-width:0}
+  body{
+    background:var(--bg);
+    background-image:radial-gradient(1200px 600px at 50% -10%, rgba(230,169,91,.06), transparent 60%);
+    color:var(--ink);font-family:var(--sans);font-size:17px;line-height:1.62;
+    -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+    overflow-x:hidden;
+  }
+  .col{width:var(--col);margin-inline:auto}
+  ::selection{background:var(--lamp-soft);color:#fff}
+  a{color:var(--lamp);text-decoration:none}
+  code{font-family:var(--mono);font-size:.85em;background:var(--lamp-soft);color:var(--lamp-2);
+    padding:1px 6px;border-radius:5px;overflow-wrap:break-word}
+  .mono{font-family:var(--mono)}
+
+  @keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+  .animate{animation:fadeUp .5s ease-out both;animation-delay:calc(var(--i,0)*.05s)}
+  @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-delay:0ms!important;transition-duration:.01ms!important}}
+
+  /* hero */
+  header{padding:13vh 0 7vh}
+  .kicker{font-family:var(--mono);font-size:12.5px;letter-spacing:.24em;text-transform:uppercase;color:var(--lamp);margin-bottom:26px}
+  h1{font-family:var(--serif);font-weight:540;font-size:clamp(38px,7vw,68px);line-height:1.02;letter-spacing:-.5px;text-wrap:balance;margin-bottom:26px}
+  h1 em{font-style:italic;color:var(--lamp-2)}
+  .lede{font-size:clamp(18px,2.4vw,22px);color:var(--ink-dim);max-width:40em;line-height:1.58}
+  .lede b{color:var(--ink);font-weight:600}
+  .chips{display:flex;flex-wrap:wrap;gap:12px;margin-top:40px}
+  .chip{border:1px solid var(--line-strong);border-radius:13px;padding:15px 18px;background:var(--bg-raise);min-width:150px;flex:1 1 150px}
+  .chip .big{font-family:var(--serif);font-size:30px;line-height:1;color:var(--lamp-2)}
+  .chip .lbl{font-family:var(--mono);font-size:10.5px;letter-spacing:.13em;text-transform:uppercase;color:var(--ink-faint);margin-top:10px;line-height:1.4}
+  .chip.bad .big{color:var(--danger)}
+
+  /* sections */
+  section{padding:7vh 0;border-top:1px solid var(--line)}
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.2em;text-transform:uppercase;color:var(--desk);margin-bottom:16px}
+  h2{font-family:var(--serif);font-weight:540;font-size:clamp(27px,4vw,40px);line-height:1.1;letter-spacing:-.3px;margin-bottom:14px;text-wrap:balance}
+  h2 em{font-style:italic;color:var(--lamp-2)}
+  .say{color:var(--ink-dim);max-width:42em;margin-bottom:34px;font-size:17.5px}
+  .say b{color:var(--ink);font-weight:600}
+
+  /* diagram */
+  .diagram-shell{position:relative;margin:8px 0 6px}
+  .diagram-shell__hint{font-family:var(--mono);font-size:10.5px;color:var(--ink-faint);margin-bottom:8px}
+  .mermaid-wrap{position:relative;background:var(--bg-raise);border:1px solid var(--line-strong);border-radius:16px;padding:22px 16px;overflow:hidden;display:flex;justify-content:center;align-items:center;min-height:420px;cursor:grab}
+  .mermaid-wrap.is-panning{cursor:grabbing;user-select:none}
+  .mermaid-viewport{position:relative;overflow:hidden;width:100%;height:100%;min-height:380px}
+  .mermaid-canvas{position:absolute;top:0;left:0}
+  .zoom-controls{position:absolute;top:10px;right:10px;display:flex;gap:2px;z-index:10;background:var(--bg-card);border:1px solid var(--line-strong);border-radius:8px;padding:3px}
+  .zoom-controls button{width:30px;height:30px;border:none;background:transparent;color:var(--ink-dim);font-family:var(--mono);font-size:14px;cursor:pointer;border-radius:5px;display:flex;align-items:center;justify-content:center;transition:background .15s,color .15s}
+  .zoom-controls button:hover{background:var(--lamp-soft);color:var(--lamp-2)}
+  .zoom-label{font-family:var(--mono);font-size:10px;color:var(--ink-faint);padding:0 7px;white-space:nowrap;align-self:center}
+  .mermaid .nodeLabel{font-family:var(--sans)!important;font-size:15px!important}
+  .mermaid .edgeLabel{font-family:var(--mono)!important;font-size:12px!important}
+  .legend{display:flex;gap:20px;flex-wrap:wrap;margin-top:14px}
+  .legend-item{display:flex;align-items:center;gap:7px;font-family:var(--mono);font-size:11px;color:var(--ink-dim)}
+  .legend-swatch{width:13px;height:13px;border-radius:4px;flex:none}
+
+  /* cards */
+  .grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(248px,1fr))}
+  .card{border:1px solid var(--line-strong);border-radius:14px;background:var(--bg-card);padding:20px 21px}
+  .card h3{font-family:var(--serif);font-weight:540;font-size:20px;letter-spacing:-.2px;margin-bottom:9px;display:flex;align-items:baseline;gap:9px}
+  .card h3 .tag{font-family:var(--mono);font-size:11px;font-weight:500;letter-spacing:.05em;color:var(--bg);background:var(--lamp);padding:2px 8px;border-radius:6px;flex:none}
+  .card h3 .tag.warn{background:var(--warn)} .card h3 .tag.desk{background:var(--desk)}
+  .card p{font-size:14.5px;color:var(--ink-dim);line-height:1.55}
+  .card p+p{margin-top:10px}
+  .card .src{font-family:var(--mono);font-size:11.5px;color:var(--ink-faint);margin-top:11px;display:block;overflow-wrap:break-word}
+  .card.span2{grid-column:span 2}
+  @media (max-width:680px){.card.span2{grid-column:span 1}}
+
+  /* seam list */
+  .seam{display:grid;grid-template-columns:auto 1fr;gap:16px 18px;align-items:start;border:1px solid var(--line);border-radius:13px;background:var(--bg-card);padding:18px 20px;margin-bottom:12px}
+  .seam .n{font-family:var(--serif);font-size:30px;color:var(--danger);line-height:.9;font-style:italic}
+  .seam .t{font-weight:600;color:var(--ink);font-size:16px;margin-bottom:4px}
+  .seam .d{font-size:14.5px;color:var(--ink-dim)}
+  .seam .src{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-top:8px;display:block;overflow-wrap:break-word}
+  .seam.ok{border-color:var(--desk-soft)} .seam.ok .n{color:var(--desk)}
+
+  /* sequence rail */
+  .rail{border-left:2px solid var(--line-strong);margin-left:8px;padding-left:0}
+  .step{position:relative;padding:0 0 22px 28px}
+  .step::before{content:"";position:absolute;left:-7px;top:4px;width:12px;height:12px;border-radius:50%;background:var(--lamp);box-shadow:0 0 0 4px var(--bg)}
+  .step.p2::before{background:var(--desk)}
+  .step .ph{font-family:var(--mono);font-size:12px;letter-spacing:.08em;color:var(--lamp);font-weight:500}
+  .step.p2 .ph{color:var(--desk)}
+  .step .h{font-weight:600;color:var(--ink);margin:2px 0 3px;font-size:15.5px}
+  .step .b{font-size:14px;color:var(--ink-dim)}
+
+  /* callout */
+  .callout{background:var(--bg-raise);border:1px solid var(--line-strong);border-left:3px solid var(--lamp);border-radius:0 12px 12px 0;padding:18px 22px;color:var(--ink-dim);font-size:15px;line-height:1.58;margin-top:8px}
+  .callout b{color:var(--ink)}
+  .gate{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:11px;margin-top:18px}
+  .gate .g{border:1px dashed var(--line-strong);border-radius:12px;padding:15px 16px;background:var(--bg-card)}
+  .gate .g .step-n{font-family:var(--mono);font-size:11px;color:var(--desk);letter-spacing:.1em}
+  .gate .g .g-h{font-weight:600;font-size:14.5px;margin:5px 0 4px}
+  .gate .g .g-b{font-size:13px;color:var(--ink-dim)}
+  .gate .g.cap{border-color:var(--lamp-soft)} .gate .g.cap .step-n{color:var(--lamp)}
+
+  footer{padding:8vh 0 12vh;border-top:1px solid var(--line);color:var(--ink-faint);font-size:13.5px}
+  footer .mono{color:var(--ink-faint)}
+  .pull{font-family:var(--serif);font-style:italic;font-size:clamp(20px,3vw,27px);color:var(--lamp-2);line-height:1.3;max-width:30em;margin:10px 0 0}
+</style>
+</head>
+<body>
+
+<header class="col">
+  <div class="kicker animate">Memorum · dogfood diagnosis → plan</div>
+  <h1 class="animate" style="--i:1">The loop that<br><em>never closed.</em></h1>
+  <p class="lede animate" style="--i:2">
+    Every stream shipped and passed its own gate. But the runtime loop that connects them —
+    <b>write → commit → dream → capture → recall → observe</b> — was never closed end-to-end on a real
+    single-device install. Six days of dogfooding on one laptop with no git remote surfaced it: the system
+    <b>recalls a frozen import, learns nothing from daily use, and reports itself healthy throughout.</b>
+  </p>
+  <div class="chips animate" style="--i:3">
+    <div class="chip bad"><div class="big">0</div><div class="lbl">new memories in 6 days of heavy use</div></div>
+    <div class="chip bad"><div class="big">6 / 6</div><div class="lbl">nightly dreams missed</div></div>
+    <div class="chip bad"><div class="big">552</div><div class="lbl">memories, all frozen at import</div></div>
+    <div class="chip bad"><div class="big">healthy: true</div><div class="lbl">doctor said, with 4 seams cut</div></div>
+  </div>
+</header>
+
+<section class="col">
+  <div class="eyebrow animate">The mental model</div>
+  <h2 class="animate">A day in the office, as a <em>loop</em></h2>
+  <p class="say animate">
+    Memorum is supposed to work like walking into your office each morning: you pick up where you left off
+    (<b>remembered, not retrieved</b>), things surface as they become relevant, and at day's end you snapshot
+    where things landed for tomorrow. That's a loop. Five of its arrows are cut — and one bug (writes never
+    commit) cuts three of them at once. Each arrow below is labeled with the fix that re-connects it.
+  </p>
+
+  <div class="diagram-shell animate">
+    <p class="diagram-shell__hint">Ctrl/⌘ + wheel to zoom · drag to pan · ⤢ opens full size · double-click to fit</p>
+    <div class="mermaid-wrap">
+      <div class="zoom-controls">
+        <button type="button" data-action="zoom-in" title="Zoom in">+</button>
+        <button type="button" data-action="zoom-out" title="Zoom out">&minus;</button>
+        <button type="button" data-action="zoom-fit" title="Smart fit">&#8634;</button>
+        <button type="button" data-action="zoom-one" title="1:1">1:1</button>
+        <button type="button" data-action="zoom-expand" title="Open full size">&#x26F6;</button>
+        <span class="zoom-label">Loading…</span>
+      </div>
+      <div class="mermaid-viewport"><div class="mermaid mermaid-canvas"></div></div>
+    </div>
+    <script type="text/plain" class="diagram-source">
+flowchart TD
+  W["Write<br/>a session learns something"]
+  C["Commit<br/>to local git"]
+  DR["Dream<br/>nightly synthesis"]
+  CAP["Capture<br/>C0 closeout writes continuity"]
+  REC["Recall<br/>next session reads it back"]
+  SY["Sync / recover<br/>quarantine, merge"]
+  OBS["Observe<br/>doctor health"]
+
+  W -->|"Seam 1: F1 commit-on-write"| C
+  C -->|"Seam 2: F2 local lease"| DR
+  DR -->|"Seam 3: F5 C0 capture hook"| CAP
+  CAP -->|"healthy"| REC
+  REC -->|"back to work"| W
+  C -.->|"Seam 5: F3 recovery + dedup"| SY
+  OBS -.->|"Seam 5: F4 sees the whole loop"| W
+
+  classDef stage fill:#16130f,stroke:#766a59,stroke-width:1.4px,color:#ece4d6;
+  classDef watch fill:#101a18,stroke:#79b4ab,stroke-width:1.4px,color:#cfeee8;
+  class W,C,DR,CAP,REC,SY stage;
+  class OBS watch;
+  linkStyle 0,1,2 stroke:#e0654f,stroke-width:2.4px;
+  linkStyle 3,4 stroke:#79b4ab,stroke-width:1.8px;
+  linkStyle 5,6 stroke:#d98a6a,stroke-width:2px;
+    </script>
+  </div>
+  <div class="legend animate">
+    <div class="legend-item"><span class="legend-swatch" style="background:#e0654f"></span> cut by the commit gap (Seams 1–3)</div>
+    <div class="legend-item"><span class="legend-swatch" style="background:#d98a6a"></span> observability cut (Seam 5)</div>
+    <div class="legend-item"><span class="legend-swatch" style="background:#79b4ab"></span> working / watcher</div>
+  </div>
+</section>
+
+<section class="col">
+  <div class="eyebrow animate">The diagnosis</div>
+  <h2 class="animate">Five cut seams, <em>one keystone</em></h2>
+  <p class="say animate">
+    The deepest one is Seam 1: the daemon never git-commits memory writes, which on its own breaks durability,
+    blocks dreaming's clean-tree check, and makes sync meaningless. Every claim below is anchored to real source.
+  </p>
+
+  <div class="seam animate">
+    <div class="n">1</div>
+    <div>
+      <div class="t">Durability — writes never commit to git</div>
+      <div class="d">The write ladder stops at disk + SQLite + event-log. <code>auto_commit</code> exists but has <b>zero callers</b> in the daemon; the serve loop spawns no commit task. 552 memories sit untracked — the whole git-backing is inert at runtime.</div>
+      <span class="src">api/write.rs:9-91 · api/mod.rs:112 (0 callers) · server.rs:61-76</span>
+    </div>
+  </div>
+  <div class="seam animate">
+    <div class="n">2</div>
+    <div>
+      <div class="t">Cognition — dreaming can't run, two walls deep</div>
+      <div class="d"><b>Wall 1:</b> the lease's first step is <code>git fetch origin</code>, which hard-fails with no remote → 6 missed nights. <b>Wall 2:</b> the 552 untracked files from Seam 1 trip the lease's dirty-tree guard. Dreaming is the only automatic capture engine — dead two ways.</div>
+      <span class="src">dream/git.rs:75 · dream/lease.rs:123 · dirty-tree guard git.rs:168-195</span>
+    </div>
+  </div>
+  <div class="seam animate">
+    <div class="n">3</div>
+    <div>
+      <div class="t">Capture — there is no ambient capture at all</div>
+      <div class="d">All three wired hooks are read-only recall. No <code>Stop</code>/<code>SessionEnd</code> hook exists. Capture depends on dreaming (dead) or agents manually calling a write tool (≈never). Six days → zero memories, <b>independent</b> of the dream bug.</div>
+      <span class="src">setup/hooks_wire.rs:275-285 · recall_hook.rs:144 (drops SessionEnd)</span>
+    </div>
+  </div>
+  <div class="seam animate">
+    <div class="n">4</div>
+    <div>
+      <div class="t">Recall — the read path is degraded</div>
+      <div class="d">Recency not relevance; summaries are filename slugs; snippets hardcoded empty; entity-recall starved because the import set <code>entities: []</code> on everything. <b>Owned by the v3.0 redesign</b> — but it can't improve a store that never grows.</div>
+      <span class="src">recall/startup.rs:150 · governance/meta.rs:612 · import plan §29,§153</span>
+    </div>
+  </div>
+  <div class="seam animate">
+    <div class="n">5</div>
+    <div>
+      <div class="t">Observability — blind to its own failure</div>
+      <div class="d">Doctor's health model is <code>clean-tree && ≥1 authed harness</code>. It never reads dream-freshness, sync state, uncommitted-substrate, or recall budget — so it returns green with four seams cut. The merge-conflict notice piled to 96 (append-only queue); the mid-merge flag has <b>zero consumers</b>.</div>
+      <span class="src">doctor.rs:81-87 · notifications/passive.rs · reconcile.rs:171 (0 consumers)</span>
+    </div>
+  </div>
+</section>
+
+<section class="col">
+  <div class="eyebrow animate">Two decisions (yours)</div>
+  <h2 class="animate">The forks that <em>steer the build</em></h2>
+  <div class="grid">
+    <div class="card span2 animate">
+      <h3><span class="tag desk">principle</span> Local-first by default</h3>
+      <p>The most common install — one laptop, no remote — is the case the architecture handled <b>worst</b>: the cognitive engine literally required a network git remote, contradicting the "offline-capable, no cloud required" promise. The commitment: <b>the local daemon is the coordination point; the remote is only the cross-device sync transport, and lights up only when configured.</b> Every network git call gets an <code>origin_remote_configured()</code> guard; absent a remote, it commits locally and no-ops the network as success. Multi-device behavior stays byte-identical when a remote exists.</p>
+    </div>
+    <div class="card animate">
+      <h3><span class="tag">n=1</span> Trusted capture</h3>
+      <p>Continuity writes land <b>active/pinned</b>, not in a hand-approved review queue — the friction of approving every session's memory defeats the point. The safety net is the substance/acceptance gate (a hollow snapshot is held back as <code>degraded</code>), not a human in the loop.</p>
+    </div>
+    <div class="card animate">
+      <h3><span class="tag">n=1</span> Let the import decay</h3>
+      <p>No batch-enrichment pass over the 552 frozen memories — that polishes the thing the redesign replaces. Let them decay under normal salience while live writes and the continuity engine rebuild from actual use.</p>
+    </div>
+  </div>
+</section>
+
+<section class="col">
+  <div class="eyebrow animate">The plan</div>
+  <h2 class="animate">Five fixes that <em>re-connect the loop</em></h2>
+  <p class="say animate">
+    Every fix lands in an existing crate — no new stream, no new daemon. F1 is the keystone (it alone clears
+    Seam 2's second wall). Each card notes what the three adversarial reviews changed.
+  </p>
+  <div class="grid">
+    <div class="card animate">
+      <h3><span class="tag">F1</span> Commit-on-write</h3>
+      <p>A debounced commit worker + a new identity-setting helper that works on an unconfigured-git host, plus a pre-dream flush in the dream process and a repo-level git lock.</p>
+      <p><b>Review changed:</b> reuse of <code>auto_commit</code> fails (no git author set); also surfaced a latent bug — <code>sources/web</code> was never staged.</p>
+      <span class="src">new commit_substrate_writes · server.rs serve loop</span>
+    </div>
+    <div class="card animate">
+      <h3><span class="tag">F2</span> Single-device lease</h3>
+      <p>An <code>origin_remote_configured()</code> guard makes <code>fetch_origin</code>/<code>push</code> no-op-and-succeed with no remote. ~6 lines + a flipped test. A configured-but-failing remote still errors (never silently swallowed).</p>
+      <span class="src">dream/git.rs:75,91 · test dream_lease_election.rs:98</span>
+    </div>
+    <div class="card animate">
+      <h3><span class="tag warn">F3</span> Recovery + dedup</h3>
+      <p>Dedup notifications at the dispatcher on the structured event; a quarantine-resolution CLI re-runs reconcile to clear the wedge; a stranded merge surfaces an operator finding rather than auto-aborting.</p>
+      <p><b>Review changed:</b> the queue only stores a flattened string, and nothing re-reconciles after startup — both had to be designed in.</p>
+      <span class="src">notifications/dispatcher.rs · reconcile.rs</span>
+    </div>
+    <div class="card animate">
+      <h3><span class="tag desk">F4</span> Doctor sees the loop</h3>
+      <p>Doctor takes <code>HandlerState</code> and gains five checks: dream-freshness, sync/quarantine, stale-uncommitted, recall-budget, and <b>capture-freshness (D5)</b> — so the drought can never silently recur. D2/D3 are fatal; the rest advisory.</p>
+      <p><b>Review changed:</b> the signature couldn't see recall counters; D3 had to measure <i>stale</i> untracked or it flaps on every write.</p>
+      <span class="src">handlers/doctor.rs</span>
+    </div>
+    <div class="card animate">
+      <h3><span class="tag">F5</span> C0 capture hook</h3>
+      <p>The new <code>SessionEnd</code> closeout hook (the v3.0 headline) lands the continuity write via a <b>distinct governed supersede path</b> that's pinned-active.</p>
+      <p><b>Review changed:</b> "governed like a pass-2 candidate" would dump it in the review queue — the promotion carve-out had to be named separately from the governance-check one.</p>
+      <span class="src">hooks_wire.rs + unwire.rs · v3.0 §5.1</span>
+    </div>
+    <div class="card animate">
+      <h3><span class="tag desk">why now</span> v3.0 stands on this</h3>
+      <p>The ambient-recall redesign's continuity engine is "written at closeout, refined at dream-time, committed to git" — it <b>physically can't run</b> until F1, F2, and F5 exist. Redesign-first, done right, means the foundation is Phase 0 of the redesign.</p>
+    </div>
+  </div>
+</section>
+
+<section class="col">
+  <div class="eyebrow animate">Sequence</div>
+  <h2 class="animate">Phase 0 first, then the <em>redesign</em> on solid ground</h2>
+  <div class="rail animate">
+    <div class="step"><div class="ph">P0.1</div><div class="h">F2 — single-device lease</div><div class="b">Smallest independent unblock. Gate: no-remote lease acquires on a clean tree.</div></div>
+    <div class="step"><div class="ph">P0.2</div><div class="h">F1 — commit-on-write (+ sources/ fix)</div><div class="b">Makes git-backing real; clears dreaming's second wall; gives F5 durability.</div></div>
+    <div class="step"><div class="ph">P0.3</div><div class="h">F3 — recovery + notification dedup</div><div class="b">Un-wedge sync; clear the 96-item graveyard. First task: trace where the wedge came from.</div></div>
+    <div class="step"><div class="ph">P0.4</div><div class="h">F4 — doctor visibility</div><div class="b">The integration check: green only when the foundation loop is actually closed.</div></div>
+    <div class="step"><div class="ph">P0.5</div><div class="h">Redeploy ritual</div><div class="b">The live daemon is a Jun-19 binary. Rebuild + relaunchd, or every fix is invisible.</div></div>
+    <div class="step p2"><div class="ph">P1 → P4</div><div class="h">v3.0 ambient recall</div><div class="b">Render/safety → continuity engine + C0 capture (P2) → relevance gating → desk &amp; re-entry. Now on a foundation that commits, dreams, and observes.</div></div>
+  </div>
+</section>
+
+<section class="col">
+  <div class="eyebrow animate">The bar</div>
+  <h2 class="animate">Acceptance is the <em>real loop running</em></h2>
+  <p class="say animate">
+    Not green unit tests — the recursive condition: on the live <code>~/memorum</code> single-device install, with
+    zero network, the whole loop demonstrably runs. Split so the foundation has self-contained acceptance.
+  </p>
+  <div class="gate animate">
+    <div class="g"><div class="step-n">1 · write</div><div class="g-h">Commit lands</div><div class="g-b">tree clean, write-bot commit in the log</div></div>
+    <div class="g"><div class="step-n">2 · dream</div><div class="g-h">Lease + run</div><div class="g-b">acquired locally, missed-runs back to 0</div></div>
+    <div class="g cap"><div class="step-n">3 · capture · P2</div><div class="g-h">Closeout → orient</div><div class="g-b">next session reads continuity back</div></div>
+    <div class="g"><div class="step-n">4 · observe</div><div class="g-h">Doctor honest</div><div class="g-b">green, and would catch each failure</div></div>
+    <div class="g"><div class="step-n">5 · offline</div><div class="g-h">No network</div><div class="g-b">all of it, zero remote</div></div>
+  </div>
+  <div class="callout animate">
+    <b>Steps 1, 2, 4, 5</b> are the foundation gate (Phase 0). <b>Step 3</b> is the full-loop gate, after the
+    v3.0 capture hook ships in P2. Until the foundation gate passes on the real machine, the loop is not closed —
+    the §20 dogfood discipline this whole effort keeps having to relearn.
+  </div>
+</section>
+
+<footer class="col">
+  <p class="pull">The parts all worked. The whole didn't. The dogfood gate caught exactly what it exists to catch.</p>
+  <p style="margin-top:28px" class="mono">
+    spec: docs/specs/memorum-runtime-loop-foundation-v0.1.md<br>
+    diagnosis: 4 lanes (2× Explore + Cursor + spec/code reading) · reviews: plan-reviewer + Cursor + GLM
+    (Codex usage-capped) · 2026-06-25
+  </p>
+</footer>
+
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  import elkLayouts from 'https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk/dist/mermaid-layout-elk.esm.min.mjs';
+
+  const config={fitPadding:28,minHeight:380,maxHeightPx:980,maxHeightVh:.86,maxInitialZoom:1.8,minZoom:.08,maxZoom:6.5,zoomStep:.14,readabilityFloor:.55};
+  const clamp=(n,lo,hi)=>Math.max(lo,Math.min(hi,n));
+  let activeDrag=null;
+  addEventListener('mousemove',e=>activeDrag?.onMove(e));
+  addEventListener('mouseup',()=>{activeDrag?.onEnd();activeDrag=null;});
+
+  mermaid.registerLayoutLoaders(elkLayouts);
+  mermaid.initialize({
+    startOnLoad:false, theme:'base', look:'classic', layout:'elk',
+    themeVariables:{
+      fontFamily:"'DM Sans', system-ui, sans-serif", fontSize:'15px',
+      primaryColor:'#16130f', primaryBorderColor:'#766a59', primaryTextColor:'#ece4d6',
+      secondaryColor:'#101a18', secondaryBorderColor:'#79b4ab', secondaryTextColor:'#cfeee8',
+      tertiaryColor:'#1c1510', tertiaryBorderColor:'#e6a95b', tertiaryTextColor:'#f0c389',
+      lineColor:'#a89a86', noteBkgColor:'#16130f', noteTextColor:'#ece4d6', noteBorderColor:'#e6a95b',
+    }
+  });
+
+  function initDiagram(shell){
+    const wrap=shell.querySelector('.mermaid-wrap'), viewport=shell.querySelector('.mermaid-viewport'),
+      canvas=shell.querySelector('.mermaid-canvas'), source=shell.querySelector('.diagram-source'),
+      label=shell.querySelector('.zoom-label');
+    if(!wrap||!viewport||!canvas||!source||!label)return;
+    let zoom=1,fitMode='contain',panX=0,panY=0,svgW=0,svgH=0,sx=0,sy=0,spx=0,spy=0,touchDist=0,touchCx=0,touchCy=0;
+
+    function constrainPan(){const vpW=viewport.clientWidth,vpH=viewport.clientHeight,rW=svgW*zoom,rH=svgH*zoom,pad=config.fitPadding;
+      panX=(rW+pad*2<=vpW)?(vpW-rW)/2:clamp(panX,vpW-rW-pad,pad);
+      panY=(rH+pad*2<=vpH)?(vpH-rH)/2:clamp(panY,vpH-rH-pad,pad);}
+    function applyTransform(){const svg=canvas.querySelector('svg');if(!svg||!svgW)return;constrainPan();
+      svg.style.width=(svgW*zoom)+'px';svg.style.height=(svgH*zoom)+'px';
+      canvas.style.transform=`translate(${panX}px,${panY}px)`;label.textContent=Math.round(zoom*100)+'% — '+fitMode;}
+    function canPan(){const rW=svgW*zoom,rH=svgH*zoom;return rW+config.fitPadding*2>viewport.clientWidth||rH+config.fitPadding*2>viewport.clientHeight;}
+    function computeSmartFit(){const vpW=viewport.clientWidth,vpH=viewport.clientHeight,aW=Math.max(80,vpW-config.fitPadding*2),aH=Math.max(80,vpH-config.fitPadding*2),contain=Math.min(aW/svgW,aH/svgH);
+      let z=contain,mode='contain';
+      if(contain<config.readabilityFloor){const chartR=svgH/svgW,vpR=vpH/Math.max(vpW,1);if(chartR>=vpR){z=aW/svgW;mode='width-priority';}else{z=aH/svgH;mode='height-priority';}}
+      return{zoom:clamp(z,config.minZoom,config.maxInitialZoom),mode};}
+    function fitDiagram(){if(!svgW)return;const fit=computeSmartFit();zoom=fit.zoom;fitMode=fit.mode;
+      panX=(viewport.clientWidth-svgW*zoom)/2;panY=(viewport.clientHeight-svgH*zoom)/2;applyTransform();}
+    function setOneToOne(){zoom=clamp(1,config.minZoom,config.maxZoom);fitMode='1:1';
+      panX=(viewport.clientWidth-svgW*zoom)/2;panY=(viewport.clientHeight-svgH*zoom)/2;applyTransform();}
+    function zoomAround(factor,cx,cy){const next=clamp(zoom*factor,config.minZoom,config.maxZoom),ratio=next/zoom;
+      panX=cx-ratio*(cx-panX);panY=cy-ratio*(cy-panY);zoom=next;fitMode='custom';applyTransform();}
+    function readSvgNaturalSize(svg){let w=0,h=0;
+      if(svg.viewBox?.baseVal?.width>0){w=svg.viewBox.baseVal.width;h=svg.viewBox.baseVal.height;}
+      if(!w){w=parseFloat(svg.getAttribute('width'))||0;h=parseFloat(svg.getAttribute('height'))||0;}
+      if(!w){const b=svg.getBBox();w=b.width;h=b.height;}
+      if(!w){const r=svg.getBoundingClientRect();w=r.width||1000;h=r.height||700;}
+      if(!svg.getAttribute('viewBox'))svg.setAttribute('viewBox',`0 0 ${w} ${h}`);return{w,h};}
+    function setAdaptiveHeight(){if(!svgW)return;const usableW=Math.max(280,wrap.getBoundingClientRect().width-2),
+      idealH=(svgH/svgW)*usableW+config.fitPadding*2,maxVp=Math.floor(innerHeight*config.maxHeightVh),
+      hardMax=Math.min(config.maxHeightPx,Math.max(config.minHeight+40,maxVp));
+      wrap.style.height=Math.round(clamp(idealH,config.minHeight,hardMax))+'px';}
+    function openInNewTab(){const svg=canvas.querySelector('svg');if(!svg)return;const clone=svg.cloneNode(true);
+      clone.style.width='';clone.style.height='';
+      const html=`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Diagram</title><style>body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0d0b09;padding:40px;box-sizing:border-box}svg{max-width:100%;max-height:90vh;height:auto}</style></head><body>${clone.outerHTML}</body></html>`;
+      open(URL.createObjectURL(new Blob([html],{type:'text/html'})),'_blank');}
+    async function render(){try{const code=source.textContent.trim();if(!code){label.textContent='Error: empty';return;}
+      const id='d-'+Math.random().toString(36).slice(2,8);const{svg}=await mermaid.render(id,code);
+      const parsed=new DOMParser().parseFromString(svg,'text/html').body.querySelector('svg');
+      if(!parsed){label.textContent='Error: no svg';return;}
+      canvas.replaceChildren(document.adoptNode(parsed));const svgNode=canvas.querySelector('svg');
+      const size=readSvgNaturalSize(svgNode);svgW=size.w;svgH=size.h;
+      svgNode.removeAttribute('width');svgNode.removeAttribute('height');svgNode.style.maxWidth='none';svgNode.style.display='block';
+      setAdaptiveHeight();fitDiagram();}catch(err){console.error(err);label.textContent='Error: '+(err.message||'render');}}
+    const actions={'zoom-in':()=>zoomAround(1+config.zoomStep,viewport.clientWidth/2,viewport.clientHeight/2),
+      'zoom-out':()=>zoomAround(1/(1+config.zoomStep),viewport.clientWidth/2,viewport.clientHeight/2),
+      'zoom-fit':fitDiagram,'zoom-one':setOneToOne,'zoom-expand':openInNewTab};
+    Object.entries(actions).forEach(([a,h])=>wrap.querySelector(`[data-action="${a}"]`)?.addEventListener('click',h));
+    viewport.addEventListener('dblclick',fitDiagram);
+    viewport.addEventListener('wheel',e=>{if(e.ctrlKey||e.metaKey){e.preventDefault();const r=viewport.getBoundingClientRect();
+      zoomAround(e.deltaY<0?1+config.zoomStep:1/(1+config.zoomStep),e.clientX-r.left,e.clientY-r.top);return;}
+      if(canPan()){e.preventDefault();panX-=e.deltaX;panY-=e.deltaY;applyTransform();}},{passive:false});
+    viewport.addEventListener('mousedown',e=>{if(e.target.closest('.zoom-controls')||!canPan())return;
+      wrap.classList.add('is-panning');sx=e.clientX;sy=e.clientY;spx=panX;spy=panY;e.preventDefault();
+      activeDrag={onMove:ev=>{panX=spx+(ev.clientX-sx);panY=spy+(ev.clientY-sy);applyTransform();},onEnd:()=>wrap.classList.remove('is-panning')};});
+    viewport.addEventListener('touchstart',e=>{if(e.touches.length===1){sx=e.touches[0].clientX;sy=e.touches[0].clientY;spx=panX;spy=panY;}
+      else if(e.touches.length===2){const dx=e.touches[0].clientX-e.touches[1].clientX,dy=e.touches[0].clientY-e.touches[1].clientY;
+      touchDist=Math.sqrt(dx*dx+dy*dy);const r=viewport.getBoundingClientRect();
+      touchCx=(e.touches[0].clientX+e.touches[1].clientX)/2-r.left;touchCy=(e.touches[0].clientY+e.touches[1].clientY)/2-r.top;}},{passive:true});
+    viewport.addEventListener('touchmove',e=>{if(e.touches.length===1&&canPan()){if(touchDist>0){sx=e.touches[0].clientX;sy=e.touches[0].clientY;spx=panX;spy=panY;touchDist=0;}
+      e.preventDefault();panX=spx+(e.touches[0].clientX-sx);panY=spy+(e.touches[0].clientY-sy);applyTransform();}
+      else if(e.touches.length===2&&touchDist>0){e.preventDefault();const dx=e.touches[0].clientX-e.touches[1].clientX,dy=e.touches[0].clientY-e.touches[1].clientY,d=Math.sqrt(dx*dx+dy*dy);
+      zoomAround(d/touchDist,touchCx,touchCy);touchDist=d;}},{passive:false});
+    new ResizeObserver(()=>{if(svgW){setAdaptiveHeight();fitDiagram();}}).observe(wrap);
+    render();
+  }
+  document.querySelectorAll('.diagram-shell').forEach(initDiagram);
+</script>
+</body>
+</html>
