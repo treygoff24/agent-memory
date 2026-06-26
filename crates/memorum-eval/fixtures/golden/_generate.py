@@ -185,9 +185,7 @@ def tombstone(tid, applied_at, actor_kind, actor_ref, reason, prior_status, reas
     return t
 
 
-# =============================================================================
 # ME NAMESPACE (~40)
-# =============================================================================
 
 # --- Identity ---
 mid_role = mem_id("20250918", "role")
@@ -374,11 +372,9 @@ memory(path="me/relationship/facts/old-laptop.md", mid=mid_tomb_me, mtype="claim
                                 "Machine was replaced; this fact is no longer true.")],
     body="(Tombstoned) Dana's primary machine was logged as a 2021 Intel MacBook Pro. Replaced with an M3 machine in Jan 2026 — tombstoned as stale. Should never be recalled as current.")
 
-# =============================================================================
 # PROJECT NAMESPACE (~50) across atlas / orbit / quill
-# =============================================================================
 
-# ---------- ATLAS: the DB migration saga (supersession chain) ----------
+# ATLAS: the DB migration saga (supersession chain)
 # Chain: initial plan -> revised plan -> final executed plan. Only head should recall.
 mig_v1 = mem_id("20251201", "atlas-mig-v1")
 mig_v2 = mem_id("20251208", "atlas-mig-v2")
@@ -518,7 +514,7 @@ for relpath, eid, label, mtype, summary, tags in atlas_fillers:
         summary=summary, tags=tags, entities=ents, created="2026-01-05T10:00:00Z",
         body=summary)
 
-# ---------- ORBIT: the auth refactor (supersession chain + collisions) ----------
+# ORBIT: the auth refactor (supersession chain + collisions)
 auth_v1 = mem_id("20251110", "orbit-auth-v1")
 auth_v2 = mem_id("20251120", "orbit-auth-v2")
 memory(path="projects/orbit/decisions/2025-11-10-session-cookies.md", mid=auth_v1, mtype="decision", scope="project", project="orbit",
@@ -596,7 +592,7 @@ for relpath, eid, label, mtype, summary, tags in orbit_fillers:
         summary=summary, tags=tags, entities=ents, created="2025-12-16T10:00:00Z",
         body=summary)
 
-# ---------- QUILL: the flaky CI hunt (postmortem-ish) + tooling ----------
+# QUILL: the flaky CI hunt (postmortem-ish) + tooling
 quill_flaky_v1 = mem_id("20260102", "quill-flaky-v1")
 quill_flaky_v2 = mem_id("20260120", "quill-flaky-v2")
 memory(path="projects/quill/decisions/2026-01-02-flaky-retry.md", mid=quill_flaky_v1, mtype="decision", scope="project", project="quill",
@@ -683,9 +679,7 @@ memory(path="projects/atlas/decisions/2026-01-15-enterprise-pricing.md", mid=atl
     created="2026-01-15T10:00:00Z",
     body="DECISION (confidential): enterprise tier floor pricing was set in a closed Finance/Sales meeting. Confidential-sensitivity: not body/embedding indexed, masked for synthesis. Exists in corpus to exercise the privacy path.")
 
-# =============================================================================
 # AGENT NAMESPACE (~30): patterns, heuristics, postmortems, anti-patterns, playbooks, regressions
-# =============================================================================
 
 # Agent supersession chain: a heuristic that was refined
 ag_h_v1 = mem_id("20251015", "agent-heur-v1")
@@ -809,9 +803,7 @@ memory(path="agent/patterns/instant-revert.md", mid=ag_dup_b, mtype="pattern", s
     tags=["pattern", "rollback", "revert"], confidence=0.85, created="2025-11-17T10:00:00Z",
     body="PATTERN: don't ship what you can't instantly revert. One action — flag off, or redeploy prior tag. (Near-duplicate of the one-step-rollback pattern; recall should collapse these.)")
 
-# =============================================================================
 # ADDITIONAL HARD STRUCTURES (chains 5 & 6, extra near-dup, volume fillers)
-# =============================================================================
 
 # --- Supersession chain #5 (me): user's job title changed (senior -> staff -> tech lead).
 # Three-link chain; only the head (tech-lead) should recall for "what is Dana's role".

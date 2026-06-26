@@ -1,10 +1,10 @@
+mod common;
+
+use common::spawn_server;
 use memory_source::storage::ArtifactStore;
 use memory_source::{
     capture_web_source_with_resolver, url_safety, AddressPolicy, CaptureWebSourceRequest, SourceArtifactId,
-    StaticDnsResolver,
 };
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
 
 #[test]
 fn redacts_sensitive_query_params_and_fragments() {
@@ -54,20 +54,4 @@ async fn capture_persists_only_redacted_urls() {
     assert!(!manifest_json.contains("redirect-secret"));
     assert!(manifest_json.contains("keep=1"));
     assert!(manifest_json.contains("keep=yes"));
-}
-
-async fn spawn_server(responses: Vec<String>) -> (String, StaticDnsResolver) {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        for response in responses {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let mut buf = [0_u8; 1024];
-            let _ = stream.read(&mut buf).await.unwrap();
-            stream.write_all(response.as_bytes()).await.unwrap();
-            stream.shutdown().await.unwrap();
-        }
-    });
-    let resolver = StaticDnsResolver::new(vec![std::net::SocketAddr::new("127.0.0.1".parse().unwrap(), addr.port())]);
-    (format!("http://example.test:{}", addr.port()), resolver)
 }

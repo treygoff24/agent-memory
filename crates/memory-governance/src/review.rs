@@ -49,10 +49,11 @@ impl ReviewQueueItem {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "snake_case")]
 pub enum ReviewStatus {
     Quarantined,
     Candidate,
+    #[serde(alias = "pending-review")]
     PendingReview,
 }
 

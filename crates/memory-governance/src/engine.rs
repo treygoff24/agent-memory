@@ -42,7 +42,7 @@ pub enum GovernanceWriteDecision {
         /// Caller action.
         next_action: NextWriteAction,
     },
-    /// Candidate should be written as candidate/pending-review, not active.
+    /// Candidate should be written as candidate/pending_review, not active.
     Candidate {
         /// Candidate memory id.
         id: String,

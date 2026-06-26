@@ -445,8 +445,8 @@ mod tests {
         git(repo.path(), &["init"]).expect("git init"); // expect-justified: test setup
         commit_substrate_writes(repo.path(), 1).expect("baseline commit"); // expect-justified: test setup
         fs::create_dir_all(repo.path().join("me/identity")).expect("dir"); // expect-justified: test setup
-        fs::write(repo.path().join("me/identity/fact.md"), "---\nsummary: f\n---\nbody\n").expect("fact"); // a real memory write
-        fs::write(repo.path().join("me/identity/.fact.md.op1.tmp"), "torn").expect("temp"); // an in-flight atomic-write temp
+        fs::write(repo.path().join("me/identity/fact.md"), "---\nsummary: f\n---\nbody\n").expect("fact"); // expect-justified: test setup
+        fs::write(repo.path().join("me/identity/.fact.md.op1.tmp"), "torn").expect("temp"); // expect-justified: test setup
 
         // The temp is not counted, and the commit holds the real file but never the temp.
         assert_eq!(count_substrate_write_changes(repo.path()).expect("count"), 1, "atomic temp must not be counted"); // expect-justified: test assertion

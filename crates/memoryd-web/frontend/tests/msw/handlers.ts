@@ -40,7 +40,7 @@ function handlerFor(method: string, path: string, scenario: ApiScenario): HttpHa
     return http.get(path, resolver);
 }
 
-export function handlersForScenario(scenario: ApiScenario = 'happy'): HttpHandler[] {
+function handlersForScenario(scenario: ApiScenario = 'happy'): HttpHandler[] {
     return routes.map(([method, path]) => handlerFor(method, path, scenario));
 }
 

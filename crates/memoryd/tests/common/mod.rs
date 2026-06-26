@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use memory_substrate::Substrate;
+use memory_substrate::{MemoryStatus, Substrate, TrustLevel};
 use memoryd::server::{serve_substrate_with, ServerOptions};
 use memoryd::setup::{SetupReport, SetupStep, SetupStepStatus};
 use tokio::net::UnixStream;
@@ -130,4 +130,14 @@ pub fn unique_socket_path(prefix: &str, test_name: &str) -> PathBuf {
     let dir = PathBuf::from(format!("/tmp/memd-{prefix}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("create short socket directory");
     dir.join(format!("{test_name}-{nonce}.sock"))
+}
+
+#[allow(dead_code)]
+pub fn trust_for_status(status: MemoryStatus) -> TrustLevel {
+    match status {
+        MemoryStatus::Pinned => TrustLevel::Pinned,
+        MemoryStatus::Candidate => TrustLevel::Candidate,
+        MemoryStatus::Quarantined => TrustLevel::Quarantined,
+        _ => TrustLevel::Trusted,
+    }
 }

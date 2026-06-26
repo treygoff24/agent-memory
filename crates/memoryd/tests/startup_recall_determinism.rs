@@ -1,9 +1,12 @@
+mod common;
+
 use chrono::{DateTime, Utc};
+use common::trust_for_status;
 use memory_substrate::events::{append_event, Event, EventKind, EVENT_SCHEMA_VERSION};
 use memory_substrate::{
     Author, AuthorKind, ClassificationOutcome, DeviceId, EventContext, EventId, Frontmatter, InitOptions, Memory,
     MemoryId, MemoryStatus, MemoryType, OperationId, RepoPath, RetrievalPolicy, Roots, Scope, Sensitivity, Source,
-    SourceKind, Substrate, TrustLevel, WriteMode, WritePolicy, WriteRequest,
+    SourceKind, Substrate, WriteMode, WritePolicy, WriteRequest,
 };
 use memoryd::recall::{
     bounded_omissions, build_startup_response, estimated_tokens, render_memory_entry, render_startup_frame,
@@ -612,13 +615,4 @@ fn recall_event(spec: RecallEventSpec<'_>) -> Event {
 
 fn instant(value: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(value).expect("fixture timestamp parses").with_timezone(&Utc)
-}
-
-fn trust_for_status(status: MemoryStatus) -> TrustLevel {
-    match status {
-        MemoryStatus::Pinned => TrustLevel::Pinned,
-        MemoryStatus::Candidate => TrustLevel::Candidate,
-        MemoryStatus::Quarantined => TrustLevel::Quarantined,
-        _ => TrustLevel::Trusted,
-    }
 }

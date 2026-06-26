@@ -1,7 +1,7 @@
 use chrono::{TimeZone, Utc};
-use memory_substrate::{EventId, MemoryId, MemoryStatus, Sensitivity};
+use memory_substrate::{AuthorKind, EventId, MemoryId, MemoryStatus, Sensitivity, SourceKind};
 use memoryd::protocol::{
-    CandidateWriteResult, CaptureSourceResponse, ComponentScores, DashboardRoiResponse, DreamRunReport,
+    CandidateWriteResult, CaptureSourceResponse, CaptureStatus, ComponentScores, DashboardRoiResponse, DreamRunReport,
     DreamStatusCounters, DreamStatusReport, DreamingRoiSummary, GetProvenance, GetResponse, GovernanceForgetResponse,
     GovernanceStatus, GovernanceSupersedeResponse, GovernanceWriteResponse, HarnessCliStatus, LeaseRecord, ObserveKind,
     ObserveResponse, ObserveTarget, PassOutcome, PassStatus, PromptTransport, RealityCheckAction,
@@ -122,7 +122,7 @@ fn protocol_contract_capture_source_response_round_trips() {
             mode: memoryd::protocol::CaptureSourceMode::HttpStatic,
             final_url: "https://example.com/report".to_owned(),
             captured_at,
-            capture_status: "complete_text_only".to_owned(),
+            capture_status: CaptureStatus::CompleteTextOnly,
             warnings: vec!["raw_omitted_privacy".to_owned()],
         }),
     );
@@ -687,9 +687,9 @@ fn protocol_contract_success_responses_are_bounded_and_guided() {
             truncated: true,
             provenance: Some(GetProvenance {
                 path: Some("agent/patterns/mem_20260428_0123456789abcdef_000001.md".to_owned()),
-                source_kind: "import".to_owned(),
+                source_kind: SourceKind::Import,
                 source_ref: Some("fixture".to_owned()),
-                author_kind: "system".to_owned(),
+                author_kind: AuthorKind::System,
                 harness: None,
                 session_id: None,
                 evidence_refs: Vec::new(),

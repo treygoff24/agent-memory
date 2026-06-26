@@ -482,8 +482,7 @@ fn reindex_and_scan_conflicts(
             continue;
         }
         let Ok(repo_relative) = path.strip_prefix(repo) else { continue };
-        // Skip encrypted-tier ciphertext (raw bytes, not Markdown) to avoid blowing
-        // up index consistency reindex. Deferred: confirm guard placement vs. walker.
+        // Encrypted-tier ciphertext is raw bytes, not Markdown.
         if repo_relative.components().next().is_some_and(|c| c.as_os_str() == "encrypted") {
             continue;
         }

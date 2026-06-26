@@ -1,20 +1,15 @@
 import { useQuery } from '@tanstack/react-query';
 
 import type {
-    AuditMemoryResponse,
     EntityDetailResponse,
     EntityGraphResponse,
     PolicyEditorResponse,
-    ProvenanceWalkResponse,
-    RealityCheckHistoryResponse,
     RealityCheckStatusResponse,
     RecallHitsResponse,
     ReviewQueueResponse,
-    DashboardRoiResponse,
     DashboardSearchResponse,
     StatusResponse,
     SyncDashboardResponse,
-    TemporalStateResponse,
 } from './types';
 
 import { apiJson } from './client';
@@ -35,15 +30,9 @@ export const queryKeys = {
     status: ['status'] as const,
     entityGraph: ['entityGraph'] as const,
     entityDetail: (id: string) => ['entityGraph', id] as const,
-    roi: (windowDays?: number) => ['roi', windowDays ?? null] as const,
     realityCheck: ['realityCheck'] as const,
-    realityCheckHistory: (limit?: number) => ['realityCheckHistory', limit ?? null] as const,
     recallHits: (params: RecallHitsParams = {}) => ['recallHits', params] as const,
     search: (query: string) => ['search', query] as const,
-    audit: (id: string) => ['audit', id] as const,
-    auditWalk: (id: string, direction?: string, depth?: number) =>
-        ['auditWalk', id, direction ?? null, depth ?? null] as const,
-    auditTemporal: (id: string, at?: string) => ['auditTemporal', id, at ?? null] as const,
     review: (params: ReviewQueueParams = {}) => ['review', params] as const,
     policy: ['policy'] as const,
     sync: ['sync'] as const,
@@ -82,24 +71,10 @@ export function useEntityDetailQuery(id: string) {
     });
 }
 
-export function useRoiQuery(windowDays?: number) {
-    return useQuery({
-        queryKey: queryKeys.roi(windowDays),
-        queryFn: () => apiJson<DashboardRoiResponse>(withParams('/api/roi', { window: windowDays })),
-    });
-}
-
 export function useRealityCheckQuery() {
     return useQuery({
         queryKey: queryKeys.realityCheck,
         queryFn: () => apiJson<RealityCheckStatusResponse>('/api/reality-check'),
-    });
-}
-
-export function useRealityCheckHistoryQuery(limit?: number) {
-    return useQuery({
-        queryKey: queryKeys.realityCheckHistory(limit),
-        queryFn: () => apiJson<RealityCheckHistoryResponse>(withParams('/api/reality-check/history', { limit })),
     });
 }
 
@@ -112,34 +87,6 @@ export function useRecallHitsQuery(params: RecallHitsParams = {}) {
 
 export function searchMemories(query: string, limit = 5) {
     return apiJson<DashboardSearchResponse>(withParams('/api/search', { q: query, limit }));
-}
-
-export function useAuditQuery(id: string) {
-    return useQuery({
-        queryKey: queryKeys.audit(id),
-        queryFn: () => apiJson<AuditMemoryResponse>(`/api/audit/${encodeURIComponent(id)}`),
-        enabled: id.length > 0,
-    });
-}
-
-export function useAuditWalkQuery(id: string, direction?: string, depth?: number) {
-    return useQuery({
-        queryKey: queryKeys.auditWalk(id, direction, depth),
-        queryFn: () =>
-            apiJson<ProvenanceWalkResponse>(
-                withParams(`/api/audit/${encodeURIComponent(id)}/walk`, { direction, depth }),
-            ),
-        enabled: id.length > 0,
-    });
-}
-
-export function useAuditTemporalQuery(id: string, at?: string) {
-    return useQuery({
-        queryKey: queryKeys.auditTemporal(id, at),
-        queryFn: () =>
-            apiJson<TemporalStateResponse>(withParams(`/api/audit/${encodeURIComponent(id)}/temporal`, { at })),
-        enabled: id.length > 0,
-    });
 }
 
 export function useReviewQueueQuery(params: ReviewQueueParams = {}) {

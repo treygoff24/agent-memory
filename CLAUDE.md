@@ -72,6 +72,27 @@ When reviewing the plan, treat all of the above as idiomatic for the target runt
 - `Cargo.lock` and `pnpm-lock.yaml` are orchestrator-merged. Workers update `Cargo.toml` only.
 - Don't touch Codex's in-flight worktrees or branches without checking with Trey.
 
+## Build / lint / test CPU discipline (read before running ANY cargo gate)
+
+Running cargo across the whole workspace spawns **one compiler process per crate** — 12 of them — at once. On macOS every freshly built binary is re-validated by `syspolicyd` on launch, so a 12-wide swarm pegs a core and roasts the machine. This is the single most common way an agent cooks Trey's laptop. It is not a style preference; treat it as a hard rule.
+
+**Inner loop — always scope to the crate you touched.** You always know which crate: it's the directory under `crates/` you edited.
+
+- `cargo check -p <crate>` — fastest; "does it still compile."
+- `cargo clippy -p <crate> --all-targets -- -D warnings` — lint that crate.
+- `cargo test -p <crate> -- --test-threads=2` — test that crate.
+
+**Leaf vs foundational.** Scoping to a leaf crate (an app like `memoryd` that nothing depends on) is complete on its own. If you edit a foundational crate (`memory-substrate`, `memory-source`, …), `-p` on it alone won't catch breakage in the crates that depend on it — that's what the final full gate is for. `cargo tree -i <crate>` lists who depends on a crate if you need the ripple set mid-loop.
+
+**Full gate — `bash scripts/check.sh`, and only this — runs ONLY:**
+
+- on the integrated trunk (`main`), never inside a task worktree, **and**
+- once, when the task is completely done — never mid-task as a progress check.
+
+It already bakes in the macOS syspolicyd mitigation (isolated `mktemp` target dir; sccache and nextest off unless opted in) and ends with perf-sensitive benchmarks, so it must not be throttled or run speculatively. It is the one blessed heavy command.
+
+**Never, mid-task:** bare `cargo clippy`, `cargo test` / `cargo test --workspace`, `cargo nextest run --workspace`, or `bash scripts/check.sh`. A Claude Code `PreToolUse` hook (`.claude/settings.json`) hard-blocks the bare whole-workspace clippy/test forms when you're in the main checkout and points you back here. The hook can't reach task worktrees or non-Claude harnesses — there the discipline above is yours to keep.
+
 ## Critical invariants (will fail review if violated)
 
 These are spec-mandated, not preferences:

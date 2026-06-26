@@ -253,9 +253,9 @@ pub(crate) async fn get_response(
 fn get_provenance(memory: &Memory) -> GetProvenance {
     GetProvenance {
         path: memory.path.as_ref().map(|path| path.as_str().to_string()),
-        source_kind: serialized_enum_value(&memory.frontmatter.source.kind),
+        source_kind: memory.frontmatter.source.kind,
         source_ref: memory.frontmatter.source.reference.clone(),
-        author_kind: serialized_enum_value(&memory.frontmatter.author.kind),
+        author_kind: memory.frontmatter.author.kind,
         harness: memory.frontmatter.author.harness.clone().or_else(|| memory.frontmatter.source.harness.clone()),
         session_id: memory
             .frontmatter

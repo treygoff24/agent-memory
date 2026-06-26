@@ -32,6 +32,13 @@ fn review_queue_contract_includes_only_memories_requiring_review() {
     assert_eq!(pending.reason.as_deref(), Some("awaiting human review"));
 }
 
+#[test]
+fn review_status_serializes_as_stable_snake_case() {
+    assert_eq!(ReviewStatus::PendingReview.as_str(), "pending_review");
+    assert_eq!(serde_json::to_value(ReviewStatus::PendingReview).unwrap(), "pending_review");
+    assert_eq!(serde_json::from_str::<ReviewStatus>("\"pending-review\"").unwrap(), ReviewStatus::PendingReview);
+}
+
 fn memory(fixture: ReviewFixture<'_>) -> ReviewMemoryEnvelope {
     ReviewMemoryEnvelope {
         id: fixture.id.to_string(),

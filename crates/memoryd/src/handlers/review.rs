@@ -65,7 +65,7 @@ pub(crate) async fn review_queue_response(
         .map(|item| ReviewQueueItemResponse {
             id: item.id,
             summary: bounded(&item.summary, REVIEW_QUEUE_SUMMARY_MAX),
-            status: item.status.as_str().to_string(),
+            status: item.status,
             policy_applied: bounded(&item.policy_applied, REVIEW_QUEUE_POLICY_MAX),
             reason: item.reason.map(|reason| bounded(&reason, REVIEW_QUEUE_REASON_MAX)),
             next_actions: item
@@ -346,12 +346,13 @@ fn review_queue_contains(memory: &Memory) -> bool {
 #[cfg(test)]
 mod trim_tests {
     use super::*;
+    use memory_governance::ReviewStatus;
 
     fn sample_item(index: usize, summary_chars: usize) -> ReviewQueueItemResponse {
         ReviewQueueItemResponse {
             id: format!("mem-{index:08}"),
             summary: "x".repeat(summary_chars),
-            status: "candidate".to_string(),
+            status: ReviewStatus::Candidate,
             policy_applied: "default".to_string(),
             reason: Some("review".to_string()),
             next_actions: vec!["approve".to_string(), "reject".to_string()],

@@ -186,11 +186,9 @@ async fn export_json_shape_validates_v0_1_schema() {
         output.status,
     );
 
-    // Parse JSON
     let value: serde_json::Value =
         serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("stdout is not valid JSON: {e}\nstdout: {stdout}"));
 
-    // schema_version == 1
     assert_eq!(value["schema_version"], serde_json::json!(1), "schema_version must be 1");
 
     // exported_at: RFC3339 UTC millisecond-precision

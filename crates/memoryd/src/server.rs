@@ -528,7 +528,6 @@ async fn read_frame(reader: &mut BufReader<UnixStream>, idle_timeout: Duration) 
 /// Returns an empty string when extraction fails; this is acceptable because the
 /// client should still display the error message even without a matching id.
 fn extract_id_best_effort(bytes: &[u8]) -> String {
-    // Parse as a generic JSON value and pull out the top-level "id" string, if present.
     if let Ok(serde_json::Value::Object(map)) = serde_json::from_slice(bytes) {
         if let Some(serde_json::Value::String(id)) = map.get("id") {
             return id.clone();

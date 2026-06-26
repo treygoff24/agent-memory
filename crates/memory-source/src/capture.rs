@@ -48,7 +48,7 @@ pub struct CaptureWebSourceResponse {
     pub source_refs: Vec<String>,
     pub final_url: String,
     pub captured_at: chrono::DateTime<Utc>,
-    pub capture_status: String,
+    pub capture_status: CaptureStatus,
     pub warnings: Vec<String>,
 }
 
@@ -171,7 +171,7 @@ pub async fn capture_web_source_with_resolver(
         source_refs,
         final_url: artifact.manifest.final_url.clone(),
         captured_at,
-        capture_status: artifact.manifest.capture_status.as_str().to_string(),
+        capture_status: artifact.manifest.capture_status,
         warnings: artifact.manifest.warnings,
     })
 }

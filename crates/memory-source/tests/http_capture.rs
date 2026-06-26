@@ -1,11 +1,11 @@
-use std::net::SocketAddr;
+mod common;
 
 use memory_source::{
-    capture_web_source_with_resolver, AddressPolicy, ArtifactStore, CaptureMethod, CaptureMode,
+    capture_web_source_with_resolver, AddressPolicy, ArtifactStore, CaptureMethod, CaptureMode, CaptureStatus,
     CaptureWebSourceRequest, SourceArtifactId, StaticDnsResolver,
 };
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
+
+use common::spawn_server;
 
 #[tokio::test]
 async fn capture_records_final_url_redirect_and_source_ref() {
@@ -33,7 +33,7 @@ async fn capture_records_final_url_redirect_and_source_ref() {
     )
     .await
     .unwrap();
-    assert_eq!(response.capture_status, "complete");
+    assert_eq!(response.capture_status, CaptureStatus::Complete);
     assert_eq!(response.final_url, format!("{base_url}/final"));
     assert_eq!(response.source_refs.len(), 1);
     assert!(response.source_refs[0].starts_with("webcap:src_"));
@@ -187,20 +187,4 @@ async fn oversized_local_artifact_fails_before_groundable_artifact() {
 
     assert!(err.to_string().contains("exceeded"), "{err}");
     assert!(!temp.path().join("sources").exists());
-}
-
-async fn spawn_server(responses: Vec<String>) -> (String, StaticDnsResolver) {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        for response in responses {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let mut buf = [0_u8; 1024];
-            let _ = stream.read(&mut buf).await.unwrap();
-            stream.write_all(response.as_bytes()).await.unwrap();
-            stream.shutdown().await.unwrap();
-        }
-    });
-    let resolver = StaticDnsResolver::new(vec![SocketAddr::new("127.0.0.1".parse().unwrap(), addr.port())]);
-    (format!("http://example.test:{}", addr.port()), resolver)
 }

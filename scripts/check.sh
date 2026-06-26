@@ -36,6 +36,17 @@ else
   USE_NEXTEST=0
 fi
 
+# Optional: run the cargo-heavy lint/test/doc phase at background QoS so a full
+# gate doesn't roast the machine while you keep working. On Apple Silicon this
+# schedules the work onto efficiency cores. OFF by default; deliberately NOT
+# applied to the perf-sensitive bench phase below — throttling it would corrupt
+# the baselines. `MEMORUM_CHECK_NICE=1 bash scripts/check.sh` to opt in.
+if [[ "${MEMORUM_CHECK_NICE:-0}" == "1" ]] && command -v taskpolicy >/dev/null 2>&1; then
+  NICE="taskpolicy -b"
+else
+  NICE=""
+fi
+
 # --- Phase 1: cheap independent checks, fanned out in parallel -------------
 # Each step writes to its own log; we surface the log only on failure so a
 # clean run stays readable.
@@ -108,7 +119,7 @@ wait_parallel
 
 # --- Phase 2: cargo-heavy work, serial (shared target dir) -----------------
 
-cargo clippy --workspace --all-targets --all-features -- -D warnings
+$NICE cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 # memoryd-web gates its dashboard fixtures behind the non-default `dev-fixtures`
 # feature so production builds can never embed fake numbers. The test suite needs
@@ -119,16 +130,16 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 TEST_FIXTURE_FEATURES="memoryd-web/dev-fixtures,memoryd/dev-fixtures"
 
 if [[ "$USE_NEXTEST" -eq 1 ]]; then
-  cargo nextest run --workspace --features "$TEST_FIXTURE_FEATURES"
-  cargo nextest run --workspace --release --features "$TEST_FIXTURE_FEATURES"
+  $NICE cargo nextest run --workspace --features "$TEST_FIXTURE_FEATURES"
+  $NICE cargo nextest run --workspace --release --features "$TEST_FIXTURE_FEATURES"
   # nextest doesn't run doctests; cover them so we don't lose coverage vs `cargo test`.
-  cargo test --workspace --doc --features "$TEST_FIXTURE_FEATURES"
+  $NICE cargo test --workspace --doc --features "$TEST_FIXTURE_FEATURES"
 else
-  cargo test --workspace --features "$TEST_FIXTURE_FEATURES"
-  cargo test --workspace --release --features "$TEST_FIXTURE_FEATURES"
+  $NICE cargo test --workspace --features "$TEST_FIXTURE_FEATURES"
+  $NICE cargo test --workspace --release --features "$TEST_FIXTURE_FEATURES"
 fi
 
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+$NICE env RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 
 # --- Phase 3: convergence / durability / bench (perf-sensitive, serial) ----
 

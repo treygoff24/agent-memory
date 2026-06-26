@@ -10,9 +10,10 @@ use crate::recall::counters::RecallStatusCounters;
 use crate::recall::types::{DeltaRequest, DeltaResponse, StartupRequest, StartupResponse};
 
 pub use memorum_coordination::{ClaimLockInfo, PeerHeartbeat, PeerHeartbeatAck};
-pub use memory_governance::GovernanceRefusalReason;
+pub use memory_governance::{GovernanceRefusalReason, ReviewStatus};
+pub use memory_source::CaptureStatus;
 use memory_substrate::events::EventKind;
-pub use memory_substrate::{EventId, MemoryId, MemoryStatus, ObserveKind, Sensitivity};
+pub use memory_substrate::{AuthorKind, EventId, MemoryId, MemoryStatus, ObserveKind, Sensitivity, SourceKind};
 
 /// Maximum byte length of a single newline-delimited request or response frame.
 /// Defined here so both the server-side reader and client-side reader share the same limit.
@@ -533,7 +534,7 @@ pub struct CaptureSourceResponse {
     pub mode: CaptureSourceMode,
     pub final_url: String,
     pub captured_at: DateTime<Utc>,
-    pub capture_status: String,
+    pub capture_status: CaptureStatus,
     pub warnings: Vec<String>,
 }
 
@@ -978,9 +979,9 @@ pub struct GetResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetProvenance {
     pub path: Option<String>,
-    pub source_kind: String,
+    pub source_kind: SourceKind,
     pub source_ref: Option<String>,
-    pub author_kind: String,
+    pub author_kind: AuthorKind,
     pub harness: Option<String>,
     pub session_id: Option<String>,
     pub evidence_refs: Vec<String>,
@@ -1071,7 +1072,7 @@ pub struct ReviewQueueResponse {
 pub struct ReviewQueueItemResponse {
     pub id: String,
     pub summary: String,
-    pub status: String,
+    pub status: ReviewStatus,
     pub policy_applied: String,
     pub reason: Option<String>,
     pub next_actions: Vec<String>,

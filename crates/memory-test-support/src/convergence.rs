@@ -75,7 +75,6 @@ fn compare_roots(left: &Path, right: &Path) -> anyhow::Result<ConvergenceReport>
     let left_files = collect_relative_paths(left)?;
     let right_files = collect_relative_paths(right)?;
 
-    // Check for files only in one side.
     for path in &left_files {
         if !right_files.contains(path) {
             return Ok(diverged(
@@ -171,12 +170,10 @@ fn compare_markdown(path: &Path, left: &[u8], right: &[u8]) -> anyhow::Result<Op
 
 fn canonical_markdown(path: &Path, bytes: &[u8]) -> anyhow::Result<Vec<u8>> {
     let text = std::str::from_utf8(bytes).context("markdown utf8")?;
-    // Split on the YAML frontmatter delimiter.
     let (frontmatter_yaml, body) = split_frontmatter(path, text)?;
     // Parse and re-serialize via serde_yaml (canonical: sorted keys, no anchors).
     let value: serde_yaml::Value = serde_yaml::from_str(frontmatter_yaml).context("frontmatter parse")?;
     let re_serialized = serde_yaml::to_string(&value).context("frontmatter serialize")?;
-    // Reconstruct: delimiter + canonical frontmatter + delimiter + body.
     let canonical = format!("---\n{re_serialized}---\n{body}");
     Ok(canonical.into_bytes())
 }

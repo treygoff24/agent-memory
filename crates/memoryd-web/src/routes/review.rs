@@ -89,7 +89,7 @@ pub async fn review_queue(State(state): State<WebState>, Query(query): Query<Rev
                         .map(|item| ReviewQueueItem {
                             id: item.id,
                             summary: item.summary,
-                            status: item.status,
+                            status: item.status.as_str().to_owned(),
                             namespace: query.namespace.clone().unwrap_or_else(|| "daemon".to_owned()),
                             policy_applied: item.policy_applied,
                             reason: item.reason,

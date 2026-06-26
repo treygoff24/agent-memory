@@ -17,7 +17,7 @@ runs=5; corpus=200; seed="0xA1750f7"; cargo_flags=()
 if [ "$tier" = "release" ]; then runs=9; corpus=10000; seed="0xA175e1ea5e"; cargo_flags=(--release); fi
 runs="${BENCH_RUNS_OVERRIDE:-$runs}"
 corpus="${BENCH_CORPUS_OVERRIDE:-$corpus}"
-cargo run -q "${cargo_flags[@]}" -p memory-substrate --bin stream_a_bench -- \
+cargo run -q "${cargo_flags[@]}" -p memory-substrate --features bench-harness --bin stream_a_bench -- \
   --tier "$tier" \
   --profile "$profile" \
   --output "$output" \

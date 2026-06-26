@@ -24,7 +24,7 @@ function distIsReady(): boolean {
     );
 }
 
-export function ensureDist(): void {
+function ensureDist(): void {
     if (existsSync(stampFile) && distIsReady()) return;
     mkdirSync(cacheDir, { recursive: true });
     let ownsLock = false;

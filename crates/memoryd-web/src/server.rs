@@ -142,14 +142,11 @@ pub fn embedded_asset_names() -> Vec<String> {
     Assets::iter().map(|path| path.into_owned()).collect()
 }
 
-fn embedded_response(path: &str, content_type: &str) -> Response {
+fn embedded_response(path: &str, content_type: &'static str) -> Response {
     match Assets::get(path) {
         Some(asset) => {
             let mut response = asset.data.into_owned().into_response();
-            response.headers_mut().insert(
-                header::CONTENT_TYPE,
-                HeaderValue::from_str(content_type).unwrap_or(HeaderValue::from_static("application/octet-stream")),
-            );
+            response.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
             response
         }
         None => StatusCode::NOT_FOUND.into_response(),

@@ -8,6 +8,7 @@ import {
     FocusStrip,
     QuestionStage,
     SessionSidebar,
+    realityCheckVariants,
     type RealityCheckActionName,
     type RealityCheckMemory,
     type RealityCheckRespondPayload,
@@ -23,11 +24,9 @@ interface RealityCheckProps {
     onRespond?: (payload: RealityCheckRespondPayload) => void | Promise<void>;
 }
 
-const variants = ['default', 'encrypted', 'refused', 'score-open', 'complete'] as const;
-
 function variantFromUrl(): RealityCheckVariant {
     const raw = new URLSearchParams(window.location.search).get('variant');
-    return variants.find((candidate) => candidate === raw) ?? 'default';
+    return realityCheckVariants.find((candidate) => candidate === raw) ?? 'default';
 }
 
 function daysSince(iso: string): number {

@@ -2,7 +2,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use memory_privacy::{FileKeyProvider, PrivacyEncryptor};
 use memory_source::{
     capture_web_source_with_resolver, extract::DEFAULT_EXTRACTED_TEXT_CAP, storage::ArtifactStore, AddressPolicy,
-    CaptureWebSourceRequest, RawStorage, StaticDnsResolver,
+    CaptureStatus, CaptureWebSourceRequest, RawStorage, StaticDnsResolver,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -136,7 +136,7 @@ async fn unsafe_raw_html_omits_raw_but_safe_extraction_remains_groundable() {
     )
     .await
     .unwrap();
-    assert_eq!(response.capture_status, "complete_text_only");
+    assert_eq!(response.capture_status, CaptureStatus::CompleteTextOnly);
     let store = ArtifactStore::new(temp.path());
     let artifact_id = memory_source::SourceArtifactId::try_new(response.artifact_id).unwrap();
     let artifact = store.verify_artifact_id(&artifact_id).unwrap();
@@ -166,7 +166,7 @@ async fn raw_privacy_check_scans_beyond_extraction_projection_cap() {
     .await
     .unwrap();
 
-    assert_eq!(response.capture_status, "complete_text_only");
+    assert_eq!(response.capture_status, CaptureStatus::CompleteTextOnly);
     let store = ArtifactStore::new(temp.path());
     let artifact_id = memory_source::SourceArtifactId::try_new(response.artifact_id).unwrap();
     let artifact = store.verify_artifact_id(&artifact_id).unwrap();
@@ -196,7 +196,7 @@ async fn unsafe_raw_html_encrypts_raw_with_key_instead_of_omitting() {
     .await
     .unwrap();
 
-    assert_eq!(response.capture_status, "complete");
+    assert_eq!(response.capture_status, CaptureStatus::Complete);
     assert!(response.warnings.contains(&"raw_encrypted".to_string()));
     let artifact_id = memory_source::SourceArtifactId::try_new(response.artifact_id).unwrap();
     let artifact = ArtifactStore::new(temp.path()).verify_artifact_id(&artifact_id).unwrap();

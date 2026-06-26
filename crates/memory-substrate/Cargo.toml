@@ -31,6 +31,15 @@ which.workspace = true
 
 [dependencies.memory-test-support]
 path = "../memory-test-support"
+optional = true
+
+[features]
+bench-harness = ["dep:memory-test-support"]
+
+[[bin]]
+name = "stream_a_bench"
+path = "src/bin/stream_a_bench.rs"
+required-features = ["bench-harness"]
 
 [dev-dependencies]
 proptest.workspace = true

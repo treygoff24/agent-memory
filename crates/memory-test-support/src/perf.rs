@@ -134,7 +134,6 @@ fn allocate_proportional(total: usize, placements: &[(&str, f64)]) -> Vec<usize>
         placements.iter().map(|(_, p)| ((total as f64) * p / sum).floor() as usize).collect();
     let assigned: usize = allocated.iter().sum();
     let remainder = total.saturating_sub(assigned);
-    // Add remainder to the largest bucket.
     if remainder > 0 {
         let largest = allocated.iter().enumerate().max_by_key(|(_, &c)| c).map(|(i, _)| i).unwrap_or(0);
         allocated[largest] += remainder;

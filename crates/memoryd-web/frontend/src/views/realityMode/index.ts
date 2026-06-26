@@ -2,6 +2,7 @@ export { CompletionCard } from './CompletionCard';
 export { FocusStrip } from './FocusStrip';
 export { QuestionStage } from './QuestionStage';
 export { SessionSidebar } from './SessionSidebar';
+export { realityCheckVariants } from './types';
 export type {
     RealityCheckActionName,
     RealityCheckMemory,

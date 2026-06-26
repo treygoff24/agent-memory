@@ -1,6 +1,8 @@
 import type { RealityCheckRespondRequest } from '../../api';
 
-export type RealityCheckVariant = 'default' | 'encrypted' | 'refused' | 'score-open' | 'complete';
+export const realityCheckVariants = ['default', 'encrypted', 'refused', 'score-open', 'complete'] as const;
+
+export type RealityCheckVariant = (typeof realityCheckVariants)[number];
 
 export type RealityCheckActionName = 'confirm' | 'correct' | 'forget' | 'not_relevant' | 'skip_this_week';
 

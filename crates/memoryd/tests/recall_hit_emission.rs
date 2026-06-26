@@ -1,10 +1,13 @@
+mod common;
+
+use common::trust_for_status;
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Utc};
 use memory_substrate::{
     events::EventKind, Author, AuthorKind, ClassificationOutcome, EncryptedWriteRequest, EventContext, Frontmatter,
     IndexProjection, InitOptions, Memory, MemoryId, MemoryStatus, MemoryType, RepoPath, RetrievalPolicy, Roots, Scope,
-    Sensitivity, Source, SourceKind, Substrate, TrustLevel, WriteMode, WritePolicy, WriteRequest,
+    Sensitivity, Source, SourceKind, Substrate, WriteMode, WritePolicy, WriteRequest,
 };
 use memoryd::recall::{build_delta_response, build_startup_response, DeltaRequest, StartupRequest};
 
@@ -334,13 +337,4 @@ fn duplicate_delta_body() -> String {
 
 fn instant(value: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(value).expect("fixture timestamp parses").with_timezone(&Utc)
-}
-
-fn trust_for_status(status: MemoryStatus) -> TrustLevel {
-    match status {
-        MemoryStatus::Pinned => TrustLevel::Pinned,
-        MemoryStatus::Candidate => TrustLevel::Candidate,
-        MemoryStatus::Quarantined => TrustLevel::Quarantined,
-        _ => TrustLevel::Trusted,
-    }
 }

@@ -1,8 +1,11 @@
+mod common;
+
 use chrono::{Duration, Utc};
+use common::trust_for_status;
 use memory_substrate::{
     Author, AuthorKind, ClassificationOutcome, Entity, EventContext, Frontmatter, InitOptions, Memory, MemoryId,
     MemoryStatus, MemoryType, RepoPath, RetrievalPolicy, Roots, Scope, Sensitivity, Source, SourceKind, Substrate,
-    TrustLevel, WriteMode, WritePolicy, WriteRequest,
+    WriteMode, WritePolicy, WriteRequest,
 };
 use memoryd::handlers::{handle_request_with_state, HandlerState};
 use memoryd::protocol::{RequestEnvelope, RequestPayload, ResponsePayload, ResponseResult};
@@ -377,14 +380,5 @@ fn question_file_path(repo: &std::path::Path, scope: &str) -> std::path::PathBuf
             repo.join("dreams/questions/project").join(scoped.trim_start_matches("project:")).join("2026-05-01.jsonl")
         }
         other => panic!("unsupported fixture scope {other}"),
-    }
-}
-
-fn trust_for_status(status: MemoryStatus) -> TrustLevel {
-    match status {
-        MemoryStatus::Pinned => TrustLevel::Pinned,
-        MemoryStatus::Candidate => TrustLevel::Candidate,
-        MemoryStatus::Quarantined => TrustLevel::Quarantined,
-        _ => TrustLevel::Trusted,
     }
 }

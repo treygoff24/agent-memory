@@ -54,7 +54,6 @@ pub fn repair_duplicate_ids(repo: &Path, runtime: &Path, device_id: &str) -> Res
     // Phase 1: scan for duplicates and build candidate groups.
     let records = read_memory_records(repo).map_err(|err| IdError::InvalidState(err.to_string()))?;
 
-    // Build id -> all (path, created_at) tuples.
     let mut by_id: HashMap<MemoryId, Vec<DuplicateCandidate>> = HashMap::new();
     for (path, memory) in &records {
         let created_at = memory.frontmatter.created_at.format("%Y-%m-%dT%H:%M:%SZ").to_string();
@@ -65,7 +64,6 @@ pub fn repair_duplicate_ids(repo: &Path, runtime: &Path, device_id: &str) -> Res
         ));
     }
 
-    // Collect groups with more than one occupant.
     let duplicate_groups: Vec<DuplicateGroup> = by_id.into_iter().filter(|(_, group)| group.len() > 1).collect();
 
     if duplicate_groups.is_empty() {
@@ -93,14 +91,12 @@ pub fn repair_duplicate_ids(repo: &Path, runtime: &Path, device_id: &str) -> Res
                 .ok_or_else(|| IdError::InvalidState("allocator returned empty batch".to_string()))?;
             reserved.insert(new_id.clone());
 
-            // Compute new path: replace the file stem with the new ID.
             let new_path = repaired_path(&old_path, &new_id);
             entries.push(RepairEntry { old_id: dup_id.clone(), new_id, old_path, new_path });
         }
     }
 
     // Phase 3: stage and validate.
-    // Build rename map: old_id -> new_id.
     let rename_map: HashMap<MemoryId, MemoryId> =
         entries.iter().map(|e| (e.old_id.clone(), e.new_id.clone())).collect();
 
@@ -112,7 +108,6 @@ pub fn repair_duplicate_ids(repo: &Path, runtime: &Path, device_id: &str) -> Res
         let path_changed;
 
         if let Some(entry) = entries.iter().find(|e| e.old_path == *rel_path) {
-            // This file is being reminted.
             memory.frontmatter.id = entry.new_id.clone();
             memory.path = RepoPath::try_new(entry.new_path.to_string_lossy().replace('\\', "/"))
                 .ok()
@@ -234,7 +229,6 @@ fn validate_no_duplicate_ids(
     let future_ids: HashSet<MemoryId> = original_records
         .iter()
         .map(|(path, m)| {
-            // Apply rename if this file is being reminted.
             if let Some(entry) = entries.iter().find(|e| &e.old_path == path) {
                 entry.new_id.clone()
             } else {
@@ -243,7 +237,6 @@ fn validate_no_duplicate_ids(
         })
         .collect();
 
-    // Check for duplicates in future IDs.
     let future_id_count = original_records.len();
     if future_ids.len() != future_id_count {
         return Err(ValidationError::Other("staged repair would produce duplicate IDs".to_string()));
@@ -267,13 +260,11 @@ fn commit_staged(
         let original_bytes = if abs_old.exists() { Some(std::fs::read(&abs_old)?) } else { None };
         rollback_stack.push((abs_old.clone(), original_bytes));
 
-        // Write the new file.
         if let Some(parent) = abs_new.parent() {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(&abs_new, content.as_bytes())?;
 
-        // Remove the old file if it moved.
         if abs_old != abs_new && abs_old.exists() {
             std::fs::remove_file(&abs_old)?;
         }

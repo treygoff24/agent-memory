@@ -1759,7 +1759,6 @@ mod tests {
         RepoPath::try_new("config.yaml").expect("root file"); // expect-justified: test
     }
 
-    // ---------------------------------------------------------------------
     // On-disk string contract.
     //
     // The SQLite index stores these enums as strings via `as_db_str`. Those
@@ -1768,7 +1767,6 @@ mod tests {
     // enumerates every variant explicitly (so adding a variant without updating
     // the method is caught) and asserts `as_db_str` equals the serde form. The
     // four enums with a parser also assert `from_db_str` round-trips.
-    // ---------------------------------------------------------------------
 
     /// The serde string for a unit enum variant, via JSON (always a bare string).
     fn serde_db_str<T: Serialize>(value: &T) -> String {

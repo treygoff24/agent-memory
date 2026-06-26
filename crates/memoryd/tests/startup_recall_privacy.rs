@@ -1,10 +1,13 @@
+mod common;
+
+use common::trust_for_status;
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
 use memory_substrate::{
     Author, AuthorKind, ClassificationOutcome, EventContext, Frontmatter, InitOptions, Memory, MemoryId, MemoryStatus,
-    MemoryType, RepoPath, RetrievalPolicy, Roots, Scope, Sensitivity, Source, SourceKind, Substrate, TrustLevel,
-    WriteMode, WritePolicy, WriteRequest,
+    MemoryType, RepoPath, RetrievalPolicy, Roots, Scope, Sensitivity, Source, SourceKind, Substrate, WriteMode,
+    WritePolicy, WriteRequest,
 };
 use memoryd::handlers::{handle_request_with_state, HandlerState};
 use memoryd::protocol::{RequestEnvelope, RequestPayload, ResponsePayload, ResponseResult};
@@ -305,13 +308,4 @@ impl PrivacyFixture {
 
 fn instant(value: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(value).expect("fixture timestamp parses").with_timezone(&Utc)
-}
-
-fn trust_for_status(status: MemoryStatus) -> TrustLevel {
-    match status {
-        MemoryStatus::Pinned => TrustLevel::Pinned,
-        MemoryStatus::Candidate => TrustLevel::Candidate,
-        MemoryStatus::Quarantined => TrustLevel::Quarantined,
-        _ => TrustLevel::Trusted,
-    }
 }
