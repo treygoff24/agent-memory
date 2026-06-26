@@ -261,7 +261,14 @@ async fn run_dream_cleanup(args: crate::cli::DreamCleanupArgs) -> anyhow::Result
             .ok_or_else(|| anyhow::anyhow!("local-device.yaml is missing; pass --device-id"))?,
     };
     let now = parse_cleanup_now(args.now)?;
+    let runtime = args.runtime.clone();
     let substrate = Substrate::open(Roots::new(args.repo, args.runtime)).await?;
+    // I-F1.5: the cleanup-bot commit must not race the daemon commit worker on
+    // `.git/index`. Cleanup runs as a separate `memoryd dream cleanup` process and
+    // stages fs deletions on events/dreams/ namespaces that overlap the worker, so
+    // hold the repo-level substrate git lock across the cleanup run.
+    let _git_lock = crate::substrate_git_lock::acquire_substrate_git_lock(&runtime)
+        .map_err(|err| anyhow::anyhow!("substrate git lock: {err}"))?;
     crate::dream::cleanup::run_cleanup(
         &substrate,
         crate::dream::cleanup::CleanupConfig {

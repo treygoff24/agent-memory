@@ -141,12 +141,16 @@ pub fn acquire_manual_lease_with_git(
                 // With a remote, multi-device election owns refresh, so re-entrancy
                 // stays byte-identical: reuse the record (I-F2.1).
                 //
-                // With no remote (spec §8.2), a self-owned active record can only be
-                // an abandoned lease from a crashed/interrupted prior run — a live
-                // holder never re-acquires. Reusing it would run the dream under a
-                // lease that may expire mid-run, so evict it: supersede with a fresh
-                // full-window acquire. The eviction append is deferred to *after* the
-                // dirty-tree gate below, so a dirty-tree abort never leaves an
+                // With no remote, a self-owned active record can only be an abandoned
+                // lease from a crashed/interrupted prior run — a live holder never
+                // re-acquires. (Foundation spec §8 "Open questions / risks" item 2
+                // floats this no-remote stale-lease eviction as an *option*, not an
+                // F2 contract — it is adopted here per the implementation plan;
+                // keep-vs-drop is an open spec-fidelity call.) Reusing it would run
+                // the dream under a lease that may expire mid-run, so evict it:
+                // supersede with a fresh full-window acquire. The eviction append is
+                // deferred to *after* the dirty-tree gate below, so a dirty-tree abort
+                // never leaves an
                 // uncommitted release record stranded in the journal.
                 if origin_remote_configured(&request.repo)? {
                     return Ok(LeaseAcquired { record: active, report: stub_report(&request) });

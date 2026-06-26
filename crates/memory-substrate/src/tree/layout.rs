@@ -173,7 +173,12 @@ fn write_if_missing(path: &Path, contents: &str) -> std::io::Result<()> {
 /// repos created before the Memorum rebrand (when `/.memorum/` was added here)
 /// would otherwise keep leaking substrate state into `git status` forever.
 const MANAGED_GITIGNORE_ENTRIES: &[&str] =
-    &["/.memoryd/", "/.memorum/", "*.sqlite", "*.sqlite-wal", "*.sqlite-shm", "/.*.tmp"];
+    // `.*.tmp` is deliberately NOT root-anchored: the atomic-write temp file
+    // `.<basename>.<op_id>.tmp` (markdown/atomic.rs) is created NESTED under the
+    // namespace dirs (e.g. `me/identity/.fact.md.op1.tmp`), so a leading `/` here
+    // would leave nested temps untracked-and-unignored and let the F1 commit worker
+    // stage/commit an in-flight (possibly torn) temp into the canonical tree.
+    &["/.memoryd/", "/.memorum/", "*.sqlite", "*.sqlite-wal", "*.sqlite-shm", ".*.tmp"];
 
 fn reconcile_gitignore(path: &Path) -> std::io::Result<()> {
     let existing = match std::fs::read_to_string(path) {

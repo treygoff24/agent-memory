@@ -170,8 +170,9 @@ fn foreign_active_lease_blocks_with_no_remote() {
 
 #[test]
 fn stale_self_owned_lease_is_evicted_for_fresh_acquire_with_no_remote() {
-    // spec §8.2: with no remote there is no fetch to refresh a stale journal, so a
-    // crashed prior run can leave a still-active self-owned lease. Eviction supersedes
+    // Foundation spec §8 (risk item 2): with no remote there is no fetch to refresh a
+    // stale journal, so a crashed prior run can leave a still-active self-owned lease.
+    // (The eviction is an optional consideration adopted from the plan.) Eviction supersedes
     // it and grants a fresh full-window lease rather than reusing one about to expire.
     let env = GitLeaseEnv::new_without_origin("dev_local");
     env.append_lease(LeaseRecord {
@@ -205,7 +206,7 @@ fn stale_self_owned_lease_is_evicted_for_fresh_acquire_with_no_remote() {
 
 #[test]
 fn dirty_tree_with_stale_self_owned_lease_aborts_without_mutating_journal() {
-    // The §8.2 eviction must run *after* the dirty-tree gate: a dirty-tree abort
+    // The §8 (risk item 2) eviction must run *after* the dirty-tree gate: a dirty-tree abort
     // must leave the journal byte-identical (no orphan release record), not
     // half-evicted. Regression guard for the eviction-before-dirty-guard bug.
     let env = GitLeaseEnv::new_without_origin("dev_local");

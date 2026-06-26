@@ -112,9 +112,19 @@ pub fn uncommitted_substrate_paths(repo: &Path) -> Result<Vec<String>, GitError>
     Ok(output
         .lines()
         .filter_map(status_path)
-        .filter(|path| *path != "leases/journal.lease")
+        .filter(|path| *path != "leases/journal.lease" && !is_atomic_temp(path))
+        // ^ `path: &&str`; `is_atomic_temp` takes `&str` via deref coercion.
         .map(str::to_string)
         .collect())
+}
+
+/// An in-flight atomic-write temp file (`markdown/atomic.rs`'s nested
+/// `.<basename>.<op_id>.tmp`). Excluded from substrate commits as defense-in-depth:
+/// the `.*.tmp` gitignore entry already covers these on a freshly-bootstrapped repo,
+/// but a repo created before that entry was de-anchored could still surface one in
+/// `git status`, and the commit worker must never stage a possibly-torn temp.
+fn is_atomic_temp(path: &str) -> bool {
+    path.rsplit('/').next().is_some_and(|name| name.starts_with('.') && name.ends_with(".tmp"))
 }
 
 /// Count changed paths a substrate write commit would be allowed to stage.
@@ -263,7 +273,8 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        auto_commit_with_outcome, commit_lease_file, commit_substrate_writes, CommitOutcome, LeaseCommitAction,
+        auto_commit_with_outcome, commit_lease_file, commit_substrate_writes, count_substrate_write_changes,
+        CommitOutcome, LeaseCommitAction,
     };
     use crate::tree::bootstrap_repo_tree;
 
@@ -425,6 +436,26 @@ mod tests {
             git(repo.path(), &["status", "--porcelain", "--", "me/identity/retry.md"]).expect("clean"), // expect-justified: test assertion
             ""
         );
+    }
+
+    #[test]
+    fn worker_never_commits_a_nested_atomic_temp() {
+        let repo = tempdir().expect("tempdir"); // expect-justified: test setup
+        bootstrap_repo_tree(repo.path()).expect("bootstrap"); // expect-justified: test setup
+        git(repo.path(), &["init"]).expect("git init"); // expect-justified: test setup
+        commit_substrate_writes(repo.path(), 1).expect("baseline commit"); // expect-justified: test setup
+        fs::create_dir_all(repo.path().join("me/identity")).expect("dir"); // expect-justified: test setup
+        fs::write(repo.path().join("me/identity/fact.md"), "---\nsummary: f\n---\nbody\n").expect("fact"); // a real memory write
+        fs::write(repo.path().join("me/identity/.fact.md.op1.tmp"), "torn").expect("temp"); // an in-flight atomic-write temp
+
+        // The temp is not counted, and the commit holds the real file but never the temp.
+        assert_eq!(count_substrate_write_changes(repo.path()).expect("count"), 1, "atomic temp must not be counted"); // expect-justified: test assertion
+        let outcome = commit_substrate_writes(repo.path(), 1).expect("commit"); // expect-justified: test assertion
+        assert!(matches!(outcome, CommitOutcome::Committed { .. }));
+        let files =
+            git(repo.path(), &["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"]).expect("committed files"); // expect-justified: test assertion
+        assert!(files.lines().any(|path| path == "me/identity/fact.md"), "{files}");
+        assert!(!files.lines().any(|path| path.ends_with(".tmp")), "atomic temp must never be committed: {files}");
     }
 
     fn git(repo: &std::path::Path, args: &[&str]) -> Result<String, String> {
