@@ -74,8 +74,22 @@ pub async fn serve_substrate_with(
     fire_reality_check_due_on_startup(&substrate, &state);
     spawn_reality_check_scheduler(substrate.clone(), state.clone(), shutdown.clone());
     spawn_embedding_worker(substrate.clone(), state.embedding_provider_slot(), shutdown.clone());
-    spawn_substrate_commit_worker(substrate.clone(), shutdown.clone());
-    serve_with_dispatcher(socket_path.as_ref(), Dispatch::Substrate { substrate, state }, options, shutdown).await
+    // The commit worker runs until the server loop returns. Give it a dedicated
+    // shutdown channel we own rather than the global one: the global `shutdown` sender
+    // lives in the signal task and only fires on SIGINT/SIGTERM, so if
+    // `serve_with_dispatcher` returns early with a socket error, joining on the global
+    // channel would block forever. Signalling here covers the graceful AND error paths.
+    let (worker_shutdown_tx, worker_shutdown_rx) = watch::channel(false);
+    let commit_worker = spawn_substrate_commit_worker(substrate.clone(), worker_shutdown_rx);
+    let result =
+        serve_with_dispatcher(socket_path.as_ref(), Dispatch::Substrate { substrate, state }, options, shutdown).await;
+    // Tell the worker to drain-and-exit (it runs a final `flush_substrate_commits` on
+    // its way out), then join so that last commit lands before the process exits.
+    // `JoinHandle::join` blocks, so hand it to the blocking pool; a worker panic is
+    // ignored — durability still rests on disk + index + event log (I-F1.3).
+    let _ = worker_shutdown_tx.send(true);
+    let _ = tokio::task::spawn_blocking(move || commit_worker.join()).await;
+    result
 }
 
 fn state_for_substrate(substrate: &Substrate) -> Result<HandlerState> {
@@ -233,11 +247,14 @@ async fn sleep_or_shutdown(shutdown: &mut watch::Receiver<bool>, duration: Durat
     }
 }
 
-fn spawn_substrate_commit_worker(substrate: Arc<Substrate>, mut shutdown: watch::Receiver<bool>) {
+fn spawn_substrate_commit_worker(
+    substrate: Arc<Substrate>,
+    mut shutdown: watch::Receiver<bool>,
+) -> thread::JoinHandle<()> {
     let repo = substrate.roots().repo.clone();
     let runtime = substrate.roots().runtime.clone();
     let debounce = substrate_commit_debounce(substrate.as_ref());
-    let _worker = thread::spawn(move || {
+    thread::spawn(move || {
         loop {
             if wait_or_shutdown(&mut shutdown, debounce) {
                 flush_substrate_commits(&repo, &runtime);
@@ -247,13 +264,18 @@ fn spawn_substrate_commit_worker(substrate: Arc<Substrate>, mut shutdown: watch:
             // Do not use `Substrate::watch()`: daemon-authored writes are
             // self-suppressed by watcher/subscription.rs, and those are exactly
             // the writes this worker must commit.
+            //
+            // `count_substrate_write_changes` runs OUTSIDE the git lock (the lock is
+            // taken inside `flush_substrate_commit_count`), so a write landing between
+            // the count and the commit only makes the `<n>` in the commit message
+            // stale — advisory text, never a gate on what is staged.
             match count_substrate_write_changes(&repo) {
                 Ok(0) => {}
                 Ok(write_count) => flush_substrate_commit_count(&repo, &runtime, write_count),
                 Err(error) => tracing::warn!(%error, "substrate commit worker status poll failed"),
             }
         }
-    });
+    })
 }
 
 fn substrate_commit_debounce(substrate: &Substrate) -> Duration {

@@ -142,7 +142,11 @@ active_embedding:
     assert_eq!(synced.dreams.cleanup_run_hour_utc, 3);
     assert_eq!(synced.dreams.lease_window_seconds, 3600);
     assert_eq!(synced.dreams.dream_retry_window_minutes, 180);
+    assert_eq!(synced.dreams.doctor_missed_threshold, 2);
+    assert_eq!(synced.dreams.doctor_budget_exhausted_threshold, 500);
+    assert_eq!(synced.dreams.capture_drought_days, 3);
     assert_eq!(synced.substrate.commit_debounce_ms, 2000);
+    assert_eq!(synced.substrate.commit_stale_grace_ms, 5000);
     assert_eq!(synced.events.compaction_days, 90);
 }
 
@@ -260,6 +264,60 @@ substrate:
 }
 
 #[test]
+fn substrate_config_rejects_out_of_range_commit_stale_grace() {
+    let err = load_synced_config_from_text(
+        r#"schema_version: 1
+active_embedding:
+  provider: synthetic
+  model_ref: stream-a-test
+  dimension: 32
+substrate:
+  commit_stale_grace_ms: 60001
+"#,
+    )
+    .expect_err("out of range substrate stale grace rejected");
+
+    assert!(err.contains("substrate.commit_stale_grace_ms"), "actual error: {err}");
+}
+
+#[test]
+fn dreams_config_rejects_out_of_range_doctor_missed_threshold() {
+    let err = load_synced_config_from_text(
+        r#"schema_version: 1
+active_embedding:
+  provider: synthetic
+  model_ref: stream-a-test
+  dimension: 32
+dreams:
+  doctor_missed_threshold: 101
+"#,
+    )
+    .expect_err("out of range doctor missed threshold rejected");
+
+    assert!(err.contains("dreams.doctor_missed_threshold"), "actual error: {err}");
+}
+
+#[test]
+fn dreams_config_rejects_out_of_range_capture_drought_days() {
+    // Note: `dreams.doctor_budget_exhausted_threshold` is an unbounded cumulative count
+    // (no range gate by design — see config/mod.rs validate_config), so it has no
+    // out-of-range case to assert.
+    let err = load_synced_config_from_text(
+        r#"schema_version: 1
+active_embedding:
+  provider: synthetic
+  model_ref: stream-a-test
+  dimension: 32
+dreams:
+  capture_drought_days: 366
+"#,
+    )
+    .expect_err("out of range capture drought days rejected");
+
+    assert!(err.contains("dreams.capture_drought_days"), "actual error: {err}");
+}
+
+#[test]
 fn dreams_config_parses_all_v0_2_keys_and_preserves_values() {
     let synced = load_synced_config_from_text(
         r#"schema_version: 1
@@ -288,10 +346,14 @@ dreams:
   cleanup_run_hour_utc: 11
   lease_window_seconds: 7200
   dream_retry_window_minutes: 240
+  doctor_missed_threshold: 5
+  doctor_budget_exhausted_threshold: 999
+  capture_drought_days: 9
 events:
   compaction_days: 180
 substrate:
   commit_debounce_ms: 123
+  commit_stale_grace_ms: 456
 "#,
     )
     .expect("valid dreams config");
@@ -315,7 +377,11 @@ substrate:
     assert_eq!(synced.dreams.cleanup_run_hour_utc, 11);
     assert_eq!(synced.dreams.lease_window_seconds, 7200);
     assert_eq!(synced.dreams.dream_retry_window_minutes, 240);
+    assert_eq!(synced.dreams.doctor_missed_threshold, 5);
+    assert_eq!(synced.dreams.doctor_budget_exhausted_threshold, 999);
+    assert_eq!(synced.dreams.capture_drought_days, 9);
     assert_eq!(synced.substrate.commit_debounce_ms, 123);
+    assert_eq!(synced.substrate.commit_stale_grace_ms, 456);
     assert_eq!(synced.events.compaction_days, 180);
 }
 

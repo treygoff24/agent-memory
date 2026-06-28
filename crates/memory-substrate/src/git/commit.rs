@@ -26,6 +26,19 @@ const STAGED_NAMESPACES: &[&str] = &[
 /// Root-level bootstrap files that are always tracked.
 const STAGED_ROOT_FILES: &[&str] = &["config.yaml", ".gitattributes", ".gitignore"];
 
+/// Git exclude pathspec that keeps in-flight atomic-write temps
+/// (`markdown/atomic.rs`'s nested `.<basename>.<op_id>.tmp`) out of every staging
+/// pass, independent of `.gitignore`. The de-anchored `.*.tmp` gitignore entry
+/// (`tree/layout.rs`) already ignores these on a freshly-bootstrapped repo, but a
+/// repo whose `.gitignore` predates that entry — or carries a stale root-anchored
+/// `/.*.tmp` that misses nested temps — would otherwise let `git add -- me/ …`
+/// stage a possibly-torn temp into the canonical tree. `glob` magic makes `**/`
+/// match any depth while `*` stays within a path component, so this matches a
+/// dot-prefixed `.tmp` basename at any depth and never a real canonical file
+/// (none of `*.md`/`config.yaml`/`*.jsonl`/`.keep`/… both start with `.` and end
+/// with `.tmp`).
+const ATOMIC_TEMP_EXCLUDE_PATHSPEC: &str = ":(exclude,glob)**/.*.tmp";
+
 /// Outcome of a git commit operation.
 #[derive(Debug, Eq, PartialEq)]
 pub enum CommitOutcome {
@@ -94,6 +107,9 @@ pub fn commit_substrate_writes(repo: &Path, write_count: usize) -> Result<Commit
         return Ok(CommitOutcome::NoChanges);
     }
 
+    // `write_count` is counted by the caller OUTSIDE the git lock, so a write that
+    // lands between that count and this commit can make `<n>` stale — it is advisory
+    // commit-message text only and never gates what is actually staged.
     let message = format!("substrate: commit {write_count} write(s)");
     run_write_bot_commit(repo, &message)?;
     let sha = run_git(repo, &["rev-parse", "--short", "HEAD"])?.trim().to_string();
@@ -119,10 +135,11 @@ pub fn uncommitted_substrate_paths(repo: &Path) -> Result<Vec<String>, GitError>
 }
 
 /// An in-flight atomic-write temp file (`markdown/atomic.rs`'s nested
-/// `.<basename>.<op_id>.tmp`). Excluded from substrate commits as defense-in-depth:
-/// the `.*.tmp` gitignore entry already covers these on a freshly-bootstrapped repo,
-/// but a repo created before that entry was de-anchored could still surface one in
-/// `git status`, and the commit worker must never stage a possibly-torn temp.
+/// `.<basename>.<op_id>.tmp`). Staging already excludes these at `git add` time via
+/// [`ATOMIC_TEMP_EXCLUDE_PATHSPEC`]; this predicate keeps the count/D3 status path
+/// ([`uncommitted_substrate_paths`]) consistent with that staging filter, so a torn
+/// temp surfaced by `git status` (e.g. on a repo with a stale `.*.tmp` gitignore) is
+/// never counted as a pending substrate write.
 fn is_atomic_temp(path: &str) -> bool {
     path.rsplit('/').next().is_some_and(|name| name.starts_with('.') && name.ends_with(".tmp"))
 }
@@ -161,6 +178,11 @@ pub fn commit_lease_file(
 fn stage_spec_namespaces(repo: &Path) -> Result<(), GitError> {
     let mut full_args = vec!["add", "--"];
     full_args.extend(staged_paths());
+    // Stage the canonical namespaces but never an in-flight atomic temp: this
+    // exclude pathspec filters torn `.<name>.tmp` files at `git add` time, so the
+    // result is correct even on a repo whose `.gitignore` lacks (or root-anchors)
+    // the `.*.tmp` entry. The guard is gitignore-independent by construction.
+    full_args.push(ATOMIC_TEMP_EXCLUDE_PATHSPEC);
     // `git add` with non-existent paths exits non-zero only when the path was
     // required; with globs it succeeds silently. We pass explicit names that
     // exist on disk so failures are real failures.
@@ -403,7 +425,7 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn commit_failure_does_not_lose_write() {
+    fn commit_failure_does_not_lose_write_and_surfaces_to_doctor() {
         use std::os::unix::fs::PermissionsExt;
 
         let repo = tempdir().expect("tempdir"); // expect-justified: test setup
@@ -456,6 +478,46 @@ mod tests {
             git(repo.path(), &["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"]).expect("committed files"); // expect-justified: test assertion
         assert!(files.lines().any(|path| path == "me/identity/fact.md"), "{files}");
         assert!(!files.lines().any(|path| path.ends_with(".tmp")), "atomic temp must never be committed: {files}");
+    }
+
+    #[test]
+    fn worker_never_stages_a_nested_atomic_temp_with_stale_gitignore() {
+        let repo = tempdir().expect("tempdir"); // expect-justified: test setup
+        bootstrap_repo_tree(repo.path()).expect("bootstrap"); // expect-justified: test setup
+                                                              // Simulate a repo whose `.gitignore` predates the de-anchored `.*.tmp`
+                                                              // entry: the brief intermediate F1 build emitted a ROOT-anchored `/.*.tmp`,
+                                                              // which ignores only top-level temps and leaves NESTED atomic temps
+                                                              // untracked-and-unignored. Overwriting after bootstrap is durable because
+                                                              // `reconcile_gitignore` only runs during bootstrap, so the stale entry
+                                                              // survives to the commit — only the staging pathspec exclude keeps the
+                                                              // nested temp out of the canonical tree here.
+        fs::write(repo.path().join(".gitignore"), "/.memoryd/\n/.memorum/\n/.*.tmp\n").expect("stale gitignore"); // expect-justified: test setup
+        git(repo.path(), &["init"]).expect("git init"); // expect-justified: test setup
+        commit_substrate_writes(repo.path(), 1).expect("baseline commit"); // expect-justified: test setup
+        fs::create_dir_all(repo.path().join("me/identity")).expect("dir"); // expect-justified: test setup
+        fs::write(repo.path().join("me/identity/fact.md"), "---\nsummary: f\n---\nbody\n").expect("fact"); // expect-justified: test setup
+        fs::write(repo.path().join("me/identity/.fact.md.op1.tmp"), "torn").expect("temp"); // expect-justified: test setup
+
+        // Confirm the stale gitignore really does NOT ignore the nested temp — so
+        // the staging pathspec exclude (not gitignore) is what this test exercises.
+        assert!(
+            git(repo.path(), &["status", "--porcelain", "--", "me/identity/.fact.md.op1.tmp"])
+                .expect("temp status") // expect-justified: test assertion
+                .contains("??"),
+            "stale root-anchored /.*.tmp must leave the nested temp untracked-and-unignored"
+        );
+
+        let outcome = commit_substrate_writes(repo.path(), 1).expect("commit"); // expect-justified: test assertion
+        assert!(matches!(outcome, CommitOutcome::Committed { .. }));
+        let files =
+            git(repo.path(), &["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"]).expect("committed files"); // expect-justified: test assertion
+        assert!(files.lines().any(|path| path == "me/identity/fact.md"), "{files}");
+        assert!(
+            !files.lines().any(|path| path.ends_with(".tmp")),
+            "staging exclude must keep the nested temp out of the commit even with a stale gitignore: {files}"
+        );
+        // The temp is never deleted; it stays on disk for the in-flight writer.
+        assert!(repo.path().join("me/identity/.fact.md.op1.tmp").is_file(), "atomic temp must remain on disk");
     }
 
     fn git(repo: &std::path::Path, args: &[&str]) -> Result<String, String> {

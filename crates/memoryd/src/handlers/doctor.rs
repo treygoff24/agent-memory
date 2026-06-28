@@ -2,7 +2,7 @@ use std::path::Path;
 
 use chrono::{DateTime, Duration, Utc};
 use memory_substrate::config::{DreamsConfig, SubstrateConfig};
-use memory_substrate::{MemoryStatus, Substrate};
+use memory_substrate::Substrate;
 
 use crate::handlers::HandlerState;
 use crate::protocol::{DoctorFinding, DoctorResponse, DoctorSeverity, PassStatus};
@@ -84,8 +84,9 @@ async fn foundation_loop_findings(substrate: &Substrate, state: &HandlerState) -
     };
     let now = Utc::now();
     let repo = substrate.roots().repo.as_path();
+    let runtime = substrate.roots().runtime.as_path();
     findings.extend(dream_freshness_finding(repo, &config.synced.dreams, now)); // D1
-    findings.extend(sync_conflict_finding(substrate, repo).await); // D2
+    findings.extend(sync_conflict_finding(substrate, repo, runtime).await); // D2
     findings.extend(stale_uncommitted_finding(repo, &config.synced.substrate, now)); // D3
     findings.extend(budget_pressure_finding(state, &config.synced.dreams)); // D4
     findings
@@ -121,18 +122,35 @@ fn dream_freshness_finding(repo: &Path, dreams: &DreamsConfig, now: DateTime<Utc
     ))
 }
 
-/// D2 (fatal): an active blocking conflict (live quarantined memories) or a stranded
-/// in-progress merge. Reads LIVE state, not the stale `Substrate::open` snapshot, so an
-/// in-daemon `quarantine resolve` or a manual merge-abort clears it.
-async fn sync_conflict_finding(substrate: &Substrate, repo: &Path) -> Option<DoctorFinding> {
+/// Marker filename written by
+/// `memory_substrate::runtime::reconcile::write_startup_marker` (mirrored here; the
+/// substrate hardcodes the same literal in `reconcile.rs` and exports no constant to
+/// reuse). A repair-cascade recovery can leave this marker set with NO `MERGE_HEAD`
+/// and NO live quarantine, so D2 MUST check it — otherwise a recovered-but-not-yet-
+/// reconciled tree reports silently green (I-F4.1).
+const STARTUP_RECONCILE_MARKER: &str = "startup-reconcile.required";
+
+/// D2 (fatal): an active blocking conflict (live quarantined memories), a stranded
+/// in-progress merge, or a pending startup-reconcile recovery marker. `recovery_required`
+/// (I-F4.1) is `MERGE_HEAD || startup-reconcile.required`; checking only the merge head
+/// left the marker-set repair-cascade state silently green. Reads LIVE state, not the
+/// stale `Substrate::open` snapshot, so an in-daemon `quarantine resolve`, a manual
+/// merge-abort, or a completed reconcile clears it.
+async fn sync_conflict_finding(substrate: &Substrate, repo: &Path, runtime: &Path) -> Option<DoctorFinding> {
+    // Count via the shared `status OR trust_level == Quarantined` predicate so D2 can never
+    // disagree with `quarantine list`/`status.conflicts_count`; a status-only count here would
+    // silently miss a trust-level-only quarantine and re-open the seam I-F4.1 forbids.
+    let quarantined =
+        super::quarantine::blocking_conflict_paths(substrate).await.map(|paths| paths.len() as u64).unwrap_or(0);
+    sync_conflict_finding_from_state(repo, runtime, quarantined)
+}
+
+/// Pure filesystem + count core of D2, split from the `Substrate`-coupled wrapper so the
+/// marker/merge seam (I-F4.1) is unit-testable without standing up a live `Substrate`.
+fn sync_conflict_finding_from_state(repo: &Path, runtime: &Path, quarantined: u64) -> Option<DoctorFinding> {
     let merge_head = repo.join(".git").join("MERGE_HEAD").exists();
-    let quarantined = substrate
-        .count_memories_by_status()
-        .await
-        .ok()
-        .map(|counts| counts.iter().find(|(status, _)| *status == MemoryStatus::Quarantined).map_or(0, |(_, c)| *c))
-        .unwrap_or(0);
-    if quarantined == 0 && !merge_head {
+    let recovery_marker = runtime.join(STARTUP_RECONCILE_MARKER).exists();
+    if quarantined == 0 && !merge_head && !recovery_marker {
         return None;
     }
     let mut parts = Vec::new();
@@ -143,10 +161,13 @@ async fn sync_conflict_finding(substrate: &Substrate, repo: &Path) -> Option<Doc
     if merge_head {
         parts.push("a stranded in-progress git merge (.git/MERGE_HEAD)".to_string());
     }
+    if recovery_marker {
+        parts.push("a pending startup-reconcile recovery marker (startup-reconcile.required)".to_string());
+    }
     Some(fatal_finding(
         "sync_blocked",
         format!(
-            "Sync is blocked: {}. Resolve with `memoryd quarantine list`/`resolve` (or finish/abort the merge).",
+            "Sync is blocked: {}. Resolve with `memoryd quarantine list`/`resolve` (or finish/abort the merge, then re-run startup reconciliation).",
             parts.join(" and ")
         ),
         Some("memoryd quarantine list".to_string()),
@@ -373,5 +394,136 @@ mod tests {
             .expect("stale uncommitted fires past the threshold"); // expect-justified: test assertion
         assert_eq!(finding.code, "substrate_uncommitted_stale");
         assert_eq!(finding.severity, DoctorSeverity::Fatal);
+    }
+
+    /// D1 advisory: a dream landed but the last success is older than 48h.
+    #[test]
+    fn doctor_sees_dead_dream() {
+        use chrono::Duration;
+        use memory_substrate::config::DreamsConfig;
+
+        let repo = tempfile::tempdir().expect("tempdir"); // expect-justified: test setup
+        let journal = repo.path().join("dreams/journal/me");
+        std::fs::create_dir_all(&journal).expect("journal dir"); // expect-justified: test setup
+        let entry = journal.join("2026-06-28.md");
+        std::fs::write(&entry, "# dream\n").expect("journal file"); // expect-justified: test setup
+        let mtime: chrono::DateTime<chrono::Utc> =
+            std::fs::metadata(&entry).expect("meta").modified().expect("mtime").into(); // expect-justified: test setup
+        let dreams = DreamsConfig::default();
+
+        // A successful run older than 48h is a stalled-dream advisory (never fatal).
+        let finding = super::dream_freshness_finding(repo.path(), &dreams, mtime + Duration::hours(49))
+            .expect("dead dream fires past 48h"); // expect-justified: test assertion
+        assert_eq!(finding.code, "dream_stale");
+        assert_eq!(finding.severity, DoctorSeverity::Advisory);
+        // A fresh run is not a finding.
+        assert!(super::dream_freshness_finding(repo.path(), &dreams, mtime + Duration::hours(1)).is_none());
+    }
+
+    /// D2 fatal: covers BOTH `recovery_required` triggers — a MERGE_HEAD/quarantine and
+    /// the `startup-reconcile.required` marker. The marker case is the silently-green
+    /// seam I-F4.1 forbids: a repair-cascade recovery sets it with no merge and no live
+    /// quarantine, and D2 must still flip `healthy` to false.
+    #[test]
+    fn doctor_sees_blocking_conflict() {
+        let temp = tempfile::tempdir().expect("tempdir"); // expect-justified: test setup
+        let repo = temp.path().join("repo");
+        let runtime = temp.path().join("runtime");
+        std::fs::create_dir_all(repo.join(".git")).expect("git dir"); // expect-justified: test setup
+        std::fs::create_dir_all(&runtime).expect("runtime dir"); // expect-justified: test setup
+
+        // No seam: no finding.
+        assert!(super::sync_conflict_finding_from_state(&repo, &runtime, 0).is_none());
+
+        // Trigger 1a — a stranded in-progress merge (.git/MERGE_HEAD): fatal.
+        std::fs::write(repo.join(".git/MERGE_HEAD"), "deadbeef\n").expect("merge head"); // expect-justified: test setup
+        let merge = super::sync_conflict_finding_from_state(&repo, &runtime, 0).expect("merge head fires"); // expect-justified: test assertion
+        assert_eq!(merge.code, "sync_blocked");
+        assert_eq!(merge.severity, DoctorSeverity::Fatal);
+        std::fs::remove_file(repo.join(".git/MERGE_HEAD")).expect("rm merge head"); // expect-justified: test setup
+
+        // Trigger 1b — live quarantined memories with no merge and no marker: still fatal.
+        let quarantine = super::sync_conflict_finding_from_state(&repo, &runtime, 1).expect("quarantine fires"); // expect-justified: test assertion
+        assert_eq!(quarantine.code, "sync_blocked");
+        assert_eq!(quarantine.severity, DoctorSeverity::Fatal);
+
+        // Trigger 2 — the startup-reconcile recovery marker ALONE (no merge, no quarantine).
+        // This is the seam that silently reported healthy before FIX 1.
+        std::fs::write(runtime.join("startup-reconcile.required"), "recovery").expect("marker"); // expect-justified: test setup
+        let marker = super::sync_conflict_finding_from_state(&repo, &runtime, 0).expect("marker fires"); // expect-justified: test assertion
+        assert_eq!(marker.code, "sync_blocked");
+        assert_eq!(marker.severity, DoctorSeverity::Fatal);
+        assert!(marker.message.contains("startup-reconcile"), "the marker seam is named in the finding message");
+    }
+
+    /// D4 advisory: cumulative-since-daemon-start budget exhaustion past the threshold.
+    #[test]
+    fn doctor_sees_budget_pressure() {
+        use memory_substrate::config::DreamsConfig;
+
+        let state = crate::handlers::HandlerState::new();
+        let dreams = DreamsConfig { doctor_budget_exhausted_threshold: 2, ..DreamsConfig::default() };
+
+        // At-threshold (cumulative 2, not > 2): no finding.
+        state.recall.record_budget_exhausted("recent-memory");
+        state.recall.record_budget_exhausted("recent-memory");
+        assert!(super::budget_pressure_finding(&state, &dreams).is_none());
+
+        // One more pushes the cumulative count over the threshold.
+        state.recall.record_budget_exhausted("recent-memory");
+        let finding = super::budget_pressure_finding(&state, &dreams).expect("budget pressure fires"); // expect-justified: test assertion
+        assert_eq!(finding.code, "recall_budget_pressure");
+        assert_eq!(finding.severity, DoctorSeverity::Advisory);
+    }
+
+    /// Keystone: a write→commit→dream→observe state with NO active seam yields
+    /// `healthy: true` (D1–D4; capture/D5 excluded until v3.0-P2).
+    #[test]
+    fn doctor_foundation_loop_green() {
+        use std::process::Command;
+
+        use chrono::Duration;
+        use memory_substrate::config::{DreamsConfig, SubstrateConfig};
+        use memory_substrate::tree::bootstrap_repo_tree;
+
+        let dir = tempfile::tempdir().expect("tempdir"); // expect-justified: test setup
+        let repo = dir.path().join("repo");
+        let runtime = dir.path().join("runtime");
+        bootstrap_repo_tree(&repo).expect("bootstrap"); // expect-justified: test setup
+        std::fs::create_dir_all(&runtime).expect("runtime dir"); // expect-justified: test setup
+
+        // A dream landed (write→dream): one journal entry under the `me` scope.
+        let journal = repo.join("dreams/journal/me");
+        std::fs::create_dir_all(&journal).expect("journal dir"); // expect-justified: test setup
+        let entry = journal.join("2026-06-28.md");
+        std::fs::write(&entry, "# dream\n").expect("journal file"); // expect-justified: test setup
+
+        // write→commit: the substrate is committed, so D3 sees no uncommitted paths.
+        Command::new("git").args(["init"]).current_dir(&repo).output().expect("git init"); // expect-justified: test setup
+        Command::new("git").args(["add", "-A"]).current_dir(&repo).output().expect("git add"); // expect-justified: test setup
+        Command::new("git")
+            .args(["-c", "user.email=test@example.com", "-c", "user.name=test", "commit", "-m", "init"])
+            .current_dir(&repo)
+            .output()
+            .expect("git commit"); // expect-justified: test setup
+
+        let mtime: chrono::DateTime<chrono::Utc> =
+            std::fs::metadata(&entry).expect("meta").modified().expect("mtime").into(); // expect-justified: test setup
+        let now = mtime + Duration::hours(1); // recent dream, well within 48h
+        let dreams = DreamsConfig::default();
+        let substrate_cfg = SubstrateConfig::default();
+        let state = crate::handlers::HandlerState::new();
+
+        let mut findings = Vec::new();
+        findings.extend(super::dream_freshness_finding(&repo, &dreams, now)); // D1
+        findings.extend(super::sync_conflict_finding_from_state(&repo, &runtime, 0)); // D2
+        findings.extend(super::stale_uncommitted_finding(&repo, &substrate_cfg, now)); // D3
+        findings.extend(super::budget_pressure_finding(&state, &dreams)); // D4
+
+        assert!(findings.is_empty(), "a closed loop with no seam has no D1-D4 findings: {findings:?}");
+        assert!(
+            super::doctor_is_healthy(&findings, 1, 1),
+            "no active seam plus an authenticated harness yields healthy:true"
+        );
     }
 }

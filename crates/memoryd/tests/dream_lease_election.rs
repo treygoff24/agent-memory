@@ -122,6 +122,93 @@ fn local_clean_tree_lease_acquire_succeeds_without_origin() {
 }
 
 #[test]
+fn local_lease_grants_and_dreams_with_no_remote() {
+    // F2 end-to-end (spec §5 P0.2): on a no-remote install the dream half of the loop runs
+    // entirely locally. A real committed memory write stands in for F1's commit-on-write —
+    // the content a dream refines over — and the dream's lease transaction then acquires
+    // locally with zero network, recording the write-bot lease commit and leaving a clean tree.
+    //
+    // Scaffolding note: the three cognition passes and F1's post-dream flush are owned by
+    // Wave B (`cli/dream.rs` / `server.rs`) and need authenticated Claude/Codex CLIs, so they
+    // are not reachable from this test file. This drives the dream's full *lease* transaction —
+    // the only dream machinery reachable here without those — against a repo that already has
+    // committed memory to dream over, which is the faithful no-remote write→commit→grant→clean
+    // path this file can exercise.
+    let env = GitLeaseEnv::new_without_origin("dev_local");
+
+    // F1 stand-in: a committed memory write the dream would refine over (no push — no remote).
+    env.write("me/captured-note.md", "a captured memory to dream over\n");
+    env.git(["add", "."]);
+    env.git(["commit", "-m", "memory write before dream"]);
+    let memory_commit = env.git(["rev-parse", "HEAD"]);
+
+    // (a) The dream's lease transaction is granted locally, no network.
+    let acquired = acquire_manual_lease(LeaseAcquireRequest {
+        repo: env.repo.clone(),
+        runtime: env.runtime.clone(),
+        scope: "me".to_string(),
+        force: false,
+        now: fixed_now(),
+        lease_window_seconds: 3_600,
+        cli_used: Some("codex".to_string()),
+    })
+    .expect("no-remote install grants the dream lease locally");
+    assert_eq!(acquired.record.device, "dev_local");
+
+    // (c) The write-bot lease commit lands on top of the memory write, staging only the journal.
+    assert_eq!(env.git(["log", "-1", "--format=%s"]), "dream: lease acquire me on dev_local");
+    assert_eq!(env.git(["log", "-1", "--format=%an <%ae>"]), "memoryd lease-bot <noreply@memoryd.local>");
+    assert_eq!(
+        env.git(["show", "--name-only", "--format=", "HEAD"]).lines().collect::<Vec<_>>(),
+        ["leases/journal.lease"],
+        "the lease commit stages only the journal, never the user's memory write",
+    );
+    assert_ne!(env.git(["rev-parse", "HEAD"]), memory_commit, "the lease commit sits on top of the memory write");
+
+    // (b) The whole no-remote dream lease transaction leaves a clean tree.
+    assert_eq!(env.git(["status", "--short"]), "", "no-remote dream lease leaves a clean tree");
+}
+
+#[test]
+fn with_remote_acquire_is_byte_identical_to_no_origin_where_observable() {
+    // I-F2.1: with a remote configured, `fetch_origin`/`push` run for real, but the
+    // *observable* lease transaction is identical to the no-origin no-op path. Driving both
+    // here and asserting equal commit subject, identical single staged file, and identical
+    // write-bot identity makes that equivalence self-documenting, rather than implied across
+    // the separate with-remote and no-origin acquire tests.
+    let with_remote = GitLeaseEnv::new("dev_local");
+    let no_origin = GitLeaseEnv::new_without_origin("dev_local");
+
+    for env in [&with_remote, &no_origin] {
+        acquire_manual_lease(LeaseAcquireRequest {
+            repo: env.repo.clone(),
+            runtime: env.runtime.clone(),
+            scope: "me".to_string(),
+            force: false,
+            now: fixed_now(),
+            lease_window_seconds: 3_600,
+            cli_used: None,
+        })
+        .expect("lease acquire succeeds with and without a remote");
+    }
+
+    // Identical commit subject.
+    let subject = with_remote.git(["log", "-1", "--format=%s"]);
+    assert_eq!(subject, no_origin.git(["log", "-1", "--format=%s"]));
+    assert_eq!(subject, "dream: lease acquire me on dev_local");
+
+    // Identical single-file commit.
+    let with_remote_files = with_remote.git(["show", "--name-only", "--format=", "HEAD"]);
+    assert_eq!(with_remote_files, no_origin.git(["show", "--name-only", "--format=", "HEAD"]));
+    assert_eq!(with_remote_files.lines().collect::<Vec<_>>(), ["leases/journal.lease"]);
+
+    // Identical write-bot identity.
+    let identity = with_remote.git(["log", "-1", "--format=%an <%ae>"]);
+    assert_eq!(identity, no_origin.git(["log", "-1", "--format=%an <%ae>"]));
+    assert_eq!(identity, "memoryd lease-bot <noreply@memoryd.local>");
+}
+
+#[test]
 fn configured_origin_with_fetch_failure_still_unavailable() {
     // I-F2.4: "no remote by design" is not "broken remote". A *configured* origin
     // whose fetch fails must still surface lease_unavailable — never be silently

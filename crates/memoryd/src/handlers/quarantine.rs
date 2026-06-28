@@ -19,9 +19,10 @@ pub(crate) async fn quarantine_resolve_response(
         ));
     };
     // Refuse to certify a body that still carries git conflict markers as Active/Trusted.
-    // The CLI's --accept-* flags record operator intent in the audit trail but do NOT
-    // auto-select a side (the substrate has no side-swap API yet); the operator must
-    // resolve the file first, so a marker-bearing body means the conflict is unresolved.
+    // Resolution always certifies the current on-disk body as-is — the substrate has no
+    // side-swap API, so there is no "accept ours/theirs" auto-selection (the CLI exposes
+    // only the honest `--edited` "I fixed it by hand" path). A marker-bearing body
+    // therefore means the conflict is still unresolved.
     if has_git_conflict_markers(body) {
         return Err(HandlerError::invalid_request(
             "quarantined memory still contains git conflict markers (<<<<<<< / >>>>>>>); \
@@ -73,7 +74,7 @@ pub(crate) async fn quarantine_resolve_response(
         .await
         .map_err(HandlerError::substrate)?;
 
-    let remaining_blocking_conflicts = current_blocking_conflict_paths(substrate).await?;
+    let remaining_blocking_conflicts = blocking_conflict_paths(substrate).await?;
     prune_resolved_blocking_notifications(state, &remaining_blocking_conflicts);
 
     Ok(ResponsePayload::QuarantineResolve(QuarantineResolveResponse {
@@ -84,7 +85,39 @@ pub(crate) async fn quarantine_resolve_response(
     }))
 }
 
-async fn current_blocking_conflict_paths(substrate: &Substrate) -> Result<Vec<String>, HandlerError> {
+/// Live set of repo paths currently quarantined under the authoritative
+/// blocking-conflict predicate — `status == Quarantined OR trust_level ==
+/// Quarantined` — mirroring `reconcile::reindex_and_scan_conflicts` (the source
+/// of `startup_reconcile_report().blocking_conflicts`) and the index's
+/// `file_consistency_state` OR. Shared by the post-resolve rescan and the
+/// `status` handler's `conflicts_count` so the two never disagree.
+///
+/// `RecallIndexQuery` filters on `status` only and `RecallIndexRow` does not
+/// surface `trust_level`, so the predicate is assembled in two parts:
+///
+///   - the `status` arm is read live and index-only, reflecting in-daemon
+///     resolves and any new (always-status-setting) merge quarantine
+///     immediately;
+///   - the `trust_level` arm re-verifies the bounded startup
+///     `blocking_conflicts` set against current on-disk lifecycle, so a resolved
+///     entry drops out within the daemon lifetime.
+///
+/// Re-verifying the startup set (rather than re-scanning the whole corpus) is
+/// sound because a *trust-level-only* quarantine (`trust_level == Quarantined`
+/// while `status != Quarantined`) cannot be newly created during a daemon run:
+/// every quarantine-producing write — the merge driver's
+/// `set_quarantined_lifecycle` and `apply_lifecycle_take` — sets both `status`
+/// and `trust_level` together (caught by the `status` arm), and resolve clears
+/// both. A trust-level-only state can only enter via an external edit of a
+/// canonical file, which this device observes at the next `Substrate::open`
+/// (and is therefore already in `startup_reconcile_report().blocking_conflicts`).
+/// Keeping the rescan index-bounded honors the spec's "lightweight rescan".
+///
+/// The clean long-term form is a `trust_level` filter on `RecallIndexQuery` (the
+/// `memories.trust_level` column already exists), which would make the whole
+/// predicate a single index-only scan; that lives in `memory-substrate`.
+pub(crate) async fn blocking_conflict_paths(substrate: &Substrate) -> Result<Vec<String>, HandlerError> {
+    // status arm: live, index-only.
     let mut paths = substrate
         .query_recall_index_including_metadata_only(RecallIndexQuery {
             statuses: vec![MemoryStatus::Quarantined],
@@ -96,10 +129,35 @@ async fn current_blocking_conflict_paths(substrate: &Substrate) -> Result<Vec<St
         .map_err(HandlerError::substrate)?
         .into_iter()
         .map(|row| row.path.to_string())
-        .collect::<Vec<_>>();
-    paths.sort();
-    paths.dedup();
-    Ok(paths)
+        .collect::<BTreeSet<_>>();
+
+    // trust_level arm: re-verify the bounded startup candidate set.
+    for candidate in &substrate.startup_reconcile_report().blocking_conflicts {
+        if paths.contains(candidate) {
+            continue;
+        }
+        match substrate.read_path_envelope(&RepoPath::new(candidate.clone())).await {
+            Ok(envelope) => {
+                let frontmatter = &envelope.metadata.frontmatter;
+                if matches!(frontmatter.status, MemoryStatus::Quarantined)
+                    || matches!(frontmatter.trust_level, TrustLevel::Quarantined)
+                {
+                    paths.insert(candidate.clone());
+                }
+            }
+            // File gone since startup → the conflict no longer exists.
+            Err(memory_substrate::ReadError::NotFound(_)) => {}
+            // Any other read/parse failure: we cannot prove the conflict is
+            // resolved, so keep it blocking rather than risk false-clearing a
+            // still-valid notice (the next startup reconcile is the backstop).
+            Err(_) => {
+                paths.insert(candidate.clone());
+            }
+        }
+    }
+
+    // BTreeSet iterates sorted and deduped.
+    Ok(paths.into_iter().collect())
 }
 
 /// Whether `body` still contains git conflict open/close markers — an unresolved

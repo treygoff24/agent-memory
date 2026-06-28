@@ -804,6 +804,31 @@ fn observe_request_payload_accepts_spec_shaped_json_without_binding_fields() {
     assert_eq!(harness_version, None);
 }
 
+#[test]
+fn protocol_contract_doctor_finding_round_trips_severity() {
+    use memoryd::protocol::{DoctorFinding, DoctorSeverity};
+
+    // Findings are computed fresh server-side with an explicit severity (never
+    // persisted), so we only prove the field survives the wire round-trip for both
+    // variants and serializes as snake_case. `DoctorSeverity::default() == Advisory`
+    // is intentionally left as-is (only relevant to legacy JSON without the field).
+    for (severity, wire) in [(DoctorSeverity::Fatal, "fatal"), (DoctorSeverity::Advisory, "advisory")] {
+        let finding = DoctorFinding {
+            code: "sync_blocked".to_owned(),
+            message: "Sync is blocked".to_owned(),
+            repair: Some("memoryd quarantine list".to_owned()),
+            severity,
+        };
+
+        let value = serde_json::to_value(&finding).expect("doctor finding serializes");
+        assert_eq!(value["severity"], wire, "severity serializes as snake_case");
+
+        let decoded: DoctorFinding = serde_json::from_value(value).expect("doctor finding deserializes");
+        assert_eq!(decoded, finding);
+        assert_eq!(decoded.severity, severity, "severity survives the round-trip");
+    }
+}
+
 fn sample_trust_artifact() -> memoryd::trust_artifact::TrustArtifact {
     serde_json::from_value(serde_json::json!({
         "id": "mem_20260501_0123456789abcdef_000009",

@@ -2,7 +2,7 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
 use chrono::NaiveDate;
-use clap::{ArgAction, ArgGroup, Args, Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 
 use crate::protocol::{PeerActivityFormat, QuarantineResolutionMode, RealityCheckRequest, RequestPayload};
 
@@ -618,37 +618,30 @@ pub struct QuarantineListArgs {
 }
 
 #[derive(Debug, Args)]
-#[command(group(
-    ArgGroup::new("resolution")
-        .args(["accept_ours", "accept_theirs", "edited"])
-        .multiple(false)
-))]
 pub struct QuarantineResolveArgs {
     /// Unix socket path used to reach memoryd.
     #[arg(long)]
     pub socket: Option<PathBuf>,
     /// Memory id to resolve.
     pub id: String,
-    /// Accept this side's current quarantined content as the resolution.
-    #[arg(long)]
-    pub accept_ours: bool,
-    /// Accept the other side's current quarantined content as the resolution.
-    #[arg(long)]
-    pub accept_theirs: bool,
-    /// Mark the current file as manually edited and resolved.
+    /// Confirm the conflict was resolved by editing the canonical file by hand.
+    ///
+    /// This is the only supported resolution: the daemon promotes the current
+    /// on-disk body to Active/Trusted after checking it no longer carries git
+    /// conflict markers. Side-selection ("accept ours/theirs") is not yet
+    /// supported — the substrate has no side-swap API — so resolve the file
+    /// manually first, then run this.
     #[arg(long)]
     pub edited: bool,
 }
 
 impl QuarantineResolveArgs {
     pub fn mode(&self) -> QuarantineResolutionMode {
-        if self.accept_ours {
-            QuarantineResolutionMode::AcceptOurs
-        } else if self.accept_theirs {
-            QuarantineResolutionMode::AcceptTheirs
-        } else {
-            QuarantineResolutionMode::Edited
-        }
+        // Hand-resolution is the only mode the daemon can honor; `--edited` is the
+        // operator's explicit acknowledgement and does not change the (single)
+        // resolution path (its absence resolves identically — the daemon's
+        // conflict-marker check still refuses an unresolved body).
+        QuarantineResolutionMode::Edited
     }
 }
 

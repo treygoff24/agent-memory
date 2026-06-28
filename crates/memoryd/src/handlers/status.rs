@@ -15,10 +15,19 @@ pub(crate) async fn status_response(substrate: &Substrate, state: &HandlerState)
                     None
                 }
             };
-            // Blocking conflicts are quarantined memories; read the LIVE count so an
-            // in-daemon `quarantine resolve` is reflected immediately (consistent with
-            // the pruned notification), not the stale `Substrate::open` reconcile snapshot.
-            let conflicts_count = u32::try_from(status_count(&counts, MemoryStatus::Quarantined)).ok();
+            // Blocking conflicts are memories quarantined under the authoritative OR
+            // predicate (status == Quarantined OR trust_level == Quarantined). Use the
+            // same live source as the post-resolve rescan so the count and the
+            // notification queue never disagree: a status-only count under-reports
+            // trust-level-only quarantines (and the count stays live — in-daemon
+            // resolves are reflected — because the helper re-verifies on-disk state).
+            let conflicts_count = match super::quarantine::blocking_conflict_paths(substrate).await {
+                Ok(paths) => u32::try_from(paths.len()).ok(),
+                Err(error) => {
+                    dashboard_warnings.push(format!("conflicts_count_unavailable: {}", bounded(&error.message, 160)));
+                    None
+                }
+            };
             (index_stats, Some(live_review_queue_counts(&counts)), conflicts_count)
         }
         Err(error) => {

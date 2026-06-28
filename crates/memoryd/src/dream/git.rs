@@ -56,7 +56,19 @@ impl LeaseError {
 /// Tests script this trait directly so lease retry behavior can be proven
 /// without network remotes or racy real repositories.
 pub trait LeaseGit {
-    fn fetch_origin(&mut self, repo: &Path) -> Result<(), LeaseError>;
+    /// Probe whether an origin remote is configured. Called once per acquire attempt /
+    /// release transaction; the result is threaded into [`LeaseGit::fetch_origin`] and
+    /// [`LeaseGit::push`] so a single probe covers the whole attempt. Goes through the
+    /// trait (rather than the free `origin_remote_configured`) so scripted tests can drive
+    /// it without a real repo. `Ok(false)` means "no origin"; a probe *failure* is `Err`
+    /// and must never be collapsed into "no remote" (I-F2.4).
+    fn origin_configured(&mut self, repo: &Path) -> Result<bool, LeaseError>;
+    /// Fetch from origin when a remote is configured. `has_origin` is the caller's
+    /// single per-attempt [`LeaseGit::origin_configured`] probe result, threaded in so one
+    /// `git remote` subprocess covers the whole attempt — fetch, the stale-lease eviction
+    /// discriminator, and push. A probe *failure* surfaces as `Err` at the caller before
+    /// this is reached, so it is never collapsed into "no remote" (I-F2.4).
+    fn fetch_origin(&mut self, repo: &Path, has_origin: bool) -> Result<(), LeaseError>;
     /// Return the list of paths in the working tree that count as "dirty user work" —
     /// anything `git status --porcelain --untracked-files=all` reports that is not
     /// `leases/journal.lease`. Empty list means the tree is clean for lease purposes.
@@ -64,7 +76,9 @@ pub trait LeaseGit {
     /// path list in operator-visible errors so the offending paths are diagnosable.
     fn dirty_user_work_paths(&mut self, repo: &Path) -> Result<Vec<String>, LeaseError>;
     fn commit_lease(&mut self, repo: &Path, commit: &LeaseCommit<'_>) -> Result<(), LeaseError>;
-    fn push(&mut self, repo: &Path) -> Result<(), LeaseError>;
+    /// Push to origin when a remote is configured. `has_origin` is the same per-attempt
+    /// probe result threaded into [`LeaseGit::fetch_origin`] (see there).
+    fn push(&mut self, repo: &Path, has_origin: bool) -> Result<(), LeaseError>;
     fn rollback_failed_lease_attempt(&mut self, repo: &Path) -> Result<(), LeaseError>;
 }
 
@@ -72,11 +86,17 @@ pub trait LeaseGit {
 pub struct NativeLeaseGit;
 
 impl LeaseGit for NativeLeaseGit {
-    fn fetch_origin(&mut self, repo: &Path) -> Result<(), LeaseError> {
+    fn origin_configured(&mut self, repo: &Path) -> Result<bool, LeaseError> {
+        origin_remote_configured(repo)
+    }
+
+    fn fetch_origin(&mut self, repo: &Path, has_origin: bool) -> Result<(), LeaseError> {
         // Local-first (spec §2/F2): with no origin remote there is nothing to fetch,
         // so the lease election runs entirely locally. A *configured* remote that
-        // fails still errors below (I-F2.4) — only the no-remote case no-ops.
-        if !origin_remote_configured(repo)? {
+        // fails still errors below (I-F2.4) — only the no-remote case no-ops. `has_origin`
+        // is the caller's once-per-attempt probe; a probe *failure* already surfaced there
+        // as `Err`, so it is never silently collapsed into "no remote".
+        if !has_origin {
             return Ok(());
         }
         run_git(repo, &["fetch", "origin"]).map(|_| ()).map_err(|err| LeaseError::unavailable(err.to_string()))
@@ -94,11 +114,12 @@ impl LeaseGit for NativeLeaseGit {
         }
     }
 
-    fn push(&mut self, repo: &Path) -> Result<(), LeaseError> {
+    fn push(&mut self, repo: &Path, has_origin: bool) -> Result<(), LeaseError> {
         // Local-first (spec §2/F2): no origin remote → the local commit is the
         // durable record, so the push no-ops. A configured remote still pushes
-        // and surfaces failures (I-F2.4).
-        if !origin_remote_configured(repo)? {
+        // and surfaces failures (I-F2.4). `has_origin` is threaded from the caller's
+        // single per-attempt probe (see `fetch_origin`).
+        if !has_origin {
             return Ok(());
         }
         push(repo).map_err(|err| LeaseError::unavailable(err.to_string()))
@@ -145,7 +166,14 @@ impl ScriptedLeaseGit {
 }
 
 impl LeaseGit for ScriptedLeaseGit {
-    fn fetch_origin(&mut self, _repo: &Path) -> Result<(), LeaseError> {
+    fn origin_configured(&mut self, _repo: &Path) -> Result<bool, LeaseError> {
+        // Scripted lease tests exercise retry/race logic against an assumed remote, so the
+        // probe reports "configured" and lets the scripted fetch/push outcomes drive the
+        // run. No-remote behavior is covered separately by NativeLeaseGit + real repos.
+        Ok(true)
+    }
+
+    fn fetch_origin(&mut self, _repo: &Path, _has_origin: bool) -> Result<(), LeaseError> {
         self.fetch_calls += 1;
         self.fetch_results.pop_front().unwrap_or(Ok(())).map_err(LeaseError::unavailable)
     }
@@ -162,7 +190,7 @@ impl LeaseGit for ScriptedLeaseGit {
         Ok(())
     }
 
-    fn push(&mut self, _repo: &Path) -> Result<(), LeaseError> {
+    fn push(&mut self, _repo: &Path, _has_origin: bool) -> Result<(), LeaseError> {
         self.push_calls += 1;
         self.push_results.pop_front().unwrap_or(Ok(())).map_err(LeaseError::unavailable)
     }

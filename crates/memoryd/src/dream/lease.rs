@@ -10,7 +10,7 @@ use memory_substrate::config::load_local_device_config;
 use memory_substrate::git::LeaseCommitAction;
 use serde::{Deserialize, Serialize};
 
-use crate::dream::git::{origin_remote_configured, LeaseGit, NativeLeaseGit};
+use crate::dream::git::{LeaseGit, NativeLeaseGit};
 use crate::substrate_git_lock::acquire_substrate_git_lock;
 // `LeaseCommit` and `LeaseError` are defined alongside the `LeaseGit` trait in
 // `crate::dream::git` (the git layer is their producer). Re-exported here so the
@@ -129,7 +129,12 @@ pub fn acquire_manual_lease_with_git(
     let lease_path = request.repo.join("leases/journal.lease");
 
     for attempt in 0..=MAX_PUSH_RETRIES {
-        git.fetch_origin(&request.repo)?;
+        // One origin probe per attempt, threaded to fetch, the stale-lease eviction
+        // discriminator, and push — these once spawned up to three separate `git remote`
+        // subprocesses per attempt. Goes through the trait so scripted tests drive it; a
+        // probe failure is still `Err` here (I-F2.4), never collapsed into "no remote".
+        let has_origin = git.origin_configured(&request.repo)?;
+        git.fetch_origin(&request.repo, has_origin)?;
         let mut evict_stale_self_lease = false;
         if !request.force {
             if let Some(active) = active_lease(&lease_path, &request.scope, request.now)? {
@@ -150,9 +155,8 @@ pub fn acquire_manual_lease_with_git(
                 // the dream under a lease that may expire mid-run, so evict it:
                 // supersede with a fresh full-window acquire. The eviction append is
                 // deferred to *after* the dirty-tree gate below, so a dirty-tree abort
-                // never leaves an
-                // uncommitted release record stranded in the journal.
-                if origin_remote_configured(&request.repo)? {
+                // never leaves an uncommitted release record stranded in the journal.
+                if has_origin {
                     return Ok(LeaseAcquired { record: active, report: stub_report(&request) });
                 }
                 evict_stale_self_lease = true;
@@ -176,7 +180,7 @@ pub fn acquire_manual_lease_with_git(
             &request.repo,
             &LeaseCommit { action: LeaseCommitAction::Acquire, scope: &request.scope, device_id: &device_id },
         )?;
-        match git.push(&request.repo) {
+        match git.push(&request.repo, has_origin) {
             Ok(()) => return Ok(LeaseAcquired { report: stub_report(&request), record }),
             Err(err) => {
                 git.rollback_failed_lease_attempt(&request.repo)?;
@@ -200,7 +204,10 @@ pub fn release_manual_lease_with_git(git: &mut impl LeaseGit, request: LeaseAcqu
     let device_id = load_device_id(&request.runtime)?;
     let lease_path = request.repo.join("leases/journal.lease");
 
-    git.fetch_origin(&request.repo)?;
+    // One probe per release transaction, threaded to fetch and push (same dedup as
+    // acquire; through the trait, a probe failure is still `Err` here, not "no remote" — I-F2.4).
+    let has_origin = git.origin_configured(&request.repo)?;
+    git.fetch_origin(&request.repo, has_origin)?;
     let dirty = git.dirty_user_work_paths(&request.repo)?;
     if !dirty.is_empty() {
         return Err(LeaseError::DirtyTree { message: dirty_tree_message(&dirty) });
@@ -212,7 +219,7 @@ pub fn release_manual_lease_with_git(git: &mut impl LeaseGit, request: LeaseAcqu
         &request.repo,
         &LeaseCommit { action: LeaseCommitAction::Release, scope: &request.scope, device_id: &device_id },
     )?;
-    match git.push(&request.repo) {
+    match git.push(&request.repo, has_origin) {
         Ok(()) => Ok(()),
         Err(err) => {
             git.rollback_failed_lease_attempt(&request.repo)?;

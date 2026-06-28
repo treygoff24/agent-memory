@@ -184,6 +184,81 @@ async fn quarantine_resolve_clears_sync_blocked_without_restart() {
     shutdown(shutdown_tx, server, &socket).await;
 }
 
+#[tokio::test]
+async fn trust_level_only_quarantine_is_counted_and_survives_other_resolve() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let initialized = Substrate::init(
+        roots.clone(),
+        InitOptions { force_unsafe_durability: true, device_id: Some("dev_trustquarantine".to_string()) },
+    )
+    .await
+    .expect("substrate init");
+    drop(initialized);
+
+    // Two quarantines created pre-open so the startup reconcile (OR predicate)
+    // records both: one status-quarantined (the one we will resolve) and one
+    // quarantined ONLY by `trust_level` with a non-quarantined `status` — the case
+    // a status-only scan/count misses.
+    let status_id = "mem_20260508_a1b2c3d4e5f60718_000010";
+    let trust_id = "mem_20260508_a1b2c3d4e5f60718_000011";
+    let status_path = write_quarantined_memory(&roots, status_id);
+    let trust_path = write_trust_level_only_quarantined_memory(&roots, trust_id);
+
+    let substrate = Substrate::open(roots).await.expect("reopen with quarantined memories");
+    let mut expected = vec![status_path.clone(), trust_path.clone()];
+    expected.sort();
+    assert_eq!(substrate.startup_reconcile_report().blocking_conflicts, expected);
+
+    let socket = unique_socket_path("notify", "trust-quarantine");
+    let (shutdown_tx, server) = spawn_daemon(&socket, substrate);
+    wait_for_socket(&socket).await;
+
+    // Both blocking-conflict notices fan out, and the trust-level-only quarantine
+    // is counted (FIX 2a): a status-only count would report 1, not 2.
+    wait_for_passive_notification(&socket, status_path.as_str()).await;
+    let before = wait_for_passive_notification(&socket, trust_path.as_str()).await;
+    assert!(
+        before.passive_notifications.iter().any(|notification| notification.message.contains(&trust_path)),
+        "{:#?}",
+        before.passive_notifications
+    );
+    assert_eq!(before.conflicts_count, Some(2), "{before:#?}");
+
+    // Resolve the DIFFERENT (status-quarantined) memory.
+    let response = client::request(
+        &socket,
+        "trust-quarantine-resolve",
+        RequestPayload::QuarantineResolve { id: status_id.to_owned(), mode: QuarantineResolutionMode::Edited },
+    )
+    .await
+    .expect("quarantine resolve reaches daemon");
+    match response.result {
+        ResponseResult::Success(ResponsePayload::QuarantineResolve(resolve)) => {
+            // Only the trust-level-only quarantine remains blocking.
+            assert_eq!(resolve.remaining_blocking_conflicts, vec![trust_path.clone()], "{resolve:#?}");
+        }
+        other => panic!("expected quarantine resolve response, got {other:?}"),
+    }
+
+    // FIX 2b: resolving the other quarantine must NOT false-clear the
+    // trust-level-only "Sync is blocked" notice, and the count drops to exactly 1.
+    let after = wait_for_conflicts_count(&socket, 1).await;
+    assert_eq!(after.conflicts_count, Some(1), "{after:#?}");
+    assert!(
+        after.passive_notifications.iter().any(|notification| notification.message.contains(&trust_path)),
+        "trust-level-only sync-blocked notice was false-cleared: {:#?}",
+        after.passive_notifications
+    );
+    assert!(
+        after.passive_notifications.iter().all(|notification| !notification.message.contains(&status_path)),
+        "resolved quarantine's notice should be pruned: {:#?}",
+        after.passive_notifications
+    );
+
+    shutdown(shutdown_tx, server, &socket).await;
+}
+
 #[test]
 fn trigger_registry_maps_dogfood_kinds_to_protocol_events() {
     assert_eq!(
@@ -243,6 +318,25 @@ fn write_quarantined_memory(roots: &Roots, id: &str) -> String {
     let disk_path = roots.repo.join(path.as_path());
     std::fs::create_dir_all(disk_path.parent().expect("memory path has parent")).expect("create memory dir");
     std::fs::write(&disk_path, text).expect("write quarantined memory");
+    path.as_str().to_string()
+}
+
+/// Write a memory quarantined ONLY by `trust_level`, with a non-quarantined
+/// `status`. Uses `(Candidate, Quarantined)` — a valid lifecycle pair (`frontmatter::
+/// validate`: a `Candidate` status permits `Quarantined` trust; an `Active` one does
+/// NOT, so do not "simplify" this to `Active`). The authoritative OR predicate
+/// (`reconcile.rs`) treats it as a blocking conflict, but a status-only query/count
+/// misses it (`status != Quarantined`).
+fn write_trust_level_only_quarantined_memory(roots: &Roots, id: &str) -> String {
+    let mut memory = sample_memory(id);
+    memory.frontmatter.status = MemoryStatus::Candidate;
+    memory.frontmatter.trust_level = TrustLevel::Quarantined;
+    memory.frontmatter.merge_diagnostics = Some(serde_json::json!({"reason": "blocking merge conflict"}));
+    let path = memory.path.clone().expect("memory has path");
+    let text = frontmatter::serialize_document(&memory).expect("serialize trust-level quarantined memory");
+    let disk_path = roots.repo.join(path.as_path());
+    std::fs::create_dir_all(disk_path.parent().expect("memory path has parent")).expect("create memory dir");
+    std::fs::write(&disk_path, text).expect("write trust-level quarantined memory");
     path.as_str().to_string()
 }
 
@@ -337,6 +431,20 @@ async fn wait_for_no_passive_notification(socket: &Path, needle: &str) -> Status
     loop {
         let status = status(socket).await;
         if status.passive_notifications.iter().all(|notification| !notification.message.contains(needle)) {
+            return status;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return status;
+        }
+        sleep(StdDuration::from_millis(25)).await;
+    }
+}
+
+async fn wait_for_conflicts_count(socket: &Path, target: u32) -> StatusResponse {
+    let deadline = tokio::time::Instant::now() + StdDuration::from_secs(2);
+    loop {
+        let status = status(socket).await;
+        if status.conflicts_count == Some(target) {
             return status;
         }
         if tokio::time::Instant::now() >= deadline {

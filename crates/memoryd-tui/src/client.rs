@@ -40,7 +40,7 @@ impl DaemonClient {
                         id: item.id,
                         title: item.summary,
                         namespace: "review".to_string(),
-                        status: item.status,
+                        status: item.status.as_str().to_string(),
                         reason: item.reason,
                     })
                     .collect();

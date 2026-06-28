@@ -32,23 +32,37 @@ pub(crate) async fn dream_now_response(
     let scope = crate::dream::scope::DreamScope::parse(&scope).map_err(HandlerError::from_dream)?;
     validate_dream_cli_override(cli_override.as_deref())?;
     let now = chrono::Utc::now();
+    let repo = substrate.roots().repo.clone();
+    let runtime = substrate.roots().runtime.clone();
     // Pre-dream flush (F1): commit pending daemon substrate writes before acquiring
     // the lease, so the lease dirty-tree guard does not block on the daemon's own
     // uncommitted writes (Wall 2). The CLI dream paths do the same; this in-daemon
     // trigger must too or a socket-driven `dream now` wedges whenever the commit
     // worker has pending writes.
-    crate::substrate_git_lock::flush_substrate_writes(&substrate.roots().repo, &substrate.roots().runtime)
-        .map_err(HandlerError::substrate)?;
-    let acquired = crate::dream::lease::acquire_manual_lease(crate::dream::lease::LeaseAcquireRequest {
-        repo: substrate.roots().repo.clone(),
-        runtime: substrate.roots().runtime.clone(),
+    //
+    // `flush_substrate_writes` takes the repo-level flock and shells out to `git`;
+    // this handler is reached via a per-connection `tokio::spawn`, so calling it
+    // inline would park a runtime worker for the whole commit. Run it — and the
+    // lease acquire/release and post-flush below — on the blocking pool.
+    run_blocking({
+        let repo = repo.clone();
+        let runtime = runtime.clone();
+        move || crate::substrate_git_lock::flush_substrate_writes(&repo, &runtime)
+    })
+    .await
+    .map_err(HandlerError::substrate)?;
+    let acquire_request = crate::dream::lease::LeaseAcquireRequest {
+        repo: repo.clone(),
+        runtime: runtime.clone(),
         scope: scope.as_str(),
         force,
         now,
         lease_window_seconds: u64::from(config.synced.dreams.lease_window_seconds),
         cli_used: cli_override.clone(),
-    })
-    .map_err(HandlerError::from_lease)?;
+    };
+    let acquired = run_blocking(move || crate::dream::lease::acquire_manual_lease(acquire_request))
+        .await
+        .map_err(HandlerError::from_lease)?;
 
     let result = async {
         let build = crate::dream::orchestration::build_dream_run(
@@ -82,23 +96,49 @@ pub(crate) async fn dream_now_response(
     .await;
 
     // Post-dream flush (F1): commit the dream's own pass-2 candidate writes before
-    // returning or releasing the lease, on success AND error.
-    let post_flush =
-        crate::substrate_git_lock::flush_substrate_writes(&substrate.roots().repo, &substrate.roots().runtime);
+    // returning or releasing the lease, on success AND error. Blocking flock + git,
+    // so it runs on the blocking pool too — computed BEFORE the on-error release so
+    // the candidate writes land regardless of how the run ended.
+    let post_flush = run_blocking({
+        let repo = repo.clone();
+        let runtime = runtime.clone();
+        move || crate::substrate_git_lock::flush_substrate_writes(&repo, &runtime)
+    })
+    .await;
     if result.is_err() {
-        let _ = crate::dream::lease::release_manual_lease(crate::dream::lease::LeaseAcquireRequest {
-            repo: substrate.roots().repo.clone(),
-            runtime: substrate.roots().runtime.clone(),
+        let release_request = crate::dream::lease::LeaseAcquireRequest {
+            repo: repo.clone(),
+            runtime: runtime.clone(),
             scope: scope.as_str(),
             force: false,
             now: chrono::Utc::now(),
             lease_window_seconds: u64::from(config.synced.dreams.lease_window_seconds),
             cli_used: cli_override,
-        });
+        };
+        let _ = run_blocking(move || crate::dream::lease::release_manual_lease(release_request)).await;
     }
     post_flush.map_err(HandlerError::substrate)?;
 
     result
+}
+
+/// Run a blocking substrate-git helper off the async runtime.
+///
+/// The flush/lease helpers take the repo-level flock and shell out to `git`;
+/// [`dream_now_response`] is reached via a per-connection `tokio::spawn`, so calling
+/// them inline would park a runtime worker for the whole commit. `spawn_blocking`
+/// moves the work to the blocking pool. A `spawn_blocking` task is never
+/// runtime-cancelled, so a `JoinError` here can only be a panic — resume it on the
+/// async task to preserve the exact propagation the inline call had.
+async fn run_blocking<T, F>(work: F) -> T
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    match tokio::task::spawn_blocking(work).await {
+        Ok(value) => value,
+        Err(join_error) => std::panic::resume_unwind(join_error.into_panic()),
+    }
 }
 
 fn dream_error_to_handler(error: crate::dream::types::DreamError) -> HandlerError {

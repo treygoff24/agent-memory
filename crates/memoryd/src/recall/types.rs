@@ -198,7 +198,7 @@ pub struct RecallOmission {
 #[serde(rename_all = "snake_case")]
 pub enum OmissionReason {
     BudgetExhausted,
-    /// Dropped by the passive hook's fixed entry cap ([`crate::recall::types::HOOK_RECENT_MEMORY_MAX_ENTRIES`]),
+    /// Dropped by the passive hook's fixed entry cap (`HOOK_RECENT_MEMORY_MAX_ENTRIES`),
     /// distinct from token-`BudgetExhausted` so it does not inflate the
     /// budget-exhaustion metric.
     HookEntryCap,

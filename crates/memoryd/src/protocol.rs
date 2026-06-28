@@ -492,20 +492,25 @@ pub struct ConflictsListResponse {
     pub conflicts: Vec<ConflictSummary>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
+// No `ValueEnum`/`#[clap]` derive: this is never used as a clap value arg — the
+// CLI resolves via a `--edited` bool flag (see `cli::QuarantineResolveArgs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[clap(rename_all = "kebab-case")]
 pub enum QuarantineResolutionMode {
-    AcceptOurs,
-    AcceptTheirs,
+    /// The operator resolved the conflict by editing the canonical file by hand
+    /// and is certifying the current on-disk body as the resolution.
+    ///
+    /// This is the only mode the daemon can honestly perform: it promotes the
+    /// current file to Active/Trusted after a conflict-marker check. True
+    /// "accept ours"/"accept theirs" side-selection needs a substrate side-swap
+    /// API that does not exist yet, so those modes were removed rather than
+    /// advertise flags that silently took this same path.
     Edited,
 }
 
 impl QuarantineResolutionMode {
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::AcceptOurs => "accept_ours",
-            Self::AcceptTheirs => "accept_theirs",
             Self::Edited => "edited",
         }
     }

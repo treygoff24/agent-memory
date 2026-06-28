@@ -968,9 +968,18 @@ async fn dreaming_protocol_acquires_lease_before_writing_pipeline_outputs() {
         .expect("daemon dream writes lease journal");
     assert!(lease_text.contains("\"device\":\"dev_handlercontract\""));
     assert!(lease_text.contains("\"scope\":\"me\""));
+    // F1's post-dream flush commits the dream's pipeline outputs ON TOP of the
+    // lease-acquire commit, so HEAD is that output flush and its parent is the lease
+    // acquire — which is exactly what proves the lease was acquired *before* the dream
+    // wrote (and committed) its pipeline outputs.
+    let recent = git(substrate.roots().repo.as_path(), ["log", "--format=%s", "-n", "2"]);
+    let mut recent = recent.lines();
+    let head = recent.next().unwrap_or_default();
+    let parent = recent.next().unwrap_or_default();
+    assert!(head.starts_with("substrate: commit"), "HEAD should be the post-dream output flush (F1), got: {head:?}");
     assert_eq!(
-        git(substrate.roots().repo.as_path(), ["log", "-1", "--format=%s"]),
-        "dream: lease acquire me on dev_handlercontract"
+        parent, "dream: lease acquire me on dev_handlercontract",
+        "the lease must be acquired before the dream's pipeline outputs are committed"
     );
     let journal = report.pass_1.output_path.as_deref().expect("journal output path");
     assert!(substrate.roots().repo.join(journal).is_file(), "journal should be written at {journal}");

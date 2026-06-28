@@ -84,7 +84,7 @@ impl From<ReviewQueueItemResponse> for InboxItem {
             title: item.summary,
             namespace: "review".to_string(),
             reason: item.reason,
-            age_label: item.status,
+            age_label: item.status.as_str().to_string(),
         }
     }
 }
