@@ -151,8 +151,8 @@ async fn search_and_get_return_bounded_protocol_responses_from_substrate() {
     };
     let provenance = get_with_provenance.provenance.expect("provenance included");
     assert_eq!(provenance.path.as_deref(), memory.path.as_ref().map(|path| path.as_str()));
-    assert_eq!(provenance.source_kind, SourceKind::Import);
-    assert_eq!(provenance.author_kind, AuthorKind::System);
+    assert_eq!(provenance.source_kind, SourceKind::Import.as_db_str());
+    assert_eq!(provenance.author_kind, AuthorKind::System.as_db_str());
 }
 
 #[tokio::test]

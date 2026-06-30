@@ -381,7 +381,7 @@ mod tests {
             bootstrap_repo_tree(&repo).expect("bootstrap repo");
             std::fs::write(
                 repo.join("config.yaml"),
-                "schema_version: 1\nactive_embedding:\n  provider: synthetic\n  model_ref: stream-a-test\n  dimension: 32\nsubstrate:\n  commit_debounce_ms: 10\n",
+                "schema_version: 1\nactive_embedding:\n  provider: synthetic\n  model_ref: stream-a-test\n  dimension: 32\nsubstrate:\n  commit_debounce_ms: 500\n",
             )
             .expect("config");
             command(&repo, "git", ["init"]);

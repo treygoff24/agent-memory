@@ -11,6 +11,7 @@ every Bash call. Run `python3 guard-cargo-scope.py --self-test` to check the mat
 """
 import json
 import re
+import shlex
 import sys
 
 SEP = re.compile(r"&&|\|\||;|\n|\|")
@@ -19,6 +20,8 @@ LEAD_ENV = re.compile(
 )
 SCOPE = ("-p", "--package", "--manifest-path")
 HEAVY = ("clippy", "test")  # cargo subcommands whose workspace form spawns the swarm
+CARGO_OPTIONS_WITH_VALUE = {"--config", "--manifest-path", "--target-dir", "--color"}
+NEXTEST_OPTIONS_WITH_VALUE = {"--profile", "--config-file", "--target-dir", "--workspace-remap"}
 
 REASON = (
     "Blocked: whole-workspace `cargo {sub}` spawns one compiler process per crate "
@@ -38,33 +41,37 @@ def offending_subcommand(command: str):
         while seg != prev:
             prev = seg
             seg = LEAD_ENV.sub("", seg)
-        toks = seg.split()
+        try:
+            toks = shlex.split(seg)
+        except ValueError:
+            toks = seg.split()
         if not toks:
             continue
         if toks[0] == "cargo":
-            rest = toks[1:]
+            raw_rest = toks[1:]
         elif toks[0] == "cargo-nextest":
-            rest = toks  # treat `cargo-nextest run ...` like `cargo nextest run ...`
-            rest[0] = "nextest"
+            raw_rest = toks[:]  # treat `cargo-nextest run ...` like `cargo nextest run ...`
+            raw_rest[0] = "nextest"
         else:
             continue
-        # first non-flag/non-toolchain token is the subcommand
-        sub = next((t for t in rest if not t.startswith("-") and not t.startswith("+")), None)
+        rest = strip_options(raw_rest, CARGO_OPTIONS_WITH_VALUE, skip_toolchain=True)
+        sub = rest[0] if rest else None
         if sub == "nextest":
-            after = rest[rest.index("nextest") + 1:]
-            run = next((t for t in after if not t.startswith("-")), None)
+            after = strip_options(rest[1:], NEXTEST_OPTIONS_WITH_VALUE)
+            run = after[0] if after else None
             if run != "run":
                 continue
             sub = "test"
         elif sub not in HEAVY:
             continue
-        if is_scoped(rest):
+        if is_scoped(raw_rest):
             continue  # scoped → fine
         return sub
     return None
 
 
 def is_scoped(tokens: list[str]) -> bool:
+    tokens = tokens[: tokens.index("--")] if "--" in tokens else tokens
     for scope in SCOPE:
         if scope in tokens:
             return True
@@ -72,6 +79,24 @@ def is_scoped(tokens: list[str]) -> bool:
             if token.startswith(f"{scope}=") or (scope == "-p" and token.startswith("-p") and token != "-p"):
                 return True
     return False
+
+
+def strip_options(tokens: list[str], value_options: set[str], *, skip_toolchain: bool = False) -> list[str]:
+    rest = list(tokens)
+    if skip_toolchain and rest and rest[0].startswith("+"):
+        rest = rest[1:]
+    index = 0
+    while index < len(rest):
+        token = rest[index]
+        if token == "--":
+            return []
+        if not token.startswith("-"):
+            return rest[index:]
+        option = token.split("=", 1)[0]
+        index += 1
+        if option in value_options and "=" not in token and index < len(rest):
+            index += 1
+    return []
 
 
 def _emit_deny(reason: str):
@@ -117,9 +142,14 @@ def _self_test():
         "env RUST_LOG=debug cargo test --workspace",
         "taskpolicy -b cargo test --workspace",
         "cargo +stable test --workspace",
+        "cargo --locked test --workspace",
+        "cargo --config net.git-fetch-with-cli=true test",
+        "cargo --config build.jobs=1 clippy --workspace",
+        "cargo test -- -p memoryd",
         "cargo +nightly clippy",
         "cd crates && cargo clippy",
         "cargo build --workspace && cargo clippy",
+        "cargo nextest --profile ci run --workspace",
     ]
     allow = [
         "cargo clippy -p memoryd --all-targets -- -D warnings",
@@ -128,6 +158,10 @@ def _self_test():
         "cargo test -pmemoryd",
         "cargo test --package=memoryd",
         "cargo clippy --manifest-path=crates/memoryd/Cargo.toml",
+        "cargo --manifest-path crates/memoryd/Cargo.toml test",
+        "cargo --manifest-path=crates/memoryd/Cargo.toml clippy",
+        "cargo --locked test -p memoryd -- --test-threads=2",
+        "cargo --config build.jobs=1 clippy -p memoryd",
         "cargo check -p memoryd",
         "cargo check --workspace",            # check compiles but execs no swarm; allowed
         "cargo build --workspace --locked",   # docs recommend this for lockfile work

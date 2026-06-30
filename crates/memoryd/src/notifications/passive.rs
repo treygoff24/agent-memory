@@ -27,29 +27,35 @@ impl PassiveQueue {
         Self::default()
     }
 
-    pub fn append(&self, message: impl Into<String>) {
-        self.append_with_key(message, None);
+    pub fn append(&self, message: impl Into<String>) -> bool {
+        self.append_with_key(message, None)
     }
 
-    pub fn append_at(&self, message: impl Into<String>, created_at: DateTime<Utc>) {
-        self.append_at_with_key(message, created_at, None);
+    pub fn append_at(&self, message: impl Into<String>, created_at: DateTime<Utc>) -> bool {
+        self.append_at_with_key(message, created_at, None)
     }
 
-    pub fn append_with_key(&self, message: impl Into<String>, dedup_key: Option<String>) {
-        self.append_at_with_key(message, Utc::now(), dedup_key);
+    pub fn append_with_key(&self, message: impl Into<String>, dedup_key: Option<String>) -> bool {
+        self.append_at_with_key(message, Utc::now(), dedup_key)
     }
 
-    pub fn append_at_with_key(&self, message: impl Into<String>, created_at: DateTime<Utc>, dedup_key: Option<String>) {
+    pub fn append_at_with_key(
+        &self,
+        message: impl Into<String>,
+        created_at: DateTime<Utc>,
+        dedup_key: Option<String>,
+    ) -> bool {
         let mut entries = self.inner.lock().expect("passive notification queue lock poisoned");
         if let Some(key) = dedup_key.as_deref() {
             if entries.iter().any(|entry| entry.dedup_key.as_deref() == Some(key)) {
-                return;
+                return false;
             }
         }
         if entries.len() == PASSIVE_QUEUE_CAPACITY {
             entries.pop_front();
         }
         entries.push_back(PassiveNotification { message: message.into(), created_at, dedup_key });
+        true
     }
 
     pub fn clear_by_key(&self, key: &str) {

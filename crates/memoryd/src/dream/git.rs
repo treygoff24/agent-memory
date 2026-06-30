@@ -1,7 +1,9 @@
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::path::Path;
 
-use memory_substrate::git::{commit_lease_file, push, run_git, CommitOutcome, LeaseCommitAction};
+use memory_substrate::git::{
+    commit_lease_file, push, run_git, uncommitted_substrate_paths, CommitOutcome, LeaseCommitAction,
+};
 use thiserror::Error;
 
 /// A single lease commit to apply to the journal. Lives next to the
@@ -224,30 +226,27 @@ pub(crate) fn origin_remote_configured(repo: &Path) -> Result<bool, LeaseError> 
 fn dirty_user_work_paths(repo: &Path) -> Result<Vec<String>, LeaseError> {
     let output = run_git(repo, &["status", "--porcelain=v1", "--untracked-files=all"])
         .map_err(|err| LeaseError::unavailable(err.to_string()))?;
+    let daemon_managed_paths = uncommitted_substrate_paths(repo)
+        .map_err(|err| LeaseError::unavailable(err.to_string()))?
+        .into_iter()
+        .collect::<HashSet<_>>();
     Ok(output
         .lines()
         .filter_map(status_path)
-        .filter(|path| !is_substrate_managed_path(path))
+        .filter(|path| !is_lease_file(path))
+        .filter(|path| !is_runtime_managed_path(path))
+        .filter(|path| !daemon_managed_paths.contains(*path))
         .map(str::to_string)
         .collect())
 }
 
-/// Paths the substrate, daemon runtime, or lease subsystem manages on the user's behalf —
-/// the dirty-tree check refuses lease acquisition on user work, not on transient substrate
-/// state. Without this filter the daemon's own writes (per-device events log, substrate
-/// state, runtime artifacts) race the lease check under parallel load and flake T17.
-///
-/// Keep this list aligned with the auto-generated `.gitignore` written by
-/// `memory_substrate::tree::layout::bootstrap_repo_layout` so any path the substrate
-/// is allowed to author is also tolerated by the lease dirty-tree check.
-fn is_substrate_managed_path(path: &str) -> bool {
-    if path == "leases/journal.lease" {
-        return true;
-    }
-    // Substrate marker dir (.memorum), daemon runtime (.memoryd), and the per-device
-    // events log are all written by the daemon between substrate commit cycles.
-    const SUBSTRATE_MANAGED_PREFIXES: &[&str] = &[".memorum/", ".memoryd/", "events/"];
-    SUBSTRATE_MANAGED_PREFIXES.iter().any(|prefix| path.starts_with(prefix))
+fn is_lease_file(path: &str) -> bool {
+    path == "leases/journal.lease"
+}
+
+fn is_runtime_managed_path(path: &str) -> bool {
+    const RUNTIME_MANAGED_PREFIXES: &[&str] = &[".memorum/", ".memoryd/"];
+    RUNTIME_MANAGED_PREFIXES.iter().any(|prefix| path.starts_with(prefix))
 }
 
 fn status_path(line: &str) -> Option<&str> {

@@ -10,6 +10,7 @@ use memory_substrate::{
     Scope, Sensitivity, Source, SourceKind, Substrate, TrustLevel, WritePolicy,
 };
 use memoryd::client;
+use memoryd::handlers::handle_request;
 use memoryd::notifications::config::NotificationConfig;
 use memoryd::notifications::dispatcher::NotificationDispatcher;
 use memoryd::notifications::external::ExternalNotifier;
@@ -17,7 +18,8 @@ use memoryd::notifications::os::OsNotifier;
 use memoryd::notifications::passive::PassiveQueue;
 use memoryd::notifications::triggers::{notification_for, EventKind};
 use memoryd::protocol::{
-    NotificationEvent, QuarantineResolutionMode, RequestPayload, ResponsePayload, ResponseResult, StatusResponse,
+    NotificationEvent, QuarantineResolutionMode, RequestEnvelope, RequestPayload, ResponsePayload, ResponseResult,
+    StatusResponse,
 };
 use memoryd::reality_check::RcScheduler;
 use memoryd::state::RealityCheckState;
@@ -185,6 +187,50 @@ async fn quarantine_resolve_clears_sync_blocked_without_restart() {
 }
 
 #[tokio::test]
+async fn quarantine_resolve_rejects_governance_quarantine_without_mutating_it() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let initialized = Substrate::init(
+        roots.clone(),
+        InitOptions { force_unsafe_durability: true, device_id: Some("dev_governancequarantine".to_string()) },
+    )
+    .await
+    .expect("substrate init");
+    drop(initialized);
+
+    let memory_id = "mem_20260508_a1b2c3d4e5f60718_000003";
+    write_governance_quarantined_memory(&roots, memory_id);
+    let substrate = Substrate::open(roots).await.expect("reopen with governance-quarantined memory");
+
+    let response = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "governance-quarantine-resolve",
+            RequestPayload::QuarantineResolve { id: memory_id.to_owned(), mode: QuarantineResolutionMode::Edited },
+        ),
+    )
+    .await;
+    let ResponseResult::Error(error) = response.result else {
+        panic!("expected invalid_request for governance quarantine, got {:?}", response.result);
+    };
+    assert_eq!(error.code, "invalid_request");
+    assert!(
+        error.message.contains("merge-conflict") && error.message.contains("review/governance"),
+        "error should route operator to the right flow: {}",
+        error.message
+    );
+
+    let saved = substrate.read_memory(&MemoryId::new(memory_id)).await.expect("memory remains readable");
+    assert_eq!(saved.frontmatter.status, MemoryStatus::Quarantined);
+    assert_eq!(saved.frontmatter.trust_level, TrustLevel::Quarantined);
+    assert_eq!(saved.frontmatter.review_state.as_deref(), Some("quarantined"));
+    assert_eq!(
+        saved.frontmatter.extras.get("governance_reason").and_then(serde_json::Value::as_str),
+        Some("governance quarantine")
+    );
+}
+
+#[tokio::test]
 async fn trust_level_only_quarantine_is_counted_and_survives_other_resolve() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
@@ -311,7 +357,7 @@ fn write_quarantined_memory(roots: &Roots, id: &str) -> String {
     memory.frontmatter.requires_user_confirmation = true;
     memory.frontmatter.review_state = Some("quarantined".to_string());
     memory.frontmatter.write_policy.human_review_required = true;
-    memory.frontmatter.merge_diagnostics = Some(serde_json::json!({"reason": "blocking merge conflict"}));
+    memory.frontmatter.merge_diagnostics = Some(merge_quarantine_diagnostics("blocking merge conflict"));
     memory.body.push_str("\n\n<!-- merge quarantine; admin review required -->\n");
     let path = memory.path.clone().expect("memory has path");
     let text = frontmatter::serialize_document(&memory).expect("serialize quarantined memory");
@@ -331,13 +377,47 @@ fn write_trust_level_only_quarantined_memory(roots: &Roots, id: &str) -> String 
     let mut memory = sample_memory(id);
     memory.frontmatter.status = MemoryStatus::Candidate;
     memory.frontmatter.trust_level = TrustLevel::Quarantined;
-    memory.frontmatter.merge_diagnostics = Some(serde_json::json!({"reason": "blocking merge conflict"}));
+    memory.frontmatter.merge_diagnostics = Some(merge_quarantine_diagnostics("blocking merge conflict"));
     let path = memory.path.clone().expect("memory has path");
     let text = frontmatter::serialize_document(&memory).expect("serialize trust-level quarantined memory");
     let disk_path = roots.repo.join(path.as_path());
     std::fs::create_dir_all(disk_path.parent().expect("memory path has parent")).expect("create memory dir");
     std::fs::write(&disk_path, text).expect("write trust-level quarantined memory");
     path.as_str().to_string()
+}
+
+fn write_governance_quarantined_memory(roots: &Roots, id: &str) -> String {
+    let mut memory = sample_memory(id);
+    memory.frontmatter.status = MemoryStatus::Quarantined;
+    memory.frontmatter.trust_level = TrustLevel::Quarantined;
+    memory.frontmatter.requires_user_confirmation = true;
+    memory.frontmatter.review_state = Some("quarantined".to_string());
+    memory.frontmatter.write_policy.human_review_required = true;
+    memory.frontmatter.write_policy.policy_applied = "governance-quarantine-v1".to_string();
+    memory.frontmatter.merge_diagnostics = Some(serde_json::json!({
+        "human_reason": "governance quarantine",
+        "preserved_sources": [],
+        "lifecycle_notes": [],
+        "evidence_near_duplicates": []
+    }));
+    memory.frontmatter.extras.insert("governance_reason".to_string(), serde_json::json!("governance quarantine"));
+    memory.body = "governance-quarantined body".to_string();
+    let path = memory.path.clone().expect("memory has path");
+    let text = frontmatter::serialize_document(&memory).expect("serialize governance-quarantined memory");
+    let disk_path = roots.repo.join(path.as_path());
+    std::fs::create_dir_all(disk_path.parent().expect("memory path has parent")).expect("create memory dir");
+    std::fs::write(&disk_path, text).expect("write governance-quarantined memory");
+    path.as_str().to_string()
+}
+
+fn merge_quarantine_diagnostics(reason: &str) -> serde_json::Value {
+    serde_json::json!([{
+        "merge_id": "merge_test",
+        "created_at": "2026-05-08T12:00:00Z",
+        "status": "quarantined",
+        "conflicting_fields": ["body"],
+        "human_reason": reason
+    }])
 }
 
 fn sample_memory(id: &str) -> Memory {

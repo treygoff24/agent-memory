@@ -76,6 +76,42 @@ async fn restart_does_not_duplicate_operator_action_required_notification() {
 }
 
 #[tokio::test]
+async fn duplicate_keyed_notification_does_not_repeat_side_effects() {
+    let os = Arc::new(RecordingOsSink::default());
+    let email = Arc::new(RecordingEmailDelivery::default());
+    let external = ExternalNotifier::email_for_tests(email.clone(), Arc::new(RecordingSleeper::default()));
+    let dispatcher = NotificationDispatcher::new(
+        PassiveQueue::new(),
+        NotificationConfig {
+            os: OsNotificationConfig { enabled: true, triggers: vec![NotificationTrigger::BlockingMergeConflict] },
+            external: ExternalNotificationConfig {
+                channel: Some(ExternalChannelConfig::Email(EmailNotificationConfig {
+                    smtp_host: "smtp.example.test".to_owned(),
+                    smtp_port: 587,
+                    smtp_user: "memorum".to_owned(),
+                    smtp_password_env: "DUP_TEST_SMTP_PW".to_owned(),
+                    to: "trey@example.test".to_owned(),
+                    from: "memorum@example.test".to_owned(),
+                })),
+                triggers: vec![NotificationTrigger::BlockingMergeConflict],
+                retry_max: 1,
+                retry_backoff_seconds: vec![30, 120, 600],
+            },
+        },
+        OsNotifier::with_sink(os.clone()),
+        external,
+    );
+
+    std::env::set_var("DUP_TEST_SMTP_PW", "smtp-password");
+    dispatcher.dispatch_event(blocking_conflict_event()).await;
+    dispatcher.dispatch_event(blocking_conflict_event()).await;
+    std::env::remove_var("DUP_TEST_SMTP_PW");
+
+    assert_eq!(os.calls(), 1);
+    assert_eq!(email.messages().len(), 1);
+}
+
+#[tokio::test]
 async fn test_passive_queue_drops_oldest_when_full() {
     let queue = PassiveQueue::new();
 

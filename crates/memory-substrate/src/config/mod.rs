@@ -343,7 +343,7 @@ fn validate_synced_config(config: &SyncedConfig) -> Result<(), String> {
     validate_range("dreams.cleanup_run_hour_utc", config.dreams.cleanup_run_hour_utc, 0, 23)?;
     validate_range("dreams.lease_window_seconds", config.dreams.lease_window_seconds, 60, 14400)?;
     validate_range("dreams.dream_retry_window_minutes", config.dreams.dream_retry_window_minutes, 0, 720)?;
-    validate_range("substrate.commit_debounce_ms", config.substrate.commit_debounce_ms, 0, 30000)?;
+    validate_range("substrate.commit_debounce_ms", config.substrate.commit_debounce_ms, 500, 30000)?;
     validate_range("substrate.commit_stale_grace_ms", config.substrate.commit_stale_grace_ms, 0, 60000)?;
     validate_range("dreams.doctor_missed_threshold", config.dreams.doctor_missed_threshold, 0, 100)?;
     validate_range("dreams.capture_drought_days", config.dreams.capture_drought_days, 0, 365)?;

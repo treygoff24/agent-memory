@@ -13,7 +13,7 @@ use common::{spawn_daemon, unique_socket_path, wait_for_socket};
 
 #[tokio::test]
 async fn commit_worker_coalesces_burst_into_one_commit() {
-    let fixture = Fixture::new("dev_workerburst", 200).await;
+    let fixture = Fixture::new("dev_workerburst", 500).await;
     let before = fixture.commit_count();
     let socket = unique_socket_path("f1", "burst");
     let (shutdown_tx, server) = spawn_daemon(&socket, fixture.substrate.clone());
@@ -31,7 +31,7 @@ async fn commit_worker_coalesces_burst_into_one_commit() {
 
 #[tokio::test]
 async fn commit_worker_never_pushes() {
-    let fixture = Fixture::new("dev_workernopush", 50).await;
+    let fixture = Fixture::new("dev_workernopush", 500).await;
     let remote = tempfile::tempdir().expect("remote tempdir");
     command(remote.path(), "git", ["init", "--bare"]);
     fixture.git(["remote", "add", "origin", path_arg(remote.path())]);
@@ -51,7 +51,7 @@ async fn commit_worker_never_pushes() {
 
 #[tokio::test]
 async fn concurrent_worker_and_dream_flush_do_not_corrupt_index() {
-    let fixture = Fixture::new("dev_workerlock", 10).await;
+    let fixture = Fixture::new("dev_workerlock", 500).await;
     let socket = unique_socket_path("f1", "lock");
     let (shutdown_tx, server) = spawn_daemon(&socket, fixture.substrate.clone());
     wait_for_socket(&socket).await;

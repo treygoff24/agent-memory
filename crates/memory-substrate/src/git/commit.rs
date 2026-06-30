@@ -1,10 +1,11 @@
 //! Auto-commit helper.
 
-use std::path::Path;
-use std::process::Command;
+use std::collections::BTreeSet;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use crate::error::GitError;
-use crate::git::run_git;
+use crate::git::{command::run_git_with_env, run_git};
 
 /// Spec §5.1 namespaces that `auto_commit` is allowed to stage.
 ///
@@ -38,6 +39,9 @@ const STAGED_ROOT_FILES: &[&str] = &["config.yaml", ".gitattributes", ".gitignor
 /// (none of `*.md`/`config.yaml`/`*.jsonl`/`.keep`/… both start with `.` and end
 /// with `.tmp`).
 const ATOMIC_TEMP_EXCLUDE_PATHSPEC: &str = ":(exclude,glob)**/.*.tmp";
+const LEASE_BOT_NAME: &str = "memoryd lease-bot";
+const WRITE_BOT_NAME: &str = "memoryd write-bot";
+const BOT_EMAIL: &str = "noreply@memoryd.local";
 
 /// Outcome of a git commit operation.
 #[derive(Debug, Eq, PartialEq)]
@@ -103,7 +107,8 @@ pub fn commit_substrate_writes(repo: &Path, write_count: usize) -> Result<Commit
     stage_spec_namespaces(repo)?;
     run_git(repo, &["reset", "-q", "--", "leases/journal.lease"])?;
 
-    if nothing_to_commit(repo)? {
+    let paths = staged_substrate_write_paths(repo)?;
+    if paths.is_empty() {
         return Ok(CommitOutcome::NoChanges);
     }
 
@@ -111,7 +116,7 @@ pub fn commit_substrate_writes(repo: &Path, write_count: usize) -> Result<Commit
     // lands between that count and this commit can make `<n>` stale — it is advisory
     // commit-message text only and never gates what is actually staged.
     let message = format!("substrate: commit {write_count} write(s)");
-    run_write_bot_commit(repo, &message)?;
+    run_write_bot_commit(repo, &message, &paths)?;
     let sha = run_git(repo, &["rev-parse", "--short", "HEAD"])?.trim().to_string();
     Ok(CommitOutcome::Committed { sha })
 }
@@ -197,6 +202,18 @@ fn nothing_to_commit(repo: &Path) -> Result<bool, GitError> {
     Ok(output.trim().is_empty())
 }
 
+fn staged_substrate_write_paths(repo: &Path) -> Result<Vec<String>, GitError> {
+    let mut args = vec!["diff", "--cached", "--name-only", "--"];
+    args.extend(staged_paths());
+    let output = run_git(repo, &args)?;
+    Ok(output
+        .lines()
+        .filter(|path| *path != "leases/journal.lease")
+        .filter(|path| !is_atomic_temp(path))
+        .map(str::to_string)
+        .collect())
+}
+
 /// Run `git commit` and return the short SHA of the new commit.
 fn run_commit(repo: &Path, message: &str) -> Result<String, GitError> {
     run_git(repo, &["commit", "-m", message])?;
@@ -204,73 +221,69 @@ fn run_commit(repo: &Path, message: &str) -> Result<String, GitError> {
 }
 
 fn run_lease_commit(repo: &Path, message: &str) -> Result<(), GitError> {
-    let args = vec![
-        "commit".to_string(),
-        "--author".to_string(),
-        "memoryd lease-bot <noreply@memoryd.local>".to_string(),
-        "-m".to_string(),
-        message.to_string(),
-        "--".to_string(),
-        "leases/journal.lease".to_string(),
-    ];
-    let mut command = Command::new("git");
-    command
-        .args(&args)
-        .current_dir(repo)
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .env_remove("GIT_OBJECT_DIRECTORY")
-        .env_remove("GIT_NAMESPACE")
-        .env("GIT_AUTHOR_NAME", "memoryd lease-bot")
-        .env("GIT_AUTHOR_EMAIL", "noreply@memoryd.local")
-        .env("GIT_COMMITTER_NAME", "memoryd lease-bot")
-        .env("GIT_COMMITTER_EMAIL", "noreply@memoryd.local");
-
-    let output = command.output()?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(GitError::CommandFailed {
-            program: "git".to_string(),
-            args,
-            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-        })
-    }
+    run_bot_commit(
+        repo,
+        BotCommit { bot_name: LEASE_BOT_NAME, message, paths: &["leases/journal.lease"], extra_env: &[] },
+    )
 }
 
-fn run_write_bot_commit(repo: &Path, message: &str) -> Result<(), GitError> {
-    let args = vec![
-        "commit".to_string(),
-        "--author".to_string(),
-        "memoryd write-bot <noreply@memoryd.local>".to_string(),
-        "-m".to_string(),
-        message.to_string(),
-    ];
-    let mut command = Command::new("git");
-    command
-        .args(&args)
-        .current_dir(repo)
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .env_remove("GIT_OBJECT_DIRECTORY")
-        .env_remove("GIT_NAMESPACE")
-        .env("GIT_AUTHOR_NAME", "memoryd write-bot")
-        .env("GIT_AUTHOR_EMAIL", "noreply@memoryd.local")
-        .env("GIT_COMMITTER_NAME", "memoryd write-bot")
-        .env("GIT_COMMITTER_EMAIL", "noreply@memoryd.local");
+fn run_write_bot_commit(repo: &Path, message: &str, paths: &[String]) -> Result<(), GitError> {
+    let temp_index = tempfile::NamedTempFile::new()?;
+    fs::copy(git_index_path(repo)?, temp_index.path())?;
 
-    let output = command.output()?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(GitError::CommandFailed {
-            program: "git".to_string(),
-            args,
-            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-        })
+    let path_set = paths.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    let unrelated_paths =
+        staged_index_paths(repo)?.into_iter().filter(|path| !path_set.contains(path.as_str())).collect::<Vec<_>>();
+    let index_env = temp_index.path().to_string_lossy().to_string();
+    if !unrelated_paths.is_empty() {
+        let mut args = vec!["reset", "-q", "--"];
+        args.extend(unrelated_paths.iter().map(String::as_str));
+        run_git_with_env(repo, &args, &[("GIT_INDEX_FILE", index_env.as_str())])?;
     }
+
+    run_bot_commit(
+        repo,
+        BotCommit {
+            bot_name: WRITE_BOT_NAME,
+            message,
+            paths: &[],
+            extra_env: &[("GIT_INDEX_FILE", index_env.as_str())],
+        },
+    )
+}
+
+struct BotCommit<'a> {
+    bot_name: &'static str,
+    message: &'a str,
+    paths: &'a [&'a str],
+    extra_env: &'a [(&'a str, &'a str)],
+}
+
+fn run_bot_commit(repo: &Path, commit: BotCommit<'_>) -> Result<(), GitError> {
+    let author = format!("{} <{}>", commit.bot_name, BOT_EMAIL);
+    let mut args = vec!["commit", "--author", author.as_str(), "-m", commit.message];
+    if !commit.paths.is_empty() {
+        args.push("--");
+        args.extend(commit.paths.iter().copied());
+    }
+    let mut envs = vec![
+        ("GIT_AUTHOR_NAME", commit.bot_name),
+        ("GIT_AUTHOR_EMAIL", BOT_EMAIL),
+        ("GIT_COMMITTER_NAME", commit.bot_name),
+        ("GIT_COMMITTER_EMAIL", BOT_EMAIL),
+    ];
+    envs.extend(commit.extra_env.iter().copied());
+    run_git_with_env(repo, &args, &envs).map(|_| ())
+}
+
+fn staged_index_paths(repo: &Path) -> Result<Vec<String>, GitError> {
+    let output = run_git(repo, &["diff", "--cached", "--name-only"])?;
+    Ok(output.lines().map(str::to_string).collect())
+}
+
+fn git_index_path(repo: &Path) -> Result<PathBuf, GitError> {
+    let path = PathBuf::from(run_git(repo, &["rev-parse", "--git-path", "index"])?.trim());
+    Ok(if path.is_absolute() { path } else { repo.join(path) })
 }
 
 fn staged_paths() -> Vec<&'static str> {
@@ -361,6 +374,34 @@ mod tests {
         assert_eq!(
             git(repo.path(), &["log", "-1", "--format=%s"]).expect("subject"), // expect-justified: test assertion
             "substrate: commit 1 write(s)"
+        );
+    }
+
+    #[test]
+    fn write_bot_commit_preserves_unrelated_prestaged_files() {
+        let repo = tempdir().expect("tempdir"); // expect-justified: test setup
+        bootstrap_repo_tree(repo.path()).expect("bootstrap"); // expect-justified: test setup
+        git(repo.path(), &["init"]).expect("git init"); // expect-justified: test setup
+        commit_substrate_writes(repo.path(), 1).expect("baseline commit"); // expect-justified: test setup
+        fs::write(repo.path().join("scratch.txt"), "pre-staged\n").expect("scratch"); // expect-justified: test setup
+        git(repo.path(), &["add", "--", "scratch.txt"]).expect("stage scratch"); // expect-justified: test setup
+        fs::create_dir_all(repo.path().join("me/identity")).expect("identity dir"); // expect-justified: test setup
+        fs::write(repo.path().join("me/identity/fact.md"), "---\nsummary: fact\n---\nbody\n").expect("memory write"); // expect-justified: test setup
+
+        let outcome = commit_substrate_writes(repo.path(), 1).expect("write commit"); // expect-justified: test assertion
+
+        assert!(matches!(outcome, CommitOutcome::Committed { .. }));
+        let committed_files =
+            git(repo.path(), &["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"]).expect("committed files"); // expect-justified: test assertion
+        assert!(committed_files.lines().any(|path| path == "me/identity/fact.md"), "{committed_files}");
+        assert!(!committed_files.lines().any(|path| path == "scratch.txt"), "{committed_files}");
+        assert_eq!(
+            git(repo.path(), &["status", "--porcelain", "--", "scratch.txt"]).expect("scratch status"), // expect-justified: test assertion
+            "A  scratch.txt"
+        );
+        assert!(
+            git(repo.path(), &["cat-file", "-e", "HEAD:scratch.txt"]).is_err(),
+            "scratch.txt must remain staged and absent from HEAD"
         );
     }
 

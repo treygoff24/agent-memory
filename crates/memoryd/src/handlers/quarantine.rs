@@ -13,23 +13,10 @@ pub(crate) async fn quarantine_resolve_response(
 ) -> Result<ResponsePayload, HandlerError> {
     let memory_id = HandlerError::parse_memory_id(id)?;
     let envelope = substrate.read_memory_envelope(&memory_id).await.map_err(HandlerError::substrate)?;
-    let MemoryContent::Plaintext(body) = &envelope.content else {
-        return Err(HandlerError::invalid_request(
-            "encrypted quarantine resolution requires an encrypted lifecycle update API",
-        ));
+    let body_has_git_conflict_markers = match &envelope.content {
+        MemoryContent::Plaintext(body) => Some(has_git_conflict_markers(body)),
+        _ => None,
     };
-    // Refuse to certify a body that still carries git conflict markers as Active/Trusted.
-    // Resolution always certifies the current on-disk body as-is — the substrate has no
-    // side-swap API, so there is no "accept ours/theirs" auto-selection (the CLI exposes
-    // only the honest `--edited` "I fixed it by hand" path). A marker-bearing body
-    // therefore means the conflict is still unresolved.
-    if has_git_conflict_markers(body) {
-        return Err(HandlerError::invalid_request(
-            "quarantined memory still contains git conflict markers (<<<<<<< / >>>>>>>); \
-             resolve the conflict in the file before running `quarantine resolve`",
-        ));
-    }
-
     let mut memory = envelope.metadata;
     if memory.frontmatter.schema_version > memory_substrate::merge::MERGE_DRIVER_SUPPORTED_SCHEMA_VERSION {
         return Err(HandlerError::invalid_request(format!(
@@ -42,6 +29,27 @@ pub(crate) async fn quarantine_resolve_response(
         && !matches!(memory.frontmatter.trust_level, TrustLevel::Quarantined)
     {
         return Err(HandlerError::invalid_request("memory is not quarantined"));
+    }
+    if !has_quarantined_merge_diagnostic(&memory.frontmatter.merge_diagnostics) {
+        return Err(HandlerError::invalid_request(
+            "quarantine resolve only supports merge-conflict quarantines; use review/governance flow for this memory",
+        ));
+    }
+    let Some(body_has_git_conflict_markers) = body_has_git_conflict_markers else {
+        return Err(HandlerError::invalid_request(
+            "encrypted quarantine resolution requires an encrypted lifecycle update API",
+        ));
+    };
+    // Refuse to certify a body that still carries git conflict markers as Active/Trusted.
+    // Resolution always certifies the current on-disk body as-is — the substrate has no
+    // side-swap API, so there is no "accept ours/theirs" auto-selection (the CLI exposes
+    // only the honest `--edited` "I fixed it by hand" path). A marker-bearing body
+    // therefore means the conflict is still unresolved.
+    if body_has_git_conflict_markers {
+        return Err(HandlerError::invalid_request(
+            "quarantined memory still contains git conflict markers (<<<<<<< / >>>>>>>); \
+             resolve the conflict in the file before running `quarantine resolve`",
+        ));
     }
 
     let path = memory
@@ -168,6 +176,19 @@ fn has_git_conflict_markers(body: &str) -> bool {
     body.lines().any(|line| line.starts_with("<<<<<<<") || line.starts_with(">>>>>>>"))
 }
 
+fn has_quarantined_merge_diagnostic(diagnostics: &Option<Value>) -> bool {
+    match diagnostics {
+        Some(Value::Array(entries)) => entries.iter().any(is_quarantined_merge_diagnostic),
+        Some(diagnostic @ Value::Object(_)) => is_quarantined_merge_diagnostic(diagnostic),
+        _ => false,
+    }
+}
+
+fn is_quarantined_merge_diagnostic(diagnostic: &Value) -> bool {
+    diagnostic.get("status").and_then(Value::as_str) == Some("quarantined")
+        && diagnostic.get("merge_id").and_then(Value::as_str).is_some_and(|value| value.starts_with("merge_"))
+}
+
 fn prune_resolved_blocking_notifications(state: &HandlerState, current_paths: &[String]) {
     const PREFIX: &str = "blocking_merge_conflict:";
 
@@ -183,7 +204,7 @@ fn prune_resolved_blocking_notifications(state: &HandlerState, current_paths: &[
 
 #[cfg(test)]
 mod tests {
-    use super::has_git_conflict_markers;
+    use super::{has_git_conflict_markers, has_quarantined_merge_diagnostic};
 
     #[test]
     fn flags_unresolved_conflicts_but_not_markdown() {
@@ -193,5 +214,29 @@ mod tests {
         // be read as an unresolved conflict.
         assert!(!has_git_conflict_markers("Title\n=======\nresolved body\n"));
         assert!(!has_git_conflict_markers("clean resolved content\n"));
+    }
+
+    #[test]
+    fn accepts_only_merge_quarantine_diagnostics() {
+        assert!(has_quarantined_merge_diagnostic(&Some(serde_json::json!([
+            {
+                "merge_id": "merge_01",
+                "created_at": "2026-05-08T12:00:00Z",
+                "status": "quarantined",
+                "human_reason": "body diff3 conflict - fields body"
+            }
+        ]))));
+        assert!(has_quarantined_merge_diagnostic(&Some(serde_json::json!({
+            "merge_id": "merge_legacy",
+            "created_at": "2026-05-08T12:00:00Z",
+            "status": "quarantined",
+            "human_reason": "legacy object"
+        }))));
+        assert!(!has_quarantined_merge_diagnostic(&Some(serde_json::json!({
+            "status": "quarantined",
+            "human_reason": "governance quarantine",
+            "preserved_sources": []
+        }))));
+        assert!(!has_quarantined_merge_diagnostic(&None));
     }
 }

@@ -25,7 +25,9 @@ impl NotificationDispatcher {
     }
 
     pub async fn dispatch_event(&self, event: NotificationEvent) {
-        self.passive.append_with_key(passive_message(&event), dedup_key(&event));
+        if !self.passive.append_with_key(passive_message(&event), dedup_key(&event)) {
+            return;
+        }
         if self.config.os.enabled && contains_trigger(&self.config.os.triggers, &event) {
             self.os.notify(&os_notification(&event));
         }

@@ -18,7 +18,9 @@ pub async fn run(args: QuarantineArgs) -> anyhow::Result<()> {
         }
         QuarantineCommand::Resolve(resolve) => {
             let socket = resolve_socket_arg(&resolve.socket);
-            let mode = resolve.mode();
+            let Some(mode) = resolve.mode() else {
+                anyhow::bail!("memoryd quarantine resolve requires --edited");
+            };
             print_response(
                 client::request(
                     socket,

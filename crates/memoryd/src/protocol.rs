@@ -539,7 +539,7 @@ pub struct CaptureSourceResponse {
     pub mode: CaptureSourceMode,
     pub final_url: String,
     pub captured_at: DateTime<Utc>,
-    pub capture_status: CaptureStatus,
+    pub capture_status: String,
     pub warnings: Vec<String>,
 }
 
@@ -984,9 +984,9 @@ pub struct GetResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetProvenance {
     pub path: Option<String>,
-    pub source_kind: SourceKind,
+    pub source_kind: String,
     pub source_ref: Option<String>,
-    pub author_kind: AuthorKind,
+    pub author_kind: String,
     pub harness: Option<String>,
     pub session_id: Option<String>,
     pub evidence_refs: Vec<String>,
@@ -1077,7 +1077,7 @@ pub struct ReviewQueueResponse {
 pub struct ReviewQueueItemResponse {
     pub id: String,
     pub summary: String,
-    pub status: ReviewStatus,
+    pub status: String,
     pub policy_applied: String,
     pub reason: Option<String>,
     pub next_actions: Vec<String>,

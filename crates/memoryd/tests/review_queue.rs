@@ -43,7 +43,7 @@ async fn review_queue_returns_quarantined_memories_from_substrate() {
     assert_eq!(queue.items.len(), 1);
     assert_eq!(queue.items[0].id, quarantined.frontmatter.id.as_str());
     assert_eq!(queue.items[0].summary, quarantined.frontmatter.summary);
-    assert_eq!(queue.items[0].status, ReviewStatus::Quarantined);
+    assert_eq!(queue.items[0].status, ReviewStatus::Quarantined.as_str());
     assert_eq!(queue.items[0].policy_applied, "governance-quarantine-v1");
     assert_eq!(queue.items[0].reason.as_deref(), Some("contradiction requires review"));
     assert_eq!(queue.items[0].next_actions, ["review_approve", "review_reject"]);

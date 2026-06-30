@@ -631,17 +631,31 @@ pub struct QuarantineResolveArgs {
     /// conflict markers. Side-selection ("accept ours/theirs") is not yet
     /// supported — the substrate has no side-swap API — so resolve the file
     /// manually first, then run this.
-    #[arg(long)]
+    #[arg(long, action = ArgAction::SetTrue, required = true)]
     pub edited: bool,
 }
 
 impl QuarantineResolveArgs {
-    pub fn mode(&self) -> QuarantineResolutionMode {
+    pub fn mode(&self) -> Option<QuarantineResolutionMode> {
         // Hand-resolution is the only mode the daemon can honor; `--edited` is the
         // operator's explicit acknowledgement and does not change the (single)
-        // resolution path (its absence resolves identically — the daemon's
-        // conflict-marker check still refuses an unresolved body).
-        QuarantineResolutionMode::Edited
+        // resolution path.
+        self.edited.then_some(QuarantineResolutionMode::Edited)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Cli;
+    use clap::Parser as _;
+
+    #[test]
+    fn quarantine_resolve_requires_edited_acknowledgement() {
+        let id = "mem_20260508_a1b2c3d4e5f60718_000001";
+
+        assert!(Cli::try_parse_from(["memoryd", "quarantine", "resolve", id]).is_err());
+        Cli::try_parse_from(["memoryd", "quarantine", "resolve", "--edited", id])
+            .expect("--edited quarantine resolve parses");
     }
 }
 

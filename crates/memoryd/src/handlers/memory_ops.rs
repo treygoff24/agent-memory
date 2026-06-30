@@ -253,9 +253,9 @@ pub(crate) async fn get_response(
 fn get_provenance(memory: &Memory) -> GetProvenance {
     GetProvenance {
         path: memory.path.as_ref().map(|path| path.as_str().to_string()),
-        source_kind: memory.frontmatter.source.kind,
+        source_kind: memory.frontmatter.source.kind.as_db_str().to_string(),
         source_ref: memory.frontmatter.source.reference.clone(),
-        author_kind: memory.frontmatter.author.kind,
+        author_kind: memory.frontmatter.author.kind.as_db_str().to_string(),
         harness: memory.frontmatter.author.harness.clone().or_else(|| memory.frontmatter.source.harness.clone()),
         session_id: memory
             .frontmatter

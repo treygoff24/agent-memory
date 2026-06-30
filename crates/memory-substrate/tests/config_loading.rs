@@ -264,6 +264,23 @@ substrate:
 }
 
 #[test]
+fn substrate_config_rejects_too_low_commit_debounce() {
+    let err = load_synced_config_from_text(
+        r#"schema_version: 1
+active_embedding:
+  provider: synthetic
+  model_ref: stream-a-test
+  dimension: 32
+substrate:
+  commit_debounce_ms: 499
+"#,
+    )
+    .expect_err("too-low substrate debounce rejected");
+
+    assert!(err.contains("substrate.commit_debounce_ms"), "actual error: {err}");
+}
+
+#[test]
 fn substrate_config_rejects_out_of_range_commit_stale_grace() {
     let err = load_synced_config_from_text(
         r#"schema_version: 1
@@ -352,7 +369,7 @@ dreams:
 events:
   compaction_days: 180
 substrate:
-  commit_debounce_ms: 123
+  commit_debounce_ms: 500
   commit_stale_grace_ms: 456
 "#,
     )
@@ -380,7 +397,7 @@ substrate:
     assert_eq!(synced.dreams.doctor_missed_threshold, 5);
     assert_eq!(synced.dreams.doctor_budget_exhausted_threshold, 999);
     assert_eq!(synced.dreams.capture_drought_days, 9);
-    assert_eq!(synced.substrate.commit_debounce_ms, 123);
+    assert_eq!(synced.substrate.commit_debounce_ms, 500);
     assert_eq!(synced.substrate.commit_stale_grace_ms, 456);
     assert_eq!(synced.events.compaction_days, 180);
 }

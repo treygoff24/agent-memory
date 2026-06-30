@@ -7,8 +7,8 @@ use memoryd::protocol::{
     ObserveResponse, ObserveTarget, PassOutcome, PassStatus, PromptTransport, RealityCheckAction,
     RealityCheckAdherenceSummary, RealityCheckHistorySession, RealityCheckItem, RealityCheckRequest,
     RealityCheckResponse, RecallHitSummary, RecallHitsResponse, RequestEnvelope, RequestPayload, ResponseEnvelope,
-    ResponsePayload, ResponseResult, RevealResponse, ScopeRunSummary, SearchHit, SearchResponse, SourceCapturePayload,
-    WriteNoteResponse,
+    ResponsePayload, ResponseResult, RevealResponse, ReviewQueueItemResponse, ScopeRunSummary, SearchHit,
+    SearchResponse, SourceCapturePayload, WriteNoteResponse,
 };
 use memoryd::recall::StartupRequest;
 
@@ -122,7 +122,7 @@ fn protocol_contract_capture_source_response_round_trips() {
             mode: memoryd::protocol::CaptureSourceMode::HttpStatic,
             final_url: "https://example.com/report".to_owned(),
             captured_at,
-            capture_status: CaptureStatus::CompleteTextOnly,
+            capture_status: CaptureStatus::CompleteTextOnly.as_str().to_string(),
             warnings: vec!["raw_omitted_privacy".to_owned()],
         }),
     );
@@ -663,6 +663,44 @@ where
 }
 
 #[test]
+fn protocol_response_extension_fields_accept_future_strings() {
+    let provenance: GetProvenance = serde_json::from_value(serde_json::json!({
+        "path": "agent/facts/example.md",
+        "source_kind": "future_source_kind",
+        "source_ref": "fixture",
+        "author_kind": "future_author_kind",
+        "harness": null,
+        "session_id": null,
+        "evidence_refs": []
+    }))
+    .expect("provenance accepts future string tokens");
+    assert_eq!(provenance.source_kind, "future_source_kind");
+    assert_eq!(provenance.author_kind, "future_author_kind");
+
+    let capture: CaptureSourceResponse = serde_json::from_value(serde_json::json!({
+        "artifact_id": "src_01J0Z7Y8Q9R0ABCDE123456789",
+        "source_refs": [],
+        "final_url": "https://example.com/report",
+        "captured_at": "2026-05-05T18:00:00Z",
+        "capture_status": "future_capture_status",
+        "warnings": []
+    }))
+    .expect("capture response accepts future string tokens");
+    assert_eq!(capture.capture_status, "future_capture_status");
+
+    let item: ReviewQueueItemResponse = serde_json::from_value(serde_json::json!({
+        "id": "mem_20260428_0123456789abcdef_000001",
+        "summary": "future review status",
+        "status": "future_review_status",
+        "policy_applied": "future-policy",
+        "reason": null,
+        "next_actions": []
+    }))
+    .expect("review queue item accepts future string tokens");
+    assert_eq!(item.status, "future_review_status");
+}
+
+#[test]
 fn protocol_contract_success_responses_are_bounded_and_guided() {
     let search = ResponseEnvelope::success(
         "req-search",
@@ -687,9 +725,9 @@ fn protocol_contract_success_responses_are_bounded_and_guided() {
             truncated: true,
             provenance: Some(GetProvenance {
                 path: Some("agent/patterns/mem_20260428_0123456789abcdef_000001.md".to_owned()),
-                source_kind: SourceKind::Import,
+                source_kind: SourceKind::Import.as_db_str().to_string(),
                 source_ref: Some("fixture".to_owned()),
-                author_kind: AuthorKind::System,
+                author_kind: AuthorKind::System.as_db_str().to_string(),
                 harness: None,
                 session_id: None,
                 evidence_refs: Vec::new(),

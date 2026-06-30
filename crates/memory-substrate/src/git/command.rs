@@ -27,6 +27,10 @@ fn git_binary() -> &'static Path {
 /// `GIT_NAMESPACE`. This prevents parent-shell overrides from redirecting git
 /// operations to a different repository (spec §13.1 footnote).
 pub fn run_git(repo: &Path, args: &[&str]) -> Result<String, GitError> {
+    run_git_with_env(repo, args, &[])
+}
+
+pub(super) fn run_git_with_env(repo: &Path, args: &[&str], envs: &[(&str, &str)]) -> Result<String, GitError> {
     if !repo.is_dir() {
         return Err(GitError::InvalidRepoRoot(repo.display().to_string()));
     }
@@ -34,6 +38,9 @@ pub fn run_git(repo: &Path, args: &[&str]) -> Result<String, GitError> {
     cmd.args(args).current_dir(repo);
     for var in GIT_ENV_CLEAR {
         cmd.env_remove(var);
+    }
+    for (key, value) in envs {
+        cmd.env(key, value);
     }
     let output = cmd.output()?;
     if output.status.success() {

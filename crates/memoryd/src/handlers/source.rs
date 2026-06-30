@@ -66,7 +66,7 @@ pub(crate) async fn capture_source_response(
         mode,
         final_url: response.final_url,
         captured_at: response.captured_at,
-        capture_status: response.capture_status,
+        capture_status: response.capture_status.as_str().to_string(),
         warnings: response.warnings,
     }))
 }

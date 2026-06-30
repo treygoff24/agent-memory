@@ -305,7 +305,7 @@ fn dirty_tree_with_stale_self_owned_lease_aborts_without_mutating_journal() {
         run_id: "run_crashed".to_string(),
     });
     let journal_before = std::fs::read_to_string(env.repo.join("leases/journal.lease")).expect("journal before");
-    env.write("me/user-work.md", "uncommitted user work\n");
+    env.write("scratch/user-work.txt", "uncommitted user work\n");
 
     let err = acquire_manual_lease(LeaseAcquireRequest {
         repo: env.repo.clone(),
@@ -496,9 +496,51 @@ fn forced_takeover_makes_forced_holder_active_and_ignores_stale_prior_holder() {
 }
 
 #[test]
+fn daemon_managed_substrate_write_does_not_block_lease_but_scratch_does() {
+    let env = GitLeaseEnv::new("dev_local");
+    env.write("me/knowledge/daemon-managed.md", "daemon-managed substrate write\n");
+
+    acquire_manual_lease(LeaseAcquireRequest {
+        repo: env.repo.clone(),
+        runtime: env.runtime.clone(),
+        scope: "me".to_string(),
+        force: false,
+        now: fixed_now(),
+        lease_window_seconds: 3_600,
+        cli_used: None,
+    })
+    .expect("daemon-managed substrate writes do not block lease acquisition");
+
+    assert_eq!(env.git(["show", "--name-only", "--format=", "HEAD"]), "leases/journal.lease");
+    assert_eq!(
+        env.git(["status", "--short", "--", "me/knowledge/daemon-managed.md"]),
+        "?? me/knowledge/daemon-managed.md"
+    );
+
+    let dirty_env = GitLeaseEnv::new("dev_local");
+    dirty_env.write("me/knowledge/daemon-managed.md", "daemon-managed substrate write\n");
+    dirty_env.write("scratch/user-work.txt", "unrelated scratch work\n");
+
+    let err = acquire_manual_lease(LeaseAcquireRequest {
+        repo: dirty_env.repo.clone(),
+        runtime: dirty_env.runtime.clone(),
+        scope: "me".to_string(),
+        force: false,
+        now: fixed_now(),
+        lease_window_seconds: 3_600,
+        cli_used: None,
+    })
+    .expect_err("unrelated scratch work still blocks lease acquisition");
+
+    let LeaseError::DirtyTree { message } = err else { panic!("expected dirty tree") };
+    assert!(message.contains("scratch/user-work.txt"), "dirty message was: {message}");
+    assert!(!message.contains("me/knowledge/daemon-managed.md"), "dirty message was: {message}");
+}
+
+#[test]
 fn dirty_tree_outside_lease_file_returns_lease_dirty_tree_and_does_not_commit_user_work() {
     let env = GitLeaseEnv::new("dev_local");
-    env.write("me/user-work.md", "uncommitted user work\n");
+    env.write("scratch/user-work.txt", "uncommitted user work\n");
 
     let err = acquire_manual_lease(LeaseAcquireRequest {
         repo: env.repo.clone(),
@@ -513,7 +555,7 @@ fn dirty_tree_outside_lease_file_returns_lease_dirty_tree_and_does_not_commit_us
 
     assert!(matches!(err, LeaseError::DirtyTree { .. }));
     assert_eq!(env.git(["log", "--oneline"]).lines().count(), 1, "no lease commit should be created");
-    assert_eq!(env.git(["status", "--short", "--", "me/user-work.md"]), "?? me/user-work.md");
+    assert_eq!(env.git(["status", "--short", "--", "scratch/user-work.txt"]), "?? scratch/user-work.txt");
 }
 
 fn fixed_now() -> chrono::DateTime<Utc> {
