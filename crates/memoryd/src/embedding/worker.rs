@@ -30,7 +30,7 @@ use memory_substrate::{EmbeddingTriple, EmbeddingUpdate, PendingEmbeddingJob, Su
 use tokio::sync::watch;
 use tokio::time::sleep;
 
-use super::{EmbeddingError, EmbeddingProvider};
+use super::{EmbeddingError, EmbeddingProvider, EmbeddingProviderAcquire, EmbeddingProviderSlot};
 
 /// How many jobs to pull and embed per drain tick. Bounded so one tick cannot
 /// monopolize a blocking thread for an unbounded backlog; the next tick picks up
@@ -60,35 +60,28 @@ pub fn exhausted_retry_budget_job_count() -> usize {
 /// `shutdown` flips to `true` or the sender drops.
 pub fn spawn_embedding_worker(
     substrate: Arc<Substrate>,
-    provider: Arc<dyn EmbeddingProvider>,
+    provider_slot: EmbeddingProviderSlot,
     shutdown: watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(run(substrate, provider, shutdown, IDLE_INTERVAL))
+    tokio::spawn(run(substrate, provider_slot, shutdown, IDLE_INTERVAL))
+}
+
+#[doc(hidden)]
+pub fn spawn_embedding_worker_with_interval(
+    substrate: Arc<Substrate>,
+    provider_slot: EmbeddingProviderSlot,
+    shutdown: watch::Receiver<bool>,
+    idle_interval: Duration,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(run(substrate, provider_slot, shutdown, idle_interval))
 }
 
 async fn run(
     substrate: Arc<Substrate>,
-    provider: Arc<dyn EmbeddingProvider>,
+    provider_slot: EmbeddingProviderSlot,
     mut shutdown: watch::Receiver<bool>,
     idle_interval: Duration,
 ) {
-    // Verify the provider matches the active triple before draining anything.
-    match substrate.active_embedding_triple() {
-        Ok(active) if &active == provider.triple() => {}
-        Ok(active) => {
-            tracing::error!(
-                provider_triple = ?provider.triple(),
-                active_triple = ?active,
-                "embedding worker disabled: provider triple does not match active triple"
-            );
-            return;
-        }
-        Err(error) => {
-            tracing::error!(%error, "embedding worker disabled: cannot read active triple");
-            return;
-        }
-    }
-
     let mut retry_budget = JobRetryBudget::default();
     let mut zero_success_backoff = idle_interval;
     let mut next_delay = idle_interval;
@@ -106,7 +99,49 @@ async fn run(
             if *shutdown.borrow() {
                 return;
             }
-            match drain_batch_with_budget(&substrate, &provider, DRAIN_BATCH, &mut retry_budget).await {
+            match substrate.pending_embedding_job_count() {
+                Ok(0) => {
+                    zero_success_backoff = idle_interval;
+                    break;
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        sleep_ms = zero_success_backoff.as_millis(),
+                        "embedding pending-job count failed; backing off"
+                    );
+                    next_delay = zero_success_backoff;
+                    zero_success_backoff = grow_backoff(zero_success_backoff);
+                    break;
+                }
+            }
+            if let Err(error) = provider_slot.ensure_loaded().await {
+                tracing::warn!(
+                    %error,
+                    retry_seconds = super::lifecycle::MODEL_LOAD_RETRY_BACKOFF.as_secs(),
+                    "embedding worker model load failed; recall stays FTS-only until retry succeeds"
+                );
+                next_delay = super::lifecycle::MODEL_LOAD_RETRY_BACKOFF;
+                break;
+            }
+            let guard = match provider_slot.acquire() {
+                EmbeddingProviderAcquire::Active(guard) => guard,
+                EmbeddingProviderAcquire::Dormant | EmbeddingProviderAcquire::Loading => {
+                    next_delay = Duration::from_millis(100);
+                    break;
+                }
+                EmbeddingProviderAcquire::Failed { last_error } => {
+                    tracing::warn!(
+                        error = ?last_error,
+                        retry_seconds = super::lifecycle::MODEL_LOAD_RETRY_BACKOFF.as_secs(),
+                        "embedding worker provider unavailable after load attempt"
+                    );
+                    next_delay = super::lifecycle::MODEL_LOAD_RETRY_BACKOFF;
+                    break;
+                }
+            };
+            match drain_batch_with_budget(&substrate, guard.provider(), DRAIN_BATCH, &mut retry_budget).await {
                 Ok(outcome) if outcome.fetched == 0 => {
                     zero_success_backoff = idle_interval;
                     break;
@@ -447,12 +482,40 @@ mod tests {
     #[tokio::test]
     async fn worker_disables_on_triple_mismatch() {
         let (_temp, substrate) = init_substrate().await;
+        write_project_memory(
+            &substrate,
+            "mismatched embedding worker fixture",
+            "The mismatched embedding worker fixture should remain pending.",
+        )
+        .await;
         let substrate = Arc::new(substrate);
+
         // Fixture triple `synthetic/stream-a-test/32` deliberately != the active
-        // production triple. run() must return promptly rather than draining.
+        // production triple. The lifecycle should reject it before any drain.
         let mismatched: Arc<dyn EmbeddingProvider> = Arc::new(FixtureProvider::synthetic_test_triple());
-        let (_tx, rx) = watch::channel(false);
-        run(substrate, mismatched, rx, Duration::from_millis(10)).await;
+        let provider_slot = EmbeddingProviderSlot::empty();
+        provider_slot.configure_loader(
+            substrate.active_embedding_triple().expect("triple"),
+            crate::embedding::EmbeddingIdleWindow::from_duration(Some(Duration::from_secs(60)), "test"),
+            move || Ok(Arc::clone(&mismatched)),
+        );
+
+        let (tx, rx) = watch::channel(false);
+        let worker = tokio::spawn(run(Arc::clone(&substrate), provider_slot.clone(), rx, Duration::from_millis(10)));
+
+        let mut saw_failure = false;
+        for _ in 0..50 {
+            if provider_slot.snapshot().state == "failed" {
+                saw_failure = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        tx.send(true).expect("shutdown worker");
+        worker.await.expect("worker joins");
+
+        assert!(saw_failure, "mismatched provider should fail lifecycle load");
+        assert_eq!(substrate.pending_embedding_job_count().expect("pending count"), 1);
     }
 
     #[tokio::test]

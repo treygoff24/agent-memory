@@ -127,6 +127,54 @@ async fn vector_degradation_rungs_mark_and_fallback_to_fts() {
     assert_degrades_to_fts(&fixture, Some(slow), timeout_config, "embedding_timeout").await;
 }
 
+/// F10: the degradation-rung suite must also cover the `embedding_dormant` rung
+/// — a configured-but-dormant lifecycle slot (loader configured, no provider
+/// loaded) degrades to FTS with the `embedding_dormant` marker, NOT
+/// `no_embedding_provider` (which is for never-armed/failed). The existing
+/// `None`→`no_embedding_provider` case above is correct for never-armed.
+#[tokio::test]
+async fn f10_dormant_lifecycle_slot_degrades_to_embedding_dormant_rung() {
+    use std::time::Duration;
+    use memoryd::embedding::{EmbeddingIdleWindow, EmbeddingProviderSlot};
+
+    let fixture = TestRepo::new("dev_vecdormantrung").await;
+    fixture
+        .write_memory(memory_spec(
+            "mem_20260610_0000000000000061_000061",
+            "fallback exact keyword",
+            "fallback exact keyword body",
+            true,
+        ))
+        .await;
+    let triple = fixture.substrate.active_embedding_triple().expect("active triple");
+
+    // Configure a loader on the slot but keep it dormant — don't call
+    // ensure_loaded. A slow loader ensures the slot stays dormant during the
+    // query rather than completing before the recall path reads it.
+    let slot = EmbeddingProviderSlot::empty();
+    let triple_for_loader = triple.clone();
+    slot.configure_loader(
+        triple,
+        EmbeddingIdleWindow::from_duration(Some(Duration::from_secs(60)), "test"),
+        move || {
+            std::thread::sleep(Duration::from_millis(500));
+            let provider: Arc<dyn EmbeddingProvider> = Arc::new(FixtureProvider::new(triple_for_loader.clone()));
+            Ok(provider)
+        },
+    );
+
+    let response = build_delta_response_with_vector_recall(
+        &fixture.substrate,
+        fixture.delta_request("fallback exact keyword"),
+        VectorRecallContext::from_lifecycle(slot, VectorRecallConfig::default()),
+    )
+    .await
+    .expect("dormant lifecycle delta");
+
+    assert_eq!(response.vector_recall_degraded.as_deref(), Some("embedding_dormant"));
+    assert!(response.delta_block.contains("mem_20260610_0000000000000061_000061"));
+}
+
 #[tokio::test]
 async fn vector_recall_disabled_does_not_call_provider_or_mark_degraded() {
     let fixture = TestRepo::new("dev_vecdisabled").await;

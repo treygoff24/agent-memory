@@ -204,6 +204,12 @@ if [ -n "$claude_config_dir" ]; then
   claude_config_dir_entry="<key>CLAUDE_CONFIG_DIR</key><string>${claude_config_dir_xml}</string>"
 fi
 
+embed_idle_unload_entry=""
+if [ "${MEMORUM_EMBED_IDLE_UNLOAD_SECS+x}" = x ]; then
+  embed_idle_unload_xml="$(xml_escape "$MEMORUM_EMBED_IDLE_UNLOAD_SECS")"
+  embed_idle_unload_entry="<key>MEMORUM_EMBED_IDLE_UNLOAD_SECS</key><string>${embed_idle_unload_xml}</string>"
+fi
+
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 launch_agents="$HOME/Library/LaunchAgents"
 
@@ -216,7 +222,8 @@ render_template() {
     -v memoryd_bin="$memoryd_bin_xml" \
     -v daemon_path="$daemon_path_xml" \
     -v user_name="$user_name_xml" \
-    -v ccd_entry="$claude_config_dir_entry" '
+    -v ccd_entry="$claude_config_dir_entry" \
+    -v embed_idle_entry="$embed_idle_unload_entry" '
     function replace_all(s, needle, replacement,    out, pos) {
       out = ""
       while ((pos = index(s, needle)) > 0) {
@@ -233,6 +240,7 @@ render_template() {
       line = replace_all(line, "{{PATH}}", daemon_path)
       line = replace_all(line, "{{USER}}", user_name)
       line = replace_all(line, "{{CLAUDE_CONFIG_DIR_ENTRY}}", ccd_entry)
+      line = replace_all(line, "{{MEMORUM_EMBED_IDLE_UNLOAD_SECS_ENTRY}}", embed_idle_entry)
       print line
     }
   ' "$template"

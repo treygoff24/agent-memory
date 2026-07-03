@@ -3,11 +3,12 @@ use std::time::Duration;
 
 use memory_substrate::{HybridVectorQuery, Substrate, VectorError};
 
-use crate::embedding::EmbeddingProvider;
+use crate::embedding::{EmbeddingProvider, EmbeddingProviderAcquire, EmbeddingProviderSlot, ProviderGuard};
 use crate::recall::config::VectorRecallConfig;
 use crate::recall::fusion::{fuse_rrf, FusedHybridCandidate};
 
 pub(crate) const DEGRADED_NO_EMBEDDING_PROVIDER: &str = "no_embedding_provider";
+pub(crate) const DEGRADED_EMBEDDING_DORMANT: &str = "embedding_dormant";
 pub(crate) const DEGRADED_NO_ACTIVE_TRIPLE: &str = "no_active_triple";
 pub(crate) const DEGRADED_TRIPLE_MISMATCH: &str = "triple_mismatch";
 pub(crate) const DEGRADED_EMBEDDING_FAILED: &str = "embedding_failed";
@@ -17,14 +18,24 @@ pub(crate) const DEGRADED_EMBEDDING_TIMEOUT: &str = "embedding_timeout";
 
 #[derive(Clone)]
 pub struct VectorRecallContext {
-    pub provider: Option<Arc<dyn EmbeddingProvider>>,
+    provider: VectorRecallProvider,
     pub config: VectorRecallConfig,
 }
 
 impl VectorRecallContext {
     pub fn new(provider: Option<Arc<dyn EmbeddingProvider>>, config: VectorRecallConfig) -> Self {
-        Self { provider, config }
+        Self { provider: VectorRecallProvider::Direct(provider), config }
     }
+
+    pub fn from_lifecycle(provider_slot: EmbeddingProviderSlot, config: VectorRecallConfig) -> Self {
+        Self { provider: VectorRecallProvider::Lifecycle(provider_slot), config }
+    }
+}
+
+#[derive(Clone)]
+enum VectorRecallProvider {
+    Direct(Option<Arc<dyn EmbeddingProvider>>),
+    Lifecycle(EmbeddingProviderSlot),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -53,26 +64,51 @@ pub(crate) async fn collect_hybrid_recall(
         return HybridRecallDecision::FtsOnly { degraded: None };
     }
 
-    let Some(provider) = context.provider.as_ref() else {
-        return HybridRecallDecision::FtsOnly { degraded: Some(DEGRADED_NO_EMBEDDING_PROVIDER) };
-    };
-
     let active_triple = match active_triple_or_degradation(substrate.active_embedding_triple()) {
         Ok(triple) => triple,
         Err(marker) => return HybridRecallDecision::FtsOnly { degraded: Some(marker) },
     };
-    if provider.triple() != &active_triple {
-        tracing::warn!(
-            provider_triple = ?provider.triple(),
-            active_triple = ?active_triple,
-            "vector recall degraded: provider triple does not match active triple"
-        );
-        return HybridRecallDecision::FtsOnly { degraded: Some(DEGRADED_TRIPLE_MISMATCH) };
-    }
-
-    let vector = match embed_query_with_timeout(provider, message, context.config.embed_timeout_ms).await {
-        Ok(vector) => vector,
-        Err(marker) => return HybridRecallDecision::FtsOnly { degraded: Some(marker) },
+    let vector = match &context.provider {
+        VectorRecallProvider::Direct(Some(provider)) => {
+            if provider.triple() != &active_triple {
+                tracing::warn!(
+                    provider_triple = ?provider.triple(),
+                    active_triple = ?active_triple,
+                    "vector recall degraded: provider triple does not match active triple"
+                );
+                return HybridRecallDecision::FtsOnly { degraded: Some(DEGRADED_TRIPLE_MISMATCH) };
+            }
+            match embed_query_with_timeout(provider, message, context.config.embed_timeout_ms).await {
+                Ok(vector) => vector,
+                Err(marker) => return HybridRecallDecision::FtsOnly { degraded: Some(marker) },
+            }
+        }
+        VectorRecallProvider::Direct(None) => {
+            return HybridRecallDecision::FtsOnly { degraded: Some(DEGRADED_NO_EMBEDDING_PROVIDER) };
+        }
+        VectorRecallProvider::Lifecycle(provider_slot) => {
+            let guard = match provider_slot.acquire_or_trigger_load() {
+                EmbeddingProviderAcquire::Active(guard) => guard,
+                EmbeddingProviderAcquire::Dormant | EmbeddingProviderAcquire::Loading => {
+                    return HybridRecallDecision::FtsOnly { degraded: Some(DEGRADED_EMBEDDING_DORMANT) };
+                }
+                EmbeddingProviderAcquire::Failed { .. } => {
+                    return HybridRecallDecision::FtsOnly { degraded: Some(DEGRADED_NO_EMBEDDING_PROVIDER) };
+                }
+            };
+            if guard.triple() != &active_triple {
+                tracing::warn!(
+                    provider_triple = ?guard.triple(),
+                    active_triple = ?active_triple,
+                    "vector recall degraded: provider triple does not match active triple"
+                );
+                return HybridRecallDecision::FtsOnly { degraded: Some(DEGRADED_TRIPLE_MISMATCH) };
+            }
+            match embed_query_guard_with_timeout(guard, message, context.config.embed_timeout_ms).await {
+                Ok(vector) => vector,
+                Err(marker) => return HybridRecallDecision::FtsOnly { degraded: Some(marker) },
+            }
+        }
     };
 
     let candidates = match substrate
@@ -123,6 +159,30 @@ async fn embed_query_with_timeout(
     let embed_provider = Arc::clone(provider);
     let body = message.to_owned();
     let task = tokio::task::spawn_blocking(move || embed_provider.embed_query(&body));
+    match tokio::time::timeout(Duration::from_millis(timeout_ms), task).await {
+        Err(_) => {
+            tracing::warn!(timeout_ms, "vector recall degraded: query embedding timed out");
+            Err(DEGRADED_EMBEDDING_TIMEOUT)
+        }
+        Ok(Ok(Ok(vector))) => Ok(vector),
+        Ok(Ok(Err(error))) => {
+            tracing::warn!(%error, "vector recall degraded: query embedding failed");
+            Err(DEGRADED_EMBEDDING_FAILED)
+        }
+        Ok(Err(join_error)) => {
+            tracing::warn!(%join_error, "vector recall degraded: query embedding task failed");
+            Err(DEGRADED_EMBEDDING_FAILED)
+        }
+    }
+}
+
+async fn embed_query_guard_with_timeout(
+    provider: ProviderGuard,
+    message: &str,
+    timeout_ms: u64,
+) -> Result<Vec<f32>, &'static str> {
+    let body = message.to_owned();
+    let task = tokio::task::spawn_blocking(move || provider.embed_query(&body));
     match tokio::time::timeout(Duration::from_millis(timeout_ms), task).await {
         Err(_) => {
             tracing::warn!(timeout_ms, "vector recall degraded: query embedding timed out");

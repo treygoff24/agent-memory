@@ -37,8 +37,10 @@ pub(crate) async fn delta_response(
         delivery_recorder: Some(state),
         peer_cooldown: Some(state),
     };
-    let vector_recall =
-        crate::recall::VectorRecallContext::new(state.embedding_provider(), load_vector_recall_config(substrate));
+    let vector_recall = crate::recall::VectorRecallContext::from_lifecycle(
+        state.embedding_provider_slot(),
+        load_vector_recall_config(substrate),
+    );
     match crate::recall::build_delta_response_with_vector_recall_and_coordination(
         substrate,
         request,
@@ -103,8 +105,10 @@ pub(crate) async fn search_response(
     }
 
     let limit = request.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX);
-    let vector_recall =
-        crate::recall::VectorRecallContext::new(state.embedding_provider(), load_vector_recall_config(substrate));
+    let vector_recall = crate::recall::VectorRecallContext::from_lifecycle(
+        state.embedding_provider_slot(),
+        load_vector_recall_config(substrate),
+    );
     let (total, mut hits) =
         match crate::recall::hybrid::collect_hybrid_recall(substrate, query, Some(&vector_recall)).await {
             crate::recall::hybrid::HybridRecallDecision::Fused { candidates } => {

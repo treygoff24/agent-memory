@@ -54,6 +54,7 @@ pub(crate) async fn status_response(substrate: &Substrate, state: &HandlerState)
         }),
         dashboard_warnings,
         recall: state.recall.snapshot(),
+        embedding: embedding_status(state),
         dreams: Default::default(),
         passive_notifications: state
             .passive_notifications
@@ -67,6 +68,19 @@ pub(crate) async fn status_response(substrate: &Substrate, state: &HandlerState)
         peer_sessions: peer_status_response(state).active_sessions,
         peer_update_count: Some(state.peer_deliveries.snapshot().len() as u64),
         compact_dream_status,
+    }
+}
+
+fn embedding_status(state: &HandlerState) -> EmbeddingStatus {
+    let snapshot = state.embedding_provider_slot().snapshot();
+    EmbeddingStatus {
+        state: snapshot.state,
+        load_count: snapshot.load_count,
+        unload_count: snapshot.unload_count,
+        idle_unload_secs: snapshot.idle_unload_secs,
+        idle_unload_source: snapshot.idle_unload_source.to_string(),
+        in_flight: snapshot.in_flight,
+        last_error: snapshot.last_error,
     }
 }
 

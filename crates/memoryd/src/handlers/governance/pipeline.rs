@@ -119,9 +119,10 @@ pub(crate) async fn governance_write_response(
         .saturating_add(WRITE_PATH_SIMILARITY_HEADROOM);
     let similarity = match state {
         Some(state) => {
+            let provider_slot = state.embedding_provider_slot();
             resolve_similarity_candidates(
                 substrate,
-                state.embedding_provider().as_ref(),
+                &provider_slot,
                 candidate.claim(),
                 candidate.namespace(),
                 &active,

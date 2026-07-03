@@ -701,6 +701,8 @@ pub struct StatusResponse {
     #[serde(default)]
     pub recall: RecallStatusCounters,
     #[serde(default)]
+    pub embedding: EmbeddingStatus,
+    #[serde(default)]
     pub dreams: DreamStatusCounters,
     #[serde(default)]
     pub passive_notifications: Vec<PassiveNotificationStatus>,
@@ -716,6 +718,32 @@ pub struct StatusResponse {
     pub peer_update_count: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compact_dream_status: Option<CompactDreamStatus>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EmbeddingStatus {
+    pub state: String,
+    pub load_count: u64,
+    pub unload_count: u64,
+    pub idle_unload_secs: Option<u64>,
+    pub idle_unload_source: String,
+    pub in_flight: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
+impl Default for EmbeddingStatus {
+    fn default() -> Self {
+        Self {
+            state: "unknown".to_string(),
+            load_count: 0,
+            unload_count: 0,
+            idle_unload_secs: None,
+            idle_unload_source: "unknown".to_string(),
+            in_flight: 0,
+            last_error: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

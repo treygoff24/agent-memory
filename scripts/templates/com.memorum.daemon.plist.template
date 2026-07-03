@@ -20,7 +20,7 @@
     <key>PATH</key>
     <string>{{PATH}}</string>
     <key>USER</key>
-    <string>{{USER}}</string>{{CLAUDE_CONFIG_DIR_ENTRY}}
+    <string>{{USER}}</string>{{CLAUDE_CONFIG_DIR_ENTRY}}{{MEMORUM_EMBED_IDLE_UNLOAD_SECS_ENTRY}}
   </dict>
   <key>RunAtLoad</key>
   <true/>

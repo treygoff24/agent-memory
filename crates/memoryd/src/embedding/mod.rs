@@ -30,64 +30,19 @@
 
 mod fastembed_provider;
 mod fixture_provider;
+pub mod lifecycle;
 mod prompts;
 pub mod worker;
 
 pub use fastembed_provider::{is_fastembed_candle_triple, FastembedProvider, LoadedDevice, FASTEMBED_CANDLE_PROVIDER};
 pub use fixture_provider::FixtureProvider;
+pub use lifecycle::{
+    EmbeddingIdleWindow, EmbeddingLifecycleSnapshot, EmbeddingProviderAcquire, EmbeddingProviderSlot, ProviderGuard,
+};
 
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::Mutex;
 
 use memory_substrate::EmbeddingTriple;
-
-/// A late-initialized, shareable handle to the active embedding provider.
-///
-/// The provider loads asynchronously a moment after daemon startup (the
-/// fastembed model load is CPU/GPU-heavy and must not gate socket binding), so
-/// the slot starts empty and the embedding worker publishes the provider into it
-/// once loaded. Consumers that need to embed on a request path — governance
-/// contradiction detection embeds the candidate text — clone this slot from
-/// `HandlerState` and read the current provider.
-///
-/// An empty slot is not an error: it means embedding inference is unavailable
-/// (model not yet loaded, load failed, or the worker is disabled). Governance
-/// treats that as "no similarity candidates" and records the degradation in the
-/// decision trace rather than silently behaving as if nothing was similar
-/// (invariant 3: no silent fallback).
-#[derive(Clone, Default)]
-pub struct EmbeddingProviderSlot {
-    inner: Arc<RwLock<Option<Arc<dyn EmbeddingProvider>>>>,
-}
-
-impl EmbeddingProviderSlot {
-    /// An empty slot — no provider published yet.
-    pub fn empty() -> Self {
-        Self::default()
-    }
-
-    /// Publish the loaded provider so request-path consumers can embed with it.
-    pub fn set(&self, provider: Arc<dyn EmbeddingProvider>) {
-        match self.inner.write() {
-            Ok(mut guard) => {
-                *guard = Some(provider);
-            }
-            Err(error) => {
-                tracing::error!(%error, "embedding provider slot poisoned while publishing provider");
-            }
-        }
-    }
-
-    /// The current provider, or `None` if none has been published yet.
-    pub fn get(&self) -> Option<Arc<dyn EmbeddingProvider>> {
-        match self.inner.read() {
-            Ok(guard) => guard.clone(),
-            Err(error) => {
-                tracing::error!(%error, "embedding provider slot poisoned while reading provider");
-                None
-            }
-        }
-    }
-}
 
 static MODEL_LOAD_FAILURE: Mutex<Option<String>> = Mutex::new(None);
 
@@ -120,13 +75,6 @@ pub(crate) fn model_load_failure() -> Option<String> {
             tracing::error!(%error, "embedding model-load status lock poisoned while reading failure");
             None
         }
-    }
-}
-
-impl std::fmt::Debug for EmbeddingProviderSlot {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let loaded = self.get().is_some();
-        f.debug_struct("EmbeddingProviderSlot").field("loaded", &loaded).finish()
     }
 }
 

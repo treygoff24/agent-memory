@@ -78,7 +78,7 @@ assert_contains "<key>USER</key>"
 assert_contains "<string>$runtime/dream-scheduled.out.log</string>"
 
 # All templated placeholders must be rendered away.
-for placeholder in "{{PATH}}" "{{CLAUDE_CONFIG_DIR_ENTRY}}" "{{MEMORYD_BIN}}" "{{HOME}}"; do
+for placeholder in "{{PATH}}" "{{CLAUDE_CONFIG_DIR_ENTRY}}" "{{MEMORYD_BIN}}" "{{HOME}}" "{{MEMORUM_EMBED_IDLE_UNLOAD_SECS_ENTRY}}"; do
   if grep -Fq -- "$placeholder" "$out"; then
     echo "unrendered placeholder remained: $placeholder" >&2
     cat "$out" >&2
@@ -90,6 +90,11 @@ done
 # auto-detects). The installer never reads an ambient CLAUDE_CONFIG_DIR.
 if grep -Fq -- "CLAUDE_CONFIG_DIR" "$out"; then
   echo "CLAUDE_CONFIG_DIR injected without --claude-config-dir flag" >&2
+  cat "$out" >&2
+  exit 1
+fi
+if grep -Fq -- "MEMORUM_EMBED_IDLE_UNLOAD_SECS" "$out"; then
+  echo "MEMORUM_EMBED_IDLE_UNLOAD_SECS injected without ambient env var" >&2
   cat "$out" >&2
   exit 1
 fi
@@ -177,5 +182,14 @@ expect_rejection "tilde-claude-config-dir" "literal ~ is not expanded here" \
   --repo "$repo" --runtime "$runtime" --claude-config-dir '~/.claude' --dry-run
 expect_rejection "empty-claude-config-dir-value" "--claude-config-dir requires a non-empty value" \
   --repo "$repo" --runtime "$runtime" --claude-config-dir --dry-run
+
+idle_out="$tmp/embed-idle.out"
+MEMORUM_EMBED_IDLE_UNLOAD_SECS=42 bash "$repo_root/scripts/install-launchd.sh" \
+  --repo "$repo" \
+  --runtime "$runtime" \
+  --daemon \
+  --dry-run >"$idle_out"
+assert_file_contains "$idle_out" "<key>MEMORUM_EMBED_IDLE_UNLOAD_SECS</key>" "embed idle key"
+assert_file_contains "$idle_out" "<string>42</string>" "embed idle value"
 
 echo "install-launchd.test.sh: all checks passed"

@@ -22,7 +22,7 @@ use memory_substrate::{
     AuxScope, EmbeddingTriple, Memory, MemoryContent, MemoryStatus, RecallIndexQuery, Scope, Substrate, VectorError,
 };
 
-use crate::embedding::EmbeddingProvider;
+use crate::embedding::{EmbeddingProviderAcquire, EmbeddingProviderSlot, ProviderGuard};
 use crate::handlers::{entity_ids, namespace_for_frontmatter, HandlerError};
 
 pub(crate) fn load_policy_set(repo: &Path) -> Result<(PolicySet, PolicySource), HandlerError> {
@@ -311,30 +311,16 @@ fn scopes_for_namespace(namespace: &str) -> Vec<Scope> {
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn resolve_similarity_candidates(
     substrate: &Substrate,
-    provider: Option<&std::sync::Arc<dyn EmbeddingProvider>>,
+    provider_slot: &EmbeddingProviderSlot,
     candidate_body: &str,
     namespace: &str,
     active: &[ExistingMemorySummary],
     limit: usize,
 ) -> SimilarityResolution {
-    let Some(provider) = provider else {
-        return SimilarityResolution::degraded("similarity_degraded:no_embedding_provider");
-    };
-
     let active_triple = match active_triple_or_degradation(substrate.active_embedding_triple()) {
         Ok(triple) => triple,
         Err(degradation) => return degradation,
     };
-    if provider.triple() != &active_triple {
-        // Invariant 3: triple is identity. Embedding with a model that disagrees
-        // with the vec table would compare vectors from different spaces.
-        tracing::warn!(
-            provider_triple = ?provider.triple(),
-            active_triple = ?active_triple,
-            "contradiction similarity degraded: provider triple does not match active triple"
-        );
-        return SimilarityResolution::degraded("similarity_degraded:triple_mismatch");
-    }
 
     let scopes = scopes_for_namespace(namespace);
     if scopes.is_empty() {
@@ -345,18 +331,22 @@ pub(super) async fn resolve_similarity_candidates(
 
     // Embed off the async runtime: candle compute blocks. Candidate text is the
     // *query* side of the asymmetric pair (see doc comment).
-    let embed_provider = std::sync::Arc::clone(provider);
     let body = candidate_body.to_string();
-    let vector = match tokio::task::spawn_blocking(move || embed_provider.embed_query(&body)).await {
-        Ok(Ok(vector)) => vector,
-        Ok(Err(error)) => {
-            tracing::warn!(%error, "contradiction similarity degraded: candidate embedding failed");
-            return SimilarityResolution::degraded("similarity_degraded:embedding_failed");
+    let guard = match provider_slot.acquire_or_trigger_load() {
+        EmbeddingProviderAcquire::Active(guard) => guard,
+        EmbeddingProviderAcquire::Dormant | EmbeddingProviderAcquire::Loading => {
+            return SimilarityResolution::degraded("similarity_degraded:embedding_dormant");
         }
-        Err(join_error) => {
-            tracing::warn!(%join_error, "contradiction similarity degraded: embedding task panicked");
-            return SimilarityResolution::degraded("similarity_degraded:embedding_failed");
+        EmbeddingProviderAcquire::Failed { .. } => {
+            return SimilarityResolution::degraded("similarity_degraded:no_embedding_provider");
         }
+    };
+    if guard.triple() != &active_triple {
+        return degraded_guard_triple_mismatch(&guard, &active_triple);
+    }
+    let vector = match embed_candidate_body_guard(guard, body).await {
+        Ok(vector) => vector,
+        Err(degradation) => return degradation,
     };
 
     let neighbours = match substrate.knn_active_memories(&active_triple, &vector, &scopes, limit).await {
@@ -386,6 +376,36 @@ pub(super) async fn resolve_similarity_candidates(
         })
         .collect::<Vec<_>>();
     SimilarityResolution::available(hits)
+}
+
+fn degraded_triple_mismatch(
+    provider_triple: &EmbeddingTriple,
+    active_triple: &EmbeddingTriple,
+) -> SimilarityResolution {
+    tracing::warn!(
+        provider_triple = ?provider_triple,
+        active_triple = ?active_triple,
+        "contradiction similarity degraded: provider triple does not match active triple"
+    );
+    SimilarityResolution::degraded("similarity_degraded:triple_mismatch")
+}
+
+fn degraded_guard_triple_mismatch(provider: &ProviderGuard, active_triple: &EmbeddingTriple) -> SimilarityResolution {
+    degraded_triple_mismatch(provider.triple(), active_triple)
+}
+
+async fn embed_candidate_body_guard(provider: ProviderGuard, body: String) -> Result<Vec<f32>, SimilarityResolution> {
+    match tokio::task::spawn_blocking(move || provider.embed_query(&body)).await {
+        Ok(Ok(vector)) => Ok(vector),
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "contradiction similarity degraded: candidate embedding failed");
+            Err(SimilarityResolution::degraded("similarity_degraded:embedding_failed"))
+        }
+        Err(join_error) => {
+            tracing::warn!(%join_error, "contradiction similarity degraded: embedding task panicked");
+            Err(SimilarityResolution::degraded("similarity_degraded:embedding_failed"))
+        }
+    }
 }
 
 fn active_triple_or_degradation(
@@ -501,7 +521,7 @@ mod tests {
     use memory_substrate::{InitOptions, Roots};
 
     use super::*;
-    use crate::embedding::{EmbeddingError, FixtureProvider};
+    use crate::embedding::{EmbeddingError, EmbeddingProvider, FixtureProvider};
 
     async fn init_substrate() -> (tempfile::TempDir, Substrate) {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -544,7 +564,9 @@ mod tests {
         substrate: &Substrate,
         provider: Arc<dyn EmbeddingProvider>,
     ) -> Option<&'static str> {
-        resolve_similarity_candidates(substrate, Some(&provider), "candidate claim", "project", &[], 5)
+        let slot = EmbeddingProviderSlot::empty();
+        slot.set(provider);
+        resolve_similarity_candidates(substrate, &slot, "candidate claim", "project", &[], 5)
             .await
             .degradation
     }

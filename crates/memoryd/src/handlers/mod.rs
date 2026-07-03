@@ -30,14 +30,14 @@ use tokio::sync::{broadcast, Mutex};
 
 use crate::dream::rehydration;
 use crate::protocol::{
-    CaptureSourceMode, CaptureSourceResponse, CompactDreamStatus, DaemonProcessStatus, GetProvenance, GetResponse,
-    GovernanceStatus, IndexStats, NotificationEvent, ObserveResponse, ObserveTarget, PassiveNotificationStatus,
-    PeerActivityResponse, PeerDeliveryAuditEntry, PeerReleaseLockResponse, PeerReleaseLockStatus, PeerSessionStatus,
-    PeerStatusResponse, QuarantineResolutionMode, QuarantineResolveResponse, RealityCheckAction,
-    RealityCheckHistorySession, RealityCheckRequest, RealityCheckResponse, RequestEnvelope, RequestPayload,
-    RespondRefusalKind, ResponseEnvelope, ResponsePayload, RevealResponse, ReviewDecisionResponse, ReviewQueueCounts,
-    ReviewQueueItemResponse, ReviewQueueResponse, SearchHit, SearchResponse, SourceCapturePayload, StatusResponse,
-    WebDashboardStatus, WriteNoteResponse, MAX_FRAME_BYTES, NOTIFICATION_CHANNEL_CAPACITY,
+    CaptureSourceMode, CaptureSourceResponse, CompactDreamStatus, DaemonProcessStatus, EmbeddingStatus, GetProvenance,
+    GetResponse, GovernanceStatus, IndexStats, NotificationEvent, ObserveResponse, ObserveTarget,
+    PassiveNotificationStatus, PeerActivityResponse, PeerDeliveryAuditEntry, PeerReleaseLockResponse,
+    PeerReleaseLockStatus, PeerSessionStatus, PeerStatusResponse, QuarantineResolutionMode, QuarantineResolveResponse,
+    RealityCheckAction, RealityCheckHistorySession, RealityCheckRequest, RealityCheckResponse, RequestEnvelope,
+    RequestPayload, RespondRefusalKind, ResponseEnvelope, ResponsePayload, RevealResponse, ReviewDecisionResponse,
+    ReviewQueueCounts, ReviewQueueItemResponse, ReviewQueueResponse, SearchHit, SearchResponse, SourceCapturePayload,
+    StatusResponse, WebDashboardStatus, WriteNoteResponse, MAX_FRAME_BYTES, NOTIFICATION_CHANNEL_CAPACITY,
 };
 use crate::reality_check::{RcAdvanceRequest, RcRunRequest, RcSessionAdvance, RcSessionHandler};
 use crate::recall::{
@@ -158,11 +158,6 @@ impl HandlerState {
     /// publish the loaded provider and for governance to embed write candidates.
     pub fn embedding_provider_slot(&self) -> crate::embedding::EmbeddingProviderSlot {
         self.embedding_provider.clone()
-    }
-
-    /// The active embedding provider, if one has been loaded and published.
-    pub(crate) fn embedding_provider(&self) -> Option<std::sync::Arc<dyn crate::embedding::EmbeddingProvider>> {
-        self.embedding_provider.get()
     }
 
     pub fn subscribe_notifications(&self) -> broadcast::Receiver<crate::protocol::NotificationEvent> {

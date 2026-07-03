@@ -45,7 +45,7 @@ pub(super) async fn doctor_response(substrate: &Substrate, state: &HandlerState)
     // Embedding-pipeline findings are advisory: recall still works via FTS bm25
     // without vectors (a freshly-initialized substrate legitimately has a backlog
     // before the worker first drains).
-    findings.extend(embedding_health_findings(substrate).await);
+    findings.extend(embedding_health_findings(substrate, state).await);
     // Foundation-loop checks (F4 D1-D4): dream freshness (advisory), sync/quarantine
     // (fatal), stale uncommitted substrate (fatal), recall budget pressure (advisory).
     findings.extend(foundation_loop_findings(substrate, state).await);
@@ -268,7 +268,7 @@ fn doctor_is_healthy(
 /// warnings, not repair-required: recall still works via FTS bm25, just without
 /// vector similarity. A persistent backlog with zero vectors is the strong
 /// "embeddings are not being produced" signal worth surfacing prominently.
-async fn embedding_health_findings(substrate: &Substrate) -> Vec<DoctorFinding> {
+async fn embedding_health_findings(substrate: &Substrate, state: &HandlerState) -> Vec<DoctorFinding> {
     let mut findings = Vec::new();
     let backlog = match substrate.pending_embedding_job_count() {
         Ok(count) => count,
@@ -295,13 +295,34 @@ async fn embedding_health_findings(substrate: &Substrate) -> Vec<DoctorFinding> 
         }
     }
 
-    if let Some(error) = crate::embedding::model_load_failure() {
+    let lifecycle = state.embedding_provider_slot().snapshot();
+    let load_error = if lifecycle.state == "failed" {
+        lifecycle.last_error.or_else(crate::embedding::model_load_failure)
+    } else {
+        crate::embedding::model_load_failure()
+    };
+    if let Some(error) = load_error {
+        // F7: distinguish intentional disable (MEMORUM_DISABLE_EMBEDDING_WORKER)
+        // from transient load failures. The disabled path is a permanent,
+        // intentional opt-out — retry guidance is wrong for it.
+        let is_intentionally_disabled = error.contains("MEMORUM_DISABLE_EMBEDDING_WORKER");
+        let (message, repair) = if is_intentionally_disabled {
+            (
+                "embedding worker is intentionally disabled (MEMORUM_DISABLE_EMBEDDING_WORKER); vector recall is FTS-only. This is a permanent opt-out, not a transient failure.".to_string(),
+                Some("Unset MEMORUM_DISABLE_EMBEDDING_WORKER and restart memoryd to enable the embedding worker.".to_string()),
+            )
+        } else {
+            (
+                format!(
+                    "embedding model load is failing and the daemon is retrying on a slow backoff; vector recall is FTS-only until a retry succeeds. Last error: {error}"
+                ),
+                Some("Check network/model-cache availability and daemon logs; no restart is required after connectivity recovers.".to_string()),
+            )
+        };
         findings.push(DoctorFinding {
             code: "embedding_model_load_failed".to_string(),
-            message: format!(
-                "embedding model load is failing and the daemon is retrying on a slow backoff; vector recall is FTS-only until a retry succeeds. Last error: {error}"
-            ),
-            repair: Some("Check network/model-cache availability and daemon logs; no restart is required after connectivity recovers.".to_string()),
+            message,
+            repair,
             severity: DoctorSeverity::Advisory,
         });
     }
@@ -319,7 +340,16 @@ async fn embedding_health_findings(substrate: &Substrate) -> Vec<DoctorFinding> 
         });
     }
 
-    if backlog > 0 && vector_count == Some(0) {
+    // F1: `embedding_worker_idle` fires only when the lifecycle is in a
+    // terminal-degraded state (failed or no loader configured). A fresh or
+    // restarted daemon with pending jobs is in dormant/loading/active — that is
+    // healthy per design amendment F4, and the `embedding_backlog` advisory
+    // below covers the transient backlog. Without this gate, the finding
+    // false-alarms during the normal dormant→loading→first-drain window.
+    let loader_configured = state.embedding_provider_slot().has_loader_configured();
+    let worker_idle = backlog > 0 && vector_count == Some(0) && (lifecycle.state == "failed" || !loader_configured);
+
+    if worker_idle {
         // Backlog exists but nothing has ever been embedded for the active
         // triple — the worker is down (model load failed, disabled, or the
         // daemon was started without it). This is the headline finding.
