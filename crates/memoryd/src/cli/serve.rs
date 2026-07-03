@@ -11,6 +11,19 @@ use crate::server::{self, ServerOptions};
 use crate::state;
 
 pub async fn run(args: ServeArgs) -> anyhow::Result<()> {
+    // Daemon-only logging: the tracing facade has no global subscriber
+    // anywhere else in the workspace, so without this init every
+    // tracing::warn!/error! in the daemon is silently dropped. Scoped to
+    // `serve` deliberately — CLI paths must stay quiet (the passive recall
+    // hook contract requires zero stderr output on the hook path).
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .with_writer(std::io::stderr)
+        .with_ansi(false)
+        .try_init();
     let roots = Roots::new(args.repo, args.runtime);
     let loaded_config =
         memory_substrate::config::load_config(&roots.repo, &roots.runtime, None).map_err(anyhow::Error::msg)?;

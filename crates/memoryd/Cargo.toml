@@ -46,6 +46,7 @@ tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["env-filter", "fmt", "ansi"] }
 ulid.workspace = true
 walkdir.workspace = true
 which.workspace = true
