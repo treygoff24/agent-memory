@@ -134,8 +134,8 @@ async fn vector_degradation_rungs_mark_and_fallback_to_fts() {
 /// `None`→`no_embedding_provider` case above is correct for never-armed.
 #[tokio::test]
 async fn f10_dormant_lifecycle_slot_degrades_to_embedding_dormant_rung() {
-    use std::time::Duration;
     use memoryd::embedding::{EmbeddingIdleWindow, EmbeddingProviderSlot};
+    use std::time::Duration;
 
     let fixture = TestRepo::new("dev_vecdormantrung").await;
     fixture

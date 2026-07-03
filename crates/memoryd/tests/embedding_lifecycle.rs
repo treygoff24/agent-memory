@@ -366,11 +366,7 @@ async fn f03_timeout_abandoned_guard_keeps_in_flight_until_embed_completes() {
     // because in_flight > 0.
     tokio::time::sleep(Duration::from_millis(40)).await;
     slot.check_idle_now();
-    assert_eq!(
-        slot.snapshot().state,
-        "unloading-pending-inflight",
-        "unload must defer while in_flight > 0",
-    );
+    assert_eq!(slot.snapshot().state, "unloading-pending-inflight", "unload must defer while in_flight > 0",);
 
     // Release the channel: the blocking embed finishes, the guard drops,
     // in_flight drops to 0, and unload can proceed.
@@ -576,22 +572,14 @@ async fn f1_stale_load_completion_does_not_clobber_newer_active() {
     eventually("stale load A completion is processed", || load_a_handle.is_finished()).await;
 
     // State must remain Active — the stale failure was discarded.
-    assert_eq!(
-        slot.snapshot().state,
-        "active",
-        "stale load A failure must not clobber B's Active state",
-    );
+    assert_eq!(slot.snapshot().state, "active", "stale load A failure must not clobber B's Active state",);
 
     // B's provider must still be the one served.
     let guard_after = match slot.acquire() {
         EmbeddingProviderAcquire::Active(guard) => guard,
         _ => panic!("expected active provider after stale A completion"),
     };
-    assert_eq!(
-        guard_after.triple(),
-        &b_triple,
-        "B's provider must still be served after stale A completion",
-    );
+    assert_eq!(guard_after.triple(), &b_triple, "B's provider must still be served after stale A completion",);
     drop(guard_after);
 
     // B's load count must still be 1 (A's stale success/failure did not
@@ -639,27 +627,15 @@ async fn f2_stale_idle_timer_does_not_unload_new_provider_or_strand_armed_flag()
     // before the reconfigure). The new provider must still be Active — the
     // stale timer no-op'd.
     tokio::time::sleep(Duration::from_millis(30)).await;
-    assert_eq!(
-        slot.snapshot().state,
-        "active",
-        "stale idle timer must not unload the freshly-reloaded provider early",
-    );
-    assert_eq!(
-        slot.snapshot().unload_count, 0,
-        "stale idle timer must not increment unload_count",
-    );
+    assert_eq!(slot.snapshot().state, "active", "stale idle timer must not unload the freshly-reloaded provider early",);
+    assert_eq!(slot.snapshot().unload_count, 0, "stale idle timer must not increment unload_count",);
 
     // Now verify the fresh 200ms idle TIMER unloads on its own — deliberately
     // no `check_idle_now()`, so a broken timer re-arm path cannot hide behind
     // the manual fallback.
-    eventually("fresh idle timer unloads on schedule without manual check", || {
-        slot.snapshot().state == "dormant"
-    })
-    .await;
-    assert_eq!(
-        slot.snapshot().unload_count, 1,
-        "unload_count must be 1 after the fresh idle cycle unloads",
-    );
+    eventually("fresh idle timer unloads on schedule without manual check", || slot.snapshot().state == "dormant")
+        .await;
+    assert_eq!(slot.snapshot().unload_count, 1, "unload_count must be 1 after the fresh idle cycle unloads",);
 }
 
 /// Round-3 F2 pin: an idle unload via the GUARD-DROP path (not the timer's
@@ -780,16 +756,9 @@ async fn delta_with_slot(
     .expect("delta")
 }
 
-async fn request_doctor_with_state(
-    substrate: &Substrate,
-    state: &HandlerState,
-) -> memoryd::protocol::DoctorResponse {
-    let response = handle_request_with_state(
-        substrate,
-        state,
-        RequestEnvelope::new("doctor", RequestPayload::Doctor),
-    )
-    .await;
+async fn request_doctor_with_state(substrate: &Substrate, state: &HandlerState) -> memoryd::protocol::DoctorResponse {
+    let response =
+        handle_request_with_state(substrate, state, RequestEnvelope::new("doctor", RequestPayload::Doctor)).await;
     match response.result {
         ResponseResult::Success(ResponsePayload::Doctor(doctor)) => doctor,
         other => panic!("expected doctor success, got {other:?}"),

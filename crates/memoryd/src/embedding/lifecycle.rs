@@ -396,8 +396,7 @@ impl EmbeddingProviderSlot {
                     Ok(())
                 }
                 Phase::Failed => {
-                    let error =
-                        state.last_error.clone().unwrap_or_else(|| "embedding model load failed".to_string());
+                    let error = state.last_error.clone().unwrap_or_else(|| "embedding model load failed".to_string());
                     Err(EmbeddingError::Load(error))
                 }
                 // The notification was not from our load (e.g. an idle-unload
@@ -658,9 +657,7 @@ fn record_failure_locked(state: &mut State, message: String) {
 }
 
 fn failure_backoff_elapsed(state: &State) -> bool {
-    state
-        .last_failure
-        .is_none_or(|failed_at| failed_at.elapsed() >= state.load_retry_backoff)
+    state.last_failure.is_none_or(|failed_at| failed_at.elapsed() >= state.load_retry_backoff)
 }
 
 impl std::fmt::Debug for EmbeddingProviderSlot {

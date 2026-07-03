@@ -566,9 +566,7 @@ mod tests {
     ) -> Option<&'static str> {
         let slot = EmbeddingProviderSlot::empty();
         slot.set(provider);
-        resolve_similarity_candidates(substrate, &slot, "candidate claim", "project", &[], 5)
-            .await
-            .degradation
+        resolve_similarity_candidates(substrate, &slot, "candidate claim", "project", &[], 5).await.degradation
     }
 
     #[test]
