@@ -11,7 +11,7 @@ Measured basis (branch binary, release, fresh temp store):
 | State | RSS |
 | --- | --- |
 | Daemon, model not loaded (load failed, retrying) | **188–194 MB** steady over 2 min, writes+search included |
-| Daemon, model loaded (Metal fp16) | **(measured in amendment below — expected ~1.3–2.4 GB; weights are 1.1 GB on disk)** |
+| Model resident, in-process (real-model smoke test, Metal fp16) | **1,139 MB peak** (load: 7.75s cold cache, 0.4s warm; embed 28–38ms) |
 
 The non-model daemon is already at ~194 MB. The entire fix is **model lifecycle**, not micro-optimization.
 
