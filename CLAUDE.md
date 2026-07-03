@@ -38,7 +38,7 @@ When Trey says "the spec" or "the plan" without a version, he means the latest. 
 | B      | (in system spec)                             | `docs/plans/2026-04-28-stream-b-daemon-mcp.md`                              |
 | C      | (in system spec)                             | `docs/plans/2026-04-29-stream-c-governance.md`                              |
 | D      | `docs/specs/stream-d-privacy-v0.1.md`        | (in Stream D plan)                                                          |
-| E      | `docs/specs/stream-e-passive-recall-v0.5.md` | `docs/plans/2026-04-30-stream-e-passive-recall.md`                          |
+| E      | `docs/specs/stream-e-passive-recall-v0.7.md` | `docs/plans/2026-04-30-stream-e-passive-recall.md`                          |
 | F      | `docs/specs/stream-f-dreaming-v0.3.md`       | `docs/plans/2026-04-30-stream-f-dreaming.md`                                |
 | G      | `docs/specs/stream-g-observability-v0.1.md`  | `docs/plans/2026-05-01-stream-g-observability.md`                           |
 | H      | `docs/specs/stream-h-eval-harness-v0.1.md`   | `docs/plans/2026-05-01-stream-h-eval-harness.md`                            |

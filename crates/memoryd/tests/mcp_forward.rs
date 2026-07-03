@@ -131,7 +131,7 @@ async fn forward_memory_startup_round_trips_through_live_substrate_daemon() {
     match response.result {
         ResponseResult::Success(ResponsePayload::Startup(startup)) => {
             assert_eq!(startup.session_binding.session_id, "sess_mcp_live");
-            assert!(startup.recall_block.starts_with("<memory-recall version=\"stream-e-v0.6\""));
+            assert!(startup.recall_block.starts_with("<memory-recall version=\"stream-e-v0.7\""));
         }
         other => panic!("expected live startup response, got {other:?}"),
     }

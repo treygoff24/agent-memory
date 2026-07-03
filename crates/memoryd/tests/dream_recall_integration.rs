@@ -395,7 +395,7 @@ fn assert_counter_absent(status: &memoryd::protocol::StatusResponse, reason: &st
 
 fn stream_e_empty_baseline(cwd: &str) -> String {
     let template = [
-        "<memory-recall version=\"stream-e-v0.6\" harness=\"codex\" session=\"sess_dream\">".to_owned(),
+        "<memory-recall version=\"stream-e-v0.7\" harness=\"codex\" session=\"sess_dream\">".to_owned(),
         "  <identity>".to_owned(),
         "    - harness: codex".to_owned(),
         "    - session: sess_dream".to_owned(),
@@ -411,7 +411,7 @@ fn stream_e_empty_baseline(cwd: &str) -> String {
         "  </recent-memory>".to_owned(),
         "  <pending-attention>".to_owned(),
         "  </pending-attention>".to_owned(),
-        "  <recall-explanation policy=\"stream-e-v0.6\" budget-tokens=\"512\" used-tokens=\"{used}\">".to_owned(),
+        "  <recall-explanation policy=\"stream-e-v0.7\" budget-tokens=\"512\" used-tokens=\"{used}\">".to_owned(),
         "    Deterministic passive recall from Memorum index rows.".to_owned(),
         "  </recall-explanation>".to_owned(),
         "</memory-recall>".to_owned(),

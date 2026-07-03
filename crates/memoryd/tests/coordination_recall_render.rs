@@ -159,7 +159,7 @@ fn startup_renders_peer_updates_but_never_peer_presence() {
         Some(&insertion),
     );
 
-    assert!(rendered.starts_with("<memory-recall version=\"stream-e-v0.6\" harness=\"codex\" session=\"sess_current\" coordination=\"stream-i-v0.1\">"));
+    assert!(rendered.starts_with("<memory-recall version=\"stream-e-v0.7\" harness=\"codex\" session=\"sess_current\" coordination=\"stream-i-v0.1\">"));
     assert_in_order(&rendered, &["<entity-recall", "<peer-update", "</entity-recall>"]);
     assert!(!rendered.contains("<peer-presence"));
 }
@@ -170,7 +170,7 @@ fn startup_without_coordination_preserves_existing_root_shape() {
         render_startup_frame_with_coordination(&session_binding(), &RecallExplanation::empty(3600), &[], None);
 
     assert!(
-        rendered.starts_with("<memory-recall version=\"stream-e-v0.6\" harness=\"codex\" session=\"sess_current\">")
+        rendered.starts_with("<memory-recall version=\"stream-e-v0.7\" harness=\"codex\" session=\"sess_current\">")
     );
     assert!(!rendered.contains("coordination="));
 }
@@ -203,7 +203,7 @@ fn startup_renders_cross_device_updates_separately_with_device_other() {
         },
     );
 
-    assert!(rendered.starts_with("<memory-recall version=\"stream-e-v0.6\" harness=\"codex\" session=\"sess_current\" coordination=\"stream-i-v0.1\">"));
+    assert!(rendered.starts_with("<memory-recall version=\"stream-e-v0.7\" harness=\"codex\" session=\"sess_current\" coordination=\"stream-i-v0.1\">"));
     assert_in_order(&rendered, &["<entity-recall", "<peer-update", "<cross-device-updates", "</entity-recall>"]);
     assert!(rendered.contains("<cross-device-updates from-sync=\"2026-05-01\">"));
     assert!(rendered.contains(

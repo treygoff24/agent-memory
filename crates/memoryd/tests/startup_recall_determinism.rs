@@ -60,7 +60,7 @@ fn rendered_entry_truncates_summary_and_snippet_inside_xml_fields() {
 
 #[test]
 fn empty_startup_frame_contains_required_sections_in_spec_order() {
-    assert_eq!(STREAM_E_POLICY, "stream-e-v0.6");
+    assert_eq!(STREAM_E_POLICY, "stream-e-v0.7");
 
     let binding = session_binding();
     let explanation = RecallExplanation::empty(3600);
@@ -70,7 +70,7 @@ fn empty_startup_frame_contains_required_sections_in_spec_order() {
     assert_in_order(
         &frame,
         &[
-            "<memory-recall version=\"stream-e-v0.6\" harness=\"codex\" session=\"sess_abc123\">",
+            "<memory-recall version=\"stream-e-v0.7\" harness=\"codex\" session=\"sess_abc123\">",
             "<identity>",
             "</identity>",
             "<project-state project=\"agent-memory\" resolved-via=\"git_remote\">",
@@ -81,7 +81,7 @@ fn empty_startup_frame_contains_required_sections_in_spec_order() {
             "</recent-memory>",
             "<pending-attention>",
             "</pending-attention>",
-            "<recall-explanation policy=\"stream-e-v0.6\" budget-tokens=\"3600\" used-tokens=\"0\">",
+            "<recall-explanation policy=\"stream-e-v0.7\" budget-tokens=\"3600\" used-tokens=\"0\">",
             "</recall-explanation>",
             "</memory-recall>",
         ],

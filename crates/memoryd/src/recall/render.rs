@@ -781,7 +781,7 @@ mod tests {
             StartupCoordinationRender::default(),
         );
 
-        assert!(passive.starts_with("<memory-recall version=\"stream-e-v0.6\" harness=\"claude-code\">"));
+        assert!(passive.starts_with("<memory-recall version=\"stream-e-v0.7\" harness=\"claude-code\">"));
         assert!(!passive.contains("session=\""), "passive frame must not carry the session attribute");
         assert!(!passive.contains("sess_should_not_appear"));
 

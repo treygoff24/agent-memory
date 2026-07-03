@@ -45,7 +45,7 @@ async fn recall_cli_startup_and_delta_print_only_xml_and_update_daemon_counters(
     .await;
     assert!(startup.status.success(), "startup stderr: {}", String::from_utf8_lossy(&startup.stderr));
     let startup_stdout = String::from_utf8(startup.stdout).expect("startup stdout utf8");
-    assert!(startup_stdout.starts_with("<memory-recall version=\"stream-e-v0.6\""));
+    assert!(startup_stdout.starts_with("<memory-recall version=\"stream-e-v0.7\""));
     assert!(String::from_utf8_lossy(&startup.stderr).is_empty(), "success diagnostics stay off stderr");
 
     let delta = run_memoryd_async([
