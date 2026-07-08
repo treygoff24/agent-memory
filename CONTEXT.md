@@ -22,7 +22,7 @@ A cue derived from a submitted user message (or a subagent's task brief).
 A cue derived from tool activity — files touched, commands run, errors emitted — perceived via post-tool-use lifecycle events.
 
 **Rising edge**:
-The discipline that a memory fires when its cue *becomes* active, not continuously while the cue stays active; one ping, never a nag.
+The discipline that a memory fires when its cue _becomes_ active, not continuously while the cue stays active; one ping, never a nag.
 
 **Silence**:
 The valid, default output of the associative channel when nothing clears the relevance bar. Token efficiency is a consequence of the bar, not the target.
@@ -44,7 +44,7 @@ Inferred evidence that a surfaced memory mattered: same-session **echo** (the me
 The per-session record of what the channel has already injected — the state behind rising-edge dedup, echo detection, and habituation telemetry.
 
 **Retina**:
-The fast-model role (Gemma 4 31B on Cerebras today; a config value, not an identity): sensing, extraction, classification, and ranking over *presented* items. The retina proposes, never disposes — its output is always a candidate, flag, or ranking with machine-verifiable provenance, never a canonical write or free conclusion.
+The fast-model role (Gemma 4 31B on Cerebras today; a config value, not an identity): sensing, extraction, classification, and ranking over _presented_ items. The retina proposes, never disposes — its output is always a candidate, flag, or ranking with machine-verifiable provenance, never a canonical write or free conclusion.
 _Avoid_: gemma (the model is swappable), fast judge
 
 **Cortex**:
