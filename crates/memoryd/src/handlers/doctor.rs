@@ -167,7 +167,7 @@ fn sync_conflict_finding_from_state(repo: &Path, runtime: &Path, quarantined: u6
     Some(fatal_finding(
         "sync_blocked",
         format!(
-            "Sync is blocked: {}. Resolve with `memoryd quarantine list`/`resolve` (or finish/abort the merge, then re-run startup reconciliation).",
+            "Sync is blocked: {}. Merge-conflict quarantines: `memoryd quarantine list`/`resolve`; governance quarantines: `memoryd review approve`/`reject` (or finish/abort the merge, then re-run startup reconciliation).",
             parts.join(" and ")
         ),
         Some("memoryd quarantine list".to_string()),

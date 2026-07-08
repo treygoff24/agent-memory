@@ -133,6 +133,136 @@ async fn review_decision_rejects_active_memory_without_mutating_it() {
 }
 
 #[tokio::test]
+async fn review_approve_promotes_governance_quarantine_and_restores_retrieval() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let substrate = init_substrate(roots).await;
+    let quarantined = review_memory();
+    let id = quarantined.frontmatter.id.as_str().to_string();
+    write_test_memory(&substrate, quarantined).await;
+
+    let response = handle_request(
+        &substrate,
+        RequestEnvelope::new("req-review-approve-quarantine", RequestPayload::ReviewApprove { id: id.clone() }),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::ReviewApprove(decision)) = response.result else {
+        panic!("expected approve success for governance quarantine, got {:?}", response.result);
+    };
+    assert_eq!(decision.status, "approved");
+
+    let saved = substrate.read_memory(&MemoryId::new(&id)).await.expect("promoted memory readable");
+    assert_eq!(saved.frontmatter.status, MemoryStatus::Active);
+    assert_eq!(saved.frontmatter.trust_level, TrustLevel::Trusted);
+    assert_eq!(saved.frontmatter.review_state, None);
+    assert!(!saved.frontmatter.requires_user_confirmation);
+    assert!(!saved.frontmatter.write_policy.human_review_required);
+    // The quarantine suppressed the retrieval surface at write time; promotion
+    // must restore it or the memory stays invisible to recall forever.
+    assert!(saved.frontmatter.retrieval_policy.passive_recall);
+    assert!(saved.frontmatter.retrieval_policy.index_body);
+    assert!(saved.frontmatter.retrieval_policy.index_embeddings);
+    // Quarantine artifacts are dropped on promotion.
+    assert_eq!(saved.frontmatter.merge_diagnostics, None);
+    assert!(!saved.frontmatter.extras.contains_key("governance_reason"));
+}
+
+#[tokio::test]
+async fn review_approve_still_refuses_merge_quarantine() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let substrate = init_substrate(roots).await;
+    let mut merge_quarantined = review_memory();
+    merge_quarantined.frontmatter.merge_diagnostics = Some(serde_json::json!([{
+        "merge_id": "merge_test",
+        "created_at": "2026-05-08T12:00:00Z",
+        "status": "quarantined",
+        "conflicting_fields": ["body"],
+        "human_reason": "body diff3 conflict"
+    }]));
+    let id = merge_quarantined.frontmatter.id.as_str().to_string();
+    write_test_memory(&substrate, merge_quarantined).await;
+
+    let response = handle_request(
+        &substrate,
+        RequestEnvelope::new("req-review-approve-merge", RequestPayload::ReviewApprove { id: id.clone() }),
+    )
+    .await;
+    let ResponseResult::Error(error) = response.result else {
+        panic!("expected invalid_request for merge quarantine, got {:?}", response.result);
+    };
+    assert_eq!(error.code, "invalid_request");
+    assert!(
+        error.message.contains("quarantine resolve"),
+        "error should route operator to quarantine resolve: {}",
+        error.message
+    );
+
+    let saved = substrate.read_memory(&MemoryId::new(&id)).await.expect("merge quarantine remains readable");
+    assert_eq!(saved.frontmatter.status, MemoryStatus::Quarantined);
+    assert_eq!(saved.frontmatter.trust_level, TrustLevel::Quarantined);
+}
+
+#[tokio::test]
+async fn review_reject_archives_quarantined_memory_as_untrusted() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let substrate = init_substrate(roots).await;
+    let quarantined = review_memory();
+    let id = quarantined.frontmatter.id.as_str().to_string();
+    write_test_memory(&substrate, quarantined).await;
+
+    let response = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "req-review-reject-quarantine",
+            RequestPayload::ReviewReject { id: id.clone(), reason: "not appropriate".to_string() },
+        ),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::ReviewReject(decision)) = response.result else {
+        panic!("expected reject success for quarantined memory, got {:?}", response.result);
+    };
+    assert_eq!(decision.status, "rejected");
+
+    let saved = substrate.read_memory(&MemoryId::new(&id)).await.expect("rejected memory readable");
+    assert_eq!(saved.frontmatter.status, MemoryStatus::Archived);
+    // (Archived, Quarantined) is an invalid lifecycle pair — reject normalizes to Untrusted.
+    assert_eq!(saved.frontmatter.trust_level, TrustLevel::Untrusted);
+    assert_eq!(saved.frontmatter.review_state.as_deref(), Some("rejected"));
+}
+
+#[tokio::test]
+async fn review_reject_still_refuses_secret_bearing_reason() {
+    // SEC-001 regression guard: the rejection reason passes the privacy scanner and a
+    // secret span refuses the write. (The namespace floor must NOT do this job — `Me`
+    // floors at EncryptAtRest and refused every reject unconditionally.)
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let substrate = init_substrate(roots).await;
+    let quarantined = review_memory();
+    let id = quarantined.frontmatter.id.as_str().to_string();
+    write_test_memory(&substrate, quarantined).await;
+
+    let response = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "req-review-reject-secret",
+            RequestPayload::ReviewReject { id: id.clone(), reason: "leaked key AKIA1234567890ABCDEF".to_string() },
+        ),
+    )
+    .await;
+    let ResponseResult::Error(error) = response.result else {
+        panic!("expected refusal for secret-bearing rejection reason, got {:?}", response.result);
+    };
+    assert_eq!(error.code, "invalid_request");
+
+    let saved = substrate.read_memory(&MemoryId::new(&id)).await.expect("memory unchanged");
+    assert_eq!(saved.frontmatter.status, MemoryStatus::Quarantined);
+    assert!(!saved.frontmatter.extras.contains_key("review_rejection_reason"));
+}
+
+#[tokio::test]
 async fn review_queue_response_is_frame_bounded_for_oversized_review_fields() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));

@@ -176,7 +176,7 @@ fn has_git_conflict_markers(body: &str) -> bool {
     body.lines().any(|line| line.starts_with("<<<<<<<") || line.starts_with(">>>>>>>"))
 }
 
-fn has_quarantined_merge_diagnostic(diagnostics: &Option<Value>) -> bool {
+pub(crate) fn has_quarantined_merge_diagnostic(diagnostics: &Option<Value>) -> bool {
     match diagnostics {
         Some(Value::Array(entries)) => entries.iter().any(is_quarantined_merge_diagnostic),
         Some(diagnostic @ Value::Object(_)) => is_quarantined_merge_diagnostic(diagnostic),

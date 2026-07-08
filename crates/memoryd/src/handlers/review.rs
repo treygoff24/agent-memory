@@ -12,6 +12,7 @@ pub(crate) enum ReviewDecision {
 
 impl ReviewDecision {
     fn apply(&self, memory: &mut Memory) -> &'static str {
+        let was_quarantined = matches!(memory.frontmatter.status, MemoryStatus::Quarantined);
         memory.frontmatter.updated_at = chrono::Utc::now();
         memory.frontmatter.requires_user_confirmation = false;
         memory.frontmatter.write_policy.human_review_required = false;
@@ -20,10 +21,28 @@ impl ReviewDecision {
                 memory.frontmatter.status = MemoryStatus::Active;
                 memory.frontmatter.trust_level = TrustLevel::Trusted;
                 memory.frontmatter.review_state = None;
+                if was_quarantined {
+                    // Promotion out of a governance quarantine (merge quarantines are
+                    // refused before apply): restore the retrieval surface the
+                    // quarantine suppressed at write time (meta.rs stamps
+                    // index_body/index_embeddings/passive_recall false for quarantined
+                    // writes) and drop the quarantine artifacts. This path is
+                    // plaintext-only, so re-enabling indexing is safe.
+                    memory.frontmatter.retrieval_policy.passive_recall = true;
+                    memory.frontmatter.retrieval_policy.index_body = true;
+                    memory.frontmatter.retrieval_policy.index_embeddings = true;
+                    memory.frontmatter.merge_diagnostics = None;
+                    memory.frontmatter.extras.remove("governance_reason");
+                }
                 "approved"
             }
             Self::Reject { reason } => {
                 memory.frontmatter.status = MemoryStatus::Archived;
+                if matches!(memory.frontmatter.trust_level, TrustLevel::Quarantined) {
+                    // (Archived, Quarantined) is an invalid lifecycle pair — a
+                    // rejected quarantine archives as Untrusted.
+                    memory.frontmatter.trust_level = TrustLevel::Untrusted;
+                }
                 memory.frontmatter.review_state = Some("rejected".to_string());
                 memory.frontmatter.retrieval_policy.index_body = false;
                 memory.frontmatter.retrieval_policy.index_embeddings = false;
@@ -141,8 +160,17 @@ pub(crate) async fn review_decision_response(
     // actually lands — so a rehydration-refused approval (which returns early
     // below) never logs an `accept`.
     let calibration_inputs = CalibrationInputs::from_candidate(&memory);
-    if matches!((&decision, memory.frontmatter.status), (ReviewDecision::Approve, MemoryStatus::Quarantined)) {
-        return Err(HandlerError::invalid_request("quarantined memories must be resubmitted through governance"));
+    // Governance quarantines (contradiction/unclear routing, `governance_reason:
+    // governance quarantine`) are review-queue items and approvable here — this is
+    // their only promotion path. Merge-driver quarantines carry an unresolved git
+    // merge and must go through `quarantine resolve --edited` instead, which
+    // verifies the on-disk body no longer has conflict markers.
+    if matches!((&decision, memory.frontmatter.status), (ReviewDecision::Approve, MemoryStatus::Quarantined))
+        && quarantine::has_quarantined_merge_diagnostic(&memory.frontmatter.merge_diagnostics)
+    {
+        return Err(HandlerError::invalid_request(
+            "merge-conflict quarantines must be resolved via `quarantine resolve --edited`",
+        ));
     }
     // Approving a dream candidate that asked for grounding rehydration re-runs
     // verification against the *current* substrate before promotion. If the cited
@@ -158,9 +186,13 @@ pub(crate) async fn review_decision_response(
     }
     if let ReviewDecision::Reject { reason } = &decision {
         // The rejection reason is caller-supplied free text persisted into the canonical
-        // file. Classify it (strictest namespace) so a secret/sensitive reason is refused
-        // rather than written unclassified under a hardcoded Trusted outcome.
-        let privacy = super::governance::classify_privacy(reason, PrivacyNamespace::Me, None)?;
+        // file. Classify it so a secret/sensitive reason is refused rather than written
+        // unclassified under a hardcoded Trusted outcome. Namespace picks the tier FLOOR,
+        // not scanner strictness — `Me` floors at Personal/EncryptAtRest and refuses every
+        // reason unconditionally (SEC-001 as originally shipped bricked reject entirely).
+        // `Agent` floors at Internal/Plaintext; scanner spans still raise the action, so
+        // secret spans refuse and sensitive spans reject as not plaintext-storable.
+        let privacy = super::governance::classify_privacy(reason, PrivacyNamespace::Agent, None)?;
         if privacy.storage_action.refuses_storage() {
             return Err(HandlerError::invalid_request(
                 "review rejection reason contains secret content and cannot be persisted",
