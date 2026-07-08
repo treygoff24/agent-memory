@@ -738,7 +738,10 @@ fn collect_reindex_paths(repo: &std::path::Path, scope: ReindexScope) -> Result<
     let mut acc = Vec::new();
     for raw in crate::tree::relative_memory_paths(repo) {
         let rel = raw.to_string_lossy().replace('\\', "/");
-        let path = RepoPath::new(rel.clone());
+        // Non-Stream-A `.md` files (runtime-dir artifacts when the runtime nests
+        // inside the repo, stray docs) are not memories; skip rather than panic
+        // via the validating constructor.
+        let Ok(path) = RepoPath::try_new(rel.clone()) else { continue };
         if rel.starts_with("encrypted/") {
             match read_memory_file(repo, &path) {
                 Ok((memory, hash)) => {

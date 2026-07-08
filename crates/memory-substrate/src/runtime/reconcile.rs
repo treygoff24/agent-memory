@@ -487,7 +487,15 @@ fn reindex_and_scan_conflicts(
             continue;
         }
         let Ok(relative_str) = repo_relative.to_str().ok_or("non-utf8 path") else { continue };
-        let repo_path = RepoPath::new(relative_str);
+        // Stream F prose artifacts (dream journals) are valid repo files but not
+        // canonical memories — parsing one as frontmatter would fail startup.
+        if crate::path_validation::is_noncanonical_stream_f_repo_path(relative_str) {
+            continue;
+        }
+        // Non-Stream-A `.md` files (runtime-dir artifacts when the runtime nests
+        // inside the repo, stray docs) are not memories; skip rather than panic
+        // via the validating constructor.
+        let Ok(repo_path) = RepoPath::try_new(relative_str) else { continue };
 
         // Raw bytes are read once. Clean files pay only the hash; drifted files
         // parse from the same bytes instead of reopening and rereading the file.

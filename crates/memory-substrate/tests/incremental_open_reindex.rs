@@ -348,6 +348,48 @@ async fn open_reconciles_pending_embedding_jobs() {
     );
 }
 
+/// Phase-6 index consistency must skip repo `.md` files that are not canonical
+/// memories: Stream F dream journals (frontmatter-less prose the dream pass
+/// legitimately writes) and stray non-Stream-A files (e.g. a model-cache README
+/// when the runtime dir nests inside the repo). Regression: the first live
+/// dream run broke every subsequent `Substrate::open` with "bad shape for
+/// frontmatter delimiters".
+#[tokio::test]
+async fn open_tolerates_dream_journal_and_non_stream_a_markdown() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let substrate = Substrate::init(
+        roots.clone(),
+        InitOptions { force_unsafe_durability: true, device_id: Some("dev_test".to_string()) },
+    )
+    .await
+    .expect("init");
+    let memory = sample_memory("mem_20260424_a1b2c3d4e5f60718_090001");
+    write_memory_file(&roots, &memory);
+    drop(substrate);
+
+    // Frontmatter-less Stream F prose artifact, exactly what `dream now` writes.
+    let journal = roots.repo.join("dreams/journal/me/2026-07-08.md");
+    std::fs::create_dir_all(journal.parent().expect("parent")).expect("dirs");
+    std::fs::write(&journal, "# Dream reflection\n\nProse only, no frontmatter.\n").expect("write journal");
+
+    // Non-Stream-A markdown inside the repo (runtime-dir artifact shape).
+    let stray = roots.repo.join(".memoryd/models/README.md");
+    std::fs::create_dir_all(stray.parent().expect("parent")).expect("dirs");
+    std::fs::write(&stray, "---\nlicense: apache-2.0\n---\nA model card, not a memory.\n").expect("write stray");
+
+    let reopened = Substrate::open(roots.clone()).await.expect("open must tolerate non-memory markdown");
+    let report = reopened.startup_reconcile_report();
+    assert!(report.blocking_conflicts.is_empty(), "prose artifacts must not register as conflicts");
+
+    // The canonical memory is still indexed and recallable.
+    let hits = reopened
+        .query_chunks(ChunkQuery { text: Some("body".to_string()), triple: None, vector: None })
+        .await
+        .expect("query plaintext");
+    assert!(!hits.is_empty(), "canonical memory still indexed alongside prose artifacts");
+}
+
 // helpers
 
 /// Regression: two distinct memories with byte-identical bodies must both index
