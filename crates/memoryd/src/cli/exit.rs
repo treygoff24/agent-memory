@@ -8,10 +8,9 @@ pub(crate) const EXIT_INVALID_INPUT: i32 = 65;
 pub(crate) const EXIT_NOT_FOUND: i32 = 66;
 pub(crate) const EXIT_INTERNAL: i32 = 70;
 pub(crate) const EXIT_TRANSIENT: i32 = 75;
-// Used by the Task 4 client-side reveal gate; defined here so the whole contract
-// dictionary lives in one place.
-#[allow(dead_code)]
 pub(crate) const EXIT_CLIENT_GATE: i32 = 77;
+// Reserved by the contract for pre-connect config problems; no covered command
+// surfaces it yet (socket resolution never fails), so it is documented-not-emitted.
 #[allow(dead_code)]
 pub(crate) const EXIT_CONFIG: i32 = 78;
 

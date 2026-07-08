@@ -37,6 +37,17 @@ pub enum Command {
     Write(WriteMemoryArgs),
     /// Capture source artifacts for grounded memory writes.
     Source(SourceArgs),
+    /// Reveal decrypted content of an encrypted memory. Audited: a successful
+    /// reveal writes an `EncryptedContentRevealed` event. Requires `--allow-reveal`.
+    ///
+    /// Example:
+    ///   memoryd reveal mem_20260708_a1b2c3d4e5f60718_000001 --reason "user asked to see it" --allow-reveal
+    Reveal(RevealArgs),
+    /// Record a Stream F substrate observation (observation/pattern/signal).
+    ///
+    /// Example:
+    ///   memoryd observe "the deploy step flakes on cold caches" --kind signal --entity ent_deploy
+    Observe(ObserveArgs),
     /// Supersede an existing memory through governance.
     Supersede(SupersedeArgs),
     /// Tombstone a memory through governance.
@@ -538,6 +549,66 @@ pub enum SourceCaptureCliMode {
     BrowserRendered,
     Screenshot,
     Authenticated,
+}
+
+#[derive(Debug, Args)]
+pub struct RevealArgs {
+    /// Unix socket path used to reach memoryd.
+    #[arg(long)]
+    pub socket: Option<PathBuf>,
+    /// Encrypted memory id to unmask.
+    pub id: String,
+    /// Audit reason persisted (redacted) into the event log. Required.
+    #[arg(long)]
+    pub reason: String,
+    /// Acknowledge that reveal decrypts protected content and writes an audit
+    /// event. Without this flag the CLI refuses before contacting the daemon.
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub allow_reveal: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ObserveArgs {
+    /// Unix socket path used to reach memoryd.
+    #[arg(long)]
+    pub socket: Option<PathBuf>,
+    /// Observation text (bounded to 16 KiB).
+    pub text: String,
+    /// Observation kind.
+    #[arg(long, value_enum)]
+    pub kind: ObserveKindArg,
+    /// Bound entity id (`ent_*`). Repeatable; up to 32, each ≤128 bytes.
+    #[arg(long = "entity")]
+    pub entities: Vec<String>,
+    /// Session id to attribute the observation to. Defaults to `$MEMORUM_SESSION_ID`,
+    /// else `cli`.
+    #[arg(long)]
+    pub session_id: Option<String>,
+    /// Harness to attribute the observation to. Defaults to `$MEMORUM_HARNESS`,
+    /// else `cli`.
+    #[arg(long)]
+    pub harness: Option<String>,
+}
+
+/// CLI surface for `memory_substrate::ObserveKind`. Kept as a distinct enum so
+/// the substrate type needs no clap dependency; mapped in `cli::memory`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "lowercase")]
+pub enum ObserveKindArg {
+    Observation,
+    Pattern,
+    Signal,
+}
+
+impl ObserveKindArg {
+    pub fn to_protocol(self) -> crate::protocol::ObserveKind {
+        use crate::protocol::ObserveKind;
+        match self {
+            Self::Observation => ObserveKind::Observation,
+            Self::Pattern => ObserveKind::Pattern,
+            Self::Signal => ObserveKind::Signal,
+        }
+    }
 }
 
 #[derive(Debug, Args)]

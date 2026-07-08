@@ -1,11 +1,13 @@
 use std::path::Path;
 
-use crate::cli::exit::EXIT_INVALID_INPUT;
+use crate::cli::exit::{EXIT_CLIENT_GATE, EXIT_INVALID_INPUT};
 use crate::cli::output::{
     emit_and_exit, emit_client_error_and_exit, emit_transport_error_and_exit, governance_write_response_promoted_id,
     maybe_emit_first_write_banner, write_note_response_id,
 };
-use crate::cli::{ForgetArgs, GetArgs, SearchArgs, SupersedeArgs, WriteMemoryArgs, WriteNoteArgs};
+use crate::cli::{
+    ForgetArgs, GetArgs, ObserveArgs, RevealArgs, SearchArgs, SupersedeArgs, WriteMemoryArgs, WriteNoteArgs,
+};
 use crate::mcp::meta_with_current_cwd_if_missing;
 use crate::paths::resolve_socket_arg;
 use crate::protocol::{RequestPayload, ResponseEnvelope};
@@ -86,6 +88,46 @@ pub async fn run_supersede(args: SupersedeArgs) -> anyhow::Result<()> {
 pub async fn run_forget(args: ForgetArgs) -> anyhow::Result<()> {
     let socket = resolve_socket_arg(&args.socket);
     request_and_emit(&socket, "cli-forget", RequestPayload::Forget { id: args.id, reason: args.reason }).await
+}
+
+pub async fn run_reveal(args: RevealArgs) -> anyhow::Result<()> {
+    // Client-side gate: refuse before touching the socket. The daemon Reveal
+    // handler has no gate of its own (it always audits), so the CLI reimplements
+    // the MCP bridge's `allow_reveal` guard here — the refusal must precede any
+    // connection so an agent without reveal authority never reaches the daemon.
+    if !args.allow_reveal {
+        emit_client_error_and_exit(
+            "reveal_not_allowed",
+            "reveal decrypts protected content and writes an EncryptedContentRevealed audit event".to_string(),
+            EXIT_CLIENT_GATE,
+            Some("re-run with --allow-reveal once you have user-directed authority to unmask this memory".to_string()),
+        );
+    }
+    let socket = resolve_socket_arg(&args.socket);
+    request_and_emit(&socket, "cli-reveal", RequestPayload::Reveal { id: args.id, reason: args.reason }).await
+}
+
+pub async fn run_observe(args: ObserveArgs) -> anyhow::Result<()> {
+    let socket = resolve_socket_arg(&args.socket);
+    let session_id =
+        args.session_id.or_else(|| std::env::var("MEMORUM_SESSION_ID").ok()).unwrap_or_else(|| "cli".to_string());
+    let harness = args.harness.or_else(|| std::env::var("MEMORUM_HARNESS").ok()).unwrap_or_else(|| "cli".to_string());
+    let cwd =
+        std::env::current_dir().map(|path| path.to_string_lossy().into_owned()).unwrap_or_else(|_| "/".to_string());
+    request_and_emit(
+        &socket,
+        "cli-observe",
+        RequestPayload::Observe {
+            text: args.text,
+            kind: args.kind.to_protocol(),
+            entities: args.entities,
+            cwd,
+            session_id,
+            harness,
+            harness_version: None,
+        },
+    )
+    .await
 }
 
 /// Emit a write response through the envelope layer, first firing the

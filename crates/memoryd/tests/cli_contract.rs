@@ -20,10 +20,13 @@ fn cli_contract_help_exposes_daemon_and_agent_facing_client_commands() {
         "mcp",
         "status",
         "doctor",
+        "schema",
         "search",
         "get",
         "write-note",
         "source",
+        "reveal",
+        "observe",
         "ui",
         "web",
         "reality-check",
@@ -41,9 +44,15 @@ fn cli_contract_help_exposes_daemon_and_agent_facing_client_commands() {
 
 #[test]
 fn cli_contract_client_commands_expose_help_without_requiring_daemon() {
-    for args in
-        [&["status", "--help"][..], &["search", "--help"][..], &["get", "--help"][..], &["write-note", "--help"][..]]
-    {
+    for args in [
+        &["status", "--help"][..],
+        &["search", "--help"][..],
+        &["get", "--help"][..],
+        &["write-note", "--help"][..],
+        &["schema", "--help"][..],
+        &["reveal", "--help"][..],
+        &["observe", "--help"][..],
+    ] {
         let output = Command::new(env!("CARGO_BIN_EXE_memoryd")).args(args).output().expect("run memoryd command");
         assert!(output.status.success(), "command failed: {args:?}");
     }
@@ -127,6 +136,25 @@ fn cli_contract_clap_parses_all_subcommands() {
     assert!(
         Cli::try_parse_from(["memoryd", "write-note", "--entity", "Alice", "note text"]).is_err(),
         "--entity flag should be rejected"
+    );
+
+    Cli::try_parse_from(["memoryd", "schema"]).expect("schema parses");
+    Cli::try_parse_from(["memoryd", "schema", "exit-codes", "--json"]).expect("schema section parses");
+
+    Cli::try_parse_from(["memoryd", "reveal", "mem-0001", "--reason", "user asked", "--allow-reveal"])
+        .expect("reveal parses");
+    assert!(
+        Cli::try_parse_from(["memoryd", "reveal", "mem-0001"]).is_err(),
+        "reveal without --reason is a usage error"
+    );
+
+    Cli::try_parse_from(["memoryd", "observe", "some text", "--kind", "signal"]).expect("observe parses");
+    Cli::try_parse_from(["memoryd", "observe", "t", "--kind", "pattern", "--entity", "ent_a", "--entity", "ent_b"])
+        .expect("observe with entities parses");
+    assert!(Cli::try_parse_from(["memoryd", "observe", "text"]).is_err(), "observe without --kind is a usage error");
+    assert!(
+        Cli::try_parse_from(["memoryd", "observe", "text", "--kind", "bogus"]).is_err(),
+        "observe with an unknown --kind is a usage error"
     );
 
     Cli::try_parse_from(["memoryd", "serve", "--repo", "/tmp/repo", "--runtime", "/tmp/rt"]).expect("serve parses");

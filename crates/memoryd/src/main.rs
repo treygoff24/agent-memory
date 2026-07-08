@@ -27,6 +27,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::WriteNote(args) => cli::memory::run_write_note(args).await?,
         Command::Write(args) => cli::memory::run_write(args).await?,
         Command::Source(args) => cli::source::run(args).await?,
+        Command::Reveal(args) => cli::memory::run_reveal(args).await?,
+        Command::Observe(args) => cli::memory::run_observe(args).await?,
         Command::Supersede(args) => cli::memory::run_supersede(args).await?,
         Command::Forget(args) => cli::memory::run_forget(args).await?,
         Command::Review(args) => cli::review::run(args).await?,

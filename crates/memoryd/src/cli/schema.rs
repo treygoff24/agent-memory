@@ -31,6 +31,8 @@ const COVERED: &[CommandMeta] = &[
     CommandMeta { path: &["supersede"], side_effect: "mutating", exit_codes: &[0, 2, 65, 66, 75] },
     CommandMeta { path: &["forget"], side_effect: "destructive", exit_codes: &[0, 2, 65, 66, 75] },
     CommandMeta { path: &["source", "capture"], side_effect: "mutating", exit_codes: &[0, 2, 65, 75] },
+    CommandMeta { path: &["reveal"], side_effect: "read_only", exit_codes: &[0, 2, 65, 66, 75, 77] },
+    CommandMeta { path: &["observe"], side_effect: "mutating", exit_codes: &[0, 2, 65, 75] },
     CommandMeta { path: &["status"], side_effect: "read_only", exit_codes: &[0, 2, 75] },
     CommandMeta { path: &["schema"], side_effect: "read_only", exit_codes: &[0, 2] },
 ];
