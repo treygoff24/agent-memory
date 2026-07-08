@@ -53,6 +53,12 @@ pub(crate) fn agent_exit_code(daemon_code: &str) -> i32 {
     agent_exit_code_opt(daemon_code).unwrap_or(EXIT_INTERNAL)
 }
 
+/// The full `daemon error code → exit code` crosswalk, in registry order. Used by
+/// the `schema` command to publish the mapping.
+pub(crate) fn agent_exit_crosswalk() -> Vec<(&'static str, i32)> {
+    crate::handlers::error::DAEMON_ERROR_CODES.iter().map(|code| (*code, agent_exit_code(code))).collect()
+}
+
 pub(crate) fn exit_protocol_error(error: ProtocolError) -> ! {
     eprintln!("{}: {}", error.code, error.message);
     std::process::exit(recall_exit_code(&error.code));

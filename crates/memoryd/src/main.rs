@@ -21,6 +21,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Mcp(args) => cli::daemon::run_mcp(args).await?,
         Command::Status(args) => cli::daemon::run_status(args).await?,
         Command::Doctor(args) => cli::daemon::run_doctor(args).await?,
+        Command::Schema(args) => cli::schema::run(args)?,
         Command::Search(args) => cli::memory::run_search(args).await?,
         Command::Get(args) => cli::memory::run_get(args).await?,
         Command::WriteNote(args) => cli::memory::run_write_note(args).await?,

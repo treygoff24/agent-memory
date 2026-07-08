@@ -21,9 +21,8 @@ use crate::recall::RecallError;
 /// no explicit exit mapping. When a handler grows a new error code, add it here
 /// **and** to the crosswalk match, or the gate fails.
 ///
-/// Consumed by the CLI crosswalk enumeration test and the `schema` command;
-/// `allow(dead_code)` covers the non-test lib build until `schema` lands.
-#[allow(dead_code)]
+/// Consumed by the CLI crosswalk enumeration test and the `schema` command's
+/// published crosswalk.
 pub(crate) const DAEMON_ERROR_CODES: &[&str] = &[
     "invalid_request",
     "not_found",

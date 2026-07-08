@@ -24,6 +24,9 @@ pub enum Command {
     Status(SocketArgs),
     /// Check local substrate and daemon configuration.
     Doctor(DoctorArgs),
+    /// Print the machine-readable CLI agent contract (envelope, exit codes,
+    /// per-command schemas). Generated from the implementing types.
+    Schema(SchemaArgs),
     /// Search memory through the daemon.
     Search(SearchArgs),
     /// Read one memory by id through the daemon.
@@ -417,6 +420,26 @@ pub struct DoctorArgs {
     /// inspects the substrate in-process and does not talk to the daemon.
     #[arg(long)]
     pub socket: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct SchemaArgs {
+    /// Which slice of the contract to print. Defaults to the whole contract.
+    #[arg(value_enum, default_value_t = SchemaSection::All)]
+    pub section: SchemaSection,
+    /// Emit JSON. The contract is machine-facing, so output is always JSON;
+    /// this flag is accepted for explicitness and forward compatibility.
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "kebab-case")]
+pub enum SchemaSection {
+    All,
+    Commands,
+    Envelope,
+    ExitCodes,
 }
 
 #[derive(Debug, Args)]
@@ -1138,6 +1161,7 @@ pub mod reality_check;
 pub mod recall;
 pub mod recall_hook;
 pub mod review;
+pub mod schema;
 pub mod serve;
 pub mod source;
 pub mod ui;

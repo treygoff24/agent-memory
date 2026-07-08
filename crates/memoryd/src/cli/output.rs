@@ -18,7 +18,7 @@ pub(crate) fn print_response(response: ResponseEnvelope) -> anyhow::Result<()> {
 
 /// Schema version emitted in every agent envelope's `meta`. Pinned by the CLI
 /// contract (`docs/api/memoryd-cli-contract-v1.md`).
-const SCHEMA_VERSION: &str = "1.0";
+pub(crate) const SCHEMA_VERSION: &str = "1.0";
 
 #[derive(Debug, Serialize)]
 pub struct AgentEnvelope {
