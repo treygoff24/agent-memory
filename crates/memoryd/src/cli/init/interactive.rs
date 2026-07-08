@@ -143,7 +143,8 @@ impl InteractiveIo {
         }
         println!();
         println!("This wizard walks through importing that memory, arranging the Memorum");
-        println!("daemon, and wiring the `memorum` MCP server into your coding agents.");
+        println!("daemon, and wiring passive-recall hooks into your coding agents. (The MCP");
+        println!("bridge is an opt-in compatibility surface, off by default.)");
         println!("Nothing changes unless you opt in — declining every prompt exits without");
         println!("touching anything.");
         println!();

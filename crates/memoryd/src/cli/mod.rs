@@ -90,8 +90,9 @@ pub enum Command {
     /// socket so privacy, governance, and event-log machinery all fire.
     Import(ImportArgs),
     /// First-run setup: detect prior harness memory, import it, provision the
-    /// daemon, and wire MCP configs. Interactive wizard on a TTY; scripted
-    /// JSON path via `--non-interactive`.
+    /// daemon, and wire the passive-recall lifecycle hooks. The MCP bridge is
+    /// opt-in (`--wire-mcp`), not wired by default. Interactive wizard on a TTY;
+    /// scripted JSON path via `--non-interactive`.
     Init(InitArgs),
     /// Reverse what `memoryd init` / `scripts/install-memorum.sh` set up: stop
     /// the daemon, remove the launchd plist, unwire MCP configs, and optionally
@@ -175,8 +176,10 @@ pub struct InitArgs {
     /// saved and active) on the non-interactive path.
     #[arg(long, value_enum)]
     pub non_git_cwd_default: Option<NonGitCwdDefault>,
-    /// MCP configs to wire. Omitted: prompted by the wizard on a TTY;
-    /// `current` (the single detected harness) on the non-interactive path.
+    /// MCP configs to wire. The MCP bridge is an opt-in compatibility surface
+    /// under the CLI-first design, so this is off by default. Omitted: prompted
+    /// by the wizard on a TTY; `none` (skip MCP wiring) on the non-interactive
+    /// path. Pass `current`/`claude`/`codex`/`all` to wire it explicitly.
     #[arg(long, value_enum)]
     pub wire_mcp: Option<HarnessTargetArg>,
     /// Harness configs to wire the passive-recall lifecycle hooks into.

@@ -6,8 +6,10 @@ usage() {
 Usage: scripts/install-memorum.sh [--repo PATH] [--runtime PATH] [--socket PATH] [--with-scheduler] [--agent] [--dry-run] [--force-reinstall]
 
 Builds/installs memoryd, initializes a local repo/runtime, starts the daemon,
-prints an MCP client snippet, and optionally installs the launchd scheduler.
-Default socket: <runtime>/memoryd.sock.
+and optionally installs the launchd scheduler. The agent surface is the memoryd
+CLI plus the using-memorum skill; the MCP bridge is an opt-in compatibility path
+whose wiring snippet is printed under "Optional". Default socket:
+<runtime>/memoryd.sock.
 --agent appends a machine-parseable bootstrap summary for non-interactive runs.
 USAGE
 }
@@ -216,9 +218,13 @@ claude_mcp_command() {
 }
 
 emit_agent_summary() {
-  local next_command
-  next_command="$(claude_mcp_command)"
-  local next_command_argv=(claude mcp add --scope user memorum -- memoryd mcp --socket "$socket")
+  # The recommended next step is to verify the daemon is reachable and start
+  # driving the CLI — not to wire MCP. The MCP one-liner is still emitted, but
+  # as an opt-in `mcp_command` field, no longer as `next_command`.
+  local next_command="memoryd status --socket $(shell_word "$socket")"
+  local next_command_argv=(memoryd status --socket "$socket")
+  local mcp_command
+  mcp_command="$(claude_mcp_command)"
 
   printf 'MEMORUM_AGENT_SUMMARY_JSON={'
   printf '"mode":"agent",'
@@ -232,10 +238,19 @@ emit_agent_summary() {
   json_string "$next_command"
   printf ',"next_command_argv":'
   json_string_array "${next_command_argv[@]}"
+  printf ',"mcp_command":'
+  json_string "$mcp_command"
   printf '}\n'
 }
 
 print_mcp_snippets() {
+  cat <<'INTRO'
+Optional — MCP bridge (compatibility surface, opt-in):
+  The recommended agent surface is the `memoryd` CLI plus the using-memorum
+  skill; passive recall is wired by `memoryd init` as lifecycle hooks. Wire the
+  MCP bridge only for a shell-less harness that needs it.
+
+INTRO
   printf 'Claude MCP one-liner:\n'
   claude_mcp_command
   printf '\n\n'

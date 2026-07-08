@@ -181,20 +181,16 @@ expected_socket = sys.argv[2]
 assert summary["mode"] == "agent", summary
 assert summary["socket"] == expected_socket, summary
 assert os.path.isabs(summary["socket"]), summary
-assert summary["next_command"] == f'claude mcp add --scope user memorum -- memoryd mcp --socket {expected_socket}', summary
+# CLI-first: the next step verifies the daemon and starts driving the CLI, not
+# MCP wiring. The MCP one-liner moved to an opt-in `mcp_command` field.
+assert summary["next_command"] == f'memoryd status --socket {expected_socket}', summary
 assert summary["next_command_argv"] == [
-    "claude",
-    "mcp",
-    "add",
-    "--scope",
-    "user",
-    "memorum",
-    "--",
     "memoryd",
-    "mcp",
+    "status",
     "--socket",
     expected_socket,
 ], summary
+assert summary["mcp_command"] == f'claude mcp add --scope user memorum -- memoryd mcp --socket {expected_socket}', summary
 PY
 rm -rf "$agent_tmp"
 
@@ -232,7 +228,10 @@ assert summary["next_command_argv"][-1] == expected_socket, summary
 print(summary["next_command"])
 PY
 )"
-bash -c "claude() { :; }; $shell_command"
+# Stub both binaries next_command might invoke (claude for the opt-in MCP path,
+# memoryd for the default status verify) so the test exercises only whether the
+# malicious socket arg triggers command substitution, not the real binaries.
+bash -c "claude() { :; }; memoryd() { :; }; $shell_command"
 if [ -e "$shell_marker" ]; then
   echo "agent shell-safe test: next_command executed socket command substitution" >&2
   cat "$shell_out" >&2

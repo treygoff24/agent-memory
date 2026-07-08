@@ -266,6 +266,67 @@ fn piped_invocation_without_machine_mode_refuses_with_guidance() {
     assert!(!repo.exists(), "a refused init must not create the repo directory");
 }
 
+/// CLI-first flip: omitting `--wire-mcp` on the non-interactive path skips MCP
+/// wiring (the bridge is opt-in), while hooks are unaffected. Isolated with
+/// `--wire-hooks none --daemon none` so the only wiring decision under test is
+/// the MCP default. A companion run proves explicit opt-in still wires.
+#[test]
+#[serial]
+fn omitting_wire_mcp_skips_mcp_wiring_but_explicit_flag_still_wires() {
+    let env = TestEnv::new();
+    env.seed_codex_fixture();
+    let repo = env.temp.path().join("repo");
+
+    // Omitted --wire-mcp → WireMcp step Skipped, and no MCP entry lands in the
+    // Codex config the wiring would have written.
+    let omitted = env.run_init([
+        "init",
+        "--non-interactive",
+        "--json",
+        "--harness",
+        "codex",
+        "--wire-hooks",
+        "none",
+        "--daemon",
+        "none",
+        "--repo",
+        path_arg(&repo),
+        "--runtime",
+        path_arg(&repo.join(".memoryd")),
+    ]);
+    assert_success(&omitted);
+    let report: SetupReport = parse_stdout(&omitted);
+    assert_step(&report, SetupStep::WireMcp, SetupStepStatus::Skipped);
+    let codex_config = env.codex_home.join("config.toml");
+    if let Ok(body) = std::fs::read_to_string(&codex_config) {
+        assert!(!body.contains("mcp_servers"), "omitted --wire-mcp must not write an MCP server entry:\n{body}");
+    }
+
+    // Explicit --wire-mcp codex → the step is no longer skipped.
+    let repo2 = env.temp.path().join("repo2");
+    let explicit = env.run_init([
+        "init",
+        "--non-interactive",
+        "--json",
+        "--harness",
+        "codex",
+        "--wire-mcp",
+        "codex",
+        "--wire-hooks",
+        "none",
+        "--daemon",
+        "none",
+        "--repo",
+        path_arg(&repo2),
+        "--runtime",
+        path_arg(&repo2.join(".memoryd")),
+    ]);
+    assert_success(&explicit);
+    let report2: SetupReport = parse_stdout(&explicit);
+    let wire = report2.steps.iter().find(|step| step.step == SetupStep::WireMcp).expect("report has a WireMcp step");
+    assert_ne!(wire.status, SetupStepStatus::Skipped, "explicit --wire-mcp codex must attempt MCP wiring");
+}
+
 struct TestEnv {
     temp: tempfile::TempDir,
     home: PathBuf,
