@@ -233,24 +233,51 @@ meta_json() {
       explicit_user_context:$exp}'
 }
 
+# Run a governed memoryd command and echo its v1 agent envelope, tolerating a
+# nonzero exit so a governance refusal (exit 65, envelope on stderr) does not
+# trip `set -e`. Success envelopes land on stdout; error envelopes on stderr.
+capture_envelope() {
+  local errf; errf="$(mktemp)"
+  local out=""
+  out="$("$@" 2>"$errf")" || true
+  if [ -n "$out" ]; then
+    printf '%s' "$out"
+  else
+    cat "$errf"
+  fi
+  rm -f "$errf"
+}
+
 # Loud failure: any unexpected error from a governed write should stop the
 # script so we don't silently lose memories like the first cut of this script did.
+# Parses the v1 agent envelope (docs/api/memoryd-cli-contract-v1.md): governance
+# refusals now arrive as `ok:false` with `error.code` = the refusal reason, while
+# queued writes are `ok:true` with `data.status` = candidate/quarantined.
 check_gw_response() {
   local resp="$1" allow_review="${2:-0}"
-  local err; err="$(printf '%s' "$resp" | jq -r '.result.error.message // empty')"
-  if [ -n "$err" ]; then
-    echo "error: memoryd write failed: $err" >&2
+  local ok; ok="$(printf '%s' "$resp" | jq -r '.ok // empty')"
+  if [ "$ok" != "true" ]; then
+    local code msg
+    code="$(printf '%s' "$resp" | jq -r '.error.code // empty')"
+    msg="$(printf '%s' "$resp" | jq -r '.error.message // empty')"
+    # An expected governance refusal (grounding/policy/tombstone/contradiction/
+    # privacy/superseded/review_required) is tolerated where the caller opted in.
+    case "$code" in
+      grounding|policy|tombstone|contradiction|privacy|superseded|review_required)
+        [ "$allow_review" -eq 1 ] && return 0 ;;
+    esac
+    echo "error: memoryd write failed: ${code}: ${msg}" >&2
     echo "response: $resp" >&2
     return 1
   fi
-  local status; status="$(printf '%s' "$resp" | jq -r '.result.success.governance_write.status // .result.success.governance_supersede.status // empty')"
+  local status; status="$(printf '%s' "$resp" | jq -r '.data.status // empty')"
   if [ -z "$status" ]; then
     echo "error: unexpected response shape: $resp" >&2
     return 1
   fi
   case "$status" in
-    promoted) return 0 ;;
-    candidate|in_review|quarantined|refused|superseded|tombstoned)
+    promoted|tombstoned) return 0 ;;
+    candidate|quarantined)
       [ "$allow_review" -eq 1 ] && return 0
       echo "error: write status=$status not allowed here: $resp" >&2
       return 1
@@ -262,8 +289,8 @@ check_gw_response() {
   esac
 }
 
-gw_id() { jq -r '.result.success.governance_write.id // empty'; }
-gs_new_id() { jq -r '.result.success.governance_supersede.new_id // empty'; }
+gw_id() { jq -r '.data.id // empty'; }
+gs_new_id() { jq -r '.data.new_id // empty'; }
 
 # Confidence floor per namespace (built-in policy floors).
 ns_confidence() {
@@ -282,7 +309,7 @@ write_governed() {
   local meta; meta="$(meta_json "$ns" "$t" "$conf" "agent_primary" "$src_ref" true)"
   local tag_args=(); local tag
   for tag in "$@"; do tag_args+=(--tag "$tag"); done
-  local resp; resp="$(memoryd write --socket "$socket" --title "$title" "${tag_args[@]}" --meta "$meta" "$body")"
+  local resp; resp="$(capture_envelope memoryd write --socket "$socket" --title "$title" "${tag_args[@]}" --meta "$meta" "$body")"
   check_gw_response "$resp" 0 >&2 || return 1
   printf '%s' "$resp" | gw_id
 }
@@ -294,9 +321,9 @@ write_governed_low_conf() {
   local meta; meta="$(meta_json "$ns" "$t" 0.55 "agent_primary" "$src_ref" true)"
   local tag_args=(); local tag
   for tag in "$@"; do tag_args+=(--tag "$tag"); done
-  local resp; resp="$(memoryd write --socket "$socket" --title "$title" "${tag_args[@]}" --meta "$meta" "$body")"
+  local resp; resp="$(capture_envelope memoryd write --socket "$socket" --title "$title" "${tag_args[@]}" --meta "$meta" "$body")"
   check_gw_response "$resp" 1 >&2 || return 1
-  printf '%s' "$resp" | jq -r '.result.success.governance_write.id // empty'
+  printf '%s' "$resp" | jq -r '.data.id // empty'
 }
 
 # Missing grounding (lands in review queue or refused by policy).
@@ -306,9 +333,9 @@ write_governed_no_grounding() {
   local meta; meta="$(meta_json "$ns" "$t" "$conf" "agent_primary" "" true)"
   local tag_args=(); local tag
   for tag in "$@"; do tag_args+=(--tag "$tag"); done
-  local resp; resp="$(memoryd write --socket "$socket" --title "$title" "${tag_args[@]}" --meta "$meta" "$body")"
+  local resp; resp="$(capture_envelope memoryd write --socket "$socket" --title "$title" "${tag_args[@]}" --meta "$meta" "$body")"
   check_gw_response "$resp" 1 >&2 || return 1
-  printf '%s' "$resp" | jq -r '.result.success.governance_write.id // empty'
+  printf '%s' "$resp" | jq -r '.data.id // empty'
 }
 
 declare -a promoted_ids=()
@@ -392,7 +419,7 @@ A_NOTES=(
   "Lesson from 5/11 — when a tool reports paths that stat denies, list the actual cwd first"
 )
 for note in "${A_NOTES[@]}"; do
-  memoryd write-note --socket "$socket" "$note" >/dev/null
+  memoryd write-note --socket "$socket" "$note" >/dev/null || true
 done
 
 echo "    bucket A: ${#A_PROJECT[@]} project + ${#A_ME[@]} me + ${#A_AGENT[@]} agent + ${#A_NOTES[@]} notes"
@@ -431,7 +458,7 @@ seed_supersession() {
   local conf; conf="$(ns_confidence "$ns")"
   local src_ref; src_ref="$(make_grounding "$label_v2" "$title_v1 (v2) — $body_v2")"
   local meta; meta="$(meta_json "$ns" "$typ" "$conf" "agent_primary" "$src_ref" true)"
-  local resp; resp="$(memoryd supersede --socket "$socket" "$old_id" "$body_v2" --reason "$reason" --meta "$meta")"
+  local resp; resp="$(capture_envelope memoryd supersede --socket "$socket" "$old_id" "$body_v2" --reason "$reason" --meta "$meta")"
   if ! check_gw_response "$resp" 0 >&2; then return; fi
   local new_id; new_id="$(printf '%s' "$resp" | gs_new_id)"
   supersede_chains+=("$old_id->$new_id")
@@ -458,7 +485,7 @@ seed_tombstone() {
   local ns="$1" typ="$2" title="$3" body="$4" reason="$5" label="$6"
   local id; id="$(write_governed "$ns" "$typ" "$title" "$body" "$label" obsolete)"
   if [ -z "$id" ]; then return; fi
-  memoryd forget --socket "$socket" "$id" --reason "$reason" >/dev/null
+  memoryd forget --socket "$socket" "$id" --reason "$reason" >/dev/null || true
   tombstone_ids+=("$id")
 }
 seed_tombstone project claim \
@@ -488,7 +515,7 @@ for entry in "${C_CONTRADICT[@]}"; do
   src_ref="$(make_grounding "$label" "$title — $body")"
   conf="$(ns_confidence me)"
   meta="$(meta_json me "$typ" "$conf" "agent_primary" "$src_ref" true)"
-  resp="$(memoryd write --socket "$socket" --title "$title" --tag contradiction --meta "$meta" "$body")"
+  resp="$(capture_envelope memoryd write --socket "$socket" --title "$title" --tag contradiction --meta "$meta" "$body")"
   if check_gw_response "$resp" 1 >&2; then
     id="$(printf '%s' "$resp" | gw_id)"
     remember promoted_ids "$id"
@@ -507,7 +534,7 @@ for entry in "${D_PRIVACY[@]}"; do
   src_ref="$(make_grounding "$label" "$title — $body")"
   conf="$(ns_confidence me)"
   meta="$(meta_json me "$typ" "$conf" "agent_primary" "$src_ref" true)"
-  resp="$(memoryd write --socket "$socket" --title "$title" --tag contact --meta "$meta" "$body")"
+  resp="$(capture_envelope memoryd write --socket "$socket" --title "$title" --tag contact --meta "$meta" "$body")"
   if check_gw_response "$resp" 0 >&2; then
     id="$(printf '%s' "$resp" | gw_id)"
     remember promoted_ids "$id"

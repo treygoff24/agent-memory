@@ -9,10 +9,43 @@
 //! `peer`, `dream`, `inspect`, and `governance::*`) can build and inspect them.
 
 use memory_source::SourceError;
-use memory_substrate::MemoryId;
+use memory_substrate::{MemoryId, ReadError};
 
 use super::bounded;
 use crate::recall::RecallError;
+
+/// Canonical registry of every free-form error-code string the daemon can emit
+/// inside a `ResponseEnvelope::error`. This is the single source of truth the CLI
+/// crosswalk (`cli::exit::agent_exit_code`) maps to contract exit codes; the
+/// crosswalk enumeration test iterates this slice and fails on any code that has
+/// no explicit exit mapping. When a handler grows a new error code, add it here
+/// **and** to the crosswalk match, or the gate fails.
+///
+/// Consumed by the CLI crosswalk enumeration test and the `schema` command;
+/// `allow(dead_code)` covers the non-test lib build until `schema` lands.
+#[allow(dead_code)]
+pub(crate) const DAEMON_ERROR_CODES: &[&str] = &[
+    "invalid_request",
+    "not_found",
+    "substrate_error",
+    "privacy_error",
+    "unsupported",
+    "source_capture_failed",
+    "trust_artifact_error",
+    "grounding_rehydration_failed",
+    "embedding_backlog",
+    "embedding_worker_idle",
+    "embedding_retry_budget_exhausted",
+    "embedding_model_load_failed",
+    "embedding_provider_unsupported",
+    "recall_unavailable",
+    "not_implemented",
+    "dream_unavailable",
+    "dream_disabled",
+    "web_unavailable",
+    "port_in_use",
+    "method_not_allowed_on_mcp",
+];
 
 #[derive(Debug)]
 pub(crate) struct HandlerError {
@@ -50,6 +83,23 @@ impl HandlerError {
 
     pub(crate) fn substrate(error: impl std::fmt::Display) -> Self {
         Self { code: "substrate_error".to_string(), message: error.to_string(), retryable: true }
+    }
+
+    /// A well-formed id that resolves to no memory. Distinct from `substrate` so
+    /// the CLI can map "not found" to exit 66 with a `search` hint instead of
+    /// letting it masquerade as a retryable `substrate_error`.
+    pub(crate) fn not_found(message: impl Into<String>) -> Self {
+        Self { code: "not_found".to_string(), message: message.into(), retryable: false }
+    }
+
+    /// Map a substrate read error, distinguishing a genuine "no such memory"
+    /// (`not_found`, retryable:false) from a real transient substrate fault
+    /// (`substrate_error`, retryable:true).
+    pub(crate) fn read_memory(error: ReadError) -> Self {
+        match error {
+            ReadError::NotFound(path) => Self::not_found(format!("no memory found at {path}")),
+            other => Self::substrate(other),
+        }
     }
 
     /// Typed refusal for a review approval blocked by grounding rehydration: the

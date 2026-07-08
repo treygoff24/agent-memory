@@ -32,8 +32,11 @@ pub async fn run_mcp(args: McpArgs) -> anyhow::Result<()> {
 }
 
 pub async fn run_status(args: SocketArgs) -> anyhow::Result<()> {
-    print_response(client::request(resolve_socket_arg(&args.socket), "cli-status", RequestPayload::Status).await?)?;
-    Ok(())
+    let socket = resolve_socket_arg(&args.socket);
+    match client::request(&socket, "cli-status", RequestPayload::Status).await {
+        Ok(response) => crate::cli::output::emit_and_exit(response),
+        Err(error) => crate::cli::output::emit_transport_error_and_exit(error, &socket),
+    }
 }
 
 pub async fn run_doctor(args: DoctorArgs) -> anyhow::Result<()> {

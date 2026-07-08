@@ -236,7 +236,7 @@ pub(crate) async fn get_response(
     include_provenance: bool,
 ) -> Result<ResponsePayload, HandlerError> {
     let memory_id = HandlerError::parse_memory_id(id)?;
-    let envelope = substrate.read_memory_envelope(&memory_id).await.map_err(HandlerError::substrate)?;
+    let envelope = substrate.read_memory_envelope(&memory_id).await.map_err(HandlerError::read_memory)?;
     let provenance = include_provenance.then(|| get_provenance(&envelope.metadata));
     let body = match envelope.content {
         MemoryContent::Plaintext(body) => body,
@@ -284,7 +284,7 @@ pub(crate) async fn reveal_response(
         return Err(HandlerError::invalid_request("reveal reason must be at most 512 characters"));
     }
     let memory_id = HandlerError::parse_memory_id(id)?;
-    let envelope = substrate.read_memory_envelope(&memory_id).await.map_err(HandlerError::substrate)?;
+    let envelope = substrate.read_memory_envelope(&memory_id).await.map_err(HandlerError::read_memory)?;
     let MemoryContent::Ciphertext { bytes, encryption } = envelope.content else {
         return Err(HandlerError::invalid_request("memory_reveal requires an encrypted memory"));
     };

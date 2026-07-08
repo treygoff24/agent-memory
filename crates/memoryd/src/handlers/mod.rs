@@ -48,7 +48,7 @@ use crate::recall::{
 
 mod doctor;
 pub(crate) mod dream;
-mod error;
+pub(crate) mod error;
 pub(crate) mod governance;
 mod inspect;
 pub(crate) mod memory_ops;

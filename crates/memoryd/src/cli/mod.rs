@@ -1129,7 +1129,7 @@ pub(crate) mod exit;
 pub mod import;
 pub mod init;
 pub mod memory;
-pub(crate) mod output;
+pub mod output;
 pub mod peer;
 pub mod peer_render;
 pub mod privacy;
