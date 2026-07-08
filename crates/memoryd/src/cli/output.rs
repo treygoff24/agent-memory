@@ -241,12 +241,16 @@ fn refusal_suggested_fix(reason: Option<GovernanceRefusalReason>) -> Option<Stri
             "run `memoryd get <existing-id>` for the current version, then supersede that instead"
         }
         Some(GovernanceRefusalReason::Grounding) => {
-            "capture supporting evidence with `memoryd source capture` and cite it in `--meta`"
+            "capture supporting evidence with `memoryd source capture` (e.g. --url or --file), then cite the returned ref in `--meta` as `source_ref` (a single string)"
         }
-        Some(GovernanceRefusalReason::Policy)
-        | Some(GovernanceRefusalReason::Privacy)
-        | Some(GovernanceRefusalReason::ReviewRequired) => {
-            "review the failing governance gate; the daemon `next_actions` name the corrective step"
+        Some(GovernanceRefusalReason::Privacy) => {
+            "the content — or a cited source artifact — classified as protected; drop the sensitive material or cite a non-sensitive source, since a plaintext governed write cannot carry a privacy-flagged descriptor"
+        }
+        Some(GovernanceRefusalReason::Policy) => {
+            "the write violates a governance policy named in the message (often a confidence floor for the namespace); adjust the offending `--meta` field to satisfy it"
+        }
+        Some(GovernanceRefusalReason::ReviewRequired) => {
+            "this namespace requires human review; there is no agent-side override — surface it to the user and check `memoryd review queue`"
         }
         None => return None,
     };

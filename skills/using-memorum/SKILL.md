@@ -40,7 +40,7 @@ Exit codes you will branch on:
 | 75 | daemon unreachable / transient | retry, or `doctor` |
 | 77 | client gate (e.g. `reveal` without `--allow-reveal`) | pass the named flag only with authority |
 
-`doctor` (0/1) and `recall *` (their own dictionary) are documented exceptions. Run `memoryd schema --json` for the whole machine contract, or `memoryd schema exit-codes` for just the tables.
+`doctor` (0/1) and `recall *` (their own dictionary) are documented exceptions. **`doctor` also differs in output *shape*, not just its exit codes:** it emits the raw daemon frame `{"id":...,"result":{"success":{"doctor":{...}}}}`, not the `{"ok","data","meta"}` envelope — read `.result.success.doctor.healthy`, and do not parse it with the envelope's `.ok`/`.data`. Run `memoryd schema --json` for the whole machine contract, or `memoryd schema exit-codes` for just the tables.
 
 ## 1. Orient (start of a session)
 
@@ -107,6 +107,21 @@ memoryd supersede <old-id> "The dashboard now defaults to port 7137 and honors -
 
 memoryd forget <id> --reason "keyboard preference no longer holds" --socket "$MEMORUM_SOCKET"
 ```
+
+**Supersede runs the full governance gate — and can be *stricter* than the original write.** It goes through the same policy / grounding / privacy / contradiction checks as `write`, so a claim that promoted ungrounded may be refused on supersede if its namespace demands grounding. If you get `error.code: "grounding"`, capture evidence and cite it:
+
+```bash
+# 1. Capture a source (a URL is cleanest; --file works for local artifacts)
+memoryd source capture --url "https://example.com/changelog" \
+  --excerpt "default port is now 7137" --socket "$MEMORUM_SOCKET"
+# → data.source_refs: ["webcap:src_...#quote_0001"]
+
+# 2. Cite it in --meta under the key `source_ref` (a single string, not `source_refs`)
+memoryd supersede <old-id> "..." --reason "..." \
+  --meta '{"source_ref":"webcap:src_...#quote_0001"}' --socket "$MEMORUM_SOCKET"
+```
+
+Prefer a **public URL** as the source: a local `--file` artifact whose path/contents the privacy classifier flags (e.g. anything under a home directory) will pass grounding but then trip a `privacy` refusal, because a plaintext governed write can't carry a privacy-flagged descriptor. If both gates box you in, surface it to the user rather than looping.
 
 **Observations (Stream F).** Record a low-level observation/pattern/signal for later synthesis:
 
