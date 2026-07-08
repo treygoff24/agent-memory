@@ -1,5 +1,7 @@
 # Stream B Daemon MCP API
 
+> **MCP is the opt-in compatibility transport, not the default agent surface.** The primary agent-facing contract is the hardened `memoryd` CLI — see `docs/api/memoryd-cli-contract-v1.md` — driven by the `using-memorum` skill (`skills/using-memorum/SKILL.md`) and backed by passive-recall lifecycle hooks that `memoryd init` wires by default. The MCP tools below are still shipped and frozen at 10 tools, exposed over the **same** `memoryd` daemon and the same governance/privacy pipeline; wire them only for shell-less or MCP-only harnesses with `memoryd init --wire-mcp <harness>`.
+
 This document lists the agent-facing MCP tools exported by `memoryd`. Admin and operator commands such as `memoryd dream ...`, privacy controls, device onboarding, review commands, and doctor/status repair flows are not MCP tools.
 
 ## Tool manifest

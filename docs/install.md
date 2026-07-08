@@ -5,10 +5,13 @@ session: getting the `memoryd` binaries onto the box. Use the installer when you
 want Memorum built, a local memory repo/runtime prepared, the daemon started,
 lifecycle commands printed, and MCP wiring snippets shown in one pass.
 
-Once the binaries are installed, bootstrap the substrate and wire MCP with
-`memoryd init` (the unified first-run entrypoint):
+Once the binaries are installed, bootstrap the substrate and wire the
+passive-recall hooks with `memoryd init` (the unified first-run entrypoint). The
+MCP bridge is an opt-in compatibility surface — wire it only with
+`memoryd init --wire-mcp <harness>`; the default agent surface is the `memoryd`
+CLI plus the `using-memorum` skill.
 
-- **Human operator:** [`docs/getting-started.md`](getting-started.md) — interactive `memoryd init` plus verify and MCP wiring.
+- **Human operator:** [`docs/getting-started.md`](getting-started.md) — interactive `memoryd init` plus verify; MCP wiring is opt-in.
 - **AI agent installing for a user:** [`docs/agent-onboarding.md`](agent-onboarding.md) — the scripted `memoryd init --non-interactive --json` loop.
 - **Something broke:** [`docs/troubleshooting.md`](troubleshooting.md).
 

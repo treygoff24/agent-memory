@@ -1,6 +1,6 @@
 # Memorum (`agent-memory`)
 
-Memorum is one shared memory layer for every coding assistant you use. If you bounce between Claude Code and Codex CLI — or want to — you've noticed each tool keeps its own private notes about your projects, your preferences, and what worked last time. Switch tools and the new one starts cold. Memorum is the missing piece: a local-first daemon that holds the source of truth, and an MCP server every harness can read from and write to.
+Memorum is one shared memory layer for every coding assistant you use. If you bounce between Claude Code and Codex CLI — or want to — you've noticed each tool keeps its own private notes about your projects, your preferences, and what worked last time. Switch tools and the new one starts cold. Memorum is the missing piece: a local-first daemon that holds the source of truth, with a hardened `memoryd` CLI and the `using-memorum` skill as the primary way an agent reads and writes memory, plus passive-recall lifecycle hooks that inject relevant memory into each session automatically. An opt-in MCP bridge exposes the same daemon to shell-less or MCP-only harnesses.
 
 You install it once. Your existing notes from Claude Code's `~/.claude/projects/.../memory/` and Codex CLI's `~/.codex/memories/MEMORY.md` get backfilled on first run so nothing's lost. Every new memory either harness writes lands in one place. Recall hits the same store from every session.
 
@@ -9,12 +9,13 @@ What's different from `CLAUDE.md` and `AGENTS.md`: those files are instructions 
 The repo lives on your disk under `$MEMORUM_REPO` (default `~/memorum`). It's plain Markdown + YAML frontmatter, version-controlled with git. No cloud component, no telemetry, no shared multi-tenant store.
 
 ```text
-Claude / Codex / Cursor / any MCP client
-              │
-              ▼
-       memoryd mcp --socket <sock>   (stdio JSON-RPC MCP bridge)
-              │
-              ▼
+Claude / Codex / any shell-capable agent          shell-less / MCP-only client
+   (memoryd CLI + using-memorum skill                        │
+    + auto-wired passive-recall hooks)                       ▼
+              │                            memoryd mcp --socket <sock>
+              │                            (opt-in stdio JSON-RPC MCP bridge)
+              │                                              │
+              ▼                                              ▼
         memoryd serve --init         (owner-only Unix socket daemon)
               │
               ├─ governance + privacy + passive recall + dreaming
@@ -56,12 +57,19 @@ For development without installing, use `cargo run --bin memoryd -- ...`.
 ## Quickstart
 
 The fastest path is the interactive wizard — it detects prior Claude Code /
-Codex memory, imports it with your consent, arranges the daemon, and wires the
-`memorum` MCP server into your agents, then prints next steps:
+Codex memory, imports it with your consent, arranges the daemon, and wires
+passive-recall lifecycle hooks into your harness, then prints next steps:
 
 ```bash
 memoryd init
 ```
+
+Hooks are the default agent surface: once wired, each session gets a
+startup-recall block and delta-recall injected automatically, and an agent
+reads/writes memory through the `memoryd` CLI (`search`, `get`, `write`,
+`supersede`, `forget`, …) guided by the `using-memorum` skill. The MCP bridge is
+**not** wired by default; pass `--wire-mcp <harness>` to also expose the
+opt-in MCP server for shell-less or MCP-only clients.
 
 Declining every prompt is a guaranteed no-op, so it is always safe to run and
 look. (In scripts/CI, use `memoryd init --non-interactive --json` — a bare
@@ -88,10 +96,19 @@ In another shell (reuse the same exports, or source them from your shell profile
 ```bash
 memoryd status --socket "$MEMORUM_SOCKET"
 memoryd doctor --repo "$MEMORUM_REPO" --runtime "$MEMORUM_RUNTIME"
+```
+
+`status` now emits the v1 agent envelope (`{"ok":true,"data":{...},"meta":{...}}`) on stdout exit 0; `doctor` keeps its own raw daemon frame and 0/1 exit. With the daemon up, an agent can read and write memory directly through the CLI — `memoryd search`, `get`, `write`, `write-note`, `supersede`, `forget`, `observe` — all of which speak the same envelope. See `docs/api/memoryd-cli-contract-v1.md` for the machine contract and `skills/using-memorum/SKILL.md` for the agent playbook.
+
+### Optional: wire the MCP bridge (opt-in compatibility path)
+
+The MCP server is not required for the default CLI + hooks surface. Wire it only for shell-less or MCP-only harnesses. Start the bridge with:
+
+```bash
 memoryd mcp --socket "$MEMORUM_SOCKET"
 ```
 
-Wire an MCP client to launch the stdio bridge. Use the absolute socket path printed by `scripts/install-memorum.sh`; most MCP clients do not expand `~` inside JSON/TOML.
+Then point an MCP client at the stdio bridge. Use the absolute socket path printed by `scripts/install-memorum.sh`; most MCP clients do not expand `~` inside JSON/TOML.
 
 For Claude Code, use user-scope wiring:
 
@@ -114,7 +131,7 @@ Or add this at the top-level `mcpServers` key of the user config (`$CLAUDE_CONFI
 
 Replace `/absolute/path/to/memorum` with your real path, or paste the installer snippet that already contains the canonicalized socket.
 
-Then ask the client to call `memory_write` with a grounded fact and `memory_search` for the same text. See `docs/getting-started.md` for a step-by-step path and `docs/mcp-wiring.md` for per-harness config snippets.
+Then ask the client to call `memory_write` with a grounded fact and `memory_search` for the same text. See `docs/getting-started.md` for a step-by-step path and `docs/mcp-wiring.md` for per-harness config snippets. The MCP manifest stays frozen at 10 tools over the same daemon the CLI uses.
 
 ## Alpha limits that are explicit
 
@@ -167,11 +184,13 @@ cargo test --workspace
 
 ## Docs map
 
-- System contract: `docs/specs/system-v0.2.md`
+- System contract: `docs/specs/system-v0.3.md`
 - Getting started: `docs/getting-started.md`
+- Agent CLI contract: `docs/api/memoryd-cli-contract-v1.md`
+- Using Memorum (agent skill): `skills/using-memorum/SKILL.md`
 - Importing prior memories: `docs/importer.md`
 - Troubleshooting: `docs/troubleshooting.md`
-- MCP wiring: `docs/mcp-wiring.md`
+- MCP wiring (opt-in compatibility path): `docs/mcp-wiring.md`
 - API docs: `docs/api/`
 - Stream specs: `docs/specs/`
 - Review-fix policy: `docs/review-fix-policy.md`

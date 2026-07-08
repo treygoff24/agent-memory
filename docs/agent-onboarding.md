@@ -12,17 +12,17 @@ Related guides:
 
 ## What you are doing
 
-You are helping a user install Memorum: a local-first daemon that creates one shared memory layer across Claude Code, Codex CLI, and any other MCP-capable harness. You will detect what they already have, get their consent, run setup, verify it, and tell them to restart their session.
+You are helping a user install Memorum: a local-first daemon that creates one shared memory layer across Claude Code, Codex CLI, and any other harness. You will detect what they already have, get their consent, run setup, verify it, and tell them to restart their session.
 
-The outcome is a running `memoryd serve` daemon with MCP wiring in place and (optionally) prior harness memory imported. The user must restart their harness session after wiring so the MCP config takes effect.
+The default agent surface is the `memoryd` CLI plus the `using-memorum` skill plus passive-recall lifecycle hooks that `memoryd init` wires by default. The outcome is a running `memoryd serve` daemon with those recall hooks wired and (optionally) prior harness memory imported. MCP wiring is an opt-in compatibility path for shell-less or MCP-only harnesses — it happens only when you pass `--wire-mcp <harness>`. The user must restart their harness session after setup so the newly wired hooks (and MCP config, if you wired it) take effect.
 
 ## Overview of the canonical loop
 
 1. Detect — run `memoryd init --detect-only` and read the JSON. Learn what harnesses are installed and whether prior memory exists.
 2. Propose — explain to the user what you found and what you plan to do. Get explicit consent before writing anything.
-3. Run setup — run `memoryd init --non-interactive --json` with the flags that match their decisions.
+3. Run setup — run `memoryd init --non-interactive --json` with the flags that match their decisions. This wires the passive-recall hooks by default; add `--wire-mcp <harness>` only if they want the opt-in MCP bridge too.
 4. Verify — read the `SetupReport` JSON; call `memoryd doctor` and `memoryd status` for belt-and-suspenders confirmation.
-5. Restart — tell the user to restart their harness session so MCP wiring loads.
+5. Restart — tell the user to restart their harness session so the newly wired hooks (and MCP config, if any) load.
 
 Never run a mutating step without the user's explicit yes first.
 
@@ -51,13 +51,13 @@ If the detection JSON is empty or the command fails, report the stderr output to
 
 Present your findings in plain language. Then ask the user to make the following decisions. Do not proceed past this point until you have explicit answers.
 
-### Decision 1: which harnesses to wire
+### Decision 1: whether to also wire the opt-in MCP bridge
 
-Explain: Memorum will write MCP config for the chosen harnesses so they can access shared memory. This modifies the harness config file on disk.
+Explain: `memoryd init` wires the passive-recall lifecycle hooks by default — that plus the `memoryd` CLI and the `using-memorum` skill is the primary agent surface, and it needs no MCP. Wiring MCP is optional and only useful for a shell-less or MCP-only harness. If they want it, Memorum will write MCP config for the chosen harnesses, modifying the harness config file on disk.
 
-Ask: "Should I wire MCP for the harness you are using now (`current`), for Claude Code (`claude`), for Codex CLI (`codex`), for all detected harnesses (`all`), or none (`none`)?"
+Ask: "Do you also want the opt-in MCP bridge wired? If so, for the harness you are using now (`current`), Claude Code (`claude`), Codex CLI (`codex`), all detected harnesses (`all`), or none (`none`, the default — hooks + CLI only)?"
 
-Map their answer to `--wire-mcp current|claude|codex|all|none`.
+Map their answer to `--wire-mcp current|claude|codex|all|none`. The non-interactive default is `none` (hooks only); pass a harness value only when they opt in.
 
 `current` resolves from the active harness session environment first, then falls back to the single detected harness if exactly one harness is detected. If multiple harnesses are detected and the session environment is ambiguous, setup fails loudly instead of skipping MCP wiring. When you already know the intended target, prefer passing explicit `claude`, `codex`, or `all`.
 
@@ -94,7 +94,8 @@ Map their answer to `--daemon on-demand|background|launchd|none`.
 
 **Consent summary before running:** Tell the user exactly what you are about to do:
 - Initialize a Memorum repo at `~/memorum` (or their chosen path).
-- Wire MCP config for their chosen harnesses (names the config files that will be modified).
+- Wire the passive-recall lifecycle hooks into the harness (default; names the config files that will be modified).
+- Optionally wire the opt-in MCP bridge if they chose a `--wire-mcp` harness (names those config files too).
 - Optionally import prior harness memory.
 - Set up daemon persistence as chosen.
 
@@ -106,23 +107,22 @@ Then ask: "Should I proceed?" Do not run the next step until they say yes.
 
 Run `memoryd init` with `--non-interactive` and `--json` plus the flags you collected. All output to parse is on stdout; diagnostics go to stderr.
 
-Base command (non-interactive agent mode):
+Base command (non-interactive agent mode) — wires the recall hooks by default and leaves MCP unwired:
 
 ```bash
 memoryd init --non-interactive --json \
-  --wire-mcp <current|claude|codex|all|none> \
   --daemon <on-demand|background|launchd|none>
 ```
 
-Add `--import --harness <value>` if the user wants to import prior memory:
+Add `--wire-mcp <current|claude|codex|all|none>` only if the user opted into the MCP bridge in Decision 1 (default `none` — hooks + CLI only). Add `--import --harness <value>` if the user wants to import prior memory:
 
 ```bash
 memoryd init --non-interactive --json \
   --import \
   --harness <current|claude|codex|all|none> \
   --non-git-cwd-default <skip|me|generate> \
-  --wire-mcp <current|claude|codex|all|none> \
-  --daemon <on-demand|background|launchd|none>
+  --daemon <on-demand|background|launchd|none> \
+  [--wire-mcp <current|claude|codex|all|none>]
 ```
 
 Optional path overrides (use only if the user has non-default paths):
@@ -136,7 +136,7 @@ Use `--print-only` to preview what would happen without applying side effects (u
 
 ```bash
 memoryd init --non-interactive --json --print-only \
-  --wire-mcp <value> --daemon <value>
+  --daemon <value> [--wire-mcp <value>]
 ```
 
 ### Exit codes
@@ -153,7 +153,7 @@ The JSON object printed to stdout has this shape:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "detection": { ... },
   "decisions": { ... },
   "steps": [
@@ -179,6 +179,11 @@ The JSON object printed to stdout has this shape:
     },
     {
       "step": "wire_mcp",
+      "status": "skipped",
+      "message": null
+    },
+    {
+      "step": "wire_hooks",
       "status": "succeeded",
       "message": null
     },
@@ -197,10 +202,12 @@ The JSON object printed to stdout has this shape:
 }
 ```
 
+Schema 2 adds the `wire_hooks` step (the passive-recall hook installer) alongside `wire_mcp`. In the default setup `wire_hooks` is `succeeded` and `wire_mcp` is `skipped` because MCP is opt-in.
+
 **Fields to check:**
 
-- `restart_required`: if `true`, you MUST tell the user to restart their harness session. MCP wiring does not take effect until the harness is restarted.
-- `steps[*].status`: each step reports `succeeded`, `failed`, `skipped`, or `expected`. A `skipped` step means the step was not needed given the chosen flags (e.g., import skipped when `--harness none`). An `expected` step means the outcome was expected given the mode (e.g., a status probe that is absent because no daemon was started).
+- `restart_required`: if `true`, you MUST tell the user to restart their harness session. The newly wired recall hooks (and any opt-in MCP config) do not take effect until the harness is restarted.
+- `steps[*].status`: each step reports `succeeded`, `failed`, `skipped`, or `expected`. A `skipped` step means the step was not needed given the chosen flags (e.g., import skipped when `--harness none`, or `wire_mcp` skipped when `--wire-mcp none` — the default, since MCP is opt-in). An `expected` step means the outcome was expected given the mode (e.g., a status probe that is absent because no daemon was started).
 - `steps[*].message`: human-readable explanation, present on failures. Report this to the user if a step failed.
 - `import_report`: present if an import ran; contains per-harness counts of written, skipped, and failed memories.
 - `verify.doctor_probe`: if this is `failed`, the substrate or daemon has a real problem regardless of daemon mode. Report the step message and tell the user to run `memoryd doctor` manually.
@@ -210,7 +217,8 @@ The JSON object printed to stdout has this shape:
 If any step has `status: "failed"`, read its `message` and report it to the user. The most common recoverable failures are:
 
 - `ensure_daemon` failed: the daemon could not start. Ask the user to check that the binary is in their PATH and that no other process holds the socket.
-- `wire_mcp` failed: the config file could not be written. Check file permissions.
+- `wire_hooks` failed: the recall hooks could not be installed into the harness config (this is the default surface). Check file permissions on the harness config file.
+- `wire_mcp` failed: the opt-in MCP config file could not be written (only runs when `--wire-mcp` names a harness). Check file permissions.
 - `verify` failed on `doctor_probe`: substrate issue; run `memoryd doctor` for details.
 
 ---
@@ -235,7 +243,7 @@ memoryd status --socket <PATH>
 
 **Interpreting doctor output:** Doctor prints a pretty-printed JSON response envelope to stdout (for example `{"id":"cli-doctor","result":{"success":{"doctor":{...}}}}`). Inside `result.success.doctor`, `healthy: true` means nothing is broken. `events_log_mirror_lag` means the derived SQLite mirror is behind; run the reindex command it prints. Any other failure is a real problem — report the output to the user and stop. Doctor exits `1` when `healthy` is false. It takes no JSON output flag; stdout is always this envelope.
 
-**Interpreting status output:** Status queries the running daemon over its socket and prints a pretty-printed JSON response envelope to stdout (same `id` / `result` shape as other daemon RPCs). A successful `result.success` payload means the daemon is reachable. If status fails and the daemon mode was `none`, that is expected. If status fails with any other daemon mode, the daemon did not start correctly — check `ensure_daemon` step message in the report. It takes no JSON output flag; stdout is always this envelope.
+**Interpreting status output:** Status queries the running daemon over its socket and prints the v1 agent envelope to stdout: `{"ok":true,"data":{...},"meta":{"schema_version":"1.0","warnings":[]}}` with exit 0 when the daemon is reachable. On failure it prints an error envelope (`{"ok":false,"error":{...},"meta":{...}}`) to stderr with a nonzero exit. Parse stdout on exit 0 and stderr on nonzero exit. If status fails and the daemon mode was `none`, that is expected. If status fails with any other daemon mode, the daemon did not start correctly — check the `ensure_daemon` step message in the report. Unlike `doctor`, `status` speaks this agent envelope, not the raw `id`/`result` daemon frame.
 
 ---
 
@@ -243,7 +251,7 @@ memoryd status --socket <PATH>
 
 **Tell the user this, in plain language, before you consider the task done:**
 
-> Memorum is installed and the daemon is running. MCP wiring has been written to your harness config. You must **restart your harness session** (close and reopen Claude Code, Codex CLI, or whichever harness was wired) for the MCP server to load. After restarting, ask the harness to list available tools — you should see Memorum tools such as `memory_write`, `memory_search`, and `memory_startup`.
+> Memorum is installed and the daemon is running. Passive-recall lifecycle hooks have been written to your harness config. You must **restart your harness session** (close and reopen Claude Code, Codex CLI, or whichever harness was wired) for the hooks to load. After restarting, the harness automatically gets a startup-recall block and delta-recall each session, and the agent reads/writes memory through the `memoryd` CLI (`search`, `get`, `write`, `supersede`, `forget`, `observe`) — see `skills/using-memorum/SKILL.md`. If you also opted into the MCP bridge, restarting loads it too; ask the harness to list tools and you should see Memorum tools such as `memory_write`, `memory_search`, and `memory_startup`.
 
 Do not mark the onboarding complete until you have delivered this restart instruction and the user acknowledges it.
 
@@ -290,8 +298,10 @@ These are every flag accepted by `memoryd init`. Do not cite flags outside this 
     non-interactive path.
 
 --wire-mcp <current|claude|codex|all|none>
-    MCP configs to wire. Omitted: prompted by the wizard on a TTY; defaults
-    to current on the non-interactive path.
+    Opt-in MCP configs to wire. Omitted: prompted by the wizard on a TTY;
+    defaults to none on the non-interactive path (the recall hooks are the
+    default surface and are wired regardless). Set a harness value only for a
+    shell-less or MCP-only client.
     current uses the same environment-first, exactly-one-detected fallback as
     --harness current and fails loudly if still ambiguous. Prefer explicit
     claude, codex, or all when you already know the target.
@@ -335,7 +345,9 @@ memoryd doctor [--repo <PATH>] [--runtime <PATH>] [--reindex]
 memoryd status [--socket <PATH>]
     Query daemon health.
     Default socket: <resolved repo>/.memoryd/memoryd.sock (repo resolved like init).
-    Prints a pretty-printed JSON response envelope to stdout (takes no JSON output flag).
+    Prints the v1 agent envelope ({"ok":true,"data":{...},"meta":{...}}) to
+    stdout on exit 0, or an error envelope to stderr on nonzero exit — not the
+    raw id/result daemon frame that doctor prints.
 
 memoryd serve [--repo <PATH>] [--runtime <PATH>] [--socket <PATH>] [--init]
     Run the local daemon directly (for manual or custom arrangements).

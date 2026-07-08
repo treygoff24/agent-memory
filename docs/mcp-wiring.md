@@ -1,4 +1,6 @@
-# MCP wiring
+# MCP wiring (opt-in compatibility path)
+
+> **This is not the default agent surface.** The primary way an agent uses Memorum is the `memoryd` CLI plus the `using-memorum` skill (`skills/using-memorum/SKILL.md`), backed by passive-recall lifecycle hooks that `memoryd init` wires by default. MCP is an **opt-in compatibility transport** for shell-less or MCP-only harnesses that cannot drive the CLI. It is still shipped and its manifest is frozen at 10 tools over the same daemon, but it is not wired unless you ask for it — either `memoryd init --wire-mcp <harness>` or the manual steps below.
 
 Memorum exposes MCP through a stdio bridge that forwards calls to a running `memoryd` daemon over its Unix socket.
 

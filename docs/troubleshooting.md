@@ -63,7 +63,9 @@ claude auth status    # current Claude Code CLI
 
 ---
 
-## MCP client doesn't list any tools
+## MCP client doesn't list any tools (opt-in MCP path only)
+
+This section applies only if you opted into the MCP bridge (`memoryd init --wire-mcp <harness>` or manual wiring per `docs/mcp-wiring.md`). The default agent surface is the `memoryd` CLI plus recall hooks and does not use MCP at all — if you did not wire MCP, an empty tool list is expected, not a fault.
 
 **Symptom**: Claude Code or Codex CLI loads the MCP server but `/mcp` shows no tools, or `tools/list` returns empty.
 
