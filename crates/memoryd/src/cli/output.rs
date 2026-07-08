@@ -253,13 +253,28 @@ fn refusal_suggested_fix(reason: Option<GovernanceRefusalReason>) -> Option<Stri
     Some(fix.to_string())
 }
 
-/// The `suggested_fix` for a daemon error code. Kept minimal here; Task 5
-/// deepens per-command pedagogy on top of this baseline.
+/// The `suggested_fix` for a daemon error code: the exact corrective move. The
+/// daemon `message` already names *what* was wrong and *why*; this names *how* to
+/// proceed. Codes whose message is already self-correcting return `None`.
 fn suggested_fix_for(code: &str) -> Option<String> {
     let fix = match code {
         "not_found" => "no memory has this id; run `memoryd search <query>` to find the right one",
-        "invalid_request" => "check the argument shape with `memoryd schema commands --json`",
+        "invalid_request" => {
+            "the message names the bad input; run `memoryd schema commands --json` for the exact argument shape"
+        }
         "substrate_error" => "transient; retry, or run `memoryd doctor` to check daemon health",
+        "privacy_error" => {
+            "the content classified as protected; rephrase to drop the secret, or record it as an encrypted memory"
+        }
+        "unsupported" => {
+            "unsupported source-capture mode; use `--url` with `--mode http-static`, or `--file` with a local mode"
+        }
+        "source_capture_failed" => {
+            "the capture itself failed (network, integrity, or IO); retry, or verify the URL/file is reachable"
+        }
+        "embedding_backlog" | "embedding_worker_idle" | "embedding_retry_budget_exhausted" => {
+            "the embedding worker is catching up; retry shortly (`memoryd doctor` shows worker state)"
+        }
         _ => return None,
     };
     Some(fix.to_string())

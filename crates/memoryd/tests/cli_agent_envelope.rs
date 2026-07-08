@@ -265,3 +265,46 @@ fn identical_search_invocations_are_byte_identical_on_stdout() {
     assert_eq!(json["data"]["hits"].as_array().unwrap().len(), 0);
     assert_eq!(json["meta"]["schema_version"], "1.0");
 }
+
+// --- Task 5: error pedagogy -------------------------------------------------
+
+#[test]
+fn daemon_error_suggested_fixes_name_the_corrective_move() {
+    // Each code's suggested_fix names the exact next move, not just "an error".
+    let cases = [
+        ("not_found", "search"),
+        ("invalid_request", "schema"),
+        ("substrate_error", "doctor"),
+        ("privacy_error", "encrypted"),
+        ("unsupported", "http-static"),
+        ("source_capture_failed", "retry"),
+        ("embedding_backlog", "retry"),
+    ];
+    for (code, needle) in cases {
+        let render = render_agent_response(&ResponseEnvelope::error("cli", code, "the daemon message", false));
+        let json = envelope_json(&render);
+        let fix = json["error"]["suggested_fix"].as_str().unwrap_or("");
+        assert!(fix.contains(needle), "suggested_fix for `{code}` should mention `{needle}`, got: {fix}");
+    }
+}
+
+#[test]
+fn write_note_stdout_is_pure_json_with_diagnostics_on_stderr() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let repo = temp.path().join("repo");
+    let runtime = temp.path().join("runtime");
+    let socket = temp.path().join("memoryd.sock");
+    let _daemon = start_daemon(&repo, &runtime, &socket);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_memoryd"))
+        .args(["write-note", "a durable dev note for the pedagogy test", "--socket"])
+        .arg(&socket)
+        .output()
+        .expect("run write-note");
+    assert_eq!(output.status.code(), Some(0), "write-note should succeed: {}", String::from_utf8_lossy(&output.stderr));
+    // The entire stdout must parse as exactly one JSON object — proving no banner
+    // or prose leaked onto the success stream (diagnostics/banner go to stderr).
+    let json: Value = serde_json::from_slice(&output.stdout).expect("write-note stdout is pure JSON, no prose");
+    assert_eq!(json["ok"], true);
+    assert!(json["data"]["id"].is_string(), "write-note returns the new memory id");
+}

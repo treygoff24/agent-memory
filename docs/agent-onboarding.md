@@ -233,9 +233,9 @@ memoryd doctor --repo <PATH> --runtime <PATH>
 memoryd status --socket <PATH>
 ```
 
-**Interpreting doctor output:** Doctor prints a pretty-printed JSON response envelope to stdout (for example `{"id":"cli-doctor","result":{"success":{"doctor":{...}}}}`). Inside `result.success.doctor`, `healthy: true` means nothing is broken. `events_log_mirror_lag` means the derived SQLite mirror is behind; run the reindex command it prints. Any other failure is a real problem — report the output to the user and stop. Doctor exits `1` when `healthy` is false. There is no `--json` flag; stdout is always this envelope.
+**Interpreting doctor output:** Doctor prints a pretty-printed JSON response envelope to stdout (for example `{"id":"cli-doctor","result":{"success":{"doctor":{...}}}}`). Inside `result.success.doctor`, `healthy: true` means nothing is broken. `events_log_mirror_lag` means the derived SQLite mirror is behind; run the reindex command it prints. Any other failure is a real problem — report the output to the user and stop. Doctor exits `1` when `healthy` is false. It takes no JSON output flag; stdout is always this envelope.
 
-**Interpreting status output:** Status queries the running daemon over its socket and prints a pretty-printed JSON response envelope to stdout (same `id` / `result` shape as other daemon RPCs). A successful `result.success` payload means the daemon is reachable. If status fails and the daemon mode was `none`, that is expected. If status fails with any other daemon mode, the daemon did not start correctly — check `ensure_daemon` step message in the report. There is no `--json` flag; stdout is always this envelope.
+**Interpreting status output:** Status queries the running daemon over its socket and prints a pretty-printed JSON response envelope to stdout (same `id` / `result` shape as other daemon RPCs). A successful `result.success` payload means the daemon is reachable. If status fails and the daemon mode was `none`, that is expected. If status fails with any other daemon mode, the daemon did not start correctly — check `ensure_daemon` step message in the report. It takes no JSON output flag; stdout is always this envelope.
 
 ---
 
@@ -307,7 +307,7 @@ These are every flag accepted by `memoryd init`. Do not cite flags outside this 
 
 ## Uninstalling
 
-`memoryd uninstall` is the clean reverse of `memoryd init` — the easy exit a user should be able to take at any time. Drive it the same way you drove install: detect, confirm with the user, run, verify.
+`memoryd uninstall` is the clean reverse of the `init` bootstrap — the easy exit a user should be able to take at any time. Drive it the same way you drove install: detect, confirm with the user, run, verify.
 
 1. **Detect.** Run `memoryd uninstall --print-only` and read the JSON. It resolves the repo/runtime, probes the daemon socket, lists which harness configs hold a `memorum` MCP entry, and (on macOS) reports any `com.memorum.*` launchd plist. Nothing is changed.
 2. **Confirm with the user.** Show them what will happen. By default their data is **preserved** — only the daemon, launchd plist, and MCP wiring are removed. Deleting the repo and runtime requires `--purge`, which is destructive. Always confirm the resolved absolute paths before purging.
@@ -330,12 +330,12 @@ memoryd uninstall [--repo <PATH>] [--runtime <PATH>]
 memoryd doctor [--repo <PATH>] [--runtime <PATH>] [--reindex]
     Check local substrate and daemon configuration.
     Defaults match init: --repo $MEMORUM_REPO or ~/memorum; --runtime <repo>/.memoryd.
-    Prints a pretty-printed JSON response envelope to stdout (no --json flag).
+    Prints a pretty-printed JSON response envelope to stdout (takes no JSON output flag).
 
 memoryd status [--socket <PATH>]
     Query daemon health.
     Default socket: <resolved repo>/.memoryd/memoryd.sock (repo resolved like init).
-    Prints a pretty-printed JSON response envelope to stdout (no --json flag).
+    Prints a pretty-printed JSON response envelope to stdout (takes no JSON output flag).
 
 memoryd serve [--repo <PATH>] [--runtime <PATH>] [--socket <PATH>] [--init]
     Run the local daemon directly (for manual or custom arrangements).
