@@ -1,123 +1,155 @@
 ---
 name: using-memorum
-description: Use when asked to back up, import, or backfill prior agent memory (Claude Code / Codex CLI) into Memorum, or to operate the memoryd CLI — searching memory, reading/writing/forgetting memories, checking daemon health, or activating imported memories. Covers the non-interactive agent flow end to end.
+description: Use when operating Memorum from the memoryd CLI — orienting in a new session, searching and reading memories, recording notes and governed memories, superseding or forgetting, revealing encrypted content, checking daemon health, or importing/backing up prior Claude Code / Codex CLI memory. Covers the full agent operating loop and the JSON envelope + exit-code contract every command follows.
 ---
 
 # Operating Memorum from the CLI
 
-Memorum is a local-first daemon that gives Claude Code, Codex CLI, and any MCP-capable harness one shared memory layer. You drive it with the `memoryd` CLI; this skill is the non-interactive flow for backing up prior memory and operating the store.
+Memorum is a local-first daemon that gives Claude Code, Codex CLI, and any shell-capable harness one shared, governed memory layer. You drive it with the `memoryd` CLI. This skill is the operating loop: how to orient, read, write, and stay out of trouble.
 
-Deeper reference — full flag tables, the reconciliation report schema, troubleshooting, and the exit-code contract — is in `docs/agent-import-guide.md`. Read it when something here is underspecified.
+The CLI is the Tier-1 agent surface. The MCP bridge still ships but is an opt-in compatibility path — you do not need it. Passive recall is injected for you by lifecycle hooks (see "Recall interplay" below), so a lot of context arrives without you asking.
 
 ## Paths and env vars
-
-Every command needs to know the repo and socket. Use these if the user has them exported; otherwise the defaults below apply.
 
 ```bash
 MEMORUM_REPO="${MEMORUM_REPO:-$HOME/memorum}"
 MEMORUM_SOCKET="${MEMORUM_SOCKET:-$MEMORUM_REPO/.memoryd/memoryd.sock}"
 ```
 
-Two flag conventions, and they differ by subcommand:
+Flag convention: daemon-backed commands (`status`, `search`, `get`, `write`, `write-note`, `supersede`, `forget`, `source`, `reveal`, `observe`, `review`, `export`) take `--socket`. `doctor` reads the substrate directly and takes `--repo`/`--runtime` (it also tolerates `--socket` so one scripted loop can pass the same flags everywhere).
 
-- Daemon commands (`status`, `search`, `get`, `review`, `forget`, `export`) take `--socket`.
-- `doctor` takes `--repo` / `--runtime` (it inspects the substrate directly). It now also tolerates `--socket` so a single scripted loop can pass the same flags everywhere.
+## The envelope and exit-code contract
 
-## 1. Confirm Memorum is running
+Every covered command speaks one machine contract. Learn it once and you can branch on any command's outcome.
+
+- **Success** → one JSON object on **stdout**, exit `0`:
+  `{"ok":true,"data":{...},"meta":{"schema_version":"1.0","warnings":[]}}`
+- **Failure** → one JSON object on **stderr**, nonzero exit:
+  `{"ok":false,"error":{"code","message","retryable","suggested_fix"},"meta":{...}}`
+
+Parse stdout on exit 0, stderr otherwise. `data` is the payload itself (e.g. `data.hits`), never a daemon wrapper. `meta.warnings` carries non-fatal advisories — read them.
+
+Exit codes you will branch on:
+
+| Exit | Meaning | React |
+| ---: | --- | --- |
+| 0 | success (incl. empty result, and queued writes) | check `meta.warnings` and `data.status` |
+| 2 | usage / bad argument | fix the command |
+| 65 | invalid input or **governance refusal** | read `error.message` + `suggested_fix` |
+| 66 | `not_found` — well-formed id, no such memory | `search` for the right id |
+| 75 | daemon unreachable / transient | retry, or `doctor` |
+| 77 | client gate (e.g. `reveal` without `--allow-reveal`) | pass the named flag only with authority |
+
+`doctor` (0/1) and `recall *` (their own dictionary) are documented exceptions. Run `memoryd schema --json` for the whole machine contract, or `memoryd schema exit-codes` for just the tables.
+
+## 1. Orient (start of a session)
 
 ```bash
-memoryd status --socket "$MEMORUM_SOCKET"   # daemon reachable over the socket?
-memoryd doctor --repo "$MEMORUM_REPO"        # substrate healthy?
+memoryd status --socket "$MEMORUM_SOCKET"    # daemon reachable? (exit 0 = yes)
+memoryd doctor --repo "$MEMORUM_REPO"         # substrate healthy? (exit 0, healthy:true)
+memoryd schema --json                          # the full command/envelope/exit contract
 ```
 
-`status` returning a `result.success` payload means the daemon is live. `doctor` exits 0 and reports `healthy: true` when the store is clean. If `status` fails, the daemon isn't running — start it (or tell the user to) before doing anything else.
+If `status` exits 75, the daemon isn't running — start it (or ask the user) before anything else. If `doctor` exits 1, it prints the specific finding and the fix.
 
-## 2. Import prior memory — one command
+## Recall interplay — don't re-search what you already have
 
-This is the headline. It backs up everything the user has taught Claude Code and Codex CLI into Memorum.
+When Memorum's lifecycle hooks are wired (the default), relevant memories are **already injected into your context** at session start and as the conversation shifts — you receive them without running a command. Before you `search`, check whether the answer is already in the recall block you were given. Reach for `search` when you need something the passive block didn't surface, or to confirm before a write.
+
+## 2. Read path: search → get
+
+```bash
+memoryd search "delegate droid alias" --socket "$MEMORUM_SOCKET"
+memoryd search "onboarding" --limit 5 --include-body --socket "$MEMORUM_SOCKET"
+```
+
+`search` returns bounded summaries by default; `--include-body` inlines full bodies. An empty result is still exit 0 with `data.hits: []` and a broadening hint in `meta.warnings` — widen the query rather than treating it as an error.
+
+To read one memory in full, follow a hit's id into `get`:
+
+```bash
+memoryd get <id> --socket "$MEMORUM_SOCKET"
+memoryd get <id> --include-provenance --socket "$MEMORUM_SOCKET"
+```
+
+Bodies are bounded server-side (4 KiB); `data.truncated: true` marks a cut body. A well-formed id that doesn't exist exits 66 — `search` for the right one.
+
+## 3. Write etiquette
+
+**Search before you write.** A write that contradicts an existing memory is refused (see below); confirm what's already recorded first.
+
+**Note vs. governed write.** A note is low-friction and lands immediately; a governed write goes through policy, grounding, and contradiction checks.
+
+```bash
+# Note — quick, immediate, no governance candidate step
+memoryd write-note "react-doctor flakes on cold start; a rerun fixes it" --socket "$MEMORUM_SOCKET"
+
+# Governed structured write — carries title/tags/meta, subject to governance
+memoryd write "The dashboard defaults to port 7137; override with --port." \
+  --title "Dashboard default port" --tag config \
+  --meta '{"namespace":"project","type":"claim","confidence":0.88}' \
+  --socket "$MEMORUM_SOCKET"
+```
+
+Malformed `--meta` JSON exits 65 with a minimal valid example in `suggested_fix`.
+
+**Read the write outcome — a queued write is not a live one.** A governed write returns `data.status`:
+
+- `promoted` — live and recall-visible. Done.
+- `candidate` / `quarantined` — accepted into the review queue, **exit 0 but not yet active**. `meta.warnings` says so. It will not appear in search until a human approves it (`memoryd review queue`, then `memoryd review approve <id>`). Do not report it as a completed write.
+- `refused` — **exit 65, `ok:false`**. The write did not happen. `error.code` is the reason (`contradiction`, `tombstone`, `policy`, `grounding`, `privacy`, `superseded`, `review_required`) and `suggested_fix` names the next move — e.g. for `contradiction`, `search` for the conflicting memory and `supersede` it instead of writing fresh.
+
+**Supersede vs. forget.** To replace an outdated memory with a corrected one, `supersede` (keeps the chain); to remove a memory that should no longer exist, `forget` (tombstones it).
+
+```bash
+memoryd supersede <old-id> "The dashboard now defaults to port 7137 and honors --port." \
+  --reason "clarify override mechanism" --socket "$MEMORUM_SOCKET"
+
+memoryd forget <id> --reason "keyboard preference no longer holds" --socket "$MEMORUM_SOCKET"
+```
+
+**Observations (Stream F).** Record a low-level observation/pattern/signal for later synthesis:
+
+```bash
+memoryd observe "the deploy step flakes on cold caches" --kind signal --socket "$MEMORUM_SOCKET"
+```
+
+`--kind` is required (`observation`/`pattern`/`signal`); text is bounded to 16 KiB and entity ids must be `ent_*` — violations exit 65.
+
+## 4. Reveal encrypted content (audited, gated)
+
+Some memories are encrypted at rest (PII, contacts). Reading their plaintext is an **audited** action: a successful reveal writes an `EncryptedContentRevealed` event. The CLI refuses unless you pass `--allow-reveal`, and it refuses **before** contacting the daemon (exit 77):
+
+```bash
+memoryd reveal <id> --reason "user asked to see their saved address" --allow-reveal --socket "$MEMORUM_SOCKET"
+```
+
+Only pass `--allow-reveal` when the user has directed you to unmask that specific content.
+
+## 5. Import / back up prior memory
+
+Back up everything the user taught Claude Code and Codex CLI into Memorum — one idempotent, non-destructive command:
 
 ```bash
 memoryd import --repo "$MEMORUM_REPO" --socket "$MEMORUM_SOCKET"
 ```
 
-What that one invocation does, by default:
+By default it imports the union of all Claude profile roots (`~/.claude*/projects`) plus `~/.codex/memories`, gives non-git-cwd memories a derived project namespace (saved and active, never silently skipped), and recovers malformed frontmatter leniently. Re-runs skip unchanged sources by content hash. Preview with `--dry-run`; pin exact roots with repeatable `--from-claude`.
 
-- **Claude**: auto-detects and imports the **union of all Claude profile roots** (`~/.claude*/projects`). A user with three profiles gets all three — no flag needed.
-- **Codex**: imports from `~/.codex/memories`.
-- **Non-git-cwd memories**: given a project namespace derived from their directory path (no `.memory-project.yaml` written), so they're saved and land **active and recall-visible** — never silently skipped. Override with `--non-git-cwd-default me|generate|skip`.
-- **Malformed YAML frontmatter**: recovered leniently; the body always imports.
+`import` has its **own** exit contract (not the envelope): it exits **0 even when some writes were refused, recovered, or skipped** — those are reported in the summary, not failures. Nonzero means a hard failure only (daemon unreachable, `AnotherImportInProgress { pid: N }`, unreadable repo). Privacy-blocked counts are by design; report them and move on. Full detail: `docs/agent-import-guide.md`.
 
-Run it once. It's idempotent and non-destructive: source files are never modified, and re-runs skip unchanged sources by content hash. Running it twice is safe and cheap.
-
-To pin exact Claude roots instead of auto-detecting, pass `--from-claude` (repeatable):
+## 6. Review queue
 
 ```bash
-memoryd import --repo "$MEMORUM_REPO" --socket "$MEMORUM_SOCKET" \
-  --from-claude ~/.claude/projects --from-claude ~/.claude-work/projects
+memoryd review queue --socket "$MEMORUM_SOCKET"          # candidates + quarantined items
+memoryd review approve <id> --socket "$MEMORUM_SOCKET"   # promote one to active
 ```
-
-Preview without writing anything:
-
-```bash
-memoryd import --repo "$MEMORUM_REPO" --socket "$MEMORUM_SOCKET" --dry-run
-```
-
-## 3. Read the result
-
-The run ends with a reconciliation summary:
-
-```
-imported-active: 294   queued-for-review: 0   privacy-blocked: 6
-frontmatter-recovered: 3   dropped: 1
-next: memoryd search "<topic>" --socket <sock>
-```
-
-Read it like this:
-
-- **imported-active** — written and recall-visible now. The win.
-- **queued-for-review** — items the governance layer flagged for a human look (a detected contradiction, or memories you explicitly routed to `me` scope). Inspect with `memoryd review queue` and accept individually with `memoryd review approve <id>`.
-- **privacy-blocked** — Stream D refused these (PII, contacts, donor data). **This is by design, not an error.** They appear in the report's `refusals[]`. Don't retry them or report them as failures.
-- **frontmatter-recovered** — had broken YAML; body imported anyway. Fine.
-- **dropped** — truly unreadable files, listed in the report. The only real data loss; mention them to the user.
-
-For machine-readable output, add `--report run.json` and parse the JSON.
-
-## 4. Exit codes
-
-`import` exits **0 on success even when some writes were refused or recovered** — those are reported, not failures. A privacy refusal does not fail the run.
-
-Non-zero means a **hard** failure only:
-
-- Can't reach the daemon.
-- Lock contention: `AnotherImportInProgress { pid: <N> }` — another import holds the lock.
-- Unreadable repo.
-
-## 5. Common follow-ups
-
-```bash
-# Search memory
-memoryd search "delegate droid alias" --socket "$MEMORUM_SOCKET"
-
-# Read one memory in full by id
-memoryd get <id> --socket "$MEMORUM_SOCKET"
-
-# See what's queued for review (candidates + quarantine)
-memoryd review queue --socket "$MEMORUM_SOCKET"
-
-# Approve a specific queued candidate by id
-memoryd review approve <id> --socket "$MEMORUM_SOCKET"
-
-# Remove one memory
-memoryd forget <id> --socket "$MEMORUM_SOCKET"
-
-# Dump the store
-memoryd export --socket "$MEMORUM_SOCKET"
-```
-
-After a search, if you need the whole memory and not just the snippet, follow up with `memoryd get <id>`.
 
 ## Gotchas
 
-- The default `memoryd import` already covers multi-profile Claude setups. Don't reach for `--from-claude` unless the user wants to pin specific roots.
-- Privacy refusals are expected output, not a problem to fix. Report the count; move on.
-- If a re-run reports everything as skipped/unchanged, that's correct — the corpus is already imported.
+- Passive recall already injects relevant memory — check the recall block before searching.
+- A `candidate`/`quarantined` write is exit 0 but **not active**; only `promoted` is live. Never read a queued write as done.
+- A refused write is exit 65 — `error.suggested_fix` tells you the next move (usually `search` then `supersede`).
+- Privacy refusals (on import or write) are expected output, not a bug. Report and move on.
+- Reveal is audited; pass `--allow-reveal` only with user-directed authority.
+- Deeper reference: `docs/api/memoryd-cli-contract-v1.md` (the contract), `docs/agent-import-guide.md` (import), `docs/troubleshooting.md` (symptoms → fixes).

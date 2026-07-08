@@ -169,8 +169,8 @@ A governed `write` / `supersede` / `forget` returns a `GovernanceStatus` inside 
 | --- | --- | ---: | --- | --- |
 | `promoted` | `ok:true`, `data.status="promoted"` | 0 | — | live and active |
 | `tombstoned` | `ok:true`, `data.status="tombstoned"` | 0 | — | `forget` success |
-| `candidate` | `ok:true`, `data.status="candidate"` | 0 | "accepted into review queue; not yet active; check `memoryd review list`" | queued, not active |
-| `quarantined` | `ok:true`, `data.status="quarantined"` | 0 | "quarantined for review; not yet active; check `memoryd review list`" | queued, not active |
+| `candidate` | `ok:true`, `data.status="candidate"` | 0 | "accepted into review queue; not yet active; check `memoryd review queue`" | queued, not active |
+| `quarantined` | `ok:true`, `data.status="quarantined"` | 0 | "quarantined for review; not yet active; check `memoryd review queue`" | queued, not active |
 | `refused` | `ok:false`, `error.code = refusal reason` | 65 | — | not written; `suggested_fix` names the next move |
 
 `data.status` is **mandatory** in every governance-write success envelope — an agent must never read a queued write as a completed one.

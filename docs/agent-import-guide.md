@@ -195,6 +195,8 @@ With defaults, every non-git-cwd memory lands in a derived project scope and is 
 
 Note the split: `doctor` reads the substrate directly and is keyed on `--repo`/`--runtime`; the rest go through the daemon and are keyed on `--socket`. `doctor` now also tolerates `--socket` so a health-gated import loop can pass one consistent set of flags.
 
+**Envelope and exit codes.** The daemon-backed covered commands (`status`, `search`, `get`, `write`, `write-note`, `supersede`, `forget`, `source`, `reveal`, `observe`) emit the v1 agent envelope — `{ok,data,meta.schema_version}` on stdout for success, `{ok:false,error,meta}` on stderr for failure — and follow the published exit dictionary (0 success, 65 invalid/refused, 66 not-found, 75 daemon-unreachable/transient, 77 client gate). `import` and `doctor` keep their own dictionaries (import: 0 even on soft refusals, per above; doctor: 0/1). The full contract is `docs/api/memoryd-cli-contract-v1.md`, and `memoryd schema --json` prints it. Governance writes never report a refusal as success: a refused `write`/`supersede`/`forget` is `ok:false` exit 65, while `candidate`/`quarantined` are `ok:true` exit 0 with a `data.status` and a "not yet active" warning.
+
 ## Troubleshooting quick reference
 
 | Symptom                              | Likely cause                                    | Action                                                                |
