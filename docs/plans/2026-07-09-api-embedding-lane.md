@@ -39,9 +39,28 @@ Ship an **opt-in** API-served embedding lane (working candidate: Voyage AI; fina
 
 - **Q1 — RESOLVED (audit 2026-07-09).** `pending_embedding_jobs` itself carries no sensitivity, but the fetch already joins `memory_chunks` (`chunk_id`), and `memory_chunks.memory_id → memories.sensitivity` (`index/schema.rs:26`, indexed at `:53`). The fence is a `WHERE` clause + one field on the `PendingEmbeddingJob` DTO — an **additive** Stream A query change, no schema migration. Enforce in SQL at the fetch boundary (single choke point, per R1), not in worker-side filtering.
 - **Q2 — RESOLVED (audit 2026-07-09).** Encrypted memories never index plaintext: `write_encrypted` (`api/write.rs:154`) stores metadata + ciphertext (`encrypted_ciphertext_path`), so chunks for `RequiresEncryption` memories are masked/metadata text at most. The API lane therefore cannot leak raw encrypted bodies **but masked summaries of sensitive memories are still indexed text** — the D3 fence filters on `memories.sensitivity` tier so even masked derivatives of sensitive memories stay local-only. Exposure is strictly narrower than local behavior.
-- **Q3 — Model + dims:** pending scouts + bake-off. Affects only the triple literal and cost table, not the architecture.
+- **Q3 — Model + dims:** sonnet scout reported 2026-07-09 (see Model candidates below); codex cross-check pending. Bake-off (T4.1) still decides. Affects only the triple literal and cost table, not the architecture.
+- **Q6 — Voyage retention posture (NEW, from scout):** Voyage's direct-API training-on-inputs/retention policy could not be confirmed from public docs ("governed by commercial agreement"); same gap for Gemini and Jina specifics. **Follow-up research task before any vendor is ratified** — privacy posture is a first-class selection criterion for this feature, not a tiebreaker.
 - **Q4 — Rate limits / retry-after:** vendor-specific; drain worker needs 429 handling with honest backoff (jobs stay pending — the retry-budget machinery exists, but `Retry-After` respect is new).
 - **Q5 — Consent UX wording:** exact `memoryd init` / `memoryd config` prompt copy; must name query-text transit (D3) and the vendor's retention posture (from scout research).
+
+## Model candidates (scout research, 2026-07-09)
+
+Sonnet scout (exa-grounded, source URLs in the session record); codex decorrelated cross-check pending.
+
+| Rank | Model | Dims (MRL) | Context | Price /M tok | Asymmetric mechanism | Notes |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | **voyage-4** (+ `-large`/`-lite`/open-weight `-nano`) | 1024 (256–2048) | 32K | $0.06 (lite $0.02; 200M free) | `input_type=query\|document`; 4-series shares one embedding space across model sizes (cheap query model + strong doc model, valid cosine) | Anthropic's own docs route embeddings to Voyage. MoE serving. **Retention posture unverified — Q6.** |
+| 2 | **gemini-embedding-001** | 3072 (→1536/768) | TBD | $0.15 / $0.075 batch | `task_type=RETRIEVAL_QUERY\|RETRIEVAL_DOCUMENT` | #1 MTEB English (68.32, Mar 2026) — but raw nDCG is exactly the axis that didn't predict our failure modes. Bake-off, not benchmark-trust. |
+| 3 | **Cohere embed-v4.0** | 256–1536 | 128K | per-token rate not confirmed | `input_type` family | Only native text+image+PDF unified space — revisit if Memorum ever embeds attachments; no edge for pure-text short memories. |
+| 4 | **jina-embeddings-v4** | 128–2048 | 32K | free 10M; tiers TBD | task-specific LoRA adapters | Qwen2.5-VL backbone (same lineage as our local model); multi-vector/ColBERT support. |
+| — | **voyage-context-3** | — | — | — | contextualized chunk embeddings | Different product: embeds chunks with sibling-chunk context. Dedicated look someday for the wrong-project-lookalike problem; out of scope v1. |
+
+**Scout flags adopted into this plan:**
+- **RTEB benchmark integrity:** RTEB was co-developed with Voyage, which had private-test-set access; MTEB maintainers pulled the private RTEB column 2026-01-14 (mteb issue #3934) pending redesign. **No Voyage-vs-competitor RTEB claim is admissible evidence here.** Core MTEB + our own golden-corpus harness are the only accepted signals — which D7 already requires.
+- **No public evidence exists on hard-negative discrimination or similarity calibration for any API vendor** — the metrics Memorum actually selects on. Validates D7: our bake-off isn't optional diligence, it's the only measurement of what we care about that exists.
+- Anthropic has no embedding API (docs route to Voyage); Mistral Embed is stale (unchanged since 2023) — both excluded.
+- Working bake-off pair: **voyage-4 (and voyage-4-lite) vs gemini-embedding-001**, pending Q6 retention verification and codex cross-check.
 
 ## Task graph (v0.1 — sizes are rough; owned files disjoint unless noted)
 
@@ -79,3 +98,4 @@ Ship an **opt-in** API-served embedding lane (working candidate: Voyage AI; fina
 ## Plan revision history
 
 - **v0.1 (2026-07-09):** first draft, authored while scout research (sonnet exa lane + codex lane) in flight. Model choice, Q1–Q5 open.
+- **v0.1 amendments (2026-07-09, same day):** Q1/Q2 resolved by lead audit (fence = sensitivity predicate on existing join; encrypted bodies never indexed in plaintext). Sonnet scout results folded in: candidate table, RTEB conflict-of-interest exclusion, Q6 (vendor retention verification) added as a ratification blocker. Codex cross-check pending.
