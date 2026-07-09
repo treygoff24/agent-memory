@@ -728,6 +728,8 @@ pub struct EmbeddingStatus {
     pub idle_unload_secs: Option<u64>,
     pub idle_unload_source: String,
     pub in_flight: usize,
+    #[serde(default)]
+    pub held_local_jobs: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
 }
@@ -741,6 +743,7 @@ impl Default for EmbeddingStatus {
             idle_unload_secs: None,
             idle_unload_source: "unknown".to_string(),
             in_flight: 0,
+            held_local_jobs: 0,
             last_error: None,
         }
     }

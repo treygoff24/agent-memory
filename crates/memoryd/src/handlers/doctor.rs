@@ -270,11 +270,22 @@ fn doctor_is_healthy(
 /// "embeddings are not being produced" signal worth surfacing prominently.
 async fn embedding_health_findings(substrate: &Substrate, state: &HandlerState) -> Vec<DoctorFinding> {
     let mut findings = Vec::new();
-    let backlog = match substrate.pending_embedding_job_count(memory_substrate::EmbeddingLaneEligibility::AllTiers) {
-        Ok(count) => count,
+    let active = substrate.active_embedding_triple();
+    let (backlog, held_local_jobs) = match &active {
+        Ok(triple) => {
+            let eligibility = crate::embedding::embedding_lane_eligibility(triple);
+            let backlog = match substrate.pending_embedding_job_count(eligibility) {
+                Ok(count) => count,
+                Err(_) => return findings,
+            };
+            let held_local_jobs = match substrate.held_local_embedding_job_count(eligibility) {
+                Ok(count) => count,
+                Err(_) => return findings,
+            };
+            (backlog, held_local_jobs)
+        }
         Err(_) => return findings,
     };
-    let active = substrate.active_embedding_triple();
     let vector_count = match &active {
         Ok(triple) => substrate.vector_count(triple.clone()).await.ok(),
         Err(_) => None,
@@ -291,6 +302,19 @@ async fn embedding_health_findings(substrate: &Substrate, state: &HandlerState) 
                     crate::embedding::GEMINI_API_PROVIDER
                 ),
                 repair: Some("Switch active_embedding.provider to a supported lane or run a daemon that supports the configured provider.".to_string()),
+                severity: DoctorSeverity::Advisory,
+            });
+        }
+        if crate::embedding::is_gemini_api_triple(triple) && held_local_jobs > 0 {
+            let plural = if held_local_jobs == 1 { "" } else { "s" };
+            findings.push(DoctorFinding {
+                code: "embedding_api_lane_held_local".to_string(),
+                message: format!(
+                    "{held_local_jobs} memory embedding job{plural} held local-only under the API embedding lane because its sensitivity tier (confidential/personal) is not eligible to transit the API; vector recall for those memories is FTS-only."
+                ),
+                repair: Some(
+                    "Switch to the local embedding lane if you need vector recall for sensitive memories.".to_string(),
+                ),
                 severity: DoctorSeverity::Advisory,
             });
         }
@@ -380,6 +404,8 @@ async fn embedding_health_findings(substrate: &Substrate, state: &HandlerState) 
 #[cfg(test)]
 mod tests {
     use super::doctor_is_healthy;
+    use memory_substrate::Sensitivity;
+
     use crate::protocol::{DoctorFinding, DoctorSeverity};
 
     fn finding(severity: DoctorSeverity) -> DoctorFinding {
@@ -451,6 +477,74 @@ mod tests {
         assert!(
             bogus_findings.iter().any(|finding| finding.code == "embedding_provider_unsupported"),
             "unknown providers still raise embedding_provider_unsupported: {bogus_findings:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn embedding_api_lane_held_local_advisory_does_not_inflate_backlog() {
+        let state = crate::handlers::HandlerState::new();
+        let (_temp, substrate) = crate::embedding::lane_test_support::init_substrate_with_active_embedding(
+            crate::embedding::lane_test_support::gemini_test_triple(),
+            "dev_doctorapilane",
+        )
+        .await;
+        crate::embedding::lane_test_support::seed_indexed_memory(
+            &substrate,
+            "mem_20260709_dddddddddddddddd_000001",
+            Sensitivity::Internal,
+            "doctor api lane drainable body",
+        );
+        crate::embedding::lane_test_support::seed_indexed_memory(
+            &substrate,
+            "mem_20260709_dddddddddddddddd_000002",
+            Sensitivity::Confidential,
+            "doctor api lane held local body",
+        );
+
+        let findings = super::embedding_health_findings(&substrate, &state).await;
+
+        let held_local = findings
+            .iter()
+            .find(|finding| finding.code == "embedding_api_lane_held_local")
+            .expect("held-local advisory");
+        assert_eq!(held_local.severity, DoctorSeverity::Advisory);
+        assert!(held_local.message.contains("1 memory embedding job"), "{held_local:?}");
+        assert!(
+            held_local.repair.as_deref().is_some_and(|repair| repair.contains("local embedding lane")),
+            "{held_local:?}"
+        );
+
+        let backlog = findings
+            .iter()
+            .find(|finding| finding.code == "embedding_worker_idle" || finding.code == "embedding_backlog")
+            .expect("drainable backlog finding");
+        assert!(backlog.message.contains("1 embedding job"), "{backlog:?}");
+        assert!(
+            !backlog.message.contains("2 embedding job"),
+            "held-local jobs must not inflate drainable backlog: {backlog:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn embedding_held_local_advisory_is_api_lane_only() {
+        let state = crate::handlers::HandlerState::new();
+        let (_temp, substrate) = crate::embedding::lane_test_support::init_substrate_with_active_embedding(
+            crate::embedding::lane_test_support::local_test_triple(),
+            "dev_doctorlocal",
+        )
+        .await;
+        crate::embedding::lane_test_support::seed_indexed_memory(
+            &substrate,
+            "mem_20260709_dddddddddddddddd_000003",
+            Sensitivity::Confidential,
+            "doctor local lane sensitive body",
+        );
+
+        let findings = super::embedding_health_findings(&substrate, &state).await;
+
+        assert!(
+            !findings.iter().any(|finding| finding.code == "embedding_api_lane_held_local"),
+            "local lane must not report API held-local advisory: {findings:?}"
         );
     }
 

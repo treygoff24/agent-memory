@@ -49,7 +49,7 @@ pub use lifecycle::{
 
 use std::sync::Mutex;
 
-use memory_substrate::EmbeddingTriple;
+use memory_substrate::{EmbeddingLaneEligibility, EmbeddingTriple};
 
 static MODEL_LOAD_FAILURE: Mutex<Option<String>> = Mutex::new(None);
 
@@ -82,6 +82,16 @@ pub(crate) fn model_load_failure() -> Option<String> {
             tracing::error!(%error, "embedding model-load status lock poisoned while reading failure");
             None
         }
+    }
+}
+
+/// Product policy for deciding which queued embedding jobs may transit the
+/// active embedding lane.
+pub fn embedding_lane_eligibility(triple: &EmbeddingTriple) -> EmbeddingLaneEligibility {
+    if is_gemini_api_triple(triple) {
+        EmbeddingLaneEligibility::PlaintextOnly
+    } else {
+        EmbeddingLaneEligibility::AllTiers
     }
 }
 
@@ -162,5 +172,138 @@ fn check_dimension(triple: &EmbeddingTriple, vector: &[f32]) -> Result<(), Embed
         Ok(())
     } else {
         Err(EmbeddingError::DimensionMismatch { expected: triple.dimension, found: vector.len() as u32 })
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod lane_test_support {
+    use chrono::{DateTime, Utc};
+    use memory_substrate::index::{open_index, Index};
+    use memory_substrate::{
+        Author, AuthorKind, Frontmatter, Memory, MemoryId, MemoryStatus, MemoryType, RepoPath, RetrievalPolicy, Roots,
+        Scope, Sensitivity, Source, SourceKind, Substrate, TrustLevel, WritePolicy,
+    };
+
+    pub(crate) fn gemini_test_triple() -> memory_substrate::EmbeddingTriple {
+        memory_substrate::EmbeddingTriple {
+            provider: super::GEMINI_API_PROVIDER.to_string(),
+            model_ref: "gemini-embedding-2".to_string(),
+            dimension: 768,
+        }
+    }
+
+    pub(crate) fn local_test_triple() -> memory_substrate::EmbeddingTriple {
+        memory_substrate::EmbeddingTriple {
+            provider: super::FASTEMBED_CANDLE_PROVIDER.to_string(),
+            model_ref: memory_substrate::tree::DEFAULT_ACTIVE_EMBEDDING_MODEL_REF.to_string(),
+            dimension: memory_substrate::tree::DEFAULT_ACTIVE_EMBEDDING_DIMENSION,
+        }
+    }
+
+    pub(crate) async fn init_substrate_with_active_embedding(
+        triple: memory_substrate::EmbeddingTriple,
+        device_id: &str,
+    ) -> (tempfile::TempDir, Substrate) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = temp.path().join("repo");
+        let runtime = temp.path().join("runtime");
+        std::fs::create_dir_all(&repo).expect("repo dir");
+        std::fs::write(
+            repo.join("config.yaml"),
+            format!(
+                "schema_version: 1\nactive_embedding:\n  provider: {}\n  model_ref: {}\n  dimension: {}\n",
+                triple.provider, triple.model_ref, triple.dimension
+            ),
+        )
+        .expect("write config");
+        let substrate = Substrate::init(
+            Roots::new(&repo, &runtime),
+            memory_substrate::InitOptions { force_unsafe_durability: true, device_id: Some(device_id.to_string()) },
+        )
+        .await
+        .expect("substrate init");
+        (temp, substrate)
+    }
+
+    pub(crate) fn seed_indexed_memory(substrate: &Substrate, id: &str, sensitivity: Sensitivity, body: &str) {
+        let triple = substrate.active_embedding_triple().expect("active triple");
+        let connection = open_index(&substrate.roots().runtime.join("index.sqlite")).expect("open index");
+        let mut index = Index::with_active_embedding(connection, triple);
+        index.upsert_memory(&memory(id, sensitivity, body), false).expect("upsert indexed memory");
+    }
+
+    fn memory(id: &str, sensitivity: Sensitivity, body: &str) -> Memory {
+        let now = instant("2026-07-09T12:00:00Z");
+        Memory {
+            frontmatter: Frontmatter {
+                schema_version: memory_substrate::SUBSTRATE_SCHEMA_VERSION,
+                id: MemoryId::new(id),
+                memory_type: MemoryType::Pattern,
+                scope: Scope::Agent,
+                summary: "embedding lane accounting fixture".to_string(),
+                confidence: 1.0,
+                original_confidence: None,
+                trust_level: TrustLevel::Trusted,
+                sensitivity,
+                status: MemoryStatus::Active,
+                created_at: now,
+                updated_at: now,
+                observed_at: None,
+                author: Author {
+                    kind: AuthorKind::System,
+                    user_handle: None,
+                    harness: None,
+                    harness_version: None,
+                    session_id: None,
+                    subagent_id: None,
+                    phase: None,
+                    component: Some("memoryd-test".to_string()),
+                },
+                namespace: None,
+                canonical_namespace_id: None,
+                tags: Vec::new(),
+                entities: Vec::new(),
+                aliases: Vec::new(),
+                source: Source {
+                    kind: SourceKind::Import,
+                    reference: None,
+                    harness: None,
+                    harness_version: None,
+                    session_id: None,
+                    subagent_id: None,
+                    device: None,
+                },
+                evidence: Vec::new(),
+                requires_user_confirmation: false,
+                review_state: None,
+                supersedes: Vec::new(),
+                superseded_by: Vec::new(),
+                related: Vec::new(),
+                tombstone_events: Vec::new(),
+                retrieval_policy: RetrievalPolicy {
+                    passive_recall: true,
+                    max_scope: Scope::Agent,
+                    mask_personal_for_synthesis: matches!(
+                        sensitivity,
+                        Sensitivity::Confidential | Sensitivity::Personal
+                    ),
+                    index_body: true,
+                    index_embeddings: true,
+                },
+                write_policy: WritePolicy {
+                    human_review_required: false,
+                    policy_applied: "memoryd-test".to_string(),
+                    expected_base_hash: None,
+                },
+                merge_diagnostics: None,
+                extras: Default::default(),
+            },
+            body: body.to_string(),
+            path: Some(RepoPath::new(format!("agent/patterns/{id}.md"))),
+        }
+    }
+
+    fn instant(value: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(value).expect("date").with_timezone(&Utc)
     }
 }

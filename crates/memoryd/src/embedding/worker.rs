@@ -26,11 +26,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use memory_substrate::{EmbeddingTriple, EmbeddingUpdate, PendingEmbeddingJob, Substrate, VectorError};
+use memory_substrate::{
+    EmbeddingLaneEligibility, EmbeddingTriple, EmbeddingUpdate, PendingEmbeddingJob, Substrate, VectorError,
+};
 use tokio::sync::watch;
 use tokio::time::sleep;
 
-use super::{EmbeddingError, EmbeddingProvider, EmbeddingProviderAcquire, EmbeddingProviderSlot};
+use super::{
+    embedding_lane_eligibility, EmbeddingError, EmbeddingProvider, EmbeddingProviderAcquire, EmbeddingProviderSlot,
+};
 
 /// How many jobs to pull and embed per drain tick. Bounded so one tick cannot
 /// monopolize a blocking thread for an unbounded backlog; the next tick picks up
@@ -99,7 +103,22 @@ async fn run(
             if *shutdown.borrow() {
                 return;
             }
-            match substrate.pending_embedding_job_count(memory_substrate::EmbeddingLaneEligibility::AllTiers) {
+            let active_triple = match substrate.active_embedding_triple() {
+                Ok(triple) => triple,
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        sleep_ms = zero_success_backoff.as_millis(),
+                        "embedding active-triple lookup failed; backing off"
+                    );
+                    next_delay = zero_success_backoff;
+                    zero_success_backoff = grow_backoff(zero_success_backoff);
+                    break;
+                }
+            };
+            let eligibility = embedding_lane_eligibility(&active_triple);
+            debug_assert_lane_eligibility(&active_triple, eligibility);
+            match substrate.pending_embedding_job_count(eligibility) {
                 Ok(0) => {
                     zero_success_backoff = idle_interval;
                     break;
@@ -141,7 +160,16 @@ async fn run(
                     break;
                 }
             };
-            match drain_batch_with_budget(&substrate, guard.provider(), DRAIN_BATCH, &mut retry_budget).await {
+            match drain_batch_with_budget(
+                &substrate,
+                guard.provider(),
+                DRAIN_BATCH,
+                &active_triple,
+                eligibility,
+                &mut retry_budget,
+            )
+            .await
+            {
                 Ok(outcome) if outcome.fetched == 0 => {
                     zero_success_backoff = idle_interval;
                     break;
@@ -253,20 +281,25 @@ pub async fn drain_batch(
     limit: usize,
 ) -> Result<usize, String> {
     let mut retry_budget = JobRetryBudget::default();
-    drain_batch_with_budget(substrate, provider, limit, &mut retry_budget).await.map(|outcome| outcome.succeeded)
+    let active_triple = substrate.active_embedding_triple().map_err(|err| err.to_string())?;
+    let eligibility = embedding_lane_eligibility(&active_triple);
+    drain_batch_with_budget(substrate, provider, limit, &active_triple, eligibility, &mut retry_budget)
+        .await
+        .map(|outcome| outcome.succeeded)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn drain_batch_with_budget(
     substrate: &Substrate,
     provider: &Arc<dyn EmbeddingProvider>,
     limit: usize,
+    active_triple: &EmbeddingTriple,
+    eligibility: EmbeddingLaneEligibility,
     retry_budget: &mut JobRetryBudget,
 ) -> Result<DrainOutcome, String> {
+    debug_assert_lane_eligibility(active_triple, eligibility);
     let requested = limit.saturating_add(retry_budget.exhausted_count());
-    let jobs = substrate
-        .pending_embedding_jobs(requested, memory_substrate::EmbeddingLaneEligibility::AllTiers)
-        .await
-        .map_err(|err| err.to_string())?;
+    let jobs = substrate.pending_embedding_jobs(requested, eligibility).await.map_err(|err| err.to_string())?;
     if jobs.is_empty() {
         return Ok(DrainOutcome { requested, fetched: 0, succeeded: 0 });
     }
@@ -332,6 +365,13 @@ async fn drain_batch_with_budget(
     succeeded =
         succeeded.saturating_add(write_and_record_embedded_jobs(substrate, &triple, pairs, retry_budget).await?);
     Ok(DrainOutcome { requested, fetched, succeeded })
+}
+
+fn debug_assert_lane_eligibility(triple: &EmbeddingTriple, eligibility: EmbeddingLaneEligibility) {
+    debug_assert!(
+        !super::is_gemini_api_triple(triple) || matches!(eligibility, EmbeddingLaneEligibility::PlaintextOnly),
+        "gemini-api embedding triples must use PlaintextOnly eligibility"
+    );
 }
 
 /// Per-job fallback for when the batched forward pass fails wholesale (either a
@@ -404,7 +444,7 @@ async fn write_and_record_embedded_jobs(
 mod tests {
     use std::sync::Arc;
 
-    use memory_substrate::{InitOptions, Roots, Substrate};
+    use memory_substrate::{EmbeddingLaneEligibility, InitOptions, Roots, Sensitivity, Substrate};
 
     use super::*;
     use crate::embedding::FixtureProvider;
@@ -547,10 +587,12 @@ mod tests {
         let provider: Arc<dyn EmbeddingProvider> = Arc::new(PoisonProvider { triple: triple.clone() });
         let mut retry_budget = JobRetryBudget::default();
         let exhausted_before = exhausted_retry_budget_job_count();
+        let eligibility = embedding_lane_eligibility(&triple);
 
         for _ in 0..MAX_JOB_ATTEMPTS {
-            let outcome =
-                drain_batch_with_budget(&substrate, &provider, 1, &mut retry_budget).await.expect("drain poison");
+            let outcome = drain_batch_with_budget(&substrate, &provider, 1, &triple, eligibility, &mut retry_budget)
+                .await
+                .expect("drain poison");
             assert_eq!(outcome.succeeded, 0);
         }
         assert_eq!(retry_budget.exhausted_count(), 1);
@@ -559,9 +601,48 @@ mod tests {
             "budget exhaustion should be surfaced to doctor"
         );
 
-        let outcome =
-            drain_batch_with_budget(&substrate, &provider, 1, &mut retry_budget).await.expect("drain behind poison");
+        let outcome = drain_batch_with_budget(&substrate, &provider, 1, &triple, eligibility, &mut retry_budget)
+            .await
+            .expect("drain behind poison");
         assert_eq!(outcome.succeeded, 1, "later job should drain after poisoned head is skipped");
+        assert_eq!(substrate.vector_count(triple).await.expect("vector count"), 1);
+    }
+
+    #[tokio::test]
+    async fn api_lane_drain_uses_plaintext_only_eligibility_and_leaves_sensitive_jobs_pending() {
+        let (_temp, substrate) = crate::embedding::lane_test_support::init_substrate_with_active_embedding(
+            crate::embedding::lane_test_support::gemini_test_triple(),
+            "dev_workerapilane",
+        )
+        .await;
+        crate::embedding::lane_test_support::seed_indexed_memory(
+            &substrate,
+            "mem_20260709_bbbbbbbbbbbbbbbb_000001",
+            Sensitivity::Internal,
+            "api lane drainable internal body",
+        );
+        crate::embedding::lane_test_support::seed_indexed_memory(
+            &substrate,
+            "mem_20260709_bbbbbbbbbbbbbbbb_000002",
+            Sensitivity::Confidential,
+            "api lane held local confidential body",
+        );
+
+        let triple = substrate.active_embedding_triple().expect("active triple");
+        let eligibility = embedding_lane_eligibility(&triple);
+        assert_eq!(eligibility, EmbeddingLaneEligibility::PlaintextOnly);
+        assert_eq!(substrate.pending_embedding_job_count(eligibility).expect("drainable count"), 1);
+        assert_eq!(substrate.held_local_embedding_job_count(eligibility).expect("held-local count"), 1);
+
+        let provider: Arc<dyn EmbeddingProvider> = Arc::new(FixtureProvider::new(triple.clone()));
+        let mut retry_budget = JobRetryBudget::default();
+        let outcome = drain_batch_with_budget(&substrate, &provider, 64, &triple, eligibility, &mut retry_budget)
+            .await
+            .expect("api lane drain");
+
+        assert_eq!(outcome.succeeded, 1);
+        assert_eq!(substrate.pending_embedding_job_count(eligibility).expect("drainable count after"), 0);
+        assert_eq!(substrate.held_local_embedding_job_count(eligibility).expect("held-local count after"), 1);
         assert_eq!(substrate.vector_count(triple).await.expect("vector count"), 1);
     }
 }

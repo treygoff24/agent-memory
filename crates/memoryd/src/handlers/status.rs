@@ -43,6 +43,7 @@ pub(crate) async fn status_response(substrate: &Substrate, state: &HandlerState)
             None
         }
     };
+    let embedding = embedding_status(substrate, state, &mut dashboard_warnings);
 
     StatusResponse {
         state: if dashboard_warnings.is_empty() { "ready".to_string() } else { "degraded".to_string() },
@@ -54,7 +55,7 @@ pub(crate) async fn status_response(substrate: &Substrate, state: &HandlerState)
         }),
         dashboard_warnings,
         recall: state.recall.snapshot(),
-        embedding: embedding_status(state),
+        embedding,
         dreams: Default::default(),
         passive_notifications: state
             .passive_notifications
@@ -71,8 +72,19 @@ pub(crate) async fn status_response(substrate: &Substrate, state: &HandlerState)
     }
 }
 
-fn embedding_status(state: &HandlerState) -> EmbeddingStatus {
+fn embedding_status(
+    substrate: &Substrate,
+    state: &HandlerState,
+    dashboard_warnings: &mut Vec<String>,
+) -> EmbeddingStatus {
     let snapshot = state.embedding_provider_slot().snapshot();
+    let held_local_jobs = match held_local_embedding_jobs(substrate) {
+        Ok(count) => count,
+        Err(error) => {
+            dashboard_warnings.push(format!("embedding_held_local_unavailable: {}", bounded(&error.message, 160)));
+            0
+        }
+    };
     EmbeddingStatus {
         state: snapshot.state,
         load_count: snapshot.load_count,
@@ -80,8 +92,16 @@ fn embedding_status(state: &HandlerState) -> EmbeddingStatus {
         idle_unload_secs: snapshot.idle_unload_secs,
         idle_unload_source: snapshot.idle_unload_source.to_string(),
         in_flight: snapshot.in_flight,
+        held_local_jobs,
         last_error: snapshot.last_error,
     }
+}
+
+fn held_local_embedding_jobs(substrate: &Substrate) -> Result<u64, HandlerError> {
+    let triple = substrate.active_embedding_triple().map_err(HandlerError::substrate)?;
+    let eligibility = crate::embedding::embedding_lane_eligibility(&triple);
+    let count = substrate.held_local_embedding_job_count(eligibility).map_err(HandlerError::substrate)?;
+    Ok(u64::try_from(count).unwrap_or(u64::MAX))
 }
 
 fn live_index_stats(substrate: &Substrate, counts: &[(MemoryStatus, u64)]) -> Result<IndexStats, HandlerError> {
@@ -124,4 +144,60 @@ fn live_compact_dream_status(
         next_scheduled_at: None,
         active_leases: active_leases.into_iter().map(|lease| lease.scope).collect(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use memory_substrate::Sensitivity;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn status_reports_held_local_jobs_under_api_lane() {
+        let (_temp, substrate) = crate::embedding::lane_test_support::init_substrate_with_active_embedding(
+            crate::embedding::lane_test_support::gemini_test_triple(),
+            "dev_statusapilane",
+        )
+        .await;
+        crate::embedding::lane_test_support::seed_indexed_memory(
+            &substrate,
+            "mem_20260709_cccccccccccccccc_000001",
+            Sensitivity::Internal,
+            "status api lane drainable body",
+        );
+        crate::embedding::lane_test_support::seed_indexed_memory(
+            &substrate,
+            "mem_20260709_cccccccccccccccc_000002",
+            Sensitivity::Confidential,
+            "status api lane held local body",
+        );
+
+        let status = status_response(&substrate, &HandlerState::new()).await;
+
+        assert_eq!(status.embedding.held_local_jobs, 1);
+        assert!(
+            status.dashboard_warnings.is_empty(),
+            "held-local accounting should not degrade status: {:?}",
+            status.dashboard_warnings
+        );
+    }
+
+    #[tokio::test]
+    async fn status_reports_zero_held_local_jobs_under_local_lane() {
+        let (_temp, substrate) = crate::embedding::lane_test_support::init_substrate_with_active_embedding(
+            crate::embedding::lane_test_support::local_test_triple(),
+            "dev_statuslocal",
+        )
+        .await;
+        crate::embedding::lane_test_support::seed_indexed_memory(
+            &substrate,
+            "mem_20260709_cccccccccccccccc_000003",
+            Sensitivity::Confidential,
+            "status local lane sensitive body",
+        );
+
+        let status = status_response(&substrate, &HandlerState::new()).await;
+
+        assert_eq!(status.embedding.held_local_jobs, 0);
+    }
 }
