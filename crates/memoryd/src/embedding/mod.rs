@@ -86,6 +86,38 @@ pub(crate) fn model_load_failure() -> Option<String> {
     }
 }
 
+static DRAIN_FAILURE: Mutex<Option<String>> = Mutex::new(None);
+
+/// Record the last drain-tick failure (rate limit, transport, substrate error)
+/// so `doctor` can explain a stuck backlog. The provider slot's `last_error`
+/// only ever records provider LOAD failures — without this, drain-time 429s
+/// and offline errors are invisible to doctor.
+pub(crate) fn record_drain_failure(error: impl Into<String>) {
+    match DRAIN_FAILURE.lock() {
+        Ok(mut guard) => *guard = Some(error.into()),
+        Err(error) => tracing::error!(%error, "embedding drain status lock poisoned while recording failure"),
+    }
+}
+
+/// Clear the drain failure once a tick succeeds.
+pub(crate) fn clear_drain_failure() {
+    match DRAIN_FAILURE.lock() {
+        Ok(mut guard) => *guard = None,
+        Err(error) => tracing::error!(%error, "embedding drain status lock poisoned while clearing failure"),
+    }
+}
+
+/// Last drain-tick failure recorded by the embedding worker.
+pub(crate) fn drain_failure() -> Option<String> {
+    match DRAIN_FAILURE.lock() {
+        Ok(guard) => guard.clone(),
+        Err(error) => {
+            tracing::error!(%error, "embedding drain status lock poisoned while reading failure");
+            None
+        }
+    }
+}
+
 /// Whether the active triple is served by an off-device API embedding lane.
 ///
 /// The single product-policy predicate for "does content leave the machine to be

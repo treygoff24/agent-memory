@@ -39,8 +39,15 @@ pub async fn configure_init(args: &crate::cli::InitArgs) -> anyhow::Result<()> {
     let Some(lane) = args.embedding_lane else {
         return Ok(());
     };
+    if args.print_only {
+        // Dry-run init must not mutate config or enqueue re-embeds.
+        return Ok(());
+    }
     let (repo, runtime) = super::init::resolve_repo_runtime(args);
-    switch_lane(EmbeddingLaneArgs { lane, repo: Some(repo), runtime: Some(runtime), consent: args.consent }, true)
+    // Interactive init at a TTY gets the same consent dialog as the standalone
+    // config command; scripted init still hard-requires --consent.
+    let agent_mode = !std::io::stdout().is_terminal();
+    switch_lane(EmbeddingLaneArgs { lane, repo: Some(repo), runtime: Some(runtime), consent: args.consent }, agent_mode)
         .await
         .map(|_| ())
 }
@@ -62,9 +69,12 @@ async fn switch_lane(args: EmbeddingLaneArgs, agent_mode: bool) -> anyhow::Resul
         }
     }
     let triple = lane_triple(args.lane);
-    memory_substrate::config::store_active_embedding(&repo, &triple).map_err(anyhow::Error::msg)?;
     if args.lane == EmbeddingLane::GeminiApi {
-        memory_substrate::config::record_api_embedding_consent(&repo).map_err(anyhow::Error::msg)?;
+        // One atomic document write: no window where the API triple exists
+        // without consent (the daemon gate would fail closed but silently).
+        memory_substrate::config::store_active_embedding_with_consent(&repo, &triple).map_err(anyhow::Error::msg)?;
+    } else {
+        memory_substrate::config::store_active_embedding(&repo, &triple).map_err(anyhow::Error::msg)?;
     }
     // A fresh handle observes the new config triple and uses existing reconcile
     // machinery to enqueue missing vectors. Existing triple tables are retained.
@@ -137,7 +147,7 @@ fn print_consent(estimate: &CostEstimate) {
     );
     eprintln!("Google's paid Gemini API is not used to train models; logs may be retained up to 55 days unless approved ZDR applies.");
     eprintln!(
-        "Estimated re-embed: {} eligible chunks, about {} tokens, ${:.4} at ${:.2}/M tokens.",
+        "Estimated re-embed (upper bound; ~4 bytes/token heuristic, excludes ongoing query traffic): {} eligible chunks, about {} tokens, ${:.4} at ${:.2}/M tokens.",
         estimate.chunks, estimate.tokens, estimate.usd, GEMINI_EMBEDDING_USD_PER_MILLION_TOKENS
     );
 }

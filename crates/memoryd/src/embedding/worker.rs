@@ -174,10 +174,12 @@ async fn run(
             .await
             {
                 Ok(outcome) if outcome.fetched == 0 => {
+                    crate::embedding::clear_drain_failure();
                     zero_success_backoff = idle_interval;
                     break;
                 }
                 Ok(outcome) if outcome.succeeded > 0 => {
+                    crate::embedding::clear_drain_failure();
                     zero_success_backoff = idle_interval;
                     if outcome.fetched < outcome.requested {
                         break;
@@ -196,6 +198,7 @@ async fn run(
                     break;
                 }
                 Err(error) => {
+                    crate::embedding::record_drain_failure(error.to_string());
                     if let Some(delay) = error.rate_limit_backoff() {
                         tracing::warn!(
                             %error,

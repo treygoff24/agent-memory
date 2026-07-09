@@ -63,15 +63,76 @@ so the lane may well have caught this itself). Final: clippy clean, 398/398, com
 - Brief: `/tmp/memorum-briefs/T3.1-init-config-consent.md` — init/config lane selection, Q5 consent
   prompt, R4 cost estimate, D4 switch mechanics. Bigger + more open-ended than T2.2 (CLI surface design
   judgment required) — good probe of terra at its recommended default effort.
-- Status: IN FLIGHT.
+- Attempt 1 (codex-67): **blocked in 53s, correctly.** Explored the dispatch surface, found my brief's
+  owned-files list couldn't wire a new CLI verb (main.rs unlisted) or compute the R4 estimate (no
+  substrate corpus-stats API), changed NOTHING, and asked for minimal additional ownership. That's the
+  classic Codex failure-reporting virtue intact in terra at medium effort — 53s to a precise, actionable
+  block beats 20min of scope creep (contrast: Grok-4.5/cursor creeping into doctor.rs on T2.3).
+- Attempt 2 (codex-68): **blocked again, deeper and again correctly** (~2min). Found that NO public
+  config-mutation API exists — `config.yaml` is written only by substrate bootstrap/init internals — and
+  refused to build the "explicitly prohibited second config writer" in memoryd. Asked for a narrowly
+  scoped substrate config-mutation surface. Both blocks are really *plan defects* (v0.2's T3.1 says
+  "triple write to synced config.yaml" as if the surface existed); terra surfaced them instead of
+  papering over. Two-for-two on the stop-boundary contract.
+- Attempt 3 (codex-69): implemented the whole surface (config CLI, consent, cost estimate, substrate
+  mutation + stats API) but its run window expired mid-`cargo check`. Honest report: flagged its own two
+  follow-ups (envelope non-conformance, duplicated triple consts) unprompted.
+- Attempt 4 / finish pass (codex-70): fixed both follow-ups + a gate-found type mismatch; window expired
+  again during compilation, gates unrun. Orchestrator ran gates, fixed 2 clippy lints (items-after-test-module
+  — really a boundary-check collision; collapsible_if), corrected the price const ($0.15 → plan-ratified
+  $0.20/M), and added the daemon-side consent enforcement + tests. Committed `310fd3b`.
+- **Verdict: terra×medium = excellent judgment, short legs.** Two-for-two on correct scope-blocks
+  (both were genuine plan defects), clean idiomatic implementation (`Value`-based YAML RMW preserving
+  operator keys was exactly right), honest self-reporting of unfinished follow-ups. Weakness: its run
+  windows kept expiring during Rust compilation — on this workspace terra needs tasks sized so the gate
+  fits, or the orchestrator should own gates by default (codex windows ≪ Rust cold-compile times).
+- **Cross-cutting lesson (all GPT-5.6 lanes):** crate-scoped clippy/test does NOT include this repo's
+  release-gate validators (rust_boundary_check bans raw unwrap/expect in substrate src — even in
+  #[cfg(test)] modules — without `expect-justified:` annotations). Lane briefs for memory-substrate work
+  should name that rule; the full-suite run at the orchestrator caught it.
+
+### T3.2 — luna, effort medium (codex-71, work auth)
+
+- Single-file diff exactly as briefed, 5 findings + tests, ran its own clippy gate to completion (unlike
+  terra it POLLED the compile with `ps` loops instead of dying — the fast tier's longer effective window
+  or better process discipline, worth watching). Disclosed its interrupted final test rerun honestly.
+- One quality nit found later by its own sibling reviewer: the rate-limit/offline advisories keyed off a
+  signal (`lifecycle.last_error`) that drain errors never populate. The brief allowed "closest honest
+  signal" and it disclosed the telemetry gap in the finding message, so partial credit — but a stronger
+  run would have flagged that the signal was structurally dead.
+- **Verdict: luna×medium = ideal for bounded follow-the-idiom work.** Fast, scope-perfect, honest.
+
+### Wave-3 review round — luna×high (safe) vs native Opus subagent, in parallel
+
+- **Native Opus:** 9 findings. Unique catches: doctor key-check Err-arm false-fire on env-only setups;
+  the rate-limit substring mismatch ("rate limit" vs the actual "rate-limited" Display); the hardcoded
+  2-param IN clause; schema COVERED gap (also found by luna). One finding REFUTED by code
+  (claimed pending count is always 0 at switch — Substrate::open runs reconcile, so it's real).
+- **luna×high:** 8 findings, zero refuted. Unique catches: `init --print-only` still mutates config (real
+  dry-run violation both the author AND the native reviewer missed); the structural version of the
+  rate-limit issue (the signal is never populated at all — deeper than the substring bug); cost-estimate
+  overstatement on switch-back. Also independently confirmed the consent gate + fence clean, including
+  the crash-ordering analysis.
+- Overlap (both): atomic-write blocker on config.yaml, YAML comment loss, schema gap, init-TTY
+  consent-mode bug.
+- **Verdict: luna×high is a legitimate adversarial reviewer** — on this round it matched or beat the
+  native Opus review on depth (print_only + dead-signal) while Opus was stronger on string/API-level
+  precision. Same-family review (GPT reviewing GPT) did NOT show author-blindness here, but keep
+  cross-family for trust-critical gates.
 
 ## Matrix scorecard (fill as evidence lands)
 
 | Model × effort | Task type | Wall clock | Scope discipline | Quality | Notes |
 | --- | --- | --- | --- | --- | --- |
-| sol × high | hardening (T2.2) | — | — | — | — |
-| terra × medium | impl (T3.1) | — | — | — | — |
-| luna × medium | impl (T3.2) | — | — | — | — |
+| sol × high | trust-adjacent hardening (T2.2) | ~35 min | Perfect (fence untouched) | Exceeded brief (fd TOCTOU verify unasked) | 1 async-test defect; died mid-gate to usage limit, not model |
+| terra × medium | open-ended CLI impl (T3.1) | 4 runs | Perfect × 2 scope-blocks (both real plan defects) | Clean, idiomatic YAML RMW | Run windows too short for Rust gates; orchestrator finished |
+| luna × medium | bounded findings impl (T3.2) | 1 run | Perfect (single file) | Good; one structurally-dead signal | Polled compiles instead of dying; honest disclosure |
+| luna × high (safe) | adversarial review (W3) | 1 run | n/a | 8 findings, 0 refuted; beat native Opus on depth | Caught print_only + dead-signal; keep cross-family for sacred gates anyway |
+
+**Bottom line for the delegate-agent skill:** Sol = author for trust-critical/hard work (high effort);
+Terra = judgment-dense everyday impl but orchestrator owns cargo gates (window-limited); Luna = bounded
+impl AND a shockingly strong cheap reviewer at high effort. All three inherit Codex's scope-discipline +
+honest-failure-reporting virtues; none showed cursor-style scope creep.
 
 ## Standing comparisons
 

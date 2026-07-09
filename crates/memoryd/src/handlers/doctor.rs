@@ -340,16 +340,24 @@ async fn embedding_health_findings(substrate: &Substrate, state: &HandlerState) 
                     "the Gemini API embedding lane is active but no usable API key was found".to_string(),
                     Some("Set `MEMORUM_GEMINI_API_KEY` or configure the key with the `memoryd` CLI.".to_string()),
                 )),
-                Err(error) => findings.push(fatal_finding(
+                // An unreadable key FILE is only fatal when the env var doesn't
+                // already supply the key — env-only deployments are healthy.
+                Err(error) if !env_key_present => findings.push(fatal_finding(
                     "embedding_api_key_missing",
                     format!("the Gemini API embedding lane cannot read its API key: {error}"),
                     Some("Set `MEMORUM_GEMINI_API_KEY` or configure the key with the `memoryd` CLI.".to_string()),
                 )),
-                Ok(true) => {}
+                Ok(true) | Err(_) => {}
             }
 
-            let last_error = lifecycle.last_error.as_deref().unwrap_or_default().to_ascii_lowercase();
-            if backlog > 0 && (last_error.contains("rate limit") || last_error.contains("429")) {
+            // Drain-tick failures are the primary signal (the provider slot's
+            // last_error only records LOAD failures); fall back to the slot.
+            let last_error = crate::embedding::drain_failure()
+                .or_else(|| lifecycle.last_error.clone())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            // `EmbeddingError::RateLimit` Displays as "embedding API rate-limited: ...".
+            if backlog > 0 && (last_error.contains("rate-limited") || last_error.contains("rate limit") || last_error.contains("429")) {
                 findings.push(advisory_finding(
                     "embedding_api_rate_limited",
                     format!(

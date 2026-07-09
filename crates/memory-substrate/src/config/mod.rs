@@ -300,6 +300,19 @@ pub fn record_api_embedding_consent(repo: &Path) -> Result<(), String> {
     })
 }
 
+/// Atomically switch to an API-lane triple AND record consent in one document
+/// write. A two-write sequence would leave a window where the API triple is
+/// active without consent — safe (the daemon's consent gate fails closed) but
+/// silently degraded until the user notices via doctor.
+pub fn store_active_embedding_with_consent(repo: &Path, triple: &EmbeddingTriple) -> Result<(), String> {
+    let active_embedding = serde_yaml::to_value(triple).map_err(|err| err.to_string())?;
+    update_config_document(repo, |mapping| {
+        mapping.insert(serde_yaml::Value::String("active_embedding".to_string()), active_embedding);
+        mapping.insert(serde_yaml::Value::String("api_embedding_consent".to_string()), serde_yaml::Value::Bool(true));
+        Ok(())
+    })
+}
+
 /// True only when the repo has recorded explicit API-lane consent
 /// (`api_embedding_consent: true`). Fail-closed: a missing file, parse error,
 /// or absent/false key all mean "no consent" — the daemon refuses to start an
@@ -316,6 +329,11 @@ pub fn load_api_embedding_consent(repo: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Read-modify-write of the synced config document. Unknown keys survive; YAML
+/// comments and anchors do NOT (`serde_yaml::Value` drops them). The write is
+/// atomic (temp file + same-directory rename) so an interrupted process can
+/// never leave a truncated config.yaml — a partial config makes the substrate
+/// unopenable.
 fn update_config_document(
     repo: &Path,
     update: impl FnOnce(&mut serde_yaml::Mapping) -> Result<(), String>,
@@ -327,7 +345,9 @@ fn update_config_document(
     let mapping = document.as_mapping_mut().ok_or_else(|| format!("{} must contain a YAML mapping", path.display()))?;
     update(mapping)?;
     let rendered = serde_yaml::to_string(&document).map_err(|err| format!("serialize {}: {err}", path.display()))?;
-    std::fs::write(&path, rendered).map_err(|err| format!("write {}: {err}", path.display()))
+    let temp = path.with_extension("yaml.tmp");
+    std::fs::write(&temp, rendered).map_err(|err| format!("write {}: {err}", temp.display()))?;
+    std::fs::rename(&temp, &path).map_err(|err| format!("rename {} -> {}: {err}", temp.display(), path.display()))
 }
 
 /// Load local device config if present.
