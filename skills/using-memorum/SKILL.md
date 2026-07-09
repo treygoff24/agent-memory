@@ -52,6 +52,14 @@ memoryd schema --json                          # the full command/envelope/exit 
 
 If `status` exits 75, the daemon isn't running — start it (or ask the user) before anything else. If `doctor` exits 1, it prints the specific finding and the fix.
 
+**Embedding lanes:** the default is the local on-device model. An opt-in Gemini API lane exists
+(`memoryd config embedding-lane --lane gemini-api`, ~30 MB daemon instead of ~1.3 GB): it requires an
+explicit consent ceremony — scripted runs must pass `--consent`, and only plaintext-eligible
+(public/internal) content plus query text ever reach the API; confidential/personal content is held local
+by the embedding fence. Never pass `--consent` on the user's behalf without their instruction. Switching
+lanes requires a daemon restart; `doctor` explains API-lane problems (`embedding_api_*` findings). Operator
+detail: `docs/runbooks/api-embedding-lane.md`.
+
 ## Recall interplay — don't re-search what you already have
 
 When Memorum's lifecycle hooks are wired (the default), relevant memories are **already injected into your context** at session start and as the conversation shifts — you receive them without running a command. Before you `search`, check whether the answer is already in the recall block you were given. Reach for `search` when you need something the passive block didn't surface, or to confirm before a write.
