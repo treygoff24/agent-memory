@@ -85,10 +85,20 @@ pub(crate) fn model_load_failure() -> Option<String> {
     }
 }
 
+/// Whether the active triple is served by an off-device API embedding lane.
+///
+/// The single product-policy predicate for "does content leave the machine to be
+/// embedded?" — every fence site (governance write-path, worker drain, status,
+/// doctor) routes through this so a future second API provider is enabled by
+/// extending one function, not by editing each fence in lockstep.
+pub fn is_api_embedding_lane(triple: &EmbeddingTriple) -> bool {
+    is_gemini_api_triple(triple)
+}
+
 /// Product policy for deciding which queued embedding jobs may transit the
 /// active embedding lane.
 pub fn embedding_lane_eligibility(triple: &EmbeddingTriple) -> EmbeddingLaneEligibility {
-    if is_gemini_api_triple(triple) {
+    if is_api_embedding_lane(triple) {
         EmbeddingLaneEligibility::PlaintextOnly
     } else {
         EmbeddingLaneEligibility::AllTiers

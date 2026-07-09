@@ -369,7 +369,7 @@ async fn drain_batch_with_budget(
 
 fn debug_assert_lane_eligibility(triple: &EmbeddingTriple, eligibility: EmbeddingLaneEligibility) {
     debug_assert!(
-        !super::is_gemini_api_triple(triple) || matches!(eligibility, EmbeddingLaneEligibility::PlaintextOnly),
+        !super::is_api_embedding_lane(triple) || matches!(eligibility, EmbeddingLaneEligibility::PlaintextOnly),
         "gemini-api embedding triples must use PlaintextOnly eligibility"
     );
 }

@@ -23,7 +23,7 @@ use memory_substrate::{
     VectorError,
 };
 
-use crate::embedding::{is_gemini_api_triple, EmbeddingProviderAcquire, EmbeddingProviderSlot, ProviderGuard};
+use crate::embedding::{is_api_embedding_lane, EmbeddingProviderAcquire, EmbeddingProviderSlot, ProviderGuard};
 use crate::handlers::{entity_ids, namespace_for_frontmatter, HandlerError};
 
 pub(crate) fn load_policy_set(repo: &Path) -> Result<(PolicySet, PolicySource), HandlerError> {
@@ -324,7 +324,7 @@ pub(super) async fn resolve_similarity_candidates(
         Ok(triple) => triple,
         Err(degradation) => return degradation,
     };
-    if is_gemini_api_triple(&active_triple)
+    if is_api_embedding_lane(&active_triple)
         && !candidate_sensitivity.is_some_and(|sensitivity| sensitivity.api_lane_eligible())
     {
         return SimilarityResolution::degraded("similarity_degraded:sensitive_held_local");

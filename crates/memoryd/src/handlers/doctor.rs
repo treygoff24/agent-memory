@@ -305,12 +305,12 @@ async fn embedding_health_findings(substrate: &Substrate, state: &HandlerState) 
                 severity: DoctorSeverity::Advisory,
             });
         }
-        if crate::embedding::is_gemini_api_triple(triple) && held_local_jobs > 0 {
+        if crate::embedding::is_api_embedding_lane(triple) && held_local_jobs > 0 {
             let plural = if held_local_jobs == 1 { "" } else { "s" };
             findings.push(DoctorFinding {
                 code: "embedding_api_lane_held_local".to_string(),
                 message: format!(
-                    "{held_local_jobs} memory embedding job{plural} held local-only under the API embedding lane because its sensitivity tier (confidential/personal) is not eligible to transit the API; vector recall for those memories is FTS-only."
+                    "{held_local_jobs} memory embedding job{plural} held local-only under the API embedding lane because its sensitivity tier is not plaintext-eligible to transit the API; vector recall for those memories is FTS-only."
                 ),
                 repair: Some(
                     "Switch to the local embedding lane if you need vector recall for sensitive memories.".to_string(),
