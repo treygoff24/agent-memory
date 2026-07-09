@@ -6,11 +6,13 @@
 
 use std::collections::HashSet;
 
-use rusqlite::params;
 use rusqlite::OptionalExtension as _;
+use rusqlite::{params, params_from_iter, types::Value};
 
 use crate::error::VectorError;
-use crate::model::EmbeddingTriple;
+use crate::model::{EmbeddingLaneEligibility, EmbeddingTriple};
+
+use super::sql_placeholders;
 
 /// Validate that `vector.len()` matches `triple.dimension`.
 ///
@@ -49,6 +51,12 @@ pub fn reconcile_orphans(
 
 /// Insert pending embedding jobs for missing vectors.
 ///
+/// This low-level helper is intentionally lane-unaware and is not used by the
+/// production active-triple reconciliation path. API-lane callers must use
+/// `Index::reconcile_active_embedding_jobs` /
+/// `reconcile_active_embedding_jobs_impl`, which take
+/// [`EmbeddingLaneEligibility`] and apply the sensitivity fence before enqueue.
+///
 /// Looks up `body_hash` from `memory_chunks` for each missing chunk to
 /// populate the `content_hash` column (spec §10.2.1 #6 stale-job gate).
 /// When the chunk row is not found in `memory_chunks` (e.g. a test stub or a
@@ -85,13 +93,63 @@ pub fn reconcile_missing(
     Ok(missing.len())
 }
 
-/// Count pending jobs for a triple.
-pub fn reconcile_pending_jobs(connection: &rusqlite::Connection, triple: &EmbeddingTriple) -> rusqlite::Result<usize> {
-    connection
-        .query_row(
-            "SELECT COUNT(*) FROM pending_embedding_jobs WHERE provider=?1 AND model_ref=?2 AND dimension=?3",
-            params![triple.provider, triple.model_ref, triple.dimension],
-            |row| row.get::<_, i64>(0),
-        )
-        .map(|count| count as usize)
+/// Count pending jobs for a triple that are eligible to drain.
+///
+/// `AllTiers` preserves the historical unfiltered count for the local lane.
+/// `PlaintextOnly` joins through `memories` and counts only jobs whose current
+/// chunk text may transit an API embedding provider.
+pub fn reconcile_pending_jobs(
+    connection: &rusqlite::Connection,
+    triple: &EmbeddingTriple,
+    eligibility: EmbeddingLaneEligibility,
+) -> rusqlite::Result<usize> {
+    if matches!(eligibility, EmbeddingLaneEligibility::AllTiers) {
+        return connection
+            .query_row(
+                "SELECT COUNT(*) FROM pending_embedding_jobs WHERE provider=?1 AND model_ref=?2 AND dimension=?3",
+                params![triple.provider, triple.model_ref, i64::from(triple.dimension)],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|count| count as usize);
+    }
+    count_plaintext_filtered_pending_jobs(connection, triple, eligibility, true)
+}
+
+/// Count pending jobs held local-only by the lane eligibility fence.
+pub fn held_local_embedding_jobs(
+    connection: &rusqlite::Connection,
+    triple: &EmbeddingTriple,
+    eligibility: EmbeddingLaneEligibility,
+) -> rusqlite::Result<usize> {
+    if matches!(eligibility, EmbeddingLaneEligibility::AllTiers) {
+        return Ok(0);
+    }
+    count_plaintext_filtered_pending_jobs(connection, triple, eligibility, false)
+}
+
+fn count_plaintext_filtered_pending_jobs(
+    connection: &rusqlite::Connection,
+    triple: &EmbeddingTriple,
+    eligibility: EmbeddingLaneEligibility,
+    eligible: bool,
+) -> rusqlite::Result<usize> {
+    let allowed_sensitivities = eligibility.allowed_sensitivity_db_strs();
+    let predicate = if eligible { "IN" } else { "NOT IN" };
+    let sql = format!(
+        "SELECT COUNT(*)
+         FROM pending_embedding_jobs pj
+         JOIN memory_chunks mc ON mc.chunk_id = pj.chunk_id
+         JOIN memories m ON m.id = mc.memory_id
+         WHERE pj.provider = ? AND pj.model_ref = ? AND pj.dimension = ?
+           AND pj.content_hash = mc.body_hash
+           AND m.sensitivity {predicate} ({})",
+        sql_placeholders(allowed_sensitivities.len())
+    );
+    let mut bindings = vec![
+        Value::from(triple.provider.clone()),
+        Value::from(triple.model_ref.clone()),
+        Value::from(i64::from(triple.dimension)),
+    ];
+    bindings.extend(allowed_sensitivities.into_iter().map(|sensitivity| Value::from(sensitivity.to_string())));
+    connection.query_row(&sql, params_from_iter(bindings), |row| row.get::<_, i64>(0)).map(|count| count as usize)
 }

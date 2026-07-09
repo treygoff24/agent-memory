@@ -342,7 +342,12 @@ async fn open_reconciles_pending_embedding_jobs() {
     let active = reopened.active_embedding_triple().expect("active triple");
     let connection = memory_substrate::index::open_index(&roots.runtime.join("index.sqlite")).expect("reopen index");
     assert_eq!(
-        memory_substrate::index::reconcile_pending_jobs(&connection, &active).expect("pending jobs"),
+        memory_substrate::index::reconcile_pending_jobs(
+            &connection,
+            &active,
+            memory_substrate::EmbeddingLaneEligibility::AllTiers,
+        )
+        .expect("pending jobs"),
         1,
         "open must reconcile active embedding jobs"
     );

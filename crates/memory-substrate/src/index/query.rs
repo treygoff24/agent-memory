@@ -9,14 +9,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Utc};
-use rusqlite::{params, params_from_iter, Connection};
+use rusqlite::{params, params_from_iter, types::Value, Connection};
 
 use crate::error::{SubstrateResult, VectorError};
 use crate::events::{Event, EventKind};
 use crate::model::{
-    ChunkResult, EmbeddingTriple, EmbeddingUpdate, Entity, EventsLogMirrorHealth, HybridMemoryCandidate,
-    HybridScoreBreakdown, HybridVectorQuery, Memory, MemoryId, MemoryQuery, MemoryStatus, QueryResult,
-    RecallIndexQuery, RecallIndexRow, RepoPath, ReviewQueuePage, ReviewQueueRow, Scope, Sha256,
+    ChunkResult, EmbeddingLaneEligibility, EmbeddingTriple, EmbeddingUpdate, Entity, EventsLogMirrorHealth,
+    HybridMemoryCandidate, HybridScoreBreakdown, HybridVectorQuery, Memory, MemoryId, MemoryQuery, MemoryStatus,
+    QueryResult, RecallIndexQuery, RecallIndexRow, RepoPath, ReviewQueuePage, ReviewQueueRow, Scope, Sha256,
 };
 
 use super::embedding::{
@@ -398,9 +398,12 @@ impl Index {
     }
 
     /// Reconcile chunk/vector metadata and enqueue missing embeddings for the active triple.
-    pub fn reconcile_active_embedding_jobs(&mut self) -> Result<usize, VectorError> {
+    pub fn reconcile_active_embedding_jobs(
+        &mut self,
+        eligibility: EmbeddingLaneEligibility,
+    ) -> Result<usize, VectorError> {
         let triple = self.active_embedding.clone();
-        reconcile_active_embedding_jobs_impl(&mut self.connection, &triple)
+        reconcile_active_embedding_jobs_impl(&mut self.connection, &triple, eligibility)
     }
 
     /// Deferred second pass for supersession edges after a bulk reindex.
@@ -458,19 +461,41 @@ impl Index {
     /// the vector-store write is gated a second time at commit (spec §10.2.1).
     ///
     /// Ordered by `enqueued_at` so the oldest backlog drains first.
-    pub fn pending_embedding_jobs(&self, limit: usize) -> Result<Vec<crate::model::PendingEmbeddingJob>, VectorError> {
+    pub fn pending_embedding_jobs(
+        &self,
+        limit: usize,
+        eligibility: EmbeddingLaneEligibility,
+    ) -> Result<Vec<crate::model::PendingEmbeddingJob>, VectorError> {
         let triple = &self.active_embedding;
-        let mut stmt = self.connection.prepare_cached(
+        let allowed_sensitivities = eligibility.allowed_sensitivity_db_strs();
+        let mut sql = String::from(
             "SELECT mc.chunk_id, mc.text, mc.body_hash
              FROM pending_embedding_jobs pj
              JOIN memory_chunks mc ON mc.chunk_id = pj.chunk_id
-             WHERE pj.provider = ?1 AND pj.model_ref = ?2 AND pj.dimension = ?3
-               AND pj.content_hash = mc.body_hash
+             JOIN memories m ON m.id = mc.memory_id
+             WHERE pj.provider = ? AND pj.model_ref = ? AND pj.dimension = ?
+               AND pj.content_hash = mc.body_hash",
+        );
+        if eligibility.requires_plaintext_filter() {
+            sql.push_str(" AND m.sensitivity IN (");
+            sql.push_str(&sql_placeholders(allowed_sensitivities.len()));
+            sql.push(')');
+        }
+        sql.push_str(
+            "
              ORDER BY pj.enqueued_at
-             LIMIT ?4",
-        )?;
+             LIMIT ?",
+        );
+        let mut bindings = vec![
+            Value::from(triple.provider.clone()),
+            Value::from(triple.model_ref.clone()),
+            Value::from(i64::from(triple.dimension)),
+        ];
+        bindings.extend(allowed_sensitivities.into_iter().map(|sensitivity| Value::from(sensitivity.to_string())));
+        bindings.push(Value::from(limit as i64));
+        let mut stmt = self.connection.prepare_cached(&sql)?;
         let rows = stmt
-            .query_map(params![triple.provider, triple.model_ref, i64::from(triple.dimension), limit as i64], |row| {
+            .query_map(params_from_iter(bindings), |row| {
                 Ok(crate::model::PendingEmbeddingJob {
                     chunk_id: row.get::<_, String>(0)?,
                     text: row.get::<_, String>(1)?,

@@ -135,6 +135,8 @@ pub enum Sensitivity {
 }
 
 impl Sensitivity {
+    const PERSISTED_VARIANTS: [Self; 4] = [Self::Public, Self::Internal, Self::Confidential, Self::Personal];
+
     /// Canonical on-disk string for the SQLite index. Byte-identical to the
     /// serde representation used in frontmatter YAML; the `model` tests lock the
     /// two together. See [`Sensitivity::from_db_str`] for the inverse.
@@ -156,6 +158,27 @@ impl Sensitivity {
             "personal" => Some(Self::Personal),
             _ => None,
         }
+    }
+
+    /// Whether this persisted sensitivity tier may transit an API embedding
+    /// lane.
+    ///
+    /// This mirrors the privacy storage policy: `Public` and `Internal` store
+    /// as plaintext, while `Confidential` and `Personal` are encrypted at rest
+    /// and must remain local-only when an API embedding provider is active.
+    pub fn api_lane_eligible(&self) -> bool {
+        matches!(self, Self::Public | Self::Internal)
+    }
+
+    /// Canonical DB strings for API-eligible tiers, derived from
+    /// [`Self::api_lane_eligible`] so SQL predicates and Rust checks share one
+    /// source of truth.
+    pub fn api_lane_eligible_db_strs() -> Vec<&'static str> {
+        Self::PERSISTED_VARIANTS
+            .iter()
+            .filter(|sensitivity| sensitivity.api_lane_eligible())
+            .map(Self::as_db_str)
+            .collect()
     }
 }
 
@@ -1268,6 +1291,34 @@ pub struct EmbeddingTriple {
     pub model_ref: String,
     /// Dimension.
     pub dimension: u32,
+}
+
+/// Which sensitivity tiers may be handed to the active embedding lane.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum EmbeddingLaneEligibility {
+    /// Local lane: every persisted sensitivity tier may be embedded locally.
+    AllTiers,
+    /// API lane: only tiers stored as plaintext may transit the provider.
+    PlaintextOnly,
+}
+
+impl EmbeddingLaneEligibility {
+    /// `true` when SQL should add the plaintext-only sensitivity predicate.
+    pub fn requires_plaintext_filter(self) -> bool {
+        matches!(self, Self::PlaintextOnly)
+    }
+
+    /// DB strings allowed by this eligibility mode.
+    ///
+    /// `AllTiers` returns an empty list because no SQL sensitivity predicate is
+    /// applied. `PlaintextOnly` derives its allowlist from
+    /// [`Sensitivity::api_lane_eligible`].
+    pub fn allowed_sensitivity_db_strs(self) -> Vec<&'static str> {
+        match self {
+            Self::AllTiers => Vec::new(),
+            Self::PlaintextOnly => Sensitivity::api_lane_eligible_db_strs(),
+        }
+    }
 }
 
 /// A pending embedding job paired with the chunk text the worker must embed.

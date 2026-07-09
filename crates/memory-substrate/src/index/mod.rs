@@ -18,7 +18,9 @@ pub use chunking::{chunk_memory, Chunk};
 pub use events_read::{EventsLogPage, MirrorEvent};
 pub use migrations::{open_index, INDEX_SUPPORTED_SCHEMA_VERSION};
 pub use query::Index;
-pub use vector::{reconcile_missing, reconcile_orphans, reconcile_pending_jobs, VectorStore};
+pub use vector::{
+    held_local_embedding_jobs, reconcile_missing, reconcile_orphans, reconcile_pending_jobs, VectorStore,
+};
 
 /// Render `count` comma-separated `?` SQL bind placeholders (e.g. `?,?,?`).
 ///

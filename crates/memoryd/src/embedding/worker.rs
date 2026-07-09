@@ -99,7 +99,7 @@ async fn run(
             if *shutdown.borrow() {
                 return;
             }
-            match substrate.pending_embedding_job_count() {
+            match substrate.pending_embedding_job_count(memory_substrate::EmbeddingLaneEligibility::AllTiers) {
                 Ok(0) => {
                     zero_success_backoff = idle_interval;
                     break;
@@ -263,7 +263,10 @@ async fn drain_batch_with_budget(
     retry_budget: &mut JobRetryBudget,
 ) -> Result<DrainOutcome, String> {
     let requested = limit.saturating_add(retry_budget.exhausted_count());
-    let jobs = substrate.pending_embedding_jobs(requested).await.map_err(|err| err.to_string())?;
+    let jobs = substrate
+        .pending_embedding_jobs(requested, memory_substrate::EmbeddingLaneEligibility::AllTiers)
+        .await
+        .map_err(|err| err.to_string())?;
     if jobs.is_empty() {
         return Ok(DrainOutcome { requested, fetched: 0, succeeded: 0 });
     }
@@ -515,7 +518,12 @@ mod tests {
         worker.await.expect("worker joins");
 
         assert!(saw_failure, "mismatched provider should fail lifecycle load");
-        assert_eq!(substrate.pending_embedding_job_count().expect("pending count"), 1);
+        assert_eq!(
+            substrate
+                .pending_embedding_job_count(memory_substrate::EmbeddingLaneEligibility::AllTiers)
+                .expect("pending count"),
+            1
+        );
     }
 
     #[tokio::test]

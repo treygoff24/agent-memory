@@ -657,7 +657,9 @@ fn full_reindex_from_repo(repo: &std::path::Path, index: &mut Index) -> std::io:
     if has_supersession_edges {
         index.resync_supersession_edges().map_err(|err| std::io::Error::other(err.to_string()))?;
     }
-    index.reconcile_active_embedding_jobs().map_err(|err| std::io::Error::other(err.to_string()))?;
+    index
+        .reconcile_active_embedding_jobs(crate::model::EmbeddingLaneEligibility::AllTiers)
+        .map_err(|err| std::io::Error::other(err.to_string()))?;
     Ok(count)
 }
 
@@ -715,7 +717,9 @@ fn incremental_reindex_at_open(repo: &std::path::Path, index: &mut Index) -> std
     index.resync_supersession_edges().map_err(|err| std::io::Error::other(err.to_string()))?;
 
     // (4) Embedding-job reconciliation — must keep running at open.
-    index.reconcile_active_embedding_jobs().map_err(|err| std::io::Error::other(err.to_string()))?;
+    index
+        .reconcile_active_embedding_jobs(crate::model::EmbeddingLaneEligibility::AllTiers)
+        .map_err(|err| std::io::Error::other(err.to_string()))?;
     Ok(count)
 }
 

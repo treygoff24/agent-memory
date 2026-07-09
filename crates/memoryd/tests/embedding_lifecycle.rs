@@ -429,7 +429,10 @@ async fn f01_doctor_no_idle_finding_for_dormant_slot_with_backlog() {
     // Write a memory to create pending embedding jobs (backlog > 0). The vector
     // table is empty because we never drained.
     write_project_memory(&fixture.substrate, "dormant doctor keyword", "dormant doctor keyword body").await;
-    let backlog = fixture.substrate.pending_embedding_job_count().expect("pending count");
+    let backlog = fixture
+        .substrate
+        .pending_embedding_job_count(memory_substrate::EmbeddingLaneEligibility::AllTiers)
+        .expect("pending count");
     assert!(backlog > 0, "there must be pending embedding jobs");
     let vec_count = fixture.substrate.vector_count(fixture.triple()).await.unwrap_or(0);
     assert_eq!(vec_count, 0, "vector table must be empty");

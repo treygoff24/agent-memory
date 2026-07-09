@@ -301,7 +301,10 @@ async fn fixture_asymmetry_catches_index_and_query_call_site_swaps() {
     assert_eq!(first.status, GovernanceStatus::Promoted);
     recording.take_calls(); // First write attempted query-side similarity before vectors existed.
 
-    let pending = substrate.pending_embedding_jobs(1).await.expect("pending jobs");
+    let pending = substrate
+        .pending_embedding_jobs(1, memory_substrate::EmbeddingLaneEligibility::AllTiers)
+        .await
+        .expect("pending jobs");
     let chunk_text = pending.first().expect("one pending chunk").text.clone();
     drain_all(&substrate, &provider).await;
     assert!(

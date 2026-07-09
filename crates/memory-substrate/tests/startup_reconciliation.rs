@@ -125,7 +125,15 @@ async fn startup_reindex_requeues_missing_active_embedding_jobs() {
     // from the substrate rather than hardcoding the superseded synthetic triple.
     let active = reopened.active_embedding_triple().expect("active triple");
 
-    assert_eq!(memory_substrate::index::reconcile_pending_jobs(&connection, &active).expect("pending jobs"), 1);
+    assert_eq!(
+        memory_substrate::index::reconcile_pending_jobs(
+            &connection,
+            &active,
+            memory_substrate::EmbeddingLaneEligibility::AllTiers,
+        )
+        .expect("pending jobs"),
+        1
+    );
 }
 
 #[tokio::test]

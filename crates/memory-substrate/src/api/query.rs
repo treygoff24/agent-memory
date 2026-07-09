@@ -266,18 +266,32 @@ impl Substrate {
     pub async fn pending_embedding_jobs(
         &self,
         limit: usize,
+        eligibility: crate::model::EmbeddingLaneEligibility,
     ) -> Result<Vec<crate::model::PendingEmbeddingJob>, VectorError> {
         self.index
             .lock()
             .map_err(|err| VectorError::IndexUnavailable(format!("index mutex poisoned: {err}")))?
-            .pending_embedding_jobs(limit)
+            .pending_embedding_jobs(limit, eligibility)
     }
 
     /// Count pending embedding jobs for the active triple (doctor backlog).
-    pub fn pending_embedding_job_count(&self) -> Result<usize, VectorError> {
+    pub fn pending_embedding_job_count(
+        &self,
+        eligibility: crate::model::EmbeddingLaneEligibility,
+    ) -> Result<usize, VectorError> {
         let index = lock_index(&self.index);
         let triple = index.active_embedding().clone();
-        crate::index::reconcile_pending_jobs(index.connection(), &triple).map_err(Into::into)
+        crate::index::reconcile_pending_jobs(index.connection(), &triple, eligibility).map_err(Into::into)
+    }
+
+    /// Count pending embedding jobs held local-only by lane eligibility.
+    pub fn held_local_embedding_job_count(
+        &self,
+        eligibility: crate::model::EmbeddingLaneEligibility,
+    ) -> Result<usize, VectorError> {
+        let index = lock_index(&self.index);
+        let triple = index.active_embedding().clone();
+        crate::index::held_local_embedding_jobs(index.connection(), &triple, eligibility).map_err(Into::into)
     }
 
     /// Drop embedding model and return the structured report (spec §16.4, B-API-4).

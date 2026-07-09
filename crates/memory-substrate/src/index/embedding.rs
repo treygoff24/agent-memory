@@ -2,11 +2,12 @@
 //! pending-job resolution, the active-triple reconcile sweep, and the
 //! dropped-triple / table-existence probes shared with the query facade.
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, params_from_iter, types::Value, Connection};
 
 use crate::error::VectorError;
-use crate::model::{EmbeddingTriple, EmbeddingUpdate};
+use crate::model::{EmbeddingLaneEligibility, EmbeddingTriple, EmbeddingUpdate};
 
+use super::sql_placeholders;
 use super::util::EMBEDDING_TRIPLE_PREDICATE;
 
 /// Validate: dimension OK, triple not dropped, content hash matches stored hash.
@@ -121,6 +122,7 @@ pub(super) fn resolve_pending_embedding_job(conn: &Connection, update: &Embeddin
 pub(super) fn reconcile_active_embedding_jobs_impl(
     connection: &mut Connection,
     triple: &EmbeddingTriple,
+    eligibility: EmbeddingLaneEligibility,
 ) -> Result<usize, VectorError> {
     if is_dropped_triple_rusqlite(connection, triple).map_err(VectorError::Sqlite)? {
         return Ok(0);
@@ -143,20 +145,37 @@ pub(super) fn reconcile_active_embedding_jobs_impl(
 
     // Enqueue jobs for chunks missing a vector for this triple.
     let enqueued_at = chrono::Utc::now().to_rfc3339();
-    let queued = txn.execute(
+    let allowed_sensitivities = eligibility.allowed_sensitivity_db_strs();
+    let mut sql = String::from(
         "INSERT OR IGNORE INTO pending_embedding_jobs(
              chunk_id, provider, model_ref, dimension, content_hash, enqueued_at
          )
-         SELECT mc.chunk_id, ?1, ?2, ?3, mc.body_hash, ?4
+         SELECT mc.chunk_id, ?, ?, ?, mc.body_hash, ?
          FROM memory_chunks mc
+         JOIN memories m ON m.id = mc.memory_id
          LEFT JOIN chunk_vectors cv
            ON cv.chunk_id  = mc.chunk_id
-          AND cv.provider  = ?1
-          AND cv.model_ref = ?2
-          AND cv.dimension = ?3
+          AND cv.provider  = ?
+          AND cv.model_ref = ?
+          AND cv.dimension = ?
          WHERE cv.chunk_id IS NULL",
-        params![triple.provider, triple.model_ref, i64::from(triple.dimension), enqueued_at],
-    )?;
+    );
+    if eligibility.requires_plaintext_filter() {
+        sql.push_str(" AND m.sensitivity IN (");
+        sql.push_str(&sql_placeholders(allowed_sensitivities.len()));
+        sql.push(')');
+    }
+    let mut bindings = vec![
+        Value::from(triple.provider.clone()),
+        Value::from(triple.model_ref.clone()),
+        Value::from(i64::from(triple.dimension)),
+        Value::from(enqueued_at),
+        Value::from(triple.provider.clone()),
+        Value::from(triple.model_ref.clone()),
+        Value::from(i64::from(triple.dimension)),
+    ];
+    bindings.extend(allowed_sensitivities.into_iter().map(|sensitivity| Value::from(sensitivity.to_string())));
+    let queued = txn.execute(&sql, params_from_iter(bindings))?;
 
     txn.commit()?;
     Ok(queued)

@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use memory_substrate::index::{open_index, reconcile_missing, reconcile_orphans, reconcile_pending_jobs, VectorStore};
-use memory_substrate::{EmbeddingTriple, VectorError};
+use memory_substrate::{EmbeddingLaneEligibility, EmbeddingTriple, VectorError};
 
 #[derive(Default)]
 struct InMemoryVectorStore {
@@ -38,7 +38,10 @@ fn vector_orphan_and_missing_reconciliation_deletes_orphans_and_queues_jobs() {
     assert_eq!(deleted, 1);
     assert_eq!(store.deleted, vec!["chunk-orphan".to_string()]);
     assert_eq!(queued, 1);
-    assert_eq!(reconcile_pending_jobs(&connection, &triple).expect("pending jobs"), 1);
+    assert_eq!(
+        reconcile_pending_jobs(&connection, &triple, EmbeddingLaneEligibility::AllTiers).expect("pending jobs"),
+        1
+    );
 }
 
 #[test]
@@ -57,8 +60,14 @@ fn active_triple_switch_queues_chunks_for_new_embedding_triple() {
     let queued = reconcile_missing(&connection, &new_store, &new_triple, &valid_chunk_ids).expect("queue new triple");
 
     assert_eq!(queued, 2);
-    assert_eq!(reconcile_pending_jobs(&connection, &new_triple).expect("new pending"), 2);
-    assert_eq!(reconcile_pending_jobs(&connection, &old_triple).expect("old pending"), 0);
+    assert_eq!(
+        reconcile_pending_jobs(&connection, &new_triple, EmbeddingLaneEligibility::AllTiers).expect("new pending"),
+        2
+    );
+    assert_eq!(
+        reconcile_pending_jobs(&connection, &old_triple, EmbeddingLaneEligibility::AllTiers).expect("old pending"),
+        0
+    );
 }
 
 fn triple(model_ref: &str, dimension: u32) -> EmbeddingTriple {

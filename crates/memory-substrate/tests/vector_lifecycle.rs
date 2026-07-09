@@ -127,7 +127,11 @@ async fn plaintext_writes_enqueue_pending_embedding_jobs_for_active_triple() {
     // it from the substrate so the assertion tracks the bootstrapped triple.
     let active = substrate.active_embedding_triple().expect("active triple");
 
-    assert_eq!(memory_substrate::index::reconcile_pending_jobs(&connection, &active).expect("pending jobs"), 1);
+    assert_eq!(
+        memory_substrate::index::reconcile_pending_jobs(&connection, &active, EmbeddingLaneEligibility::AllTiers)
+            .expect("pending jobs"),
+        1
+    );
 }
 
 #[tokio::test]

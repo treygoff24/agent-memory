@@ -270,7 +270,7 @@ fn doctor_is_healthy(
 /// "embeddings are not being produced" signal worth surfacing prominently.
 async fn embedding_health_findings(substrate: &Substrate, state: &HandlerState) -> Vec<DoctorFinding> {
     let mut findings = Vec::new();
-    let backlog = match substrate.pending_embedding_job_count() {
+    let backlog = match substrate.pending_embedding_job_count(memory_substrate::EmbeddingLaneEligibility::AllTiers) {
         Ok(count) => count,
         Err(_) => return findings,
     };
