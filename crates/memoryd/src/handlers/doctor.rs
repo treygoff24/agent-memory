@@ -281,15 +281,16 @@ async fn embedding_health_findings(substrate: &Substrate, state: &HandlerState) 
     };
 
     if let Ok(triple) = &active {
-        if !crate::embedding::is_fastembed_candle_triple(triple) {
+        if !crate::embedding::is_fastembed_candle_triple(triple) && !crate::embedding::is_gemini_api_triple(triple) {
             findings.push(DoctorFinding {
                 code: "embedding_provider_unsupported".to_string(),
                 message: format!(
-                    "active embedding provider `{}` is unsupported by this daemon; expected `{}`. The embedding worker will not start, so vector recall is unavailable for this triple.",
+                    "active embedding provider `{}` is unsupported by this daemon; expected `{}` or `{}`. The embedding worker will not start, so vector recall is unavailable for this triple.",
                     triple.provider,
-                    crate::embedding::FASTEMBED_CANDLE_PROVIDER
+                    crate::embedding::FASTEMBED_CANDLE_PROVIDER,
+                    crate::embedding::GEMINI_API_PROVIDER
                 ),
-                repair: Some("Switch active_embedding.provider to the fastembed candle lane or run a daemon that supports the configured provider.".to_string()),
+                repair: Some("Switch active_embedding.provider to a supported lane or run a daemon that supports the configured provider.".to_string()),
                 severity: DoctorSeverity::Advisory,
             });
         }
@@ -383,6 +384,74 @@ mod tests {
 
     fn finding(severity: DoctorSeverity) -> DoctorFinding {
         DoctorFinding { code: "t".to_string(), message: String::new(), repair: None, severity }
+    }
+
+    async fn substrate_with_active_embedding(
+        triple: memory_substrate::EmbeddingTriple,
+        device_id: &str,
+    ) -> TestSubstrate {
+        let temp = tempfile::tempdir().expect("tempdir"); // expect-justified: test setup
+        let repo = temp.path().join("repo");
+        let runtime = temp.path().join("runtime");
+        std::fs::create_dir_all(&repo).expect("repo dir"); // expect-justified: test setup
+        std::fs::write(
+            repo.join("config.yaml"),
+            format!(
+                "schema_version: 1\nactive_embedding:\n  provider: {}\n  model_ref: {}\n  dimension: {}\n",
+                triple.provider, triple.model_ref, triple.dimension
+            ),
+        )
+        .expect("write config"); // expect-justified: test setup
+
+        let substrate = memory_substrate::Substrate::init(
+            memory_substrate::Roots::new(&repo, &runtime),
+            memory_substrate::InitOptions { force_unsafe_durability: true, device_id: Some(device_id.to_string()) },
+        )
+        .await
+        .expect("substrate init"); // expect-justified: test setup
+
+        TestSubstrate { _temp: temp, substrate }
+    }
+
+    struct TestSubstrate {
+        _temp: tempfile::TempDir,
+        substrate: memory_substrate::Substrate,
+    }
+
+    #[tokio::test]
+    async fn embedding_provider_unsupported_is_lane_aware() {
+        let state = crate::handlers::HandlerState::new();
+        let gemini = substrate_with_active_embedding(
+            memory_substrate::EmbeddingTriple {
+                provider: crate::embedding::GEMINI_API_PROVIDER.to_string(),
+                model_ref: "gemini-embedding-2".to_string(),
+                dimension: 768,
+            },
+            "dev_doctorgemini",
+        )
+        .await;
+
+        let gemini_findings = super::embedding_health_findings(&gemini.substrate, &state).await;
+        assert!(
+            !gemini_findings.iter().any(|finding| finding.code == "embedding_provider_unsupported"),
+            "gemini-api is a supported lane and must not raise embedding_provider_unsupported: {gemini_findings:?}"
+        );
+
+        let bogus = substrate_with_active_embedding(
+            memory_substrate::EmbeddingTriple {
+                provider: "acme-whatever".to_string(),
+                model_ref: "not-real".to_string(),
+                dimension: 3,
+            },
+            "dev_doctorbogus",
+        )
+        .await;
+
+        let bogus_findings = super::embedding_health_findings(&bogus.substrate, &state).await;
+        assert!(
+            bogus_findings.iter().any(|finding| finding.code == "embedding_provider_unsupported"),
+            "unknown providers still raise embedding_provider_unsupported: {bogus_findings:?}"
+        );
     }
 
     #[test]

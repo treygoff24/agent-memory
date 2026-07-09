@@ -164,30 +164,45 @@ fn spawn_embedding_worker(
             return;
         }
     };
-    if !crate::embedding::is_fastembed_candle_triple(&triple) {
+    if crate::embedding::is_fastembed_candle_triple(&triple) {
+        let idle_window = crate::embedding::EmbeddingIdleWindow::from_env();
+        provider_slot.configure_loader(triple.clone(), idle_window, move || {
+            let provider = crate::embedding::FastembedProvider::load_for_runtime(&runtime_root, triple.clone())?;
+            tracing::info!(
+                model = %provider.triple().model_ref,
+                dimension = provider.triple().dimension,
+                device = provider.device().label(),
+                "embedding worker model loaded"
+            );
+            Ok(Arc::new(provider))
+        });
+    } else if crate::embedding::is_gemini_api_triple(&triple) {
+        let idle_window = crate::embedding::EmbeddingIdleWindow::from_env();
+        provider_slot.configure_loader(triple.clone(), idle_window, move || {
+            let provider = crate::embedding::ApiEmbeddingProvider::load_for_runtime(&runtime_root, triple.clone())?;
+            tracing::info!(
+                model = %provider.triple().model_ref,
+                dimension = provider.triple().dimension,
+                provider = %provider.triple().provider,
+                "embedding worker API provider loaded"
+            );
+            Ok(Arc::new(provider))
+        });
+    } else {
         tracing::warn!(
             provider = %triple.provider,
-            supported_provider = crate::embedding::FASTEMBED_CANDLE_PROVIDER,
+            supported_local_provider = crate::embedding::FASTEMBED_CANDLE_PROVIDER,
+            supported_api_provider = crate::embedding::GEMINI_API_PROVIDER,
             "embedding worker not started: active embedding provider is unsupported by this daemon"
         );
         provider_slot.mark_failed(format!(
-            "active embedding provider `{}` is unsupported by this daemon; expected `{}`",
+            "active embedding provider `{}` is unsupported by this daemon; expected `{}` or `{}`",
             triple.provider,
-            crate::embedding::FASTEMBED_CANDLE_PROVIDER
+            crate::embedding::FASTEMBED_CANDLE_PROVIDER,
+            crate::embedding::GEMINI_API_PROVIDER
         ));
         return;
     }
-    let idle_window = crate::embedding::EmbeddingIdleWindow::from_env();
-    provider_slot.configure_loader(triple.clone(), idle_window, move || {
-        let provider = crate::embedding::FastembedProvider::load_for_runtime(&runtime_root, triple.clone())?;
-        tracing::info!(
-            model = %provider.triple().model_ref,
-            dimension = provider.triple().dimension,
-            device = provider.device().label(),
-            "embedding worker model loaded"
-        );
-        Ok(Arc::new(provider))
-    });
     crate::embedding::worker::spawn_embedding_worker(substrate, provider_slot, shutdown);
 }
 
@@ -627,6 +642,93 @@ mod tests {
     use super::response_line_with_frame_cap;
     use crate::protocol::{ResponseEnvelope, ResponsePayload, ResponseResult};
     use crate::recall::{DeltaResponse, StartupResponse};
+    use serial_test::serial;
+
+    async fn substrate_with_active_embedding(
+        triple: memory_substrate::EmbeddingTriple,
+        device_id: &str,
+    ) -> TestSubstrate {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = temp.path().join("repo");
+        let runtime = temp.path().join("runtime");
+        std::fs::create_dir_all(&repo).expect("repo dir");
+        std::fs::write(
+            repo.join("config.yaml"),
+            format!(
+                "schema_version: 1\nactive_embedding:\n  provider: {}\n  model_ref: {}\n  dimension: {}\n",
+                triple.provider, triple.model_ref, triple.dimension
+            ),
+        )
+        .expect("write config");
+
+        let substrate = memory_substrate::Substrate::init(
+            memory_substrate::Roots::new(&repo, &runtime),
+            memory_substrate::InitOptions { force_unsafe_durability: true, device_id: Some(device_id.to_string()) },
+        )
+        .await
+        .expect("substrate init");
+
+        TestSubstrate { _temp: temp, substrate: std::sync::Arc::new(substrate) }
+    }
+
+    struct TestSubstrate {
+        _temp: tempfile::TempDir,
+        substrate: std::sync::Arc<memory_substrate::Substrate>,
+    }
+
+    struct EnvVarGuard {
+        name: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn remove(name: &'static str) -> Self {
+            let previous = std::env::var_os(name);
+            std::env::remove_var(name);
+            Self { name, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.name, value),
+                None => std::env::remove_var(self.name),
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn gemini_api_embedding_worker_missing_key_marks_slot_failed() {
+        let _api_key = EnvVarGuard::remove("MEMORUM_GEMINI_API_KEY");
+        let _disable_worker = EnvVarGuard::remove("MEMORUM_DISABLE_EMBEDDING_WORKER");
+        let fixture = substrate_with_active_embedding(
+            memory_substrate::EmbeddingTriple {
+                provider: crate::embedding::GEMINI_API_PROVIDER.to_string(),
+                model_ref: "gemini-embedding-2".to_string(),
+                dimension: 768,
+            },
+            "dev_servergemini",
+        )
+        .await;
+        let slot = crate::embedding::EmbeddingProviderSlot::empty();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+        super::spawn_embedding_worker(fixture.substrate.clone(), slot.clone(), shutdown_rx);
+
+        assert!(slot.has_loader_configured(), "gemini-api should configure a provider loader");
+        let load = slot.ensure_loaded().await;
+        let _ = shutdown_tx.send(true);
+
+        assert!(load.is_err(), "missing Gemini credentials should fail the provider load cleanly");
+        let snapshot = slot.snapshot();
+        assert_eq!(snapshot.state, "failed");
+        assert!(
+            snapshot.last_error.as_deref().is_some_and(|error| error.contains("Gemini API key not found")),
+            "missing-key failure should be recorded on the lifecycle slot: {snapshot:?}"
+        );
+    }
 
     #[cfg(unix)]
     #[tokio::test]
