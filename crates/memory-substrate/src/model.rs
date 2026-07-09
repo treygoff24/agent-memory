@@ -1316,7 +1316,15 @@ impl EmbeddingLaneEligibility {
     pub fn allowed_sensitivity_db_strs(self) -> Vec<&'static str> {
         match self {
             Self::AllTiers => Vec::new(),
-            Self::PlaintextOnly => Sensitivity::api_lane_eligible_db_strs(),
+            Self::PlaintextOnly => {
+                let allowed = Sensitivity::api_lane_eligible_db_strs();
+                // A PlaintextOnly allowlist must never be empty: callers splice it
+                // into `sensitivity IN (...)`, and `IN ()` is a SQL syntax error,
+                // not a fail-closed empty match. Public|Internal keep this at
+                // length 2 today; this guards a future tier-table edit.
+                debug_assert!(!allowed.is_empty(), "PlaintextOnly sensitivity allowlist must be non-empty");
+                allowed
+            }
         }
     }
 }

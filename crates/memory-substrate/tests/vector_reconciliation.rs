@@ -33,7 +33,8 @@ fn vector_orphan_and_missing_reconciliation_deletes_orphans_and_queues_jobs() {
     };
 
     let deleted = reconcile_orphans(&mut store, &triple, &valid_chunk_ids).expect("orphan reconcile");
-    let queued = reconcile_missing(&connection, &store, &triple, &valid_chunk_ids).expect("missing reconcile");
+    let queued = reconcile_missing(&connection, &store, &triple, &valid_chunk_ids, EmbeddingLaneEligibility::AllTiers)
+        .expect("missing reconcile");
 
     assert_eq!(deleted, 1);
     assert_eq!(store.deleted, vec!["chunk-orphan".to_string()]);
@@ -57,7 +58,9 @@ fn active_triple_switch_queues_chunks_for_new_embedding_triple() {
     let new_store = InMemoryVectorStore::default();
     let valid_chunk_ids = old_store.list_chunk_ids(&old_triple).expect("old chunks");
 
-    let queued = reconcile_missing(&connection, &new_store, &new_triple, &valid_chunk_ids).expect("queue new triple");
+    let queued =
+        reconcile_missing(&connection, &new_store, &new_triple, &valid_chunk_ids, EmbeddingLaneEligibility::AllTiers)
+            .expect("queue new triple");
 
     assert_eq!(queued, 2);
     assert_eq!(

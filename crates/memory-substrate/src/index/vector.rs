@@ -10,7 +10,7 @@ use rusqlite::OptionalExtension as _;
 use rusqlite::{params, params_from_iter, types::Value};
 
 use crate::error::VectorError;
-use crate::model::{EmbeddingLaneEligibility, EmbeddingTriple};
+use crate::model::{EmbeddingLaneEligibility, EmbeddingTriple, Sensitivity};
 
 use super::sql_placeholders;
 
@@ -51,46 +51,73 @@ pub fn reconcile_orphans(
 
 /// Insert pending embedding jobs for missing vectors.
 ///
-/// This low-level helper is intentionally lane-unaware and is not used by the
-/// production active-triple reconciliation path. API-lane callers must use
-/// `Index::reconcile_active_embedding_jobs` /
-/// `reconcile_active_embedding_jobs_impl`, which take
-/// [`EmbeddingLaneEligibility`] and apply the sensitivity fence before enqueue.
+/// Not used by the production active-triple reconciliation path (that is
+/// `reconcile_active_embedding_jobs_impl`); retained as a lower-level helper and
+/// exercised directly by substrate tests. It applies the **same** lane
+/// eligibility fence as the production paths so there is no unfenced enqueue
+/// route: under [`EmbeddingLaneEligibility::PlaintextOnly`] a chunk whose memory
+/// tier is not plaintext-eligible — or whose memory row is missing, so the tier
+/// cannot be verified — is held local (skipped). Fail closed.
 ///
 /// Looks up `body_hash` from `memory_chunks` for each missing chunk to
 /// populate the `content_hash` column (spec §10.2.1 #6 stale-job gate).
 /// When the chunk row is not found in `memory_chunks` (e.g. a test stub or a
-/// race with a concurrent delete), a sentinel empty string is used so the
-/// job is still enqueued — the embedding worker will discard it if the chunk
-/// is no longer present when it runs.
+/// race with a concurrent delete), a sentinel empty string is used under
+/// `AllTiers` so the job is still enqueued — the embedding worker will discard
+/// it if the chunk is no longer present when it runs.
 ///
 /// Propagates `VectorError::Sqlite` on SQL failure — not the misleading
 /// `UnknownEmbeddingTriple` the old code emitted on any SQL error.
+// The store/triple/chunk-set inputs plus the lane-eligibility fence make five
+// distinct parameters; bundling them into a struct would obscure, not clarify.
+#[allow(clippy::too_many_arguments)]
 pub fn reconcile_missing(
     connection: &rusqlite::Connection,
     store: &dyn VectorStore,
     triple: &EmbeddingTriple,
     valid_chunk_ids: &HashSet<String>,
+    eligibility: EmbeddingLaneEligibility,
 ) -> Result<usize, VectorError> {
     let existing = store.list_chunk_ids(triple)?;
     let missing: Vec<_> = valid_chunk_ids.difference(&existing).cloned().collect();
     let enqueued_at = chrono::Utc::now().to_rfc3339();
+    let mut queued = 0usize;
     for chunk_id in &missing {
-        // Fetch the content hash from the chunks table.  Use an empty sentinel
-        // when the row is absent so we still enqueue the job — the worker
-        // will drop it if the chunk is gone by the time it runs.
-        let content_hash: String = connection
-            .query_row("SELECT body_hash FROM memory_chunks WHERE chunk_id=?1", [chunk_id.as_str()], |row| row.get(0))
-            .optional()?
-            .unwrap_or_default();
+        // Fetch content hash + persisted sensitivity together. Use a LEFT JOIN so
+        // an absent memory row yields `None` for both rather than dropping the row.
+        let row: Option<(String, Option<String>)> = connection
+            .query_row(
+                "SELECT mc.body_hash, m.sensitivity
+                 FROM memory_chunks mc
+                 LEFT JOIN memories m ON m.id = mc.memory_id
+                 WHERE mc.chunk_id = ?1",
+                [chunk_id.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        if eligibility.requires_plaintext_filter() {
+            // API lane: enqueue only if the tier is known AND plaintext-eligible.
+            // Unknown tier (missing memory row / unparseable) => held local.
+            let eligible = row
+                .as_ref()
+                .and_then(|(_, sensitivity)| sensitivity.as_deref())
+                .and_then(Sensitivity::from_db_str)
+                .is_some_and(|sensitivity| sensitivity.api_lane_eligible());
+            if !eligible {
+                continue;
+            }
+        }
+        // Under AllTiers an absent row keeps the historical empty-sentinel behavior.
+        let content_hash = row.map(|(body_hash, _)| body_hash).unwrap_or_default();
         connection.execute(
             "INSERT OR IGNORE INTO pending_embedding_jobs(
                      chunk_id, provider, model_ref, dimension, content_hash, enqueued_at
                  ) VALUES (?1,?2,?3,?4,?5,?6)",
             params![chunk_id, triple.provider, triple.model_ref, triple.dimension, content_hash, enqueued_at],
         )?;
+        queued += 1;
     }
-    Ok(missing.len())
+    Ok(queued)
 }
 
 /// Count pending jobs for a triple that are eligible to drain.
