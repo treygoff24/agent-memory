@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Canonical default repo: `$MEMORUM_REPO` → `~/memorum` → `./memorum`.
 ///
@@ -37,6 +37,12 @@ pub(crate) fn resolve_socket_arg(socket: &Option<PathBuf>) -> PathBuf {
 
 pub(crate) fn resolve_socket_with_runtime(socket: &Option<PathBuf>, runtime: &std::path::Path) -> PathBuf {
     socket.clone().unwrap_or_else(|| crate::socket::resolve_socket_path(runtime))
+}
+
+/// Device-local Gemini API key path. This lives under runtime state, never the
+/// synced memory repo config.
+pub(crate) fn gemini_api_key_path(runtime_root: &Path) -> PathBuf {
+    runtime_root.join("gemini_api_key")
 }
 
 #[cfg(test)]

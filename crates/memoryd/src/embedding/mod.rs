@@ -28,12 +28,19 @@
 //! flavor rather than identity, so small numeric drift can coexist in one vector
 //! table across restarts without changing `(provider, model_ref, dimension)`.
 
+mod api_provider;
 mod fastembed_provider;
 mod fixture_provider;
 pub mod lifecycle;
 mod prompts;
 pub mod worker;
 
+#[cfg(test)]
+#[allow(unused_imports)]
+pub(crate) use api_provider::test_support as api_test_support;
+pub use api_provider::{
+    is_gemini_api_triple, read_gemini_api_key, write_gemini_api_key, ApiEmbeddingProvider, ApiKey, GEMINI_API_PROVIDER,
+};
 pub use fastembed_provider::{is_fastembed_candle_triple, FastembedProvider, LoadedDevice, FASTEMBED_CANDLE_PROVIDER};
 pub use fixture_provider::FixtureProvider;
 pub use lifecycle::{
@@ -87,6 +94,23 @@ pub enum EmbeddingError {
     /// Inference failed for a specific input.
     #[error("embedding inference failed: {0}")]
     Inference(String),
+    /// The API provider is missing credentials or the remote rejected them.
+    #[error("embedding API authentication failed: {0}")]
+    Auth(String),
+    /// The API provider asked the caller to back off.
+    #[error("embedding API rate-limited: {message}")]
+    RateLimit {
+        /// Parsed `Retry-After` delay, when the server supplied one.
+        retry_after: Option<std::time::Duration>,
+        /// Human-readable remote error context.
+        message: String,
+    },
+    /// The API request could not be delivered or completed.
+    #[error("embedding API transport failed: {0}")]
+    Transport(String),
+    /// The API response did not match the provider contract.
+    #[error("embedding API contract failed: {0}")]
+    Contract(String),
     /// The produced vector length disagreed with the provider's declared
     /// dimension. Per invariant 3 this is a hard error, never a silent
     /// truncate/pad — a mismatch means the configured triple does not describe
