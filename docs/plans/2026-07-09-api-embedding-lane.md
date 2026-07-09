@@ -1,7 +1,7 @@
 # API embedding lane (opt-in) — implementation plan v0.1 DRAFT
 
 **Date:** 2026-07-09
-**Status:** DRAFT — model selection pending SOTA research (sonnet + codex scouts in flight); design open for Trey review
+**Status:** DRAFT — **vendor ratified by Trey 2026-07-09: `gemini-embedding-2`, not Voyage.** Rationale: at personal scale the 10× price gap is ~$0.45/mo (pocket lint); Gemini's verified no-training default beats Voyage's trains-unless-opted-out posture for the consent story, and native multimodality keeps future image/video memories a config change, not a re-architecture. Working triple: `("gemini-api", "gemini-embedding-2", <dims TBD: 768/1536/3072>)`. The D7 bake-off ship gate still applies (trap-rate@5 + abstention gap vs Qwen3) — Voyage/Jina remain the fallback candidates if gemini-embedding-2 fails it. Remaining pre-build: Q4 (rate limits), Q5 (consent copy), Gemini ZDR-approval mechanics, dims choice.
 **Owner:** Claude (Stream B); implementation delegated per lab convention
 **Prereq reading:** `docs/specs/system-v0.3.md` §embedding, `crates/memoryd/src/embedding/mod.rs` module docs, `docs/plans/2026-06-09-dynamics-eval-hardening.md` Task 3.0 (why Qwen3 won)
 
