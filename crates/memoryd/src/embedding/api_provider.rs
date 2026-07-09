@@ -513,6 +513,10 @@ pub(crate) mod test_support {
         responses: &Arc<Mutex<VecDeque<MockResponse>>>,
         panic_on_request: bool,
     ) {
+        // The listener is non-blocking for shutdown polling; on macOS/BSD accepted
+        // streams inherit that flag, so large request bodies that span packets
+        // would fail reads with WouldBlock. Restore blocking mode per-connection.
+        stream.set_nonblocking(false).expect("blocking stream");
         let mut reader = BufReader::new(stream);
         let mut request_line = String::new();
         if reader.read_line(&mut request_line).expect("read request line") == 0 {

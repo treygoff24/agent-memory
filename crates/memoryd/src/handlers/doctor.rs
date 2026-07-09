@@ -321,6 +321,63 @@ async fn embedding_health_findings(substrate: &Substrate, state: &HandlerState) 
     }
 
     let lifecycle = state.embedding_provider_slot().snapshot();
+    if let Ok(triple) = &active {
+        if crate::embedding::is_api_embedding_lane(triple) {
+            let repo = substrate.roots().repo.as_path();
+            let runtime = substrate.roots().runtime.as_path();
+            if !memory_substrate::config::load_api_embedding_consent(repo) {
+                findings.push(fatal_finding(
+                    "embedding_api_consent_missing",
+                    "the Gemini API embedding lane is active but API consent is not recorded; the daemon will not start the API provider".to_string(),
+                    Some("Run `memoryd config embedding-lane --lane gemini-api` to record consent, or switch back to the local lane.".to_string()),
+                ));
+            }
+            let env_key_present =
+                std::env::var("MEMORUM_GEMINI_API_KEY").ok().is_some_and(|key| !key.trim().is_empty());
+            match crate::embedding::read_gemini_api_key(runtime).map(|key| env_key_present || key.is_some()) {
+                Ok(false) => findings.push(fatal_finding(
+                    "embedding_api_key_missing",
+                    "the Gemini API embedding lane is active but no usable API key was found".to_string(),
+                    Some("Set `MEMORUM_GEMINI_API_KEY` or configure the key with the `memoryd` CLI.".to_string()),
+                )),
+                Err(error) => findings.push(fatal_finding(
+                    "embedding_api_key_missing",
+                    format!("the Gemini API embedding lane cannot read its API key: {error}"),
+                    Some("Set `MEMORUM_GEMINI_API_KEY` or configure the key with the `memoryd` CLI.".to_string()),
+                )),
+                Ok(true) => {}
+            }
+
+            let last_error = lifecycle.last_error.as_deref().unwrap_or_default().to_ascii_lowercase();
+            if backlog > 0 && (last_error.contains("rate limit") || last_error.contains("429")) {
+                findings.push(advisory_finding(
+                    "embedding_api_rate_limited",
+                    format!(
+                        "the Gemini API embedding drain has {backlog} pending job(s) and its latest provider error reports rate limiting; doctor has no duration telemetry to prove how long this has persisted"
+                    ),
+                    Some("Wait for the provider backoff to clear, then re-run `memoryd doctor` and inspect daemon logs.".to_string()),
+                ));
+            }
+            if backlog > 0
+                && (last_error.contains("transport")
+                    || last_error.contains("network")
+                    || last_error.contains("offline")
+                    || last_error.contains("connect"))
+            {
+                findings.push(advisory_finding(
+                    "embedding_api_offline",
+                    format!(
+                        "the Gemini API embedding lane has {backlog} pending job(s) and its latest provider error indicates network unreachability; doctor made no network request"
+                    ),
+                    Some("Restore network access and re-run `memoryd doctor`; recall remains available through FTS while the backlog drains.".to_string()),
+                ));
+            }
+
+            if let Some(finding) = orphaned_vector_table_finding(substrate, triple) {
+                findings.push(finding);
+            }
+        }
+    }
     let load_error = if lifecycle.state == "failed" {
         lifecycle.last_error.or_else(crate::embedding::model_load_failure)
     } else {
@@ -401,6 +458,41 @@ async fn embedding_health_findings(substrate: &Substrate, state: &HandlerState) 
     findings
 }
 
+fn orphaned_vector_table_finding(
+    substrate: &Substrate,
+    active: &memory_substrate::EmbeddingTriple,
+) -> Option<DoctorFinding> {
+    let active_table = memory_substrate::index::sqlite_vec::vector_table_name(active);
+    let tables = substrate
+        .with_index(|index| {
+            let mut statement = index
+                .connection()
+                .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'vec_%'")?;
+            let names =
+                statement.query_map([], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(names)
+        })
+        .ok()?;
+    orphaned_vector_table_finding_from_names(&tables, active_table.as_ref())
+}
+
+fn orphaned_vector_table_finding_from_names(tables: &[String], active_table: &str) -> Option<DoctorFinding> {
+    let active_base = active_table.to_string();
+    let orphan_tables = tables
+        .iter()
+        .map(|table| table.splitn(3, '_').take(2).collect::<Vec<_>>().join("_"))
+        .filter(|table: &String| table != &active_base)
+        .collect::<std::collections::BTreeSet<_>>();
+    let orphan_count = orphan_tables.len();
+    (orphan_count > 0).then(|| advisory_finding(
+        "embedding_orphaned_triples",
+        format!(
+            "{orphan_count} vector table(s) remain for embedding triples other than the active API triple; old lane tables are retained by design"
+        ),
+        Some("Use the embedding drop-triple maintenance surface to remove an old triple when it is no longer needed.".to_string()),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::doctor_is_healthy;
@@ -410,6 +502,28 @@ mod tests {
 
     fn finding(severity: DoctorSeverity) -> DoctorFinding {
         DoctorFinding { code: "t".to_string(), message: String::new(), repair: None, severity }
+    }
+
+    struct EnvVarGuard {
+        name: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn remove(name: &'static str) -> Self {
+            let previous = std::env::var_os(name);
+            std::env::remove_var(name);
+            Self { name, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.name, value),
+                None => std::env::remove_var(self.name),
+            }
+        }
     }
 
     async fn substrate_with_active_embedding(
@@ -546,6 +660,63 @@ mod tests {
             !findings.iter().any(|finding| finding.code == "embedding_api_lane_held_local"),
             "local lane must not report API held-local advisory: {findings:?}"
         );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn api_lane_missing_key_is_fatal_and_key_presence_clears_it() {
+        let _api_key = EnvVarGuard::remove("MEMORUM_GEMINI_API_KEY");
+        let state = crate::handlers::HandlerState::new();
+        let missing = crate::embedding::lane_test_support::init_substrate_with_active_embedding(
+            crate::embedding::lane_test_support::gemini_test_triple(),
+            "dev_doctorkeymissing",
+        )
+        .await;
+        let missing_findings = super::embedding_health_findings(&missing.1, &state).await;
+        let key_finding = missing_findings.iter().find(|finding| finding.code == "embedding_api_key_missing");
+        assert_eq!(key_finding.map(|finding| finding.severity), Some(DoctorSeverity::Fatal));
+
+        crate::embedding::write_gemini_api_key(missing.1.roots().runtime.as_path(), "test-key")
+            .expect("write test key");
+        let present_findings = super::embedding_health_findings(&missing.1, &state).await;
+        assert!(!present_findings.iter().any(|finding| finding.code == "embedding_api_key_missing"));
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn api_only_findings_do_not_fire_for_local_lane() {
+        let _api_key = EnvVarGuard::remove("MEMORUM_GEMINI_API_KEY");
+        let state = crate::handlers::HandlerState::new();
+        let local = crate::embedding::lane_test_support::init_substrate_with_active_embedding(
+            crate::embedding::lane_test_support::local_test_triple(),
+            "dev_doctorlocalfindings",
+        )
+        .await;
+        let findings = super::embedding_health_findings(&local.1, &state).await;
+        assert!(!findings.iter().any(|finding| {
+            matches!(
+                finding.code.as_str(),
+                "embedding_api_key_missing" | "embedding_orphaned_triples" | "embedding_api_consent_missing"
+            )
+        }));
+    }
+
+    #[test]
+    fn orphaned_vector_table_finding_fires_only_for_non_active_tables() {
+        let finding = super::orphaned_vector_table_finding_from_names(
+            &[
+                "vec_active".to_string(),
+                "vec_active_data".to_string(),
+                "vec_old".to_string(),
+                "vec_old_data".to_string(),
+            ],
+            "vec_active",
+        )
+        .expect("orphaned table finding");
+        assert_eq!(finding.code, "embedding_orphaned_triples");
+        assert_eq!(finding.severity, DoctorSeverity::Advisory);
+
+        assert!(super::orphaned_vector_table_finding_from_names(&["vec_active".to_string()], "vec_active").is_none());
     }
 
     #[test]
