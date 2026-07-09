@@ -340,7 +340,7 @@ async fn f03_timeout_abandoned_guard_keeps_in_flight_until_embed_completes() {
     write_project_memory(&fixture.substrate, "timeout guard keyword", "timeout guard keyword body").await;
 
     // Use a 1ms embed timeout so the query times out almost immediately.
-    let timeout_config = VectorRecallConfig { embed_timeout_ms: 1, ..VectorRecallConfig::default() };
+    let timeout_config = VectorRecallConfig { embed_timeout_ms: Some(1), ..VectorRecallConfig::default() };
     let response = build_delta_response_with_vector_recall(
         &fixture.substrate,
         fixture.delta_request("timeout guard keyword"),

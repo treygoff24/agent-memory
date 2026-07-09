@@ -78,7 +78,8 @@ pub(crate) async fn collect_hybrid_recall(
                 );
                 return HybridRecallDecision::FtsOnly { degraded: Some(DEGRADED_TRIPLE_MISMATCH) };
             }
-            match embed_query_with_timeout(provider, message, context.config.embed_timeout_ms).await {
+            let timeout_ms = context.config.effective_embed_timeout_ms(&active_triple);
+            match embed_query_with_timeout(provider, message, timeout_ms).await {
                 Ok(vector) => vector,
                 Err(marker) => return HybridRecallDecision::FtsOnly { degraded: Some(marker) },
             }
@@ -104,7 +105,8 @@ pub(crate) async fn collect_hybrid_recall(
                 );
                 return HybridRecallDecision::FtsOnly { degraded: Some(DEGRADED_TRIPLE_MISMATCH) };
             }
-            match embed_query_guard_with_timeout(guard, message, context.config.embed_timeout_ms).await {
+            let timeout_ms = context.config.effective_embed_timeout_ms(&active_triple);
+            match embed_query_guard_with_timeout(guard, message, timeout_ms).await {
                 Ok(vector) => vector,
                 Err(marker) => return HybridRecallDecision::FtsOnly { degraded: Some(marker) },
             }

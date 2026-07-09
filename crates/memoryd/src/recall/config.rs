@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use memory_substrate::EmbeddingTriple;
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_VECTOR_RECALL_ENABLED: bool = true;
@@ -12,7 +13,10 @@ pub const DEFAULT_VECTOR_RECALL_RECENCY_LAMBDA: f64 = 0.0005;
 /// Half-life for exponential recency decay in days. Age is measured from the newest
 /// candidate's `recency_at` in the result set (not wall clock), keeping eval deterministic.
 pub const DEFAULT_VECTOR_RECALL_RECENCY_HALF_LIFE_DAYS: f64 = 90.0;
-pub const DEFAULT_VECTOR_RECALL_EMBED_TIMEOUT_MS: u64 = 50;
+/// On-device query-embed budget when `embed_timeout_ms` is unset (local lane).
+pub const LOCAL_EMBED_TIMEOUT_MS: u64 = 50;
+/// HTTP round-trip budget when `embed_timeout_ms` is unset (API lane).
+pub const API_EMBED_TIMEOUT_MS: u64 = 250;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct RecallConfig {
@@ -32,8 +36,10 @@ pub struct VectorRecallConfig {
     pub recency_lambda: f64,
     #[serde(default = "default_recency_half_life_days")]
     pub recency_half_life_days: f64,
-    #[serde(default = "default_embed_timeout_ms")]
-    pub embed_timeout_ms: u64,
+    /// Explicit query-embed timeout. `None` means use the lane-appropriate default
+    /// ([`LOCAL_EMBED_TIMEOUT_MS`] or [`API_EMBED_TIMEOUT_MS`]).
+    #[serde(default)]
+    pub embed_timeout_ms: Option<u64>,
 }
 
 impl Default for VectorRecallConfig {
@@ -44,8 +50,21 @@ impl Default for VectorRecallConfig {
             rrf_k: default_rrf_k(),
             recency_lambda: default_recency_lambda(),
             recency_half_life_days: default_recency_half_life_days(),
-            embed_timeout_ms: default_embed_timeout_ms(),
+            embed_timeout_ms: None,
         }
+    }
+}
+
+impl VectorRecallConfig {
+    /// Effective query-embed timeout: explicit config wins; otherwise lane default.
+    pub fn effective_embed_timeout_ms(&self, triple: &EmbeddingTriple) -> u64 {
+        self.embed_timeout_ms.unwrap_or_else(|| {
+            if crate::embedding::is_api_embedding_lane(triple) {
+                API_EMBED_TIMEOUT_MS
+            } else {
+                LOCAL_EMBED_TIMEOUT_MS
+            }
+        })
     }
 }
 
@@ -69,10 +88,6 @@ fn default_recency_half_life_days() -> f64 {
     DEFAULT_VECTOR_RECALL_RECENCY_HALF_LIFE_DAYS
 }
 
-fn default_embed_timeout_ms() -> u64 {
-    DEFAULT_VECTOR_RECALL_EMBED_TIMEOUT_MS
-}
-
 #[derive(Debug, Default, Deserialize)]
 struct ConfigRecallEnvelope {
     #[serde(default)]
@@ -93,6 +108,23 @@ pub fn load_recall_config(repo: &Path) -> Result<RecallConfig, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::embedding::{GEMINI_API_PROVIDER, FASTEMBED_CANDLE_PROVIDER};
+
+    fn gemini_triple() -> EmbeddingTriple {
+        EmbeddingTriple {
+            provider: GEMINI_API_PROVIDER.to_string(),
+            model_ref: "gemini-embedding-2".to_string(),
+            dimension: 768,
+        }
+    }
+
+    fn fastembed_triple() -> EmbeddingTriple {
+        EmbeddingTriple {
+            provider: FASTEMBED_CANDLE_PROVIDER.to_string(),
+            model_ref: memory_substrate::tree::DEFAULT_ACTIVE_EMBEDDING_MODEL_REF.to_string(),
+            dimension: memory_substrate::tree::DEFAULT_ACTIVE_EMBEDDING_DIMENSION,
+        }
+    }
 
     #[test]
     fn vector_recall_config_defaults_match_spec() {
@@ -104,9 +136,34 @@ mod tests {
                 rrf_k: 60,
                 recency_lambda: 0.0005,
                 recency_half_life_days: 90.0,
-                embed_timeout_ms: 50,
+                embed_timeout_ms: None,
             }
         );
+    }
+
+    #[test]
+    fn omitted_embed_timeout_resolves_by_lane() {
+        let config = VectorRecallConfig::default();
+        assert_eq!(config.embed_timeout_ms, None);
+        assert_eq!(config.effective_embed_timeout_ms(&gemini_triple()), API_EMBED_TIMEOUT_MS);
+        assert_eq!(config.effective_embed_timeout_ms(&fastembed_triple()), LOCAL_EMBED_TIMEOUT_MS);
+    }
+
+    #[test]
+    fn explicit_embed_timeout_wins_regardless_of_lane() {
+        let config = VectorRecallConfig { embed_timeout_ms: Some(80), ..VectorRecallConfig::default() };
+        assert_eq!(config.effective_embed_timeout_ms(&gemini_triple()), 80);
+        assert_eq!(config.effective_embed_timeout_ms(&fastembed_triple()), 80);
+    }
+
+    #[test]
+    fn explicit_legacy_fifty_still_means_fifty() {
+        let yaml = "recall:\n  vector_recall:\n    embed_timeout_ms: 50\n";
+        let envelope: ConfigRecallEnvelope = serde_yaml::from_str(yaml).expect("parse");
+        let config = envelope.recall.expect("recall present").vector_recall;
+        assert_eq!(config.embed_timeout_ms, Some(50));
+        assert_eq!(config.effective_embed_timeout_ms(&gemini_triple()), 50);
+        assert_eq!(config.effective_embed_timeout_ms(&fastembed_triple()), 50);
     }
 
     #[test]
@@ -117,7 +174,7 @@ mod tests {
         assert!(!config.vector_recall.enabled);
         assert_eq!(config.vector_recall.rrf_k, 42);
         assert_eq!(config.vector_recall.knn_limit, 20);
-        assert_eq!(config.vector_recall.embed_timeout_ms, 50);
+        assert_eq!(config.vector_recall.embed_timeout_ms, None);
     }
 
     #[test]

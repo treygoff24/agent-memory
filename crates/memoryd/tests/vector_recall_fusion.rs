@@ -123,7 +123,7 @@ async fn vector_degradation_rungs_mark_and_fallback_to_fts() {
     assert_degrades_to_fts(&fixture, Some(wrong_dim), VectorRecallConfig::default(), "knn_failed").await;
 
     let slow: Arc<dyn EmbeddingProvider> = Arc::new(SlowProvider { triple: active_triple });
-    let timeout_config = VectorRecallConfig { embed_timeout_ms: 1, ..VectorRecallConfig::default() };
+    let timeout_config = VectorRecallConfig { embed_timeout_ms: Some(1), ..VectorRecallConfig::default() };
     assert_degrades_to_fts(&fixture, Some(slow), timeout_config, "embedding_timeout").await;
 }
 
