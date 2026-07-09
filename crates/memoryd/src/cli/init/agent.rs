@@ -59,6 +59,8 @@ async fn run_setup(args: InitArgs) -> anyhow::Result<()> {
     let engine = SetupEngine::new(repo, runtime);
     let report = engine.run(&mut io).await?;
 
+    crate::cli::config::configure_init(&args).await?;
+
     // Engine notes (expected/failed step messages) are diagnostics: stderr only.
     for note in io.notes() {
         eprintln!("{note}");

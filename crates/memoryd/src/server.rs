@@ -177,6 +177,20 @@ fn spawn_embedding_worker(
             Ok(Arc::new(provider))
         });
     } else if crate::embedding::is_gemini_api_triple(&triple) {
+        // Consent gate: the CLI ceremony records `api_embedding_consent: true` in
+        // config.yaml; an API triple that arrived any other way (hand edit, merge,
+        // clone of a repo missing the flag) must not start sending plaintext.
+        if !memory_substrate::config::load_api_embedding_consent(&substrate.roots().repo) {
+            tracing::warn!(
+                provider = %triple.provider,
+                "embedding worker not started: API lane active without recorded consent"
+            );
+            provider_slot.mark_failed(
+                "API embedding lane is active but api_embedding_consent is not recorded in config.yaml; \
+                 run `memoryd config embedding-lane --lane gemini-api` to consent, or switch back to the local lane",
+            );
+            return;
+        }
         let idle_window = crate::embedding::EmbeddingIdleWindow::from_env();
         provider_slot.configure_loader(triple.clone(), idle_window, move || {
             let provider = crate::embedding::ApiEmbeddingProvider::load_for_runtime(&runtime_root, triple.clone())?;
@@ -712,6 +726,8 @@ mod tests {
             "dev_servergemini",
         )
         .await;
+        memory_substrate::config::record_api_embedding_consent(&fixture.substrate.roots().repo)
+            .expect("record consent");
         let slot = crate::embedding::EmbeddingProviderSlot::empty();
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
@@ -727,6 +743,37 @@ mod tests {
         assert!(
             snapshot.last_error.as_deref().is_some_and(|error| error.contains("Gemini API key not found")),
             "missing-key failure should be recorded on the lifecycle slot: {snapshot:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn gemini_api_embedding_worker_without_consent_refuses_to_start() {
+        let _api_key = EnvVarGuard::remove("MEMORUM_GEMINI_API_KEY");
+        let _disable_worker = EnvVarGuard::remove("MEMORUM_DISABLE_EMBEDDING_WORKER");
+        let fixture = substrate_with_active_embedding(
+            memory_substrate::EmbeddingTriple {
+                provider: crate::embedding::GEMINI_API_PROVIDER.to_string(),
+                model_ref: "gemini-embedding-2".to_string(),
+                dimension: 768,
+            },
+            "dev_servergeminiconsent",
+        )
+        .await;
+        // No consent recorded: an API triple that arrived via hand edit or merge
+        // must not configure a provider loader at all.
+        let slot = crate::embedding::EmbeddingProviderSlot::empty();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+        super::spawn_embedding_worker(fixture.substrate.clone(), slot.clone(), shutdown_rx);
+        let _ = shutdown_tx.send(true);
+
+        assert!(!slot.has_loader_configured(), "consent-less API lane must not configure a loader");
+        let snapshot = slot.snapshot();
+        assert_eq!(snapshot.state, "failed");
+        assert!(
+            snapshot.last_error.as_deref().is_some_and(|error| error.contains("api_embedding_consent")),
+            "consent refusal should be recorded on the lifecycle slot: {snapshot:?}"
         );
     }
 

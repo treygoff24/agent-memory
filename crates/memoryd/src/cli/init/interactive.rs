@@ -45,6 +45,7 @@ pub async fn run_with_io<I: SetupIo>(args: InitArgs, mut io: I) -> anyhow::Resul
     let socket = crate::socket::resolve_socket_path(&runtime);
     let engine = SetupEngine::new(&repo, &runtime);
     let report = engine.run(&mut io).await?;
+    crate::cli::config::configure_init(&args).await?;
     print!("{}", render_epilogue(&report, &repo, &runtime, &socket));
     Ok(())
 }
@@ -591,6 +592,8 @@ mod tests {
             wire_hooks: Some(crate::cli::HarnessTargetArg::None),
             daemon: Some(crate::cli::DaemonMode::None),
             print_only: false,
+            embedding_lane: None,
+            consent: false,
         }
     }
 

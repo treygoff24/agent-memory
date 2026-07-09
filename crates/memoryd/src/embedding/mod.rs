@@ -39,7 +39,8 @@ pub mod worker;
 #[allow(unused_imports)]
 pub(crate) use api_provider::test_support as api_test_support;
 pub use api_provider::{
-    is_gemini_api_triple, read_gemini_api_key, write_gemini_api_key, ApiEmbeddingProvider, ApiKey, GEMINI_API_PROVIDER,
+    is_gemini_api_triple, read_gemini_api_key, write_gemini_api_key, ApiEmbeddingProvider, ApiKey,
+    GEMINI_API_DEFAULT_MODEL_REF, GEMINI_API_PROVIDER, GEMINI_API_RECOMMENDED_DIMENSION,
 };
 pub use fastembed_provider::{is_fastembed_candle_triple, FastembedProvider, LoadedDevice, FASTEMBED_CANDLE_PROVIDER};
 pub use fixture_provider::FixtureProvider;

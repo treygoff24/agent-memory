@@ -62,6 +62,13 @@ impl AgentEnvelope {
     }
 }
 
+/// Render a successful local CLI command in the v1 agent envelope. Local
+/// commands use this instead of manufacturing a daemon response solely for
+/// presentation.
+pub fn render_local_success(data: Value, warnings: Vec<String>) -> AgentRender {
+    AgentRender { envelope: AgentEnvelope::success(data, warnings), exit_code: 0, to_stderr: false }
+}
+
 /// The rendered agent envelope plus how to deliver it: which exit code and which
 /// stream. Pure and inspectable so `tests/cli_agent_envelope.rs` can assert the
 /// full matrix without spawning a process.

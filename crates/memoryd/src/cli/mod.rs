@@ -24,6 +24,8 @@ pub enum Command {
     Status(SocketArgs),
     /// Check local substrate and daemon configuration.
     Doctor(DoctorArgs),
+    /// Configure the active embedding lane for this Memorum repository.
+    Config(ConfigArgs),
     /// Print the machine-readable CLI agent contract (envelope, exit codes,
     /// per-command schemas). Generated from the implementing types.
     Schema(SchemaArgs),
@@ -195,6 +197,39 @@ pub struct InitArgs {
     /// import, print-only MCP wiring).
     #[arg(long, default_value_t = false)]
     pub print_only: bool,
+    /// Embedding lane to activate after setup completes.
+    #[arg(long, value_enum)]
+    pub embedding_lane: Option<EmbeddingLane>,
+    /// Required acknowledgement before enabling the Gemini API lane in scripted mode.
+    #[arg(long, default_value_t = false)]
+    pub consent: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ConfigArgs {
+    #[command(subcommand)]
+    pub command: ConfigCommand,
+}
+#[derive(Debug, Subcommand)]
+pub enum ConfigCommand {
+    EmbeddingLane(EmbeddingLaneArgs),
+}
+#[derive(Debug, Args)]
+pub struct EmbeddingLaneArgs {
+    #[arg(long, value_enum)]
+    pub lane: EmbeddingLane,
+    #[arg(long)]
+    pub repo: Option<PathBuf>,
+    #[arg(long)]
+    pub runtime: Option<PathBuf>,
+    #[arg(long, default_value_t = false)]
+    pub consent: bool,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "kebab-case")]
+pub enum EmbeddingLane {
+    Local,
+    GeminiApi,
 }
 
 /// Daemon arrangement for `memoryd init --daemon`.
@@ -1220,6 +1255,7 @@ pub fn validate_snooze_until(raw: Option<&str>) -> Result<Option<NaiveDate>, i32
 }
 
 // Per-command runners — populated by the 2026-05-28 main.rs refactor.
+pub mod config;
 pub mod daemon;
 pub mod dream;
 pub(crate) mod exit;

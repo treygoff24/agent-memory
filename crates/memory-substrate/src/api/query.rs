@@ -4,6 +4,20 @@
 use super::*;
 
 impl Substrate {
+    /// Read-only size summary for API-lane cost estimates. Only public and
+    /// internal chunks are counted; confidential/personal rows are excluded.
+    pub async fn api_lane_corpus_stats(&self) -> SubstrateResult<(u64, u64)> {
+        let index = Arc::clone(&self.index);
+        tokio::task::spawn_blocking(move || {
+            let index = lock_index(&index);
+            let eligible = Sensitivity::api_lane_eligible_db_strs();
+            index.connection().query_row(
+                "SELECT COUNT(*), COALESCE(SUM(length(mc.text)), 0)\n                 FROM memory_chunks mc JOIN memories m ON m.id = mc.memory_id\n                 WHERE m.sensitivity IN (?1, ?2)",
+                rusqlite::params![eligible[0], eligible[1]],
+                |row| Ok((row.get::<_, i64>(0)? as u64, row.get::<_, i64>(1)? as u64)),
+            ).map_err(Into::into)
+        }).await.map_err(|err| OpenError::InvalidRoots(format!("API-lane corpus stats task panicked: {err}")))?
+    }
     /// Rebuild the derived index from files (backs the public `memoryd reindex`).
     ///
     /// Unconditional full reindex: clears all plaintext rows and rebuilds from

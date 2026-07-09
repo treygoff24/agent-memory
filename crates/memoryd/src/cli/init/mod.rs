@@ -93,6 +93,8 @@ mod tests {
             wire_hooks: None,
             daemon: None,
             print_only: false,
+            embedding_lane: None,
+            consent: false,
         }
     }
 

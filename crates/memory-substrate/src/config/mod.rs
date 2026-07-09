@@ -277,6 +277,59 @@ pub fn load_active_embedding(repo: &Path) -> Result<EmbeddingTriple, String> {
     synced.active_embedding.ok_or_else(|| "active_embedding not set in config.yaml".to_string())
 }
 
+/// Replace only `active_embedding` in the synced YAML document.
+///
+/// This intentionally edits a `Value`, rather than round-tripping through
+/// `SyncedConfig`, so operator-owned keys that this binary does not understand
+/// survive a lane switch.
+pub fn store_active_embedding(repo: &Path, triple: &EmbeddingTriple) -> Result<(), String> {
+    let active_embedding = serde_yaml::to_value(triple).map_err(|err| err.to_string())?;
+    update_config_document(repo, |mapping| {
+        mapping.insert(serde_yaml::Value::String("active_embedding".to_string()), active_embedding);
+        Ok(())
+    })
+}
+
+/// Record the repository-scoped acknowledgement required for an API lane.
+/// Credentials stay device-local; this is synced product-policy state so a
+/// clone cannot silently lose the user's explicit choice.
+pub fn record_api_embedding_consent(repo: &Path) -> Result<(), String> {
+    update_config_document(repo, |mapping| {
+        mapping.insert(serde_yaml::Value::String("api_embedding_consent".to_string()), serde_yaml::Value::Bool(true));
+        Ok(())
+    })
+}
+
+/// True only when the repo has recorded explicit API-lane consent
+/// (`api_embedding_consent: true`). Fail-closed: a missing file, parse error,
+/// or absent/false key all mean "no consent" — the daemon refuses to start an
+/// API embedding provider without it, so a hand-edited or merged
+/// `active_embedding` cannot silently begin sending plaintext to a vendor.
+pub fn load_api_embedding_consent(repo: &Path) -> bool {
+    let path = repo.join("config.yaml");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return false;
+    };
+    serde_yaml::from_str::<serde_yaml::Value>(&text)
+        .ok()
+        .and_then(|document| document.get("api_embedding_consent").and_then(serde_yaml::Value::as_bool))
+        .unwrap_or(false)
+}
+
+fn update_config_document(
+    repo: &Path,
+    update: impl FnOnce(&mut serde_yaml::Mapping) -> Result<(), String>,
+) -> Result<(), String> {
+    let path = repo.join("config.yaml");
+    let text = std::fs::read_to_string(&path).map_err(|err| format!("read {}: {err}", path.display()))?;
+    let mut document: serde_yaml::Value =
+        serde_yaml::from_str(&text).map_err(|err| format!("parse {}: {err}", path.display()))?;
+    let mapping = document.as_mapping_mut().ok_or_else(|| format!("{} must contain a YAML mapping", path.display()))?;
+    update(mapping)?;
+    let rendered = serde_yaml::to_string(&document).map_err(|err| format!("serialize {}: {err}", path.display()))?;
+    std::fs::write(&path, rendered).map_err(|err| format!("write {}: {err}", path.display()))
+}
+
 /// Load local device config if present.
 pub fn load_local_device_config(runtime: &Path) -> Result<Option<LocalDeviceConfig>, String> {
     let path = runtime.join("local-device.yaml");
@@ -509,4 +562,40 @@ fn default_doctor_budget_exhausted_threshold() -> u64 {
 
 fn default_capture_drought_days() -> u32 {
     3
+}
+
+#[cfg(test)]
+mod active_embedding_tests {
+    use super::*;
+
+    #[test]
+    fn store_active_embedding_preserves_unknown_keys() {
+        let temp = tempfile::tempdir().expect("tempdir"); // expect-justified: test-only
+        std::fs::write(
+            temp.path().join("config.yaml"),
+            "schema_version: 1\noperator_key: keep-me\nactive_embedding:\n  provider: old\n  model_ref: old\n  dimension: 1\n",
+        )
+        .expect("config"); // expect-justified: test-only
+        store_active_embedding(
+            temp.path(),
+            &EmbeddingTriple { provider: "new".into(), model_ref: "new-model".into(), dimension: 768 },
+        )
+        .expect("store"); // expect-justified: test-only
+        let value: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(temp.path().join("config.yaml")).expect("read")) // expect-justified: test-only
+                .expect("yaml"); // expect-justified: test-only
+        assert_eq!(value["operator_key"], "keep-me");
+        assert_eq!(value["active_embedding"]["provider"], "new");
+    }
+
+    #[test]
+    fn consent_defaults_to_false_and_round_trips() {
+        let temp = tempfile::tempdir().expect("tempdir"); // expect-justified: test-only
+        std::fs::write(temp.path().join("config.yaml"), "schema_version: 1\n").expect("config"); // expect-justified: test-only
+        assert!(!load_api_embedding_consent(temp.path()));
+        record_api_embedding_consent(temp.path()).expect("record"); // expect-justified: test-only
+        assert!(load_api_embedding_consent(temp.path()));
+        // Missing file is fail-closed too.
+        assert!(!load_api_embedding_consent(&temp.path().join("nowhere")));
+    }
 }

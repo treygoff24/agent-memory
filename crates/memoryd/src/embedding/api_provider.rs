@@ -23,6 +23,10 @@ use crate::paths::gemini_api_key_path;
 use super::{check_dimension, EmbeddingError, EmbeddingProvider};
 
 pub const GEMINI_API_PROVIDER: &str = "gemini-api";
+/// Default Gemini model selected by the opt-in API embedding lane.
+pub const GEMINI_API_DEFAULT_MODEL_REF: &str = "gemini-embedding-2";
+/// Recommended output dimension for the default Gemini embedding model.
+pub const GEMINI_API_RECOMMENDED_DIMENSION: u32 = 768;
 const GEMINI_API_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 const GEMINI_EMBED_CONTENT_ENDPOINT: &str = ":embedContent";
 const GEMINI_BATCH_EMBED_CONTENTS_ENDPOINT: &str = ":batchEmbedContents";
