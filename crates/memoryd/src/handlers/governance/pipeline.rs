@@ -12,8 +12,8 @@ use memory_governance::{GovernanceWriteDecision, PolicySet, PolicySource, Tombst
 use memory_privacy::{FileKeyProvider, PrivacyDecision, PrivacyEncryptor};
 use memory_substrate::{
     events::EventKind, ClassificationOutcome, EncryptedWriteRequest, EventContext, Memory, MemoryContent, MemoryId,
-    MemoryStatus, Substrate, SupersedeRequest as SubstrateSupersedeRequest, TombstoneRequest, TrustLevel, WriteMode,
-    WriteRequest as SubstrateWriteRequest,
+    MemoryStatus, Sensitivity, Substrate, SupersedeRequest as SubstrateSupersedeRequest, TombstoneRequest, TrustLevel,
+    WriteMode, WriteRequest as SubstrateWriteRequest,
 };
 use serde_json::{Map, Value};
 
@@ -125,6 +125,7 @@ pub(crate) async fn governance_write_response(
                 &provider_slot,
                 candidate.claim(),
                 candidate.namespace(),
+                api_similarity_sensitivity(&privacy),
                 &active,
                 write_path_similarity_limit,
             )
@@ -150,6 +151,13 @@ pub(crate) async fn governance_write_response(
     // was reached without a real similarity backend.
     response.similarity_degraded = degradation.map(str::to_string);
     Ok(ResponsePayload::GovernanceWrite(response))
+}
+
+fn api_similarity_sensitivity(privacy: &PrivacyDecision) -> Option<Sensitivity> {
+    if privacy.storage_action.requires_encryption() {
+        return None;
+    }
+    privacy.tier.persisted_sensitivity().filter(|sensitivity| sensitivity.api_lane_eligible())
 }
 
 pub(crate) async fn governance_supersede_response(

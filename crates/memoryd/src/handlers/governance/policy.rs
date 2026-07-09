@@ -19,10 +19,11 @@ use memory_governance::{
 };
 use memory_source::ArtifactStore;
 use memory_substrate::{
-    AuxScope, EmbeddingTriple, Memory, MemoryContent, MemoryStatus, RecallIndexQuery, Scope, Substrate, VectorError,
+    AuxScope, EmbeddingTriple, Memory, MemoryContent, MemoryStatus, RecallIndexQuery, Scope, Sensitivity, Substrate,
+    VectorError,
 };
 
-use crate::embedding::{EmbeddingProviderAcquire, EmbeddingProviderSlot, ProviderGuard};
+use crate::embedding::{is_gemini_api_triple, EmbeddingProviderAcquire, EmbeddingProviderSlot, ProviderGuard};
 use crate::handlers::{entity_ids, namespace_for_frontmatter, HandlerError};
 
 pub(crate) fn load_policy_set(repo: &Path) -> Result<(PolicySet, PolicySource), HandlerError> {
@@ -301,6 +302,7 @@ fn scopes_for_namespace(namespace: &str) -> Vec<Scope> {
 /// Any condition that means "no real similarity backend" returns
 /// [`SimilarityResolution::degraded`] with a stable reason rather than a silent
 /// empty set:
+/// - API-lane candidate text is not conclusively plaintext-eligible,
 /// - no provider loaded (model not up / load failed / worker disabled),
 /// - the provider's triple disagrees with the substrate's active triple,
 /// - the active triple has no vector table yet (`UnknownEmbeddingTriple`),
@@ -314,6 +316,7 @@ pub(super) async fn resolve_similarity_candidates(
     provider_slot: &EmbeddingProviderSlot,
     candidate_body: &str,
     namespace: &str,
+    candidate_sensitivity: Option<Sensitivity>,
     active: &[ExistingMemorySummary],
     limit: usize,
 ) -> SimilarityResolution {
@@ -321,6 +324,11 @@ pub(super) async fn resolve_similarity_candidates(
         Ok(triple) => triple,
         Err(degradation) => return degradation,
     };
+    if is_gemini_api_triple(&active_triple)
+        && !candidate_sensitivity.is_some_and(|sensitivity| sensitivity.api_lane_eligible())
+    {
+        return SimilarityResolution::degraded("similarity_degraded:sensitive_held_local");
+    }
 
     let scopes = scopes_for_namespace(namespace);
     if scopes.is_empty() {
@@ -518,10 +526,21 @@ impl SessionSpawnResolver for MemorydSessionResolver {
 mod tests {
     use std::sync::Arc;
 
-    use memory_substrate::{InitOptions, Roots};
+    use memory_privacy::FileKeyProvider;
+    use memory_substrate::{InitOptions, MemoryContent, MemoryId, Roots};
+    use serde_json::json;
 
     use super::*;
-    use crate::embedding::{EmbeddingError, EmbeddingProvider, FixtureProvider};
+    use crate::embedding::{
+        api_test_support::{MockGeminiServer, MockResponse},
+        ApiEmbeddingProvider, EmbeddingError, EmbeddingIdleWindow, EmbeddingProvider, FixtureProvider,
+        GEMINI_API_PROVIDER,
+    };
+    use crate::handlers::{handle_request_with_state, HandlerState};
+    use crate::protocol::{GovernanceStatus, RequestEnvelope, RequestPayload, ResponsePayload, ResponseResult};
+
+    const TEST_PROJECT_CANONICAL_ID: &str = "proj_governance_api_lane_fence";
+    const TEST_PROJECT_ALIAS: &str = "governance-api-lane-fence";
 
     async fn init_substrate() -> (tempfile::TempDir, Substrate) {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -566,7 +585,17 @@ mod tests {
     ) -> Option<&'static str> {
         let slot = EmbeddingProviderSlot::empty();
         slot.set(provider);
-        resolve_similarity_candidates(substrate, &slot, "candidate claim", "project", &[], 5).await.degradation
+        resolve_similarity_candidates(
+            substrate,
+            &slot,
+            "candidate claim",
+            "project",
+            Some(Sensitivity::Internal),
+            &[],
+            5,
+        )
+        .await
+        .degradation
     }
 
     #[test]
@@ -612,5 +641,178 @@ mod tests {
             Arc::new(StubProvider { triple, query: QueryBehavior::Vector(vec![0.0; 1]) });
 
         assert_eq!(degradation_for_provider(&substrate, provider).await, Some("similarity_degraded:knn_failed"));
+    }
+
+    #[tokio::test]
+    async fn local_lane_does_not_apply_api_sensitive_candidate_fence() {
+        let (_temp, substrate) = init_substrate().await;
+        let slot = EmbeddingProviderSlot::empty();
+        slot.set(Arc::new(FixtureProvider::new(substrate.active_embedding_triple().expect("triple"))));
+
+        let degradation = resolve_similarity_candidates(&substrate, &slot, "candidate claim", "project", None, &[], 5)
+            .await
+            .degradation;
+
+        assert_ne!(degradation, Some("similarity_degraded:sensitive_held_local"));
+    }
+
+    #[tokio::test]
+    async fn api_lane_confidential_governed_write_degrades_without_http_and_writes_ciphertext() {
+        let (_temp, substrate) = init_substrate_with_active_triple(api_triple()).await;
+        FileKeyProvider::runtime_default(&substrate.roots().runtime).onboard_local_file().expect("privacy key");
+        let server = MockGeminiServer::panic_on_any_request();
+        let state = HandlerState::new();
+        state.embedding_provider_slot().set_idle_window_for_tests(EmbeddingIdleWindow::from_duration(None, "test"));
+        publish_api_provider(&state, server.base_url()).await;
+
+        let write = write_project_memory(
+            &substrate,
+            &state,
+            "confidential-api-fence",
+            "confidential acquisition note",
+            "The confidential acquisition target for this project is Northstar.",
+            "confidential",
+        )
+        .await;
+
+        assert_eq!(write.status, GovernanceStatus::Promoted, "sensitive write must complete, not refuse");
+        assert_eq!(
+            write.similarity_degraded.as_deref(),
+            Some("similarity_degraded:sensitive_held_local"),
+            "API-lane sensitive candidate must degrade before embedding"
+        );
+        assert!(server.requests().is_empty(), "sensitive candidate must make zero Gemini HTTP requests");
+        let id = write.id.expect("promoted encrypted write id");
+        let envelope = substrate.read_memory_envelope(&MemoryId::new(&id)).await.expect("read encrypted envelope");
+        assert!(matches!(envelope.content, MemoryContent::Ciphertext { .. }), "sensitive write must be encrypted");
+        assert_eq!(envelope.metadata.frontmatter.sensitivity, Sensitivity::Confidential);
+        drop_api_test_resources(state, server).await;
+    }
+
+    #[tokio::test]
+    async fn api_lane_public_governed_write_embeds_candidate_claim() {
+        let (_temp, substrate) = init_substrate_with_active_triple(api_triple()).await;
+        let server = MockGeminiServer::new(vec![MockResponse::json(200, embedding_response(vec![vec![1.0, 0.0]]))]);
+        let state = HandlerState::new();
+        state.embedding_provider_slot().set_idle_window_for_tests(EmbeddingIdleWindow::from_duration(None, "test"));
+        publish_api_provider(&state, server.base_url()).await;
+
+        let write = write_project_memory(
+            &substrate,
+            &state,
+            "public-api-fence",
+            "public API lane note",
+            "The public API lane test canary for this project is Atlas.",
+            "public",
+        )
+        .await;
+
+        assert_eq!(write.status, GovernanceStatus::Promoted, "public write must complete");
+        let requests = server.requests();
+        assert_eq!(requests.len(), 1, "public candidate should embed exactly once under the API lane");
+        assert_eq!(requests[0].method, "POST");
+        assert_eq!(requests[0].path, "/models/gemini-embedding-2:embedContent");
+        assert!(
+            requests[0].body.contains("The public API lane test canary for this project is Atlas."),
+            "request should be the candidate query embedding, got {}",
+            requests[0].body
+        );
+        drop_api_test_resources(state, server).await;
+    }
+
+    async fn init_substrate_with_active_triple(triple: EmbeddingTriple) -> (tempfile::TempDir, Substrate) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = temp.path().join("repo");
+        let runtime = temp.path().join("runtime");
+        std::fs::create_dir_all(&repo).expect("repo dir");
+        std::fs::write(
+            repo.join("config.yaml"),
+            format!(
+                "schema_version: 1\nactive_embedding:\n  provider: {}\n  model_ref: {}\n  dimension: {}\n",
+                triple.provider, triple.model_ref, triple.dimension
+            ),
+        )
+        .expect("write config");
+        let substrate = Substrate::init(
+            Roots::new(repo, runtime),
+            InitOptions { force_unsafe_durability: true, device_id: Some("dev_governanceapifence".into()) },
+        )
+        .await
+        .expect("init substrate");
+        (temp, substrate)
+    }
+
+    fn api_triple() -> EmbeddingTriple {
+        EmbeddingTriple {
+            provider: GEMINI_API_PROVIDER.to_string(),
+            model_ref: "gemini-embedding-2".to_string(),
+            dimension: 2,
+        }
+    }
+
+    fn api_provider(base_url: String) -> Arc<dyn EmbeddingProvider> {
+        Arc::new(ApiEmbeddingProvider::new_for_test(api_triple(), "test-api-key", base_url).expect("api provider"))
+    }
+
+    async fn publish_api_provider(state: &HandlerState, base_url: String) {
+        let provider = tokio::task::spawn_blocking(move || api_provider(base_url))
+            .await
+            .expect("construct API provider off async runtime");
+        state.embedding_provider_slot().set(provider);
+    }
+
+    fn embedding_response(vectors: Vec<Vec<f32>>) -> String {
+        json!({
+            "embeddings": vectors.into_iter().map(|values| json!({ "values": values })).collect::<Vec<_>>()
+        })
+        .to_string()
+    }
+
+    async fn write_project_memory(
+        substrate: &Substrate,
+        state: &HandlerState,
+        request_id: &str,
+        summary: &str,
+        body: &str,
+        sensitivity: &str,
+    ) -> crate::protocol::GovernanceWriteResponse {
+        let response = handle_request_with_state(
+            substrate,
+            state,
+            RequestEnvelope::new(
+                request_id,
+                RequestPayload::WriteMemory {
+                    body: body.to_string(),
+                    title: Some(summary.to_string()),
+                    tags: vec!["api-lane-fence".to_string()],
+                    meta: json!({
+                        "namespace": "project",
+                        "type": "claim",
+                        "summary": summary,
+                        "canonical_namespace_id": TEST_PROJECT_CANONICAL_ID,
+                        "namespace_alias": TEST_PROJECT_ALIAS,
+                        "confidence": 0.95,
+                        "sensitivity": sensitivity,
+                        "source_kind": "user",
+                        "explicit_user_context": true
+                    }),
+                },
+            ),
+        )
+        .await;
+
+        match response.result {
+            ResponseResult::Success(ResponsePayload::GovernanceWrite(write)) => write,
+            other => panic!("expected governed write success, got {other:?}"),
+        }
+    }
+
+    async fn drop_api_test_resources(state: HandlerState, server: MockGeminiServer) {
+        tokio::task::spawn_blocking(move || {
+            drop(state);
+            drop(server);
+        })
+        .await
+        .expect("drop API test resources off async runtime");
     }
 }
