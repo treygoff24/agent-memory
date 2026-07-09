@@ -768,6 +768,7 @@ mod tests {
         .to_string()
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn write_project_memory(
         substrate: &Substrate,
         state: &HandlerState,
