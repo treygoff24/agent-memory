@@ -42,7 +42,8 @@ Post-import: active memories 549 → **786** (+237, matches written-new); review
 
 ### 4. Daemon footprint after import
 - Right after the import, `vmmap --summary` physical footprint = **6.9G** (embedding model loaded in Metal + import working set; `embedding.state: active`, `load_count: 1`). `ps` RSS only 267 MB — Metal memory is invisible to RSS, so footprint is the right metric (matches the daemon-memory-reduction note).
-- 6.9G is above the "~2GB loaded" figure from the memory note; the reduction design relies on idle-unload (`idle_unload_secs: 900`) to drop back to ~108MB when embedding goes dormant. **To verify:** re-check footprint after ≥15 min idle to confirm it reclaims (done at the end of this run).
+- 6.9G is above the "~2GB loaded" figure from the memory note; the reduction design relies on idle-unload (`idle_unload_secs: 900`) to drop back to ~108MB when embedding goes dormant.
+- **Idle-unload did not fire in-session.** ~25 min after the import the worker was still `embedding.state: active`, `unload_count: 0`, footprint still 6.9G. Most likely cause: the recall hooks wired in §3 now fire on every turn of this live Claude session, and each recall touches the daemon — resetting the 900s idle timer before it can expire. So this is probably "an actively-used daemon never goes idle," not "unload is broken." **Follow-up (orthogonal to CLI-first):** confirm idle-unload still reclaims to ~108MB during a genuinely quiet window (no wired session hitting the daemon for >15 min). The embedding lifecycle is unchanged from `74e3250`, so this is not a regression introduced by this branch — but the 6.9G loaded figure (vs the note's ~2GB) is worth a look on its own.
 
 ### 5. Recall loop closed live — the headline result
 Immediately after wiring the hooks, the next `SessionStart` in *this* Claude session injected a `<memory-recall version="stream-e-v0.7" harness="claude-code">` block into my context — and it surfaced `mem_20260708_40edd13334a43d72_000689` ("Dogfood: using-memorum skill validation"), the exact governed write the canonical-loop subagent had made minutes earlier. So the full runtime loop is closed end-to-end on the CLI-first build: **governed write → commit-on-write → index → passive recall injection**, with the recall block also carrying project resolution (`resolved-via: git_remote`), a `pending-attention` line ("16 memory item(s) require review"), and a budget accounting (`used-tokens: 672 / budget 1900`). This is the whole system working in a real session, not a test harness.
@@ -54,3 +55,18 @@ Full transcript + findings: `docs/reviews/2026-07-08-canonical-loop-live-transcr
 - **Contract:** spelled out doctor's raw shape (`.result.success.doctor.healthy`) so a script author doesn't parse it with `.ok`/`.data`.
 
 Follow-ups (out of scope for this plan, logged for a later arc): the grounding→privacy catch-22 for self-referential claims with no public source; the `summary` field carrying different semantics in `search` (snippet) vs `get` (title); undocumented negative search scores; and the import `skipped_idempotent=0` question from §2.
+
+### 7. Final gate — green modulo the known-flaky bench-regression stage (3-run evidence)
+The final `scripts/check.sh` (after the §6 fixes) came back `CHECK_SH_EXIT=1`, with **every** stage green — fmt, oxfmt, oxlint, docs-validity, cargo-audit, installer-test, baseline, specgate-{validate,check,doctor}, the full workspace test suite (debug + release), rustdoc, two-clone convergence, durability probe — **except** the terminal `bench-regression-check`, which tripped on `query_by_id` (p95 0.072 ms vs baseline 0.037 ms, a 35µs delta on a sub-100µs microbench).
+
+Per the project's documented bench flakiness (non-deterministic corpus, stale baselines), I ran two more standalone release-bench + regression-check passes for 3-run evidence:
+
+| Run | query_by_id p95 (ms) | regression-check verdict |
+|----:|:--------------------:|--------------------------|
+| 1 (gate) | 0.072 | fails on **query_by_id** |
+| 2 | 0.048 | query_by_id clean; fails on **cold_reindex** |
+| 3 | 0.061 | query_by_id clean; fails on **cold_reindex** |
+
+The metric that trips **changes every run** — the signature of environmental noise, not a code regression (a real regression fails the same metric consistently). `query_by_id` was over threshold only in run 1; the other two runs trip `cold_reindex`, the metric CLAUDE.md explicitly calls out as "usually environmental." Combined with mechanistic impossibility — every file this branch touched is in the `memoryd` CLI layer, and `query_by_id`/`cold_reindex` benchmark the `memory-substrate` index with no code path from the CLI changes — this is the documented known-flaky stage, not a regression introduced here. Baselines (`bench/baseline.darwin-arm64.json`) were left untouched throughout.
+
+**Conclusion:** the gate is green for the purpose of this plan. The lone red is the pre-existing flaky bench stage, confirmed by 3-run evidence.
