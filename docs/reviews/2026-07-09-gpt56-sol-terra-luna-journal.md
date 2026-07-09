@@ -7,12 +7,12 @@ mode).
 
 ## Routing plan for this run
 
-| Task | Model | Effort | Rationale |
-| --- | --- | --- | --- |
-| T2.2 rate-limit + credential hardening | sol | high | Trust-adjacent, decision-dense (error-classification refactor, credential file security) |
-| T3.1 init/config CLI + consent | terra | medium | Everyday implementation, well-specified brief |
-| T3.2 doctor findings | luna | medium | Bounded, mechanical-ish, follows existing idiom |
-| Wave-3 review gate | luna high vs terra medium (TBD) | — | Probe review quality at the fast tier |
+| Task                                   | Model                           | Effort | Rationale                                                                                |
+| -------------------------------------- | ------------------------------- | ------ | ---------------------------------------------------------------------------------------- |
+| T2.2 rate-limit + credential hardening | sol                             | high   | Trust-adjacent, decision-dense (error-classification refactor, credential file security) |
+| T3.1 init/config CLI + consent         | terra                           | medium | Everyday implementation, well-specified brief                                            |
+| T3.2 doctor findings                   | luna                            | medium | Bounded, mechanical-ish, follows existing idiom                                          |
+| Wave-3 review gate                     | luna high vs terra medium (TBD) | —      | Probe review quality at the fast tier                                                    |
 
 Installed delegate supports `--model` + `--reasoning-effort`; NO `--fast` flag in this build (service tier
 inherits Codex config). Luna caps at `max` (no `ultra`); Sol/Terra `ultra` = nested multi-agent mode, not
@@ -32,7 +32,7 @@ used this run.
   blocked on Trey re-login before relaunch.
 - **Plot twist:** the "dead" run had already FINISHED the implementation before the usage limit killed it —
   it died during its own verification gate. All three deliverables complete + tested on disk:
-  - R1 credential hardening is *better than briefed*: symlink reject pre-open, dev/ino TOCTOU verify
+  - R1 credential hardening is _better than briefed_: symlink reject pre-open, dev/ino TOCTOU verify
     post-open, chmod-on-fd BEFORE `set_len(0)` + write (no world-readable window), symlink-target
     non-clobber test.
   - R2 400→Auth body sniff (`API_KEY_INVALID`/`PERMISSION_DENIED`/message match) with mock test.
@@ -46,14 +46,14 @@ used this run.
   already-embedded survivors (re-billed next tick) rather than writing them first.
 - Wall clock: ~35 min to full implementation + tests before the auth kill (limit was usage, not model).
 - **Verdict: sol×high = GPT-5.5-Codex quality or better on trust-adjacent hardening.** Notably it
-  *upgraded* the brief's security spec (fd-based TOCTOU verify wasn't asked for). Gate run by
+  _upgraded_ the brief's security spec (fd-based TOCTOU verify wasn't asked for). Gate run by
   orchestrator post-mortem since the lane died pre-gate.
 
 ### sol×high postscript — the one defect
 
-Sol's single miss: its new async test built (and dropped) the reqwest *blocking* client inside the tokio
+Sol's single miss: its new async test built (and dropped) the reqwest _blocking_ client inside the tokio
 test runtime — panics with "Cannot drop a runtime in a context where blocking is not allowed". It
-half-knew (the test's last line spawn_blocks the *drop*) but missed that *construction* also enters the
+half-knew (the test's last line spawn*blocks the \_drop*) but missed that _construction_ also enters the
 runtime (`reqwest::blocking::wait::enter` in `ClientHandle::new`). Orchestrator fixed by building under
 `spawn_blocking` too. Classic author-blindness residue, though milder than GPT-5.5's (it died pre-gate,
 so the lane may well have caught this itself). Final: clippy clean, 398/398, committed `493980e`.
@@ -71,7 +71,7 @@ so the lane may well have caught this itself). Final: clippy clean, 398/398, com
 - Attempt 2 (codex-68): **blocked again, deeper and again correctly** (~2min). Found that NO public
   config-mutation API exists — `config.yaml` is written only by substrate bootstrap/init internals — and
   refused to build the "explicitly prohibited second config writer" in memoryd. Asked for a narrowly
-  scoped substrate config-mutation surface. Both blocks are really *plan defects* (v0.2's T3.1 says
+  scoped substrate config-mutation surface. Both blocks are really _plan defects_ (v0.2's T3.1 says
   "triple write to synced config.yaml" as if the surface existed); terra surfaced them instead of
   papering over. Two-for-two on the stop-boundary contract.
 - Attempt 3 (codex-69): implemented the whole surface (config CLI, consent, cost estimate, substrate
@@ -87,8 +87,7 @@ so the lane may well have caught this itself). Final: clippy clean, 398/398, com
   windows kept expiring during Rust compilation — on this workspace terra needs tasks sized so the gate
   fits, or the orchestrator should own gates by default (codex windows ≪ Rust cold-compile times).
 - **Cross-cutting lesson (all GPT-5.6 lanes):** crate-scoped clippy/test does NOT include this repo's
-  release-gate validators (rust_boundary_check bans raw unwrap/expect in substrate src — even in
-  #[cfg(test)] modules — without `expect-justified:` annotations). Lane briefs for memory-substrate work
+  release-gate validators (rust_boundary_check bans raw unwrap/expect in substrate src — even in #[cfg(test)] modules — without `expect-justified:` annotations). Lane briefs for memory-substrate work
   should name that rule; the full-suite run at the orchestrator caught it.
 
 ### T3.2 — luna, effort medium (codex-71, work auth)
@@ -122,12 +121,12 @@ so the lane may well have caught this itself). Final: clippy clean, 398/398, com
 
 ## Matrix scorecard (fill as evidence lands)
 
-| Model × effort | Task type | Wall clock | Scope discipline | Quality | Notes |
-| --- | --- | --- | --- | --- | --- |
-| sol × high | trust-adjacent hardening (T2.2) | ~35 min | Perfect (fence untouched) | Exceeded brief (fd TOCTOU verify unasked) | 1 async-test defect; died mid-gate to usage limit, not model |
-| terra × medium | open-ended CLI impl (T3.1) | 4 runs | Perfect × 2 scope-blocks (both real plan defects) | Clean, idiomatic YAML RMW | Run windows too short for Rust gates; orchestrator finished |
-| luna × medium | bounded findings impl (T3.2) | 1 run | Perfect (single file) | Good; one structurally-dead signal | Polled compiles instead of dying; honest disclosure |
-| luna × high (safe) | adversarial review (W3) | 1 run | n/a | 8 findings, 0 refuted; beat native Opus on depth | Caught print_only + dead-signal; keep cross-family for sacred gates anyway |
+| Model × effort     | Task type                       | Wall clock | Scope discipline                                  | Quality                                          | Notes                                                                      |
+| ------------------ | ------------------------------- | ---------- | ------------------------------------------------- | ------------------------------------------------ | -------------------------------------------------------------------------- |
+| sol × high         | trust-adjacent hardening (T2.2) | ~35 min    | Perfect (fence untouched)                         | Exceeded brief (fd TOCTOU verify unasked)        | 1 async-test defect; died mid-gate to usage limit, not model               |
+| terra × medium     | open-ended CLI impl (T3.1)      | 4 runs     | Perfect × 2 scope-blocks (both real plan defects) | Clean, idiomatic YAML RMW                        | Run windows too short for Rust gates; orchestrator finished                |
+| luna × medium      | bounded findings impl (T3.2)    | 1 run      | Perfect (single file)                             | Good; one structurally-dead signal               | Polled compiles instead of dying; honest disclosure                        |
+| luna × high (safe) | adversarial review (W3)         | 1 run      | n/a                                               | 8 findings, 0 refuted; beat native Opus on depth | Caught print_only + dead-signal; keep cross-family for sacred gates anyway |
 
 **Bottom line for the delegate-agent skill:** Sol = author for trust-critical/hard work (high effort);
 Terra = judgment-dense everyday impl but orchestrator owns cargo gates (window-limited); Luna = bounded

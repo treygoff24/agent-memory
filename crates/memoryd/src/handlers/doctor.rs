@@ -357,7 +357,11 @@ async fn embedding_health_findings(substrate: &Substrate, state: &HandlerState) 
                 .unwrap_or_default()
                 .to_ascii_lowercase();
             // `EmbeddingError::RateLimit` Displays as "embedding API rate-limited: ...".
-            if backlog > 0 && (last_error.contains("rate-limited") || last_error.contains("rate limit") || last_error.contains("429")) {
+            if backlog > 0
+                && (last_error.contains("rate-limited")
+                    || last_error.contains("rate limit")
+                    || last_error.contains("429"))
+            {
                 findings.push(advisory_finding(
                     "embedding_api_rate_limited",
                     format!(

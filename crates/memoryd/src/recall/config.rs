@@ -37,7 +37,7 @@ pub struct VectorRecallConfig {
     #[serde(default = "default_recency_half_life_days")]
     pub recency_half_life_days: f64,
     /// Explicit query-embed timeout. `None` means use the lane-appropriate default
-    /// ([`LOCAL_EMBED_TIMEOUT_MS`] or [`API_EMBED_TIMEOUT_MS`]).
+    /// (`LOCAL_EMBED_TIMEOUT_MS` or `API_EMBED_TIMEOUT_MS`).
     #[serde(default)]
     pub embed_timeout_ms: Option<u64>,
 }
@@ -108,7 +108,7 @@ pub fn load_recall_config(repo: &Path) -> Result<RecallConfig, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::embedding::{GEMINI_API_PROVIDER, FASTEMBED_CANDLE_PROVIDER};
+    use crate::embedding::{FASTEMBED_CANDLE_PROVIDER, GEMINI_API_PROVIDER};
 
     fn gemini_triple() -> EmbeddingTriple {
         EmbeddingTriple {

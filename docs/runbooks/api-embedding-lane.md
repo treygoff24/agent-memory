@@ -16,7 +16,7 @@ Spec: the 2026-07-09 amendment to `stream-a-core-substrate-v1.1` (see
    - Interactive: shows the consent copy (what transits, what never leaves, Google's no-training +
      55-day-log retention posture) and the cost estimate for re-embedding the current corpus, then asks.
    - Scripted/agent: add `--consent` (refused otherwise). Init-time: `memoryd init --embedding-lane
-     gemini-api --consent`.
+gemini-api --consent`.
    - Consent is recorded as `api_embedding_consent: true` in synced `config.yaml`. The daemon refuses to
      start the API provider without it, so a hand-edited or merged `active_embedding` cannot silently
      begin sending plaintext.
