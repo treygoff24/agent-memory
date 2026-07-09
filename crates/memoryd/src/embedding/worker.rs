@@ -52,6 +52,9 @@ const MAX_JOB_ATTEMPTS: u32 = 5;
 /// Cap for the zero-success drain backoff.
 const MAX_ZERO_SUCCESS_BACKOFF: Duration = Duration::from_secs(300);
 
+/// Fallback when a 429 omits Retry-After.
+const DEFAULT_RATE_LIMIT_BACKOFF: Duration = Duration::from_secs(60);
+
 static EXHAUSTED_RETRY_BUDGET_JOBS: AtomicUsize = AtomicUsize::new(0);
 
 /// Number of jobs this process has skipped after exhausting the in-memory retry
@@ -193,13 +196,22 @@ async fn run(
                     break;
                 }
                 Err(error) => {
-                    tracing::warn!(
-                        %error,
-                        sleep_ms = zero_success_backoff.as_millis(),
-                        "embedding drain tick failed; backing off"
-                    );
-                    next_delay = zero_success_backoff;
-                    zero_success_backoff = grow_backoff(zero_success_backoff);
+                    if let Some(delay) = error.rate_limit_backoff() {
+                        tracing::warn!(
+                            %error,
+                            sleep_ms = delay.as_millis(),
+                            "embedding drain rate-limited; respecting provider backoff"
+                        );
+                        next_delay = delay;
+                    } else {
+                        tracing::warn!(
+                            %error,
+                            sleep_ms = zero_success_backoff.as_millis(),
+                            "embedding drain tick failed; backing off"
+                        );
+                        next_delay = zero_success_backoff;
+                        zero_success_backoff = grow_backoff(zero_success_backoff);
+                    }
                     break;
                 }
             }
@@ -267,6 +279,23 @@ struct DrainOutcome {
     succeeded: usize,
 }
 
+#[derive(Debug, thiserror::Error)]
+enum DrainError {
+    #[error("embedding API rate-limited: {message}")]
+    RateLimit { retry_after: Option<Duration>, message: String },
+    #[error("{0}")]
+    Other(String),
+}
+
+impl DrainError {
+    fn rate_limit_backoff(&self) -> Option<Duration> {
+        match self {
+            Self::RateLimit { retry_after, .. } => Some(retry_after.unwrap_or(DEFAULT_RATE_LIMIT_BACKOFF)),
+            Self::Other(_) => None,
+        }
+    }
+}
+
 /// Embed and write up to `limit` pending jobs for the active triple, returning
 /// how many jobs succeeded.
 ///
@@ -286,6 +315,7 @@ pub async fn drain_batch(
     drain_batch_with_budget(substrate, provider, limit, &active_triple, eligibility, &mut retry_budget)
         .await
         .map(|outcome| outcome.succeeded)
+        .map_err(|error| error.to_string())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -296,10 +326,13 @@ async fn drain_batch_with_budget(
     active_triple: &EmbeddingTriple,
     eligibility: EmbeddingLaneEligibility,
     retry_budget: &mut JobRetryBudget,
-) -> Result<DrainOutcome, String> {
+) -> Result<DrainOutcome, DrainError> {
     debug_assert_lane_eligibility(active_triple, eligibility);
     let requested = limit.saturating_add(retry_budget.exhausted_count());
-    let jobs = substrate.pending_embedding_jobs(requested, eligibility).await.map_err(|err| err.to_string())?;
+    let jobs = substrate
+        .pending_embedding_jobs(requested, eligibility)
+        .await
+        .map_err(|err| DrainError::Other(err.to_string()))?;
     if jobs.is_empty() {
         return Ok(DrainOutcome { requested, fetched: 0, succeeded: 0 });
     }
@@ -343,6 +376,9 @@ async fn drain_batch_with_budget(
         // forward pass (`Err(join_error)`) both fall back to embedding each job
         // individually, so only chunks that fail on their own burn retry budget —
         // a single poisoned input never fails the whole batch toward exhaustion.
+        Ok(Err(EmbeddingError::RateLimit { retry_after, message })) => {
+            return Err(DrainError::RateLimit { retry_after, message });
+        }
         Ok(Err(_)) | Err(_) => {
             succeeded =
                 succeeded.saturating_add(embed_jobs_individually(provider, live_jobs, substrate, retry_budget).await?);
@@ -383,7 +419,7 @@ async fn embed_jobs_individually(
     jobs: Vec<PendingEmbeddingJob>,
     substrate: &Substrate,
     retry_budget: &mut JobRetryBudget,
-) -> Result<usize, String> {
+) -> Result<usize, DrainError> {
     let triple = provider.triple().clone();
     let mut surviving = Vec::new();
     for job in jobs {
@@ -391,6 +427,9 @@ async fn embed_jobs_individually(
         let text = job.text.clone();
         match tokio::task::spawn_blocking(move || embed_provider.embed_document(&text)).await {
             Ok(Ok(vector)) => surviving.push((job, vector)),
+            Ok(Err(EmbeddingError::RateLimit { retry_after, message })) => {
+                return Err(DrainError::RateLimit { retry_after, message });
+            }
             Ok(Err(individual_error)) => retry_budget.record_failure(&job.chunk_id, &individual_error),
             Err(join_error) => retry_budget.record_failure(&job.chunk_id, &join_error),
         }
@@ -403,7 +442,7 @@ async fn write_and_record_embedded_jobs(
     triple: &EmbeddingTriple,
     pairs: Vec<(PendingEmbeddingJob, Vec<f32>)>,
     retry_budget: &mut JobRetryBudget,
-) -> Result<usize, String> {
+) -> Result<usize, DrainError> {
     if pairs.is_empty() {
         return Ok(0);
     }
@@ -417,7 +456,8 @@ async fn write_and_record_embedded_jobs(
         })
         .collect();
     let jobs: Vec<&PendingEmbeddingJob> = pairs.iter().map(|(job, _)| job).collect();
-    let write_results = substrate.update_embeddings_batch(updates).await.map_err(|err| err.to_string())?;
+    let write_results =
+        substrate.update_embeddings_batch(updates).await.map_err(|err| DrainError::Other(err.to_string()))?;
     let mut succeeded = 0usize;
     for (job, result) in jobs.into_iter().zip(write_results) {
         let chunk_id = job.chunk_id.as_str();
@@ -447,6 +487,8 @@ mod tests {
     use memory_substrate::{EmbeddingLaneEligibility, InitOptions, Roots, Sensitivity, Substrate};
 
     use super::*;
+    use crate::embedding::api_provider::test_support::{MockGeminiServer, MockResponse};
+    use crate::embedding::api_provider::ApiEmbeddingProvider;
     use crate::embedding::FixtureProvider;
     use crate::handlers::{handle_request_with_state, HandlerState};
     use crate::protocol::{RequestEnvelope, RequestPayload, ResponsePayload, ResponseResult};
@@ -606,6 +648,54 @@ mod tests {
             .expect("drain behind poison");
         assert_eq!(outcome.succeeded, 1, "later job should drain after poisoned head is skipped");
         assert_eq!(substrate.vector_count(triple).await.expect("vector count"), 1);
+    }
+
+    #[tokio::test]
+    async fn rate_limit_uses_retry_after_without_charging_job_budget() {
+        let (_temp, substrate) = crate::embedding::lane_test_support::init_substrate_with_active_embedding(
+            crate::embedding::lane_test_support::gemini_test_triple(),
+            "dev_workerratelimit",
+        )
+        .await;
+        crate::embedding::lane_test_support::seed_indexed_memory(
+            &substrate,
+            "mem_20260709_bbbbbbbbbbbbbbbb_000003",
+            Sensitivity::Internal,
+            "api lane rate-limited body",
+        );
+        let server = MockGeminiServer::new(vec![MockResponse::json(
+            429,
+            serde_json::json!({ "error": { "message": "slow down" } }).to_string(),
+        )
+        .with_header("Retry-After", "7")]);
+        let triple = substrate.active_embedding_triple().expect("active triple");
+        // reqwest's blocking Client owns an internal runtime; building (and dropping) it
+        // inside the async test context panics, so both happen under spawn_blocking.
+        let provider: Arc<dyn EmbeddingProvider> = tokio::task::spawn_blocking({
+            let triple = triple.clone();
+            let base_url = server.base_url();
+            move || -> Arc<dyn EmbeddingProvider> {
+                Arc::new(ApiEmbeddingProvider::new_for_test(triple, "test-api-key", base_url).expect("provider"))
+            }
+        })
+        .await
+        .expect("build blocking client");
+        let eligibility = embedding_lane_eligibility(&triple);
+        let mut retry_budget = JobRetryBudget::default();
+
+        let error = drain_batch_with_budget(&substrate, &provider, 64, &triple, eligibility, &mut retry_budget)
+            .await
+            .expect_err("rate limit");
+
+        assert!(matches!(
+            &error,
+            DrainError::RateLimit { retry_after: Some(delay), .. } if *delay == Duration::from_secs(7)
+        ));
+        assert_eq!(error.rate_limit_backoff(), Some(Duration::from_secs(7)));
+        assert!(retry_budget.attempts_by_chunk.is_empty());
+        assert_eq!(substrate.pending_embedding_job_count(eligibility).expect("pending count"), 1);
+        assert_eq!(server.requests().len(), 1);
+        tokio::task::spawn_blocking(move || drop(provider)).await.expect("drop blocking client");
     }
 
     #[tokio::test]

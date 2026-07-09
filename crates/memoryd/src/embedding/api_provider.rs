@@ -6,7 +6,7 @@
 //! `spawn_blocking` embedding call sites.
 
 use std::fmt;
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 use std::time::Duration;
@@ -29,6 +29,12 @@ const GEMINI_BATCH_EMBED_CONTENTS_ENDPOINT: &str = ":batchEmbedContents";
 const GEMINI_MODEL_RESOURCE_PREFIX: &str = "models/";
 const GEMINI_OUTPUT_DIMENSIONALITY_FIELD: &str = "output_dimensionality";
 const GEMINI_API_KEY_ENV: &str = "MEMORUM_GEMINI_API_KEY";
+const GEMINI_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+const GEMINI_TOTAL_TIMEOUT: Duration = Duration::from_secs(8);
+
+// The Gemini batchEmbedContents schema does not currently publish a numeric
+// item maximum. Cap at 100 requests conservatively and validate during T4.1.
+const GEMINI_BATCH_MAX_REQUESTS: usize = 100;
 
 // Gemini asymmetric-retrieval prefixes. These are subject to the T4.1 bake-off.
 const GEMINI_QUERY_PREFIX: &str = "task: search result | query: ";
@@ -77,20 +83,25 @@ pub fn write_gemini_api_key(runtime_root: &Path, key: &str) -> Result<(), Embedd
         EmbeddingError::Auth(format!("create runtime directory {}: {error}", runtime_root.display()))
     })?;
     let path = gemini_api_key_path(runtime_root);
+    reject_key_symlink(&path)?;
 
     let mut options = OpenOptions::new();
-    options.create(true).truncate(true).write(true);
+    options.create(true).write(true);
     set_owner_only_create_mode(&mut options);
 
     let mut file = options
         .open(&path)
         .map_err(|error| EmbeddingError::Auth(format!("write Gemini API key {}: {error}", path.display())))?;
+    verify_opened_key_path(&file, &path)?;
+    enforce_owner_only_permissions(&file, &path)?;
+    file.set_len(0)
+        .map_err(|error| EmbeddingError::Auth(format!("truncate Gemini API key {}: {error}", path.display())))?;
     let trimmed = key.trim();
     file.write_all(trimmed.as_bytes())
         .and_then(|_| file.write_all(b"\n"))
         .and_then(|_| file.sync_all())
         .map_err(|error| EmbeddingError::Auth(format!("write Gemini API key {}: {error}", path.display())))?;
-    enforce_owner_only_permissions(&path)
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -102,14 +113,56 @@ fn set_owner_only_create_mode(options: &mut OpenOptions) {
 #[cfg(not(unix))]
 fn set_owner_only_create_mode(_options: &mut OpenOptions) {}
 
-fn enforce_owner_only_permissions(path: &Path) -> Result<(), EmbeddingError> {
+#[cfg(unix)]
+fn reject_key_symlink(path: &Path) -> Result<(), EmbeddingError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            Err(EmbeddingError::Auth(format!("refusing to write Gemini API key through symlink {}", path.display())))
+        }
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(EmbeddingError::Auth(format!("inspect Gemini API key path {}: {error}", path.display()))),
+    }
+}
+
+#[cfg(not(unix))]
+fn reject_key_symlink(_path: &Path) -> Result<(), EmbeddingError> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn verify_opened_key_path(file: &File, path: &Path) -> Result<(), EmbeddingError> {
+    use std::os::unix::fs::MetadataExt;
+
+    let opened = file
+        .metadata()
+        .map_err(|error| EmbeddingError::Auth(format!("inspect opened Gemini API key {}: {error}", path.display())))?;
+    let linked = fs::symlink_metadata(path)
+        .map_err(|error| EmbeddingError::Auth(format!("inspect Gemini API key path {}: {error}", path.display())))?;
+    if linked.file_type().is_symlink() || opened.dev() != linked.dev() || opened.ino() != linked.ino() {
+        return Err(EmbeddingError::Auth(format!(
+            "Gemini API key path changed or became a symlink while opening {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn verify_opened_key_path(_file: &File, _path: &Path) -> Result<(), EmbeddingError> {
+    Ok(())
+}
+
+fn enforce_owner_only_permissions(file: &File, path: &Path) -> Result<(), EmbeddingError> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(|error| {
+        file.set_permissions(fs::Permissions::from_mode(0o600)).map_err(|error| {
             EmbeddingError::Auth(format!("set Gemini API key permissions {}: {error}", path.display()))
         })?;
     }
+    #[cfg(not(unix))]
+    let _ = (file, path);
     Ok(())
 }
 
@@ -148,7 +201,8 @@ impl ApiEmbeddingProvider {
 
     fn new(triple: EmbeddingTriple, api_key: ApiKey, base_url: String) -> Result<Self, EmbeddingError> {
         let client = Client::builder()
-            .timeout(Duration::from_secs(30))
+            .connect_timeout(GEMINI_CONNECT_TIMEOUT)
+            .timeout(GEMINI_TOTAL_TIMEOUT)
             .build()
             .map_err(|error| EmbeddingError::Transport(format!("build Gemini API client: {error}")))?;
         let model_ref = triple.model_ref.clone();
@@ -236,17 +290,25 @@ impl EmbeddingProvider for ApiEmbeddingProvider {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
-        let requests: Vec<Value> = texts
-            .iter()
-            .map(|text| {
-                embedding_request(
-                    self.model_resource(),
-                    format!("{GEMINI_DOCUMENT_PREFIX}{text}"),
-                    self.triple.dimension,
-                )
-            })
-            .collect();
-        self.post_embeddings(GEMINI_BATCH_EMBED_CONTENTS_ENDPOINT, json!({ "requests": requests }), texts.len())
+        let mut embeddings = Vec::with_capacity(texts.len());
+        for batch in texts.chunks(GEMINI_BATCH_MAX_REQUESTS) {
+            let requests: Vec<Value> = batch
+                .iter()
+                .map(|text| {
+                    embedding_request(
+                        self.model_resource(),
+                        format!("{GEMINI_DOCUMENT_PREFIX}{text}"),
+                        self.triple.dimension,
+                    )
+                })
+                .collect();
+            embeddings.extend(self.post_embeddings(
+                GEMINI_BATCH_EMBED_CONTENTS_ENDPOINT,
+                json!({ "requests": requests }),
+                batch.len(),
+            )?);
+        }
+        Ok(embeddings)
     }
 }
 
@@ -310,8 +372,21 @@ fn map_http_error(status: StatusCode, retry_after: Option<Duration>, body: &str)
     match status {
         StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => EmbeddingError::Auth(message),
         StatusCode::TOO_MANY_REQUESTS => EmbeddingError::RateLimit { retry_after, message },
+        StatusCode::BAD_REQUEST if bad_request_is_auth(body) => EmbeddingError::Auth(message),
+        StatusCode::BAD_REQUEST => EmbeddingError::Contract(message),
         _ => EmbeddingError::Transport(message),
     }
+}
+
+fn bad_request_is_auth(body: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<Value>(body) else {
+        return false;
+    };
+    let status = value.pointer("/error/status").and_then(Value::as_str).unwrap_or_default();
+    let message = value.pointer("/error/message").and_then(Value::as_str).unwrap_or_default().to_ascii_lowercase();
+    matches!(status, "API_KEY_INVALID" | "PERMISSION_DENIED")
+        || message.contains("api key not valid")
+        || message.contains("api_key_invalid")
 }
 
 fn remote_error_message(body: &str) -> String {
@@ -576,6 +651,29 @@ mod tests {
     }
 
     #[test]
+    fn batch_splits_large_inputs_and_preserves_positional_order() {
+        let first_vectors: Vec<Vec<f32>> = (0..100).map(|index| vec![index as f32, 1.0]).collect();
+        let server = MockGeminiServer::new(vec![
+            MockResponse::json(200, embedding_response(first_vectors)),
+            MockResponse::json(200, embedding_response(vec![vec![100.0, 1.0]])),
+        ]);
+        let texts: Vec<String> = (0..101).map(|index| format!("document {index}")).collect();
+        let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+
+        let vectors = provider(server.base_url(), 2).embed_documents(&refs).expect("microbatch embed");
+
+        assert_eq!(vectors.len(), 101);
+        assert_eq!(vectors[0], vec![0.0, 1.0]);
+        assert_eq!(vectors[100], vec![100.0, 1.0]);
+        let requests = server.requests();
+        assert_eq!(requests.len(), 2);
+        let first_body: Value = serde_json::from_str(&requests[0].body).expect("first request json");
+        let second_body: Value = serde_json::from_str(&requests[1].body).expect("second request json");
+        assert_eq!(first_body["requests"].as_array().expect("first requests").len(), 100);
+        assert_eq!(second_body["requests"].as_array().expect("second requests").len(), 1);
+    }
+
+    #[test]
     fn dimension_mismatch_is_reported() {
         let server = MockGeminiServer::new(vec![MockResponse::json(200, embedding_response(vec![vec![1.0]]))]);
         let error = provider(server.base_url(), 2).embed_document("short vector").expect_err("dimension mismatch");
@@ -592,6 +690,24 @@ mod tests {
         let error = provider(server.base_url(), 2).embed_document("doc").expect_err("auth");
 
         assert!(matches!(error, EmbeddingError::Auth(message) if message.contains("bad API key")));
+    }
+
+    #[test]
+    fn invalid_api_key_bad_request_maps_to_auth() {
+        let server = MockGeminiServer::new(vec![MockResponse::json(
+            400,
+            json!({
+                "error": {
+                    "code": 400,
+                    "status": "INVALID_ARGUMENT",
+                    "message": "API key not valid. Please pass a valid API key."
+                }
+            })
+            .to_string(),
+        )]);
+        let error = provider(server.base_url(), 2).embed_document("doc").expect_err("invalid key");
+
+        assert!(matches!(error, EmbeddingError::Auth(message) if message.contains("API key not valid")));
     }
 
     #[test]
@@ -630,6 +746,38 @@ mod tests {
 
         restore_env(GEMINI_API_KEY_ENV, previous);
         assert!(matches!(error, EmbeddingError::Auth(message) if message.contains("Gemini API key not found")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn key_write_tightens_existing_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let runtime = tempfile::tempdir().expect("tempdir");
+        let key_path = gemini_api_key_path(runtime.path());
+        fs::write(&key_path, "old-key\n").expect("seed key");
+        fs::set_permissions(&key_path, fs::Permissions::from_mode(0o644)).expect("loosen key permissions");
+
+        write_gemini_api_key(runtime.path(), "new-key").expect("write key");
+
+        assert_eq!(fs::read_to_string(&key_path).expect("read key"), "new-key\n");
+        assert_eq!(fs::metadata(&key_path).expect("key metadata").permissions().mode() & 0o777, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn key_write_rejects_symlink_without_touching_target() {
+        use std::os::unix::fs::symlink;
+
+        let runtime = tempfile::tempdir().expect("tempdir");
+        let target = runtime.path().join("target-secret");
+        fs::write(&target, "unchanged\n").expect("seed target");
+        symlink(&target, gemini_api_key_path(runtime.path())).expect("plant symlink");
+
+        let error = write_gemini_api_key(runtime.path(), "redirected-key").expect_err("symlink must fail");
+
+        assert!(matches!(error, EmbeddingError::Auth(message) if message.contains("symlink")));
+        assert_eq!(fs::read_to_string(target).expect("read target"), "unchanged\n");
     }
 
     #[test]
