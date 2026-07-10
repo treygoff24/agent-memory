@@ -42,3 +42,18 @@ Coordinator gate re-run GREEN (/tmp/w1-gate-r1.log, 102 suites, 0 failures) — 
 | F19 | NIT | C6 | `prior_record_key` threaded on Supersede/RepairBucket but unused. **Fix:** use it for explicit legacy-key removal or drop it from those variants. |
 
 Round 3: scoped re-review of fix diff 2 — MUST be dry (3-round cap; a non-dry round 3 is a coordinator escalation to Trey, not a round 4).
+
+## Round 3 — Cursor (cursor-3) + Luna (codex-3) on fix commit `1a6481c` — CAP HIT
+
+Round 3 was the must-be-dry final round. It was not dry: 4 new accepted findings, all in the round-2 fix layer, 2 coordinator-verified on disk before triage. **The 3-round cap is hit; the W1 cycle is HALTED pending Trey's decision.** No further delegate fix rounds without authorization.
+
+| # | Sev | Source | Finding (verified?) |
+| --- | --- | --- | --- |
+| F20 | HIGH | C (r3) | F17's fail-closed scope too broad: a dangling `superseded_by` link (a state `trust_artifact.rs` already models as "unavailable") makes the chain walk error on hop-1 → whole supersede path aborts on EVERY retry → permanent import livelock for that memory. Mock treats missing nodes as empty children (`unwrap_or_default`), production errors — tests structurally green. Fix direction: typed-error discrimination — NotFound/tombstoned chain node = leaf (skip, keep walking); transport/protocol error = fail closed; fail-closed scope = "don't adopt", never "don't supersede" when the unreadable node is provably gone. |
+| F21 | HIGH | L (r3) | Namespace fallback cross-project mismatch — **coordinator-verified** at `plan.rs:150,236-242`: legacy-record identity recomputation uses the CANDIDATE's `canonical_namespace_id`, not `record.canonical_namespace_id` (added in round 1, unused here). A project-A record can match a project-B candidate → wrong-memory supersede. |
+| F22 | HIGH | L (r3) + C residual | BFS bound semantics: `chain.len() >= 16` bounds collected nodes, checked pre-hop — a single wide fan-out can exceed it, and exactly-16 first-level nodes stop traversal to deeper replacements → missed adoption. Fix: bound traversal depth and cap frontier explicitly. |
+| F23 | HIGH | L (r3) | Encrypted replacements unrecoverable: `full_body` still returns the `[encrypted content omitted]` sentinel → hash mismatch → duplicate supersede for encrypted-tier memories — the truncation defect's sibling, one tier over. Fix: adoption for encrypted replacements must compare via a daemon-computed hash of plaintext (or skip adoption + fail closed), never the redacted body. |
+
+Non-blocking round-3 confirmations: F14 additive + correctly scoped; F13 over-match resolves to ReportAmbiguous; walk duplication acceptable IF error semantics are aligned (they are not — F20).
+
+**Escalation state:** wave is otherwise strong — gate green (102 suites), root cause (ordinal renumbering) fixed and pinned, 19 prior findings landed and verified. The residual 4 are all in the crash-recovery adoption path added by rounds 1–2. Options for Trey: (a) coordinator-owned inline fix pass for F20–F23 + pinning tests + own gate + ONE scoped verify read (recommended — the fixes are small, well-understood, and the fix-lane loop is demonstrably generating new defects at this depth); (b) authorized 4th Devin round; (c) park W1 unmerged, integrate W0 alone, revisit W1 next session.

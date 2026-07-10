@@ -185,3 +185,17 @@ Outcome and verification: **DISSENT**, and it was right. Five verdicts: agreed W
 Performance observations: xhigh spent its effort exactly where briefed — checked the memo's citations against source, caught an uncited empirical claim, and found the two contract interactions (Stream D raise-only; W4 single-query-embedding) that both the Opus researcher and I missed. Honest about its own limit (no network to verify vec2text literature).
 
 Routing assessment: Sol xhigh as the final judgment read on coordinator-authored analysis is validated at the strongest level yet — it materially corrected a memo two other passes had grounded. Keep for every judgment-dense deliverable this arc. Confidence: high.
+
+## 2026-07-10 - devin swe-1.7 - W0 fix round 1 (16 findings) + W1 fix round 2 (7 findings)
+
+Two work-mode runs, --isolation none in the respective worktrees (W0: `devin-1` in memora-w0fix, ~75m; W1: `devin-2`... actually `memora-w1fix2`'s run, ~15m). Both executed their findings lists fully and honestly reported scope boundaries. Both committed despite instructions (W0 round said do-not-commit; W1 round 2 was granted one labeled commit) — treat "Devin will commit" as its standing behavior and plan the diff-review accordingly.
+
+Verification outcomes: W0 — its `--lib`-scoped memoryd gate hid 3 integration-test failures my full gate caught one at a time (candidate-leak pins in daemon_e2e, mcp_forward, mcp_stdio + the vector_recall_fusion strict-AND premise). All four were tests pinning pre-fix behavior, not defects in the fix — but the round-1 lesson stands: Devin's self-selected gate is narrower than the coordinator's. W1 round 2 — all 7 landed as specced and my full gate ran green, but round-3 review found 4 new HIGHs in its fix layer (livelock scope, namespace fallback, BFS bound, encrypted adoption). Pattern: Devin executes contracts perfectly and does not reason beyond them — every residual defect was in a case the findings contract failed to name.
+
+Routing assessment: keep Devin for well-specified fix lists; the coordinator must budget a full-gate + adversarial re-review per round, and cap-aware waves should write tighter contracts up front (name the error-path and encrypted/truncated variants explicitly). Confidence: high.
+
+## 2026-07-10 - grok-4.5 via cursor + gpt-5.6-luna via codex - W1 round 3 (cap round)
+
+`cursor-3` + `codex-3`, group memora-w1rev3, same brief. Cursor: 1 merge-blocking finding (fail-closed overreach → permanent import livelock on dangling supersession links; diagnosed the mock/prod divergence exactly — mock `unwrap_or_default` vs production error). Luna: 3 HIGHs (cross-project namespace fallback — coordinator-verified at plan.rs:150; BFS bound semantics; encrypted-replacement adoption hash mismatch). Zero overlap between the two reports — fifth consecutive disjoint round from this pair.
+
+Process note: round 3 was the cap round and was NOT dry → W1 halted and escalated per loop discipline. The pair's throughput (each round <6 min, all findings verified real so far) is not the bottleneck; the fix-contract completeness is.
