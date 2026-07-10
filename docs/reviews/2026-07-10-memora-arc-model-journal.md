@@ -109,3 +109,39 @@ Routing assessment: keep Cursor as round-2 on all remaining spec/contract text t
 ## 2026-07-10 - stale-alias incident #2 (process note)
 
 `delegate run-output cursor-2` (guessed alias for the round-2 spec review) returned an unrelated old `live_conflicts_count` report. Caught by report-validity check immediately. Cause: coordinator launched the run without recording its numbered alias first — the exact rule violation the round-1 incident established. Correct sequence run thereafter (`runs --group memora-w2spec` → cursor-29). Reinforcement: NEVER issue run-output on a guessed alias; resolve via --group listing first.
+
+## 2026-07-10 - gpt-5.6-luna via codex - W3 merge-proposal spec review (round 1)
+
+Command and run: `delegate --group memora-w3spec codex safe --model luna --reasoning-effort high --prompt-file thoughts/memora-build/w3-spec-review-prompt.md`; alias `codex-78` (main scope); mode/isolation: safe / worktree-temporary.
+
+Task and expectation: contract-level attack on the W3 merge-proposal spec (coordinator-authored), primed with two-clone convergence + shipped-code grounding requirements.
+
+Outcome and verification: 4 BLOCKER + 6 MAJOR + 1 MINOR, NOT-RATIFIABLE, 4m37s; **11/11 accepted** (findings-w3spec-r1.md). Every blocker was grounded in shipped code with exact line anchors: staged candidates servable through `query_chunks` (filters only metadata_only/passive_recall), transitions rejected by `validate.rs:44-55`, no concurrency fence, and the spec citing a per-source supersession event that `events/log.rs` explicitly defers. That last one is the sharpest catch — I wrote "emits the existing per-source supersession event" from the spec's mental model, not the code.
+
+Performance observations: read 6+ source files across 3 crates to ground findings; zero speculative findings; every fix suggestion was implementable as written. Luna×high on coordinator-authored contract text is now 2-for-2 producing accepted-only rounds.
+
+Routing assessment: standing conclusion reinforced — Luna×high is the default first-review lane for contract/spec text. Confidence: high.
+
+## 2026-07-10 - grok-4.5 via cursor - W0 benchmark harness review (round 1)
+
+Command and run: `delegate --group memora-w0rev cursor safe --prompt-file thoughts/memora-build/w0-review-prompt.md` (W0-worktree scope); alias `cursor-1`; mode/isolation: safe / worktree-temporary.
+
+Task and expectation: adversarial review of Sol's uncommitted W0 diff, primed with the strict-AND diagnosis and the 45-gold-id hunt area.
+
+Outcome and verification: 3 BLOCKER + 6 MAJOR + 3 MINOR + 1 NIT in 1m58s; 12/13 accepted (findings-w0-r1.md). Confirmed the coordinator's gold-mapping read independently and went further: the corpus-contamination blocker (one shared daemon corpus across all conversations/questions) was unique to Cursor and is arguably the most consequential finding of the round — nobody else saw it. Also spot-checked split parity with actual sha256 vectors.
+
+Performance observations: fastest reviewer in the fleet again (<2 min); findings arrived with plan-clause citations (caught the sensitivity-injection contract violation against plan r4 text). One finding rejected (feature-gating sha2 — cosmetic).
+
+Routing assessment: attacker role re-confirmed on eval/metrics code; its protocol-faithfulness instincts (dataset isolation) are a distinct strength. Confidence: high.
+
+## 2026-07-10 - gpt-5.6-luna via codex - W0 benchmark harness review (round 1, parallel slot)
+
+Command and run: same brief, `codex safe --model luna --reasoning-effort high` (W0-worktree scope); alias `codex-1`; mode/isolation: safe / worktree-temporary.
+
+Task and expectation: decorrelated same-brief parallel review of the W0 diff.
+
+Outcome and verification: 6 MAJOR + 3 MINOR + 1 NIT in 3m8s; all accepted after merging with Cursor's set. Convergent on gold over-count, judge timeout, streaming load, sensitivity conflation, startup-lane mislabeling, test gaps. Two unique accepted adds: chunk-level hits not collapsed to memory level (duplicate ids consume the top-10 budget and double-count in recall/nDCG — grounded in memory_ops.rs:158-179) and judge-score validation (non-finite/out-of-range scores enter judge_mean unchecked).
+
+Performance observations: the unique finds were both quantitative-integrity defects — Luna keeps catching the "numbers lie silently" class. Ran `git diff --check` + fixture JSON validation + `cargo metadata` as read-only verification.
+
+Routing assessment: Cursor+Luna parallel pair produced disjoint accepted uniques for the third consecutive round — this is now the standing review configuration for the arc. Confidence: high.
