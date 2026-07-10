@@ -31,3 +31,7 @@ Spec §14.4 says same-field `summary` conflicts select "the side with later `upd
 ## OPEN: shipped `_extras` merge diverges from spec §14.4 (pre-existing, found 2026-07-10)
 
 Spec §14.4 says unknown `_extras` add/add same-key conflicts "quarantine unless values equal"; the shipped `field_rules.rs` `three_way_value` fallthrough resolves them silently ours-wins instead. Spec/code drift — one of them is wrong. Found by the W2 spec-package round-2 review (Cursor, cursor-29). Fix direction TBD with the `summary` tie-break audit above (same fallthrough).
+
+## OPEN: `memoryd search` FTS-only degraded path is strict-AND — zero hits for natural-language queries (found 2026-07-10 by W0)
+
+When vector recall is unavailable, `memory_ops.rs` `fts_search_hits` falls back to `substrate.query_chunks` (strict-AND phrase tokens, `query.rs:520`). Natural-language questions ("What does Melanie do to destress?") require every token in a single chunk → 0 hits over a 540-memory corpus, measured by the W0 benchmark e2e. The hybrid BM25 lane already has the two-stage strict→relaxed-OR fallback (`query.rs:649-680`, RELAXED_RANK_OFFSET sweep-tuned) — the degraded path just doesn't use it. Fix: route the FTS-only fallback through the same two-stage helper, with a pinning test (natural-language query over a fixture corpus returns >0 hits in degraded mode). Scoped into W0's fix round.
