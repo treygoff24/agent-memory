@@ -9,13 +9,13 @@ the API lane, land there.
 Real-API golden-corpus run, Gemini only (no Voyage/Jina keys on device). Results copied into
 `crates/memorum-eval/fixtures/golden/_embed_bench/result_gemini-*.json`.
 
-| model | ndcg10 | recall5 | mrr | trap5 | abstain gap |
-| --- | --- | --- | --- | --- | --- |
-| qwen3-0.6b (shipped local) | 0.751 | 0.89 | 0.724 | 0.261 | 0.332 |
-| embeddinggemma | 0.843 | 0.91 | 0.827 | 0.348 | 0.137 |
-| **gemini-768** | **0.845** | **0.92** | 0.825 | 0.346 | 0.164 |
-| gemini-1536 | 0.849 | 0.90 | 0.835 | 0.365 | 0.172 |
-| gemini-3072 | 0.854 | 0.90 | 0.835 | 0.365 | 0.169 |
+| model                      | ndcg10    | recall5  | mrr   | trap5 | abstain gap |
+| -------------------------- | --------- | -------- | ----- | ----- | ----------- |
+| qwen3-0.6b (shipped local) | 0.751     | 0.89     | 0.724 | 0.261 | 0.332       |
+| embeddinggemma             | 0.843     | 0.91     | 0.827 | 0.348 | 0.137       |
+| **gemini-768**             | **0.845** | **0.92** | 0.825 | 0.346 | 0.164       |
+| gemini-1536                | 0.849     | 0.90     | 0.835 | 0.365 | 0.172       |
+| gemini-3072                | 0.854     | 0.90     | 0.835 | 0.365 | 0.169       |
 
 **Verdict: 768 ratified.** 1536/3072 buy +0.004/+0.009 nDCG for 2–4× vector storage; 768 has the best
 recall@5 in the whole table and the best Gemini trap rate. Mean query embed 206 ms (inside the 250 ms
