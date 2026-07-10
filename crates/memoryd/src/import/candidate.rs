@@ -1,9 +1,11 @@
 //! Parsed memory candidate — the uniform shape both Claude and Codex parsers
 //! emit, consumed by the pipeline's dedup/plan/write stages.
 
-use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
+use regex::Regex;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -73,9 +75,32 @@ pub struct ParsedMemory {
     /// Optional Claude-style topic title for `memory_write { title }` if the
     /// parser was able to extract one.
     pub title: Option<String>,
+    /// Content-hash suffix appended to the section component when multiple
+    /// sections in the same source file would otherwise share the same ordinal-
+    /// free slug. Set by `disambiguate_collisions` after parsing.
+    pub section_disambiguation: Option<String>,
 }
 
 impl ParsedMemory {
+    /// Stable import identity. A recovered canonical id wins; otherwise use a
+    /// portable tuple rather than the mutable absolute path/source key.
+    pub fn import_identity(&self, canonical_project_id: Option<&str>) -> String {
+        if let Some(id) = self.recovered_memory_id() {
+            return format!("mem:{id}");
+        }
+        compute_identity(
+            &self.source_key,
+            &self.source_path,
+            self.harness.as_str(),
+            canonical_project_id.unwrap_or("me"),
+            self.section_disambiguation.as_deref(),
+        )
+    }
+
+    pub fn recovered_memory_id(&self) -> Option<&str> {
+        self.frontmatter_hint.get("id").and_then(Value::as_str).filter(|id| id.starts_with("mem_"))
+    }
+
     /// Compute the canonical content hash over `(canonical-yaml of frontmatter
     /// hint || body)`. Whitespace-stable: the YAML representation is what
     /// `serde_yaml` produces, which is deterministic for a `BTreeMap`-keyed
@@ -88,11 +113,116 @@ impl ParsedMemory {
         hasher.update(body.as_bytes());
         format!("sha256:{}", hex::encode(hasher.finalize()))
     }
+
+    /// First 8 hex digits of the content hash, used as a collision disambiguator.
+    pub fn short_content_hash(&self) -> &str {
+        short_hash(&self.content_hash)
+    }
+
+    /// The root-relative path without the section, and the ordinal-free section
+    /// base, grouped as a collision key for `disambiguate_collisions`.
+    pub fn section_base_key(&self) -> (String, String) {
+        let (_, relative) = self.source_key.split_once(':').unwrap_or(("", self.source_key.as_str()));
+        let (path, section) = relative.split_once('#').unwrap_or((relative, ""));
+        (path.to_string(), ordinal_free_section(section))
+    }
+
+    /// The section base alone (ordinal-free).
+    pub fn section_base(&self) -> String {
+        self.section_base_key().1
+    }
+}
+
+/// Compute the stable import identity for any source record or candidate.
+///
+/// The identity is `tuple:<harness>:<canonical-profile-path>:<project>:<path>:<section>`.
+/// The profile path is canonicalized so symlinked profiles resolve to the same
+/// backing store; the section is stripped of Codex `task-group-N-` prefixes and
+/// disambiguated when `section_disambiguation` is supplied.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn compute_identity(
+    source_key: &str,
+    source_path: &Path,
+    harness: &str,
+    canonical_project_id: &str,
+    section_disambiguation: Option<&str>,
+) -> String {
+    let (_, relative) = source_key.split_once(':').unwrap_or(("", source_key));
+    let (path, section) = relative.split_once('#').unwrap_or((relative, ""));
+    let section = ordinal_free_section(section);
+    let section = match section_disambiguation {
+        Some(suffix) if !section.is_empty() => format!("{section}-{suffix}"),
+        Some(suffix) => suffix.to_string(),
+        None => section,
+    };
+    format!("tuple:{harness}:{}:{canonical_project_id}:{path}:{section}", profile_identity_from_path(source_path))
+}
+
+/// Strip Codex `task-group-N-` prefixes from a section slug so a renumbered
+/// task group still maps to the same identity.
+pub(crate) fn ordinal_free_section(section: &str) -> String {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"^task-group-\d+-").expect("static regex compiles"));
+    re.replace(section, "").into_owned()
+}
+
+/// Canonicalize the profile path (e.g. `~/.claude` or `~/.codex`) from a source
+/// path. If the profile directory is a symlink, this resolves to the real path
+/// so two profile roots pointing at the same store share an identity.
+fn profile_identity_from_path(source_path: &Path) -> String {
+    let Some(profile_root) = source_path.ancestors().find(|path| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with(".claude") || name.starts_with(".codex"))
+    }) else {
+        return "default".to_string();
+    };
+    std::fs::canonicalize(profile_root)
+        .unwrap_or_else(|_| profile_root.to_path_buf())
+        .to_string_lossy()
+        .to_string()
+}
+
+/// First 8 hex digits of a `sha256:`-prefixed hash.
+pub(crate) fn short_hash(content_hash: &str) -> &str {
+    let hex = content_hash.strip_prefix("sha256:").unwrap_or(content_hash);
+    hex.get(..8).unwrap_or(hex)
+}
+
+/// Detect sections whose ordinal-free slugs collide within the same source file
+/// and append a short content-hash suffix to their identity. Callers parse all
+/// candidates from a source root, then run this once over the vector.
+pub(crate) fn disambiguate_collisions(candidates: &mut [ParsedMemory]) {
+    let mut counts: HashMap<(String, String), usize> = HashMap::new();
+    for candidate in candidates.iter() {
+        *counts.entry(candidate.section_base_key()).or_default() += 1;
+    }
+    for candidate in candidates.iter_mut() {
+        if counts.get(&candidate.section_base_key()).copied().unwrap_or(0) > 1 {
+            candidate.section_disambiguation = Some(candidate.short_content_hash().to_string());
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+
+    fn candidate(path: &str, source_key: &str) -> ParsedMemory {
+        ParsedMemory {
+            source_key: source_key.to_string(),
+            source_path: PathBuf::from(path),
+            content_hash: "sha256:00000000000000000000000000000000000000000000000000000000deadbeef".to_string(),
+            harness: Harness::ClaudeCode,
+            frontmatter_hint: BTreeMap::new(),
+            body: "body".to_string(),
+            wiki_links: Vec::new(),
+            cwd: None,
+            title: None,
+            section_disambiguation: None,
+        }
+    }
 
     #[test]
     fn content_hash_is_stable_for_equivalent_input() {
@@ -116,5 +246,80 @@ mod tests {
     fn harness_str_token_is_stable_for_wire_use() {
         assert_eq!(Harness::ClaudeCode.as_str(), "claude-code");
         assert_eq!(Harness::Codex.as_str(), "codex");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn import_identity_uses_canonical_profile_root_and_survives_symlinks() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let real_profile = tmp.path().join(".claude-real");
+        let other_profile = tmp.path().join(".claude-other");
+        std::fs::create_dir_all(real_profile.join("projects/proj/memory")).expect("mkdir");
+        std::fs::create_dir_all(other_profile.join("projects/proj/memory")).expect("mkdir");
+        std::fs::write(real_profile.join("projects/proj/memory/topic.md"), b"body").expect("write");
+        std::fs::write(other_profile.join("projects/proj/memory/topic.md"), b"body").expect("write");
+
+        let link_profile = tmp.path().join(".claude-shared");
+        std::os::unix::fs::symlink(&real_profile, &link_profile).expect("symlink");
+
+        let same_via_link = link_profile.join("projects/proj/memory/topic.md");
+        let same_real = real_profile.join("projects/proj/memory/topic.md");
+        let other = other_profile.join("projects/proj/memory/topic.md");
+        let renamed = real_profile.join("projects/proj/memory/renamed.md");
+
+        let c1 = candidate(same_via_link.to_str().unwrap(), "claude:projects/proj/memory/topic.md");
+        let c2 = candidate(same_real.to_str().unwrap(), "claude:projects/proj/memory/topic.md");
+        let c3 = candidate(other.to_str().unwrap(), "claude:projects/proj/memory/topic.md");
+        let c4 = candidate(renamed.to_str().unwrap(), "claude:projects/proj/memory/renamed.md");
+
+        assert_eq!(c1.import_identity(Some("proj_x")), c2.import_identity(Some("proj_x")));
+        assert_ne!(c2.import_identity(Some("proj_x")), c3.import_identity(Some("proj_x")));
+        assert_ne!(c2.import_identity(Some("proj_x")), c4.import_identity(Some("proj_x")));
+        assert_ne!(c2.import_identity(Some("proj_x")), c2.import_identity(Some("proj_y")));
+    }
+
+    #[test]
+    fn recovered_canonical_id_survives_rename_and_content_change() {
+        let mut original = candidate("/a/.claude/projects/p/memory/old.md", "claude:projects/p/memory/old.md");
+        original.frontmatter_hint.insert("id".to_string(), Value::String("mem_20260710_test_000001".to_string()));
+        let mut renamed = candidate("/a/.claude/projects/p/memory/new.md", "claude:projects/p/memory/new.md");
+        renamed.frontmatter_hint = original.frontmatter_hint.clone();
+        assert_eq!(original.import_identity(Some("proj_p")), renamed.import_identity(Some("proj_p")));
+    }
+
+    #[test]
+    fn ordinal_free_section_strips_task_group_prefix() {
+        assert_eq!(ordinal_free_section("task-group-1-atlasos-react-doctor"), "atlasos-react-doctor");
+        assert_eq!(ordinal_free_section("atlasos-react-doctor"), "atlasos-react-doctor");
+        assert_eq!(ordinal_free_section(""), "");
+    }
+
+    #[test]
+    fn section_disambiguation_survives_into_identity() {
+        let mut c = candidate(
+            "/u/.claude/projects/p/memory/topic.md",
+            "claude:projects/p/memory/topic.md#section-a",
+        );
+        c.section_disambiguation = Some("a1b2c3d4".to_string());
+        let id = c.import_identity(Some("proj_p"));
+        assert!(id.ends_with(":section-a-a1b2c3d4"), "identity: {id}");
+    }
+
+    #[test]
+    fn disambiguate_collisions_appends_short_hash_suffix() {
+        let mut c1 = candidate("/u/.codex/memories/MEMORY.md", "codex:memories/MEMORY.md#task-group-1-foo");
+        c1.content_hash = "sha256:aaa1110000000000000000000000000000000000000000000000000000000000".to_string();
+        let mut c2 = candidate("/u/.codex/memories/MEMORY.md", "codex:memories/MEMORY.md#task-group-2-foo");
+        c2.content_hash = "sha256:bbb2220000000000000000000000000000000000000000000000000000000000".to_string();
+        let mut c3 = candidate("/u/.codex/memories/MEMORY.md", "codex:memories/MEMORY.md#task-group-3-bar");
+        c3.content_hash = "sha256:ccc3330000000000000000000000000000000000000000000000000000000000".to_string();
+
+        let mut candidates = vec![c1, c2, c3];
+        disambiguate_collisions(&mut candidates);
+
+        assert!(candidates[0].section_disambiguation.is_some());
+        assert!(candidates[1].section_disambiguation.is_some());
+        assert!(candidates[0].section_disambiguation != candidates[1].section_disambiguation);
+        assert!(candidates[2].section_disambiguation.is_none());
     }
 }

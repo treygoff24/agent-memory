@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use super::{extract_wiki_links, slugify, stamp_auto_memory_provenance, strip_memorum_recall_blocks};
-use crate::import::candidate::{Harness, ParsedMemory};
+use crate::import::candidate::{disambiguate_collisions, Harness, ParsedMemory};
 use crate::import::{ImportError, ImportResult};
 
 /// Output bundle from a Codex memory root parse.
@@ -35,6 +35,7 @@ pub fn parse(root: &Path) -> ImportResult<CodexParseOutput> {
     if ad_hoc.exists() {
         parse_ad_hoc_notes(&ad_hoc, &mut output);
     }
+    disambiguate_collisions(&mut output.candidates);
     output.candidates.sort_by(|a, b| a.source_key.cmp(&b.source_key));
     Ok(output)
 }
@@ -147,6 +148,7 @@ fn parse_task_group_block(block: &TaskGroupBlock, index: usize, source_path: &Pa
         wiki_links,
         cwd,
         title: Some(block.header.clone()),
+        section_disambiguation: None,
     })
 }
 
@@ -209,6 +211,7 @@ fn parse_ad_hoc_note(path: &Path) -> ImportResult<ParsedMemory> {
         wiki_links,
         cwd: None,
         title,
+        section_disambiguation: None,
     })
 }
 

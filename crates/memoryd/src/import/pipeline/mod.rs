@@ -93,7 +93,7 @@ mod tests {
     use serde_json::Value;
 
     use crate::import::project_map::{ResolutionKind, ScopeBinding};
-    use crate::protocol::{GovernanceRefusalReason, GovernanceStatus, ProtocolError, ResponsePayload};
+    use crate::protocol::{GetResponse, GovernanceRefusalReason, GovernanceStatus, ProtocolError, ResponsePayload};
 
     use crate::import::candidate::ParsedMemory;
     use crate::import::report::ImportReport;
@@ -139,6 +139,7 @@ mod tests {
             wiki_links,
             cwd: None,
             title: Some(source_key.to_string()),
+            section_disambiguation: None,
         }
     }
 
@@ -167,6 +168,9 @@ mod tests {
         canonical_namespace_id: Option<&str>,
     ) -> ImportRecord {
         ImportRecord {
+            source_identity: String::new(),
+            source_key: String::new(),
+            source_memory_id: None,
             memory_id: memory_id.to_string(),
             content_hash: content_hash.to_string(),
             imported_at: Utc::now(),
@@ -174,6 +178,7 @@ mod tests {
             source_path_at_import: PathBuf::from("ignored"),
             namespace: namespace.map(str::to_string),
             canonical_namespace_id: canonical_namespace_id.map(str::to_string),
+            aliases: Vec::new(),
             supersession_chain: Vec::new(),
         }
     }
@@ -193,9 +198,9 @@ mod tests {
     fn unchanged_project_import_with_matching_bucket_skips_idempotently() {
         let record = import_record("mem_existing", "sha256:same", Some("policy"), Some("proj_policy-c6698817853503be"));
         let action =
-            plan_action_for_record(&record, "sha256:same", &project_scope("policy", "proj_policy-c6698817853503be"));
+            plan_action_for_record(&record, "record_key", "sha256:same", &project_scope("policy", "proj_policy-c6698817853503be"));
         assert!(
-            matches!(action, PlanAction::SkipUnchanged { existing_memory_id } if existing_memory_id == "mem_existing")
+            matches!(action, PlanAction::SkipUnchanged { existing_memory_id, .. } if existing_memory_id == "mem_existing")
         );
     }
 
@@ -203,9 +208,9 @@ mod tests {
     fn unchanged_project_import_with_different_bucket_repairs_instead_of_skipping() {
         let record = import_record("mem_wrong_bucket", "sha256:same", Some("agent-memory"), Some("proj_agent-memory"));
         let action =
-            plan_action_for_record(&record, "sha256:same", &project_scope("policy", "proj_policy-c6698817853503be"));
+            plan_action_for_record(&record, "record_key", "sha256:same", &project_scope("policy", "proj_policy-c6698817853503be"));
         assert!(
-            matches!(action, PlanAction::RepairBucket { prior_memory_id, prior_content_hash } if prior_memory_id == "mem_wrong_bucket" && prior_content_hash == "sha256:same")
+            matches!(action, PlanAction::RepairBucket { prior_memory_id, prior_content_hash, .. } if prior_memory_id == "mem_wrong_bucket" && prior_content_hash == "sha256:same")
         );
     }
 
@@ -378,6 +383,9 @@ mod tests {
         state.imports.insert(
             source_key.clone(),
             ImportRecord {
+                source_identity: String::new(),
+                source_key: String::new(),
+                source_memory_id: None,
                 memory_id: "mem_existing".to_string(),
                 content_hash,
                 imported_at: Utc::now(),
@@ -385,6 +393,7 @@ mod tests {
                 source_path_at_import: PathBuf::from("ignored"),
                 namespace: Some("me".to_string()),
                 canonical_namespace_id: None,
+                aliases: Vec::new(),
                 supersession_chain: Vec::new(),
             },
         );
@@ -405,7 +414,7 @@ mod tests {
             .expect("second plan");
         assert_eq!(plan.actions.len(), 1);
         assert!(
-            matches!(plan.actions[0].action, PlanAction::SkipUnchanged { ref existing_memory_id } if existing_memory_id == "mem_existing")
+            matches!(plan.actions[0].action, PlanAction::SkipUnchanged { ref existing_memory_id, .. } if existing_memory_id == "mem_existing")
         );
     }
 
@@ -439,6 +448,9 @@ mod tests {
         state.imports.insert(
             source_key,
             ImportRecord {
+                source_identity: String::new(),
+                source_key: String::new(),
+                source_memory_id: None,
                 memory_id: "mem_wrong_bucket".to_string(),
                 content_hash,
                 imported_at: Utc::now(),
@@ -446,6 +458,7 @@ mod tests {
                 source_path_at_import: PathBuf::from("ignored"),
                 namespace: Some("agent-memory".to_string()),
                 canonical_namespace_id: Some("proj_agent-memory".to_string()),
+                aliases: Vec::new(),
                 supersession_chain: Vec::new(),
             },
         );
@@ -463,7 +476,10 @@ mod tests {
                 resolution: ResolutionKind::YamlOverride,
                 project_yaml: None,
             },
-            action: bucket_repair_action(state.imports.get("claude:proj/memory/a.md").expect("seeded record")),
+            action: bucket_repair_action(
+                state.imports.get("claude:proj/memory/a.md").expect("seeded record"),
+                "claude:proj/memory/a.md",
+            ),
             wiki_link_targets_resolvable: Vec::new(),
             wiki_link_targets_back_edge: Vec::new(),
         };
@@ -504,8 +520,7 @@ mod tests {
         );
         let claude = result.report.harnesses.get("claude-code").expect("bucket");
         assert_eq!(claude.superseded, 1);
-        let record = result.state.imports.get("claude:proj/memory/a.md").expect("state record");
-        assert_eq!(record.memory_id, "mem_rebucketed");
+        let record = result.state.imports.values().find(|r| r.memory_id == "mem_rebucketed").expect("state record");
         assert_eq!(record.namespace.as_deref(), Some("policy"));
         assert_eq!(record.canonical_namespace_id.as_deref(), Some("proj_policy-c6698817853503be"));
     }
@@ -523,6 +538,9 @@ mod tests {
         state.imports.insert(
             "claude:proj/memory/a.md".to_string(),
             ImportRecord {
+                source_identity: String::new(),
+                source_key: String::new(),
+                source_memory_id: None,
                 memory_id: "mem_old".to_string(),
                 content_hash: "sha256:STALE".to_string(),
                 imported_at: Utc::now(),
@@ -530,6 +548,7 @@ mod tests {
                 source_path_at_import: PathBuf::from("ignored"),
                 namespace: Some("me".to_string()),
                 canonical_namespace_id: None,
+                aliases: Vec::new(),
                 supersession_chain: Vec::new(),
             },
         );
@@ -551,12 +570,79 @@ mod tests {
             .expect("plan");
         assert_eq!(plan.actions.len(), 1);
         match &plan.actions[0].action {
-            PlanAction::Supersede { prior_memory_id, prior_content_hash } => {
+            PlanAction::Supersede { prior_memory_id, prior_content_hash, .. } => {
                 assert_eq!(prior_memory_id, "mem_old");
                 assert_eq!(prior_content_hash, "sha256:STALE");
             }
             other => panic!("expected Supersede, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn plan_matches_codex_memory_after_task_group_renumbering() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let codex_root = tmp.path().join("codex");
+        std::fs::create_dir_all(&codex_root).expect("mkdir");
+        // Old run: "Foo" was the first task group. New run: "Foo" is second.
+        std::fs::write(
+            codex_root.join("MEMORY.md"),
+            b"# Task Group: Atlas\n\nscope: how\n\nbody atlas\n\n# Task Group: Foo\n\nscope: what\n\nbody foo\n",
+        )
+        .expect("write");
+
+        let parse_output = crate::import::sources::codex::parse(&codex_root).expect("parse");
+        assert!(parse_output.errors.is_empty(), "parse errors: {:?}", parse_output.errors);
+        let foo = parse_output
+            .candidates
+            .iter()
+            .find(|c| c.source_key == "codex:memories/MEMORY.md#task-group-2-foo")
+            .unwrap_or_else(|| panic!("foo candidate not in {:?}", parse_output.candidates.iter().map(|c| &c.source_key).collect::<Vec<_>>()));
+
+        let mut state = ImportState::default();
+        state.imports.insert(
+            "codex:memories/MEMORY.md#task-group-1-foo".to_string(),
+            ImportRecord {
+                source_identity: String::new(),
+                source_key: String::new(),
+                source_memory_id: None,
+                memory_id: "mem_foo".to_string(),
+                content_hash: foo.content_hash.clone(),
+                imported_at: Utc::now(),
+                harness: "codex".to_string(),
+                source_path_at_import: codex_root.join("MEMORY.md"),
+                namespace: Some("me".to_string()),
+                canonical_namespace_id: None,
+                aliases: Vec::new(),
+                supersession_chain: Vec::new(),
+            },
+        );
+
+        let engine = ImportEngine::new(tmp.path());
+        let mut prompts = NoPrompts;
+        let plan = engine
+            .plan(
+                ImportOptions {
+                    from_claude: Vec::new(),
+                    from_codex: Some(codex_root),
+                    harness_filter: None,
+                    quiet: true,
+                    state,
+                },
+                &mut prompts,
+            )
+            .await
+            .expect("plan");
+
+        let foo_action = plan
+            .actions
+            .iter()
+            .find(|a| a.source_key == "codex:memories/MEMORY.md#task-group-2-foo")
+            .expect("foo action");
+        assert!(
+            matches!(foo_action.action, PlanAction::SkipUnchanged { ref existing_memory_id, .. } if existing_memory_id == "mem_foo"),
+            "renumbered task group should still match by ordinal-free identity: {:?}",
+            foo_action.action
+        );
     }
 
     #[tokio::test]
@@ -594,8 +680,12 @@ mod tests {
     struct MockDaemonClient {
         write_responses: std::collections::VecDeque<WriteMemoryOutcome>,
         supersede_responses: std::collections::VecDeque<SupersedeOutcome>,
+        get_responses: std::collections::HashMap<String, crate::protocol::GetResponse>,
+        superseded_by_chains: std::collections::HashMap<String, Vec<String>>,
         write_calls: Vec<MockWriteCall>,
         supersede_calls: Vec<MockSupersedeCall>,
+        get_calls: Vec<String>,
+        trust_artifact_calls: Vec<String>,
     }
 
     #[derive(Debug, Clone)]
@@ -623,6 +713,14 @@ mod tests {
         }
         fn push_supersede(mut self, outcome: SupersedeOutcome) -> Self {
             self.supersede_responses.push_back(outcome);
+            self
+        }
+        fn with_get_response(mut self, id: &str, response: crate::protocol::GetResponse) -> Self {
+            self.get_responses.insert(id.to_string(), response);
+            self
+        }
+        fn with_superseded_by_chain(mut self, id: &str, chain: Vec<String>) -> Self {
+            self.superseded_by_chains.insert(id.to_string(), chain);
             self
         }
     }
@@ -654,6 +752,22 @@ mod tests {
                 new_id: Some("mem_supersede".to_string()),
                 reason: None,
             }))
+        }
+
+        async fn get_superseded_by_chain(&mut self, id: &str) -> ImportResult<Vec<String>> {
+            self.trust_artifact_calls.push(id.to_string());
+            Ok(self.superseded_by_chains.get(id).cloned().unwrap_or_default())
+        }
+
+        async fn get_memory(&mut self, id: &str) -> ImportResult<crate::protocol::GetResponse> {
+            self.get_calls.push(id.to_string());
+            self.get_responses
+                .get(id)
+                .cloned()
+                .ok_or_else(|| ImportError::Parse {
+                    source_key: id.to_string(),
+                    reason: "mock get response not configured".to_string(),
+                })
         }
     }
 
@@ -721,7 +835,8 @@ mod tests {
         let claude = result.report.harnesses.get("claude-code").expect("claude bucket");
         assert_eq!(claude.written_new, 1);
         assert_eq!(claude.refused_other, 0);
-        assert_eq!(result.state.imports.get("a").map(|r| r.memory_id.clone()), Some("mem_abc".to_string()));
+        assert_eq!(result.state.imports.len(), 1);
+        assert_eq!(result.state.imports.values().next().map(|r| r.memory_id.clone()), Some("mem_abc".to_string()));
         assert_eq!(client.write_calls.len(), 1, "single socket call");
     }
 
@@ -745,7 +860,8 @@ mod tests {
         assert_eq!(claude.dedup_existing, 1);
         assert_eq!(claude.written_new, 0);
         assert_eq!(result.report.dedups.len(), 1);
-        assert_eq!(result.state.imports.get("a").map(|r| r.memory_id.clone()), Some("mem_existing".to_string()));
+        let record = result.state.imports.values().find(|r| r.memory_id == "mem_existing").expect("state record");
+        assert_eq!(record.source_key, "a");
     }
 
     #[tokio::test]
@@ -774,9 +890,95 @@ mod tests {
         assert_eq!(client.supersede_calls[0].old_id, "mem_prior");
         let claude = result.report.harnesses.get("claude-code").expect("bucket");
         assert_eq!(claude.superseded, 1);
-        let record = result.state.imports.get("a").expect("state record");
-        assert_eq!(record.memory_id, "mem_new");
+        let record = result.state.imports.values().find(|r| r.memory_id == "mem_new").expect("state record");
+        assert_eq!(record.source_key, "a");
         assert_eq!(record.supersession_chain.len(), 0, "supersession chain only carries prior state-file records");
+    }
+
+    #[tokio::test]
+    async fn execute_supersede_chain_adopts_existing_replacement_without_duplicate_write() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let engine = ImportEngine::new(tmp.path());
+        // Candidate content is "replacement"; the daemon's supersession chain
+        // already has a memory with that same body.
+        let candidate = make_candidate("a", "replacement", Vec::new());
+        let mut state = ImportState::default();
+        state.imports.insert(
+            "a".to_string(),
+            ImportRecord {
+                source_identity: String::new(),
+                source_key: String::new(),
+                source_memory_id: None,
+                memory_id: "mem_prior".to_string(),
+                content_hash: "sha256:STALE".to_string(),
+                imported_at: Utc::now(),
+                harness: "claude-code".to_string(),
+                source_path_at_import: PathBuf::from("/fixture/a"),
+                namespace: Some("me".to_string()),
+                canonical_namespace_id: None,
+                aliases: Vec::new(),
+                supersession_chain: Vec::new(),
+            },
+        );
+        let action = PlannedWrite {
+            source_key: candidate.source_key.clone(),
+            candidate,
+            scope: ScopeBinding {
+                scope: memory_substrate::Scope::User,
+                namespace: Some("me".to_string()),
+                namespace_alias: None,
+                canonical_namespace_id: None,
+                resolution: ResolutionKind::UserScope,
+                project_yaml: None,
+            },
+            action: PlanAction::Supersede {
+                prior_memory_id: "mem_prior".to_string(),
+                prior_content_hash: "sha256:STALE".to_string(),
+                prior_record_key: "a".to_string(),
+            },
+            wiki_link_targets_resolvable: Vec::new(),
+            wiki_link_targets_back_edge: Vec::new(),
+        };
+
+        let mut client = MockDaemonClient::default()
+            .with_superseded_by_chain("mem_prior", vec!["mem_new".to_string()])
+            .with_get_response(
+                "mem_new",
+                GetResponse {
+                    id: "mem_new".to_string(),
+                    summary: "replacement".to_string(),
+                    body: "replacement".to_string(),
+                    truncated: false,
+                    guidance: String::new(),
+                    provenance: None,
+                },
+            );
+
+        let result = engine
+            .execute(
+                ImportPlan {
+                    actions: vec![action],
+                    source_discovery_summary: DiscoverySummary::default(),
+                    unresolved_back_edges: Vec::new(),
+                    parse_errors: Vec::new(),
+                    frontmatter_recovered: Vec::new(),
+                    claude_roots_used: Vec::new(),
+                    state,
+                },
+                ExecuteOptions::default(),
+                &mut client,
+            )
+            .await
+            .expect("execute ok");
+
+        assert!(client.supersede_calls.is_empty(), "crash-mitigation must not re-issue supersede");
+        assert!(client.get_calls.contains(&"mem_new".to_string()));
+        assert!(client.trust_artifact_calls.contains(&"mem_prior".to_string()));
+        let claude = result.report.harnesses.get("claude-code").expect("bucket");
+        assert_eq!(claude.superseded, 1);
+        let record = result.state.imports.values().find(|r| r.memory_id == "mem_new").expect("state record");
+        assert_eq!(record.source_key, "a");
+        assert!(record.supersession_chain.iter().any(|link| link.memory_id == "mem_prior"));
     }
 
     #[tokio::test]

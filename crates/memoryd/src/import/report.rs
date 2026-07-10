@@ -39,6 +39,8 @@ pub struct ImportReport {
     /// `candidates`; quarantined memories also surface in the review queue.
     #[serde(default)]
     pub quarantined: Vec<CandidateEntry>,
+    #[serde(default)]
+    pub ambiguous_historical: Vec<AmbiguousImportEntry>,
     /// The Claude profile roots the import actually covered, as string paths.
     /// Empty when only Codex was imported (or no roots were discovered).
     #[serde(default)]
@@ -67,6 +69,7 @@ pub struct HarnessCounters {
     pub quarantined: usize,
     pub skipped_idempotent: usize,
     pub skipped_by_prompt: usize,
+    pub ambiguous: usize,
     pub refused_privacy: usize,
     pub refused_contradiction: usize,
     pub refused_tombstone: usize,
@@ -88,6 +91,13 @@ pub struct DedupEntry {
     pub source_key: String,
     pub harness: String,
     pub existing_memory_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AmbiguousImportEntry {
+    pub source_key: String,
+    pub harness: String,
+    pub matching_memory_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -185,6 +195,12 @@ impl ImportReport {
         if !self.parse_errors.is_empty() {
             buf.push_str(&format!("  dropped (unreadable): {}\n", self.parse_errors.len()));
         }
+        if !self.ambiguous_historical.is_empty() {
+            buf.push_str(&format!(
+                "  ambiguous historical matches (not changed): {}\n",
+                self.ambiguous_historical.len()
+            ));
+        }
         if dedup_existing > 0 {
             buf.push_str(&format!("  deduped (already present): {dedup_existing}\n"));
         }
@@ -206,7 +222,7 @@ impl ImportReport {
         self.push_reconciliation(&mut buf);
         for (harness, counters) in &self.harnesses {
             buf.push_str(&format!(
-                "  {harness}: parsed={p} written={w} dedup={d} superseded={s} candidate={c} quarantined={q} skipped_idempotent={si} skipped_by_prompt={sp} refused={r}\n",
+                "  {harness}: parsed={p} written={w} dedup={d} superseded={s} candidate={c} quarantined={q} skipped_idempotent={si} skipped_by_prompt={sp} ambiguous={a} refused={r}\n",
                 p = counters.parsed,
                 w = counters.written_new,
                 d = counters.dedup_existing,
@@ -215,6 +231,7 @@ impl ImportReport {
                 q = counters.quarantined,
                 si = counters.skipped_idempotent,
                 sp = counters.skipped_by_prompt,
+                a = counters.ambiguous,
                 r = counters.refused_privacy
                     + counters.refused_contradiction
                     + counters.refused_tombstone
@@ -256,6 +273,17 @@ impl ImportReport {
             buf.push_str("\nParse errors (skipped):\n");
             for error in &self.parse_errors {
                 buf.push_str(&format!("  [{}] {}: {}\n", error.kind, error.source_key, error.message));
+            }
+        }
+        if !self.ambiguous_historical.is_empty() {
+            buf.push_str("\nAmbiguous historical matches (not superseded):\n");
+            for entry in &self.ambiguous_historical {
+                buf.push_str(&format!(
+                    "  [{}] {}: {}\n",
+                    entry.harness,
+                    entry.source_key,
+                    entry.matching_memory_ids.join(", ")
+                ));
             }
         }
         buf

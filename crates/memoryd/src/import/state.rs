@@ -6,6 +6,10 @@
 //! double-writes; the state file just lets the importer skip the parse +
 //! socket round-trip for sources it has already confirmed-imported.
 //!
+//! Schema v1 records use `source_identity` as the map key. Legacy records that
+//! predate `source_identity` are keyed by `source_key` and are rewritten on the
+//! first matching rerun.
+//!
 //! Durability strategy (plan-locked):
 //!
 //! - Per-record write: atomic tmp + rename. No parent-dir fsync per record
@@ -39,6 +43,17 @@ const LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 /// state file stays portable across machines with different home directories.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImportRecord {
+    /// Stable identity used as the map key.  Unlike `source_key`, this survives
+    /// a profile-home move and, when available, is the source's canonical id.
+    #[serde(default)]
+    pub source_identity: String,
+    /// The current harness-relative location.  Kept for link aliases and
+    /// backwards-compatible migration of schema-v1 records.
+    #[serde(default)]
+    pub source_key: String,
+    /// Canonical `mem_*` id recovered from the source frontmatter, if present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_memory_id: Option<String>,
     pub memory_id: String,
     pub content_hash: String,
     pub imported_at: DateTime<Utc>,
@@ -54,6 +69,10 @@ pub struct ImportRecord {
     /// instead of skipping solely on content hash.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub canonical_namespace_id: Option<String>,
+    /// Lowercased aliases (title, short filename, filename stem) used for
+    /// wiki-link resolution and identity seeding. Filled on first write.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
     #[serde(default)]
     pub supersession_chain: Vec<SupersededRecord>,
 }
@@ -238,6 +257,9 @@ mod tests {
 
     fn sample_record() -> ImportRecord {
         ImportRecord {
+            source_identity: "tuple:claude-code:default:me:memory/y.md:".to_string(),
+            source_key: "claude:projects/x/memory/y.md".to_string(),
+            source_memory_id: None,
             memory_id: "mem_20260527_a1b2c3d4e5f60718_000001".to_string(),
             content_hash: "sha256:abc".to_string(),
             imported_at: Utc.with_ymd_and_hms(2026, 5, 27, 22, 33, 0).unwrap(),
@@ -245,6 +267,7 @@ mod tests {
             source_path_at_import: PathBuf::from("/Users/u/.claude/projects/x/memory/y.md"),
             namespace: Some("me".to_string()),
             canonical_namespace_id: None,
+            aliases: Vec::new(),
             supersession_chain: Vec::new(),
         }
     }

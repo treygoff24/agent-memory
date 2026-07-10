@@ -81,6 +81,7 @@ impl ImportReport {
             frontmatter_recovered: plan.frontmatter_recovered.clone(),
             candidates: Vec::new(),
             quarantined: Vec::new(),
+            ambiguous_historical: Vec::new(),
             claude_roots_used: plan.claude_roots_used.clone(),
         }
     }

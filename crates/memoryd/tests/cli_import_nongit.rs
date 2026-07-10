@@ -290,6 +290,14 @@ impl DaemonClient for RecordingClient {
     async fn supersede(&mut self, _request: SupersedeRequest) -> memoryd::import::ImportResult<SupersedeOutcome> {
         panic!("test fixture should not supersede")
     }
+
+    async fn get_superseded_by_chain(&mut self, _id: &str) -> memoryd::import::ImportResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    async fn get_memory(&mut self, _id: &str) -> memoryd::import::ImportResult<memoryd::protocol::GetResponse> {
+        panic!("test fixture should not get memory")
+    }
 }
 
 struct FailingClient;
@@ -307,5 +315,16 @@ impl DaemonClient for FailingClient {
 
     async fn supersede(&mut self, _request: SupersedeRequest) -> memoryd::import::ImportResult<SupersedeOutcome> {
         panic!("test fixture should not supersede")
+    }
+
+    async fn get_superseded_by_chain(&mut self, _id: &str) -> memoryd::import::ImportResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    async fn get_memory(&mut self, _id: &str) -> memoryd::import::ImportResult<memoryd::protocol::GetResponse> {
+        Err(memoryd::import::ImportError::Io {
+            path: PathBuf::from("/tmp/memoryd.sock"),
+            source: std::io::Error::other("socket down"),
+        })
     }
 }

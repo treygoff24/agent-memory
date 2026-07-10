@@ -72,6 +72,17 @@ impl DaemonClient for AlwaysPromote {
             reason: None,
         })
     }
+
+    async fn get_superseded_by_chain(&mut self, _id: &str) -> memoryd::import::ImportResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    async fn get_memory(&mut self, _id: &str) -> memoryd::import::ImportResult<memoryd::protocol::GetResponse> {
+        Err(memoryd::import::ImportError::Parse {
+            source_key: _id.to_string(),
+            reason: "not configured in test double".to_string(),
+        })
+    }
 }
 
 struct DropToMePrompts;

@@ -11,7 +11,9 @@ use serde_json::Value;
 
 use crate::import::candidate::ParsedMemory;
 use crate::import::project_map::{write_generated_project_yaml, ProjectYamlAction, ScopeBinding};
-use crate::import::report::{CandidateEntry, DedupEntry, HarnessCounters, ImportReport, RefusalEntry};
+use crate::import::report::{
+    AmbiguousImportEntry, CandidateEntry, DedupEntry, HarnessCounters, ImportReport, RefusalEntry,
+};
 use crate::import::sources::candidate_aliases;
 use crate::import::state::{ImportRecord, ImportState, SupersededRecord};
 use crate::import::{ImportError, ImportResult};
@@ -56,9 +58,16 @@ impl ImportEngine {
         let total = plan.actions.len();
         let mut alias_to_id: HashMap<String, String> = HashMap::new();
         // Seed alias_to_id from the existing state file so re-runs can resolve
-        // wiki-links against previously-imported memories.
-        for (source_key, record) in &state.imports {
-            alias_to_id.insert(source_key.to_ascii_lowercase(), record.memory_id.clone());
+        // wiki-links against previously-imported memories. A legacy state may
+        // still be keyed by source_key, so we index both forms.
+        for (record_key, record) in &state.imports {
+            alias_to_id.insert(record_key.to_ascii_lowercase(), record.memory_id.clone());
+            if !record.source_key.is_empty() {
+                alias_to_id.insert(record.source_key.to_ascii_lowercase(), record.memory_id.clone());
+            }
+            for alias in &record.aliases {
+                alias_to_id.entry(alias.to_ascii_lowercase()).or_insert_with(|| record.memory_id.clone());
+            }
         }
 
         for (index, action) in plan.actions.iter().enumerate() {
@@ -68,14 +77,38 @@ impl ImportEngine {
             let progress_prefix = format!("[{}/{}]", index + 1, total);
 
             match &action.action {
-                PlanAction::SkipUnchanged { existing_memory_id } => {
+                PlanAction::SkipUnchanged { existing_memory_id, existing_record_key } => {
                     counters_mut(&mut report, &harness_key).skipped_idempotent += 1;
+                    if !opts.dry_run {
+                        let new_identity = action.candidate.import_identity(action.scope.canonical_namespace_id.as_deref());
+                        let new_source_key = action.source_key.clone();
+                        let new_source_memory_id = action.candidate.recovered_memory_id().map(str::to_string);
+                        if let Some(mut record) = state.imports.remove(existing_record_key) {
+                            record.source_identity = new_identity;
+                            record.source_key = new_source_key.clone();
+                            record.source_memory_id = new_source_memory_id;
+                            record.aliases = candidate_aliases(&action.candidate);
+                            record.source_path_at_import = action.candidate.source_path.clone();
+                            remove_import_record_duplicates(&mut state.imports, &record, None);
+                            state.imports.insert(record.source_identity.clone(), record);
+                            state.save_atomic(&self.state_path)?;
+                        }
+                    }
                     alias_to_id.insert(action.source_key.to_ascii_lowercase(), existing_memory_id.clone());
                     register_aliases_for(&action.candidate, existing_memory_id, &mut alias_to_id);
                     continue;
                 }
                 PlanAction::SkipByPrompt => {
                     counters_mut(&mut report, &harness_key).skipped_by_prompt += 1;
+                    continue;
+                }
+                PlanAction::ReportAmbiguous { matching_memory_ids } => {
+                    counters_mut(&mut report, &harness_key).ambiguous += 1;
+                    report.ambiguous_historical.push(AmbiguousImportEntry {
+                        source_key: action.source_key.clone(),
+                        harness: harness_key.clone(),
+                        matching_memory_ids: matching_memory_ids.clone(),
+                    });
                     continue;
                 }
                 PlanAction::RepairBucket { prior_memory_id, .. } => {
@@ -102,7 +135,31 @@ impl ImportEngine {
                     .await?;
                     continue;
                 }
-                PlanAction::WriteNew | PlanAction::Supersede { .. } => {}
+                PlanAction::Supersede { prior_memory_id, .. } => {
+                    if opts.dry_run {
+                        counters_mut(&mut report, &harness_key).superseded += 1;
+                        continue;
+                    }
+                    let related = resolve_related_ids(action, &alias_to_id);
+                    self.apply_supersede(
+                        client,
+                        action,
+                        &related,
+                        prior_memory_id,
+                        "import supersede",
+                        "inspect supersede refusal",
+                        "supersede",
+                        &progress_prefix,
+                        &harness_key,
+                        &opts,
+                        &mut state,
+                        &mut report,
+                        &mut alias_to_id,
+                    )
+                    .await?;
+                    continue;
+                }
+                PlanAction::WriteNew => {}
             }
 
             let related = resolve_related_ids(action, &alias_to_id);
@@ -243,6 +300,11 @@ impl ImportEngine {
     /// `suggested_next_action` recorded on a refusal, and the verbose-progress
     /// label differ per call site. Callers gate `dry_run` themselves before
     /// reaching here — this method always issues the daemon write.
+    ///
+    /// Before issuing a new `supersede`, this checks the daemon's supersession
+    /// chain for `old_id`. If a memory in that chain already has the same
+    /// content as the candidate, the candidate is adopted as the replacement
+    /// and no new write is issued.
     #[expect(clippy::too_many_arguments, reason = "shared supersede state machine threads both call sites' context")]
     async fn apply_supersede<C: DaemonClient>(
         &self,
@@ -261,6 +323,28 @@ impl ImportEngine {
         alias_to_id: &mut HashMap<String, String>,
     ) -> ImportResult<()> {
         let old_id = old_id.to_string();
+
+        // F10: crash-mitigation. If a previous run superseded `old_id` but the
+        // importer crashed before it could record the new id, the chain already
+        // contains a replacement with the same content. Adopt it rather than
+        // writing a duplicate.
+        if let Ok(chain) = client.get_superseded_by_chain(&old_id).await {
+            for new_id in chain {
+                match client.get_memory(&new_id).await {
+                    Ok(get) if !get.truncated => {
+                        let computed = ParsedMemory::compute_content_hash(&action.candidate.frontmatter_hint, &get.body);
+                        if computed == action.candidate.content_hash {
+                            counters_mut(report, harness_key).superseded += 1;
+                            record_promoted(state, action, &new_id, Some(old_id.as_str()), alias_to_id, &self.state_path)
+                                .map_err(|error| partial_import_error(error, report, &action.source_key))?;
+                            return Ok(());
+                        }
+                    }
+                    _ => continue,
+                }
+            }
+        }
+
         let supersede_meta = build_write_meta(action, related, Some(std::slice::from_ref(&old_id)));
         let supersede = client
             .supersede(SupersedeRequest {
@@ -368,22 +452,31 @@ fn import_bucket_matches(record: &ImportRecord, scope: &ScopeBinding) -> bool {
 
 pub(super) fn plan_action_for_record(
     record: &ImportRecord,
+    record_key: &str,
     candidate_content_hash: &str,
     scope: &ScopeBinding,
 ) -> PlanAction {
     if record.content_hash == candidate_content_hash && import_bucket_matches(record, scope) {
-        return PlanAction::SkipUnchanged { existing_memory_id: record.memory_id.clone() };
+        return PlanAction::SkipUnchanged {
+            existing_memory_id: record.memory_id.clone(),
+            existing_record_key: record_key.to_string(),
+        };
     }
     if record.content_hash == candidate_content_hash {
-        return bucket_repair_action(record);
+        return bucket_repair_action(record, record_key);
     }
-    PlanAction::Supersede { prior_memory_id: record.memory_id.clone(), prior_content_hash: record.content_hash.clone() }
+    PlanAction::Supersede {
+        prior_memory_id: record.memory_id.clone(),
+        prior_content_hash: record.content_hash.clone(),
+        prior_record_key: record_key.to_string(),
+    }
 }
 
-pub(super) fn bucket_repair_action(record: &ImportRecord) -> PlanAction {
+pub(super) fn bucket_repair_action(record: &ImportRecord, record_key: &str) -> PlanAction {
     PlanAction::RepairBucket {
         prior_memory_id: record.memory_id.clone(),
         prior_content_hash: record.content_hash.clone(),
+        prior_record_key: record_key.to_string(),
     }
 }
 
@@ -458,7 +551,10 @@ fn build_write_meta(action: &PlannedWrite, related: &[String], supersedes: Optio
             PlanAction::Supersede { prior_memory_id, .. } | PlanAction::RepairBucket { prior_memory_id, .. } => {
                 meta.insert("supersedes".to_string(), Value::Array(vec![Value::String(prior_memory_id.clone())]));
             }
-            PlanAction::SkipUnchanged { .. } | PlanAction::WriteNew | PlanAction::SkipByPrompt => {}
+            PlanAction::SkipUnchanged { .. }
+            | PlanAction::WriteNew
+            | PlanAction::SkipByPrompt
+            | PlanAction::ReportAmbiguous { .. } => {}
         }
     }
     if let Some(Value::Array(evidence_refs)) = action.candidate.frontmatter_hint.get("evidence_refs") {
@@ -496,6 +592,9 @@ fn record_promoted(
 ) -> ImportResult<()> {
     let bucket = target_import_bucket(&action.scope);
     let mut record = ImportRecord {
+        source_identity: action.candidate.import_identity(action.scope.canonical_namespace_id.as_deref()),
+        source_key: action.source_key.clone(),
+        source_memory_id: action.candidate.recovered_memory_id().map(str::to_string),
         memory_id: new_id.to_string(),
         content_hash: action.candidate.content_hash.clone(),
         imported_at: Utc::now(),
@@ -503,10 +602,13 @@ fn record_promoted(
         source_path_at_import: action.candidate.source_path.clone(),
         namespace: bucket.namespace,
         canonical_namespace_id: bucket.canonical_namespace_id,
+        aliases: candidate_aliases(&action.candidate),
         supersession_chain: Vec::new(),
     };
+
+    // Build the supersession chain from the prior record, if one exists.
     if let Some(prior_id) = superseded {
-        if let Some(existing) = state.imports.get(&action.source_key) {
+        if let Some(existing) = state.imports.values().find(|r| r.memory_id == prior_id) {
             record.supersession_chain = existing.supersession_chain.clone();
             record.supersession_chain.push(SupersededRecord {
                 memory_id: prior_id.to_string(),
@@ -515,11 +617,39 @@ fn record_promoted(
             });
         }
     }
-    state.imports.insert(action.source_key.clone(), record);
+
+    remove_import_record_duplicates(&mut state.imports, &record, superseded);
+    state.imports.insert(record.source_identity.clone(), record);
     state.save_atomic(state_path)?;
     alias_to_id.insert(action.source_key.to_ascii_lowercase(), new_id.to_string());
     register_aliases_for(&action.candidate, new_id, alias_to_id);
     Ok(())
+}
+
+fn remove_import_record_duplicates(
+    imports: &mut std::collections::BTreeMap<String, ImportRecord>,
+    record: &ImportRecord,
+    superseded: Option<&str>,
+) {
+    imports.retain(|key, existing| {
+        if key == &record.source_identity {
+            return false;
+        }
+        if existing.memory_id == record.memory_id {
+            return false;
+        }
+        if let Some(id) = &record.source_memory_id {
+            if existing.source_memory_id.as_deref() == Some(id) {
+                return false;
+            }
+        }
+        if let Some(old_id) = superseded {
+            if existing.memory_id == old_id {
+                return false;
+            }
+        }
+        true
+    });
 }
 
 fn bump_refusal(counters: &mut HarnessCounters, reason: &str) {

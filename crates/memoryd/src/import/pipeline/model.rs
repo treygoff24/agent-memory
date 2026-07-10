@@ -69,18 +69,23 @@ pub struct PlannedWrite {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlanAction {
     /// State file already records this source with a matching content hash —
-    /// skip.
-    SkipUnchanged { existing_memory_id: String },
+    /// skip. `existing_record_key` is the `state.imports` map key for the
+    /// matching record, used to migrate legacy `source_key` entries to the
+    /// stable `source_identity` key.
+    SkipUnchanged { existing_memory_id: String, existing_record_key: String },
     /// State file records this exact source/content under a different bucket —
     /// supersede the prior memory with identical content in the correct bucket.
-    RepairBucket { prior_memory_id: String, prior_content_hash: String },
+    RepairBucket { prior_memory_id: String, prior_content_hash: String, prior_record_key: String },
     /// State file records this source under a different content hash —
     /// supersede the prior memory.
-    Supersede { prior_memory_id: String, prior_content_hash: String },
+    Supersede { prior_memory_id: String, prior_content_hash: String, prior_record_key: String },
     /// First time we've seen this source — write a fresh memory.
     WriteNew,
     /// Project mapper resolved to "skip" for this candidate's cwd.
     SkipByPrompt,
+    /// Historical state contained multiple possible predecessors. Never guess
+    /// which one to supersede; surface it and leave canonical state untouched.
+    ReportAmbiguous { matching_memory_ids: Vec<String> },
 }
 
 /// A back-edge wiki link that the topo sort had to break. Surfaced in the

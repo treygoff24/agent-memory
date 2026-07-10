@@ -6,8 +6,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 
-use crate::import::candidate::ParsedMemory;
+use crate::import::candidate::{compute_identity, ParsedMemory, short_hash};
 use crate::import::discovery::{discover_claude_memory_roots, discover_codex_memory_root};
+use crate::import::state::ImportRecord;
 use crate::import::project_map::{ProjectMapper, PromptBackend, ResolutionKind, ScopeBinding};
 use crate::import::sources::{candidate_aliases, claude, codex};
 use crate::import::{ImportError, ImportResult};
@@ -77,6 +78,12 @@ impl ImportEngine {
                 std::fs::canonicalize(&candidate.source_path).unwrap_or_else(|_| candidate.source_path.clone());
             seen_claude.insert((canonical, candidate.source_key.clone()))
         });
+
+        // Disambiguate collisions within the same source file. Must happen
+        // before canonical-path dedup? No, canonical dedup doesn't depend on
+        // disambiguation; it uses source_key. We do it before identity matching.
+        crate::import::candidate::disambiguate_collisions(&mut claude_candidates);
+
         let claude_count = claude_candidates.len();
         candidates.extend(claude_candidates);
 
@@ -89,6 +96,8 @@ impl ImportEngine {
         } else {
             0
         };
+
+        crate::import::candidate::disambiguate_collisions(&mut candidates);
 
         if !options.quiet && !claude_roots.is_empty() {
             let roots_summary = claude_root_summaries
@@ -136,9 +145,37 @@ impl ImportEngine {
             let action = if matches!(scope.resolution, ResolutionKind::PromptedSkip) {
                 PlanAction::SkipByPrompt
             } else {
-                match state.imports.get(&candidate.source_key) {
-                    Some(record) => plan_action_for_record(record, &candidate.content_hash, &scope),
-                    None => PlanAction::WriteNew,
+                let identity = candidate.import_identity(scope.canonical_namespace_id.as_deref());
+                let anchor = candidate.recovered_memory_id();
+                let canonical_project_id = scope.canonical_namespace_id.as_deref().unwrap_or("me");
+                let mut matches: Vec<(&String, &ImportRecord)> = Vec::new();
+                for (record_key, record) in &state.imports {
+                    if record_identity(record_key, record, &candidate, canonical_project_id).as_deref()
+                        == Some(identity.as_str())
+                        || anchor.is_some_and(|id| {
+                            record.source_memory_id.as_deref() == Some(id)
+                                && record.harness == candidate.harness.as_str()
+                        })
+                    {
+                        matches.push((record_key, record));
+                    }
+                }
+                // Schema-v1 compatibility: if a legacy record is keyed by the
+                // exact source_key, include it as a fallback even when the
+                // ordinal-free identity changed.
+                if let Some(record) = state.imports.get(&candidate.source_key) {
+                    if !matches.iter().any(|(_, matched)| matched.memory_id == record.memory_id) {
+                        matches.push((&candidate.source_key, record));
+                    }
+                }
+                matches.sort_by(|a, b| a.1.memory_id.cmp(&b.1.memory_id));
+                matches.dedup_by(|a, b| a.1.memory_id == b.1.memory_id);
+                match matches.as_slice() {
+                    [] => PlanAction::WriteNew,
+                    [(record_key, record)] => plan_action_for_record(record, record_key, &candidate.content_hash, &scope),
+                    records => PlanAction::ReportAmbiguous {
+                        matching_memory_ids: records.iter().map(|(_, record)| record.memory_id.clone()).collect(),
+                    },
                 }
             };
             prelim.push(PlannedWrite {
@@ -175,6 +212,30 @@ impl ImportEngine {
             state,
         })
     }
+}
+
+fn record_identity(
+    record_key: &str,
+    record: &ImportRecord,
+    candidate: &ParsedMemory,
+    canonical_project_id: &str,
+) -> Option<String> {
+    if !record.source_identity.is_empty() {
+        return Some(record.source_identity.clone());
+    }
+    let source_key = if record.source_key.is_empty() { record_key } else { &record.source_key };
+    if source_key.is_empty() || source_key.starts_with("tuple:") {
+        return None;
+    }
+    let section_disambiguation =
+        candidate.section_disambiguation.as_deref().map(|_| short_hash(&record.content_hash));
+    Some(compute_identity(
+        source_key,
+        &record.source_path_at_import,
+        &record.harness,
+        canonical_project_id,
+        section_disambiguation,
+    ))
 }
 
 /// Topological sort over wiki-link dependencies. Returns the sorted action list

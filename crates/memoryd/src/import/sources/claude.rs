@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use super::{extract_wiki_links, slugify, stamp_auto_memory_provenance, strip_memorum_recall_blocks};
-use crate::import::candidate::{Harness, ParsedMemory};
+use crate::import::candidate::{disambiguate_collisions, Harness, ParsedMemory};
 use crate::import::{ImportError, ImportResult};
 
 /// `##` headings that are scaffolding rather than substantive sections. The
@@ -88,6 +88,7 @@ pub fn parse(root: &Path) -> ImportResult<ClaudeParseOutput> {
             Err(error) => output.errors.push(error),
         }
     }
+    disambiguate_collisions(&mut output.candidates);
     output.candidates.sort_by(|a, b| a.source_key.cmp(&b.source_key));
     output.recovered.sort();
     Ok(output)
@@ -189,6 +190,7 @@ fn build_memory(input: ClaudeCandidateInput<'_>) -> ParsedMemory {
         wiki_links,
         cwd,
         title,
+        section_disambiguation: None,
     }
 }
 

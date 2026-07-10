@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use serde_json::Value;
 
 use crate::import::{ImportError, ImportResult};
-use crate::protocol::{GovernanceRefusalReason, GovernanceStatus, ProtocolError, ResponsePayload, ResponseResult};
+use crate::protocol::{GetResponse, GovernanceRefusalReason, GovernanceStatus, ProtocolError, ResponsePayload, ResponseResult};
 
 /// Request shape for a `WriteMemory` daemon call. Bundling these into a struct
 /// keeps the trait method's argument count manageable.
@@ -39,6 +39,15 @@ pub trait DaemonClient {
 
     /// Issue a `RequestPayload::Supersede` with the given prior id.
     async fn supersede(&mut self, request: SupersedeRequest) -> ImportResult<SupersedeOutcome>;
+
+    /// Return the memory ids that have superseded `id`, walking the chain.
+    /// Used by the import supersede retry path to avoid re-writing a memory
+    /// whose previous supersede was already issued before a crash.
+    async fn get_superseded_by_chain(&mut self, id: &str) -> ImportResult<Vec<String>>;
+
+    /// Fetch a memory by id. Used by the supersede retry path to check whether
+    /// a candidate's content already exists in a supersession chain.
+    async fn get_memory(&mut self, id: &str) -> ImportResult<GetResponse>;
 }
 
 /// Production daemon client backed by the existing memoryd Unix socket.
@@ -102,6 +111,34 @@ impl DaemonClient for SocketDaemonClient {
             ResponseResult::Success(payload) => return Err(unexpected_daemon_payload("Supersede", &payload)),
         };
         Ok(SupersedeOutcome { status: supersede.status, new_id: supersede.new_id, reason: supersede.reason })
+    }
+
+    async fn get_superseded_by_chain(&mut self, id: &str) -> ImportResult<Vec<String>> {
+        let request_id = self.next_request_id("import-trust-artifact");
+        let payload = crate::protocol::RequestPayload::TrustArtifact { id: id.to_string() };
+        let envelope = crate::client::request(&self.socket_path, request_id, payload)
+            .await
+            .map_err(|error| ImportError::io(self.socket_path.clone(), std::io::Error::other(error.to_string())))?;
+        match envelope.result {
+            ResponseResult::Success(ResponsePayload::TrustArtifact(artifact)) => {
+                Ok(artifact.superseded_by.iter().map(|link| link.id.as_str().to_string()).collect())
+            }
+            ResponseResult::Error(error) => Err(daemon_protocol_error("TrustArtifact", error)),
+            ResponseResult::Success(payload) => Err(unexpected_daemon_payload("TrustArtifact", &payload)),
+        }
+    }
+
+    async fn get_memory(&mut self, id: &str) -> ImportResult<GetResponse> {
+        let request_id = self.next_request_id("import-get");
+        let payload = crate::protocol::RequestPayload::Get { id: id.to_string(), include_provenance: false };
+        let envelope = crate::client::request(&self.socket_path, request_id, payload)
+            .await
+            .map_err(|error| ImportError::io(self.socket_path.clone(), std::io::Error::other(error.to_string())))?;
+        match envelope.result {
+            ResponseResult::Success(ResponsePayload::Get(response)) => Ok(response),
+            ResponseResult::Error(error) => Err(daemon_protocol_error("Get", error)),
+            ResponseResult::Success(payload) => Err(unexpected_daemon_payload("Get", &payload)),
+        }
     }
 }
 
