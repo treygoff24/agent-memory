@@ -277,9 +277,10 @@ pub struct ImportArgs {
     #[arg(long)]
     pub socket: Option<PathBuf>,
     /// Canonical Memorum repo root (state file lives at
-    /// `<repo>/.memorum/import-state.json`).
-    #[arg(long, default_value = ".")]
-    pub repo: PathBuf,
+    /// `<repo>/.memorum/import-state.json`). Defaults to `$MEMORUM_REPO` →
+    /// `~/memorum`, matching `doctor`/`status` — never the caller's cwd.
+    #[arg(long)]
+    pub repo: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

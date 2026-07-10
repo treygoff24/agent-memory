@@ -19,8 +19,9 @@ pub async fn run(args: ImportArgs) -> anyhow::Result<()> {
     let socket = resolve_socket_arg(&args.socket);
     let mut client = SocketDaemonClient::new(socket);
     let execute_opts = ExecuteOptions { dry_run: args.dry_run, verbose_progress: !args.quiet };
+    let repo = args.repo.clone().unwrap_or_else(crate::paths::default_repo_root);
     let result = run_import_session(
-        &args.repo,
+        &repo,
         ImportOptions {
             from_claude: args.from_claude.clone(),
             from_codex: args.from_codex.clone(),
