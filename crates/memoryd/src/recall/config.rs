@@ -16,7 +16,10 @@ pub const DEFAULT_VECTOR_RECALL_RECENCY_HALF_LIFE_DAYS: f64 = 90.0;
 /// On-device query-embed budget when `embed_timeout_ms` is unset (local lane).
 pub const LOCAL_EMBED_TIMEOUT_MS: u64 = 50;
 /// HTTP round-trip budget when `embed_timeout_ms` is unset (API lane).
-pub const API_EMBED_TIMEOUT_MS: u64 = 250;
+/// Live-measured 2026-07-09 (T4.2 dogfood): Gemini query embeds run p50 ≈ 210 ms /
+/// max ≈ 257 ms including connection setup, so the original 250 ms budget degraded
+/// most queries to FTS-only. 750 ms covers the observed max with tail headroom.
+pub const API_EMBED_TIMEOUT_MS: u64 = 750;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct RecallConfig {

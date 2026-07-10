@@ -45,7 +45,7 @@ gemini-api --consent`.
   budget is not charged. Expected during a full-corpus re-embed.
 - **Bad key:** Gemini's 400 `API_KEY_INVALID` maps to an auth failure (not endless transport retries);
   doctor points at the key.
-- **Offline / slow API:** query-time embeds run under a lane-aware timeout (~250 ms API / ~50 ms local,
+- **Offline / slow API:** query-time embeds run under a lane-aware timeout (~750 ms API / ~50 ms local,
   explicit `embed_timeout_ms` config wins) and recall degrades to FTS; drain backs off and resumes.
 
 ## Switch back
