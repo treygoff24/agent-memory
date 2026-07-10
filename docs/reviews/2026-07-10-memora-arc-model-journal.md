@@ -93,3 +93,19 @@ Outcome and verification: 1 BLOCKER + 4 MAJOR + 2 MINOR, NEEDS-REWORK, 5 min. Co
 Performance observations: read into a SECOND crate to ground a finding; both uniques survived triage. Slightly slower than Cursor, deeper on cross-crate consequence tracing.
 
 Routing assessment: Cursor+Luna as the standing parallel review pair is producing disjoint accepted-finding sets — keep it. Confidence: high.
+
+## 2026-07-10 - grok-4.5 via cursor - W2 spec package review (round 2)
+
+Command and run: `delegate --group memora-w2spec cursor safe --prompt-file thoughts/memora-build/w2-spec-review-prompt.md`; alias `cursor-29`; mode/isolation: safe / isolated copy.
+
+Task and expectation: cross-family round-2 attack on package r2 (post-Luna fixes).
+
+Outcome and verification: 2 BLOCKER + 3 MAJOR + 2 MINOR + 1 NIT, 8/8 accepted → package r3. Both blockers were implementation-reality catches Luna's contract-level pass missed: the drop-fields rule was unimplementable as written (outcome stays RequiresEncryption → body refused — required inventing the dual-classify/rebind design), and "same naming discipline" would have routed aux vectors into the chunk table because the shipped digest hashes only the triple. Also surfaced a THIRD pre-existing drift: shipped `_extras` merge is ours-wins while §14.4 says quarantine (logged in issues.md). Ran a convergence proof of the cue rule itself and pinned the case-fold hazard.
+
+Performance observations: ~9 min; read schema.rs/sqlite_vec.rs/upsert.rs/field_rules.rs to ground findings. Luna→Cursor sequencing on spec text is working exactly like the canonical author→attacker pipeline: contract-level pass first, implementation-reality pass second, near-zero overlap.
+
+Routing assessment: keep Cursor as round-2 on all remaining spec/contract text this arc. Confidence: high.
+
+## 2026-07-10 - stale-alias incident #2 (process note)
+
+`delegate run-output cursor-2` (guessed alias for the round-2 spec review) returned an unrelated old `live_conflicts_count` report. Caught by report-validity check immediately. Cause: coordinator launched the run without recording its numbered alias first — the exact rule violation the round-1 incident established. Correct sequence run thereafter (`runs --group memora-w2spec` → cursor-29). Reinforcement: NEVER issue run-output on a guessed alias; resolve via --group listing first.
