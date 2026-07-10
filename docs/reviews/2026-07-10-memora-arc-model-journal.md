@@ -157,3 +157,31 @@ Outcome and verification: 1 BLOCKER + 3 MAJOR + 1 NIT in 2m40s, NOT-RATIFIABLE; 
 Performance observations: the "restates settled row N because the applied fix is insufficient" framing was used correctly twice — precise, zero noise, no re-litigation of genuinely settled items. Cross-referenced four code files + both triage tables + the plan in under 3 minutes.
 
 Routing assessment: the convergence bookend (Sol high, both docs + triage tables together, after per-doc rounds run dry) is validated — it found composition defects no per-document round could see. Keep as the standing final gate before human ratification on multi-spec arcs. Confidence: high.
+
+## 2026-07-10 - grok-4.5 via cursor - W1 fix-diff re-review (round 2)
+
+Command and run: `delegate --group memora-w1rev2 cursor safe --prompt-file thoughts/memora-build/w1-review-r2-prompt.md` (W1-worktree scope); alias `cursor-2`.
+
+Outcome: 4 MAJOR + 1 MINOR + 1 NIT on Devin's fix layer, all accepted (findings-w1-r1.md round 2). Star finds: F10 adoption is blind to the real handler's GET_BODY_MAX=4096 truncation (mocks return full bodies, so the pinning test structurally cannot fail — the exact author-blindness class again, one layer down) and the production "chain" is one hop while the mock fakes a full walk. Both verified on disk by coordinator before triage.
+
+Routing assessment: probing the REAL surface against the mocks' assumptions is Cursor's durable edge. Confidence: high.
+
+## 2026-07-10 - gpt-5.6-luna via codex - W1 fix-diff re-review (round 2, parallel slot)
+
+Command and run: same brief, `codex safe --model luna --reasoning-effort high` (W1-worktree scope); alias `codex-2`.
+
+Outcome: 1 BLOCKER + 3 MAJOR + 1 MINOR, all accepted after merge. Convergent with Cursor on collision uniqueness, one-hop chain, fail-open. Unique adds: adoption can select a TOMBSTONED replacement (get response carries no lifecycle status — quantitative-integrity class again) and alias-map seeding violates F6's contract. Sandbox blocked its cargo check; honest about it.
+
+Routing assessment: fourth consecutive round of disjoint accepted uniques from the Cursor+Luna pair. Standing config confirmed. Confidence: high.
+
+## 2026-07-10 - gpt-5.6-sol via codex - W6 memo read (xhigh, plan-mandated)
+
+Command and run: `delegate --group memora-w6 codex safe --model sol --reasoning-effort xhigh --prompt-file thoughts/memora-build/w6-memo-read-prompt.md`; alias `codex-80` (main scope); 3m13s.
+
+Task and expectation: judgment read of the finished W6 memo per plan §W6; expected concur-with-nits.
+
+Outcome and verification: **DISSENT**, and it was right. Five verdicts: agreed W3-value-moot; disputed the inversion framing (unnecessary — the abstraction transits as plaintext anyway; my vec2text claim was uncited), disputed the classification framing (Stream D is raise-only, so abstraction-only classification = unauthorized declassification — the strongest anti-Option-2 argument, which the memo had missed), disputed the 28/786 denominator (28 = held-local chunk JOBS; sensitive records default index_embeddings=false so even the local lane excludes them; abstraction_compile can't reach encrypted memories through refused supersession — the r1 "local-lane parity" claim was flat wrong), disputed Option-3 dominance as under-specified (second query embedding + second provider lifecycle vs W4's one-embedding contract and the 11-17MB win), and expanded the fail-closed list (declassification authority, four ingress paths, revocation breadth, batch races, zero-request tests). All folded into memo r2; recommendation direction survived but on corrected grounds.
+
+Performance observations: xhigh spent its effort exactly where briefed — checked the memo's citations against source, caught an uncited empirical claim, and found the two contract interactions (Stream D raise-only; W4 single-query-embedding) that both the Opus researcher and I missed. Honest about its own limit (no network to verify vec2text literature).
+
+Routing assessment: Sol xhigh as the final judgment read on coordinator-authored analysis is validated at the strongest level yet — it materially corrected a memo two other passes had grounded. Keep for every judgment-dense deliverable this arc. Confidence: high.

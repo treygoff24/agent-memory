@@ -26,3 +26,19 @@ Verdict: **NEEDS-REWORK** (unanimous). The identity scaffolding is sound; the li
 - Generic "crash between Promoted and save_atomic → stale state" (cursor MAJOR, luna overlap) — the *general* crash-journaling problem is pre-existing and out of W1 scope; the bounded supersede-specific consequence is accepted as F10. DEFERRED beyond F10's mitigation.
 
 Luna round-1 (codex-1, 1 BLOCKER + 4 MAJOR + 2 MINOR, NEEDS-REWORK) merged above: convergent on F1/F2/F3/F4; unique adds folded into F7 (profile-root identity) and F10 (supersede retry duplication).
+
+## Round 2 — Cursor (cursor-2) + Luna (codex-2) on the fix diff `d85f104..0ffde7c`
+
+Coordinator gate re-run GREEN (/tmp/w1-gate-r1.log, 102 suites, 0 failures) — again green while defects remain: the F10 mocks return untruncated bodies and full chains the real daemon never produces. Coordinator read independently found F17 (fail-open) and the truncation half of F14 before reports landed; GET_BODY_MAX=4096 and one-hop chain verified on disk. Verdicts: both FINDINGS. 7/7 accepted:
+
+| # | Sev | Source | Finding → fix contract |
+| --- | --- | --- | --- |
+| F13 | BLOCKER | L1+C3+C5 | Collision disambiguation not unique (identical content or shared 8-hex prefix → same identity) and suffix-toggle breaks matching (delete sibling → suffix drops; renumber+edit → WriteNew duplicate). **Fix:** identical-content same-slug candidates collapse to ONE plan action (they are the same memory); differing-content collisions get a deterministic unique per-file disambiguator; record matching tries ordinal-free identity with AND without suffix; multi-hit → ReportAmbiguous — never WriteNew solely from a suffix change. Tests: collision set → delete sibling → renumber+edit → Supersede; identical-content collision collapses. |
+| F14 | MAJOR | C1 | F10 adoption blind to `GET_BODY_MAX=4096` truncation — any replacement body ≥4KiB skips adoption and mints a duplicate; mocks return full bodies so tests can't see it. **Fix:** additive optional `full_body: bool` on the get request (server honors for import adoption; hash needs candidate frontmatter_hint + full replacement body, so server-side hashing can't substitute); `truncated: true` after that = unknown → fail closed per F17. Test with a >4KiB body through the real handler bound. |
+| F15 | MAJOR | C2+L2 | "Chain" is one hop — `get_superseded_by_chain` maps only immediate `superseded_by` links; A→B→C with state on A misses C, mints duplicate; mock fakes a full walk. **Fix:** client-side transitive walk with cycle+depth guard (bound ~16); mock aligned to one-hop-per-call; multi-hop + cycle tests. |
+| F16 | MAJOR | L3 | Adoption can select a tombstoned/non-servable replacement (get response carries no lifecycle status) → state points at a dead memory, future runs skip as unchanged. **Fix:** additive status field on the get response; adoption rejects non-`{active,pinned}` replacements. Test: tombstoned replacement in chain → not adopted. |
+| F17 | MAJOR | C4+L4+K | F10 fail-open: `if let Ok(chain)` + `_ => continue` swallow daemon errors, then supersede anyway — recreating the duplicate-mint race under transient failure. **Fix:** fail closed — propagate the error via `partial_import_error` for that action; supersede only when the chain was read successfully and had no content match. Test: erroring mock → action errors, no supersede issued. |
+| F18 | MINOR | L5 | Alias seeding inserts the stable `tuple:` identity key into the wiki-link alias map, contrary to F6. **Fix:** seed only `record.source_key` + persisted aliases. |
+| F19 | NIT | C6 | `prior_record_key` threaded on Supersede/RepairBucket but unused. **Fix:** use it for explicit legacy-key removal or drop it from those variants. |
+
+Round 3: scoped re-review of fix diff 2 — MUST be dry (3-round cap; a non-dry round 3 is a coordinator escalation to Trey, not a round 4).
