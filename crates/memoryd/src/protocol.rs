@@ -1009,6 +1009,8 @@ pub struct GetResponse {
     pub truncated: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<GetProvenance>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sensitivity: Option<Sensitivity>,
     pub guidance: String,
 }
 

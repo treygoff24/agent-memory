@@ -14,9 +14,12 @@
 //! here in eval's own code rather than importing memoryd's dream internals.
 
 use std::collections::HashMap;
+use std::ffi::OsString;
+use std::io::{Read, Write};
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::harness_runner::{HarnessRunResult, HarnessRunner};
@@ -25,6 +28,202 @@ use crate::harness_runner::{HarnessRunResult, HarnessRunner};
 /// test stdout to record a judge verdict. Format, one per line:
 /// `MEMORUM_EVAL_JUDGE=<test>:<harness>:<score>:<rationale>`.
 pub const EVAL_JUDGE_MARKER: &str = "MEMORUM_EVAL_JUDGE=";
+
+/// Stable benchmark judge input dumped by the benchmark runner and accepted by
+/// external judge commands on stdin.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BenchmarkJudgeInput {
+    pub question: String,
+    pub gold: String,
+    pub retrieved_context: Vec<String>,
+    pub answer_basis: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BenchmarkJudgeVerdict {
+    pub score: f64,
+    #[serde(default)]
+    pub rationale: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum JudgeError {
+    Timeout,
+    Spawn(String),
+    Io(String),
+    Serialize(String),
+    Parse(String),
+    NonFinite { score: f64 },
+    OutOfRange { score: f64, min: f64, max: f64 },
+    External { status: String, stderr: String },
+}
+
+impl std::fmt::Display for JudgeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Timeout => write!(f, "judge_timeout"),
+            Self::Spawn(error) => write!(f, "judge_spawn_error: {error}"),
+            Self::Io(error) => write!(f, "judge_io_error: {error}"),
+            Self::Serialize(error) => write!(f, "judge_serialize_error: {error}"),
+            Self::Parse(error) => write!(f, "judge_parse_error: {error}"),
+            Self::NonFinite { score } => write!(f, "judge_non_finite_score: {score}"),
+            Self::OutOfRange { score, min, max } => write!(f, "judge_score_out_of_range: {score} not in {min}..={max}"),
+            Self::External { status, stderr } => write!(f, "judge_external_error: exited {status}: {stderr}"),
+        }
+    }
+}
+
+impl std::error::Error for JudgeError {}
+
+pub trait BenchmarkJudge {
+    fn judge(&self, input: &BenchmarkJudgeInput) -> Result<BenchmarkJudgeVerdict, JudgeError>;
+
+    fn identity(&self) -> String {
+        "unknown".to_owned()
+    }
+}
+
+/// Judge adapter for a coordinator-pinned command. The executable and argv are
+/// explicit: no shell expansion or hidden model choice occurs in the harness.
+pub struct ExternalCommandJudge {
+    program: OsString,
+    args: Vec<OsString>,
+    timeout: Duration,
+    min_score: f64,
+    max_score: f64,
+}
+
+impl ExternalCommandJudge {
+    pub fn new(program: impl Into<OsString>, args: impl IntoIterator<Item = impl Into<OsString>>) -> Self {
+        Self {
+            program: program.into(),
+            args: args.into_iter().map(Into::into).collect(),
+            timeout: Duration::from_secs(60),
+            min_score: 0.0,
+            max_score: 1.0,
+        }
+    }
+
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    pub fn with_score_range(mut self, min: f64, max: f64) -> Self {
+        self.min_score = min;
+        self.max_score = max;
+        self
+    }
+}
+
+impl BenchmarkJudge for ExternalCommandJudge {
+    fn judge(&self, input: &BenchmarkJudgeInput) -> Result<BenchmarkJudgeVerdict, JudgeError> {
+        let mut child = Command::new(&self.program)
+            .args(&self.args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| JudgeError::Spawn(error.to_string()))?;
+
+        let input_json = serde_json::to_vec(input).map_err(|error| JudgeError::Serialize(error.to_string()))?;
+        child
+            .stdin
+            .take()
+            .expect("piped judge stdin")
+            .write_all(&input_json)
+            .map_err(|error| JudgeError::Io(error.to_string()))?;
+
+        let start = std::time::Instant::now();
+        let status = loop {
+            if start.elapsed() >= self.timeout {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(JudgeError::Timeout);
+            }
+            match child.try_wait().map_err(|error| JudgeError::Io(error.to_string()))? {
+                Some(status) => break status,
+                None => std::thread::sleep(Duration::from_millis(100)),
+            }
+        };
+
+        if !status.success() {
+            let stderr = read_pipe_to_string(child.stderr.as_mut());
+            return Err(JudgeError::External {
+                status: status.to_string(),
+                stderr,
+            });
+        }
+
+        let mut stdout = Vec::new();
+        child
+            .stdout
+            .take()
+            .expect("piped judge stdout")
+            .read_to_end(&mut stdout)
+            .map_err(|error| JudgeError::Io(error.to_string()))?;
+
+        let mut verdict: BenchmarkJudgeVerdict =
+            serde_json::from_slice(&stdout).map_err(|error| match error.to_string().as_str() {
+                msg if msg.starts_with("number out of range") => JudgeError::NonFinite { score: f64::INFINITY },
+                _ => JudgeError::Parse(error.to_string()),
+            })?;
+
+        if !verdict.score.is_finite() {
+            return Err(JudgeError::NonFinite { score: verdict.score });
+        }
+        if !(self.min_score..=self.max_score).contains(&verdict.score) {
+            return Err(JudgeError::OutOfRange {
+                score: verdict.score,
+                min: self.min_score,
+                max: self.max_score,
+            });
+        }
+
+        verdict.rationale = verdict.rationale.trim().to_owned();
+        Ok(verdict)
+    }
+
+    fn identity(&self) -> String {
+        let args = self.args.iter().map(|a| a.to_string_lossy()).collect::<Vec<_>>().join(" ");
+        format!("{} {}", self.program.to_string_lossy(), args)
+    }
+}
+
+fn read_pipe_to_string(pipe: Option<&mut std::process::ChildStderr>) -> String {
+    let mut text = Vec::new();
+    if let Some(pipe) = pipe {
+        let _ = pipe.read_to_end(&mut text);
+    }
+    String::from_utf8_lossy(&text).trim().to_owned()
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DeterministicMockJudge;
+
+impl BenchmarkJudge for DeterministicMockJudge {
+    fn judge(&self, input: &BenchmarkJudgeInput) -> Result<BenchmarkJudgeVerdict, JudgeError> {
+        let gold = normalize_answer(&input.gold);
+        let contains = !gold.is_empty() && normalize_answer(&input.answer_basis).contains(&gold);
+        Ok(BenchmarkJudgeVerdict {
+            score: if contains { 1.0 } else { 0.0 },
+            rationale: if contains {
+                "gold answer appears in answer basis"
+            } else {
+                "gold answer absent from answer basis"
+            }
+            .to_owned(),
+        })
+    }
+
+    fn identity(&self) -> String {
+        "deterministic_mock".to_owned()
+    }
+}
+
+fn normalize_answer(value: &str) -> String {
+    value.chars().filter(|character| character.is_alphanumeric()).flat_map(char::to_lowercase).collect()
+}
 
 /// Corrective preamble appended to the judge prompt on its single retry when the
 /// first response did not parse as the rubric JSON. Mirrors dream Pass 2's
@@ -248,5 +447,71 @@ mod tests {
     #[test]
     fn marker_const_ends_with_equals() {
         assert!(EVAL_JUDGE_MARKER.ends_with('='));
+    }
+
+    #[test]
+    fn external_command_judge_uses_json_stdin_and_stdout() {
+        let judge = ExternalCommandJudge::new(
+            "/bin/sh",
+            ["-c", "grep -q '\"question\"' && printf '{\"score\":0.75,\"rationale\":\"ok\"}'"],
+        );
+        let verdict = judge
+            .judge(&BenchmarkJudgeInput {
+                question: "q".to_owned(),
+                gold: "a".to_owned(),
+                retrieved_context: vec![],
+                answer_basis: String::new(),
+            })
+            .expect("external judge verdict");
+        assert_eq!(verdict.score, 0.75);
+    }
+
+    #[test]
+    fn external_command_judge_times_out_after_configured_duration() {
+        let judge = ExternalCommandJudge::new("/bin/sh", ["-c", "sleep 2"]).with_timeout(Duration::from_millis(100));
+        let error = judge
+            .judge(&BenchmarkJudgeInput {
+                question: "q".to_owned(),
+                gold: "a".to_owned(),
+                retrieved_context: vec![],
+                answer_basis: String::new(),
+            })
+            .expect_err("judge should time out");
+        assert!(matches!(error, JudgeError::Timeout), "expected timeout, got {error:?}");
+    }
+
+    #[test]
+    fn external_command_judge_rejects_out_of_rubric_score() {
+        let judge = ExternalCommandJudge::new(
+            "/bin/sh",
+            ["-c", "printf '{\"score\":2.0,\"rationale\":\"too high\"}'"],
+        );
+        let error = judge
+            .judge(&BenchmarkJudgeInput {
+                question: "q".to_owned(),
+                gold: "a".to_owned(),
+                retrieved_context: vec![],
+                answer_basis: String::new(),
+            })
+            .expect_err("judge should reject out-of-range score");
+        assert!(matches!(error, JudgeError::OutOfRange { .. }), "expected out-of-range, got {error:?}");
+    }
+
+    #[test]
+    fn external_command_judge_rejects_non_finite_score() {
+        // 1e309 overflows to +inf in JSON float parsing.
+        let judge = ExternalCommandJudge::new(
+            "/bin/sh",
+            ["-c", "printf '{\"score\":1e309,\"rationale\":\"not finite\"}'"],
+        );
+        let error = judge
+            .judge(&BenchmarkJudgeInput {
+                question: "q".to_owned(),
+                gold: "a".to_owned(),
+                retrieved_context: vec![],
+                answer_basis: String::new(),
+            })
+            .expect_err("judge should reject non-finite score");
+        assert!(matches!(error, JudgeError::NonFinite { .. }), "expected non-finite, got {error:?}");
     }
 }

@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 chrono.workspace = true
 clap.workspace = true
+hex.workspace = true
 memorum-coordination = { path = "../memorum-coordination", optional = true }
 tokio.workspace = true
 
@@ -21,6 +22,7 @@ memoryd = { path = "../memoryd", optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 serde_yaml = { workspace = true, optional = true }
+sha2.workspace = true
 tempfile = { workspace = true, optional = true }
 
 [features]
@@ -48,6 +50,12 @@ test = false
 name = "memorum-eval-quality"
 path = "src/bin/quality_runner.rs"
 required-features = ["quality"]
+test = false
+
+[[bin]]
+name = "memorum-eval-benchmark"
+path = "src/bin/benchmark_runner.rs"
+required-features = ["quality", "judge"]
 test = false
 
 [dev-dependencies]

@@ -1,4 +1,6 @@
 pub mod assertions;
+#[cfg(all(feature = "quality", feature = "judge"))]
+pub mod benchmark;
 pub mod daemon_scaffold;
 pub mod harness_runner;
 #[cfg(feature = "judge")]

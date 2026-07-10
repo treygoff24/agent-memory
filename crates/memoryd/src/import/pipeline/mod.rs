@@ -254,6 +254,7 @@ mod tests {
                 body: "SECRET MEMORY BODY".to_string(),
                 truncated: false,
                 provenance: None,
+                sensitivity: None,
                 guidance: "private guidance".to_string(),
             }),
         );

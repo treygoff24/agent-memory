@@ -48,6 +48,19 @@ impl DaemonScaffold {
         Self::start(tree_dir)
     }
 
+    /// Start a real daemon whose configured embedding triple intentionally has
+    /// no provider. Recall therefore exercises the production degraded FTS
+    /// path without downloading or loading model weights.
+    pub async fn fresh_fts_only() -> Self {
+        let tree_dir = TempTree::fresh();
+        fs::write(
+            tree_dir.path().join("config.yaml"),
+            "schema_version: 1\nactive_embedding:\n  provider: memorum-eval-unavailable\n  model_ref: fts-only\n  dimension: 32\n",
+        )
+        .expect("write FTS-only eval config");
+        Self::start(tree_dir)
+    }
+
     pub async fn two_device() -> TwoDeviceScaffold {
         let remote_dir = TempTree::fresh();
         git(None, ["init", "--bare", "--initial-branch", "main", remote_dir.path_str().as_str()]);
@@ -367,6 +380,6 @@ mod tests {
 
     fn temp_socket_path(label: &str) -> std::path::PathBuf {
         let nanos = SystemTime::now().duration_since(UNIX_EPOCH).expect("system clock before unix epoch").as_nanos();
-        std::env::temp_dir().join(format!("memorum-eval-{label}-{nanos}.sock"))
+        std::path::PathBuf::from(format!("/tmp/me-{}-{label}-{nanos}.sock", std::process::id()))
     }
 }

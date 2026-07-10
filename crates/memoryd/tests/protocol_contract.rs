@@ -732,6 +732,7 @@ fn protocol_contract_success_responses_are_bounded_and_guided() {
                 session_id: None,
                 evidence_refs: Vec::new(),
             }),
+            sensitivity: None,
             guidance: "Body preview truncated; call memory_get for full body.".to_owned(),
         }),
     );

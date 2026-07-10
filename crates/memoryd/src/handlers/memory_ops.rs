@@ -160,20 +160,25 @@ async fn fts_search_hits(
     query: &str,
     limit: usize,
 ) -> Result<(usize, Vec<SearchHit>), HandlerError> {
-    let chunks = substrate
-        .query_chunks(ChunkQuery { text: Some(query.to_string()), triple: None, vector: None })
+    // Reuse the hybrid BM25 helper so FTS-only search gets the same two-stage
+    // strict-AND -> relaxed-OR fallback and per-memory collapse as the fused
+    // lane, without duplicating the query sanitizer.
+    let candidates = substrate
+        .query_hybrid_chunks(query, None, limit)
         .await
         .map_err(HandlerError::substrate)?;
-    let total = chunks.len();
-    let hits = chunks
+    let total = candidates.len();
+    let hits = candidates
         .into_iter()
-        .take(limit)
-        .map(|chunk| SearchHit {
-            id: chunk.memory_id.as_str().to_string(),
-            summary: bounded(&chunk.text, SEARCH_SNIPPET_MAX),
-            snippet: bounded(&chunk.text, SEARCH_SNIPPET_MAX),
+        .map(|candidate| SearchHit {
+            id: candidate.memory_id.as_str().to_string(),
+            summary: bounded(&candidate.text, SEARCH_SNIPPET_MAX),
+            snippet: bounded(&candidate.text, SEARCH_SNIPPET_MAX),
             body: None,
-            score: chunk.score,
+            score: candidate
+                .score_breakdown
+                .bm25_rank
+                .map_or(0.0, |rank| 1.0 / (rank as f64)),
         })
         .collect::<Vec<_>>();
     Ok((total, hits))
@@ -250,6 +255,7 @@ pub(crate) async fn get_response(
         body,
         truncated,
         provenance,
+        sensitivity: Some(envelope.metadata.frontmatter.sensitivity),
         guidance: "Returned a bounded Memorum record preview.".to_string(),
     }))
 }

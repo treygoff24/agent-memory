@@ -19,9 +19,9 @@ use memory_privacy::{
 };
 use memory_source::{capture_web_source, CaptureMode, CaptureWebSourceRequest};
 use memory_substrate::{
-    events::EventKind, Author, AuthorKind, AuxScope, ChunkQuery, ClassificationOutcome, EncryptedSubstrateDescriptor,
-    EventContext, Frontmatter, Memory, MemoryContent, MemoryId, MemoryStatus, MemoryType, ObserveKind,
-    PrivacySpanRecord, RecallIndexQuery, RepoPath, RetrievalPolicy, Scope, Sensitivity, Source, SourceKind, Substrate,
+    events::EventKind, Author, AuthorKind, AuxScope, ClassificationOutcome, EncryptedSubstrateDescriptor, EventContext,
+    Frontmatter, Memory, MemoryContent, MemoryId, MemoryStatus, MemoryType, ObserveKind, PrivacySpanRecord,
+    RecallIndexQuery, RepoPath, RetrievalPolicy, Scope, Sensitivity, Source, SourceKind, Substrate,
     SubstrateFragmentAppendRequest, SubstrateFragmentEncryption, SubstrateFragmentPayload, TrustLevel, WriteMode,
     WritePolicy, WriteRequest as SubstrateWriteRequest,
 };
