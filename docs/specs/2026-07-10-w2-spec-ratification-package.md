@@ -21,7 +21,7 @@ Two new known nullable/collection fields, appended to the §6.2 table and to can
 | `abstraction` | string or null |
 | `cues` | array of strings |
 
-Defaults when absent on read: `abstraction: null`, `cues: []` (standard §6.2 permissive-parser materialization + `AutoPopulatedNullableField` warning). File `schema_version` stays `1`: both fields are optional, and pre-v1.2 parsers preserve them via `_extras` round-trip. (Known mixed-version wart, accepted for single-device dogfood: the pre-v1.2 merge driver's `_extras` path resolves divergent values **silently ours-wins** (`field_rules.rs` `three_way_value` fallthrough) — divergent cue edits across mixed-version devices are side-dependent, not quarantined, until both devices run v1.2. Noted, not fixed.)
+Defaults when absent on read: `abstraction: null`, `cues: []` (standard §6.2 permissive-parser materialization + `AutoPopulatedNullableField` warning). File `schema_version` stays `1`: both fields are optional, and pre-v1.2 parsers preserve them via `_extras` round-trip. (Known mixed-version wart, accepted for single-device dogfood: the **shipped** merge driver's `_extras` path resolves divergent values silently ours-wins (`field_rules.rs` `three_way_value` fallthrough) — which itself diverges from the written §14.4 quarantine wording, a pre-existing spec/code drift logged in `docs/issues.md`. Divergent cue edits across mixed-version devices are side-dependent until both devices run v1.2. Noted, not fixed.)
 
 **Validation (§9 additions):**
 
@@ -32,8 +32,8 @@ Defaults when absent on read: `abstraction: null`, `cues: []` (standard §6.2 pe
 
 | Field | Rule |
 | --- | --- |
-| `abstraction` | true 3-way; same-field conflict selects the side with later `updated_at`; equal timestamps → lexicographically greater `sha256(NFC(value))` wins; loser preserved in `_merge_diagnostics` (see deviation flag above) |
-| `cues` | set union of both sides → NFC canonicalize → sort by the strict total order **`(case_fold(NFC(value)), NFC(value) bytes)`** → dedup under case-fold equality keeping the first entry in that order (canonical casing = the byte-lexicographically smaller spelling; never insertion- or side-order) → keep first 3. No ours/theirs priority anywhere. Two-clone convergence fixtures required for opposite merge directions with overflowing unions **and with casing-only duplicates (`OAuth` vs `oauth`)** |
+| `abstraction` | true 3-way; same-field conflict selects the side with later `updated_at`; equal timestamps → **any non-null beats null; null vs null is a no-op; both non-null → lexicographically greater `sha256(NFC(value))` wins** (null/empty-after-trim are equivalent and normalize to null before comparison); loser preserved in `_merge_diagnostics` (see deviation flag above) |
+| `cues` | set union of both sides → NFC canonicalize → sort by the strict total order **`(case_fold(NFC(value)), NFC(value) bytes)`** where `case_fold` is **Unicode default (full) case folding — never locale-aware lowercasing** (`I`/`İ`, `ß` hazards) → dedup under case-fold equality keeping the first entry in that order (canonical casing = the byte-lexicographically smaller spelling; never insertion- or side-order) → keep first 3. Worked example: union `{OAuth, oauth}` → both fold to `oauth`, `O` < `o` byte-wise → keep `OAuth`; identical in both merge directions. Two-clone convergence fixtures required for opposite merge directions with overflowing unions **and with casing-only duplicates** |
 
 ### A2. Index schema 5→6 (DP2: this plan owns 6; ambient-recall v4 P2 re-points to 6→7)
 
@@ -41,7 +41,7 @@ Migration 6 is **additive-only**: `CREATE TABLE IF NOT EXISTS` with table-exists
 
 New tables (mirroring the chunk-lane shapes):
 
-All hashes below are canonical `sha256:<hex64>`: `abstraction_hash = sha256(NFC(abstraction))`, `cue_hash = sha256(NFC(cue_text))`, aux-job/meta `content_hash` = the hash of the text actually embedded (abstraction_hash or cue_hash). `source_body_hash` is the memory's body content hash at the time the abstraction was minted — it is the **generation-freshness** signal (`abstraction_compile` re-mints when `source_body_hash` no longer matches the current body), distinct from the embedded-content hash.
+All hashes below are canonical `sha256:<hex64>`: `abstraction_hash = sha256(NFC(abstraction))`, `cue_hash = sha256(NFC(cue_text))`, aux-job/meta `content_hash` = the hash of the text actually embedded (abstraction_hash or cue_hash). `source_body_hash` is the memory's body content hash **at abstraction mint time** — the **generation-freshness** signal. Freshness semantics are one-directional: a body-only edit **keeps** the mint-time `source_body_hash` (and the abstraction text/hash) so `abstraction_compile` can detect staleness; `source_body_hash` refreshes **only** when the abstraction itself is (re-)minted or explicitly written. Cue `target_id` encoding is pinned: `format!("{memory_id}:{ordinal}")`, ordinal `0..=2`, parsed from the rightmost `:`.
 
 ```sql
 CREATE TABLE IF NOT EXISTS memory_abstractions (
@@ -78,12 +78,15 @@ CREATE TABLE IF NOT EXISTS aux_pending_embedding_jobs (
   model_ref TEXT NOT NULL,
   dimension INTEGER NOT NULL,
   enqueued_at TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
   PRIMARY KEY (row_kind, target_id, provider, model_ref, dimension)
 );
+-- attempts/last_error mirror pending_embedding_jobs: one retry/backoff policy across both queues.
 CREATE INDEX IF NOT EXISTS idx_aux_pending_jobs_enqueued ON aux_pending_embedding_jobs(enqueued_at);
 ```
 
-Vector tables per (row kind × triple), same adapter naming discipline as §10.2.2: `vec_abstractions__<provider>__<model>__<dim>`, `vec_cues__<provider>__<model>__<dim>`. A triple never shares a table across row kinds or with chunks.
+Vector tables per (row kind × triple). **Vector-table identity is `(row_kind, provider, model_ref, dimension)` — the shipped `sqlite_vec::vector_table_name` helper hashes only the triple and MUST NOT be reused unmodified**: the row kind must enter the digest (or an equivalent disambiguator), else abstraction/cue vectors land in the chunk table. Names like `vec_abstractions__<provider>__<model>__<dim>` are illustrative only. A (row kind, triple) pair never shares a table with any other pair.
 
 **Derived-data posture (Stream I):** `memory_abstractions`, `memory_cues`, aux meta/jobs, and all vector tables are derived from canonical frontmatter and are **rebuildable; they do not sync**. Reindex from files reconstructs them fully.
 
@@ -98,7 +101,8 @@ Identity = `(row_kind, target_id, content_hash)` against the embedding triple �
 
   | Transition | `memory_abstractions`/`memory_cues` | aux jobs | aux vectors + meta | servable via aux query APIs |
   | --- | --- | --- | --- | --- |
-  | edit (body/abstraction/cues change) | upsert to new values | replaced per hash-change rule | stale deleted, fresh written on drain | yes (current hash only) |
+  | edit — abstraction/cues change | upsert to new values (`source_body_hash` refreshed iff abstraction re-minted) | replaced per hash-change rule | stale deleted, fresh written on drain | yes (current hash only) |
+  | edit — body only | abstraction/cue rows and `source_body_hash` **unchanged** (stale-by-design freshness signal; chunk lane handles the body) | aux jobs unchanged | aux vectors unchanged | yes |
   | supersede / archive / tombstone / quarantine (status leaves `{active, pinned}`) | rows deleted | jobs deleted | vectors + meta deleted (inline best-effort, reconcile-guaranteed) | no |
   | physical delete | CASCADE | deleted | reconcile-guaranteed | no |
   | reindex from files | rebuilt | re-enqueued as needed | reconciled | yes |
@@ -111,7 +115,11 @@ Identity = `(row_kind, target_id, content_hash)` against the embedding triple �
 
 ### A4. Classification contract composition (§8.7 extension)
 
-**One shared pipeline for every write entrypoint** — `write`, `write-note`, supersede, import execute, `review approve`, `quarantine resolve --edited`, dream fragment→memory, `abstraction_compile`, backfill — in this fixed order: **normalize/cap-validate → classify the combined payload → drop/refuse/encrypt decision → validate the final payload → persist/index/enqueue.** No canonical file write, no index row, no aux row, and no embedding job may be created before the pipeline completes. The combined payload = title + summary + body + `abstraction` + every `cues` entry; strictest outcome controls the whole write. `secret` anywhere (including in a cue) refuses before any disk effect (invariant #1). A `RequiresEncryption`/sensitive outcome caused **solely** by generated abstraction/cues in a generation context (dream compile, backfill) resolves fail-closed as **drop abstraction/cues, keep body** — the drop happens at the pipeline's decision step, so the dropped fields never reach disk, index, or any embedding queue (generation-context behavior; interactive writes still refuse/error per the existing contract). Entrypoint enumeration and the hardcoded-`Trusted` audit are W2 implementation deliverables (plan task 3); the contract here is the pipeline they must all route through — including the shipped substrate path (`api/write.rs`), which today classifies before frontmatter validation and must be reconciled to this order.
+**One shared pipeline for every write entrypoint** — `write`, `write-note`, supersede, import execute, `review approve`, `quarantine resolve --edited`, dream fragment→memory, `abstraction_compile`, backfill — in this fixed order: **normalize/cap-validate → classify → drop/refuse/encrypt decision → validate the final payload → persist/index/enqueue.** No canonical file write, no index row, no aux row, and no embedding job may be created before the pipeline completes. The combined payload = title + summary + body + `abstraction` + every `cues` entry; strictest outcome controls the whole write. `secret` anywhere (including in a cue) refuses before any disk effect (invariant #1).
+
+**Generation-context drop semantics (dual classification + outcome rebind):** in generation contexts (dream compile, backfill), the classify step runs **twice** — once over the combined payload, once over the body-only payload (title + summary + body). If the combined outcome is stricter than the body-only outcome (the strictness caused *by* the generated fields, now well-defined), the pipeline drops `abstraction`/`cues` and **rebinds the write to the body-only `ClassificationOutcome`** (and its sensitivity) before persisting — without the rebind, the write would still carry `RequiresEncryption` and the plaintext path would refuse, losing the body. `secret` in either classification still refuses the whole write. Acceptance: a sensitive-cue-on-public-body dream compile commits the body with `abstraction: null`/`cues: []`, creates no aux rows or jobs, and the write's persisted outcome is the body-only one. Interactive writes do not drop — they refuse/error per the existing contract.
+
+Entrypoint enumeration and the hardcoded-`Trusted` audit are W2 implementation deliverables (plan task 3); the contract here is the pipeline they must all route through — including the shipped substrate path (`api/write.rs`), which today classifies before frontmatter validation and must be reconciled to this order.
 
 ### A5. New/updated acceptance signals
 

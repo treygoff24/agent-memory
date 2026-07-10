@@ -15,3 +15,20 @@ Reviewer: Luna high (codex-77, safe). Package at commit `f24ec23`; fixes applied
 | 9 | MINOR | SKILL.md cue-guidance update omitted from §C | ACCEPTED — added with acceptance signal |
 
 Round 2: Cursor safe re-review of package r2 (different family; re-review until dry).
+
+## Round 2 — Cursor (cursor-29) vs package r2
+
+2 BLOCKER + 3 MAJOR + 2 MINOR + 1 NIT; **8/8 accepted**, applied as package r3:
+
+| # | Sev | Finding | Disposition |
+| --- | --- | --- | --- |
+| 10 | BLOCKER | Drop-fields path leaves `RequiresEncryption` bound to the write — body cannot actually be kept; "caused solely by" undefined | ACCEPTED — dual classification (combined + body-only) with outcome **rebind** to the body-only result on drop |
+| 11 | BLOCKER | "Same naming discipline" would reuse `sqlite_vec::vector_table_name`, which hashes only the triple — aux vectors would land in the chunk table | ACCEPTED — vector-table identity = (row_kind, triple); shipped helper must not be reused unmodified |
+| 12 | MAJOR | `source_body_hash` semantics on body-only edit unspecified | ACCEPTED — keep mint-time hash (stale-by-design freshness signal); matrix row added |
+| 13 | MAJOR | `case_fold` algorithm unpinned (locale hazards) | ACCEPTED — Unicode default case folding, NFC first, locale-aware lowercasing forbidden; worked example inlined |
+| 14 | MAJOR | Equal-timestamp tie-break undefined for null abstraction | ACCEPTED — non-null beats null; null vs null no-op; null/empty-after-trim equivalent |
+| 15 | MINOR | Aux job rows lack `attempts`/`last_error` parity | ACCEPTED — columns added, single retry policy stated |
+| 16 | MINOR | Cue `target_id` encoding underspecified | ACCEPTED — pinned format + rightmost-`:` parse |
+| 17 | NIT | Wart note implied §14.4 matches shipped ours-wins; actually spec says quarantine (drift) | ACCEPTED — clause corrected; spec/code drift logged in docs/issues.md |
+
+Round 3: Sol high convergence re-read over package r3 + the W3 merge-proposal spec together, after Luna's W3 round-1 findings are applied.

@@ -27,3 +27,7 @@ Open sub-question for the live repair pass: at least one changed Claude file (`m
 ## OPEN: `summary` merge rule diverges on equal `updated_at` (pre-existing, found 2026-07-10)
 
 Spec §14.4 says same-field `summary` conflicts select "the side with later `updated_at`" — undefined at equality; the shipped `field_rules.rs` implementation falls through to ours-wins, which is Git-side-dependent and violates two-clone convergence (invariant #6) in the equal-timestamp case. Same fallthrough resolves divergent `_extras` add/add values silently ours-wins (relevant to mixed-version fields). Low practical frequency (requires identical-microsecond independent edits, or `_extras` divergence), but it's a real convergence hole. Found by the W2 spec-package review (Luna, codex-77). Fix direction: deterministic value-hash tie-break, as ratified for the new `abstraction` field in the W2 package — port it to `summary` (+ audit other newer-wins rules: `confidence`, `entities` label, `author`) in a follow-up.
+
+## OPEN: shipped `_extras` merge diverges from spec §14.4 (pre-existing, found 2026-07-10)
+
+Spec §14.4 says unknown `_extras` add/add same-key conflicts "quarantine unless values equal"; the shipped `field_rules.rs` `three_way_value` fallthrough resolves them silently ours-wins instead. Spec/code drift — one of them is wrong. Found by the W2 spec-package round-2 review (Cursor, cursor-29). Fix direction TBD with the `summary` tie-break audit above (same fallthrough).
