@@ -4,7 +4,7 @@ Status: **DRAFT — awaiting Trey ratification.** Plan: `docs/plans/2026-07-10-m
 
 ## Coordinator deviation flag (ratify explicitly)
 
-The plan (r5 §W2 task 1) says the `abstraction` merge rule is **"ours-wins."** Ours-wins is Git-side-dependent: clone A merging B keeps A's value, clone B merging A keeps B's — opposite merge directions diverge, violating two-clone convergence (repo invariant #6, spec §13.6.1). Three review rounds carried this; the plan's own convergence test requirement covers only `cues`. **Drafted instead:** true 3-way; same-field conflict selects the side with later `updated_at`, loser preserved in `_merge_diagnostics` — identical to the shipped `summary` rule, side-independent, and it still loses at most one generation of abstraction (the dream-repair argument the plan used for ours-wins applies unchanged). Ratifying this package ratifies the substitution.
+The plan (r5 §W2 task 1) says the `abstraction` merge rule is **"ours-wins."** Ours-wins is Git-side-dependent: clone A merging B keeps A's value, clone B merging A keeps B's — opposite merge directions diverge, violating two-clone convergence (repo invariant #6, spec §13.6.1). Three review rounds carried this; the plan's own convergence test requirement covers only `cues`. **Drafted instead:** true 3-way; same-field conflict selects the side with later `updated_at`; **equal timestamps break the tie by lexicographically greater `sha256(NFC(value))`** (the shipped `summary` rule falls through to ours on equality — a pre-existing convergence gap now logged in `docs/issues.md`; the new field does not inherit it). Loser preserved in `_merge_diagnostics`. It still loses at most one generation of abstraction (the dream-repair argument the plan used for ours-wins applies unchanged). Ratifying this package ratifies the substitution.
 
 ---
 
@@ -21,7 +21,7 @@ Two new known nullable/collection fields, appended to the §6.2 table and to can
 | `abstraction` | string or null |
 | `cues` | array of strings |
 
-Defaults when absent on read: `abstraction: null`, `cues: []` (standard §6.2 permissive-parser materialization + `AutoPopulatedNullableField` warning). File `schema_version` stays `1`: both fields are optional, and pre-v1.2 parsers preserve them via `_extras` round-trip. (Known mixed-version wart, accepted for single-device dogfood: the pre-v1.2 merge driver's `_extras` add/add rule can quarantine divergent cue edits across devices instead of set-merging them. Noted, not fixed.)
+Defaults when absent on read: `abstraction: null`, `cues: []` (standard §6.2 permissive-parser materialization + `AutoPopulatedNullableField` warning). File `schema_version` stays `1`: both fields are optional, and pre-v1.2 parsers preserve them via `_extras` round-trip. (Known mixed-version wart, accepted for single-device dogfood: the pre-v1.2 merge driver's `_extras` path resolves divergent values **silently ours-wins** (`field_rules.rs` `three_way_value` fallthrough) — divergent cue edits across mixed-version devices are side-dependent, not quarantined, until both devices run v1.2. Noted, not fixed.)
 
 **Validation (§9 additions):**
 
@@ -32,8 +32,8 @@ Defaults when absent on read: `abstraction: null`, `cues: []` (standard §6.2 pe
 
 | Field | Rule |
 | --- | --- |
-| `abstraction` | true 3-way; same-field conflict selects the side with later `updated_at`, loser preserved in `_merge_diagnostics` (see deviation flag above) |
-| `cues` | set union of both sides → NFC canonicalize → case-fold dedup (keep first occurrence in the total order) → **side-independent total order** (lexicographic byte order of the case-folded NFC form) → keep first 3. No ours/theirs priority anywhere. Two-clone convergence fixtures required for opposite merge directions with overflowing unions |
+| `abstraction` | true 3-way; same-field conflict selects the side with later `updated_at`; equal timestamps → lexicographically greater `sha256(NFC(value))` wins; loser preserved in `_merge_diagnostics` (see deviation flag above) |
+| `cues` | set union of both sides → NFC canonicalize → sort by the strict total order **`(case_fold(NFC(value)), NFC(value) bytes)`** → dedup under case-fold equality keeping the first entry in that order (canonical casing = the byte-lexicographically smaller spelling; never insertion- or side-order) → keep first 3. No ours/theirs priority anywhere. Two-clone convergence fixtures required for opposite merge directions with overflowing unions **and with casing-only duplicates (`OAuth` vs `oauth`)** |
 
 ### A2. Index schema 5→6 (DP2: this plan owns 6; ambient-recall v4 P2 re-points to 6→7)
 
@@ -41,11 +41,14 @@ Migration 6 is **additive-only**: `CREATE TABLE IF NOT EXISTS` with table-exists
 
 New tables (mirroring the chunk-lane shapes):
 
+All hashes below are canonical `sha256:<hex64>`: `abstraction_hash = sha256(NFC(abstraction))`, `cue_hash = sha256(NFC(cue_text))`, aux-job/meta `content_hash` = the hash of the text actually embedded (abstraction_hash or cue_hash). `source_body_hash` is the memory's body content hash at the time the abstraction was minted — it is the **generation-freshness** signal (`abstraction_compile` re-mints when `source_body_hash` no longer matches the current body), distinct from the embedded-content hash.
+
 ```sql
 CREATE TABLE IF NOT EXISTS memory_abstractions (
   memory_id TEXT PRIMARY KEY REFERENCES memories(id) ON DELETE CASCADE,
   abstraction TEXT NOT NULL,
-  abstraction_hash TEXT NOT NULL
+  abstraction_hash TEXT NOT NULL,
+  source_body_hash TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS memory_cues (
@@ -89,21 +92,30 @@ Vector tables per (row kind × triple), same adapter naming discipline as §10.2
 Identity = `(row_kind, target_id, content_hash)` against the embedding triple — triple identity semantics unchanged (invariant #3; `DimensionMismatch` / `UnknownEmbeddingTriple` behave identically for aux rows).
 
 - **Enqueue:** indexing a memory whose `retrieval_policy.index_embeddings == true` upserts `memory_abstractions`/`memory_cues` rows and enqueues aux jobs for the active triple when no matching `aux_embedding_meta` exists for the current hash. API-lane eligibility fence (`EmbeddingLaneEligibility`) applies to aux rows exactly as to chunks: plaintext-only lanes hold `confidential`/`personal` aux rows local, fail-closed.
+- **Hash-change invalidation (atomic with the index write):** when an abstraction/cue text changes, the indexer — in the same SQLite transaction that updates `memory_abstractions`/`memory_cues` — deletes the stale `aux_embedding_meta` rows for the old hash and **replaces** (not or-ignores) the pending job with one for the new hash; the stale vector is deleted best-effort inline and guaranteed by reconciliation. Cue-set re-canonicalization that shifts or removes ordinals deletes the meta/job rows (and best-effort vectors) for every `(memory_id, ordinal)` whose `cue_hash` no longer matches. Query helpers and reconcile reject any vector whose meta `content_hash` differs from the current `abstraction_hash`/`cue_hash`.
 - **Worker:** Stream B drains **all** row kinds from both queues (chunk + aux) — a drain pass is not complete while aux jobs remain. `update_embedding`-equivalent for aux rows validates target existence + `content_hash` match; mismatch = stale-fence rejection, no vector write.
-- **Delete:** memory delete/tombstone cascades aux rows; vector deletion best-effort inline, guaranteed by reconciliation.
-- **Reconcile (both directions, per §10.2.1):** orphan aux vectors deleted; meta-without-vector re-enqueued; jobs whose targets/hashes are gone dropped.
+- **Status-lifecycle matrix (per transition, covering rows / jobs / vectors / query visibility):**
+
+  | Transition | `memory_abstractions`/`memory_cues` | aux jobs | aux vectors + meta | servable via aux query APIs |
+  | --- | --- | --- | --- | --- |
+  | edit (body/abstraction/cues change) | upsert to new values | replaced per hash-change rule | stale deleted, fresh written on drain | yes (current hash only) |
+  | supersede / archive / tombstone / quarantine (status leaves `{active, pinned}`) | rows deleted | jobs deleted | vectors + meta deleted (inline best-effort, reconcile-guaranteed) | no |
+  | physical delete | CASCADE | deleted | reconcile-guaranteed | no |
+  | reindex from files | rebuilt | re-enqueued as needed | reconciled | yes |
+
+- **Reconcile (both directions, per §10.2.1):** orphan aux vectors deleted; meta-without-vector re-enqueued; jobs whose targets/hashes are gone dropped; vectors for non-`{active,pinned}` memories deleted.
 - **Triple switch:** re-enqueues all row kinds for the new active triple; old aux vector tables remain queryable until `drop_embedding_model`, which drops all row kinds' tables for the triple.
-- **Sensitivity upgrade revocation:** when a memory's `sensitivity` rises into `{confidential, personal}` while an API-transit lane is active, all API-lane vectors for that memory — chunk, abstraction, cue — are deleted and the rows re-enqueued held-local. Test required.
+- **Sensitivity upgrade revocation:** when a memory's `sensitivity` rises into `{confidential, personal}`: (a) **all API-lane vectors** for that memory — chunk, abstraction, cue — are deleted unconditionally; (b) the post-upgrade `retrieval_policy.index_embeddings` decides what remains — under the §6.2 default it flips to `false`, so local vectors/meta/jobs are **deleted too, with no re-enqueue** (the memory is metadata-retrievable only, per the existing contract); only an explicit operator override that keeps `index_embeddings=true` re-enqueues held-local jobs for a local lane. Lane switches (API→local, local→API) follow the existing triple/lane rules — a lane switch alone never resurrects vectors for ineligible sensitivities. Test required for both the default-delete and override-re-enqueue paths.
 - **Doctor/status:** per-row-kind counts (indexed, pending, held-local) alongside chunk counts.
 - **Query path (this is the whole point):** `query_abstraction_vectors` / `query_cue_vectors` on the Substrate index API — same triple addressing, same placeholder bucketing as chunk queries, KNN over the respective vector table returning `(memory_id [, ordinal], distance)`. **No recall-lane wiring in W2** — the APIs exist and are tested; W4 consumes them.
 
 ### A4. Classification contract composition (§8.7 extension)
 
-Every write's `ClassificationOutcome` is computed over the **combined payload**: title + summary + body + `abstraction` + every `cues` entry. Strictest outcome controls the whole write. `secret` anywhere (including in a cue) refuses before any disk effect (invariant #1). A `RequiresEncryption`/sensitive outcome caused **solely** by generated abstraction/cues in a generation context (dream compile, backfill) resolves fail-closed as **drop abstraction/cues, keep body** — the memory persists without the new fields rather than escalating or refusing (generation-context behavior; interactive writes still refuse/error per the existing contract). Entrypoint enumeration and the hardcoded-`Trusted` audit (`review approve`, `quarantine resolve --edited`, dream fragment→memory, import execute, backfill) are W2 implementation deliverables (plan task 3); the contract here is the rule they must all satisfy.
+**One shared pipeline for every write entrypoint** — `write`, `write-note`, supersede, import execute, `review approve`, `quarantine resolve --edited`, dream fragment→memory, `abstraction_compile`, backfill — in this fixed order: **normalize/cap-validate → classify the combined payload → drop/refuse/encrypt decision → validate the final payload → persist/index/enqueue.** No canonical file write, no index row, no aux row, and no embedding job may be created before the pipeline completes. The combined payload = title + summary + body + `abstraction` + every `cues` entry; strictest outcome controls the whole write. `secret` anywhere (including in a cue) refuses before any disk effect (invariant #1). A `RequiresEncryption`/sensitive outcome caused **solely** by generated abstraction/cues in a generation context (dream compile, backfill) resolves fail-closed as **drop abstraction/cues, keep body** — the drop happens at the pipeline's decision step, so the dropped fields never reach disk, index, or any embedding queue (generation-context behavior; interactive writes still refuse/error per the existing contract). Entrypoint enumeration and the hardcoded-`Trusted` audit are W2 implementation deliverables (plan task 3); the contract here is the pipeline they must all route through — including the shipped substrate path (`api/write.rs`), which today classifies before frontmatter validation and must be reconciled to this order.
 
 ### A5. New/updated acceptance signals
 
-Secret-in-cue refusal; sensitive-abstraction-on-public-body drops fields keeps body; upgrade-revocation deletes API-lane vectors across all row kinds; two-clone cue-merge convergence (opposite directions, overflowing unions, identical result); abstraction conflict resolves by `updated_at` with loser in diagnostics; migration 6 up + rollback on a copied live DB; reindex-from-files rebuilds all derived tables; aux stale-write fence; triple-switch re-enqueue counts include aux kinds; doctor per-kind counts.
+Secret-in-cue refusal; sensitive-abstraction-on-public-body drops fields keeps body (nothing reaches disk/index/queue); upgrade-revocation deletes API-lane vectors across all row kinds and, under default policy, local ones too (both default-delete and override-re-enqueue paths); two-clone cue-merge convergence (opposite directions, overflowing unions, casing-only duplicates, identical result); abstraction conflict resolves by `updated_at` with sha256 tie-break and loser in diagnostics; migration 6 up + rollback on a copied live DB; reindex-from-files rebuilds all derived tables; aux stale-write fence + hash-change invalidation (no stale-hash vector ever servable); status-transition matrix fixtures (supersede/tombstone/quarantine clear aux state); triple-switch re-enqueue counts include aux kinds; doctor per-kind counts.
 
 ---
 
@@ -119,7 +131,7 @@ Dated additive amendment to `stream-f-dreaming-v0.3.md` (no version bump: new op
 
 ## §C — CLI contract v1: additive meta fields
 
-`memoryd write` / `write-note` accept `abstraction` and `cues` via meta; protocol DTO + generated schema + envelope tests updated together; validation order at the trust boundary: length/charset/count caps first, then classification per §A4. Additive change, in-version per the contract's amendment convention.
+`memoryd write` / `write-note` accept `abstraction` and `cues` via meta; protocol DTO + generated schema + envelope tests updated together; validation order at the trust boundary follows the §A4 pipeline. `skills/using-memorum/SKILL.md` gains cue-authoring guidance (adapted from Memora's `cue_index_generator.py` patterns: `[Main Entity] + [Key Aspect]`, 2–4 words, 0–3 cues) in the same change, with an acceptance signal that the skill documents abstraction/cue usage. Additive change, in-version per the contract's amendment convention.
 
 ## §D — ambient-recall v4.0 cross-reference edit
 

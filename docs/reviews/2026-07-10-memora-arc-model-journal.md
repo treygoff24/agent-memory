@@ -57,3 +57,15 @@ Outcome and verification: verdict READY-WITH-EDITS — 4 MAJOR + 2 MINOR, zero b
 Performance observations: ~14 min. Round-over-round finding decay 16 → 6 → 0-structural = healthy convergence, not reviewer fatigue (round 3 findings were real but small).
 
 Routing assessment: Sol xhigh as bookend reviewer (round 1 deep attack + round N convergence certification) is now a proven pattern. Confidence: high.
+
+## 2026-07-10 - gpt-5.6-luna via codex - W2 spec ratification package review (round 1)
+
+Command and run: `delegate --group memora-w2spec codex safe --model luna --reasoning-effort high --prompt-file thoughts/memora-build/w2-spec-review-prompt.md`; alias `codex-77`; mode/isolation: safe / worktree-temporary.
+
+Task and expectation: adversarial review of the coordinator-drafted W2 spec ratification package against the plan, Stream A v1.1, and shipped code; hunt areas included convergence, lifecycle holes, and classification ordering.
+
+Outcome and verification: 2 BLOCKER + 6 MAJOR + 1 MINOR, verdict NOT-RATIFIABLE; **9/9 accepted** after coordinator spot-checks (the `_extras` silent-ours-wins claim against `field_rules.rs` and the `index_embeddings` policy conflict both verified accurate). Both blockers were real convergence defects in coordinator-authored text: casing-collision dedup order-dependence, and the equal-timestamp tie — the latter generalized into a discovered PRE-EXISTING convergence bug in the shipped `summary` merge rule, now logged in docs/issues.md.
+
+Performance observations: ~13 min. Read shipped parser/serializer/merge-driver/write-path Rust to ground every finding; fix suggestions directly usable. Zero noise findings.
+
+Routing assessment: third consecutive strong Luna×high review outing (after the API-lane and plan-review data points) — it is now the default first-review lane for coordinator-authored contract text, not just code. Confidence: high.
