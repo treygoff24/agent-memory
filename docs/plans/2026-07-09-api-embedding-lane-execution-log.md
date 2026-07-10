@@ -26,3 +26,22 @@ Per the blocked->30min rule. Running state notes for the 2026-07-09 build arc
   fence gate PASSED (grok cross-family + orchestrator verdict); T2.2 gate in flight on salvaged diff.
 - Wave 3: briefs staged (`/tmp/memorum-briefs/T3.1-*.md`, `T3.2-*.md`); execution blocked on codex auth.
 - Wave 4: T4.1/T4.2 staging in progress by orchestrator (not blocked).
+
+## FINAL — 2026-07-09 evening: plan complete, shipped live
+
+The blocker above resolved same-day (Trey re-logged the work Codex profile; auth routing reverted to
+personal at 6:30pm CDT as scheduled). All waves closed. Post-arc, Trey approved everything gated on him
+and the lane was fully shipped locally:
+
+- Spec amendment applied (Stream A v1.1 Amendment 2026-07-09 + system-v0.3 pointer), commit `cc0b5d8`.
+- T4.1 bake-off run against the real API: **768 dims ratified** (results in
+  `docs/reviews/2026-07-09-t42-api-lane-dogfood-notes.md` and `_embed_bench/result_gemini-*.json`).
+- T4.2 live dogfood executed end-to-end; caught and fixed **three production bugs**: singular
+  `:embedContent` response shape (`b56f1ab`), 250→750 ms query-embed budget (`2a7bf77`), `import --repo`
+  cwd default (`a2b06a3`).
+- Live `~/memorum` daemon: gemini-api lane, 11–17 MB footprint, doctor healthy, fence holding 28
+  sensitive jobs local, switch-back verified with zero re-embed.
+- `using-memorum` skill installed globally for Claude and Codex; delegate-agent skill updated with the
+  GPT-5.6 field verdicts (`docs/reviews/2026-07-09-gpt56-sol-terra-luna-journal.md`).
+
+This log is closed.
