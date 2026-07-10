@@ -69,3 +69,27 @@ Outcome and verification: 2 BLOCKER + 6 MAJOR + 1 MINOR, verdict NOT-RATIFIABLE;
 Performance observations: ~13 min. Read shipped parser/serializer/merge-driver/write-path Rust to ground every finding; fix suggestions directly usable. Zero noise findings.
 
 Routing assessment: third consecutive strong Luna×high review outing (after the API-lane and plan-review data points) — it is now the default first-review lane for coordinator-authored contract text, not just code. Confidence: high.
+
+## 2026-07-10 - grok-4.5 via cursor - W1 diff review (round 1)
+
+Command and run: `delegate --cwd <terra-worktree> --group memora-w1rev cursor safe --prompt-file thoughts/memora-build/w1-review-prompt.md`; alias `cursor-1` (worktree-scoped registry); mode/isolation: safe / git-worktree temporary.
+
+Task and expectation: adversarial review of Terra's uncommitted W1 import-dedup diff, primed with three coordinator findings to verify and extend.
+
+Outcome and verification: 3 BLOCKER + 5 MAJOR + 1 MINOR + 1 NIT, NEEDS-REWORK, ~2 min wall. Confirmed all three coordinator findings; unique catches all verified by coordinator read: supersession-chain lookup broken after rekey (W3 lineage dependency!), retain leaving two records per memory_id, alias_to_id seeded from identity keys, anchor matches unconstrained by harness. Traced `sources/codex.rs:108` to prove Codex candidates never carry mem_* anchors — the load-bearing detail that the primary anchor path can't save the live bug.
+
+Performance observations: fastest deep review of the arc; loaded repo skills unprompted; zero re-derivation of primed findings, pure extension. Verification burden low.
+
+Routing assessment: attacker role re-confirmed on Rust diff review. Confidence: high.
+
+## 2026-07-10 - gpt-5.6-luna via codex - W1 diff review (round 1, parallel slot)
+
+Command and run: same brief, `codex safe --model luna --reasoning-effort high`; alias `codex-1` (worktree-scoped registry); mode/isolation: safe / worktree-temporary.
+
+Task and expectation: same as cursor-1; decorrelated same-brief parallel review.
+
+Outcome and verification: 1 BLOCKER + 4 MAJOR + 2 MINOR, NEEDS-REWORK, 5 min. Convergent with Cursor on the ordinal blocker, migration gap, ambiguity unreachability, and chain lookup. Two unique accepted adds Cursor missed: profile identity is a bare directory basename (cross-root collisions, symlink divergence) and supersede-retry can mint multiple replacements via the substrate's fresh-replacement-per-request behavior (read memory-substrate/src/api/write.rs:101-148 to prove it) — the latter is the same defect class W1 exists to fix, accepted as F10.
+
+Performance observations: read into a SECOND crate to ground a finding; both uniques survived triage. Slightly slower than Cursor, deeper on cross-crate consequence tracing.
+
+Routing assessment: Cursor+Luna as the standing parallel review pair is producing disjoint accepted-finding sets — keep it. Confidence: high.
