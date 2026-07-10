@@ -93,7 +93,7 @@ mod tests {
     use serde_json::Value;
 
     use crate::import::project_map::{ResolutionKind, ScopeBinding};
-    use crate::protocol::{GetResponse, GovernanceRefusalReason, GovernanceStatus, ProtocolError, ResponsePayload};
+    use crate::protocol::{GetResponse, GovernanceRefusalReason, GovernanceStatus, MemoryStatus, ProtocolError, ResponsePayload};
 
     use crate::import::candidate::ParsedMemory;
     use crate::import::report::ImportReport;
@@ -260,6 +260,7 @@ mod tests {
                 truncated: false,
                 provenance: None,
                 sensitivity: None,
+                status: None,
                 guidance: "private guidance".to_string(),
             }),
         );
@@ -478,7 +479,6 @@ mod tests {
             },
             action: bucket_repair_action(
                 state.imports.get("claude:proj/memory/a.md").expect("seeded record"),
-                "claude:proj/memory/a.md",
             ),
             wiki_link_targets_resolvable: Vec::new(),
             wiki_link_targets_back_edge: Vec::new(),
@@ -570,7 +570,7 @@ mod tests {
             .expect("plan");
         assert_eq!(plan.actions.len(), 1);
         match &plan.actions[0].action {
-            PlanAction::Supersede { prior_memory_id, prior_content_hash, .. } => {
+            PlanAction::Supersede { prior_memory_id, prior_content_hash } => {
                 assert_eq!(prior_memory_id, "mem_old");
                 assert_eq!(prior_content_hash, "sha256:STALE");
             }
@@ -755,19 +755,40 @@ mod tests {
         }
 
         async fn get_superseded_by_chain(&mut self, id: &str) -> ImportResult<Vec<String>> {
-            self.trust_artifact_calls.push(id.to_string());
-            Ok(self.superseded_by_chains.get(id).cloned().unwrap_or_default())
+            // Model the same transitive walk the real SocketDaemonClient performs.
+            let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut queue: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+            let mut chain: Vec<String> = Vec::new();
+            queue.push_back(id.to_string());
+            visited.insert(id.to_string());
+
+            while let Some(current_id) = queue.pop_front() {
+                if chain.len() >= 16 {
+                    break;
+                }
+                self.trust_artifact_calls.push(current_id.clone());
+                for next_id in self.superseded_by_chains.get(&current_id).cloned().unwrap_or_default() {
+                    if visited.insert(next_id.clone()) {
+                        chain.push(next_id.clone());
+                        queue.push_back(next_id);
+                    }
+                }
+            }
+
+            Ok(chain)
         }
 
-        async fn get_memory(&mut self, id: &str) -> ImportResult<crate::protocol::GetResponse> {
+        async fn get_memory(&mut self, id: &str, full_body: bool) -> ImportResult<crate::protocol::GetResponse> {
             self.get_calls.push(id.to_string());
-            self.get_responses
-                .get(id)
-                .cloned()
-                .ok_or_else(|| ImportError::Parse {
-                    source_key: id.to_string(),
-                    reason: "mock get response not configured".to_string(),
-                })
+            let mut response = self.get_responses.get(id).cloned().ok_or_else(|| ImportError::Parse {
+                source_key: id.to_string(),
+                reason: "mock get response not configured".to_string(),
+            })?;
+            if !full_body && response.body.chars().count() > 4_096 {
+                response.body = response.body.chars().take(4_096).collect();
+                response.truncated = true;
+            }
+            Ok(response)
         }
     }
 
@@ -934,7 +955,6 @@ mod tests {
             action: PlanAction::Supersede {
                 prior_memory_id: "mem_prior".to_string(),
                 prior_content_hash: "sha256:STALE".to_string(),
-                prior_record_key: "a".to_string(),
             },
             wiki_link_targets_resolvable: Vec::new(),
             wiki_link_targets_back_edge: Vec::new(),
@@ -949,8 +969,9 @@ mod tests {
                     summary: "replacement".to_string(),
                     body: "replacement".to_string(),
                     truncated: false,
-                    guidance: String::new(),
                     provenance: None,
+                    status: Some(MemoryStatus::Active),
+                    guidance: String::new(),
                 },
             );
 
@@ -1154,5 +1175,412 @@ mod tests {
         let report = ImportReport::from_plan(&plan);
         assert!(report.frontmatter_recovered.iter().any(|k| k.contains("bad.md")));
         assert_eq!(report.claude_roots_used, plan.claude_roots_used);
+    }
+
+    #[tokio::test]
+    async fn mock_get_memory_truncates_when_full_body_unset() {
+        let mut client = MockDaemonClient::default().with_get_response(
+            "mem_large",
+            GetResponse {
+                id: "mem_large".to_string(),
+                summary: "big memory".to_string(),
+                body: "x".repeat(5_000),
+                truncated: false,
+                provenance: None,
+                status: Some(MemoryStatus::Active),
+                guidance: String::new(),
+            },
+        );
+
+        let full = client.get_memory("mem_large", true).await.expect("get full");
+        assert_eq!(full.body.chars().count(), 5_000);
+        assert!(!full.truncated);
+
+        let preview = client.get_memory("mem_large", false).await.expect("get preview");
+        assert_eq!(preview.body.chars().count(), 4_096);
+        assert!(preview.truncated);
+    }
+
+    #[tokio::test]
+    async fn execute_supersede_chain_walks_multiple_hops() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let engine = ImportEngine::new(tmp.path());
+        let candidate = make_candidate("a", "replacement", Vec::new());
+        let new_identity = candidate.import_identity(None);
+        let mut state = ImportState::default();
+        state.imports.insert(
+            "a".to_string(),
+            ImportRecord {
+                source_identity: String::new(),
+                source_key: String::new(),
+                source_memory_id: None,
+                memory_id: "mem_A".to_string(),
+                content_hash: "sha256:STALE".to_string(),
+                imported_at: Utc::now(),
+                harness: "claude-code".to_string(),
+                source_path_at_import: PathBuf::from("/fixture/a"),
+                namespace: Some("me".to_string()),
+                canonical_namespace_id: None,
+                aliases: Vec::new(),
+                supersession_chain: Vec::new(),
+            },
+        );
+        let action = PlannedWrite {
+            source_key: candidate.source_key.clone(),
+            candidate,
+            scope: ScopeBinding {
+                scope: memory_substrate::Scope::User,
+                namespace: Some("me".to_string()),
+                namespace_alias: None,
+                canonical_namespace_id: None,
+                resolution: ResolutionKind::UserScope,
+                project_yaml: None,
+            },
+            action: PlanAction::Supersede {
+                prior_memory_id: "mem_A".to_string(),
+                prior_content_hash: "sha256:STALE".to_string(),
+            },
+            wiki_link_targets_resolvable: Vec::new(),
+            wiki_link_targets_back_edge: Vec::new(),
+        };
+
+        let mut client = MockDaemonClient::default()
+            .with_superseded_by_chain("mem_A", vec!["mem_B".to_string()])
+            .with_superseded_by_chain("mem_B", vec!["mem_C".to_string()])
+            .with_get_response(
+                "mem_B",
+                GetResponse {
+                    id: "mem_B".to_string(),
+                    summary: "not yet".to_string(),
+                    body: "different body".to_string(),
+                    truncated: false,
+                    provenance: None,
+                    status: Some(MemoryStatus::Active),
+                    guidance: String::new(),
+                },
+            )
+            .with_get_response(
+                "mem_C",
+                GetResponse {
+                    id: "mem_C".to_string(),
+                    summary: "replacement".to_string(),
+                    body: "replacement".to_string(),
+                    truncated: false,
+                    provenance: None,
+                    status: Some(MemoryStatus::Active),
+                    guidance: String::new(),
+                },
+            );
+
+        let result = engine
+            .execute(
+                ImportPlan {
+                    actions: vec![action],
+                    source_discovery_summary: DiscoverySummary::default(),
+                    unresolved_back_edges: Vec::new(),
+                    parse_errors: Vec::new(),
+                    frontmatter_recovered: Vec::new(),
+                    claude_roots_used: Vec::new(),
+                    state,
+                },
+                ExecuteOptions::default(),
+                &mut client,
+            )
+            .await
+            .expect("execute ok");
+
+        assert!(client.supersede_calls.is_empty(), "multi-hop adoption must not re-issue supersede");
+        assert!(client.trust_artifact_calls.contains(&"mem_A".to_string()));
+        assert!(client.trust_artifact_calls.contains(&"mem_B".to_string()));
+        assert!(client.get_calls.contains(&"mem_B".to_string()));
+        assert!(client.get_calls.contains(&"mem_C".to_string()));
+        let claude = result.report.harnesses.get("claude-code").expect("bucket");
+        assert_eq!(claude.superseded, 1);
+        let adopted = result.state.imports.get(&new_identity).expect("adopted C is recorded in state");
+        assert_eq!(adopted.memory_id, "mem_C");
+    }
+
+    #[tokio::test]
+    async fn execute_supersede_chain_rejects_tombstoned_adoption() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let engine = ImportEngine::new(tmp.path());
+        let candidate = make_candidate("a", "replacement", Vec::new());
+        let mut state = ImportState::default();
+        state.imports.insert(
+            "a".to_string(),
+            ImportRecord {
+                source_identity: String::new(),
+                source_key: String::new(),
+                source_memory_id: None,
+                memory_id: "mem_prior".to_string(),
+                content_hash: "sha256:STALE".to_string(),
+                imported_at: Utc::now(),
+                harness: "claude-code".to_string(),
+                source_path_at_import: PathBuf::from("/fixture/a"),
+                namespace: Some("me".to_string()),
+                canonical_namespace_id: None,
+                aliases: Vec::new(),
+                supersession_chain: Vec::new(),
+            },
+        );
+        let new_identity = candidate.import_identity(None);
+        let action = PlannedWrite {
+            source_key: candidate.source_key.clone(),
+            candidate,
+            scope: ScopeBinding {
+                scope: memory_substrate::Scope::User,
+                namespace: Some("me".to_string()),
+                namespace_alias: None,
+                canonical_namespace_id: None,
+                resolution: ResolutionKind::UserScope,
+                project_yaml: None,
+            },
+            action: PlanAction::Supersede {
+                prior_memory_id: "mem_prior".to_string(),
+                prior_content_hash: "sha256:STALE".to_string(),
+            },
+            wiki_link_targets_resolvable: Vec::new(),
+            wiki_link_targets_back_edge: Vec::new(),
+        };
+
+        let mut client = MockDaemonClient::default()
+            .with_superseded_by_chain("mem_prior", vec!["mem_new".to_string()])
+            .with_get_response(
+                "mem_new",
+                GetResponse {
+                    id: "mem_new".to_string(),
+                    summary: "replacement".to_string(),
+                    body: "replacement".to_string(),
+                    truncated: false,
+                    provenance: None,
+                    status: Some(MemoryStatus::Tombstoned),
+                    guidance: String::new(),
+                },
+            )
+            .push_supersede(SupersedeOutcome {
+                status: GovernanceStatus::Promoted,
+                new_id: Some("mem_fresh".to_string()),
+                reason: None,
+            });
+
+        let result = engine
+            .execute(
+                ImportPlan {
+                    actions: vec![action],
+                    source_discovery_summary: DiscoverySummary::default(),
+                    unresolved_back_edges: Vec::new(),
+                    parse_errors: Vec::new(),
+                    frontmatter_recovered: Vec::new(),
+                    claude_roots_used: Vec::new(),
+                    state,
+                },
+                ExecuteOptions::default(),
+                &mut client,
+            )
+            .await
+            .expect("execute ok");
+
+        assert_eq!(client.supersede_calls.len(), 1, "tombstoned replacement must fall through to supersede");
+        let fresh_record = result.state.imports.get(&new_identity).expect("fresh supersede is recorded");
+        assert_eq!(fresh_record.memory_id, "mem_fresh");
+    }
+
+    #[tokio::test]
+    async fn execute_supersede_chain_errors_on_get_failure() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let engine = ImportEngine::new(tmp.path());
+        let candidate = make_candidate("a", "replacement", Vec::new());
+        let mut state = ImportState::default();
+        state.imports.insert(
+            "a".to_string(),
+            ImportRecord {
+                source_identity: String::new(),
+                source_key: String::new(),
+                source_memory_id: None,
+                memory_id: "mem_prior".to_string(),
+                content_hash: "sha256:STALE".to_string(),
+                imported_at: Utc::now(),
+                harness: "claude-code".to_string(),
+                source_path_at_import: PathBuf::from("/fixture/a"),
+                namespace: Some("me".to_string()),
+                canonical_namespace_id: None,
+                aliases: Vec::new(),
+                supersession_chain: Vec::new(),
+            },
+        );
+        let action = PlannedWrite {
+            source_key: candidate.source_key.clone(),
+            candidate,
+            scope: ScopeBinding {
+                scope: memory_substrate::Scope::User,
+                namespace: Some("me".to_string()),
+                namespace_alias: None,
+                canonical_namespace_id: None,
+                resolution: ResolutionKind::UserScope,
+                project_yaml: None,
+            },
+            action: PlanAction::Supersede {
+                prior_memory_id: "mem_prior".to_string(),
+                prior_content_hash: "sha256:STALE".to_string(),
+            },
+            wiki_link_targets_resolvable: Vec::new(),
+            wiki_link_targets_back_edge: Vec::new(),
+        };
+
+        // get_memory not configured for mem_new -> Err, which must fail closed.
+        let mut client = MockDaemonClient::default()
+            .with_superseded_by_chain("mem_prior", vec!["mem_new".to_string()]);
+
+        let result = engine
+            .execute(
+                ImportPlan {
+                    actions: vec![action],
+                    source_discovery_summary: DiscoverySummary::default(),
+                    unresolved_back_edges: Vec::new(),
+                    parse_errors: Vec::new(),
+                    frontmatter_recovered: Vec::new(),
+                    claude_roots_used: Vec::new(),
+                    state,
+                },
+                ExecuteOptions::default(),
+                &mut client,
+            )
+            .await;
+
+        assert!(result.is_err(), "lookup errors must fail closed");
+    }
+
+    #[tokio::test]
+    async fn execute_alias_map_ignores_tuple_identity_keys() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let engine = ImportEngine::new(tmp.path());
+        let mut planned = make_planned("src/foo", "body", vec!["tuple:codex:/ignored:me:foo:bar".to_string()], PlanAction::WriteNew);
+        // Simulate the planning resolution: this alias is the target of the wiki link.
+        planned.wiki_link_targets_resolvable = vec!["tuple:codex:/ignored:me:foo:bar".to_string()];
+
+        let mut state = ImportState::default();
+        state.imports.insert(
+            "tuple:codex:/ignored:me:foo:bar".to_string(),
+            ImportRecord {
+                source_identity: "tuple:codex:/ignored:me:foo:bar".to_string(),
+                source_key: "src/foo".to_string(),
+                source_memory_id: None,
+                memory_id: "mem_existing".to_string(),
+                content_hash: "sha256:STALE".to_string(),
+                imported_at: Utc::now(),
+                harness: "claude-code".to_string(),
+                source_path_at_import: PathBuf::from("/fixture/src/foo"),
+                namespace: Some("me".to_string()),
+                canonical_namespace_id: None,
+                aliases: Vec::new(),
+                supersession_chain: Vec::new(),
+            },
+        );
+
+        let mut client = MockDaemonClient::default().push_write(WriteMemoryOutcome {
+            status: GovernanceStatus::Promoted,
+            id: Some("mem_new".to_string()),
+            existing_id: None,
+            next_actions: Vec::new(),
+            reason: None,
+        });
+
+        engine
+            .execute(
+                ImportPlan {
+                    actions: vec![planned],
+                    source_discovery_summary: DiscoverySummary::default(),
+                    unresolved_back_edges: Vec::new(),
+                    parse_errors: Vec::new(),
+                    frontmatter_recovered: Vec::new(),
+                    claude_roots_used: Vec::new(),
+                    state,
+                },
+                ExecuteOptions::default(),
+                &mut client,
+            )
+            .await
+            .expect("execute ok");
+
+        let write_call = client.write_calls.first().expect("write called");
+        assert!(
+            write_call.meta.get("related").is_none(),
+            "tuple identity key must not be seeded as a wiki-link alias"
+        );
+        // source_key is still a valid alias.
+        assert!(write_call.meta.get("aliases").is_some());
+    }
+
+    #[tokio::test]
+    async fn execute_supersede_removes_legacy_source_key() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let engine = ImportEngine::new(tmp.path());
+        let candidate = make_candidate("src/foo", "new body", Vec::new());
+        let mut state = ImportState::default();
+        let legacy_key = "claude:src/foo.md".to_string();
+        let new_identity = candidate.import_identity(None);
+        state.imports.insert(
+            legacy_key.clone(),
+            ImportRecord {
+                source_identity: String::new(),
+                source_key: legacy_key.clone(),
+                source_memory_id: None,
+                memory_id: "mem_old".to_string(),
+                content_hash: "sha256:STALE".to_string(),
+                imported_at: Utc::now(),
+                harness: "claude-code".to_string(),
+                source_path_at_import: PathBuf::from("/fixture/src/foo"),
+                namespace: Some("me".to_string()),
+                canonical_namespace_id: None,
+                aliases: Vec::new(),
+                supersession_chain: Vec::new(),
+            },
+        );
+        let action = PlannedWrite {
+            source_key: candidate.source_key.clone(),
+            candidate,
+            scope: ScopeBinding {
+                scope: memory_substrate::Scope::User,
+                namespace: Some("me".to_string()),
+                namespace_alias: None,
+                canonical_namespace_id: None,
+                resolution: ResolutionKind::UserScope,
+                project_yaml: None,
+            },
+            action: PlanAction::Supersede {
+                prior_memory_id: "mem_old".to_string(),
+                prior_content_hash: "sha256:STALE".to_string(),
+            },
+            wiki_link_targets_resolvable: Vec::new(),
+            wiki_link_targets_back_edge: Vec::new(),
+        };
+
+        let mut client = MockDaemonClient::default()
+            .with_superseded_by_chain("mem_old", Vec::new())
+            .push_supersede(SupersedeOutcome {
+                status: GovernanceStatus::Promoted,
+                new_id: Some("mem_new".to_string()),
+                reason: None,
+            });
+
+        let result = engine
+            .execute(
+                ImportPlan {
+                    actions: vec![action],
+                    source_discovery_summary: DiscoverySummary::default(),
+                    unresolved_back_edges: Vec::new(),
+                    parse_errors: Vec::new(),
+                    frontmatter_recovered: Vec::new(),
+                    claude_roots_used: Vec::new(),
+                    state,
+                },
+                ExecuteOptions::default(),
+                &mut client,
+            )
+            .await
+            .expect("execute ok");
+
+        assert!(!result.state.imports.contains_key(&legacy_key), "legacy source key must be removed");
+        assert!(result.state.imports.contains_key(&new_identity), "new source_identity must be present");
     }
 }

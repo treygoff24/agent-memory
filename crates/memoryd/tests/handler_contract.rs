@@ -124,7 +124,7 @@ async fn search_and_get_return_bounded_protocol_responses_from_substrate() {
         &substrate,
         RequestEnvelope::new(
             "req-get",
-            RequestPayload::Get { id: memory.frontmatter.id.as_str().to_string(), include_provenance: false },
+            RequestPayload::Get { id: memory.frontmatter.id.as_str().to_string(), include_provenance: false, full_body: false },
         ),
     )
     .await;
@@ -142,7 +142,7 @@ async fn search_and_get_return_bounded_protocol_responses_from_substrate() {
         &substrate,
         RequestEnvelope::new(
             "req-get-provenance",
-            RequestPayload::Get { id: memory.frontmatter.id.as_str().to_string(), include_provenance: true },
+            RequestPayload::Get { id: memory.frontmatter.id.as_str().to_string(), include_provenance: true, full_body: false },
         ),
     )
     .await;
@@ -153,6 +153,57 @@ async fn search_and_get_return_bounded_protocol_responses_from_substrate() {
     assert_eq!(provenance.path.as_deref(), memory.path.as_ref().map(|path| path.as_str()));
     assert_eq!(provenance.source_kind, SourceKind::Import.as_db_str());
     assert_eq!(provenance.author_kind, AuthorKind::System.as_db_str());
+}
+
+#[tokio::test]
+async fn get_full_body_returns_unbounded_body_for_large_memory() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let substrate = init_substrate(roots).await;
+    let large_body = "x".repeat(5_000);
+    let memory = sample_memory("mem_20260428_a1b2c3d4e5f60718_300004", &large_body);
+    substrate
+        .write_memory(memory_substrate::WriteRequest {
+            operation_id: None,
+            memory: memory.clone(),
+            expected_base_hash: None,
+            write_mode: memory_substrate::WriteMode::CreateNew,
+            index_projection: None,
+            event_context: EventContext::default(),
+            allow_best_effort_durability: true,
+            classification: ClassificationOutcome::Trusted,
+        })
+        .await
+        .expect("write memory");
+
+    let get_full = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "req-get-full",
+            RequestPayload::Get { id: memory.frontmatter.id.as_str().to_string(), include_provenance: false, full_body: true },
+        ),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::Get(get_full)) = get_full.result else {
+        panic!("expected full get success, got {:?}", get_full.result);
+    };
+    assert_eq!(get_full.body, large_body);
+    assert!(!get_full.truncated);
+    assert_eq!(get_full.status, Some(MemoryStatus::Active));
+
+    let get_preview = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "req-get-preview",
+            RequestPayload::Get { id: memory.frontmatter.id.as_str().to_string(), include_provenance: false, full_body: false },
+        ),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::Get(get_preview)) = get_preview.result else {
+        panic!("expected preview get success");
+    };
+    assert_eq!(get_preview.body.chars().count(), 4_096);
+    assert!(get_preview.truncated);
 }
 
 #[tokio::test]

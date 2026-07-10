@@ -1,7 +1,7 @@
 //! Parsed memory candidate — the uniform shape both Claude and Codex parsers
 //! emit, consumed by the pipeline's dedup/plan/write stages.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -192,16 +192,79 @@ pub(crate) fn short_hash(content_hash: &str) -> &str {
 /// Detect sections whose ordinal-free slugs collide within the same source file
 /// and append a short content-hash suffix to their identity. Callers parse all
 /// candidates from a source root, then run this once over the vector.
-pub(crate) fn disambiguate_collisions(candidates: &mut [ParsedMemory]) {
-    let mut counts: HashMap<(String, String), usize> = HashMap::new();
-    for candidate in candidates.iter() {
-        *counts.entry(candidate.section_base_key()).or_default() += 1;
+///
+/// Collisions with identical content are collapsed to a single candidate, and
+/// 8-hex suffix collisions are extended deterministically until the suffixes
+/// are unique within the file.
+pub(crate) fn disambiguate_collisions(candidates: &mut Vec<ParsedMemory>) {
+    let taken = std::mem::take(candidates);
+    let mut groups: HashMap<(String, String), Vec<ParsedMemory>> = HashMap::new();
+    let mut group_order: Vec<(String, String)> = Vec::new();
+    for candidate in taken {
+        let key = candidate.section_base_key();
+        if !groups.contains_key(&key) {
+            group_order.push(key.clone());
+        }
+        groups.entry(key).or_default().push(candidate);
     }
-    for candidate in candidates.iter_mut() {
-        if counts.get(&candidate.section_base_key()).copied().unwrap_or(0) > 1 {
-            candidate.section_disambiguation = Some(candidate.short_content_hash().to_string());
+
+    let mut result = Vec::with_capacity(groups.values().map(Vec::len).sum());
+    for key in group_order {
+        let group = groups.remove(&key).unwrap_or_default();
+        if group.len() < 2 {
+            result.extend(group);
+            continue;
+        }
+
+        // Collapse identical content to a single candidate (keep first occurrence).
+        let mut seen_hashes: HashSet<String> = HashSet::new();
+        let mut collapsed: Vec<ParsedMemory> = Vec::new();
+        for candidate in group {
+            if seen_hashes.insert(candidate.content_hash.clone()) {
+                collapsed.push(candidate);
+            }
+        }
+
+        if collapsed.len() == 1 {
+            result.extend(collapsed);
+            continue;
+        }
+
+        // Build a deterministic, unique suffix for each distinct content hash.
+        let hashes: Vec<String> = collapsed
+            .iter()
+            .map(|c| c.content_hash.strip_prefix("sha256:").unwrap_or(&c.content_hash).to_string())
+            .collect();
+        let suffixes = unique_hash_suffixes(&hashes);
+
+        for mut candidate in collapsed {
+            let hex = candidate.content_hash.strip_prefix("sha256:").unwrap_or(&candidate.content_hash);
+            candidate.section_disambiguation = suffixes.get(hex).cloned();
+            result.push(candidate);
         }
     }
+
+    *candidates = result;
+}
+
+/// Compute the shortest unique hex prefix (at least 8 chars) for each hash in
+/// the group. Prefixes are extended only when another hash collides on the
+/// first N characters, so the suffix is deterministic and minimal.
+fn unique_hash_suffixes(hashes: &[String]) -> HashMap<String, String> {
+    let mut suffixes = HashMap::new();
+    for (i, hash) in hashes.iter().enumerate() {
+        let mut required = 8;
+        for (j, other) in hashes.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            let common = hash.bytes().zip(other.bytes()).take_while(|(a, b)| a == b).count();
+            required = required.max(common + 1);
+        }
+        let suffix = hash.get(..required.min(hash.len())).unwrap_or(hash);
+        suffixes.insert(hash.clone(), suffix.to_string());
+    }
+    suffixes
 }
 
 #[cfg(test)]
@@ -321,5 +384,42 @@ mod tests {
         assert!(candidates[1].section_disambiguation.is_some());
         assert!(candidates[0].section_disambiguation != candidates[1].section_disambiguation);
         assert!(candidates[2].section_disambiguation.is_none());
+    }
+
+    #[test]
+    fn disambiguate_collisions_collapses_identical_content_to_one_candidate() {
+        let mut c1 = candidate("/u/.codex/memories/MEMORY.md", "codex:memories/MEMORY.md#task-group-1-foo");
+        c1.content_hash = "sha256:aaa1110000000000000000000000000000000000000000000000000000000000".to_string();
+        let mut c2 = candidate("/u/.codex/memories/MEMORY.md", "codex:memories/MEMORY.md#task-group-2-foo");
+        c2.content_hash = "sha256:aaa1110000000000000000000000000000000000000000000000000000000000".to_string();
+        let mut c3 = candidate("/u/.codex/memories/MEMORY.md", "codex:memories/MEMORY.md#task-group-3-bar");
+        c3.content_hash = "sha256:ccc3330000000000000000000000000000000000000000000000000000000000".to_string();
+
+        let mut candidates = vec![c1, c2, c3];
+        disambiguate_collisions(&mut candidates);
+
+        assert_eq!(candidates.len(), 2, "identical content collapsed to one candidate");
+        assert!(candidates.iter().filter(|c| c.section_base() == "foo").count() == 1);
+        assert!(candidates.iter().any(|c| c.section_base() == "bar" && c.section_disambiguation.is_none()));
+    }
+
+    #[test]
+    fn disambiguate_collisions_extends_suffix_until_prefix_unique() {
+        let mut c1 = candidate("/u/.codex/memories/MEMORY.md", "codex:memories/MEMORY.md#task-group-1-foo");
+        c1.content_hash = "sha256:aaa1110000000000000000000000000000000000000000000000000000000000".to_string();
+        let mut c2 = candidate("/u/.codex/memories/MEMORY.md", "codex:memories/MEMORY.md#task-group-2-foo");
+        // Same 8-hex prefix as c1, diverging at the 9th hex character.
+        c2.content_hash = "sha256:aaa1110010000000000000000000000000000000000000000000000000000000".to_string();
+
+        let mut candidates = vec![c1, c2];
+        disambiguate_collisions(&mut candidates);
+
+        assert_eq!(candidates.len(), 2);
+        let s1 = candidates[0].section_disambiguation.as_deref().unwrap();
+        let s2 = candidates[1].section_disambiguation.as_deref().unwrap();
+        assert_ne!(s1, s2, "extended suffixes must differ");
+        assert!(s1.starts_with("aaa11100"));
+        assert!(s2.starts_with("aaa11100"));
+        assert!(s1.len() > 8 || s2.len() > 8, "suffix extended beyond 8-hex prefix");
     }
 }

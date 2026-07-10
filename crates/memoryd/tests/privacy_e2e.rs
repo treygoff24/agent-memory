@@ -293,7 +293,7 @@ async fn privacy_e2e_phone_contact_is_encrypted_findable_and_revealable() {
 
     let get = handle_request(
         &substrate,
-        RequestEnvelope::new("get-redacted", RequestPayload::Get { id: id.clone(), include_provenance: false }),
+        RequestEnvelope::new("get-redacted", RequestPayload::Get { id: id.clone(), include_provenance: false, full_body: false }),
     )
     .await;
     let ResponseResult::Success(ResponsePayload::Get(get)) = get.result else {

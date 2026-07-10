@@ -305,7 +305,7 @@ pub async fn forward_to_daemon(
             include_body: args.include_body,
         },
         ToolRequest::MemoryGet(args) => {
-            RequestPayload::Get { id: args.id, include_provenance: args.include_provenance }
+            RequestPayload::Get { id: args.id, include_provenance: args.include_provenance, full_body: false }
         }
         ToolRequest::MemoryWrite(args) => RequestPayload::WriteMemory {
             body: args.body,

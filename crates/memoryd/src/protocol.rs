@@ -58,6 +58,8 @@ pub enum RequestPayload {
     Get {
         id: String,
         include_provenance: bool,
+        #[serde(default)]
+        full_body: bool,
     },
     TrustArtifact {
         id: String,
@@ -1011,6 +1013,8 @@ pub struct GetResponse {
     pub provenance: Option<GetProvenance>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sensitivity: Option<Sensitivity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<MemoryStatus>,
     pub guidance: String,
 }
 

@@ -18,6 +18,7 @@ use crate::import::sources::candidate_aliases;
 use crate::import::state::{ImportRecord, ImportState, SupersededRecord};
 use crate::import::{ImportError, ImportResult};
 use crate::protocol::GovernanceStatus;
+use memory_substrate::MemoryStatus;
 
 use super::daemon_client::{DaemonClient, SupersedeRequest, WriteMemoryRequest};
 use super::model::{ImportPlan, PlanAction, PlannedWrite};
@@ -58,10 +59,10 @@ impl ImportEngine {
         let total = plan.actions.len();
         let mut alias_to_id: HashMap<String, String> = HashMap::new();
         // Seed alias_to_id from the existing state file so re-runs can resolve
-        // wiki-links against previously-imported memories. A legacy state may
-        // still be keyed by source_key, so we index both forms.
-        for (record_key, record) in &state.imports {
-            alias_to_id.insert(record_key.to_ascii_lowercase(), record.memory_id.clone());
+        // wiki-links against previously-imported memories. Use the source's
+        // harness-relative key and persisted aliases only; the stable `tuple:`
+        // identity key is not a wiki-link alias.
+        for record in state.imports.values() {
             if !record.source_key.is_empty() {
                 alias_to_id.insert(record.source_key.to_ascii_lowercase(), record.memory_id.clone());
             }
@@ -327,21 +328,36 @@ impl ImportEngine {
         // F10: crash-mitigation. If a previous run superseded `old_id` but the
         // importer crashed before it could record the new id, the chain already
         // contains a replacement with the same content. Adopt it rather than
-        // writing a duplicate.
-        if let Ok(chain) = client.get_superseded_by_chain(&old_id).await {
-            for new_id in chain {
-                match client.get_memory(&new_id).await {
-                    Ok(get) if !get.truncated => {
-                        let computed = ParsedMemory::compute_content_hash(&action.candidate.frontmatter_hint, &get.body);
-                        if computed == action.candidate.content_hash {
-                            counters_mut(report, harness_key).superseded += 1;
-                            record_promoted(state, action, &new_id, Some(old_id.as_str()), alias_to_id, &self.state_path)
-                                .map_err(|error| partial_import_error(error, report, &action.source_key))?;
-                            return Ok(());
-                        }
-                    }
-                    _ => continue,
-                }
+        // writing a duplicate. F15/F16/F17: walk the chain transitively, fail
+        // closed on lookup errors, and only adopt active/pinned replacements.
+        let chain = client
+            .get_superseded_by_chain(&old_id)
+            .await
+            .map_err(|error| partial_import_error(error, report, &action.source_key))?;
+        for new_id in chain {
+            let get = client
+                .get_memory(&new_id, true)
+                .await
+                .map_err(|error| partial_import_error(error, report, &action.source_key))?;
+            if get.truncated {
+                return Err(partial_import_error(
+                    ImportError::Parse {
+                        source_key: new_id.clone(),
+                        reason: "supersede adoption requires full body; get response was truncated".to_string(),
+                    },
+                    report,
+                    &action.source_key,
+                ));
+            }
+            if !matches!(get.status, Some(MemoryStatus::Active) | Some(MemoryStatus::Pinned)) {
+                continue;
+            }
+            let computed = ParsedMemory::compute_content_hash(&action.candidate.frontmatter_hint, &get.body);
+            if computed == action.candidate.content_hash {
+                counters_mut(report, harness_key).superseded += 1;
+                record_promoted(state, action, &new_id, Some(old_id.as_str()), alias_to_id, &self.state_path)
+                    .map_err(|error| partial_import_error(error, report, &action.source_key))?;
+                return Ok(());
             }
         }
 
@@ -463,20 +479,18 @@ pub(super) fn plan_action_for_record(
         };
     }
     if record.content_hash == candidate_content_hash {
-        return bucket_repair_action(record, record_key);
+        return bucket_repair_action(record);
     }
     PlanAction::Supersede {
         prior_memory_id: record.memory_id.clone(),
         prior_content_hash: record.content_hash.clone(),
-        prior_record_key: record_key.to_string(),
     }
 }
 
-pub(super) fn bucket_repair_action(record: &ImportRecord, record_key: &str) -> PlanAction {
+pub(super) fn bucket_repair_action(record: &ImportRecord) -> PlanAction {
     PlanAction::RepairBucket {
         prior_memory_id: record.memory_id.clone(),
         prior_content_hash: record.content_hash.clone(),
-        prior_record_key: record_key.to_string(),
     }
 }
 

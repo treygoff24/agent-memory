@@ -40,7 +40,7 @@ pub async fn run_get(args: GetArgs) -> anyhow::Result<()> {
     request_and_emit(
         &socket,
         "cli-get",
-        RequestPayload::Get { id: args.id, include_provenance: args.include_provenance },
+        RequestPayload::Get { id: args.id, include_provenance: args.include_provenance, full_body: false },
     )
     .await
 }

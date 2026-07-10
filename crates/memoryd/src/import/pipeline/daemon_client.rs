@@ -47,7 +47,9 @@ pub trait DaemonClient {
 
     /// Fetch a memory by id. Used by the supersede retry path to check whether
     /// a candidate's content already exists in a supersession chain.
-    async fn get_memory(&mut self, id: &str) -> ImportResult<GetResponse>;
+    /// `full_body` requests the unbounded body; the handler truncates at 4KiB
+    /// when this is false.
+    async fn get_memory(&mut self, id: &str, full_body: bool) -> ImportResult<GetResponse>;
 }
 
 /// Production daemon client backed by the existing memoryd Unix socket.
@@ -114,23 +116,48 @@ impl DaemonClient for SocketDaemonClient {
     }
 
     async fn get_superseded_by_chain(&mut self, id: &str) -> ImportResult<Vec<String>> {
-        let request_id = self.next_request_id("import-trust-artifact");
-        let payload = crate::protocol::RequestPayload::TrustArtifact { id: id.to_string() };
-        let envelope = crate::client::request(&self.socket_path, request_id, payload)
-            .await
-            .map_err(|error| ImportError::io(self.socket_path.clone(), std::io::Error::other(error.to_string())))?;
-        match envelope.result {
-            ResponseResult::Success(ResponsePayload::TrustArtifact(artifact)) => {
-                Ok(artifact.superseded_by.iter().map(|link| link.id.as_str().to_string()).collect())
+        // F15: transitive client-side walk. The TrustArtifact endpoint returns only
+        // immediate supersession links, so fetch one hop at a time with a visited
+        // set and a depth bound to avoid runaway cycles.
+        let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut queue: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+        let mut chain: Vec<String> = Vec::new();
+        queue.push_back(id.to_string());
+        visited.insert(id.to_string());
+
+        while let Some(current_id) = queue.pop_front() {
+            if chain.len() >= 16 {
+                break;
             }
-            ResponseResult::Error(error) => Err(daemon_protocol_error("TrustArtifact", error)),
-            ResponseResult::Success(payload) => Err(unexpected_daemon_payload("TrustArtifact", &payload)),
+            let request_id = self.next_request_id("import-trust-artifact");
+            let payload = crate::protocol::RequestPayload::TrustArtifact { id: current_id };
+            let envelope = crate::client::request(&self.socket_path, request_id, payload)
+                .await
+                .map_err(|error| ImportError::io(self.socket_path.clone(), std::io::Error::other(error.to_string())))?;
+            let links = match envelope.result {
+                ResponseResult::Success(ResponsePayload::TrustArtifact(artifact)) => artifact.superseded_by,
+                ResponseResult::Error(error) => return Err(daemon_protocol_error("TrustArtifact", error)),
+                ResponseResult::Success(payload) => return Err(unexpected_daemon_payload("TrustArtifact", &payload)),
+            };
+            for link in links {
+                let next_id = link.id.as_str().to_string();
+                if visited.insert(next_id.clone()) {
+                    chain.push(next_id.clone());
+                    queue.push_back(next_id);
+                }
+            }
         }
+
+        Ok(chain)
     }
 
-    async fn get_memory(&mut self, id: &str) -> ImportResult<GetResponse> {
+    async fn get_memory(&mut self, id: &str, full_body: bool) -> ImportResult<GetResponse> {
         let request_id = self.next_request_id("import-get");
-        let payload = crate::protocol::RequestPayload::Get { id: id.to_string(), include_provenance: false };
+        let payload = crate::protocol::RequestPayload::Get {
+            id: id.to_string(),
+            include_provenance: false,
+            full_body,
+        };
         let envelope = crate::client::request(&self.socket_path, request_id, payload)
             .await
             .map_err(|error| ImportError::io(self.socket_path.clone(), std::io::Error::other(error.to_string())))?;

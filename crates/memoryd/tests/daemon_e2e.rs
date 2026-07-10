@@ -77,7 +77,7 @@ async fn cli_client_write_note_then_search_then_get_through_live_daemon() {
 
     // Step 3: read back through the same path `memoryd get` uses.
     let response =
-        client::request(&socket, "cli-get", RequestPayload::Get { id: note_id.clone(), include_provenance: false })
+        client::request(&socket, "cli-get", RequestPayload::Get { id: note_id.clone(), include_provenance: false, full_body: false })
             .await
             .expect("get reaches daemon");
     let ResponseResult::Success(ResponsePayload::Get(record)) = response.result else {

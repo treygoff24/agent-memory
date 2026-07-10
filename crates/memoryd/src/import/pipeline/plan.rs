@@ -150,8 +150,7 @@ impl ImportEngine {
                 let canonical_project_id = scope.canonical_namespace_id.as_deref().unwrap_or("me");
                 let mut matches: Vec<(&String, &ImportRecord)> = Vec::new();
                 for (record_key, record) in &state.imports {
-                    if record_identity(record_key, record, &candidate, canonical_project_id).as_deref()
-                        == Some(identity.as_str())
+                    if record_identity_matches(record_key, record, identity.as_str(), canonical_project_id)
                         || anchor.is_some_and(|id| {
                             record.source_memory_id.as_deref() == Some(id)
                                 && record.harness == candidate.harness.as_str()
@@ -214,28 +213,45 @@ impl ImportEngine {
     }
 }
 
-fn record_identity(
+/// Whether the record's identity could plausibly match the candidate. The
+/// record's stored `source_identity` is checked first, and then the identity is
+/// recomputed both WITH and WITHOUT the content-hash suffix to survive a
+/// suffix toggle (e.g. a sibling was deleted and the remaining section
+/// renumbered).
+fn record_identity_matches(
     record_key: &str,
     record: &ImportRecord,
-    candidate: &ParsedMemory,
+    candidate_identity: &str,
     canonical_project_id: &str,
-) -> Option<String> {
-    if !record.source_identity.is_empty() {
-        return Some(record.source_identity.clone());
+) -> bool {
+    if !record.source_identity.is_empty() && record.source_identity == candidate_identity {
+        return true;
     }
+
     let source_key = if record.source_key.is_empty() { record_key } else { &record.source_key };
     if source_key.is_empty() || source_key.starts_with("tuple:") {
-        return None;
+        return false;
     }
-    let section_disambiguation =
-        candidate.section_disambiguation.as_deref().map(|_| short_hash(&record.content_hash));
-    Some(compute_identity(
+
+    let base = compute_identity(
         source_key,
         &record.source_path_at_import,
         &record.harness,
         canonical_project_id,
-        section_disambiguation,
-    ))
+        None,
+    );
+    if base == candidate_identity {
+        return true;
+    }
+
+    let suffixed = compute_identity(
+        source_key,
+        &record.source_path_at_import,
+        &record.harness,
+        canonical_project_id,
+        Some(short_hash(&record.content_hash)),
+    );
+    suffixed == candidate_identity
 }
 
 /// Topological sort over wiki-link dependencies. Returns the sorted action list
@@ -359,4 +375,80 @@ pub(super) fn topo_sort(actions: Vec<PlannedWrite>) -> (Vec<PlannedWrite>, Vec<W
         }
     }
     (output, back_edges)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::import::candidate::{Harness, ParsedMemory};
+    use crate::import::state::ImportRecord;
+    use chrono::Utc;
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+
+    fn codex_candidate(source_key: &str, body: &str) -> ParsedMemory {
+        let mut hint = BTreeMap::new();
+        hint.insert("name".to_string(), serde_json::Value::String("foo".to_string()));
+        let content_hash = ParsedMemory::compute_content_hash(&hint, body);
+        ParsedMemory {
+            source_key: source_key.to_string(),
+            source_path: PathBuf::from("/u/.codex/memories/MEMORY.md"),
+            content_hash,
+            harness: Harness::Codex,
+            frontmatter_hint: hint,
+            body: body.to_string(),
+            wiki_links: Vec::new(),
+            cwd: None,
+            title: Some("foo".to_string()),
+            section_disambiguation: None,
+        }
+    }
+
+    fn record_with_identity(source_identity: &str, content_hash: &str, memory_id: &str) -> ImportRecord {
+        ImportRecord {
+            source_identity: source_identity.to_string(),
+            source_key: "codex:memories/MEMORY.md#task-group-2-foo".to_string(),
+            source_memory_id: None,
+            memory_id: memory_id.to_string(),
+            content_hash: content_hash.to_string(),
+            imported_at: Utc::now(),
+            harness: "codex".to_string(),
+            source_path_at_import: PathBuf::from("/u/.codex/memories/MEMORY.md"),
+            namespace: Some("me".to_string()),
+            canonical_namespace_id: None,
+            aliases: Vec::new(),
+            supersession_chain: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn record_identity_matches_after_suffix_toggle_and_renumbered_edit() {
+        // A sibling was deleted, the remaining section was renumbered, and its
+        // content edited. The new candidate has no suffix; the old record is
+        // keyed with the suffixed identity. Matching must fall back to the
+        // ordinal-free base identity.
+        let candidate = codex_candidate("codex:memories/MEMORY.md#task-group-1-foo", "new body");
+        let candidate_identity = candidate.import_identity(None);
+
+        let old_hash = "sha256:2222222222222222222222222222222222222222222222222222222222222222";
+        let mut record = record_with_identity("", old_hash, "mem_old");
+        record.source_identity = format!("{}-22222222", candidate_identity);
+
+        assert!(
+            record_identity_matches("old-key", &record, &candidate_identity, "me"),
+            "suffix-toggle record should match candidate base identity"
+        );
+    }
+
+    #[test]
+    fn record_identity_matches_multiple_records_marks_ambiguous() {
+        let candidate = codex_candidate("codex:memories/MEMORY.md#task-group-1-foo", "body");
+        let candidate_identity = candidate.import_identity(None);
+
+        let record_a = record_with_identity(&candidate_identity, "sha256:1111111111111111111111111111111111111111111111111111111111111111", "mem_a");
+        let record_b = record_with_identity("", "sha256:2222222222222222222222222222222222222222222222222222222222222222", "mem_b");
+
+        assert!(record_identity_matches("key_a", &record_a, &candidate_identity, "me"));
+        assert!(record_identity_matches("key_b", &record_b, &candidate_identity, "me"));
+    }
 }

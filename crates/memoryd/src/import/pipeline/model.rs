@@ -75,10 +75,10 @@ pub enum PlanAction {
     SkipUnchanged { existing_memory_id: String, existing_record_key: String },
     /// State file records this exact source/content under a different bucket —
     /// supersede the prior memory with identical content in the correct bucket.
-    RepairBucket { prior_memory_id: String, prior_content_hash: String, prior_record_key: String },
+    RepairBucket { prior_memory_id: String, prior_content_hash: String },
     /// State file records this source under a different content hash —
     /// supersede the prior memory.
-    Supersede { prior_memory_id: String, prior_content_hash: String, prior_record_key: String },
+    Supersede { prior_memory_id: String, prior_content_hash: String },
     /// First time we've seen this source — write a fresh memory.
     WriteNew,
     /// Project mapper resolved to "skip" for this candidate's cwd.
