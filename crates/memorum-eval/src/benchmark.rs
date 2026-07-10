@@ -1316,6 +1316,7 @@ mod tests {
                 haystack_sessions: vec![vec![LongMemTurn {
                     role: "user".to_owned(),
                     content: "body a".to_owned(),
+                    dia_id: None,
                     has_answer: true,
                 }]],
                 answer_session_ids: vec!["s1".to_owned()],
@@ -1330,6 +1331,7 @@ mod tests {
                 haystack_sessions: vec![vec![LongMemTurn {
                     role: "user".to_owned(),
                     content: "body b".to_owned(),
+                    dia_id: None,
                     has_answer: true,
                 }]],
                 answer_session_ids: vec!["s2".to_owned()],
