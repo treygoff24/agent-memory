@@ -65,13 +65,41 @@ single-endpoint mock tests now serve the real singular shape, with a comment pin
 Lesson (general): **a mock written from the parser instead of from the wire format proves nothing** —
 when staging an API integration, capture one real response per endpoint first.
 
-## Post-fix verification
+## 🐛 Second production bug: 250 ms query-embed budget structurally too tight
 
-(filled in below after redeploy)
+After the parse fix, queries still degraded intermittently. Live measurement (10 real query embeds):
+**p50 ≈ 210 ms, max ≈ 257 ms including connection setup** — the 250 ms `API_EMBED_TIMEOUT_MS` default
+failed the upper half of the distribution, so vector recall almost never fired in practice. Raised the
+API-lane default to **750 ms** (`2a7bf77`); local lane stays at 50 ms; explicit config still wins.
+Post-fix: 9 consecutive searches, **0 timeouts** (including the cold first query after restart).
+
+## 🐛 Third bug (adjacent): `memoryd import --repo` defaulted to cwd
+
+Running import from any directory other than the repo root wrote the idempotency state file to
+`<cwd>/.memorum/import-state.json` (caught when one appeared inside the bench fixtures dir). Fixed to
+resolve via `default_repo_root` like doctor/status (`a2b06a3`); stray live state merged back by hand.
+
+## Post-fix verification (final state)
+
+- **Footprint: 11–17 MB** on the API lane vs 6,200 MB local-lane baseline (~400×), while actively
+  serving vector recall. Target was ~30 MB; beaten.
+- Known-answer query "launchd absolute binary path": 34 hybrid hits on the API lane (vs 4 FTS-only on
+  local) — vector lane demonstrably fused.
+- Switch-back mechanics verified live: gemini→local reported `pending_reembed_jobs: 0` (old Qwen table
+  retained), recall + doctor healthy on local immediately; local→gemini again also `pending: 0` (gemini
+  table survived the round-trip — no re-embed, no API cost). Landed on the **gemini-api lane** as the
+  shipped end state.
+- Doctor final: `healthy: true`, advisories only (`embedding_api_lane_held_local: 28`,
+  `embedding_orphaned_triples: 1` — both by design).
+- Nit (cosmetic, unfixed): the `--lane local` envelope still reports `approximate_tokens`/
+  `estimated_usd`, which are meaningless for a local switch.
 
 ## Record
 
-- Cost estimate ~$0.093 upper bound vs actual ≈ $0.09 (465k tokens at $0.20/M ≈ full estimate; bytes/4
-  heuristic was nearly exact on this corpus).
+- Cost estimate ~$0.093 upper bound vs actual ≈ $0.09 (465k tokens at $0.20/M; bytes/4 heuristic was
+  nearly exact on this corpus). Bake-off spend was additionally ~a few cents.
 - 429 count: 0. Drain wall-clock: minutes, not hours.
-- Footprint: baseline 6,200 MB (local warm) → see post-fix numbers below.
+- Footprint: 6,200 MB (local warm) → **11–17 MB** (API lane, serving).
+- Lesson bank: (1) mocks written from the parser prove nothing — capture one real wire response per
+  endpoint before staging an integration; (2) latency budgets need a live distribution, not a mean from
+  a bake-off script; (3) any CLI default of `"."` for a canonical-root arg is a latent footgun.
