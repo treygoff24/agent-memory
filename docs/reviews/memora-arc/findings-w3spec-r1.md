@@ -16,4 +16,16 @@ Reviewer: Luna high (codex-78, main scope, group memora-w3spec). Spec at commit 
 | 10 | MAJOR | Plan/spec drift on two-clone + N=1 ("rewrite-in-place" would violate self-reference validation) | ACCEPTED — ratified: N=1 uses new-ID supersession like N>1 (no in-place rewrite); two-clone contract = proposals device-local, only results sync, idempotent replay keyed by proposal id |
 | 11 | MINOR | Direct `memoryd get` by ID exposes staged replacement | ACCEPTED — documented as intentional: direct get is the inspection surface the review CLI itself needs; staged candidates carry the marker in the returned envelope |
 
-Round 2: Sol high convergence re-read over W2 package r3 + W3 spec r2 together (the planned round-3 bookend from findings-w2spec-r1.md), then both go to Trey for ratification.
+## Round 2 — Sol high convergence re-read (codex-79) over W2 r3 + W3 r2 together
+
+1 BLOCKER + 3 MAJOR + 1 NIT, NOT-RATIFIABLE; **5/5 accepted**, applied as W3 r3 + W2 package r4:
+
+| # | Sev | Finding | Disposition |
+| --- | --- | --- | --- |
+| 12 | BLOCKER | Pinned path unimplementable: superseded+pinned trust is lifecycle-invalid; rollback restore of pinned unauthorized; replacement trust ordering/all-pinned default undefined (row 2's fix captured the tuple but never defined valid forward tuples) | ACCEPTED — pinned supersede demotes `trust: pinned → trusted` in the same CAS; amendments authorize `superseded → {active,pinned}` restoring the captured tuple exactly; replacement trust = `untrusted` if any source untrusted else `trusted` (grounded in the shipped enum — `active` permits only trusted/untrusted); full pinned-path fixtures in the gate |
+| 13 | MAJOR | Entering-active transitions don't reconstruct aux state — rollback restores canonical status but the source stays absent from abstraction-vector retrieval; activation said "enqueue" without materializing rows | ACCEPTED — new **enter-servable** row in the W2 §A3 matrix (upsert current-hash rows + enqueue jobs under the stale-hash fence); W3 activation and rollback both defined as entering-servable transitions; rollback-retrieval fixture required |
+| 14 | MAJOR | W3 doesn't pin dual-classify/rebind for the dream-generated replacement; floor-vs-rebind composition undefined | ACCEPTED — merge staging registered as a §A4 generation context (entrypoint list + generation-context clause, W2 r4); composition pinned: rebind first, then floor — persisted outcome = stricter(rebound, strictest-source floor) |
+| 15 | MAJOR | Journal tail rule contradicts triage row 8 and leaves checksum-invalid final record undefined | ACCEPTED with recorded deviation — torn (unparseable/incomplete) final line resumes (quarantining it would quarantine every crash-injection test); checksum-invalid parseable record ANYWHERE incl. final quarantines; unparseable non-final quarantines. Row 8's blanket "torn tail ⇒ quarantine" wording is superseded by this exhaustive rule |
+| 16 | NIT | "adds one additive event kind" but defines two | ACCEPTED — corrected to two |
+
+Sol confirmed no additional blocker in schema-6 ownership or the two-clone test shape. Both documents (W2 r4 + W3 r3) now go to Trey as one ratification read.

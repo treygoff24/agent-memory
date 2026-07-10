@@ -145,3 +145,15 @@ Outcome and verification: 6 MAJOR + 3 MINOR + 1 NIT in 3m8s; all accepted after 
 Performance observations: the unique finds were both quantitative-integrity defects — Luna keeps catching the "numbers lie silently" class. Ran `git diff --check` + fixture JSON validation + `cargo metadata` as read-only verification.
 
 Routing assessment: Cursor+Luna parallel pair produced disjoint accepted uniques for the third consecutive round — this is now the standing review configuration for the arc. Confidence: high.
+
+## 2026-07-10 - gpt-5.6-sol via codex - W2+W3 convergence bookend (round 2/3)
+
+Command and run: `delegate --group memora-conv codex safe --model sol --reasoning-effort high --prompt-file thoughts/memora-build/w2w3-convergence-review-prompt.md`; alias `codex-79` (main scope); mode/isolation: safe / worktree-temporary.
+
+Task and expectation: cross-document convergence re-read over W2 package r3 + W3 spec r2 together, explicitly forbidden from re-litigating the 28 settled findings; expected residual cross-spec seams.
+
+Outcome and verification: 1 BLOCKER + 3 MAJOR + 1 NIT in 2m40s, NOT-RATIFIABLE; 5/5 accepted → W3 r3 + W2 r4. The blocker was exactly the class the bookend exists for: triage row 2's fix (journal the tuple) was *individually* accepted in round 1 but is unimplementable against the shipped lifecycle validator once you compose it — superseded+pinned trust is invalid, the restore path wasn't authorized, and "minimum trust excluding pinned" had no defined ordering. Sol checked the accepted disposition against validate.rs and the TrustLevel enum rather than taking the triage table's word. Same pattern on aux state: round-1 row 7 fixed staging suppression, Sol saw that rollback restore re-enters the servable set with no aux re-materialization rule anywhere in either doc. Also caught my r2 journal-tail rule contradicting the row-8 disposition I'd recorded hours earlier.
+
+Performance observations: the "restates settled row N because the applied fix is insufficient" framing was used correctly twice — precise, zero noise, no re-litigation of genuinely settled items. Cross-referenced four code files + both triage tables + the plan in under 3 minutes.
+
+Routing assessment: the convergence bookend (Sol high, both docs + triage tables together, after per-doc rounds run dry) is validated — it found composition defects no per-document round could see. Keep as the standing final gate before human ratification on multi-spec arcs. Confidence: high.
