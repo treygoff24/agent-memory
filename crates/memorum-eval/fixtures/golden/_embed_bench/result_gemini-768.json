@@ -1,0 +1,25 @@
+{
+  "model_key": "gemini-768",
+  "status": "ok",
+  "meta": {
+    "model_key": "gemini-768",
+    "model": "gemini-embedding-2",
+    "dims": 768,
+    "api": "gemini",
+    "notes": [],
+    "doc_embed_secs": 1.1439659595489502,
+    "mean_query_embed_ms": 206.42328262329102
+  },
+  "metrics": {
+    "n_nonabstain": 52,
+    "n_graded_positive": 50,
+    "ndcg10": 0.8454588437812142,
+    "recall5_essential": 0.92,
+    "mrr_first_essential": 0.825367591524037,
+    "trap_rate5": 0.34615384615384615,
+    "n_abstain": 4,
+    "median_top1_abstain": 0.6410565674304962,
+    "median_top1_nonabstain": 0.8045795261859894,
+    "abstain_gap": 0.16352295875549316
+  }
+}

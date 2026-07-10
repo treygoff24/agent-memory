@@ -337,9 +337,22 @@ fn embedding_request(model: String, text: String, dimension: u32) -> Value {
     Value::Object(request)
 }
 
+/// `:batchEmbedContents` returns `embeddings: [...]`; `:embedContent` returns a single
+/// `embedding: {...}`. One struct accepts both so `post_embeddings` stays shape-agnostic.
 #[derive(Deserialize)]
 struct GeminiEmbeddingsResponse {
+    #[serde(default)]
     embeddings: Vec<GeminiEmbedding>,
+    embedding: Option<GeminiEmbedding>,
+}
+
+impl GeminiEmbeddingsResponse {
+    fn into_embeddings(self) -> Vec<GeminiEmbedding> {
+        match self.embedding {
+            Some(single) => vec![single],
+            None => self.embeddings,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -350,13 +363,14 @@ struct GeminiEmbedding {
 fn parse_embedding_response(body: &str, expected_count: usize) -> Result<Vec<Vec<f32>>, EmbeddingError> {
     let response: GeminiEmbeddingsResponse = serde_json::from_str(body)
         .map_err(|error| EmbeddingError::Contract(format!("parse Gemini embedding response: {error}")))?;
-    if response.embeddings.len() != expected_count {
+    let response = response.into_embeddings();
+    if response.len() != expected_count {
         return Err(EmbeddingError::Contract(format!(
             "Gemini returned {} embeddings for {expected_count} inputs",
-            response.embeddings.len()
+            response.len()
         )));
     }
-    let vectors: Vec<Vec<f32>> = response.embeddings.into_iter().map(|embedding| embedding.values).collect();
+    let vectors: Vec<Vec<f32>> = response.into_iter().map(|embedding| embedding.values).collect();
     Ok(vectors)
 }
 
@@ -599,6 +613,12 @@ mod tests {
         .to_string()
     }
 
+    /// Real `:embedContent` responses carry a singular `embedding` object (caught live 2026-07-09:
+    /// the batch-shaped mock hid a parse failure on every query embed against the real API).
+    fn single_embedding_response(values: Vec<f32>) -> String {
+        json!({ "embedding": { "values": values } }).to_string()
+    }
+
     fn request_body(server: &MockGeminiServer) -> Value {
         let requests = server.requests();
         assert_eq!(requests.len(), 1);
@@ -617,7 +637,7 @@ mod tests {
 
     #[test]
     fn query_prefix_is_applied() {
-        let server = MockGeminiServer::new(vec![MockResponse::json(200, embedding_response(vec![vec![1.0, 2.0]]))]);
+        let server = MockGeminiServer::new(vec![MockResponse::json(200, single_embedding_response(vec![1.0, 2.0]))]);
         let vector = provider(server.base_url(), 2).embed_query("find alpha").expect("embed query");
 
         assert_eq!(vector, vec![1.0, 2.0]);
@@ -631,7 +651,7 @@ mod tests {
 
     #[test]
     fn document_prefix_is_applied() {
-        let server = MockGeminiServer::new(vec![MockResponse::json(200, embedding_response(vec![vec![3.0, 4.0]]))]);
+        let server = MockGeminiServer::new(vec![MockResponse::json(200, single_embedding_response(vec![3.0, 4.0]))]);
         let vector = provider(server.base_url(), 2).embed_document("alpha document").expect("embed document");
 
         assert_eq!(vector, vec![3.0, 4.0]);
@@ -683,7 +703,7 @@ mod tests {
 
     #[test]
     fn dimension_mismatch_is_reported() {
-        let server = MockGeminiServer::new(vec![MockResponse::json(200, embedding_response(vec![vec![1.0]]))]);
+        let server = MockGeminiServer::new(vec![MockResponse::json(200, single_embedding_response(vec![1.0]))]);
         let error = provider(server.base_url(), 2).embed_document("short vector").expect_err("dimension mismatch");
 
         assert!(matches!(error, EmbeddingError::DimensionMismatch { expected: 2, found: 1 }));
