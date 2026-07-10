@@ -33,3 +33,20 @@ Reviewers: Cursor (cursor-1, W0-worktree scope) and Luna high (codex-1, W0-workt
 | — | L2 (partial) | Include startup context in judge inputs | Startup recall is not query-conditioned; stuffing it into `answer_basis` would grade the wrong lane. Superseded by F4's separate startup-coverage score. |
 
 Round 2: scoped re-review of the fix diff (Cursor + Luna) until dry.
+
+## Round 2 — Cursor (cursor-2) + Luna (codex-2), W0-worktree scope, on fix r1 + coordinator test rewrites
+
+Both FINDINGS; both explicitly validated the four coordinator test rewrites (candidate-fence contract + relaxed-fallback pin) and found no other caller depending on the leak. Coordinator full gates green pre-review (103 memoryd suites + memorum-eval). 8/8 merged findings accepted:
+
+| # | Sev | Source | Finding → fix contract |
+| --- | --- | --- | --- |
+| G1 | MAJOR (insuff. F7) | C+L | Judge timeout starts AFTER the synchronous stdin `write_all` — a child that never reads stdin blocks forever. **Fix:** deadline covers spawn + stdin write (bounded/non-blocking write); on expiry always kill+reap and drain pipes; typed Timeout. Test: judge that sleeps without reading stdin. |
+| G2 | MAJOR | C+L | Scaffold teardown leaks: Drop never unlinks `/tmp/memd-eval-<pid>/…sock` (debris across per-question scaffolds), and a readiness-poll failure drops the raw child unkilled (daemon leak). **Fix:** wrap child pre-poll (kill+reap on failure); Drop removes socket file + pid dir when empty. Test: teardown leaves no socket path; readiness-failure kills child. |
+| G3 | MAJOR (insuff. F9) | C+L | Cleaned loading still `fs::read`s + deserializes the whole 277MB then trims — peak RSS = file size, and all selected haystacks retained for the whole run. **Fix:** `from_reader` + custom array visitor that deserializes elements incrementally and drops non-selected items immediately; retain only the current question's haystack during scoring. Test: loader shape test asserting non-selected items dropped during parse (structure-level). |
+| G4 | MINOR (insuff. F1 edge) | C+L | Missing `dia_id` falls back to `Dsession_1:{n}` which can never match evidence `D1:1` → silent empty gold. **Fix:** derive `D{numeric}:{n}` from `session_N`; record unmatched evidence ids on the item as a typed field (never silent). Test: fallback + unmatched-evidence fixtures. |
+| G5 | MINOR (insuff. F5 edge) | L | Missing/mismatched `answer_session_ids` silently yields empty gold and a false zero recall. **Fix:** typed dataset-shape error recorded on the item; item excluded from means with an exclusion count in the artifact. Test: fixture with a dangling session id. |
+| G6 | MAJOR (insuff. F15) | C+L | Several new tests are compile-presence-only (`let _ = field`), range-only, or single-chunk. **Fix:** hand-computed Hit@10/Recall@10 vectors; multi-chunk collapse fixture at the harness seam; artifact JSON round-trip asserting concrete values. |
+| G7 | MINOR | C | FTS-only score shape `1.0/rank` diverges from the fused lane's RRF `1/(k+rank)`. **Fix:** reuse `reciprocal_rank_score(DEFAULT_VECTOR_RECALL_RRF_K, rank)` for parity. |
+| G8 | NIT | C | LoCoMo multi-QA items clone conversation-wide dispositions onto every question. **Fix:** attach dispositions once per conversation (or per-item delta), cheap. |
+
+Round 3: scoped re-review of fix diff 2 — MUST be dry (cap). W1's lesson applied: contracts above name the error paths and edge variants explicitly.
