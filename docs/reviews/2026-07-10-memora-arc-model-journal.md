@@ -45,3 +45,15 @@ Outcome and verification: 2 BLOCKER + 6 MAJOR + 3 MINOR + 1 NIT, verdict "anothe
 Performance observations: ~14 min; no progress events (known opencode buffering); clean single-envelope output; no scope creep; zero re-reports of fixed items. Verification burden low — every spot-checked claim held.
 
 Routing assessment: on this task Muse performed at or above Cursor/Grok-4.5 and near Sol-xhigh depth at a fraction of the ceremony. Second strong data point wanted on a *code diff* review before promoting past test-slot status; for plan/spec review it is already worth a standing slot. Confidence: medium-high (n=1 task type).
+
+## 2026-07-10 - gpt-5.6-sol via codex - plan review r4 convergence re-read (round 3)
+
+Command and run: `delegate --group memora-plan-r4 codex safe --model sol --reasoning-effort xhigh --prompt-file thoughts/memora-build/plan-review-r4-prompt.md`; alias `codex-74`; mode/isolation: safe / worktree-temporary.
+
+Task and expectation: certify-or-refute readiness of r4 with full prior-round context; new/fix-defect findings only.
+
+Outcome and verification: verdict READY-WITH-EDITS — 4 MAJOR + 2 MINOR, zero blockers, zero structural findings, explicit certification of the baseline₁ A/B protocol and journaled merge design. All six findings accepted and applied as r5; spot-checks held (quarantine.rs hardcoded Trusted; supersession primitive writes replacements active-first; desk path receives no vector context). Notably calibrated: it certified what was sound instead of inventing severity, and caught the coordinator's own CPU-discipline slip (`cargo build --locked`) that all prior reviewers and the coordinator missed.
+
+Performance observations: ~14 min. Round-over-round finding decay 16 → 6 → 0-structural = healthy convergence, not reviewer fatigue (round 3 findings were real but small).
+
+Routing assessment: Sol xhigh as bookend reviewer (round 1 deep attack + round N convergence certification) is now a proven pattern. Confidence: high.
