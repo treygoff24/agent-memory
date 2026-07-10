@@ -2138,6 +2138,16 @@ The exact struct/field names are the implementer's to finalize; the contract is 
 
 **Scope of Stream A's role:** `query_hybrid_chunks` is **hybrid result assembly with per-hit `score_breakdown` inputs**, NOT final policy ranking. The Reciprocal Rank Fusion (RRF) policy, the seven-rung degradation ladder, and the query embedding (`embed_query`) all live in Stream E / memoryd — see Stream E v0.6 §16. Stream A runs the two lanes and returns the rank inputs; the caller fuses.
 
+### 2026-07-09 — `gemini-api` embedding provider + API-lane privacy fence
+
+**Touches:** §10.2.2 (registered provider strings), §20 #2 (embedding default unchanged — this adds an opt-in alternative), config.yaml key registry. **Approved by Trey 2026-07-09** ("spec amendment approved"); staged text in `docs/plans/2026-07-09-t33-spec-amendment-draft.md`, implementation plan `docs/plans/2026-07-09-api-embedding-lane.md`. No version bump: the change is additive surface (a second registered provider string, two additive config keys, an additive eligibility parameter); triple identity, no-silent-fallback, and all §10.2.2 behavior are unchanged.
+
+1. **New provider string.** `gemini-api` joins `fastembed-candle` as a registered `provider` value in the embedding triple. Default API triple: `("gemini-api", "gemini-embedding-2", 768)` (dimension subject to the T4.1 bake-off; the triple literal, not this amendment, changes if it moves). Triple identity and typed-mismatch rules (§10.2.2 #6/#9) apply unchanged.
+2. **Plaintext-eligibility fence (Stream A surface).** Embedding job fetch/count/reconcile surfaces take an `EmbeddingLaneEligibility` parameter: `AllTiers` (local providers) or `PlaintextOnly` (API providers). `PlaintextOnly` restricts to persisted sensitivity `public`/`internal` — `confidential`/`personal` rows (including masked `safe_body` projections, which keep their source tier) are never fetched for embedding and are reported separately as held-local jobs. Fail-closed: unknown tiers are held.
+3. **Consent key.** Synced `config.yaml` gains optional `api_embedding_consent: bool` (absent = false). The daemon MUST NOT start an API embedding provider unless it is `true`; the CLI consent ceremony is the only writer. Unknown-key tolerance in `SyncedConfig` loading is load-bearing and now contractual.
+4. **Credentials.** API keys live in device-local runtime state (env `MEMORUM_GEMINI_API_KEY` or 0600 key file), never in synced config — same rationale as device IDs (invariant 4).
+5. **Non-goals.** No hot lane-swap (restart required); no cross-triple vector reuse; old triple tables remain until explicitly dropped (§10.2.2 unchanged).
+
 ---
 
 *End of Stream A — Core Substrate Spec v1.1.*

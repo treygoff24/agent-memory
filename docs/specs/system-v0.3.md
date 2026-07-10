@@ -229,7 +229,7 @@ Unchanged from v0.1 §4 and shipped per Stream A v1.1 §3 + Stream B's `RequestP
 - `memoryd` owns:
   - File watcher on the memory tree (notify on Linux/macOS).
   - SQLite writer (single-writer model; no lock contention).
-  - Embedding worker (background; configurable provider, defaults specified by Stream A).
+  - Embedding worker (background; configurable provider, defaults specified by Stream A). Two lanes: the default local `fastembed-candle` provider (all sensitivity tiers), and an opt-in `gemini-api` provider (`gemini-embedding-2`) behind a privacy fence — API lanes embed only persisted `public`/`internal` content, require an explicit `api_embedding_consent: true` recorded by the `memoryd config embedding-lane` consent ceremony, and hold everything else local. Contract: Stream A spec v1.1, Amendment 2026-07-09; operator runbook `docs/runbooks/api-embedding-lane.md`.
   - Indexer (chunk + embed + insert on file change, debounced).
   - Privacy classification (Layer 1 deterministic; ONNX Layer 2 deferred per Stream D v0.1).
   - Dreaming scheduler (three-layer pipeline, leased; harness-CLI-delegated LLM calls per Stream F v0.3).

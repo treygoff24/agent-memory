@@ -1,4 +1,6 @@
-# T3.3 spec amendment DRAFT — awaiting Trey's explicit go-ahead
+# T3.3 spec amendment DRAFT — APPLIED 2026-07-09 (Trey: "spec amendment approved")
+
+> Applied to `docs/specs/stream-a-core-substrate-v1.1.md` (Amendments section) and pointed to from `docs/specs/system-v0.3.md` (embedding worker bullet). Kept for provenance.
 
 Per repo rules ("Don't bump spec or plan versions without Trey's explicit ask"), this is the STAGED
 amendment text. On approval, the block below is appended as a dated amendment to
