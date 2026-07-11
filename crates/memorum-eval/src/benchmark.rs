@@ -307,9 +307,7 @@ async fn run_locomo(
     let mut used = 0;
     for (index, conversation) in conversations.into_iter().enumerate() {
         let split = if index % 2 == 0 { Split::Dev } else { Split::Holdout };
-        if !config.splits.contains(&split)
-            || config.locomo_conversation_limit.is_some_and(|limit| used >= limit)
-        {
+        if !config.splits.contains(&split) || config.locomo_conversation_limit.is_some_and(|limit| used >= limit) {
             continue;
         }
         used += 1;
@@ -359,11 +357,7 @@ async fn run_longmemeval(
     judge: Option<&dyn BenchmarkJudge>,
     report: &mut BaselineReport,
 ) -> Result<(), String> {
-    let name = if config.longmemeval_cleaned {
-        "longmemeval_s_cleaned.json"
-    } else {
-        "longmemeval_oracle.json"
-    };
+    let name = if config.longmemeval_cleaned { "longmemeval_s_cleaned.json" } else { "longmemeval_oracle.json" };
     let path = config.dataset_dir.join("longmemeval").join(name);
 
     // First pass: read only the lightweight headers so we can run the split /
@@ -390,10 +384,8 @@ async fn run_longmemeval(
     let (mut selected_items, _parsed) = read_longmemeval_selected(&path, &selected_ids)?;
 
     for split in &config.splits {
-        let mut split_items: Vec<&mut LongMemItem> = selected_items
-            .iter_mut()
-            .filter(|item| longmem_split(&item.question_id) == *split)
-            .collect();
+        let mut split_items: Vec<&mut LongMemItem> =
+            selected_items.iter_mut().filter(|item| longmem_split(&item.question_id) == *split).collect();
         split_items.sort_by(|a, b| {
             let a_key = (a.question_type.clone(), hash_bytes(&a.question_id));
             let b_key = (b.question_type.clone(), hash_bytes(&b.question_id));
@@ -477,25 +469,15 @@ fn ingest_sessions(
                 expected_sensitivity,
                 report,
                 &mut dispositions,
-            )? {
-            }
+            )? {}
         }
         for (turn_index, turn) in session.turns.iter().enumerate() {
-            let key = turn
-                .dia_id
-                .clone()
-                .unwrap_or_else(|| format!("D{}:{}", session_label(&session.id), turn_index + 1));
+            let key =
+                turn.dia_id.clone().unwrap_or_else(|| format!("D{}:{}", session_label(&session.id), turn_index + 1));
             let body = format!("{}: {}", turn.speaker, turn.text);
-            if let Some(id) = ingest_one(
-                daemon,
-                &body,
-                "user",
-                true,
-                dataset_path,
-                expected_sensitivity,
-                report,
-                &mut dispositions,
-            )? {
+            if let Some(id) =
+                ingest_one(daemon, &body, "user", true, dataset_path, expected_sensitivity, report, &mut dispositions)?
+            {
                 turn_ids.entry(key).or_default().push(id.clone());
                 session_ids.entry(session.id.clone()).or_default().push(id);
             }
@@ -690,19 +672,11 @@ fn score_item(
         .iter()
         .flat_map(|turn_id| ingested.turn_ids.get(turn_id).into_iter().flatten().cloned())
         .collect();
-    let unmatched_evidence: Vec<String> = item
-        .evidence_turns
-        .iter()
-        .filter(|turn_id| !ingested.turn_ids.contains_key(*turn_id))
-        .cloned()
-        .collect();
+    let unmatched_evidence: Vec<String> =
+        item.evidence_turns.iter().filter(|turn_id| !ingested.turn_ids.contains_key(*turn_id)).cloned().collect();
 
     let search = daemon.request(json!({"search": {"query": item.question, "limit": TOP_K, "include_body": true}}))?;
-    let hits = success_payload(&search, "search")?
-        .get("hits")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
+    let hits = success_payload(&search, "search")?.get("hits").and_then(Value::as_array).cloned().unwrap_or_default();
 
     let mut seen = BTreeSet::<String>::new();
     let mut retrieved_ids = Vec::new();
@@ -711,12 +685,8 @@ fn score_item(
         let Some(id) = hit.get("id").and_then(Value::as_str) else { continue };
         if seen.insert(id.to_owned()) {
             retrieved_ids.push(id.to_owned());
-            let context = hit
-                .get("body")
-                .or_else(|| hit.get("snippet"))
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_owned();
+            let context =
+                hit.get("body").or_else(|| hit.get("snippet")).and_then(Value::as_str).unwrap_or("").to_owned();
             contexts.push(context);
         }
     }
@@ -744,10 +714,7 @@ fn score_item(
         "since_event_id": null,
         "budget_tokens": 1200
     }}))?;
-    let recall_block = success_payload(&startup, "startup")?
-        .get("recall_block")
-        .and_then(Value::as_str)
-        .unwrap_or("");
+    let recall_block = success_payload(&startup, "startup")?.get("recall_block").and_then(Value::as_str).unwrap_or("");
     let startup_context_bytes = recall_block.len();
     let startup_context_memory_ids = extract_memory_ids_from_recall_block(recall_block);
     let startup_relevant: BTreeSet<String> = startup_context_memory_ids.iter().cloned().collect();
@@ -759,11 +726,7 @@ fn score_item(
 
     let search_hit_count = retrieved_ids.len();
     let search_empty = retrieved_ids.is_empty();
-    let hit_at_10 = retrieved_ids.iter().take(TOP_K).any(|id| relevant.contains(id)) as u8 as f64;
-    let first_rank = retrieved_ids.iter().position(|id| relevant.contains(id)).map(|index| index + 1);
-    let relevant_retrieved = retrieved_ids.iter().take(TOP_K).filter(|id| relevant.contains(*id)).count();
-    let recall = if relevant.is_empty() { 0.0 } else { relevant_retrieved as f64 / relevant.len() as f64 };
-    let ndcg = binary_ndcg(&retrieved_ids, &relevant, TOP_K);
+    let rank = rank_metrics(&retrieved_ids, &relevant);
     let normalized_gold = normalize(&item.gold);
     let exact = !normalized_gold.is_empty() && normalize(&answer_basis) == normalized_gold;
     let contains = !normalized_gold.is_empty() && normalize(&answer_basis).contains(&normalized_gold);
@@ -782,10 +745,10 @@ fn score_item(
         startup_coverage,
         search_hit_count,
         search_empty,
-        hit_at_10,
-        reciprocal_rank: first_rank.map_or(0.0, |rank| 1.0 / rank as f64),
-        recall_at_10: recall,
-        ndcg_at_10: ndcg,
+        hit_at_10: rank.hit_at_10,
+        reciprocal_rank: rank.reciprocal_rank,
+        recall_at_10: rank.recall_at_10,
+        ndcg_at_10: rank.ndcg_at_10,
         context_exact_match: exact,
         context_contains: contains,
         unmatched_evidence,
@@ -814,10 +777,8 @@ fn finish_metrics(report: &mut BaselineReport) {
     report.metrics.startup_coverage = scored.clone().map(|item| item.startup_coverage).sum::<f64>() / denominator;
     report.metrics.context_exact_match =
         scored.clone().filter(|item| item.context_exact_match).count() as f64 / denominator;
-    report.metrics.context_contains =
-        scored.clone().filter(|item| item.context_contains).count() as f64 / denominator;
-    let judge_scores: Vec<f64> =
-        scored.filter_map(|item| item.judge.as_ref().map(|v| v.score)).collect();
+    report.metrics.context_contains = scored.clone().filter(|item| item.context_contains).count() as f64 / denominator;
+    let judge_scores: Vec<f64> = scored.filter_map(|item| item.judge.as_ref().map(|v| v.score)).collect();
     report.metrics.judge_mean =
         (!judge_scores.is_empty()).then(|| judge_scores.iter().sum::<f64>() / judge_scores.len() as f64);
 }
@@ -837,12 +798,7 @@ fn locomo_sessions(conversation: &LocomoConversation) -> Vec<Session> {
         };
         let turns = turns
             .into_iter()
-            .map(|turn| Turn {
-                speaker: turn.speaker,
-                text: turn.text,
-                dia_id: turn.dia_id,
-                has_answer: false,
-            })
+            .map(|turn| Turn { speaker: turn.speaker, text: turn.text, dia_id: turn.dia_id, has_answer: false })
             .collect();
         let date =
             conversation.conversation.get(&format!("{key}_date_time")).and_then(Value::as_str).map(str::to_owned);
@@ -857,11 +813,7 @@ fn longmem_sessions(item: &LongMemItem) -> Vec<Session> {
         .iter()
         .enumerate()
         .map(|(index, turns)| {
-            let id = item
-                .haystack_session_ids
-                .get(index)
-                .cloned()
-                .unwrap_or_else(|| format!("session_{index}"));
+            let id = item.haystack_session_ids.get(index).cloned().unwrap_or_else(|| format!("session_{index}"));
             let label = session_label(&id);
             let date = item.haystack_dates.get(index).cloned();
             let turns = turns
@@ -870,10 +822,7 @@ fn longmem_sessions(item: &LongMemItem) -> Vec<Session> {
                 .map(|(turn_index, turn)| Turn {
                     speaker: turn.role.clone(),
                     text: turn.content.clone(),
-                    dia_id: turn
-                        .dia_id
-                        .clone()
-                        .or_else(|| Some(format!("D{label}:{}", turn_index + 1))),
+                    dia_id: turn.dia_id.clone().or_else(|| Some(format!("D{label}:{}", turn_index + 1))),
                     has_answer: turn.has_answer,
                 })
                 .collect();
@@ -902,9 +851,12 @@ fn longmem_gold_turns(sessions: &[Session], answer_session_ids: &[String]) -> BT
 
 fn balanced_locomo_questions(questions: Vec<LocomoQuestion>, limit: Option<usize>) -> Vec<LocomoQuestion> {
     let Some(limit) = limit else { return questions };
-    round_robin_by(questions, limit, |question| question.category.to_string(), |question| {
-        hash_bytes(&question.question)
-    })
+    round_robin_by(
+        questions,
+        limit,
+        |question| question.category.to_string(),
+        |question| hash_bytes(&question.question),
+    )
 }
 
 #[cfg(test)]
@@ -917,8 +869,7 @@ fn balanced_longmem_items(items: &mut Vec<LongMemItem>, limit: usize) -> Vec<&Lo
         |&i| items_ref[i].question_type.clone(),
         |&i| hash_bytes(&items_ref[i].question_id),
     );
-    let selected_ids: BTreeSet<String> =
-        selected_indices.iter().map(|&i| items_ref[i].question_id.clone()).collect();
+    let selected_ids: BTreeSet<String> = selected_indices.iter().map(|&i| items_ref[i].question_id.clone()).collect();
     for item in items.iter_mut() {
         if !selected_ids.contains(&item.question_id) {
             item.haystack_sessions.clear();
@@ -992,6 +943,31 @@ fn scalar_text(value: &Value) -> String {
         Value::String(value) => value.clone(),
         Value::Null => String::new(),
         other => other.to_string(),
+    }
+}
+
+/// Per-item rank-cutoff metrics, factored pure so tests can pin hand-computed
+/// values (round-3 G6: the pipeline-level fixture had a single relevant item
+/// at rank 1 and could not discriminate rank-cutoff, partial-recall, or
+/// averaging bugs from a correct implementation).
+struct RankMetrics {
+    hit_at_10: f64,
+    reciprocal_rank: f64,
+    recall_at_10: f64,
+    ndcg_at_10: f64,
+}
+
+fn rank_metrics(retrieved_ids: &[String], relevant: &BTreeSet<String>) -> RankMetrics {
+    let hit_at_10 = retrieved_ids.iter().take(TOP_K).any(|id| relevant.contains(id)) as u8 as f64;
+    // MRR deliberately scans the full ranked list, not just the top-K cut.
+    let first_rank = retrieved_ids.iter().position(|id| relevant.contains(id)).map(|index| index + 1);
+    let relevant_retrieved = retrieved_ids.iter().take(TOP_K).filter(|id| relevant.contains(*id)).count();
+    let recall_at_10 = if relevant.is_empty() { 0.0 } else { relevant_retrieved as f64 / relevant.len() as f64 };
+    RankMetrics {
+        hit_at_10,
+        reciprocal_rank: first_rank.map_or(0.0, |rank| 1.0 / rank as f64),
+        recall_at_10,
+        ndcg_at_10: binary_ndcg(retrieved_ids, relevant, TOP_K),
     }
 }
 
@@ -1135,11 +1111,7 @@ struct DaemonClient<'a> {
 
 impl<'a> DaemonClient<'a> {
     fn new(socket: &'a Path, cwd: &'a Path) -> Self {
-        Self {
-            socket,
-            cwd: cwd.display().to_string(),
-            sequence: 0,
-        }
+        Self { socket, cwd: cwd.display().to_string(), sequence: 0 }
     }
 
     fn request(&mut self, request: Value) -> Result<Value, String> {
@@ -1267,6 +1239,101 @@ mod tests {
         let item = report.items.iter().find(|item| item.dataset == "locomo").expect("locomo item");
         assert!(!item.relevant_promoted_ids.is_empty());
         assert!(item.relevant_promoted_ids.iter().all(|id| id.starts_with("mem_")));
+    }
+
+    #[test]
+    fn rank_metrics_hand_computed_rank_cutoff_and_partial_recall() {
+        // 12 retrieved ids; relevant at ranks 2 and 11; gold size 3.
+        let retrieved: Vec<String> = (1..=12).map(|i| format!("mem_{i:02}")).collect();
+        let relevant: BTreeSet<String> = ["mem_02", "mem_11", "mem_99"].into_iter().map(str::to_owned).collect();
+        let m = rank_metrics(&retrieved, &relevant);
+        assert_eq!(m.hit_at_10, 1.0); // rank 2 is inside the top-10 cut
+        assert_eq!(m.reciprocal_rank, 0.5); // first relevant at rank 2
+                                            // rank-11 hit is outside the cut and mem_99 was never retrieved: 1 of 3.
+        assert!((m.recall_at_10 - 1.0 / 3.0).abs() < 1e-12, "recall {}", m.recall_at_10);
+        // Hand-computed binary nDCG@10: DCG = 1/log2(3) (single hit at rank 2);
+        // IDCG = 1/log2(2) + 1/log2(3) + 1/log2(4) (3 gold ids, all within k).
+        let dcg = 1.0 / 3.0f64.log2();
+        let idcg = 1.0 + 1.0 / 3.0f64.log2() + 0.5;
+        assert!((m.ndcg_at_10 - dcg / idcg).abs() < 1e-12, "ndcg {}", m.ndcg_at_10);
+
+        // Relevant only past the cut: hit 0, but MRR scans the full list.
+        let late: BTreeSet<String> = ["mem_11"].into_iter().map(str::to_owned).collect();
+        let m = rank_metrics(&retrieved, &late);
+        assert_eq!(m.hit_at_10, 0.0);
+        assert!((m.reciprocal_rank - 1.0 / 11.0).abs() < 1e-12);
+        assert_eq!(m.recall_at_10, 0.0);
+        assert_eq!(m.ndcg_at_10, 0.0);
+
+        // Empty gold: all zeros, no division by zero.
+        let m = rank_metrics(&retrieved, &BTreeSet::new());
+        assert_eq!((m.hit_at_10, m.reciprocal_rank, m.recall_at_10, m.ndcg_at_10), (0.0, 0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn finish_metrics_hand_computed_means_exclude_item_errors() {
+        fn item(hit: f64, rr: f64, recall: f64, error: Option<&str>) -> ItemOutcome {
+            ItemOutcome {
+                dataset: "locomo",
+                split: Split::Dev,
+                id: "fixture".to_owned(),
+                category: "1".to_owned(),
+                dispositions: DispositionCounts::default(),
+                relevant_promoted_ids: Vec::new(),
+                retrieved_ids: Vec::new(),
+                startup_context_bytes: 0,
+                startup_context_memory_ids: Vec::new(),
+                startup_coverage: 0.0,
+                search_hit_count: 0,
+                search_empty: true,
+                hit_at_10: hit,
+                reciprocal_rank: rr,
+                recall_at_10: recall,
+                ndcg_at_10: 0.0,
+                context_exact_match: false,
+                context_contains: false,
+                unmatched_evidence: Vec::new(),
+                item_error: error.map(str::to_owned),
+                judge: None,
+                judge_error: None,
+            }
+        }
+
+        let mut report = BaselineReport {
+            schema_version: "test",
+            report_name: "test",
+            ranking_lanes: Vec::new(),
+            vector_lane: "test",
+            dataset_sha256s: BTreeMap::new(),
+            split_config: SplitConfig {
+                splits: vec![Split::Dev],
+                locomo_conversation_limit: None,
+                locomo_qa_per_conversation: None,
+                longmemeval_per_split: 0,
+                longmemeval_cleaned: false,
+                embedding_lane: "test",
+            },
+            sampling: SamplingReport::default(),
+            dispositions: DispositionCounts::default(),
+            governance_drag: GovernanceDrag::default(),
+            metrics: MetricReport::default(),
+            ingestion: Vec::new(),
+            items: vec![
+                item(1.0, 0.5, 0.5, None),
+                item(0.0, 0.0, 0.0, None),
+                // Excluded item carries perfect scores that MUST NOT leak into means.
+                item(1.0, 1.0, 1.0, Some("dangling session")),
+            ],
+            judge_inputs: Vec::new(),
+            judge_identity: None,
+        };
+        finish_metrics(&mut report);
+        // Hand-computed over the 2 scored items only.
+        assert_eq!(report.metrics.scored_items, 2);
+        assert_eq!(report.metrics.excluded_items, 1);
+        assert_eq!(report.metrics.hit_at_10, 0.5);
+        assert_eq!(report.metrics.mrr, 0.25);
+        assert_eq!(report.metrics.recall_at_10, 0.25);
     }
 
     #[test]
@@ -1486,7 +1553,12 @@ mod tests {
         let report = crate::block_on(run_baseline(&config, Some(&DeterministicMockJudge))).expect("baseline");
         assert!(
             report.governance_drag.expected_actual_mismatches > 0
-                || report.governance_drag.by_source_kind.values().map(|drag| drag.encrypted_not_retrievable).sum::<usize>()
+                || report
+                    .governance_drag
+                    .by_source_kind
+                    .values()
+                    .map(|drag| drag.encrypted_not_retrievable)
+                    .sum::<usize>()
                     > 0
         );
     }
@@ -1529,10 +1601,7 @@ mod tests {
         assert_eq!(selected.len(), 1);
         let selected_ids: BTreeSet<String> = selected.iter().map(|s| s.question_id.clone()).collect();
         drop(selected);
-        let non_selected = items
-            .iter()
-            .find(|i| !selected_ids.contains(&i.question_id))
-            .expect("non-selected exists");
+        let non_selected = items.iter().find(|i| !selected_ids.contains(&i.question_id)).expect("non-selected exists");
         assert!(non_selected.haystack_sessions.is_empty());
         assert!(non_selected.haystack_session_ids.is_empty());
         assert!(non_selected.haystack_dates.is_empty());

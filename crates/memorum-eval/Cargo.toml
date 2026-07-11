@@ -9,6 +9,7 @@ license.workspace = true
 chrono.workspace = true
 clap.workspace = true
 hex.workspace = true
+libc = { workspace = true, optional = true }
 memorum-coordination = { path = "../memorum-coordination", optional = true }
 tokio.workspace = true
 
@@ -33,8 +34,9 @@ tempfile = { workspace = true, optional = true }
 # `cargo build -p memorum-eval --tests`.
 default = ["stream-i-deps", "quality", "judge"]
 stream-i-deps = ["dep:memorum-coordination"]
-# LLM-as-judge helper for the real-harness e2e tests (T13/T15); needs serde.
-judge = ["dep:serde", "dep:serde_json"]
+# LLM-as-judge helper for the real-harness e2e tests (T13/T15); needs serde,
+# plus libc for the timeout path's process-group kill (round-3 G1).
+judge = ["dep:serde", "dep:serde_json", "dep:libc"]
 quality = ["dep:memory-substrate", "dep:memoryd", "dep:serde", "dep:serde_json", "dep:serde_yaml", "dep:tempfile"]
 live-harness = []
 

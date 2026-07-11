@@ -121,45 +121,49 @@ impl BenchmarkJudge for ExternalCommandJudge {
         let input_json = serde_json::to_vec(input).map_err(|error| JudgeError::Serialize(error.to_string()))?;
 
         let start = std::time::Instant::now();
-        let mut child = Command::new(&self.program)
-            .args(&self.args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|error| JudgeError::Spawn(error.to_string()))?;
+        // Own process group: on timeout we kill the whole group, so a judge
+        // wrapper's grandchildren holding inherited stdio die too — otherwise
+        // the pipe-drain threads below block until those descendants exit
+        // (round-3 G1: `sh -c 'sleep 600 & wait'` stalled the harness minutes
+        // past a 100ms deadline).
+        let mut command = Command::new(&self.program);
+        command.args(&self.args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        std::os::unix::process::CommandExt::process_group(&mut command, 0);
+        let mut child = command.spawn().map_err(|error| JudgeError::Spawn(error.to_string()))?;
 
         let stdin = child.stdin.take().expect("piped judge stdin");
         let stdout = child.stdout.take().expect("piped judge stdout");
         let stderr = child.stderr.take().expect("piped judge stderr");
 
-        let stdin_handle = std::thread::spawn(move || {
+        // The writer/reader threads are never joined unboundedly: results come
+        // back over channels with `recv_timeout`, so the configured deadline
+        // covers spawn + stdin write + pipe drain even when a descendant
+        // process escapes the group kill (it is then detached, not awaited).
+        std::thread::spawn(move || {
             let mut stdin = stdin;
             let _ = stdin.write_all(&input_json);
             let _ = stdin.flush();
         });
 
-        let stdout_handle = std::thread::spawn(move || {
+        let (stdout_tx, stdout_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
             let mut stdout = stdout;
             let mut buffer = Vec::new();
             let _ = stdout.read_to_end(&mut buffer);
-            buffer
+            let _ = stdout_tx.send(buffer);
         });
 
-        let stderr_handle = std::thread::spawn(move || {
+        let (stderr_tx, stderr_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
             let mut stderr = stderr;
             let mut buffer = Vec::new();
             let _ = stderr.read_to_end(&mut buffer);
-            String::from_utf8_lossy(&buffer).trim().to_owned()
+            let _ = stderr_tx.send(String::from_utf8_lossy(&buffer).trim().to_owned());
         });
 
         let status = loop {
             if start.elapsed() >= self.timeout {
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = stdin_handle.join();
-                let _ = stdout_handle.join();
-                let _ = stderr_handle.join();
+                kill_judge_process_group(&mut child);
                 return Err(JudgeError::Timeout);
             }
             match child.try_wait().map_err(|error| JudgeError::Io(error.to_string()))? {
@@ -168,16 +172,14 @@ impl BenchmarkJudge for ExternalCommandJudge {
             }
         };
 
-        let _ = child.wait();
-        let _ = stdin_handle.join();
-        let stdout = stdout_handle.join().map_err(|_| JudgeError::Io("stdout reader thread panicked".to_owned()))?;
-        let stderr = stderr_handle.join().map_err(|_| JudgeError::Io("stderr reader thread panicked".to_owned()))?;
+        // One shared absolute deadline for both drains, so sequential recvs
+        // can't stack to ~2x the configured timeout.
+        let deadline = start + self.timeout;
+        let stdout = recv_pipe(&stdout_rx, deadline, "stdout")?;
+        let stderr = recv_pipe(&stderr_rx, deadline, "stderr")?;
 
         if !status.success() {
-            return Err(JudgeError::External {
-                status: status.to_string(),
-                stderr,
-            });
+            return Err(JudgeError::External { status: status.to_string(), stderr });
         }
 
         let mut verdict: BenchmarkJudgeVerdict =
@@ -190,11 +192,7 @@ impl BenchmarkJudge for ExternalCommandJudge {
             return Err(JudgeError::NonFinite { score: verdict.score });
         }
         if !(self.min_score..=self.max_score).contains(&verdict.score) {
-            return Err(JudgeError::OutOfRange {
-                score: verdict.score,
-                min: self.min_score,
-                max: self.max_score,
-            });
+            return Err(JudgeError::OutOfRange { score: verdict.score, min: self.min_score, max: self.max_score });
         }
 
         verdict.rationale = verdict.rationale.trim().to_owned();
@@ -204,6 +202,42 @@ impl BenchmarkJudge for ExternalCommandJudge {
     fn identity(&self) -> String {
         let args = self.args.iter().map(|a| a.to_string_lossy()).collect::<Vec<_>>().join(" ");
         format!("{} {}", self.program.to_string_lossy(), args)
+    }
+}
+
+/// SIGKILL the judge's process group (pgid == child pid, set via
+/// `process_group(0)`), then reap the direct child. Killing the group closes
+/// pipe ends held by wrapper grandchildren so the drain threads unblock.
+fn kill_judge_process_group(child: &mut std::process::Child) {
+    // Safety: plain kill(2) on a pgid this process created; no memory involved.
+    unsafe {
+        libc::kill(-(child.id() as i32), libc::SIGKILL);
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Bounded pipe drain: wait until `deadline` for a reader thread's result.
+/// On expiry the reader is left detached rather than joined, so a descendant
+/// holding our pipe ends can never stall the harness. Deliberately NO group
+/// kill here: the child is already reaped by the time this runs, so its pgid
+/// may be recycled if every member has exited — SIGKILLing it could hit an
+/// innocent process. An in-group straggler just leaks for its natural
+/// lifetime instead.
+fn recv_pipe<T>(
+    rx: &std::sync::mpsc::Receiver<T>,
+    deadline: std::time::Instant,
+    stream: &str,
+) -> Result<T, JudgeError> {
+    // Grace floor: a judge that exits exactly at the deadline still gets a
+    // beat for its reader threads to deliver already-buffered output.
+    let remaining = deadline.saturating_duration_since(std::time::Instant::now()).max(Duration::from_millis(50));
+    match rx.recv_timeout(remaining) {
+        Ok(value) => Ok(value),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(JudgeError::Timeout),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            Err(JudgeError::Io(format!("{stream} reader thread panicked")))
+        }
     }
 }
 
@@ -506,11 +540,32 @@ mod tests {
     }
 
     #[test]
-    fn external_command_judge_rejects_out_of_rubric_score() {
-        let judge = ExternalCommandJudge::new(
-            "/bin/sh",
-            ["-c", "printf '{\"score\":2.0,\"rationale\":\"too high\"}'"],
+    fn external_command_judge_timeout_not_extended_by_grandchild_holding_pipes() {
+        // A wrapper that leaves a backgrounded grandchild holding inherited
+        // stdio must not stall the timeout path: pre-fix, the unbounded joins
+        // blocked until the grandchild exited (~5s here) instead of ~100ms.
+        let judge =
+            ExternalCommandJudge::new("/bin/sh", ["-c", "sleep 5 & wait"]).with_timeout(Duration::from_millis(100));
+        let start = std::time::Instant::now();
+        let error = judge
+            .judge(&BenchmarkJudgeInput {
+                question: "q".to_owned(),
+                gold: "a".to_owned(),
+                retrieved_context: vec![],
+                answer_basis: String::new(),
+            })
+            .expect_err("judge should time out");
+        assert!(matches!(error, JudgeError::Timeout), "expected timeout, got {error:?}");
+        assert!(
+            start.elapsed() < Duration::from_secs(3),
+            "timeout path stalled on grandchild pipes: {:?}",
+            start.elapsed()
         );
+    }
+
+    #[test]
+    fn external_command_judge_rejects_out_of_rubric_score() {
+        let judge = ExternalCommandJudge::new("/bin/sh", ["-c", "printf '{\"score\":2.0,\"rationale\":\"too high\"}'"]);
         let error = judge
             .judge(&BenchmarkJudgeInput {
                 question: "q".to_owned(),
@@ -525,10 +580,8 @@ mod tests {
     #[test]
     fn external_command_judge_rejects_non_finite_score() {
         // 1e309 overflows to +inf in JSON float parsing.
-        let judge = ExternalCommandJudge::new(
-            "/bin/sh",
-            ["-c", "printf '{\"score\":1e309,\"rationale\":\"not finite\"}'"],
-        );
+        let judge =
+            ExternalCommandJudge::new("/bin/sh", ["-c", "printf '{\"score\":1e309,\"rationale\":\"not finite\"}'"]);
         let error = judge
             .judge(&BenchmarkJudgeInput {
                 question: "q".to_owned(),

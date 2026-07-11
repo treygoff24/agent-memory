@@ -87,9 +87,9 @@ fn run(cli: Cli) -> Result<(), String> {
         expected_sensitivity: cli.expected_sensitivity,
         judge_timeout: cli.judge_timeout,
     };
-    let external = cli
-        .judge_command
-        .map(|program| ExternalCommandJudge::new(program, cli.judge_arg).with_timeout(Duration::from_secs(cli.judge_timeout)));
+    let external = cli.judge_command.map(|program| {
+        ExternalCommandJudge::new(program, cli.judge_arg).with_timeout(Duration::from_secs(cli.judge_timeout))
+    });
     let mock = cli.mock_judge.then_some(DeterministicMockJudge);
     let judge: Option<&dyn BenchmarkJudge> = external
         .as_ref()

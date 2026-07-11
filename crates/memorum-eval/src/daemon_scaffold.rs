@@ -186,7 +186,7 @@ impl Drop for TempTree {
     }
 }
 
-/// Build a short Unix-domain-socket path under `/tmp/<prefix>-<pid>/` to avoid
+/// Build a short Unix-domain-socket path under `/tmp/<prefix>-<pid>-<seq>/` to avoid
 /// macOS's 104-character socket-name cap. The default tempdir on macOS lives
 /// under `/var/folders/...` and is too long once the test name + nonce are
 /// appended.
@@ -196,11 +196,17 @@ impl Drop for TempTree {
 /// the same process (covering the T14→T17 cross-scaffold pollution found in
 /// the 2026-05-26 audit); the nanos suffix keeps each path human-readable for
 /// debug log triage.
+///
+/// The parent dir is ALSO per-scaffold (`<prefix>-<pid>-<seq>`), never shared:
+/// with a shared parent, one scaffold's Drop (`remove_file` + `remove_dir`)
+/// can race a sibling daemon inside its prepare→bind window and flake its
+/// readiness poll (round-3 G2). A unique parent makes Drop's cleanup safe by
+/// construction.
 fn short_socket_path(prefix: &str) -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH).expect("system clock before unix epoch").as_nanos();
     let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let dir = PathBuf::from(format!("/tmp/{prefix}-{}", std::process::id()));
+    let dir = PathBuf::from(format!("/tmp/{prefix}-{}-{seq}", std::process::id()));
     fs::create_dir_all(&dir).unwrap_or_else(|err| panic!("create short socket dir {}: {err}", dir.display()));
     dir.join(format!("memoryd-{seq}-{nanos}.sock"))
 }
@@ -388,16 +394,26 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_scaffold_socket_parents_are_distinct() {
+        // Shared socket parents let one scaffold's Drop remove_dir race a
+        // sibling daemon's prepare→bind window (round-3 G2). Pin the
+        // per-scaffold-parent contract.
+        let a = super::short_socket_path("parent-distinct");
+        let b = super::short_socket_path("parent-distinct");
+        assert_ne!(a.parent(), b.parent(), "each scaffold must own its socket parent dir");
+        for path in [&a, &b] {
+            let _ = fs::remove_dir_all(path.parent().expect("socket parent"));
+        }
+    }
+
+    #[test]
     fn post_teardown_socket_path_absent() {
         let socket_path = super::short_socket_path("post-teardown");
         let tree_dir = TempTree::fresh();
         let listener = UnixListener::bind(&socket_path).expect("bind listener");
         let child = Command::new("sleep").arg("10").spawn().expect("spawn child");
-        let scaffold = DaemonScaffold {
-            tree_dir,
-            socket_path: socket_path.clone(),
-            child: Some(DaemonChild { child }),
-        };
+        let scaffold =
+            DaemonScaffold { tree_dir, socket_path: socket_path.clone(), child: Some(DaemonChild { child }) };
         drop(scaffold);
         drop(listener);
         assert!(!socket_path.exists(), "socket file should be removed after teardown");

@@ -3048,6 +3048,7 @@ dependencies = [
  "chrono",
  "clap",
  "hex",
+ "libc",
  "memorum-coordination",
  "memory-source",
  "memory-substrate",
