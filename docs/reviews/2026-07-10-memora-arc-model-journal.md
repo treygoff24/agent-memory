@@ -307,3 +307,15 @@ Outcome and verification: FINDINGS — converged independently on the aux fence 
 Performance observations: ~14 min. One rejected top-severity finding out of six — an acceptable false-positive rate given the two unique real finds. The structurally-green-migration-test catch is exactly the test-fidelity class Luna has now caught twice in this arc (W0 H3 fixtures, this).
 
 Routing assessment: keep Luna high as the standing second review lane; weight its test-fidelity findings heavily, double-check its architecture-boundary findings against the layering contract before accepting. Confidence: high.
+
+## 2026-07-11 - devin swe-1.7 via devin - W2 fix round 1a (devin-1, W2-worktree registry)
+
+Command and run: `delegate --json --cwd <w2-worktree> --isolation none devin work --prompt-file thoughts/memora-build/w2-fix-r1-prompt.md`; run `del_20260711T062103Z_da7da3`, 958s.
+
+Task and expectation: implement accepted findings W2-F1..F10 from the triage artifact with required tests + gate.
+
+Outcome and verification: **partial with empty report** — exited 0 with resultQuality=empty (no completion report, 1 byte stdout). Tree audit showed F1 (Agent-namespace probe + all 3 required tests), F2 (single-txn fence + hash-scoped delete — correct shape), F3/F4 (aux drain on all paths + spawn_blocking), F5 (Archived), F8 (rsplit) landed; F6/F7/F9/F10 NOT started. Its own new code didn't compile (`old_hash` moved-value in vector_lifecycle.rs) and its new starvation test had a wrong expectation (asserted per-pass aux success ≥2 forever; aux jobs are consumed on pass 1) — Devin never ran the gate it was instructed to run. Coordinator fixed both test defects inline (clone + first-pass ≥1 assertion + a sharper post-exhaustion scenario: fresh aux work behind the exhausted head) and re-ran green. Round 1b lane launched for the missing F6/F7/F9/F10 with a mandatory write-report-to-file instruction.
+
+Performance observations: the substantive FIXES it did land are high quality (the F2 transaction restructure is exactly the contract). Failure modes: window cutoff before trailing items (known class), no gate run, no report. 16 min wall.
+
+Routing assessment: keep Devin for findings-list fixes but (a) cap list size ~5-6 items per launch, (b) always require a file-written report, (c) never trust its gate claim — it makes none. Confidence: high.
