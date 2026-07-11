@@ -515,6 +515,25 @@ fn ingest_one(
             "harness": "memorum-eval"
         }
     }}))?;
+    // A typed daemon error (e.g. a secret refusal) is a governance outcome,
+    // not a harness failure: record it as drag and move on. Per the ingestion
+    // contract, refusals are data.
+    if let Some(code) = write_error_code(&response) {
+        let drag = report.governance_drag.by_source_kind.entry(source_kind.to_owned()).or_default();
+        drag.attempted += 1;
+        drag.refused_or_unpromoted += 1;
+        report.dispositions.refused += 1;
+        item_dispositions.refused += 1;
+        report.ingestion.push(IngestionRecord {
+            id: None,
+            source_kind: source_kind.to_owned(),
+            expected_sensitivity: expected_sensitivity.to_owned(),
+            actual_classification: format!("write_error:{code}"),
+            initial_status: "refused".to_owned(),
+            promoted_after_review: false,
+        });
+        return Ok(None);
+    }
     let payload = success_payload(&response, "governance_write")?;
     let status = payload.get("status").and_then(Value::as_str).unwrap_or("refused");
     let drag = report.governance_drag.by_source_kind.entry(source_kind.to_owned()).or_default();
@@ -1132,6 +1151,13 @@ fn success_payload<'a>(response: &'a Value, name: &str) -> Result<&'a Value, Str
         .ok_or_else(|| format!("daemon response missing {name}: {response}"))
 }
 
+/// Typed daemon error code from a write response, if the daemon refused the
+/// write outright (governance/privacy refusals arrive as `result.error`, not
+/// as a `governance_write` success payload).
+fn write_error_code(response: &Value) -> Option<String> {
+    response.pointer("/result/error/code").and_then(Value::as_str).map(str::to_owned)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1239,6 +1265,25 @@ mod tests {
         let item = report.items.iter().find(|item| item.dataset == "locomo").expect("locomo item");
         assert!(!item.relevant_promoted_ids.is_empty());
         assert!(item.relevant_promoted_ids.iter().all(|id| id.starts_with("mem_")));
+    }
+
+    #[test]
+    fn write_error_code_extracts_typed_daemon_errors() {
+        let error = serde_json::json!({"id":"x","result":{"error":{"code":"privacy_error","message":"m"}}});
+        assert_eq!(write_error_code(&error).as_deref(), Some("privacy_error"));
+        let success = serde_json::json!({"id":"x","result":{"success":{"governance_write":{"status":"promoted"}}}});
+        assert_eq!(write_error_code(&success), None);
+    }
+
+    #[test]
+    fn scaffold_provisions_privacy_key_before_daemon_start() {
+        // A missing age key turns the first encrypted-tier classification into
+        // a fatal privacy_error mid-run (found by the first full baseline run).
+        let scaffold = crate::block_on(DaemonScaffold::fresh());
+        assert!(
+            scaffold.tree_dir().join(".memoryd/privacy/age-key.json").exists(),
+            "scaffold must mint age key material like memoryd init does"
+        );
     }
 
     #[test]

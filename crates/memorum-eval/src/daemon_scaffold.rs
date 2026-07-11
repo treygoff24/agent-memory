@@ -83,6 +83,7 @@ impl DaemonScaffold {
         // domain socket path cap. The tree itself can stay in the long
         // tempfile path; only the socket name is path-length-sensitive.
         let socket_path = short_socket_path("memd-eval");
+        provision_privacy_key(tree_dir.path());
         let child = DaemonChild { child: spawn_memoryd(tree_dir.path(), &socket_path) };
         let scaffold = Self { tree_dir, socket_path, child: Some(child) };
         wait_for_socket(&scaffold.socket_path);
@@ -209,6 +210,22 @@ fn short_socket_path(prefix: &str) -> PathBuf {
     let dir = PathBuf::from(format!("/tmp/{prefix}-{}-{seq}", std::process::id()));
     fs::create_dir_all(&dir).unwrap_or_else(|err| panic!("create short socket dir {}: {err}", dir.display()));
     dir.join(format!("memoryd-{seq}-{nanos}.sock"))
+}
+
+/// Mint local age key material before the daemon starts, mirroring what
+/// `memoryd init` does on a real install (`serve --init` does not). Without
+/// it, the first benchmark turn the classifier routes to the encrypted tier
+/// kills the whole run with `privacy_error: privacy key missing` — found by
+/// the first full 240-item baseline run; the 6-item smoke slice never hit a
+/// sensitive-classified turn.
+fn provision_privacy_key(tree_dir: &Path) {
+    let memoryd = memoryd_binary_path();
+    let output = Command::new(memoryd)
+        .args(["device", "onboard", "--runtime"])
+        .arg(tree_dir.join(".memoryd"))
+        .output()
+        .unwrap_or_else(|err| panic!("run memoryd device onboard: {err}"));
+    assert!(output.status.success(), "memoryd device onboard failed: {}", String::from_utf8_lossy(&output.stderr));
 }
 
 fn spawn_memoryd(tree_dir: &Path, socket_path: &Path) -> Child {
