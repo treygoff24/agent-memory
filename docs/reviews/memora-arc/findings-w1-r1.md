@@ -57,3 +57,16 @@ Round 3 was the must-be-dry final round. It was not dry: 4 new accepted findings
 Non-blocking round-3 confirmations: F14 additive + correctly scoped; F13 over-match resolves to ReportAmbiguous; walk duplication acceptable IF error semantics are aligned (they are not — F20).
 
 **Escalation state:** wave is otherwise strong — gate green (102 suites), root cause (ordinal renumbering) fixed and pinned, 19 prior findings landed and verified. The residual 4 are all in the crash-recovery adoption path added by rounds 1–2. Options for Trey: (a) coordinator-owned inline fix pass for F20–F23 + pinning tests + own gate + ONE scoped verify read (recommended — the fixes are small, well-understood, and the fix-lane loop is demonstrably generating new defects at this depth); (b) authorized 4th Devin round; (c) park W1 unmerged, integrate W0 alone, revisit W1 next session.
+
+## Round 4 — coordinator inline fix (Trey authorized option (a), 2026-07-10 AskUserQuestion; BUILD-STATE approval record #7)
+
+Fix commit `cf30e96` on the W1 worktree branch, coordinator-authored:
+
+- **F20** — typed discrimination in `SocketDaemonClient`: TrustArtifact/Get daemon error `not_found` = provably-gone leaf (walk continues; `get_memory` returns `Ok(None)`); all other daemon errors fail closed. Fail-closed scope narrowed per the finding: a gone node never blocks the supersede.
+- **F21** — `record_identity_matches` recomputes with `record.canonical_namespace_id` (candidate-side fallback kept only for legacy records without the persisted field).
+- **F22** — new `ChainWalker` (depth bound 16, explicit 256-node backstop) shared by production client AND test mock, so bound semantics cannot drift; the pre-hop collected-count check is gone.
+- **F23** — additive `GetResponse.encrypted` flag (set from `MemoryContent::Ciphertext` in the get handler); adoption fails closed on an encrypted replacement with an actionable error instead of hashing the redaction sentinel. Check order status→encrypted→truncated so non-servable encrypted intermediates are skipped as non-candidates (minimal fail-closed surface).
+
+Pinning tests (all six confirmed in the gate log `/tmp/w1-gate-r4.log`): `execute_supersede_dangling_chain_link_does_not_livelock`, `execute_supersede_chain_transport_error_fails_closed`, `execute_supersede_encrypted_replacement_fails_closed`, `chain_walk_is_depth_bounded_not_sibling_bounded`, `chain_walk_bounds_depth_and_total_nodes`, `record_identity_recompute_uses_record_namespace_not_candidates`. Gate: `cargo clippy -p memoryd -D warnings` exit 0; `cargo test -p memoryd -- --test-threads=2` 1115 passed / 0 failed.
+
+Scoped verify: Cursor safe (cursor-4, W1-worktree registry) on the `cf30e96` diff only — hunt areas: not_found completeness (tombstoned mapping), fail-closed scope leaks, ChainWalker off-by-ones/mock divergence, F21 legacy-fallback against real live-corpus record shapes, F23 mixed-version skew (`encrypted` defaults false from an old daemon), test structural-greenness. Result recorded below when the lane lands.
