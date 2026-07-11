@@ -190,3 +190,7 @@ An unmapped `GovernanceStatus` is a hard failure in the envelope layer (test cel
 - `MEMORUM_SOCKET` — daemon socket path override.
 
 Both are surfaced in `schema` output.
+
+## 7. Amendment 2026-07-11 — abstraction/cues meta fields (additive, in-version)
+
+Ratified 2026-07-10 as §C of `docs/specs/2026-07-10-w2-spec-ratification-package.md`. `memoryd write` / `write-note` accept `abstraction` and `cues` via meta; protocol DTO, generated schema, and envelope tests updated together. Validation order at the trust boundary follows the Stream A v1.2 §A4 composed pipeline: normalize/cap-validate → classify (combined payload; strictest outcome controls; `secret` anywhere refuses before any disk effect) → drop/refuse/encrypt decision → validate final payload → persist/index/enqueue. Caps: `abstraction` ≤ 8 words / ≤ 120 chars, single line; `cues` 0–3 entries, each ≤ 6 words / ≤ 64 chars. `skills/using-memorum/SKILL.md` documents cue authoring (`[Main Entity] + [Key Aspect]`, 2–4 words) in the same change.

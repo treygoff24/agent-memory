@@ -928,3 +928,15 @@ Every documentation surface that mentions dreaming — `docs/api/stream-f-dreami
 > Dreaming uses whichever agent-harness CLI you have installed and authenticated on this device (Claude Code, Codex CLI, Gemini, etc.). Dream prompts are masked through the agent-memory privacy filter before they leave the daemon, but the masked text is processed by the harness CLI's upstream model provider. The data, retention, and training policies of that provider apply. Where this device's selected harness CLI accepts prompts on stdin, the prompt is not visible to other local processes; where it does not, the prompt may be visible via process listing tools (`ps`, `top`, `/proc/<pid>/cmdline`). `memoryd dream status` shows the prompt-transport mode for each installed harness adapter. Substrate fragments written via `memory_observe` are git-synced as low-level durable telemetry; this means the private git repo's raw-observation surface is larger than its canonical-memory surface, even though substrate is not searchable as memory. If you don't want dream content sent to a particular provider, set the per-scope CLI priority to exclude it, or run `memoryd dream disable` on this device.
 
 This is not buried. It is the first paragraph of the public API doc and the first line of `memoryd dream status` when dreaming is enabled.
+
+---
+
+## Amendment 2026-07-11 — `abstraction_compile` dream job (in-version, additive)
+
+Ratified 2026-07-10 as §B of `docs/specs/2026-07-10-w2-spec-ratification-package.md` (Memora-lessons arc, plan `docs/plans/2026-07-10-memora-lessons-memorum-upgrades.md` §W2 task 6). New optional job type; no change to existing pass behavior.
+
+- New dream job **`abstraction_compile`**: selects active/pinned memories lacking `abstraction` (or whose `abstraction_hash` predates the current body hash per repair policy — see the one-directional `source_body_hash` freshness semantics in Stream A v1.2 §A2 note), mints `abstraction` (≤8 words) + `cues` (0–3, `[Main Entity] + [Key Aspect]` guidance) via the **existing harness-CLI dream machinery** — no daemon-resident LLM.
+- Output is untrusted input: machine-verified against Stream A v1.2 §A1 caps/charset before use; malformed output = skip item, log, continue (the `malformed_pass_2_json` lesson).
+- Application = **governed supersede** through the standard write path, carrying a fresh `ClassificationOutcome` per the Stream A v1.2 §A4 composed pipeline (generation-context dual classification: drop-fields-keep-body + outcome rebind on sensitive generation).
+- Structural fallback when no harness CLI is available: `abstraction` = `summary` truncated to caps, no cues, marked `source: structural` in the job report.
+- This job is the single generation mechanism for the eval-corpus backfill (W4-prep), the live-corpus backfill (W5), and ongoing dream repair — production parity by construction.
