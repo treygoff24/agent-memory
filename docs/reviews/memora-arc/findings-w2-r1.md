@@ -46,3 +46,11 @@ Verdicts: both FINDINGS. 3 accepted (2 convergent), 0 rejected. All coordinator-
 Round-2 closures worth recording: Cursor recomputed all 11 manifest bullet hashes (match) and verified the manifest fails on a lost entry; F1 probe cleared explicitly (Agent/Project share the same floor — Project drop behavior unweakened; refuses_storage checked on both probe texts; probe-clean-but-Me-encrypted = benign fields inside ciphertext, not a bypass); F3 starvation pin verified to fail pre-fix; F9 `path LIKE 'encrypted/%'` justified as the repo's real discriminator (metadata_only alone insufficient because encrypted_index_projection can set metadata_only=false with a safe body).
 
 Round 3 (scoped verify on `037d3ef`): MUST be dry — cap round.
+
+## Round 3 — Cursor (cursor-3) must-be-dry verify on `037d3ef` — cap round
+
+Verdict: FINDINGS — 1 MAJOR (predicate pin was a duplicated SQL literal, unbound to production: deleting the content_hash scoping from production alone would keep both the StaleAux path and the pin's copy green), 1 MINOR (migration-test relocation dropped the tag/alias/pending-jobs and post-reopen summary assertions). Import caps and manifest re-point VERIFIED-OK; WAL checkpoint explicitly endorsed as the correct operator model.
+
+**Cap-round exception applied (written rationale, W0 precedent):** both findings are test/const-layer with zero production-logic blast radius, and both remedies were prescribed verbatim by the verify lane itself — extract the delete SQL into one shared const executed by production and test (`AUX_PENDING_JOB_HASH_SCOPED_DELETE_SQL`), and restore the dropped assertions. No judgment call was open and no production behavior changed (the const extraction moves a literal). Coordinator applied both in `701edec`; gate re-ran green (clippy ×2; substrate 423/0; memoryd 1130/0). Escalating to Trey for a 4th delegate round over a literal-to-const move would spend his attention on a decision with one possible answer.
+
+**W2 review loop CLOSED.** Totals: 16 findings across 3 rounds (round 1: 10 accepted incl. 1 BLOCKER + 2 rejected with reasons; round 2: 3; round 3: 2), all fixed and verified; 3 author-flagged residuals tracked (same-text remint; API-lane fixture; import source-parser extraction). Wave commits: `a0429f6` (build) + `c84b2de` (fix r1) + `037d3ef` (fix r2) + `701edec` (fix r3).
