@@ -50,3 +50,17 @@ Both FINDINGS; both explicitly validated the four coordinator test rewrites (can
 | G8 | NIT | C | LoCoMo multi-QA items clone conversation-wide dispositions onto every question. **Fix:** attach dispositions once per conversation (or per-item delta), cheap. |
 
 Round 3: scoped re-review of fix diff 2 — MUST be dry (cap). W1's lesson applied: contracts above name the error paths and edge variants explicitly.
+
+## Round 3 — Cursor (cursor-3) + Luna (codex-3), W0-worktree scope, on fix commit `6721ff1` (CAP ROUND)
+
+Both FINDINGS — cap hit, but unlike W1 the residuals sit entirely in eval-harness code (zero production blast radius), so the coordinator fixed them inline rather than halting the wave. All three accepted:
+
+| # | Sev | Source | Finding → coordinator fix |
+| --- | --- | --- | --- |
+| H1 | HIGH (insuff. G1) | C+L (converged; Cursor reproduced the OS mechanism locally) | Timeout path kills only the direct child then **unconditionally joins** the three pipe-drain threads — a judge wrapper leaving a grandchild holding inherited stdio (`sh -c 'sleep 600 & wait'`, any forking supervisor — our real judge is a delegate CLI call) blocks the joins until the grandchild exits; this stall mode was *introduced* by the round-2 drain/join design. **Fix:** spawn judge with `process_group(0)`; on deadline `kill(-pgid, SIGKILL)` + reap; pipe results delivered over `mpsc` channels with `recv_timeout` so no join is ever unbounded (an escaped-group descendant detaches instead of stalling). Test: `external_command_judge_timeout_not_extended_by_grandchild_holding_pipes` (`sleep 5 & wait`, 100ms budget, asserts <3s wall). |
+| H2 | HIGH | L (Cursor read the same code and called it safe; coordinator adjudicated FOR Luna) | Concurrent scaffolds share `/tmp/memd-eval-<pid>`: A's Drop `remove_dir` can land inside B's daemon prepare→bind window (`prepare_socket_parent` recreates a missing dir, but the window between recreate and bind remains) → readiness flake. **Fix:** per-scaffold parent dir `<prefix>-<pid>-<seq>`; Drop cleanup safe by construction. Test: `concurrent_scaffold_socket_parents_are_distinct`. |
+| H3 | MAJOR (insuff. G6) | C+L | The hand-computed metric fixture has one relevant item at rank 1 → structurally cannot catch rank-cutoff, partial-recall, averaging, or exclusion-denominator bugs. **Fix:** extracted pure `rank_metrics()` helper; tests `rank_metrics_hand_computed_rank_cutoff_and_partial_recall` (relevant at ranks 2/11 of 12, gold 3 → Hit 1.0, MRR 0.5, Recall 1/3, exact nDCG; past-cut and empty-gold variants) and `finish_metrics_hand_computed_means_exclude_item_errors` (excluded item carries perfect scores that must not leak into means). |
+
+Clean areas (both reviewers): G2 kill-on-drop ordering, G3 visitor memory shape + haystack clear, G7 RRF parity/monotonicity, G4/G5 machinery. G5 dedicated-test waiver stands (recorded in the r3 prompt).
+
+Cap disposition: coordinator inline fix (this section) + full crate gate + one scoped cross-family verify of the coordinator diff. No 4th delegate fix round.

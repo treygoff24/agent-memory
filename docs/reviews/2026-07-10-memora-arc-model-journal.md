@@ -199,3 +199,27 @@ Routing assessment: keep Devin for well-specified fix lists; the coordinator mus
 `cursor-3` + `codex-3`, group memora-w1rev3, same brief. Cursor: 1 merge-blocking finding (fail-closed overreach → permanent import livelock on dangling supersession links; diagnosed the mock/prod divergence exactly — mock `unwrap_or_default` vs production error). Luna: 3 HIGHs (cross-project namespace fallback — coordinator-verified at plan.rs:150; BFS bound semantics; encrypted-replacement adoption hash mismatch). Zero overlap between the two reports — fifth consecutive disjoint round from this pair.
 
 Process note: round 3 was the cap round and was NOT dry → W1 halted and escalated per loop discipline. The pair's throughput (each round <6 min, all findings verified real so far) is not the bottleneck; the fix-contract completeness is.
+
+## 2026-07-10 - grok-4.5-fast-xhigh via cursor - W0 round-3 cap review
+
+Command and run: `delegate --cwd <w0-worktree> --group memora-w0rev3 cursor safe --prompt-file thoughts/memora-build/w0-review-r3-prompt.md`; alias cursor-3; mode/isolation: safe/worktree-temp.
+
+Task and expectation: final-round scoped re-review of fix commit `6721ff1` against G1–G7 hunt areas; must-be-dry cap round.
+
+Outcome and verification: FINDINGS — one HIGH (H1 grandchild-pipe join stall on the timeout path), with a **local OS-level reproduction** (`sh -c 'sleep 4 & wait'` vs plain `sleep 4`) proving the mechanism, and the correct observation that round-2's own fix design *introduced* the stall. Also correctly cleared G2/G3/G7 and honored the G5 waiver. 2m30s. One miss: called the shared-socket-parent teardown safe where Luna found a real (narrow) race — coordinator adjudication sided with Luna after reading `prepare_socket_parent`.
+
+Performance observations: elite again on evidence-computing review — the repro is exactly the behavior that distinguishes a real reviewer from a diff-reader. The G2 miss shows even its "verified OK" claims need coordinator adjudication when another lane dissents.
+
+Routing assessment: keep as first review lane; when two lanes disagree on a specific code path, the coordinator MUST read the disputed code — both lanes were each right once in this round. Confidence: high.
+
+## 2026-07-10 - gpt-5.6 luna (reasoning high) via codex - W0 round-3 cap review
+
+Command and run: `delegate --cwd <w0-worktree> --group memora-w0rev3 codex safe --model luna --reasoning-effort high --prompt-file <same>`; alias codex-3 (W0 scope).
+
+Task and expectation: same cap-round brief as cursor-3.
+
+Outcome and verification: FINDINGS — converged with Cursor on H1 (independent discovery, different framing: "exits without draining a large stdin, or spawns a descendant"), plus two uniques both accepted: H2 socket-parent teardown race (coordinator verified real — prepare→bind window) and H3 the metric fixture's structural inability to discriminate formula bugs (INSUFFICIENT-FIX on G6, correct — Cursor had noted the same weakness but under-severitied it as non-blocking). No false positives this round.
+
+Performance observations: this is the round where Luna beat Cursor on judgment (H2/H3 severity calls) while Cursor beat Luna on evidence (H1 repro). The pair remains disjoint-but-overlapping in exactly the useful way — 6 consecutive rounds now.
+
+Routing assessment: Cursor+Luna stays the standing review pair for this arc. Confidence: high.
