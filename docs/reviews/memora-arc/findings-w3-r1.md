@@ -31,3 +31,17 @@ Verdicts: Cursor FINDINGS (3 HIGH, 6 MAJOR, 1 MINOR); Muse FINDINGS (1 HIGH, 1 M
 Availability-gap invariant holds at all five crash points (no double-recall state exists at any journal boundary); supersede/staging/activation idempotency keys correct; proposal exclusivity holds at generation AND apply; journal matrix implements the ratified torn-tail rule with the valid-parse-truncation edge failing closed; reconcile ordering precedes socket bind; crash tests fail on a no-op reconcile; journal tests exercise the real framing code.
 
 Fix rounds: Devin A (F1–F4, F7 — operational core) then Devin B (F5, F6, F8, F10–F13 + F9 tests). Cap: 3 review rounds; this is round 1.
+
+## Round 2 — Cursor (cursor-2) + Muse (opencode-2) on the fix layer (`b50211b` + fix-B commit)
+
+Verdicts: both FINDINGS. Convergent BLOCKER; 5 accepted total.
+
+| # | Sev | Source | Finding → fix contract |
+| --- | --- | --- | --- |
+| W3-R2-1 | BLOCKER | C+M convergent | Post-activation reject double-serves: with the replacement Active (`merge-applied-v1`) and the proposal still Applying/Quarantined, `safe_restore_from_reject` restores sources (the §3.3 merge-reject allowance helps it) while the non-servability-fenced tombstone skips the Active replacement → sources AND replacement servable. **Fix:** `safe_restore_from_reject` fences on replacement state FIRST: replacement servable (Active/Pinned, non-staging policy) → NO restore; the merge has factually applied — complete the bookkeeping idempotently (proposal → Applied, emit-once event, journal `done`) and return a typed "already applied; reject unavailable" outcome. Restore path runs only when the replacement is provably non-servable or absent. Tests: reject after AfterActivation crash → proposal Applied, sources stay superseded, replacement stays Active; reject on a pre-activation quarantine still restores. |
+| W3-R2-2 | HIGH | C | No-downgrade sensitivity fence compares only against the FIRST source — `[public, internal]` passes while `[internal, public]` fails (order-dependent eligibility). **Fix:** order-independent set rule (compare min/max of the set once). Test with both orderings. |
+| W3-R2-3 | MAJOR | C | Doctor stale-Applying check: missing journal mtime falls back to `now` → an Applying proposal with a deleted/absent journal is永 "fresh", never fatal. **Fix:** missing journal for an Applying proposal = STALE (fatal). |
+| W3-R2-4 | MAJOR | M | `pinned→superseded` transition allowed for ANY actor (only the trust-still-pinned pair is refused) — normal supersede can silently demote a pinned memory; spec reserves pinned supersession for merge apply with a named approval. **Fix:** require actor `memoryd-merge` for pinned→superseded; other actors typed-refused. Audit shipped flows for legitimate pinned supersession (governance supersede of pinned — if the shipped CLI allows it deliberately, the row must allow that actor too; state what you found). |
+| W3-R2-5 | LOW | M | Retry-counter save failure (disk-full class) loses the increment → infinite retry. ACCEPTED-AS-DOCUMENTED: disk-full is doctor territory; a comment marks the residual. |
+
+Muse verified-negatives: retry counter otherwise correct (persisted, Retryable-only increments, threshold quarantine); §3.3 candidate→active rows cover both shipped flows (dream review-approve actor verified by coordinator on disk pre-review); single-sourced predicate agreed between SQL and Rust twins. Round 3 (cap): must-be-dry verify after Devin round C.
