@@ -131,6 +131,17 @@ pub(crate) async fn search_response(
     )
     .await;
     let (total, mut hits, vector_recall_degraded) = match decision {
+        // Every lane timing out yields Fused([], marker) — that is NOT a
+        // servable result; route it through the FTS fallback ladder like
+        // FtsOnly (round-2 verify HIGH: this branch previously returned empty
+        // and never called FTS at all).
+        Ok(crate::recall::hybrid::HybridRecallDecision::Fused { candidates, degraded: Some(marker) })
+            if candidates.is_empty() =>
+        {
+            tracing::warn!(marker, "memory_search four-lane recall fully degraded; falling back to FTS-only");
+            let (total, hits) = bounded_fts_fallback(substrate, query, limit, search_timeout, started).await?;
+            (total, hits, Some(marker.to_owned()))
+        }
         Ok(crate::recall::hybrid::HybridRecallDecision::Fused { candidates, degraded }) => {
             if let Some(marker) = degraded {
                 tracing::warn!(marker, "memory_search four-lane recall partially degraded");
@@ -153,32 +164,16 @@ pub(crate) async fn search_response(
             if let Some(marker) = degraded {
                 tracing::warn!(marker, "memory_search vector recall degraded; falling back to FTS-only");
             }
-            let remaining = search_timeout.saturating_sub(started.elapsed());
-            match tokio::time::timeout(remaining, fts_search_hits(substrate, query, limit)).await {
-                Ok(Ok((total, hits))) => (total, hits, degraded.map(str::to_owned)),
-                Ok(Err(error)) => return Err(error),
-                Err(_) => {
-                    tracing::warn!("memory_search fallback FTS timed out within the search envelope");
-                    (0, Vec::new(), Some(crate::recall::hybrid::DEGRADED_FOUR_LANE_TIMEOUT.to_owned()))
-                }
-            }
+            let (total, hits) = bounded_fts_fallback(substrate, query, limit, search_timeout, started).await?;
+            (total, hits, degraded.map(str::to_owned))
         }
         Err(_) => {
             tracing::warn!(
                 timeout_ms = search_timeout.as_millis(),
                 "memory_search timed out; falling back to FTS-only"
             );
-            let remaining = search_timeout.saturating_sub(started.elapsed());
-            match tokio::time::timeout(remaining, fts_search_hits(substrate, query, limit)).await {
-                Ok(Ok((total, hits))) => {
-                    (total, hits, Some(crate::recall::hybrid::DEGRADED_FOUR_LANE_TIMEOUT.to_owned()))
-                }
-                Ok(Err(error)) => return Err(error),
-                Err(_) => {
-                    tracing::warn!("memory_search fallback FTS timed out within the search envelope");
-                    (0, Vec::new(), Some(crate::recall::hybrid::DEGRADED_FOUR_LANE_TIMEOUT.to_owned()))
-                }
-            }
+            let (total, hits) = bounded_fts_fallback(substrate, query, limit, search_timeout, started).await?;
+            (total, hits, Some(crate::recall::hybrid::DEGRADED_FOUR_LANE_TIMEOUT.to_owned()))
         }
     };
 
@@ -223,6 +218,32 @@ fn load_vector_recall_config(substrate: &Substrate) -> crate::recall::VectorReca
             tracing::warn!(%error, "recall: failed to load config; vector recall defaults applied");
             crate::recall::VectorRecallConfig::default()
         })
+}
+
+/// The degraded-search ladder always gets a real chance at FTS: the fallback
+/// budget is floored (round-2 verify HIGH — after an outer timeout the naive
+/// residual is ~0, and a zero-duration tokio timeout elapses before the
+/// spawn_blocking FTS can answer, silently regressing pre-W4 behavior of
+/// serving FTS hits on degradation).
+const MIN_FTS_FALLBACK_MS: u64 = 250;
+
+#[expect(clippy::too_many_arguments, reason = "fallback threads the search envelope context explicitly")]
+async fn bounded_fts_fallback(
+    substrate: &Substrate,
+    query: &str,
+    limit: usize,
+    search_timeout: std::time::Duration,
+    started: std::time::Instant,
+) -> Result<(usize, Vec<SearchHit>), HandlerError> {
+    let remaining =
+        search_timeout.saturating_sub(started.elapsed()).max(std::time::Duration::from_millis(MIN_FTS_FALLBACK_MS));
+    match tokio::time::timeout(remaining, fts_search_hits(substrate, query, limit)).await {
+        Ok(result) => result,
+        Err(_) => {
+            tracing::warn!("memory_search fallback FTS timed out within the floored fallback budget");
+            Ok((0, Vec::new()))
+        }
+    }
 }
 
 async fn fts_search_hits(

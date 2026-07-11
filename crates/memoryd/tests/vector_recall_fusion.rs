@@ -454,11 +454,20 @@ recall:
     state.embedding_provider_slot().set(Arc::clone(&provider));
     let response = search(&fixture.substrate, &state, "exact keyword").await;
 
-    // Zero lane budget: every four-lane primitive expires, and the bounded
-    // FTS fallback still serves within the search envelope — degraded WITH
-    // results is the documented ladder, not emptiness.
-    assert_eq!(response.vector_recall_degraded.as_deref(), Some("four_lane_timeout"));
-    assert_eq!(response.total, 1);
+    // Zero lane budget: a zero-duration tokio timeout RACES the first poll of
+    // each spawn_blocking lane, so either every lane expires (degraded marker,
+    // FTS fallback serves) or the tiny synthetic queries win their first poll
+    // (clean fused result). Both are documented outcomes; the invariant is a
+    // SERVED, bounded response — never a hang, never empty-with-marker.
+    match response.vector_recall_degraded.as_deref() {
+        Some("four_lane_timeout") => {
+            assert_eq!(response.total, 1, "degraded search must still serve the FTS fallback hit");
+        }
+        None => {
+            assert_eq!(response.total, 1, "clean fused result must contain the hit");
+        }
+        other => panic!("unexpected degradation marker: {other:?}"),
+    }
     assert!(!response.hits.is_empty());
 }
 
