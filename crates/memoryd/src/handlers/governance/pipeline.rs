@@ -363,7 +363,7 @@ async fn mark_old_superseded(
     let new_id_for_chain = new_id.clone();
     if old_is_encrypted {
         substrate
-            .update_encrypted_memory_metadata(old_id, |old| {
+            .update_encrypted_memory_metadata(old_id, Some("memoryd-supersede"), |old| {
                 old.frontmatter.status = MemoryStatus::Superseded;
                 old.frontmatter.updated_at = chrono::Utc::now();
                 if !old.frontmatter.superseded_by.contains(&new_id_for_chain) {
@@ -404,7 +404,25 @@ async fn mark_old_superseded(
             classification: old_classification,
         })
         .await
-        .map_err(|err| HandlerError::substrate(format!("mark old superseded: {err:?}")))?;
+        .map_err(|err| {
+            // A lifecycle-transition denial (e.g. superseding a pinned memory
+            // outside merge apply) is an intentional refusal, not a transient
+            // substrate fault — surface it typed and non-retryable (W3 round-3
+            // verify Low).
+            if matches!(
+                &err,
+                memory_substrate::WriteFailure {
+                    kind: memory_substrate::WriteFailureKind::ValidationTyped(
+                        memory_substrate::ValidationError::LifecycleTransitionDenied { .. }
+                    ),
+                    ..
+                }
+            ) {
+                HandlerError::invalid_request(format!("supersede refused by lifecycle policy: {err:?}"))
+            } else {
+                HandlerError::substrate(format!("mark old superseded: {err:?}"))
+            }
+        })?;
     Ok(())
 }
 

@@ -313,7 +313,10 @@ async fn mutate_reality_check_metadata(
 ) -> Result<(), HandlerError> {
     let envelope = substrate.read_memory_envelope(memory_id).await.map_err(HandlerError::substrate)?;
     if !matches!(envelope.content, MemoryContent::Plaintext(_)) {
-        return substrate.update_encrypted_memory_metadata(memory_id, mutate).await.map_err(HandlerError::substrate);
+        return substrate
+            .update_encrypted_memory_metadata(memory_id, Some("memoryd-reality-check"), mutate)
+            .await
+            .map_err(HandlerError::substrate);
     }
     let mut memory = envelope.metadata;
     mutate(&mut memory);

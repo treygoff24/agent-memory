@@ -311,6 +311,7 @@ impl Substrate {
     pub async fn update_encrypted_memory_metadata(
         &self,
         id: &MemoryId,
+        actor: Option<&str>,
         mutate: impl FnOnce(&mut Memory),
     ) -> Result<(), WriteFailure> {
         let operation_id = new_operation_id();
@@ -342,7 +343,13 @@ impl Substrate {
         let preserved_body = memory.body.clone();
         let preserved_encryption = memory.frontmatter.extras.get("encryption").cloned();
 
+        let frontmatter_before = memory.frontmatter.clone();
         mutate(&mut memory);
+        // The encrypted metadata path is a lifecycle write surface too (W3
+        // round-3 verify): the same §3.3 transition rows that gate plaintext
+        // writes gate it, with the caller-declared actor.
+        validate_lifecycle_transition(Some(&frontmatter_before), &memory.frontmatter, actor)
+            .map_err(|err| WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::ValidationTyped(err) })?;
 
         memory.path = Some(path.clone());
         memory.body = preserved_body;

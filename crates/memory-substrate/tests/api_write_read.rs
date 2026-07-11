@@ -955,7 +955,7 @@ async fn update_encrypted_memory_metadata_preserves_ciphertext_envelope() {
     let before = substrate.read_memory_envelope(&memory.frontmatter.id).await.expect("read encrypted before");
 
     substrate
-        .update_encrypted_memory_metadata(&memory.frontmatter.id, |metadata| {
+        .update_encrypted_memory_metadata(&memory.frontmatter.id, None, |metadata| {
             metadata.frontmatter.summary = "updated safe metadata".to_string();
             metadata.frontmatter.confidence = 0.64;
             metadata
