@@ -105,11 +105,37 @@ fn merge_health(substrate: &Substrate) -> (std::collections::BTreeMap<String, u6
             Some("Inspect with `memoryd review merges list`, then repair or reject the proposal.".into()),
         ));
     }
-    if let Some(count) = counts.get("applying") {
+    // A stuck Applying journal older than one reconcile cycle is a doctor error;
+    // a fresh Applying proposal is reported informationally.
+    let threshold = chrono::Duration::seconds(60);
+    let now = chrono::Utc::now();
+    let mut stale_applying = 0_u64;
+    let mut fresh_applying = 0_u64;
+    for proposal in proposals.iter().filter(|p| p.status == crate::dream::merge::MergeProposalStatus::Applying) {
+        let mtime = store
+            .journal_mtime(&proposal.proposal_id)
+            .ok()
+            .flatten()
+            .map(chrono::DateTime::<chrono::Utc>::from)
+            .unwrap_or(now);
+        if now.signed_duration_since(mtime) > threshold {
+            stale_applying += 1;
+        } else {
+            fresh_applying += 1;
+        }
+    }
+    if stale_applying > 0 {
         findings.push(fatal_finding(
             "merge_proposal_stuck_applying",
-            format!("{count} merge proposal(s) remained Applying after reconciliation"),
+            format!("{stale_applying} merge proposal(s) remained Applying after reconciliation"),
             Some("Restart memoryd once; if still Applying, inspect the proposal journal.".into()),
+        ));
+    }
+    if fresh_applying > 0 {
+        findings.push(advisory_finding(
+            "merge_proposal_applying",
+            format!("{fresh_applying} merge proposal(s) are still Applying"),
+            Some("Reconciliation is in progress; revisit if this persists.".into()),
         ));
     }
     (counts, findings)
@@ -591,7 +617,12 @@ mod tests {
     use super::doctor_is_healthy;
     use memory_substrate::Sensitivity;
 
+    use crate::dream::merge::{memory, MergeProposal, MergeProposalStatus, MergeProposalStore};
     use crate::protocol::{DoctorFinding, DoctorSeverity};
+
+    fn merge_store(temp: &tempfile::TempDir) -> MergeProposalStore {
+        MergeProposalStore::new(&temp.path().join("runtime"))
+    }
 
     fn finding(severity: DoctorSeverity) -> DoctorFinding {
         DoctorFinding { code: "t".to_string(), message: String::new(), repair: None, severity }
@@ -1005,5 +1036,109 @@ mod tests {
             super::doctor_is_healthy(&findings, 1, 1),
             "no active seam plus an authenticated harness yields healthy:true"
         );
+    }
+
+    #[tokio::test]
+    async fn merge_health_quarantined_is_fatal() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store = merge_store(&temp);
+        let proposal = MergeProposal::new(
+            vec![memory_substrate::MemoryId::new("mem_20260711_aaaaaaaaaaaaaaaa_000201")],
+            memory("mem_20260711_aaaaaaaaaaaaaaaa_000202"),
+            Vec::new(),
+            "doctor-test",
+        )
+        .expect("valid proposal");
+        store.create(&proposal).expect("create proposal");
+        let mut proposal = store.load(&proposal.proposal_id).expect("load proposal");
+        proposal.status = MergeProposalStatus::Quarantined;
+        store.save(&proposal).expect("save quarantined");
+
+        let (_counts, findings) = super::merge_health(
+            &memory_substrate::Substrate::init(
+                memory_substrate::Roots::new(temp.path().join("repo"), temp.path().join("runtime")),
+                memory_substrate::InitOptions {
+                    force_unsafe_durability: true,
+                    device_id: Some("dev_mergehealth".into()),
+                },
+            )
+            .await
+            .expect("substrate init"),
+        );
+
+        let fatal = findings.iter().find(|f| f.code == "merge_proposal_quarantined").expect("quarantined finding");
+        assert_eq!(fatal.severity, DoctorSeverity::Fatal);
+    }
+
+    #[tokio::test]
+    async fn merge_health_fresh_applying_is_advisory() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store = merge_store(&temp);
+        let proposal = MergeProposal::new(
+            vec![memory_substrate::MemoryId::new("mem_20260711_aaaaaaaaaaaaaaaa_000203")],
+            memory("mem_20260711_aaaaaaaaaaaaaaaa_000204"),
+            Vec::new(),
+            "doctor-test",
+        )
+        .expect("valid proposal");
+        store.create(&proposal).expect("create proposal");
+        let mut proposal = store.load(&proposal.proposal_id).expect("load proposal");
+        proposal.status = MergeProposalStatus::Applying;
+        store.save(&proposal).expect("save applying");
+
+        let substrate = memory_substrate::Substrate::init(
+            memory_substrate::Roots::new(temp.path().join("repo"), temp.path().join("runtime")),
+            memory_substrate::InitOptions { force_unsafe_durability: true, device_id: Some("dev_mergehealth".into()) },
+        )
+        .await
+        .expect("substrate init");
+
+        let (_counts, findings) = super::merge_health(&substrate);
+        let advisory = findings.iter().find(|f| f.code == "merge_proposal_applying").expect("applying finding");
+        assert_eq!(advisory.severity, DoctorSeverity::Advisory);
+    }
+
+    #[tokio::test]
+    async fn merge_health_stale_applying_is_fatal() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store = merge_store(&temp);
+        let proposal = MergeProposal::new(
+            vec![memory_substrate::MemoryId::new("mem_20260711_aaaaaaaaaaaaaaaa_000205")],
+            memory("mem_20260711_aaaaaaaaaaaaaaaa_000206"),
+            Vec::new(),
+            "doctor-test",
+        )
+        .expect("valid proposal");
+        store.create(&proposal).expect("create proposal");
+        let mut proposal = store.load(&proposal.proposal_id).expect("load proposal");
+        proposal.status = MergeProposalStatus::Applying;
+        store.save(&proposal).expect("save applying");
+
+        // Create a journal file with an old mtime to cross the freshness threshold.
+        let journal_path = temp
+            .path()
+            .join("runtime")
+            .join("governance/merge-proposals")
+            .join(&proposal.proposal_id)
+            .join("journal.jsonl");
+        std::fs::create_dir_all(journal_path.parent().expect("journal parent")).expect("journal dir");
+        std::fs::write(&journal_path, b"").expect("journal file");
+        let output = std::process::Command::new("touch")
+            .args(["-t", "202401010000.00", journal_path.to_str().expect("journal path")])
+            .output()
+            .expect("touch command");
+        assert!(output.status.success(), "touch failed: {}", String::from_utf8_lossy(&output.stderr));
+
+        let substrate = memory_substrate::Substrate::init(
+            memory_substrate::Roots::new(temp.path().join("repo"), temp.path().join("runtime")),
+            memory_substrate::InitOptions { force_unsafe_durability: true, device_id: Some("dev_mergehealth".into()) },
+        )
+        .await
+        .expect("substrate init");
+
+        let (_counts, findings) = super::merge_health(&substrate);
+        let fatal =
+            findings.iter().find(|f| f.code == "merge_proposal_stuck_applying").expect("stale applying finding");
+        assert_eq!(fatal.severity, DoctorSeverity::Fatal);
     }
 }

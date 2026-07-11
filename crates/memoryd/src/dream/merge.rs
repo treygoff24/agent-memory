@@ -6,9 +6,9 @@ use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
+pub use memory_governance::MergeProposalStatus;
 use memory_governance::{
-    validate_merge_candidates, MergeCandidate, MergeCandidateExclusions, MergeProposalStatus,
-    DEFAULT_MERGE_SIMILARITY_THRESHOLD,
+    validate_merge_candidates, MergeCandidate, MergeCandidateExclusions, DEFAULT_MERGE_SIMILARITY_THRESHOLD,
 };
 use memory_privacy::{PrivacyNamespace, PrivacyStorageAction};
 use memory_substrate::events::{EventKind, MergeAppliedSource};
@@ -21,6 +21,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256 as Sha256Hasher};
 
 const STAGING_POLICY: &str = "merge-staged-v1";
+const MAX_RECONCILE_ATTEMPTS: u32 = 3;
 static MERGE_APPLY_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -54,6 +55,10 @@ pub struct MergeProposal {
     pub status: MergeProposalStatus,
     #[serde(default)]
     pub captured_sources: Vec<CapturedSource>,
+    /// Failed reconcile attempts for this applying proposal. Retried at startup
+    /// and dream entry; after 3 attempts we quarantine to avoid an infinite loop.
+    #[serde(default)]
+    pub reconcile_attempts: u32,
 }
 
 impl MergeProposal {
@@ -83,6 +88,7 @@ impl MergeProposal {
             created_at: Utc::now(),
             status: MergeProposalStatus::Proposed,
             captured_sources: Vec::new(),
+            reconcile_attempts: 0,
         })
     }
 }
@@ -152,7 +158,7 @@ pub async fn generate_dark_proposals(
     substrate: &Substrate,
     request: GenerateDarkProposals<'_>,
 ) -> anyhow::Result<Vec<MergeProposal>> {
-    let failures = reconcile_applying(substrate).await;
+    let failures = reconcile_applying(substrate, None).await;
     if !failures.is_empty() {
         anyhow::bail!("merge reconciliation failed before candidate generation: {failures:?}");
     }
@@ -287,17 +293,17 @@ impl MergeProposalStore {
             .collect())
     }
 
-    pub fn reject(&self, proposal_id: &str) -> anyhow::Result<MergeProposal> {
-        let mut proposal = self.load(proposal_id)?;
-        if proposal.status != MergeProposalStatus::Proposed && proposal.status != MergeProposalStatus::Quarantined {
-            anyhow::bail!("only proposed or quarantined merges may be rejected");
+    /// Return the journal file's `modified` time, if a journal exists.
+    pub fn journal_mtime(&self, proposal_id: &str) -> anyhow::Result<Option<std::time::SystemTime>> {
+        let path = self.journal_path(proposal_id);
+        if !path.exists() {
+            return Ok(None);
         }
-        proposal.status = MergeProposalStatus::Rejected;
-        self.save(&proposal)?;
-        Ok(proposal)
+        let metadata = std::fs::metadata(&path)?;
+        Ok(Some(metadata.modified().unwrap_or_else(|_| metadata.created().unwrap_or(std::time::UNIX_EPOCH))))
     }
 
-    fn save(&self, proposal: &MergeProposal) -> anyhow::Result<()> {
+    pub fn save(&self, proposal: &MergeProposal) -> anyhow::Result<()> {
         let path = self.proposal_path(&proposal.proposal_id);
         let parent = path.parent().expect("proposal path has parent").to_path_buf();
         fs::create_dir_all(&parent)?;
@@ -318,6 +324,94 @@ impl MergeProposalStore {
     fn journal_path(&self, proposal_id: &str) -> PathBuf {
         self.root.join(proposal_id).join("journal.jsonl")
     }
+}
+
+/// Reject a merge proposal. For `Proposed` proposals this is a simple status
+/// flip to `Rejected`. For `Quarantined` or stuck `Applying` proposals this
+/// performs a safe rollback: source status/trust/superseded_by fields are
+/// restored (the current body is preserved verbatim), the staged replacement is
+/// tombstoned if still non-servable, and the proposal is marked `RolledBack`
+/// with a `MergeRolledBack` event.
+pub async fn reject_proposal(
+    substrate: &Substrate,
+    store: &MergeProposalStore,
+    proposal_id: &str,
+) -> Result<MergeProposal, MergeApplyError> {
+    let mut proposal = store.load(proposal_id).map_err(MergeApplyError::Other)?;
+    match proposal.status {
+        MergeProposalStatus::Proposed => {
+            proposal.status = MergeProposalStatus::Rejected;
+            store.save(&proposal).map_err(MergeApplyError::Other)?;
+        }
+        MergeProposalStatus::Quarantined | MergeProposalStatus::Applying => {
+            safe_restore_from_reject(substrate, &mut proposal).await?;
+            proposal.status = MergeProposalStatus::RolledBack;
+            store.save(&proposal).map_err(MergeApplyError::Other)?;
+        }
+        _ => return Err(MergeApplyError::Other(anyhow::anyhow!("proposal cannot be rejected: {:?}", proposal.status))),
+    }
+    Ok(proposal)
+}
+
+async fn safe_restore_from_reject(substrate: &Substrate, proposal: &mut MergeProposal) -> Result<(), MergeApplyError> {
+    let replacement_id = proposal.replacement.frontmatter.id.clone();
+    let mut restored = Vec::new();
+    for captured in &proposal.captured_sources {
+        let mut source = match substrate.read_memory(&captured.id).await {
+            Ok(source) => source,
+            Err(_) => continue,
+        };
+        if source.frontmatter.status != MemoryStatus::Superseded
+            || source.frontmatter.superseded_by != [replacement_id.clone()]
+        {
+            continue;
+        }
+        let current_hash = memory_hash(substrate, &source).map_err(MergeApplyError::Other)?;
+        source.frontmatter.status = captured.original_status;
+        source.frontmatter.trust_level = captured.original_trust_level;
+        source.frontmatter.superseded_by.clear();
+        source.frontmatter.updated_at = Utc::now();
+        let classification = crate::handlers::governance::classify_plaintext_memory(&source)
+            .map_err(|error| MergeApplyError::Other(anyhow::anyhow!(error.message)))?;
+        substrate
+            .write_memory(WriteRequest {
+                operation_id: None,
+                memory: source,
+                expected_base_hash: Some(current_hash),
+                write_mode: WriteMode::ReplaceExisting,
+                index_projection: None,
+                event_context: EventContext {
+                    actor: Some("memoryd-merge-reject".into()),
+                    reason: Some(proposal.proposal_id.clone()),
+                },
+                allow_best_effort_durability: true,
+                classification,
+            })
+            .await
+            .map_err(|error| MergeApplyError::Other(anyhow::anyhow!(error.to_string())))?;
+        restored.push(captured.id.clone());
+    }
+
+    if let Ok(replacement) = substrate.read_memory(&replacement_id).await {
+        if replacement.frontmatter.status != MemoryStatus::Tombstoned && replacement.frontmatter.is_merge_non_servable()
+        {
+            substrate
+                .tombstone_memory(TombstoneRequest { id: replacement_id, reason: "merge-reject".to_string() })
+                .await
+                .map_err(|error| MergeApplyError::Other(anyhow::anyhow!(error.to_string())))?;
+        }
+    }
+
+    if !event_exists(substrate, &proposal.proposal_id, false).map_err(MergeApplyError::Other)? {
+        substrate
+            .record_event_best_effort(EventKind::MergeRolledBack {
+                proposal_id: proposal.proposal_id.clone(),
+                replacement_id: proposal.replacement.frontmatter.id.clone(),
+                restored_source_ids: restored,
+            })
+            .map_err(|error| MergeApplyError::Other(error.into()))?;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -351,8 +445,29 @@ pub enum MergeApplyError {
     SimulatedCrash(SimulatedCrash),
     #[error("proposal quarantined: {0}")]
     Quarantined(String),
+    #[error("retryable merge activation error: {0}")]
+    Retryable(String),
     #[error(transparent)]
     Other(#[from] anyhow::Error),
+}
+
+/// Activation-specific error used inside `activate_replacement` to tell the
+/// caller whether the failure is transient (retry) or permanent (quarantine).
+#[derive(Debug, thiserror::Error)]
+enum MergeActivationError {
+    #[error("retryable activation error: {0}")]
+    Retryable(#[source] anyhow::Error),
+    #[error("non-retryable activation error: {0}")]
+    NonRetryable(#[source] anyhow::Error),
+}
+
+impl MergeActivationError {
+    fn retryable(error: anyhow::Error) -> Self {
+        Self::Retryable(error)
+    }
+    fn non_retryable(error: anyhow::Error) -> Self {
+        Self::NonRetryable(error)
+    }
 }
 
 pub struct MergeApplyRequest<'a> {
@@ -433,10 +548,31 @@ pub async fn approve_and_apply(
     maybe_crash(request.crash, SimulatedCrash::BeforeActivation)?;
     if !completed.contains("activating_complete") {
         append_journal(store, proposal_id, "activating_intent", Value::Null)?;
-        activate_replacement(substrate, &proposal).await?;
-        emit_merge_applied_once(substrate, &proposal)?;
-        append_journal(store, proposal_id, "activating_complete", Value::Null)?;
-        maybe_crash(request.crash, SimulatedCrash::AfterActivation)?;
+        match activate_replacement(substrate, &proposal).await {
+            Ok(()) => {
+                emit_merge_applied_once(substrate, &proposal)?;
+                append_journal(store, proposal_id, "activating_complete", Value::Null)?;
+                maybe_crash(request.crash, SimulatedCrash::AfterActivation)?;
+            }
+            Err(MergeActivationError::Retryable(error)) => {
+                proposal.reconcile_attempts += 1;
+                if proposal.reconcile_attempts >= MAX_RECONCILE_ATTEMPTS {
+                    proposal.status = MergeProposalStatus::Quarantined;
+                    store.save(&proposal)?;
+                    return Err(MergeApplyError::Quarantined(format!(
+                        "activation failed after {} attempts; quarantined: {error}",
+                        proposal.reconcile_attempts
+                    )));
+                }
+                store.save(&proposal)?;
+                return Err(MergeApplyError::Retryable(error.to_string()));
+            }
+            Err(MergeActivationError::NonRetryable(error)) => {
+                proposal.status = MergeProposalStatus::Quarantined;
+                store.save(&proposal)?;
+                return Err(MergeApplyError::Quarantined(error.to_string()));
+            }
+        }
     }
 
     proposal.status = MergeProposalStatus::Applied;
@@ -640,17 +776,30 @@ async fn supersede_source(
     memory_hash(substrate, &substrate.read_memory(&captured.id).await?)
 }
 
-async fn activate_replacement(substrate: &Substrate, proposal: &MergeProposal) -> anyhow::Result<()> {
-    let mut replacement = substrate.read_memory(&proposal.replacement.frontmatter.id).await?;
+async fn activate_replacement(substrate: &Substrate, proposal: &MergeProposal) -> Result<(), MergeActivationError> {
+    let mut replacement =
+        substrate.read_memory(&proposal.replacement.frontmatter.id).await.map_err(|error| match error {
+            memory_substrate::ReadError::NotFound(_) => {
+                MergeActivationError::non_retryable(anyhow::anyhow!("replacement not found: {error}"))
+            }
+            memory_substrate::ReadError::Parse { .. }
+            | memory_substrate::ReadError::Validation(_)
+            | memory_substrate::ReadError::NotACanonicalMemory { .. } => {
+                MergeActivationError::non_retryable(anyhow::anyhow!("replacement is unparseable: {error}"))
+            }
+            memory_substrate::ReadError::Io(_) => MergeActivationError::retryable(anyhow::anyhow!("{error}")),
+        })?;
     if replacement.frontmatter.status == MemoryStatus::Active
         && replacement.frontmatter.write_policy.policy_applied != STAGING_POLICY
     {
         return Ok(());
     }
     if !replacement.frontmatter.is_merge_non_servable() {
-        anyhow::bail!("replacement activation CAS precondition failed");
+        return Err(MergeActivationError::non_retryable(anyhow::anyhow!(
+            "replacement activation CAS precondition failed"
+        )));
     }
-    let hash = memory_hash(substrate, &replacement)?;
+    let hash = memory_hash(substrate, &replacement).map_err(MergeActivationError::retryable)?;
     replacement.frontmatter.status = MemoryStatus::Active;
     replacement.frontmatter.trust_level =
         if proposal.captured_sources.iter().any(|source| source.original_trust_level == TrustLevel::Untrusted) {
@@ -661,7 +810,7 @@ async fn activate_replacement(substrate: &Substrate, proposal: &MergeProposal) -
     replacement.frontmatter.write_policy.policy_applied = "merge-applied-v1".to_string();
     replacement.frontmatter.updated_at = Utc::now();
     let classification = crate::handlers::governance::classify_plaintext_memory(&replacement)
-        .map_err(|error| anyhow::anyhow!(error.message))?;
+        .map_err(|error| MergeActivationError::non_retryable(anyhow::anyhow!(error.message)))?;
     substrate
         .write_memory(WriteRequest {
             operation_id: None,
@@ -677,8 +826,20 @@ async fn activate_replacement(substrate: &Substrate, proposal: &MergeProposal) -
             classification,
         })
         .await
-        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        .map_err(classify_write_failure_for_activation)?;
     Ok(())
+}
+
+fn classify_write_failure_for_activation(failure: memory_substrate::WriteFailure) -> MergeActivationError {
+    use memory_substrate::WriteFailureKind;
+    match failure.kind {
+        WriteFailureKind::IoTyped { .. }
+        | WriteFailureKind::DurabilityUnavailable
+        | WriteFailureKind::IndexAfterCommitFailed
+        | WriteFailureKind::RepairQueueFailed
+        | WriteFailureKind::RepairStateNotDurable => MergeActivationError::retryable(anyhow::Error::from(failure)),
+        _ => MergeActivationError::non_retryable(anyhow::Error::from(failure)),
+    }
 }
 
 async fn rollback(
@@ -857,7 +1018,14 @@ fn read_journal(path: &Path, proposal_id: &str) -> anyhow::Result<Vec<JournalFra
 }
 
 /// Startup/dream-entry reconciliation. Call before exposing read surfaces.
-pub async fn reconcile_applying(substrate: &Substrate) -> Vec<(String, String)> {
+///
+/// `state` is used to emit `OperatorActionRequired` notifications for proposals
+/// that are quarantined during reconciliation. Callers without a `HandlerState`
+/// (e.g., `dream` entry) can pass `None`.
+pub async fn reconcile_applying(
+    substrate: &Substrate,
+    state: Option<&crate::handlers::HandlerState>,
+) -> Vec<(String, String)> {
     let store = MergeProposalStore::new(&substrate.roots().runtime);
     let proposals = match store.list() {
         Ok(proposals) => proposals,
@@ -871,11 +1039,12 @@ pub async fn reconcile_applying(substrate: &Substrate) -> Vec<(String, String)> 
             .filter(|source| source.original_status == MemoryStatus::Pinned)
             .map(|source| source.id.clone())
             .collect();
-        if let Err(error) = approve_and_apply(
+        let proposal_id = proposal.proposal_id.clone();
+        match approve_and_apply(
             substrate,
             MergeApplyRequest {
                 store: &store,
-                proposal_id: &proposal.proposal_id,
+                proposal_id: &proposal_id,
                 approved_pinned: &approved_pinned,
                 claim_locked: &BTreeSet::new(),
                 crash: None,
@@ -883,10 +1052,92 @@ pub async fn reconcile_applying(substrate: &Substrate) -> Vec<(String, String)> 
         )
         .await
         {
-            failures.push((proposal.proposal_id, error.to_string()));
+            Ok(_) => {}
+            Err(MergeApplyError::Retryable(_)) => {}
+            Err(MergeApplyError::Quarantined(reason)) => {
+                if let Some(state) = state {
+                    state.emit_notification(crate::protocol::NotificationEvent::OperatorActionRequired {
+                        message: format!("merge proposal {proposal_id} is quarantined: {reason}"),
+                    });
+                }
+            }
+            Err(error) => {
+                failures.push((proposal_id, error.to_string()));
+            }
         }
     }
     failures
+}
+
+#[cfg(test)]
+pub(crate) fn memory(id: &str) -> Memory {
+    let now = Utc::now();
+    Memory {
+        frontmatter: memory_substrate::Frontmatter {
+            schema_version: 1,
+            id: MemoryId::new(id),
+            memory_type: memory_substrate::MemoryType::Procedure,
+            scope: memory_substrate::Scope::Agent,
+            summary: "summary".into(),
+            confidence: 0.8,
+            original_confidence: None,
+            trust_level: TrustLevel::Trusted,
+            sensitivity: memory_substrate::Sensitivity::Internal,
+            status: MemoryStatus::Active,
+            created_at: now,
+            updated_at: now,
+            observed_at: None,
+            author: memory_substrate::Author {
+                kind: memory_substrate::AuthorKind::Agent,
+                user_handle: None,
+                harness: Some("test".into()),
+                harness_version: None,
+                session_id: Some("merge-test".into()),
+                subagent_id: None,
+                phase: None,
+                component: None,
+            },
+            namespace: None,
+            canonical_namespace_id: None,
+            tags: Vec::new(),
+            entities: Vec::new(),
+            aliases: Vec::new(),
+            source: memory_substrate::Source {
+                kind: memory_substrate::SourceKind::AgentPrimary,
+                reference: None,
+                session_id: Some("merge-test".into()),
+                harness: Some("test".into()),
+                harness_version: None,
+                subagent_id: None,
+                device: None,
+            },
+            evidence: Vec::new(),
+            requires_user_confirmation: false,
+            review_state: None,
+            supersedes: Vec::new(),
+            superseded_by: Vec::new(),
+            related: Vec::new(),
+            tombstone_events: Vec::new(),
+            retrieval_policy: memory_substrate::RetrievalPolicy {
+                passive_recall: true,
+                max_scope: memory_substrate::Scope::Agent,
+                mask_personal_for_synthesis: false,
+                index_body: true,
+                index_embeddings: true,
+            },
+            write_policy: memory_substrate::WritePolicy {
+                human_review_required: false,
+                policy_applied: "test".into(),
+                expected_base_hash: None,
+            },
+            merge_diagnostics: None,
+            abstraction: Some("summary".into()),
+            cues: Vec::new(),
+            extras: Default::default(),
+        },
+        body: "body".into(),
+        path: Some(memory_substrate::RepoPath::new(format!("agent/patterns/{id}.md"))),
+    }
 }
 
 #[cfg(test)]
@@ -1061,7 +1312,7 @@ mod tests {
             .unwrap()
             .frontmatter
             .is_merge_non_servable());
-        assert!(reconcile_applying(&substrate).await.is_empty());
+        assert!(reconcile_applying(&substrate, None).await.is_empty());
         assert_eq!(
             substrate.read_memory(&proposal.replacement.frontmatter.id).await.unwrap().frontmatter.status,
             MemoryStatus::Active
@@ -1095,7 +1346,7 @@ mod tests {
                 .await,
                 Err(MergeApplyError::SimulatedCrash(point)) if point == crash
             ));
-            assert!(reconcile_applying(&substrate).await.is_empty());
+            assert!(reconcile_applying(&substrate, None).await.is_empty());
             assert_eq!(
                 substrate.read_memory(&proposal.replacement.frontmatter.id).await.unwrap().frontmatter.status,
                 MemoryStatus::Active
@@ -1220,6 +1471,269 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn retryable_activation_failure_increments_counter_and_quarantines_after_three() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (temp, substrate) = substrate().await;
+        let source = memory("mem_20260711_aaaaaaaaaaaaaaaa_000061");
+        write(&substrate, source.clone()).await;
+        let proposal = MergeProposal::new(
+            vec![source.frontmatter.id.clone()],
+            memory("mem_20260711_aaaaaaaaaaaaaaaa_000062"),
+            Vec::new(),
+            "dream-test",
+        )
+        .unwrap();
+        let store = MergeProposalStore::new(&temp.path().join("runtime"));
+        store.create(&proposal).unwrap();
+
+        let _ = apply!(
+            &substrate,
+            &store,
+            &proposal.proposal_id,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            Some(SimulatedCrash::AfterStage)
+        )
+        .await;
+
+        // Make the staged replacement unreadable so activation fails with a
+        // retryable IO error.
+        let replacement_path = substrate
+            .roots()
+            .repo
+            .join(substrate.read_memory(&proposal.replacement.frontmatter.id).await.unwrap().path.unwrap().as_path());
+        std::fs::set_permissions(&replacement_path, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        for attempt in 1..=3 {
+            let result =
+                apply!(&substrate, &store, &proposal.proposal_id, &BTreeSet::new(), &BTreeSet::new(), None).await;
+            let proposal = store.load(&proposal.proposal_id).unwrap();
+            if attempt < 3 {
+                assert!(matches!(result, Err(MergeApplyError::Retryable(_))), "attempt {attempt} should be retryable");
+                assert_eq!(proposal.reconcile_attempts, attempt);
+                assert_eq!(proposal.status, MergeProposalStatus::Applying);
+            } else {
+                assert!(matches!(result, Err(MergeApplyError::Quarantined(_))), "attempt 3 should quarantine");
+                assert_eq!(proposal.status, MergeProposalStatus::Quarantined);
+                assert!(proposal.reconcile_attempts >= 3);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn non_retryable_activation_failure_quarantines_without_incrementing_counter() {
+        let (temp, substrate) = substrate().await;
+        let source = memory("mem_20260711_aaaaaaaaaaaaaaaa_000071");
+        write(&substrate, source.clone()).await;
+        let proposal = MergeProposal::new(
+            vec![source.frontmatter.id.clone()],
+            memory("mem_20260711_aaaaaaaaaaaaaaaa_000072"),
+            Vec::new(),
+            "dream-test",
+        )
+        .unwrap();
+        let store = MergeProposalStore::new(&temp.path().join("runtime"));
+        store.create(&proposal).unwrap();
+
+        let _ = apply!(
+            &substrate,
+            &store,
+            &proposal.proposal_id,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            Some(SimulatedCrash::AfterStage)
+        )
+        .await;
+
+        // Replace the staged replacement with a plain Active memory so the merge
+        // non-servable precondition fails permanently (non-retryable).
+        let mut active = substrate.read_memory(&proposal.replacement.frontmatter.id).await.unwrap();
+        let hash = memory_hash(&substrate, &active).unwrap();
+        active.frontmatter.status = MemoryStatus::Active;
+        active.frontmatter.trust_level = TrustLevel::Trusted;
+        replace(&substrate, active, hash).await;
+
+        let result = apply!(&substrate, &store, &proposal.proposal_id, &BTreeSet::new(), &BTreeSet::new(), None).await;
+        assert!(matches!(result, Err(MergeApplyError::Quarantined(_))));
+        let proposal = store.load(&proposal.proposal_id).unwrap();
+        assert_eq!(proposal.status, MergeProposalStatus::Quarantined);
+        assert_eq!(proposal.reconcile_attempts, 0);
+    }
+
+    #[tokio::test]
+    async fn reject_restores_stuck_applying_sources_and_tombstones_replacement() {
+        let (temp, substrate) = substrate().await;
+        let first = memory("mem_20260711_aaaaaaaaaaaaaaaa_000081");
+        let second = memory("mem_20260711_aaaaaaaaaaaaaaaa_000082");
+        write(&substrate, first.clone()).await;
+        write(&substrate, second.clone()).await;
+        let proposal = MergeProposal::new(
+            vec![first.frontmatter.id.clone(), second.frontmatter.id.clone()],
+            memory("mem_20260711_aaaaaaaaaaaaaaaa_000083"),
+            Vec::new(),
+            "dream-test",
+        )
+        .unwrap();
+        let store = MergeProposalStore::new(&temp.path().join("runtime"));
+        store.create(&proposal).unwrap();
+
+        let _ = apply!(
+            &substrate,
+            &store,
+            &proposal.proposal_id,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            Some(SimulatedCrash::AfterSupersede(0))
+        )
+        .await;
+
+        // Concurrently edit the second source body so the rollback/restore preserves it.
+        let mut edited_second = substrate.read_memory(&second.frontmatter.id).await.unwrap();
+        let hash = memory_hash(&substrate, &edited_second).unwrap();
+        edited_second.body.push_str(" untouched body");
+        replace(&substrate, edited_second, hash).await;
+
+        let proposal = reject_proposal(&substrate, &store, &proposal.proposal_id).await.unwrap();
+        assert_eq!(proposal.status, MergeProposalStatus::RolledBack);
+
+        let first_restored = substrate.read_memory(&first.frontmatter.id).await.unwrap();
+        assert_eq!(first_restored.frontmatter.status, MemoryStatus::Active);
+        assert_eq!(first_restored.frontmatter.trust_level, TrustLevel::Trusted);
+        assert!(first_restored.frontmatter.superseded_by.is_empty());
+        assert_eq!(first_restored.body, first.body);
+
+        let second_restored = substrate.read_memory(&second.frontmatter.id).await.unwrap();
+        assert_eq!(second_restored.body, "body untouched body");
+        assert_eq!(second_restored.frontmatter.status, MemoryStatus::Active);
+
+        assert_eq!(
+            substrate.read_memory(&proposal.replacement.frontmatter.id).await.unwrap().frontmatter.status,
+            MemoryStatus::Tombstoned
+        );
+
+        assert!(substrate
+            .events()
+            .unwrap()
+            .iter()
+            .any(|event| matches!(&event.kind, EventKind::MergeRolledBack { proposal_id, .. } if proposal_id == &proposal.proposal_id)));
+    }
+
+    #[tokio::test]
+    async fn reject_proposed_sets_rejected_without_restoring() {
+        let (temp, substrate) = substrate().await;
+        let source = memory("mem_20260711_aaaaaaaaaaaaaaaa_000091");
+        write(&substrate, source.clone()).await;
+        let proposal = MergeProposal::new(
+            vec![source.frontmatter.id.clone()],
+            memory("mem_20260711_aaaaaaaaaaaaaaaa_000092"),
+            Vec::new(),
+            "dream-test",
+        )
+        .unwrap();
+        let store = MergeProposalStore::new(&temp.path().join("runtime"));
+        store.create(&proposal).unwrap();
+
+        let proposal = reject_proposal(&substrate, &store, &proposal.proposal_id).await.unwrap();
+        assert_eq!(proposal.status, MergeProposalStatus::Rejected);
+        assert_eq!(
+            substrate.read_memory(&source.frontmatter.id).await.unwrap().frontmatter.status,
+            MemoryStatus::Active
+        );
+        assert!(substrate.read_memory(&proposal.replacement.frontmatter.id).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn reconcile_applying_emits_notification_for_quarantined_and_skips_retryable() {
+        let (temp, substrate) = substrate().await;
+        let source = memory("mem_20260711_aaaaaaaaaaaaaaaa_000111");
+        write(&substrate, source.clone()).await;
+        let proposal = MergeProposal::new(
+            vec![source.frontmatter.id.clone()],
+            memory("mem_20260711_aaaaaaaaaaaaaaaa_000112"),
+            Vec::new(),
+            "dream-test",
+        )
+        .unwrap();
+        let store = MergeProposalStore::new(&temp.path().join("runtime"));
+        store.create(&proposal).unwrap();
+
+        let _ = apply!(
+            &substrate,
+            &store,
+            &proposal.proposal_id,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            Some(SimulatedCrash::AfterStage)
+        )
+        .await;
+
+        // Force a non-retryable activation precondition failure.
+        let mut active = substrate.read_memory(&proposal.replacement.frontmatter.id).await.unwrap();
+        let hash = memory_hash(&substrate, &active).unwrap();
+        active.frontmatter.status = MemoryStatus::Active;
+        active.frontmatter.trust_level = TrustLevel::Trusted;
+        replace(&substrate, active, hash).await;
+
+        let state = crate::handlers::HandlerState::new();
+        let mut rx = state.subscribe_notifications();
+        let failures = reconcile_applying(&substrate, Some(&state)).await;
+        assert!(failures.is_empty(), "quarantined proposal should not be a startup failure");
+
+        let event = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv())
+            .await
+            .expect("notification should be emitted")
+            .expect("channel should be open");
+        assert!(matches!(event, crate::protocol::NotificationEvent::OperatorActionRequired { .. }));
+        assert_eq!(store.load(&proposal.proposal_id).unwrap().status, MergeProposalStatus::Quarantined);
+    }
+
+    #[tokio::test]
+    async fn count_candidate_attention_excludes_merge_staged_candidates() {
+        let (temp, substrate) = substrate().await;
+        let source = memory("mem_20260711_aaaaaaaaaaaaaaaa_000101");
+        write(&substrate, source.clone()).await;
+        let proposal = MergeProposal::new(
+            vec![source.frontmatter.id.clone()],
+            memory("mem_20260711_aaaaaaaaaaaaaaaa_000102"),
+            Vec::new(),
+            "dream-test",
+        )
+        .unwrap();
+        let store = MergeProposalStore::new(&temp.path().join("runtime"));
+        store.create(&proposal).unwrap();
+
+        let _ = apply!(
+            &substrate,
+            &store,
+            &proposal.proposal_id,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            Some(SimulatedCrash::AfterStage)
+        )
+        .await;
+
+        let staged = substrate.read_memory(&proposal.replacement.frontmatter.id).await.unwrap();
+        assert!(staged.frontmatter.is_merge_non_servable());
+
+        let count =
+            crate::recall::startup::count_candidate_attention(&substrate, &["agent".to_string()]).await.unwrap();
+        assert_eq!(count, 0, "merge-staged replacement must not count as pending attention");
+
+        // A plain candidate requiring confirmation does count.
+        let mut candidate = memory("mem_20260711_aaaaaaaaaaaaaaaa_000103");
+        candidate.frontmatter.status = MemoryStatus::Candidate;
+        candidate.frontmatter.trust_level = TrustLevel::Candidate;
+        candidate.frontmatter.requires_user_confirmation = true;
+        write(&substrate, candidate).await;
+
+        let count =
+            crate::recall::startup::count_candidate_attention(&substrate, &["agent".to_string()]).await.unwrap();
+        assert_eq!(count, 1, "candidate requiring confirmation must count");
+    }
+
     async fn substrate() -> (tempfile::TempDir, Substrate) {
         let temp = tempfile::tempdir().unwrap();
         let substrate = Substrate::init(
@@ -1261,75 +1775,5 @@ mod tests {
             })
             .await
             .unwrap();
-    }
-
-    fn memory(id: &str) -> Memory {
-        let now = Utc::now();
-        Memory {
-            frontmatter: memory_substrate::Frontmatter {
-                schema_version: 1,
-                id: MemoryId::new(id),
-                memory_type: memory_substrate::MemoryType::Procedure,
-                scope: memory_substrate::Scope::Agent,
-                summary: "summary".into(),
-                confidence: 0.8,
-                original_confidence: None,
-                trust_level: TrustLevel::Trusted,
-                sensitivity: memory_substrate::Sensitivity::Internal,
-                status: MemoryStatus::Active,
-                created_at: now,
-                updated_at: now,
-                observed_at: None,
-                author: memory_substrate::Author {
-                    kind: memory_substrate::AuthorKind::Agent,
-                    user_handle: None,
-                    harness: Some("test".into()),
-                    harness_version: None,
-                    session_id: Some("merge-test".into()),
-                    subagent_id: None,
-                    phase: None,
-                    component: None,
-                },
-                namespace: None,
-                canonical_namespace_id: None,
-                tags: Vec::new(),
-                entities: Vec::new(),
-                aliases: Vec::new(),
-                source: memory_substrate::Source {
-                    kind: memory_substrate::SourceKind::AgentPrimary,
-                    reference: None,
-                    session_id: Some("merge-test".into()),
-                    harness: Some("test".into()),
-                    harness_version: None,
-                    subagent_id: None,
-                    device: None,
-                },
-                evidence: Vec::new(),
-                requires_user_confirmation: false,
-                review_state: None,
-                supersedes: Vec::new(),
-                superseded_by: Vec::new(),
-                related: Vec::new(),
-                tombstone_events: Vec::new(),
-                retrieval_policy: memory_substrate::RetrievalPolicy {
-                    passive_recall: true,
-                    max_scope: memory_substrate::Scope::Agent,
-                    mask_personal_for_synthesis: false,
-                    index_body: true,
-                    index_embeddings: true,
-                },
-                write_policy: memory_substrate::WritePolicy {
-                    human_review_required: false,
-                    policy_applied: "test".into(),
-                    expected_base_hash: None,
-                },
-                merge_diagnostics: None,
-                abstraction: Some("summary".into()),
-                cues: Vec::new(),
-                extras: Default::default(),
-            },
-            body: "body".into(),
-            path: Some(memory_substrate::RepoPath::new(format!("agent/patterns/{id}.md"))),
-        }
     }
 }

@@ -603,14 +603,17 @@ fn active_entity_ids(selected: &crate::recall::rank::RankedSelection) -> BTreeSe
         .collect()
 }
 
-async fn count_candidate_attention(substrate: &Substrate, namespace_prefixes: &[String]) -> Result<usize, RecallError> {
+pub(crate) async fn count_candidate_attention(
+    substrate: &Substrate,
+    namespace_prefixes: &[String],
+) -> Result<usize, RecallError> {
     let mut total = 0usize;
     for namespace_prefix in namespace_prefixes {
         // This caller needs only the count, not the rows. Use the index-only
         // `COUNT(*)` entrypoint instead of materializing + aux-hydrating every
         // matching row just to read `rows.len()`.
         total += substrate
-            .count_recall_index(RecallIndexQuery {
+            .count_recall_index_excluding_merge_staged(RecallIndexQuery {
                 namespace_prefix: Some(namespace_prefix.clone()),
                 statuses: vec![MemoryStatus::Candidate, MemoryStatus::Quarantined],
                 passive_recall_only: true,

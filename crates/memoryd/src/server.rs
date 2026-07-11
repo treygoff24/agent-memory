@@ -67,12 +67,35 @@ pub async fn serve_substrate_with(
     options: ServerOptions,
     shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
+    let state = Arc::new(state_for_substrate(&substrate)?);
     let substrate = Arc::new(substrate);
-    for (proposal_id, error) in crate::dream::merge::reconcile_applying(&substrate).await {
-        tracing::error!(%proposal_id, %error, "merge proposal startup reconciliation failed");
-    }
-    let state = Arc::new(state_for_substrate(substrate.as_ref())?);
     spawn_notification_dispatcher(&state);
+    for (proposal_id, error) in crate::dream::merge::reconcile_applying(&substrate, Some(state.as_ref())).await {
+        // Reconcile left the proposal in a non-quarantined failure state. Try to
+        // quarantine it now and emit a notification; only if even the quarantine
+        // write fails do we log and continue serving.
+        let store = crate::dream::merge::MergeProposalStore::new(&substrate.roots().runtime);
+        match store.load(&proposal_id) {
+            Ok(proposal) if proposal.status == crate::dream::merge::MergeProposalStatus::Quarantined => {
+                // `reconcile_applying` already emitted a notification for this
+                // quarantined proposal; just make sure it is recorded.
+                tracing::error!(%proposal_id, %error, "merge proposal startup reconciliation failed (quarantined)");
+            }
+            Ok(mut proposal) => {
+                proposal.status = crate::dream::merge::MergeProposalStatus::Quarantined;
+                if let Err(save_error) = store.save(&proposal) {
+                    tracing::error!(%proposal_id, %error, %save_error, "merge proposal startup reconciliation failed and quarantine write failed");
+                } else {
+                    state.emit_notification(crate::protocol::NotificationEvent::OperatorActionRequired {
+                        message: format!("merge proposal {proposal_id} is quarantined: {error}"),
+                    });
+                }
+            }
+            Err(load_error) => {
+                tracing::error!(%proposal_id, %error, %load_error, "merge proposal startup reconciliation failed and could not load proposal");
+            }
+        }
+    }
     emit_startup_reconcile_notifications(&substrate, &state);
     spawn_coordination_cleanup_for_state(state.clone(), shutdown.clone());
     fire_reality_check_due_on_startup(&substrate, &state);

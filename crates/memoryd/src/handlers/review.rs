@@ -10,7 +10,9 @@ pub(crate) async fn review_merges_response(
     state: &HandlerState,
     action: MergeReviewAction,
 ) -> Result<ResponsePayload, HandlerError> {
-    use crate::dream::merge::{approve_and_apply, MergeApplyRequest, MergeProposalStore};
+    use crate::dream::merge::{
+        approve_and_apply, reject_proposal, MergeApplyError, MergeApplyRequest, MergeProposalStore,
+    };
     let store = MergeProposalStore::new(&substrate.roots().runtime);
     let proposal = match action {
         MergeReviewAction::List => None,
@@ -27,23 +29,38 @@ pub(crate) async fn review_merges_response(
                 .filter(|id| state.claim_locks().get(id.as_str()).is_some())
                 .cloned()
                 .collect();
-            Some(
-                approve_and_apply(
-                    substrate,
-                    MergeApplyRequest {
-                        store: &store,
-                        proposal_id: &proposal_id,
-                        approved_pinned: &approved,
-                        claim_locked: &claim_locked,
-                        crash: None,
-                    },
-                )
-                .await
-                .map_err(|error| HandlerError::invalid_request(error.to_string()))?,
+            match approve_and_apply(
+                substrate,
+                MergeApplyRequest {
+                    store: &store,
+                    proposal_id: &proposal_id,
+                    approved_pinned: &approved,
+                    claim_locked: &claim_locked,
+                    crash: None,
+                },
             )
+            .await
+            {
+                Ok(proposal) => Some(proposal),
+                Err(MergeApplyError::Quarantined(reason)) => {
+                    state.emit_notification(NotificationEvent::OperatorActionRequired {
+                        message: format!("merge proposal {proposal_id} is quarantined: {reason}"),
+                    });
+                    return Err(HandlerError::invalid_request(reason));
+                }
+                Err(error) => return Err(HandlerError::invalid_request(error.to_string())),
+            }
         }
         MergeReviewAction::Reject { proposal_id } => {
-            Some(store.reject(&proposal_id).map_err(|error| HandlerError::invalid_request(error.to_string()))?)
+            Some(reject_proposal(substrate, &store, &proposal_id).await.map_err(|error| match error {
+                MergeApplyError::Quarantined(reason) => {
+                    state.emit_notification(NotificationEvent::OperatorActionRequired {
+                        message: format!("merge proposal {proposal_id} is quarantined: {reason}"),
+                    });
+                    HandlerError::invalid_request(reason)
+                }
+                _ => HandlerError::invalid_request(error.to_string()),
+            })?)
         }
     };
     let proposals = match proposal {

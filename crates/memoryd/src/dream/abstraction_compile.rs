@@ -37,7 +37,7 @@ struct HarnessOutput {
 
 pub async fn run(args: crate::cli::DreamAbstractionCompileArgs) -> anyhow::Result<AbstractionCompileReport> {
     let substrate = Substrate::open(Roots::new(args.repo, args.runtime)).await?;
-    let failures = super::merge::reconcile_applying(&substrate).await;
+    let failures = super::merge::reconcile_applying(&substrate, None).await;
     if !failures.is_empty() {
         anyhow::bail!("merge reconciliation failed before dream entry: {failures:?}");
     }

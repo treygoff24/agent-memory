@@ -78,6 +78,14 @@ impl Substrate {
             .map_err(|err| OpenError::InvalidRoots(format!("recall index count task panicked: {err}")))?
     }
 
+    /// Count recall-index rows, excluding merge-staged `Candidate` memories.
+    pub async fn count_recall_index_excluding_merge_staged(&self, query: RecallIndexQuery) -> SubstrateResult<usize> {
+        let index = Arc::clone(&self.index);
+        tokio::task::spawn_blocking(move || lock_index(&index).count_recall_index_excluding_merge_staged(&query))
+            .await
+            .map_err(|err| OpenError::InvalidRoots(format!("recall index count task panicked: {err}")))?
+    }
+
     /// Project the entities (with aliases) for a set of memory ids in one
     /// batched index query, without reading or parsing canonical files.
     ///

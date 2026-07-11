@@ -1518,18 +1518,32 @@ impl Index {
     /// are counted) is identical to fetching and calling `rows.len()` on the
     /// result. `query.hydrate` is irrelevant to a count and is ignored.
     pub fn count_recall_index(&self, query: &RecallIndexQuery) -> SubstrateResult<usize> {
-        self.count_recall_index_inner(query, false)
+        self.count_recall_index_inner(query, false, false)
+    }
+
+    /// Count recall-index rows, but exclude `Candidate` memories whose
+    /// `write_policy.policy_applied` is `merge-staged-v1`. These are merge
+    /// replacements that are not yet reviewable and must not inflate the pending
+    /// attention counter.
+    pub fn count_recall_index_excluding_merge_staged(&self, query: &RecallIndexQuery) -> SubstrateResult<usize> {
+        self.count_recall_index_inner(query, false, true)
     }
 
     fn count_recall_index_inner(
         &self,
         query: &RecallIndexQuery,
         include_metadata_only: bool,
+        exclude_merge_staged: bool,
     ) -> SubstrateResult<usize> {
         let mut sql = String::from("SELECT COUNT(*) FROM memories");
         let mut filters = Vec::new();
         let mut bindings = Vec::new();
         append_recall_index_filters(query, include_metadata_only, &mut filters, &mut bindings)?;
+        if exclude_merge_staged {
+            filters.push(
+                "NOT (memories.status = 'candidate' AND json_extract(memories.frontmatter_json, '$.write_policy.policy_applied') = 'merge-staged-v1')".to_string(),
+            );
+        }
         append_match_term_filters(query, &mut filters, &mut bindings);
         if !filters.is_empty() {
             sql.push_str(" WHERE ");
