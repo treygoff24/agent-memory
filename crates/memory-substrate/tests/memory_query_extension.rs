@@ -340,7 +340,7 @@ fn v1_index_migration_backfills_recall_projection_columns_once() {
         first_open
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get::<_, i64>(0))
             .expect("MAX(version) from schema_migrations"),
-        5
+        6
     );
     assert_recall_governance_columns_exist(&first_open);
     assert_recall_filter_indexes_exist(&first_open);
@@ -631,6 +631,8 @@ fn sample_memory(id: &str, updated_at: &str) -> Memory {
                 expected_base_hash: None,
             },
             merge_diagnostics: None,
+            abstraction: None,
+            cues: Vec::new(),
             extras: std::collections::BTreeMap::new(),
         },
         body: format!("body for {id}"),

@@ -472,6 +472,8 @@ fn test_memory(spec: TestMemorySpec<'_>) -> Memory {
                 expected_base_hash: None,
             },
             merge_diagnostics: None,
+            abstraction: None,
+            cues: Vec::new(),
             extras: std::collections::BTreeMap::new(),
         },
         body: spec.body.to_owned(),

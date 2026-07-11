@@ -350,6 +350,8 @@ mod tests {
                     expected_base_hash: None,
                 },
                 merge_diagnostics: None,
+                abstraction: None,
+                cues: Vec::new(),
                 extras: std::collections::BTreeMap::new(),
             },
             body: body.to_string(),

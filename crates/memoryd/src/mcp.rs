@@ -313,7 +313,7 @@ pub async fn forward_to_daemon(
             tags: args.tags,
             meta: meta_with_current_cwd_if_missing(args.meta)?,
         },
-        ToolRequest::MemoryNote(args) => RequestPayload::WriteNote { text: args.text },
+        ToolRequest::MemoryNote(args) => RequestPayload::WriteNote { text: args.text, meta: Value::Null },
         ToolRequest::MemoryObserve(args) => RequestPayload::Observe {
             text: args.text,
             kind: args.kind,

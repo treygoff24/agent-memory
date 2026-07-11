@@ -289,7 +289,7 @@ async fn dispatch(
         }
         RequestPayload::RecallHits { since, limit } => inspect::recall_hits_response(substrate, since, limit).await,
         RequestPayload::Reveal { id, reason } => reveal_response(substrate, &id, &reason).await,
-        RequestPayload::WriteNote { text } => write_note_response(substrate, &text).await,
+        RequestPayload::WriteNote { text, meta } => write_note_response(substrate, &text, &meta).await,
         RequestPayload::WriteMemory { body, title, tags, meta } => {
             governance_write_response(substrate, Some(state), GovernanceWriteRequest { body, title, tags, meta }).await
         }
@@ -297,7 +297,7 @@ async fn dispatch(
             governance_supersede_response(
                 substrate,
                 Some(state),
-                GovernanceSupersedeRequest { old_id, content, reason, meta },
+                GovernanceSupersedeRequest { old_id, content, reason, meta, preserve_frontmatter: false },
             )
             .await
         }
@@ -478,6 +478,8 @@ fn candidate_memory(id: MemoryId, text: &str, storage_action: PrivacyStorageActi
                 expected_base_hash: None,
             },
             merge_diagnostics: None,
+            abstraction: None,
+            cues: Vec::new(),
             extras: BTreeMap::new(),
         },
         body: text.to_string(),

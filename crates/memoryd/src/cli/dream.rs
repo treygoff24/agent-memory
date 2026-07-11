@@ -50,6 +50,10 @@ pub async fn run(args: crate::cli::DreamArgs) -> anyhow::Result<()> {
                 print!("{}", crate::dream::calibration::render_human_report(&report));
             }
         }
+        crate::cli::DreamCommand::AbstractionCompile(args) => {
+            let report = crate::dream::abstraction_compile::run(args).await?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
         crate::cli::DreamCommand::Enable(args) => {
             println!("{}", crate::dream::status::PRIVACY_DISCLOSURE);
             crate::dream::status::enable_device(&args.runtime)?;

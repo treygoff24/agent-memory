@@ -389,6 +389,8 @@ fn sample_memory(index: usize, seed: u64) -> Memory {
                 expected_base_hash: None,
             },
             merge_diagnostics: None,
+            abstraction: None,
+            cues: Vec::new(),
             extras: std::collections::BTreeMap::new(),
         },
         body: format!("needle-stream-a fixture body {index} seed {seed:x}. {}", "long body ".repeat(index % 8 + 1)),

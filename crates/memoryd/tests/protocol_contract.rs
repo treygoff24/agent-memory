@@ -59,7 +59,10 @@ fn protocol_contract_round_trips_request_variants_as_snake_case_json() {
         ),
         RequestEnvelope::new(
             "req-write-note",
-            RequestPayload::WriteNote { text: "observed a useful pattern".to_owned() },
+            RequestPayload::WriteNote {
+                text: "observed a useful pattern".to_owned(),
+                meta: serde_json::json!({"abstraction":"Useful pattern","cues":["Pattern cue"]}),
+            },
         ),
         RequestEnvelope::new(
             "req-write-memory",

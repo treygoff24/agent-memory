@@ -263,6 +263,8 @@ pub enum ValidationWarning {
     AutoPopulatedNullableField { field: String },
     /// Unknown field preserved.
     UnknownFieldPreserved { field: String },
+    /// A malformed optional semantic field was dropped during permissive read.
+    SemanticFieldDropped { field: String },
     /// Partial sync missing reference.
     PartialSyncMissingReference { id: MemoryId },
     /// Partial sync inverse supersession mismatch.
@@ -306,6 +308,18 @@ pub enum VectorError {
         expected: u32,
         /// Vector length supplied by caller.
         found: u32,
+    },
+    /// An abstraction/cue changed or disappeared before its embedding committed.
+    #[error("stale auxiliary row {row_kind}:{target_id}: expected {expected}, found {found}")]
+    StaleAux {
+        /// Row kind.
+        row_kind: String,
+        /// Semantic target id.
+        target_id: String,
+        /// Hash captured at enqueue.
+        expected: crate::model::Sha256,
+        /// Current hash or `missing`.
+        found: crate::model::Sha256,
     },
     /// Unknown embedding triple.
     #[error("unknown embedding triple: {0:?}")]

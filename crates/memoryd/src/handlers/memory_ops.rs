@@ -329,18 +329,48 @@ pub(crate) async fn reveal_response(
     }))
 }
 
-pub(crate) async fn write_note_response(substrate: &Substrate, text: &str) -> Result<ResponsePayload, HandlerError> {
+pub(crate) async fn write_note_response(
+    substrate: &Substrate,
+    text: &str,
+    meta: &serde_json::Value,
+) -> Result<ResponsePayload, HandlerError> {
+    #[derive(Default, serde::Deserialize)]
+    #[serde(default, deny_unknown_fields)]
+    struct NoteMeta {
+        abstraction: Option<String>,
+        cues: Vec<String>,
+        #[serde(rename = "cwd")]
+        _cwd: Option<String>,
+    }
+
     let text = text.trim();
     if text.is_empty() {
         return Err(HandlerError::invalid_request("note text must not be empty"));
     }
-    let privacy = classify_privacy(text, PrivacyNamespace::Agent, None)?;
+    let meta = if meta.is_null() {
+        NoteMeta::default()
+    } else {
+        serde_json::from_value::<NoteMeta>(meta.clone())
+            .map_err(|error| HandlerError::invalid_request(format!("invalid note meta: {error}")))?
+    };
+    let abstraction = memory_substrate::frontmatter::normalize_abstraction_value(meta.abstraction)
+        .map_err(|error| HandlerError::invalid_request(error.to_string()))?;
+    let cues = memory_substrate::frontmatter::normalize_cue_values(meta.cues)
+        .map_err(|error| HandlerError::invalid_request(error.to_string()))?;
+    let combined = std::iter::once(text)
+        .chain(abstraction.as_deref())
+        .chain(cues.iter().map(String::as_str))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let privacy = classify_privacy(&combined, PrivacyNamespace::Agent, None)?;
     if privacy.storage_action.refuses_storage() {
         return Err(HandlerError::invalid_request("privacy refused secret note before disk effects"));
     }
 
     let memory_id = substrate.next_memory_id().await.map_err(HandlerError::substrate)?;
-    let memory = candidate_memory(memory_id, text, privacy.storage_action);
+    let mut memory = candidate_memory(memory_id, text, privacy.storage_action);
+    memory.frontmatter.abstraction = abstraction;
+    memory.frontmatter.cues = cues;
     let id = memory.frontmatter.id.as_str().to_string();
     let summary = memory.frontmatter.summary.clone();
     write_privacy_memory(

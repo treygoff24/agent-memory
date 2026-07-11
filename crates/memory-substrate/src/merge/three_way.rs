@@ -3,6 +3,7 @@
 use crate::error::{MergeError, MergeSide};
 use crate::frontmatter::{parse_document, serialize_document, ParsedMemory};
 use crate::model::{Memory, MemoryStatus, TrustLevel};
+use sha2::{Digest, Sha256};
 
 use super::body_diff3::{merge_body_diff3, BodyMergeOutcome};
 use super::clean_fastpath;
@@ -340,6 +341,12 @@ fn splice_clean_diagnostics(
     diagnostic.preserved_sources = preserved_sources;
     diagnostic.evidence_near_duplicates = near_duplicates;
     diagnostic.lifecycle_notes = lifecycle_notes;
+    if diagnostic.conflicting_fields == ["abstraction"] {
+        diagnostic.created_at = ours.frontmatter.updated_at.max(theirs.frontmatter.updated_at);
+        let mut hasher = Sha256::new();
+        hasher.update(serde_json::to_vec(&diagnostic.preserved_sources).unwrap_or_default());
+        diagnostic.merge_id = format!("merge_{}", hex::encode(&hasher.finalize()[..16]));
+    }
     let unioned = union_diagnostics(
         base.frontmatter.merge_diagnostics.as_ref(),
         ours.frontmatter.merge_diagnostics.as_ref(),

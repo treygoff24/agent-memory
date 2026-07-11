@@ -190,6 +190,8 @@ fn memory(id: &str, status: MemoryStatus, human_review_required: bool) -> Memory
                 expected_base_hash: None,
             },
             merge_diagnostics: None,
+            abstraction: None,
+            cues: Vec::new(),
             extras: Default::default(),
         },
         body: format!("dashboard ROI test memory {id}"),

@@ -712,6 +712,12 @@ pub struct Frontmatter {
     /// Merge diagnostics.
     #[serde(rename = "_merge_diagnostics")]
     pub merge_diagnostics: Option<serde_json::Value>,
+    /// Compact semantic abstraction used by derived vector lanes.
+    #[serde(default)]
+    pub abstraction: Option<String>,
+    /// Short retrieval cues used by derived vector lanes.
+    #[serde(default)]
+    pub cues: Vec<String>,
     /// Unknown v1 fields preserved for round-trip per spec §6.2. `BTreeMap`
     /// keeps re-emission order deterministic.
     #[serde(flatten)]
@@ -1346,6 +1352,74 @@ pub struct PendingEmbeddingJob {
     pub text: String,
     /// Content hash captured at enqueue time (the chunk `body_hash`).
     pub content_hash: Sha256,
+}
+
+/// Derived semantic embedding row kind.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuxRowKind {
+    /// One abstraction per memory.
+    Abstraction,
+    /// Up to three cues per memory.
+    Cue,
+}
+
+impl AuxRowKind {
+    /// Stable SQLite representation.
+    pub const fn as_db_str(self) -> &'static str {
+        match self {
+            Self::Abstraction => "abstraction",
+            Self::Cue => "cue",
+        }
+    }
+}
+
+/// Pending abstraction/cue embedding work.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AuxPendingEmbeddingJob {
+    /// Semantic row kind.
+    pub row_kind: AuxRowKind,
+    /// Memory id, or `memory_id:ordinal` for cues.
+    pub target_id: String,
+    /// Text to embed.
+    pub text: String,
+    /// Hash captured when the job was enqueued.
+    pub content_hash: Sha256,
+}
+
+/// Stale-fenced vector update for a semantic row.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AuxEmbeddingUpdate {
+    /// Semantic row kind.
+    pub row_kind: AuxRowKind,
+    /// Memory id, or `memory_id:ordinal` for cues.
+    pub target_id: String,
+    /// Expected current semantic text hash.
+    pub expected_content_hash: Sha256,
+    /// Embedding triple identity.
+    pub triple: EmbeddingTriple,
+    /// Vector values.
+    pub vector: Vec<f32>,
+}
+
+/// Abstraction vector query hit.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AbstractionVectorHit {
+    /// Owning memory.
+    pub memory_id: MemoryId,
+    /// sqlite-vec L2 distance.
+    pub distance: f32,
+}
+
+/// Cue vector query hit.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CueVectorHit {
+    /// Owning memory.
+    pub memory_id: MemoryId,
+    /// Canonical cue ordinal.
+    pub ordinal: u8,
+    /// sqlite-vec L2 distance.
+    pub distance: f32,
 }
 
 /// Embedding update request.

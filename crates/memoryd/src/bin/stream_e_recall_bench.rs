@@ -322,6 +322,8 @@ fn bench_memory(index: usize) -> Memory {
                 expected_base_hash: None,
             },
             merge_diagnostics: matches!(status, MemoryStatus::Quarantined).then(|| serde_json::json!({"bench": true})),
+            abstraction: None,
+            cues: Vec::new(),
             extras: BTreeMap::new(),
         },
         body: format!("Entity Alpha deterministic benchmark body {index}"),

@@ -5,7 +5,7 @@
 use rusqlite::{params, params_from_iter, types::Value, Connection};
 
 use crate::error::VectorError;
-use crate::model::{EmbeddingLaneEligibility, EmbeddingTriple, EmbeddingUpdate};
+use crate::model::{AuxRowKind, EmbeddingLaneEligibility, EmbeddingTriple, EmbeddingUpdate};
 
 use super::sql_placeholders;
 use super::util::EMBEDDING_TRIPLE_PREDICATE;
@@ -174,11 +174,128 @@ pub(super) fn reconcile_active_embedding_jobs_impl(
         Value::from(triple.model_ref.clone()),
         Value::from(i64::from(triple.dimension)),
     ];
-    bindings.extend(allowed_sensitivities.into_iter().map(|sensitivity| Value::from(sensitivity.to_string())));
+    bindings.extend(allowed_sensitivities.iter().map(|sensitivity| Value::from((*sensitivity).to_string())));
     let queued = txn.execute(&sql, params_from_iter(bindings))?;
 
+    txn.execute(
+        "DELETE FROM aux_pending_embedding_jobs
+         WHERE (row_kind='abstraction' AND NOT EXISTS (
+                  SELECT 1 FROM memory_abstractions a WHERE a.memory_id=target_id AND a.abstraction_hash=content_hash))
+            OR (row_kind='cue' AND NOT EXISTS (
+                  SELECT 1 FROM memory_cues c WHERE target_id=c.memory_id||':'||c.ordinal AND c.cue_hash=content_hash))",
+        [],
+    )?;
+    txn.execute(
+        "DELETE FROM aux_embedding_meta
+         WHERE target_id NOT IN (SELECT memory_id FROM memory_abstractions)
+           AND target_id NOT IN (SELECT memory_id||':'||ordinal FROM memory_cues)",
+        [],
+    )?;
+    reconcile_aux_vector_state(&txn)?;
+    let aux_enqueued_at = chrono::Utc::now().to_rfc3339();
+    let mut aux_sql = String::from(
+        "INSERT OR IGNORE INTO aux_pending_embedding_jobs(
+           row_kind,target_id,content_hash,provider,model_ref,dimension,enqueued_at)
+         SELECT rows.row_kind,rows.target_id,rows.content_hash,?,?,?,?
+         FROM (
+           SELECT 'abstraction' row_kind,a.memory_id target_id,a.abstraction_hash content_hash,m.sensitivity
+             FROM memory_abstractions a JOIN memories m ON m.id=a.memory_id
+           UNION ALL
+           SELECT 'cue',c.memory_id||':'||c.ordinal,c.cue_hash,m.sensitivity
+             FROM memory_cues c JOIN memories m ON m.id=c.memory_id
+         ) rows
+         LEFT JOIN aux_embedding_meta meta ON meta.row_kind=rows.row_kind AND meta.target_id=rows.target_id
+           AND meta.content_hash=rows.content_hash AND meta.provider=? AND meta.model_ref=? AND meta.dimension=?
+         WHERE meta.target_id IS NULL",
+    );
+    if eligibility.requires_plaintext_filter() {
+        aux_sql.push_str(" AND rows.sensitivity IN (");
+        aux_sql.push_str(&sql_placeholders(allowed_sensitivities.len()));
+        aux_sql.push(')');
+    }
+    let mut aux_bindings = vec![
+        Value::from(triple.provider.clone()),
+        Value::from(triple.model_ref.clone()),
+        Value::from(i64::from(triple.dimension)),
+        Value::from(aux_enqueued_at),
+        Value::from(triple.provider.clone()),
+        Value::from(triple.model_ref.clone()),
+        Value::from(i64::from(triple.dimension)),
+    ];
+    aux_bindings.extend(allowed_sensitivities.into_iter().map(|value| Value::from(value.to_string())));
+    let aux_queued = txn.execute(&aux_sql, params_from_iter(aux_bindings))?;
+
     txn.commit()?;
-    Ok(queued)
+    Ok(queued + aux_queued)
+}
+
+fn reconcile_aux_vector_state(txn: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
+    let meta = {
+        let mut stmt = txn.prepare("SELECT row_kind,target_id,provider,model_ref,dimension FROM aux_embedding_meta")?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    EmbeddingTriple { provider: row.get(2)?, model_ref: row.get(3)?, dimension: row.get(4)? },
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    for (row_kind, target_id, triple) in meta {
+        let kind = if row_kind == "abstraction" { AuxRowKind::Abstraction } else { AuxRowKind::Cue };
+        let rowid = match kind {
+            AuxRowKind::Abstraction => txn
+                .query_row("SELECT rowid FROM memory_abstractions WHERE memory_id=?1", [&target_id], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .ok(),
+            AuxRowKind::Cue => target_id.rsplit_once(':').and_then(|(memory_id, ordinal)| {
+                txn.query_row(
+                    "SELECT rowid FROM memory_cues WHERE memory_id=?1 AND ordinal=?2",
+                    params![memory_id, ordinal.parse::<i64>().ok()?],
+                    |row| row.get::<_, i64>(0),
+                )
+                .ok()
+            }),
+        };
+        let table = crate::index::sqlite_vec::aux_vector_table_name(kind, &triple);
+        let exists: i64 = txn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+            [&table],
+            |row| row.get(0),
+        )?;
+        let vector_exists = match (exists != 0, rowid) {
+            (true, Some(rowid)) => {
+                txn.query_row(&format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE rowid=?1)"), [rowid], |row| {
+                    row.get(0)
+                })?
+            }
+            _ => 0_i64,
+        };
+        if vector_exists == 0 {
+            txn.execute(
+                "DELETE FROM aux_embedding_meta WHERE row_kind=?1 AND target_id=?2
+                   AND provider=?3 AND model_ref=?4 AND dimension=?5",
+                params![row_kind, target_id, triple.provider, triple.model_ref, i64::from(triple.dimension)],
+            )?;
+        }
+    }
+
+    let tables = {
+        let mut stmt = txn.prepare(
+            "SELECT name FROM sqlite_master WHERE type='table'
+               AND (name LIKE 'vec_abstractions_%' OR name LIKE 'vec_cues_%')",
+        )?;
+        let tables = stmt.query_map([], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        tables
+    };
+    for table in tables {
+        let source = if table.starts_with("vec_abstractions_") { "memory_abstractions" } else { "memory_cues" };
+        txn.execute(&format!("DELETE FROM {table} WHERE rowid NOT IN (SELECT rowid FROM {source})"), [])?;
+    }
+    Ok(())
 }
 
 /// Check if a triple is in the dropped set.  Returns `VectorError`.

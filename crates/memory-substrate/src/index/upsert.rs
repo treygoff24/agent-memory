@@ -6,7 +6,7 @@ use rusqlite::{named_params, params, Connection, Transaction};
 
 use crate::index::chunking::chunk_memory;
 use crate::markdown::hash_bytes;
-use crate::model::{EmbeddingTriple, Memory, MemoryId, Sha256};
+use crate::model::{AuxRowKind, EmbeddingTriple, Memory, MemoryId, MemoryStatus, Sensitivity, Sha256};
 
 use super::embedding::is_dropped_triple_rusqlite;
 
@@ -49,6 +49,14 @@ pub(super) fn upsert_memory_row_in_txn(
     options: MemoryUpsertOptions<'_>,
     active_embedding_dropped: bool,
 ) -> rusqlite::Result<()> {
+    let previous_sensitivity = txn
+        .query_row("SELECT sensitivity FROM memories WHERE id=?1", [memory.frontmatter.id.as_str()], |row| {
+            row.get::<_, String>(0)
+        })
+        .ok()
+        .and_then(|value| Sensitivity::from_db_str(&value));
+    let sensitivity_upgraded = previous_sensitivity
+        .is_some_and(|previous| previous.api_lane_eligible() && !memory.frontmatter.sensitivity.api_lane_eligible());
     let path = resolve_memory_path(memory);
     let sensitivity = memory.frontmatter.sensitivity.as_db_str();
     let memory_type = memory.frontmatter.memory_type.as_db_str();
@@ -149,6 +157,17 @@ pub(super) fn upsert_memory_row_in_txn(
     )?;
 
     sync_auxiliary_tables(txn, memory)?;
+    if sensitivity_upgraded {
+        delete_chunk_vectors_and_meta(txn, memory.frontmatter.id.as_str())?;
+    }
+    sync_semantic_embedding_rows(
+        txn,
+        memory,
+        &body_hash,
+        options.active_embedding,
+        active_embedding_dropped,
+        sensitivity_upgraded,
+    )?;
 
     // Rebuild chunks for this memory.
     txn.execute("DELETE FROM memory_chunks WHERE memory_id = ?1", [memory.frontmatter.id.as_str()])?;
@@ -195,6 +214,240 @@ pub(super) fn upsert_memory_row_in_txn(
         }
     }
 
+    Ok(())
+}
+
+fn delete_chunk_vectors_and_meta(txn: &Transaction<'_>, memory_id: &str) -> rusqlite::Result<()> {
+    let rows = {
+        let mut stmt = txn.prepare(
+            "SELECT c.chunk_id,c.chunk_rowid,m.provider,m.model_ref,m.dimension
+             FROM memory_chunks c JOIN chunk_embedding_meta m ON m.chunk_id=c.chunk_id
+             WHERE c.memory_id=?1",
+        )?;
+        let rows = stmt.query_map([memory_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                EmbeddingTriple { provider: row.get(2)?, model_ref: row.get(3)?, dimension: row.get(4)? },
+            ))
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    for (_, rowid, triple) in &rows {
+        let table = crate::index::sqlite_vec::vector_table_name(triple);
+        let exists: i64 = txn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+            [table.as_ref()],
+            |row| row.get(0),
+        )?;
+        if exists != 0 {
+            txn.execute(&format!("DELETE FROM {table} WHERE rowid=?1"), [rowid])?;
+        }
+    }
+    for (chunk_id, _, _) in rows {
+        txn.execute("DELETE FROM chunk_vectors WHERE chunk_id=?1", [&chunk_id])?;
+        txn.execute("DELETE FROM chunk_embedding_meta WHERE chunk_id=?1", [&chunk_id])?;
+        txn.execute("DELETE FROM pending_embedding_jobs WHERE chunk_id=?1", [&chunk_id])?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sync_semantic_embedding_rows(
+    txn: &Transaction<'_>,
+    memory: &Memory,
+    body_hash: &str,
+    triple: &EmbeddingTriple,
+    active_embedding_dropped: bool,
+    sensitivity_upgraded: bool,
+) -> rusqlite::Result<()> {
+    let memory_id = memory.frontmatter.id.as_str();
+    let servable = matches!(memory.frontmatter.status, MemoryStatus::Active | MemoryStatus::Pinned)
+        && memory.frontmatter.retrieval_policy.index_embeddings;
+    if !servable {
+        delete_semantic_rows(txn, memory_id)?;
+        return Ok(());
+    }
+
+    let enqueued_at = chrono::Utc::now().to_rfc3339();
+    if sensitivity_upgraded {
+        delete_semantic_vectors_and_meta(txn, memory_id)?;
+    }
+    if let Some(abstraction) = memory.frontmatter.abstraction.as_deref() {
+        let abstraction_hash = hash_bytes(abstraction.as_bytes()).to_string();
+        let previous = txn
+            .query_row(
+                "SELECT abstraction_hash, source_body_hash FROM memory_abstractions WHERE memory_id=?1",
+                [memory_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .ok();
+        let source_body_hash = previous
+            .as_ref()
+            .filter(|(old_hash, _)| old_hash == &abstraction_hash)
+            .map_or(body_hash, |(_, source_hash)| source_hash.as_str());
+        txn.execute(
+            "INSERT INTO memory_abstractions(memory_id,abstraction,abstraction_hash,source_body_hash)
+             VALUES (?1,?2,?3,?4)
+             ON CONFLICT(memory_id) DO UPDATE SET abstraction=excluded.abstraction,
+               abstraction_hash=excluded.abstraction_hash, source_body_hash=excluded.source_body_hash",
+            params![memory_id, abstraction, abstraction_hash, source_body_hash],
+        )?;
+        replace_aux_job_if_stale(
+            txn,
+            "abstraction",
+            memory_id,
+            &abstraction_hash,
+            triple,
+            &enqueued_at,
+            active_embedding_dropped,
+        )?;
+    } else {
+        delete_aux_target(txn, "abstraction", memory_id)?;
+        txn.execute("DELETE FROM memory_abstractions WHERE memory_id=?1", [memory_id])?;
+    }
+
+    for (ordinal, cue) in memory.frontmatter.cues.iter().enumerate() {
+        let target_id = format!("{memory_id}:{ordinal}");
+        let cue_hash = hash_bytes(cue.as_bytes()).to_string();
+        txn.execute(
+            "INSERT INTO memory_cues(memory_id,ordinal,cue_text,cue_hash) VALUES (?1,?2,?3,?4)
+             ON CONFLICT(memory_id,ordinal) DO UPDATE SET cue_text=excluded.cue_text,cue_hash=excluded.cue_hash",
+            params![memory_id, ordinal as i64, cue, cue_hash],
+        )?;
+        replace_aux_job_if_stale(txn, "cue", &target_id, &cue_hash, triple, &enqueued_at, active_embedding_dropped)?;
+    }
+    for ordinal in memory.frontmatter.cues.len()..3 {
+        let target_id = format!("{memory_id}:{ordinal}");
+        delete_aux_target(txn, "cue", &target_id)?;
+        txn.execute("DELETE FROM memory_cues WHERE memory_id=?1 AND ordinal=?2", params![memory_id, ordinal as i64])?;
+    }
+    Ok(())
+}
+
+fn delete_semantic_vectors_and_meta(txn: &Transaction<'_>, memory_id: &str) -> rusqlite::Result<()> {
+    delete_aux_vectors(txn, "abstraction", memory_id, None)?;
+    for ordinal in 0..3 {
+        delete_aux_vectors(txn, "cue", &format!("{memory_id}:{ordinal}"), None)?;
+    }
+    txn.execute(
+        "DELETE FROM aux_embedding_meta WHERE target_id=?1 OR target_id LIKE ?2 ESCAPE '\\'",
+        params![memory_id, format!("{}:%", memory_id.replace('%', "\\%").replace('_', "\\_"))],
+    )?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn replace_aux_job_if_stale(
+    txn: &Transaction<'_>,
+    row_kind: &str,
+    target_id: &str,
+    content_hash: &str,
+    triple: &EmbeddingTriple,
+    enqueued_at: &str,
+    active_embedding_dropped: bool,
+) -> rusqlite::Result<()> {
+    delete_aux_vectors(txn, row_kind, target_id, Some(content_hash))?;
+    txn.execute(
+        "DELETE FROM aux_embedding_meta WHERE row_kind=?1 AND target_id=?2 AND content_hash<>?3",
+        params![row_kind, target_id, content_hash],
+    )?;
+    if active_embedding_dropped {
+        return Ok(());
+    }
+    txn.execute(
+        "INSERT INTO aux_pending_embedding_jobs(row_kind,target_id,content_hash,provider,model_ref,dimension,enqueued_at)
+         SELECT ?1,?2,?3,?4,?5,?6,?7
+         WHERE NOT EXISTS (
+           SELECT 1 FROM aux_embedding_meta WHERE row_kind=?1 AND target_id=?2 AND content_hash=?3
+             AND provider=?4 AND model_ref=?5 AND dimension=?6
+         )
+         ON CONFLICT(row_kind,target_id,provider,model_ref,dimension) DO UPDATE SET
+           content_hash=excluded.content_hash,enqueued_at=excluded.enqueued_at,attempts=0,last_error=NULL",
+        params![row_kind, target_id, content_hash, triple.provider, triple.model_ref, i64::from(triple.dimension), enqueued_at],
+    )?;
+    Ok(())
+}
+
+fn delete_aux_target(txn: &Transaction<'_>, row_kind: &str, target_id: &str) -> rusqlite::Result<()> {
+    delete_aux_vectors(txn, row_kind, target_id, None)?;
+    txn.execute(
+        "DELETE FROM aux_pending_embedding_jobs WHERE row_kind=?1 AND target_id=?2",
+        params![row_kind, target_id],
+    )?;
+    txn.execute("DELETE FROM aux_embedding_meta WHERE row_kind=?1 AND target_id=?2", params![row_kind, target_id])?;
+    Ok(())
+}
+
+fn delete_aux_vectors(
+    txn: &Transaction<'_>,
+    row_kind: &str,
+    target_id: &str,
+    keep_hash: Option<&str>,
+) -> rusqlite::Result<()> {
+    let rowid = match row_kind {
+        "abstraction" => txn
+            .query_row("SELECT rowid FROM memory_abstractions WHERE memory_id=?1", [target_id], |row| {
+                row.get::<_, i64>(0)
+            })
+            .ok(),
+        "cue" => target_id.rsplit_once(':').and_then(|(memory_id, ordinal)| {
+            txn.query_row(
+                "SELECT rowid FROM memory_cues WHERE memory_id=?1 AND ordinal=?2",
+                params![memory_id, ordinal.parse::<i64>().ok()?],
+                |row| row.get::<_, i64>(0),
+            )
+            .ok()
+        }),
+        _ => None,
+    };
+    let Some(rowid) = rowid else { return Ok(()) };
+    let mut sql =
+        String::from("SELECT provider,model_ref,dimension FROM aux_embedding_meta WHERE row_kind=?1 AND target_id=?2");
+    if keep_hash.is_some() {
+        sql.push_str(" AND content_hash<>?3");
+    }
+    let triples = {
+        let mut stmt = txn.prepare(&sql)?;
+        let map = |row: &rusqlite::Row<'_>| {
+            Ok(EmbeddingTriple { provider: row.get(0)?, model_ref: row.get(1)?, dimension: row.get(2)? })
+        };
+        if let Some(hash) = keep_hash {
+            stmt.query_map(params![row_kind, target_id, hash], map)?.collect::<rusqlite::Result<Vec<_>>>()?
+        } else {
+            stmt.query_map(params![row_kind, target_id], map)?.collect::<rusqlite::Result<Vec<_>>>()?
+        }
+    };
+    let kind = if row_kind == "abstraction" { AuxRowKind::Abstraction } else { AuxRowKind::Cue };
+    for triple in triples {
+        let table = crate::index::sqlite_vec::aux_vector_table_name(kind, &triple);
+        let exists: i64 = txn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+            [table.as_str()],
+            |row| row.get(0),
+        )?;
+        if exists != 0 {
+            txn.execute(&format!("DELETE FROM {table} WHERE rowid=?1"), [rowid])?;
+        }
+    }
+    Ok(())
+}
+
+fn delete_semantic_rows(txn: &Transaction<'_>, memory_id: &str) -> rusqlite::Result<()> {
+    delete_aux_target(txn, "abstraction", memory_id)?;
+    for ordinal in 0..3 {
+        delete_aux_target(txn, "cue", &format!("{memory_id}:{ordinal}"))?;
+    }
+    txn.execute("DELETE FROM memory_abstractions WHERE memory_id=?1", [memory_id])?;
+    txn.execute("DELETE FROM memory_cues WHERE memory_id=?1", [memory_id])?;
+    txn.execute(
+        "DELETE FROM aux_pending_embedding_jobs WHERE target_id=?1 OR target_id LIKE ?2 ESCAPE '\\'",
+        params![memory_id, format!("{}:%", memory_id.replace('%', "\\%").replace('_', "\\_"))],
+    )?;
+    txn.execute(
+        "DELETE FROM aux_embedding_meta WHERE target_id=?1 OR target_id LIKE ?2 ESCAPE '\\'",
+        params![memory_id, format!("{}:%", memory_id.replace('%', "\\%").replace('_', "\\_"))],
+    )?;
     Ok(())
 }
 

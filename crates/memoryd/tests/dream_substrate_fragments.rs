@@ -243,7 +243,10 @@ async fn memory_note_still_writes_canonical_memory_only() {
 
     let note = handle_request(
         &substrate,
-        RequestEnvelope::new("note", RequestPayload::WriteNote { text: "canonical note only".to_string() }),
+        RequestEnvelope::new(
+            "note",
+            RequestPayload::WriteNote { text: "canonical note only".to_string(), meta: serde_json::Value::Null },
+        ),
     )
     .await;
 

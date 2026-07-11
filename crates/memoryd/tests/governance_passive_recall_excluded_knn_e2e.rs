@@ -172,6 +172,8 @@ fn project_memory(id: &str, summary: &str, body: &str, passive_recall: bool) -> 
                 expected_base_hash: None,
             },
             merge_diagnostics: None,
+            abstraction: None,
+            cues: Vec::new(),
             extras: Default::default(),
         },
         body: body.to_string(),

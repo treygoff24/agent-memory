@@ -36,4 +36,6 @@ pub const CANONICAL_KEYS: &[&str] = &[
     "retrieval_policy",
     "write_policy",
     "_merge_diagnostics",
+    "abstraction",
+    "cues",
 ];

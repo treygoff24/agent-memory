@@ -95,9 +95,11 @@ memoryd write-note "react-doctor flakes on cold start; a rerun fixes it" --socke
 # Governed structured write — carries title/tags/meta, subject to governance
 memoryd write "The dashboard defaults to port 7137; override with --port." \
   --title "Dashboard default port" --tag config \
-  --meta '{"namespace":"project","type":"claim","confidence":0.88}' \
+  --meta '{"namespace":"project","type":"claim","confidence":0.88,"abstraction":"Dashboard port configuration","cues":["Dashboard port","Port override"]}' \
   --socket "$MEMORUM_SOCKET"
 ```
+
+When semantic metadata helps future retrieval, add an `abstraction` of at most 8 words and 0–3 cues. Write cues as `[Main Entity] + [Key Aspect]`, usually 2–4 words each (for example, `Dashboard port` or `Port override`); omit them rather than padding weak cues.
 
 Malformed `--meta` JSON exits 65 with a minimal valid example in `suggested_fix`.
 

@@ -798,6 +798,8 @@ fn bench_memory(index: usize, scope: Scope, canonical_project_id: Option<&str>) 
                 expected_base_hash: None,
             },
             merge_diagnostics: None,
+            abstraction: None,
+            cues: Vec::new(),
             extras: BTreeMap::new(),
         },
         body: format!("Stream F benchmark body {index} with deterministic auth rotation detail."),

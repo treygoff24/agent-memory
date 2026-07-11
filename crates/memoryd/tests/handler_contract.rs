@@ -332,7 +332,10 @@ async fn write_note_creates_candidate_safe_record_through_substrate() {
         &substrate,
         RequestEnvelope::new(
             "req-write",
-            RequestPayload::WriteNote { text: "Candidate note from handler".to_string() },
+            RequestPayload::WriteNote {
+                text: "Candidate note from handler".to_string(),
+                meta: serde_json::Value::Null,
+            },
         ),
     )
     .await;
@@ -1209,7 +1212,10 @@ async fn status_response_includes_live_dashboard_counts() {
         &substrate,
         RequestEnvelope::new(
             "req-status-candidate",
-            RequestPayload::WriteNote { text: "Candidate note for status dashboard".to_owned() },
+            RequestPayload::WriteNote {
+                text: "Candidate note for status dashboard".to_owned(),
+                meta: serde_json::Value::Null,
+            },
         ),
     )
     .await;
@@ -1420,6 +1426,8 @@ fn sample_memory(id: &str, body: &str) -> Memory {
                 expected_base_hash: None,
             },
             merge_diagnostics: None,
+            abstraction: None,
+            cues: Vec::new(),
             extras: std::collections::BTreeMap::new(),
         },
         body: body.to_string(),

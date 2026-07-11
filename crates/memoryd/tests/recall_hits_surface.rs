@@ -107,6 +107,8 @@ async fn write_memory(substrate: &Substrate, id: MemoryId) {
                         expected_base_hash: None,
                     },
                     merge_diagnostics: None,
+                    abstraction: None,
+                    cues: Vec::new(),
                     extras: Default::default(),
                 },
                 body: "Recall-hit surface fixture body".to_owned(),

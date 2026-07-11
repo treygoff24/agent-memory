@@ -524,6 +524,9 @@ pub struct WriteNoteArgs {
     /// Unix socket path used to reach memoryd.
     #[arg(long)]
     pub socket: Option<PathBuf>,
+    /// Optional semantic metadata (`abstraction`, `cues`) as JSON.
+    #[arg(long)]
+    pub meta: Option<String>,
     /// Note text.
     pub text: String,
 }
@@ -872,6 +875,8 @@ pub enum DreamCommand {
     Review(DreamReviewArgs),
     /// Report review-decision calibration: accept-rate per confidence decile.
     Calibration(DreamCalibrationArgs),
+    /// Compile semantic abstractions/cues for missing or stale memories.
+    AbstractionCompile(DreamAbstractionCompileArgs),
     /// Enable dreaming on this device by removing the local disabled sentinel.
     Enable(DreamToggleArgs),
     /// Disable dreaming on this device by creating the local disabled sentinel.
@@ -991,6 +996,22 @@ pub struct DreamCalibrationArgs {
     /// Emit a structured JSON CalibrationReport instead of the human table.
     #[arg(long)]
     pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct DreamAbstractionCompileArgs {
+    /// Canonical memory repository root.
+    #[arg(long, default_value = ".")]
+    pub repo: PathBuf,
+    /// Local per-device runtime root.
+    #[arg(long, default_value = ".memoryd")]
+    pub runtime: PathBuf,
+    /// Harness CLI override; unavailable harnesses use structural fallback.
+    #[arg(long = "cli")]
+    pub cli_override: Option<String>,
+    /// Maximum memories to process.
+    #[arg(long, default_value_t = 100)]
+    pub limit: usize,
 }
 
 #[derive(Debug, Args)]

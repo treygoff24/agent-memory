@@ -87,6 +87,8 @@ fn make_metadata_only_memory(id: &str, updated_at_str: &str) -> Memory {
                 expected_base_hash: None,
             },
             merge_diagnostics: None,
+            abstraction: None,
+            cues: Vec::new(),
             extras: Default::default(),
         },
         body: String::new(),

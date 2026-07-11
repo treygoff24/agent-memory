@@ -5,6 +5,7 @@ use serde_json::{Map, Value};
 use crate::error::{ValidationError, ValidationWarning};
 use crate::frontmatter::defaults::{default_retrieval_policy, default_source, default_write_policy};
 use crate::frontmatter::schema::CANONICAL_KEYS;
+use crate::frontmatter::semantic::normalize_abstraction_cues;
 use crate::frontmatter::validate::validate_frontmatter;
 use crate::model::{Frontmatter, Memory, RepoPath};
 
@@ -36,9 +37,30 @@ pub fn parse_frontmatter_yaml(yaml: &str) -> Result<(Frontmatter, Vec<Validation
     let mut warnings = Vec::new();
     materialize_defaults(map, &mut warnings)?;
     note_unknown_fields(map, &mut warnings);
-    let frontmatter: Frontmatter = serde_json::from_value(Value::Object(map.clone()))
+    let mut frontmatter: Frontmatter = serde_json::from_value(Value::Object(map.clone()))
         .map_err(|err| ValidationError::BadShape(format!("frontmatter: {err}")))?;
+    repair_semantic_fields(&mut frontmatter, &mut warnings)?;
     Ok((frontmatter, warnings))
+}
+
+fn repair_semantic_fields(
+    frontmatter: &mut Frontmatter,
+    warnings: &mut Vec<ValidationWarning>,
+) -> Result<(), ValidationError> {
+    loop {
+        match normalize_abstraction_cues(frontmatter) {
+            Ok(()) => return Ok(()),
+            Err(ValidationError::BadShape(field)) if field == "abstraction" => {
+                frontmatter.abstraction = None;
+                warnings.push(ValidationWarning::SemanticFieldDropped { field });
+            }
+            Err(ValidationError::BadShape(field)) if field == "cues" => {
+                frontmatter.cues.clear();
+                warnings.push(ValidationWarning::SemanticFieldDropped { field });
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 fn split_document(input: &str) -> Result<(&str, &str), ValidationError> {
@@ -87,6 +109,8 @@ fn materialize_defaults(
         serde_json::to_value(default_write_policy()).map_err(|err| ValidationError::Other(err.to_string()))?,
     );
     set_default(map, warnings, "_merge_diagnostics", Value::Null);
+    set_default(map, warnings, "abstraction", Value::Null);
+    set_default(map, warnings, "cues", Value::Array(Vec::new()));
     Ok(())
 }
 

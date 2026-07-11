@@ -46,6 +46,7 @@ pub(super) async fn doctor_response(substrate: &Substrate, state: &HandlerState)
     // without vectors (a freshly-initialized substrate legitimately has a backlog
     // before the worker first drains).
     findings.extend(embedding_health_findings(substrate, state).await);
+    findings.extend(index_schema_findings(substrate));
     // Foundation-loop checks (F4 D1-D4): dream freshness (advisory), sync/quarantine
     // (fatal), stale uncommitted substrate (fatal), recall budget pressure (advisory).
     findings.extend(foundation_loop_findings(substrate, state).await);
@@ -70,7 +71,47 @@ pub(super) async fn doctor_response(substrate: &Substrate, state: &HandlerState)
         findings,
         guidance: "Doctor reflects Memorum substrate validation, repair state, dreaming harness availability, and the runtime loop (dream freshness, sync, uncommitted substrate, recall budget)."
             .to_string(),
+        embedding_counts: embedding_row_kind_counts(substrate),
     }
+}
+
+fn index_schema_findings(substrate: &Substrate) -> Vec<DoctorFinding> {
+    let result = substrate.with_index(|index| {
+        let version: i64 = index.connection().query_row(
+            "SELECT COALESCE(MAX(version),0) FROM schema_migrations", [], |row| row.get(0),
+        )?;
+        let mut mismatched = Vec::new();
+        for table in ["memory_abstractions", "memory_cues", "aux_embedding_meta", "aux_pending_embedding_jobs"] {
+            let exists: i64 = index.connection().query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)", [table], |row| row.get(0),
+            )?;
+            if (version >= 6) != (exists != 0) { mismatched.push(table); }
+        }
+        let trigger_tables: i64 = index.connection().query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND (name='memory_triggers' OR name LIKE 'memory_trigger_%')",
+            [], |row| row.get(0),
+        )?;
+        Ok((mismatched, trigger_tables))
+    });
+    match result {
+        Ok((mismatched, 0)) if mismatched.is_empty() => Vec::new(),
+        Ok((mismatched, triggers)) => vec![fatal_finding(
+            "index_schema_v6_inconsistent",
+            format!("schema-6 table mismatch: mismatched={mismatched:?}, pre-W4 trigger tables={triggers}"),
+            Some("Restore the pre-migration SQLite copy or run `memoryd doctor --reindex`.".to_string()),
+        )],
+        Err(error) => vec![fatal_finding("index_schema_probe_failed", error.to_string(), None)],
+    }
+}
+
+fn embedding_row_kind_counts(substrate: &Substrate) -> std::collections::BTreeMap<String, u64> {
+    substrate
+        .active_embedding_triple()
+        .ok()
+        .and_then(|triple| {
+            substrate.embedding_row_kind_counts(crate::embedding::embedding_lane_eligibility(&triple)).ok()
+        })
+        .unwrap_or_default()
 }
 
 /// F4 foundation-loop checks D1-D4. D5 (capture freshness) is deferred to v3.0-P2.
@@ -672,6 +713,29 @@ mod tests {
             !findings.iter().any(|finding| finding.code == "embedding_api_lane_held_local"),
             "local lane must not report API held-local advisory: {findings:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn doctor_reports_embedding_counts_for_each_row_kind() {
+        let (_temp, substrate) = crate::embedding::lane_test_support::init_substrate_with_active_embedding(
+            crate::embedding::lane_test_support::local_test_triple(),
+            "dev_doctorrowkinds",
+        )
+        .await;
+        let counts = super::embedding_row_kind_counts(&substrate);
+        for key in [
+            "chunk_indexed",
+            "chunk_pending",
+            "chunk_held_local",
+            "abstraction_indexed",
+            "abstraction_pending",
+            "abstraction_held_local",
+            "cue_indexed",
+            "cue_pending",
+            "cue_held_local",
+        ] {
+            assert!(counts.contains_key(key), "missing {key}: {counts:?}");
+        }
     }
 
     #[tokio::test]

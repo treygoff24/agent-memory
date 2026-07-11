@@ -271,6 +271,8 @@ impl Fixture {
                             expected_base_hash: None,
                         },
                         merge_diagnostics: None,
+                        abstraction: None,
+                        cues: Vec::new(),
                         extras: Default::default(),
                     },
                     body: "claim lock conflict fixture".to_string(),

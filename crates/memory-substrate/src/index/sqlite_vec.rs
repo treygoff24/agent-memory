@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, Once, OnceLock};
 use rusqlite::ffi::sqlite3_auto_extension;
 use sha2::{Digest, Sha256};
 
-use crate::model::EmbeddingTriple;
+use crate::model::{AuxRowKind, EmbeddingTriple};
 
 static REGISTER_SQLITE_VEC: Once = Once::new();
 
@@ -60,6 +60,16 @@ pub fn vector_table_name(triple: &EmbeddingTriple) -> Arc<str> {
             .clone();
     }
     Arc::from(compute_vector_table_name(triple).as_str())
+}
+
+/// Deterministically name a vector table for one semantic row kind and triple.
+pub fn aux_vector_table_name(row_kind: AuxRowKind, triple: &EmbeddingTriple) -> String {
+    let mut hasher = Sha256::new();
+    hash_length_prefixed(&mut hasher, row_kind.as_db_str().as_bytes());
+    hash_length_prefixed(&mut hasher, triple.provider.as_bytes());
+    hash_length_prefixed(&mut hasher, triple.model_ref.as_bytes());
+    hash_length_prefixed(&mut hasher, &triple.dimension.to_be_bytes());
+    format!("vec_{}s_{}", row_kind.as_db_str(), hex::encode(&hasher.finalize()[..16]))
 }
 
 /// Compute the vector table name digest without consulting the memoization cache.
@@ -119,5 +129,18 @@ mod vector_table_name_tests {
         let c = vector_table_name(&triple("synthetic", "model-a", 64));
         assert_ne!(a, b, "model_ref participates in the digest");
         assert_ne!(a, c, "dimension participates in the digest");
+    }
+
+    #[test]
+    fn auxiliary_row_kind_participates_in_table_identity() {
+        let triple = triple("synthetic", "model", 32);
+        assert_ne!(
+            super::aux_vector_table_name(crate::model::AuxRowKind::Abstraction, &triple),
+            super::aux_vector_table_name(crate::model::AuxRowKind::Cue, &triple)
+        );
+        assert_ne!(
+            super::aux_vector_table_name(crate::model::AuxRowKind::Cue, &triple),
+            vector_table_name(&triple).as_ref()
+        );
     }
 }

@@ -482,6 +482,8 @@ fn sample_memory(id: &str, status: MemoryStatus) -> Memory {
                 expected_base_hash: None,
             },
             merge_diagnostics: None,
+            abstraction: None,
+            cues: Vec::new(),
             extras: Default::default(),
         },
         body: "cleanup memory body".to_string(),

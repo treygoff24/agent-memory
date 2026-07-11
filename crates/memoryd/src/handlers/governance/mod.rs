@@ -25,4 +25,4 @@ pub(crate) use pipeline::{
     GovernanceSupersedeRequest, GovernanceWriteRequest,
 };
 pub(crate) use policy::load_policy_set;
-pub(crate) use privacy::classify_privacy;
+pub(crate) use privacy::{classify_plaintext_memory, classify_privacy};

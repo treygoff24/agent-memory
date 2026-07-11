@@ -238,6 +238,8 @@ async fn write_entity_memory(substrate: &Substrate, id: MemoryId) {
                         expected_base_hash: None,
                     },
                     merge_diagnostics: None,
+                    abstraction: None,
+                    cues: Vec::new(),
                     extras: BTreeMap::new(),
                 },
                 body: "Entity graph web fixture body".to_owned(),

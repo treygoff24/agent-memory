@@ -5,6 +5,7 @@ use std::sync::LazyLock;
 
 use crate::error::ValidationError;
 use crate::frontmatter::schema::SUPPORTED_SCHEMA_VERSION;
+use crate::frontmatter::semantic::normalize_abstraction_cues;
 use crate::model::{AuthorKind, Frontmatter, MemoryStatus, MemoryType, Scope, Sensitivity, TrustLevel};
 
 #[allow(clippy::expect_used)]
@@ -20,6 +21,11 @@ static SLUG_RE: LazyLock<Regex> = LazyLock::new(|| {
 /// already be unreachable, and adding the check again just duplicates the regex literal and
 /// the error path. The id is therefore accepted as-is.
 pub fn validate_frontmatter(frontmatter: &Frontmatter) -> Result<(), ValidationError> {
+    let mut normalized = frontmatter.clone();
+    normalize_abstraction_cues(&mut normalized)?;
+    if normalized.abstraction != frontmatter.abstraction || normalized.cues != frontmatter.cues {
+        return Err(ValidationError::BadShape("abstraction/cues normalization".to_string()));
+    }
     if frontmatter.schema_version > SUPPORTED_SCHEMA_VERSION {
         return Err(ValidationError::UnsupportedSchemaVersion {
             found: frontmatter.schema_version,

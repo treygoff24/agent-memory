@@ -136,6 +136,8 @@ fn sample_memory(id: &MemoryId) -> Memory {
                 expected_base_hash: None,
             },
             merge_diagnostics: None,
+            abstraction: None,
+            cues: Vec::new(),
             extras: [("privacy_scan".to_string(), json!({"labels_detected": ["none"], "storage_action": "plaintext"}))]
                 .into_iter()
                 .collect(),

@@ -442,6 +442,8 @@ fn memory_frontmatter(id: &str) -> memory_substrate::Frontmatter {
         requires_user_confirmation: false,
         tombstone_events: Vec::new(),
         merge_diagnostics: None,
+        abstraction: None,
+        cues: Vec::new(),
         extras: Default::default(),
     }
 }

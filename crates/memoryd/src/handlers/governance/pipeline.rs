@@ -166,7 +166,7 @@ pub(crate) async fn governance_supersede_response(
     request: GovernanceSupersedeRequest,
 ) -> Result<ResponsePayload, HandlerError> {
     let _governance_guard = GOVERNANCE_MUTATION_LOCK.lock().await;
-    let GovernanceSupersedeRequest { old_id, content, reason, meta } = request;
+    let GovernanceSupersedeRequest { old_id, content, reason, meta, preserve_frontmatter } = request;
     let old_memory_id = HandlerError::parse_memory_id(old_id.clone())?;
     let old_envelope = substrate.read_memory_envelope(&old_memory_id).await.map_err(HandlerError::substrate)?;
     let meta = inherit_supersede_namespace_meta(meta, &old_envelope.metadata.frontmatter);
@@ -244,6 +244,17 @@ pub(crate) async fn governance_supersede_response(
         GovernedLifecycle::new(MemoryStatus::Active, TrustLevel::Trusted, policy_applied.clone()),
         &privacy,
     )?;
+    if preserve_frontmatter {
+        let generated = replacement.frontmatter;
+        replacement.frontmatter = old_envelope.metadata.frontmatter.clone();
+        replacement.frontmatter.id = generated.id;
+        replacement.frontmatter.abstraction = generated.abstraction;
+        replacement.frontmatter.cues = generated.cues;
+        replacement.frontmatter.status = generated.status;
+        replacement.frontmatter.trust_level = generated.trust_level;
+        replacement.frontmatter.updated_at = generated.updated_at;
+        replacement.frontmatter.superseded_by.clear();
+    }
     replacement.frontmatter.supersedes.push(old_memory_id.clone());
 
     let claim_lock = match state {
@@ -377,6 +388,7 @@ async fn mark_old_superseded(
     if !old_memory.frontmatter.superseded_by.contains(&new_id_for_chain) {
         old_memory.frontmatter.superseded_by.push(new_id_for_chain);
     }
+    let old_classification = super::privacy::classify_plaintext_memory(&old_memory)?;
     substrate
         .write_memory(SubstrateWriteRequest {
             operation_id: None,
@@ -389,7 +401,7 @@ async fn mark_old_superseded(
                 reason: Some(reason.to_string()),
             },
             allow_best_effort_durability: true,
-            classification: ClassificationOutcome::Trusted,
+            classification: old_classification,
         })
         .await
         .map_err(|err| HandlerError::substrate(format!("mark old superseded: {err:?}")))?;
@@ -893,6 +905,7 @@ pub(crate) struct GovernanceSupersedeRequest {
     pub(crate) content: String,
     pub(crate) reason: String,
     pub(crate) meta: Value,
+    pub(crate) preserve_frontmatter: bool,
 }
 
 #[derive(Clone, Debug)]

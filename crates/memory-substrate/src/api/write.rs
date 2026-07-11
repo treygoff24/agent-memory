@@ -6,7 +6,7 @@ use super::*;
 
 impl Substrate {
     /// Write plaintext memory.
-    pub async fn write_memory(&self, request: WriteRequest) -> Result<WriteOutcome, WriteFailure> {
+    pub async fn write_memory(&self, mut request: WriteRequest) -> Result<WriteOutcome, WriteFailure> {
         let operation_id = request.operation_id.clone().unwrap_or_else(new_operation_id);
         let outcome = WriteOutcome::not_committed(operation_id.clone(), self.durability);
         // Pre-disk refusal gates emit `WriteRefused` audit events per spec §8.7 step 6.
@@ -20,16 +20,19 @@ impl Substrate {
             &audit_ctx,
             self.enforce_best_effort_opt_in(request.allow_best_effort_durability, outcome.clone()),
         )?;
-        self.run_gate(&audit_ctx, self.enforce_plaintext_classification(&request, outcome.clone()))?;
-        self.run_gate(&audit_ctx, self.validate_memory_path(&request.memory, outcome.clone()))?;
-        self.run_gate(&audit_ctx, enforce_no_dream_prose_sources(&request.memory, outcome.clone()))?;
         self.run_gate(
             &audit_ctx,
-            validate_frontmatter(&request.memory.frontmatter).map_err(|err| WriteFailure {
-                outcome: outcome.clone(),
-                kind: WriteFailureKind::ValidationTyped(ValidationError::Other(err.to_string())),
-            }),
+            crate::frontmatter::normalize_abstraction_cues(&mut request.memory.frontmatter)
+                .map_err(|err| WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::ValidationTyped(err) }),
         )?;
+        self.run_gate(&audit_ctx, self.enforce_plaintext_classification(&request, outcome.clone()))?;
+        self.run_gate(
+            &audit_ctx,
+            validate_frontmatter(&request.memory.frontmatter)
+                .map_err(|err| WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::ValidationTyped(err) }),
+        )?;
+        self.run_gate(&audit_ctx, self.validate_memory_path(&request.memory, outcome.clone()))?;
+        self.run_gate(&audit_ctx, enforce_no_dream_prose_sources(&request.memory, outcome.clone()))?;
         let final_hash = atomic_write(crate::markdown::AtomicWrite {
             repo: &self.roots.repo,
             memory: &request.memory,

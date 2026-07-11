@@ -9,6 +9,37 @@ const TEST_PROJECT_CANONICAL_ID: &str = "proj_privacy_e2e";
 const TEST_PROJECT_ALIAS: &str = "privacy-e2e";
 
 #[tokio::test]
+async fn privacy_e2e_secret_in_cue_is_refused_before_any_disk_effect() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let substrate = init_substrate(&temp).await;
+    let secret = "AKIA1234567890ABCDEF";
+    let response = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "secret-cue",
+            RequestPayload::WriteMemory {
+                body: "Public body".to_string(),
+                title: Some("Public title".to_string()),
+                tags: Vec::new(),
+                meta: serde_json::json!({
+                    "namespace": "project", "type": "claim", "summary": "Public summary",
+                    "canonical_namespace_id": TEST_PROJECT_CANONICAL_ID, "confidence": 0.95,
+                    "source_kind": "user", "explicit_user_context": true,
+                    "cues": [secret]
+                }),
+            },
+        ),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::GovernanceWrite(write)) = response.result else {
+        panic!("expected governance refusal")
+    };
+    assert_eq!(write.status, GovernanceStatus::Refused);
+    assert_eq!(write.reason, Some(GovernanceRefusalReason::Privacy));
+    assert!(!repo_contains(temp.path(), secret));
+}
+
+#[tokio::test]
 async fn privacy_e2e_secret_governed_write_is_refused_before_disk_effects() {
     let temp = tempfile::tempdir().expect("tempdir");
     let substrate = init_substrate(&temp).await;
@@ -638,7 +669,10 @@ async fn privacy_e2e_note_secret_is_refused() {
 
     let response = handle_request(
         &substrate,
-        RequestEnvelope::new("secret-note", RequestPayload::WriteNote { text: format!("temporary {secret}") }),
+        RequestEnvelope::new(
+            "secret-note",
+            RequestPayload::WriteNote { text: format!("temporary {secret}"), meta: serde_json::Value::Null },
+        ),
     )
     .await;
 
@@ -657,7 +691,10 @@ async fn privacy_e2e_encrypted_review_decision_fails_closed_without_not_found() 
 
     let write = handle_request(
         &substrate,
-        RequestEnvelope::new("encrypted-note", RequestPayload::WriteNote { text: "email reviewer@example.com".into() }),
+        RequestEnvelope::new(
+            "encrypted-note",
+            RequestPayload::WriteNote { text: "email reviewer@example.com".into(), meta: serde_json::Value::Null },
+        ),
     )
     .await;
     let ResponseResult::Success(ResponsePayload::WriteNote(note)) = write.result else {

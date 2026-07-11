@@ -481,6 +481,8 @@ fn sample_memory(id: &str) -> Memory {
                 expected_base_hash: None,
             },
             merge_diagnostics: None,
+            abstraction: None,
+            cues: Vec::new(),
             extras: std::collections::BTreeMap::new(),
         },
         body: "memory body quarantined by merge".to_string(),

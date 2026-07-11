@@ -2,8 +2,13 @@
 //! scans, chunk + hybrid + KNN search, and the embedding-table family.
 
 use super::*;
+use rusqlite::params;
 
 impl Substrate {
+    /// Candidate ids for the `abstraction_compile` dream job.
+    pub fn abstraction_compile_candidates(&self, limit: usize) -> SubstrateResult<Vec<MemoryId>> {
+        Ok(lock_index(&self.index).abstraction_compile_candidates(limit)?)
+    }
     /// Read-only size summary for API-lane cost estimates. Only plaintext-
     /// eligible (public/internal) chunks are counted — an upper bound on what a
     /// full re-embed would send, not a per-triple pending count.
@@ -298,6 +303,51 @@ impl Substrate {
             .pending_embedding_jobs(limit, eligibility)
     }
 
+    /// Drainable abstraction/cue jobs for the active triple.
+    pub async fn pending_aux_embedding_jobs(
+        &self,
+        limit: usize,
+        eligibility: EmbeddingLaneEligibility,
+    ) -> Result<Vec<AuxPendingEmbeddingJob>, VectorError> {
+        self.index
+            .lock()
+            .map_err(|err| VectorError::IndexUnavailable(format!("index mutex poisoned: {err}")))?
+            .pending_aux_embedding_jobs(limit, eligibility)
+    }
+
+    /// Commit one stale-fenced abstraction/cue embedding.
+    pub async fn update_aux_embedding(&self, update: AuxEmbeddingUpdate) -> Result<(), VectorError> {
+        let index = Arc::clone(&self.index);
+        tokio::task::spawn_blocking(move || {
+            index
+                .lock()
+                .map_err(|err| VectorError::IndexUnavailable(format!("index mutex poisoned: {err}")))?
+                .update_aux_embedding(&update)
+        })
+        .await
+        .map_err(|err| VectorError::IndexUnavailable(format!("update-aux-embedding task panicked: {err}")))?
+    }
+
+    /// Query current abstraction vectors without wiring them into recall.
+    pub async fn query_abstraction_vectors(
+        &self,
+        triple: &EmbeddingTriple,
+        vector: &[f32],
+        limit: usize,
+    ) -> Result<Vec<AbstractionVectorHit>, VectorError> {
+        lock_index(&self.index).query_abstraction_vectors(triple, vector, limit)
+    }
+
+    /// Query current cue vectors without wiring them into recall.
+    pub async fn query_cue_vectors(
+        &self,
+        triple: &EmbeddingTriple,
+        vector: &[f32],
+        limit: usize,
+    ) -> Result<Vec<CueVectorHit>, VectorError> {
+        lock_index(&self.index).query_cue_vectors(triple, vector, limit)
+    }
+
     /// Count pending embedding jobs for the active triple (doctor backlog).
     pub fn pending_embedding_job_count(
         &self,
@@ -305,7 +355,9 @@ impl Substrate {
     ) -> Result<usize, VectorError> {
         let index = lock_index(&self.index);
         let triple = index.active_embedding().clone();
-        crate::index::reconcile_pending_jobs(index.connection(), &triple, eligibility).map_err(Into::into)
+        let chunks = crate::index::reconcile_pending_jobs(index.connection(), &triple, eligibility)?;
+        let aux = index.pending_aux_embedding_jobs(usize::MAX, eligibility)?.len();
+        Ok(chunks + aux)
     }
 
     /// Count pending embedding jobs held local-only by lane eligibility.
@@ -316,6 +368,45 @@ impl Substrate {
         let index = lock_index(&self.index);
         let triple = index.active_embedding().clone();
         crate::index::held_local_embedding_jobs(index.connection(), &triple, eligibility).map_err(Into::into)
+    }
+
+    /// Per-row-kind indexed/pending/held-local counts for status and doctor.
+    pub fn embedding_row_kind_counts(
+        &self,
+        eligibility: EmbeddingLaneEligibility,
+    ) -> Result<BTreeMap<String, u64>, VectorError> {
+        let index = lock_index(&self.index);
+        let triple = index.active_embedding().clone();
+        let mut counts = BTreeMap::new();
+        for (key, sql) in [
+            ("chunk_indexed", "SELECT COUNT(*) FROM memory_chunks"),
+            ("abstraction_indexed", "SELECT COUNT(*) FROM memory_abstractions"),
+            ("cue_indexed", "SELECT COUNT(*) FROM memory_cues"),
+        ] {
+            let count: i64 = index.connection().query_row(sql, [], |row| row.get(0))?;
+            counts.insert(key.to_string(), count as u64);
+        }
+        counts.insert(
+            "chunk_pending".to_string(),
+            crate::index::reconcile_pending_jobs(index.connection(), &triple, eligibility)? as u64,
+        );
+        counts.insert(
+            "chunk_held_local".to_string(),
+            crate::index::held_local_embedding_jobs(index.connection(), &triple, eligibility)? as u64,
+        );
+        let eligible_aux = index.pending_aux_embedding_jobs(usize::MAX, eligibility)?;
+        for kind in [AuxRowKind::Abstraction, AuxRowKind::Cue] {
+            let eligible = eligible_aux.iter().filter(|job| job.row_kind == kind).count() as u64;
+            let total: i64 = index.connection().query_row(
+                "SELECT COUNT(*) FROM aux_pending_embedding_jobs WHERE row_kind=?1
+                   AND provider=?2 AND model_ref=?3 AND dimension=?4",
+                params![kind.as_db_str(), triple.provider, triple.model_ref, i64::from(triple.dimension)],
+                |row| row.get(0),
+            )?;
+            counts.insert(format!("{}_pending", kind.as_db_str()), eligible);
+            counts.insert(format!("{}_held_local", kind.as_db_str()), (total as u64).saturating_sub(eligible));
+        }
+        Ok(counts)
     }
 
     /// Drop embedding model and return the structured report (spec §16.4, B-API-4).

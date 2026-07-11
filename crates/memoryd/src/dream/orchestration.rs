@@ -12,9 +12,9 @@ use memory_privacy::{
     PrivacyStorageAction,
 };
 use memory_substrate::{
-    config::PromptVersion, Author, AuthorKind, AuxScope, ClassificationOutcome, Entity, EventContext, Evidence,
-    Frontmatter, Memory, MemoryStatus, MemoryType, RecallIndexQuery, RepoPath, RetrievalPolicy, Scope, Sensitivity,
-    Source, SourceKind, Substrate, TrustLevel, WriteMode, WritePolicy, WriteRequest,
+    config::PromptVersion, Author, AuthorKind, AuxScope, Entity, EventContext, Evidence, Frontmatter, Memory,
+    MemoryStatus, MemoryType, RecallIndexQuery, RepoPath, RetrievalPolicy, Scope, Sensitivity, Source, SourceKind,
+    Substrate, TrustLevel, WriteMode, WritePolicy, WriteRequest,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -244,6 +244,8 @@ impl SubstrateCandidateWriter {
         let id = self.substrate.next_memory_id().await.map_err(|err| err.to_string())?;
         let source_ref_count = request.evidence.len();
         let memory = candidate_memory(id, &request)?;
+        let classification =
+            crate::handlers::governance::classify_plaintext_memory(&memory).map_err(|error| error.message)?;
         let id = memory.frontmatter.id.as_str().to_string();
         self.substrate
             .write_memory(WriteRequest {
@@ -257,7 +259,7 @@ impl SubstrateCandidateWriter {
                     reason: Some("dreaming-strict candidate write".to_string()),
                 },
                 allow_best_effort_durability: true,
-                classification: ClassificationOutcome::Trusted,
+                classification,
             })
             .await
             .map_err(|err| err.kind.to_string())?;
@@ -330,6 +332,8 @@ fn candidate_memory(id: memory_substrate::MemoryId, request: &CandidateWriteRequ
             expected_base_hash: None,
         },
         merge_diagnostics: None,
+        abstraction: None,
+        cues: Vec::new(),
         extras: BTreeMap::new(),
     };
     frontmatter.set_grounding_rehydration_required(request.grounding_rehydration_required);

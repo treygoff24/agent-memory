@@ -1,5 +1,191 @@
 use memory_substrate::*;
 
+#[test]
+fn auxiliary_vectors_are_stale_fenced_queryable_and_invalidated_on_hash_change() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let triple = EmbeddingTriple { provider: "synthetic".into(), model_ref: "aux".into(), dimension: 3 };
+    let connection = memory_substrate::index::open_index(&temp.path().join("index.sqlite")).expect("index");
+    let mut index = memory_substrate::index::Index::with_active_embedding(connection, triple.clone());
+    let mut memory = sample_memory("mem_20260424_a1b2c3d4e5f60718_000099");
+    memory.frontmatter.abstraction = Some("OAuth token policy".into());
+    memory.frontmatter.cues = vec!["OAuth refresh".into()];
+    index.upsert_memory(&memory, false).expect("upsert");
+    let jobs = index.pending_aux_embedding_jobs(10, EmbeddingLaneEligibility::AllTiers).expect("jobs");
+    assert_eq!(jobs.len(), 2);
+    let abstraction = jobs.iter().find(|job| job.row_kind == AuxRowKind::Abstraction).expect("abstraction job").clone();
+    let cue = jobs.iter().find(|job| job.row_kind == AuxRowKind::Cue).expect("cue job").clone();
+    let stale = index
+        .update_aux_embedding(&AuxEmbeddingUpdate {
+            row_kind: AuxRowKind::Abstraction,
+            target_id: abstraction.target_id.clone(),
+            expected_content_hash: Sha256::new("sha256:stale"),
+            triple: triple.clone(),
+            vector: vec![1.0, 0.0, 0.0],
+        })
+        .expect_err("stale fence");
+    assert!(matches!(stale, VectorError::StaleAux { .. }));
+    index
+        .update_aux_embedding(&AuxEmbeddingUpdate {
+            row_kind: AuxRowKind::Abstraction,
+            target_id: abstraction.target_id.clone(),
+            expected_content_hash: abstraction.content_hash.clone(),
+            triple: triple.clone(),
+            vector: vec![1.0, 0.0, 0.0],
+        })
+        .expect("update");
+    assert_eq!(index.query_abstraction_vectors(&triple, &[1.0, 0.0, 0.0], 3).expect("query").len(), 1);
+    index
+        .update_aux_embedding(&AuxEmbeddingUpdate {
+            row_kind: AuxRowKind::Cue,
+            target_id: cue.target_id,
+            expected_content_hash: cue.content_hash,
+            triple: triple.clone(),
+            vector: vec![0.0, 1.0, 0.0],
+        })
+        .expect("cue update");
+    assert_eq!(index.query_cue_vectors(&triple, &[0.0, 1.0, 0.0], 3).expect("cue query").len(), 1);
+    let chunk = index
+        .pending_embedding_jobs(1, EmbeddingLaneEligibility::AllTiers)
+        .expect("chunk jobs")
+        .pop()
+        .expect("chunk job");
+    index
+        .update_embedding(&EmbeddingUpdate {
+            chunk_id: chunk.chunk_id,
+            expected_chunk_hash: chunk.content_hash,
+            triple: triple.clone(),
+            vector: vec![0.0, 0.0, 1.0],
+        })
+        .expect("chunk update");
+
+    memory.frontmatter.sensitivity = Sensitivity::Confidential;
+    memory.frontmatter.retrieval_policy.index_embeddings = true;
+    index.upsert_memory(&memory, false).expect("direct operator-override upgrade");
+    assert_eq!(index.vector_count(&triple).expect("chunk vector count"), 0);
+    assert!(index
+        .query_abstraction_vectors(&triple, &[1.0, 0.0, 0.0], 3)
+        .expect("revoked abstraction query")
+        .is_empty());
+    assert!(index.query_cue_vectors(&triple, &[0.0, 1.0, 0.0], 3).expect("revoked cue query").is_empty());
+    assert!(!index
+        .pending_aux_embedding_jobs(10, EmbeddingLaneEligibility::AllTiers)
+        .expect("local override jobs")
+        .is_empty());
+    assert!(index
+        .pending_aux_embedding_jobs(10, EmbeddingLaneEligibility::PlaintextOnly)
+        .expect("api held-local jobs")
+        .is_empty());
+    memory.frontmatter.sensitivity = Sensitivity::Public;
+    index.upsert_memory(&memory, false).expect("restore public fixture");
+
+    let cue_table = memory_substrate::index::sqlite_vec::aux_vector_table_name(AuxRowKind::Cue, &triple);
+    index.connection().execute(&format!("DELETE FROM {cue_table}"), []).expect("simulate missing vector");
+    index.reconcile_active_embedding_jobs(EmbeddingLaneEligibility::AllTiers).expect("reconcile missing aux vector");
+    assert!(index
+        .pending_aux_embedding_jobs(10, EmbeddingLaneEligibility::AllTiers)
+        .expect("re-enqueued cue")
+        .iter()
+        .any(|job| job.row_kind == AuxRowKind::Cue));
+
+    memory.frontmatter.sensitivity = Sensitivity::Confidential;
+    memory.frontmatter.retrieval_policy.index_embeddings = false;
+    memory.frontmatter.retrieval_policy.index_body = false;
+    index.upsert_memory(&memory, false).expect("default sensitivity upgrade");
+    let abstraction_table =
+        memory_substrate::index::sqlite_vec::aux_vector_table_name(AuxRowKind::Abstraction, &triple);
+    let remaining: i64 = index
+        .connection()
+        .query_row(&format!("SELECT COUNT(*) FROM {abstraction_table}"), [], |row| row.get(0))
+        .expect("vector count");
+    assert_eq!(remaining, 0, "default sensitivity upgrade revokes aux vectors");
+    assert!(index.pending_aux_embedding_jobs(10, EmbeddingLaneEligibility::AllTiers).unwrap().is_empty());
+
+    memory.frontmatter.retrieval_policy.index_embeddings = true;
+    index.upsert_memory(&memory, false).expect("operator override");
+    assert!(!index.pending_aux_embedding_jobs(10, EmbeddingLaneEligibility::AllTiers).unwrap().is_empty());
+    assert!(index.pending_aux_embedding_jobs(10, EmbeddingLaneEligibility::PlaintextOnly).unwrap().is_empty());
+    memory.frontmatter.sensitivity = Sensitivity::Public;
+    memory.frontmatter.retrieval_policy.index_body = true;
+    index.upsert_memory(&memory, false).expect("restore public fixture");
+
+    memory.frontmatter.abstraction = Some("Rotated token policy".into());
+    index.upsert_memory(&memory, false).expect("changed upsert");
+    assert!(index.query_abstraction_vectors(&triple, &[1.0, 0.0, 0.0], 3).expect("query").is_empty());
+    assert!(index
+        .pending_aux_embedding_jobs(10, EmbeddingLaneEligibility::AllTiers)
+        .expect("replacement job")
+        .iter()
+        .any(|job| job.row_kind == AuxRowKind::Abstraction && job.content_hash != abstraction.content_hash));
+
+    for status in [MemoryStatus::Superseded, MemoryStatus::Tombstoned, MemoryStatus::Quarantined] {
+        memory.frontmatter.status = status;
+        index.upsert_memory(&memory, false).expect("leave servable set");
+        assert_eq!(
+            index
+                .connection()
+                .query_row("SELECT COUNT(*) FROM memory_abstractions", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert!(index.pending_aux_embedding_jobs(10, EmbeddingLaneEligibility::AllTiers).unwrap().is_empty());
+        memory.frontmatter.status = MemoryStatus::Active;
+        index.upsert_memory(&memory, false).expect("re-enter servable set");
+    }
+    memory.frontmatter.status = MemoryStatus::Pinned;
+    index.upsert_memory(&memory, false).expect("enter pinned servable set");
+    assert_eq!(
+        index
+            .connection()
+            .query_row("SELECT COUNT(*) FROM memory_abstractions", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    let job = index
+        .pending_aux_embedding_jobs(10, EmbeddingLaneEligibility::AllTiers)
+        .unwrap()
+        .into_iter()
+        .find(|job| job.row_kind == AuxRowKind::Abstraction)
+        .expect("re-materialized abstraction job");
+    index
+        .update_aux_embedding(&AuxEmbeddingUpdate {
+            row_kind: job.row_kind,
+            target_id: job.target_id,
+            expected_content_hash: job.content_hash,
+            triple: triple.clone(),
+            vector: vec![1.0, 0.0, 0.0],
+        })
+        .expect("drain re-materialized abstraction");
+    assert_eq!(index.query_abstraction_vectors(&triple, &[1.0, 0.0, 0.0], 3).unwrap().len(), 1);
+}
+
+#[test]
+fn active_triple_switch_reenqueues_abstraction_and_cue_rows() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("index.sqlite");
+    let old = EmbeddingTriple { provider: "synthetic".into(), model_ref: "old".into(), dimension: 3 };
+    let new = EmbeddingTriple { provider: "synthetic".into(), model_ref: "new".into(), dimension: 5 };
+    let mut memory = sample_memory("mem_20260424_a1b2c3d4e5f60718_000098");
+    memory.frontmatter.abstraction = Some("OAuth token policy".into());
+    memory.frontmatter.cues = vec!["OAuth refresh".into()];
+    let connection = memory_substrate::index::open_index(&path).expect("old index");
+    let mut index = memory_substrate::index::Index::with_active_embedding(connection, old);
+    index.upsert_memory(&memory, false).expect("seed semantic rows");
+    drop(index);
+
+    let connection = memory_substrate::index::open_index(&path).expect("reopen index");
+    let mut index = memory_substrate::index::Index::with_active_embedding(connection, new.clone());
+    index.reconcile_active_embedding_jobs(EmbeddingLaneEligibility::AllTiers).expect("reconcile switched triple");
+    let queued: i64 = index
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM aux_pending_embedding_jobs WHERE provider=?1 AND model_ref=?2 AND dimension=?3",
+            rusqlite::params![new.provider, new.model_ref, i64::from(new.dimension)],
+            |row| row.get(0),
+        )
+        .expect("new aux jobs");
+    assert_eq!(queued, 2);
+}
+
 #[tokio::test]
 async fn update_embedding_rejects_wrong_dimension_and_stale_hash() {
     let (_temp, substrate, memory) = seeded_substrate().await;
@@ -380,6 +566,8 @@ fn sample_memory(id: &str) -> Memory {
                 expected_base_hash: None,
             },
             merge_diagnostics: None,
+            abstraction: None,
+            cues: Vec::new(),
             extras: std::collections::BTreeMap::new(),
         },
         body: "vector body".to_string(),

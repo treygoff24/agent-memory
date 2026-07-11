@@ -65,6 +65,8 @@ pub(crate) struct GovernanceMeta {
     #[serde(rename = "type")]
     memory_type: GovernanceMemoryType,
     summary: Option<String>,
+    abstraction: Option<String>,
+    cues: Vec<String>,
     confidence: f64,
     sensitivity: Option<GovernanceSensitivity>,
     source_kind: GovernanceSourceKindMeta,
@@ -229,6 +231,8 @@ impl Default for GovernanceMeta {
             namespace: GovernanceNamespace::Project,
             memory_type: GovernanceMemoryType::Project,
             summary: None,
+            abstraction: None,
+            cues: Vec::new(),
             confidence: 0.85,
             sensitivity: None,
             source_kind: GovernanceSourceKindMeta::User,
@@ -325,6 +329,10 @@ impl GovernanceWriteInput {
             return Err(HandlerError::invalid_request("memory body must not be empty"));
         }
         let mut meta = parse_governance_meta(meta, source)?;
+        meta.abstraction = memory_substrate::frontmatter::normalize_abstraction_value(meta.abstraction)
+            .map_err(|error| HandlerError::invalid_request(error.to_string()))?;
+        meta.cues = memory_substrate::frontmatter::normalize_cue_values(meta.cues)
+            .map_err(|error| HandlerError::invalid_request(error.to_string()))?;
         meta.session_id = validated_claim_lock_identity_field("session_id", meta.session_id)?;
         meta.harness = validated_claim_lock_identity_field("harness", meta.harness)?;
         if !meta.confidence.is_finite() || !(0.0..=1.0).contains(&meta.confidence) {
@@ -367,6 +375,10 @@ impl GovernanceWriteInput {
         if let Some(summary) = &self.meta.summary {
             fields.push(summary.as_str());
         }
+        if let Some(abstraction) = &self.meta.abstraction {
+            fields.push(abstraction.as_str());
+        }
+        fields.extend(self.meta.cues.iter().map(String::as_str));
         // Skip provenance *locators* from the privacy scan: a WebCapture URL or a
         // `file:`-grounded import/file path is a machine-generated reference, not
         // user-authored content. Scanning them produces false positives — a
@@ -533,6 +545,8 @@ impl GovernanceWriteInput {
                         "evidence_near_duplicates": []
                     })
                 }),
+                abstraction: self.meta.abstraction.clone(),
+                cues: self.meta.cues.clone(),
                 extras,
             },
             body: self.body.clone(),

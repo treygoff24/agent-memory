@@ -377,6 +377,8 @@ fn citing_memory(id: &str, status: MemoryStatus, fragment_refs: &[&str]) -> Memo
                 expected_base_hash: None,
             },
             merge_diagnostics: None,
+            abstraction: None,
+            cues: Vec::new(),
             extras: Default::default(),
         },
         body: "deferral memory body".to_string(),

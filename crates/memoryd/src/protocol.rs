@@ -89,6 +89,8 @@ pub enum RequestPayload {
     },
     WriteNote {
         text: String,
+        #[serde(default)]
+        meta: Value,
     },
     WriteMemory {
         body: String,
@@ -732,6 +734,8 @@ pub struct EmbeddingStatus {
     pub in_flight: usize,
     #[serde(default)]
     pub held_local_jobs: u64,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub row_kind_counts: BTreeMap<String, u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
 }
@@ -746,6 +750,7 @@ impl Default for EmbeddingStatus {
             idle_unload_source: "unknown".to_string(),
             in_flight: 0,
             held_local_jobs: 0,
+            row_kind_counts: BTreeMap::new(),
             last_error: None,
         }
     }
@@ -962,6 +967,9 @@ pub struct DoctorResponse {
     pub healthy: bool,
     pub findings: Vec<DoctorFinding>,
     pub guidance: String,
+    /// Per-row-kind embedding lifecycle counts.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub embedding_counts: BTreeMap<String, u64>,
 }
 
 /// Severity of a doctor finding (F4 / I-F4.2). `Fatal` findings flip `healthy`

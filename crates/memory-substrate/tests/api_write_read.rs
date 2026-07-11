@@ -1531,6 +1531,8 @@ fn sample_memory(id: &str) -> Memory {
                 expected_base_hash: None,
             },
             merge_diagnostics: None,
+            abstraction: None,
+            cues: Vec::new(),
             extras: std::collections::BTreeMap::new(),
         },
         // Body includes the id so each fixture produces a distinct chunk_id —

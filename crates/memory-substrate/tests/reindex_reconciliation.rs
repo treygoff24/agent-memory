@@ -20,6 +20,32 @@ async fn external_edit_to_same_path_is_indexed_by_reindex() {
 }
 
 #[tokio::test]
+async fn reindex_from_files_rebuilds_semantic_rows_and_jobs() {
+    let (_temp, substrate, roots, mut memory) = seeded("mem_20260424_a1b2c3d4e5f60718_020099").await;
+    memory.frontmatter.abstraction = Some("OAuth token policy".to_string());
+    memory.frontmatter.cues = vec!["OAuth refresh".to_string(), "Token rotation".to_string()];
+    let path = roots.repo.join(memory.path.clone().expect("path").as_path());
+    std::fs::write(&path, memory_substrate::frontmatter::serialize_document(&memory).expect("serialize"))
+        .expect("write semantic fixture");
+
+    substrate.reindex().await.expect("rebuild semantic rows");
+    let (abstractions, cues, jobs) = substrate
+        .with_index(|index| {
+            let abstractions = index
+                .connection()
+                .query_row("SELECT COUNT(*) FROM memory_abstractions", [], |row| row.get::<_, i64>(0))?;
+            let cues =
+                index.connection().query_row("SELECT COUNT(*) FROM memory_cues", [], |row| row.get::<_, i64>(0))?;
+            let jobs = index
+                .connection()
+                .query_row("SELECT COUNT(*) FROM aux_pending_embedding_jobs", [], |row| row.get::<_, i64>(0))?;
+            Ok((abstractions, cues, jobs))
+        })
+        .expect("semantic counts");
+    assert_eq!((abstractions, cues, jobs), (1, 2, 3));
+}
+
+#[tokio::test]
 async fn reindex_refuses_plaintext_markdown_under_encrypted_namespace() {
     let (_temp, substrate, roots, memory) = seeded("mem_20260424_a1b2c3d4e5f60718_020005").await;
     let markdown = memory_substrate::frontmatter::serialize_document(&memory).expect("serialize leak fixture");
@@ -275,6 +301,8 @@ fn sample_memory(id: &str) -> Memory {
                 expected_base_hash: None,
             },
             merge_diagnostics: None,
+            abstraction: None,
+            cues: Vec::new(),
             extras: std::collections::BTreeMap::new(),
         },
         body: "body".to_string(),

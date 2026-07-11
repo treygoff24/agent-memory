@@ -208,6 +208,7 @@ async fn correct_reality_check_item(
             old_id: memory_id.as_str().to_owned(),
             content: new_body,
             reason: "reality check correction".to_owned(),
+            preserve_frontmatter: false,
             meta: serde_json::json!({
                 "namespace": governance_namespace_meta(&old.frontmatter),
                 "type": governance_type_meta(old.frontmatter.memory_type),

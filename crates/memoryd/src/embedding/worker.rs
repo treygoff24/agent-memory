@@ -27,7 +27,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use memory_substrate::{
-    EmbeddingLaneEligibility, EmbeddingTriple, EmbeddingUpdate, PendingEmbeddingJob, Substrate, VectorError,
+    AuxEmbeddingUpdate, EmbeddingLaneEligibility, EmbeddingTriple, EmbeddingUpdate, PendingEmbeddingJob, Substrate,
+    VectorError,
 };
 use tokio::sync::watch;
 use tokio::time::sleep;
@@ -337,7 +338,7 @@ async fn drain_batch_with_budget(
         .await
         .map_err(|err| DrainError::Other(err.to_string()))?;
     if jobs.is_empty() {
-        return Ok(DrainOutcome { requested, fetched: 0, succeeded: 0 });
+        return drain_aux_batch(substrate, provider, requested, active_triple, eligibility).await;
     }
     let fetched = jobs.len();
     let triple = provider.triple().clone();
@@ -403,6 +404,47 @@ async fn drain_batch_with_budget(
     let pairs: Vec<(PendingEmbeddingJob, Vec<f32>)> = live_jobs.into_iter().zip(vectors).collect();
     succeeded =
         succeeded.saturating_add(write_and_record_embedded_jobs(substrate, &triple, pairs, retry_budget).await?);
+    let aux = drain_aux_batch(substrate, provider, requested, active_triple, eligibility).await?;
+    Ok(DrainOutcome {
+        requested,
+        fetched: fetched.saturating_add(aux.fetched),
+        succeeded: succeeded.saturating_add(aux.succeeded),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn drain_aux_batch(
+    substrate: &Substrate,
+    provider: &Arc<dyn EmbeddingProvider>,
+    requested: usize,
+    triple: &EmbeddingTriple,
+    eligibility: EmbeddingLaneEligibility,
+) -> Result<DrainOutcome, DrainError> {
+    let jobs = substrate
+        .pending_aux_embedding_jobs(requested, eligibility)
+        .await
+        .map_err(|error| DrainError::Other(error.to_string()))?;
+    let fetched = jobs.len();
+    if jobs.is_empty() {
+        return Ok(DrainOutcome { requested, fetched, succeeded: 0 });
+    }
+    let texts = jobs.iter().map(|job| job.text.as_str()).collect::<Vec<_>>();
+    let vectors = provider.embed_documents(&texts).map_err(|error| DrainError::Other(error.to_string()))?;
+    let mut succeeded = 0;
+    for (job, vector) in jobs.into_iter().zip(vectors) {
+        let update = AuxEmbeddingUpdate {
+            row_kind: job.row_kind,
+            target_id: job.target_id,
+            expected_content_hash: job.content_hash,
+            triple: triple.clone(),
+            vector,
+        };
+        match substrate.update_aux_embedding(update).await {
+            Ok(()) => succeeded += 1,
+            Err(VectorError::StaleAux { .. }) => {}
+            Err(error) => tracing::warn!(%error, "aux embedding write failed"),
+        }
+    }
     Ok(DrainOutcome { requested, fetched, succeeded })
 }
 

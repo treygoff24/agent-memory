@@ -468,6 +468,8 @@ fn peer_memory(spec: &PeerMemorySpec<'_>, device_id: &str) -> Memory {
                 expected_base_hash: None,
             },
             merge_diagnostics: None,
+            abstraction: None,
+            cues: Vec::new(),
             extras: Default::default(),
         },
         body: format!("raw body secret for {} that must stay out of peer XML", spec.id),

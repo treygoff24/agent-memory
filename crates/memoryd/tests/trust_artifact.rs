@@ -390,6 +390,8 @@ fn sample_memory(id: &str, summary: &str, body: &str) -> Memory {
                 expected_base_hash: None,
             },
             merge_diagnostics: None,
+            abstraction: None,
+            cues: Vec::new(),
             extras: [
                 ("confidence_reason".to_owned(), json!("user confirmed; corroborated by 2 sources")),
                 (

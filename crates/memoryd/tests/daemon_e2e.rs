@@ -27,7 +27,7 @@ async fn cli_client_write_note_then_search_then_get_through_live_daemon() {
     let response = client::request(
         &socket,
         "cli-write-note",
-        RequestPayload::WriteNote { text: "live daemon end-to-end note".to_string() },
+        RequestPayload::WriteNote { text: "live daemon end-to-end note".to_string(), meta: serde_json::Value::Null },
     )
     .await
     .expect("client::request reaches daemon");

@@ -255,6 +255,8 @@ impl PrivacyFixture {
                 },
                 merge_diagnostics: matches!(status, MemoryStatus::Quarantined)
                     .then(|| serde_json::json!({"reason": "test"})),
+                abstraction: None,
+                cues: Vec::new(),
                 extras: BTreeMap::new(),
             },
             body: summary.to_owned(),

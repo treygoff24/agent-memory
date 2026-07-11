@@ -166,6 +166,8 @@ fn sample_memory() -> Memory {
                 expected_base_hash: None,
             },
             merge_diagnostics: None,
+            abstraction: None,
+            cues: Vec::new(),
             extras: Default::default(),
         },
         body: "Trust artifact dynamics config fixture".to_owned(),

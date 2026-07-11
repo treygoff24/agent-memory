@@ -120,6 +120,46 @@ CREATE TABLE IF NOT EXISTS pending_embedding_jobs(
 CREATE INDEX IF NOT EXISTS idx_pending_embedding_jobs_enqueued
   ON pending_embedding_jobs(enqueued_at);
 
+CREATE TABLE IF NOT EXISTS memory_abstractions (
+  memory_id TEXT PRIMARY KEY REFERENCES memories(id) ON DELETE CASCADE,
+  abstraction TEXT NOT NULL,
+  abstraction_hash TEXT NOT NULL,
+  source_body_hash TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS memory_cues (
+  memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+  ordinal INTEGER NOT NULL,
+  cue_text TEXT NOT NULL,
+  cue_hash TEXT NOT NULL,
+  PRIMARY KEY (memory_id, ordinal)
+);
+
+CREATE TABLE IF NOT EXISTS aux_embedding_meta (
+  row_kind TEXT NOT NULL CHECK (row_kind IN ('abstraction','cue')),
+  target_id TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  model_ref TEXT NOT NULL,
+  dimension INTEGER NOT NULL,
+  embedded_at TEXT NOT NULL,
+  PRIMARY KEY (row_kind, target_id, provider, model_ref, dimension)
+);
+
+CREATE TABLE IF NOT EXISTS aux_pending_embedding_jobs (
+  row_kind TEXT NOT NULL CHECK (row_kind IN ('abstraction','cue')),
+  target_id TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  model_ref TEXT NOT NULL,
+  dimension INTEGER NOT NULL,
+  enqueued_at TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  PRIMARY KEY (row_kind, target_id, provider, model_ref, dimension)
+);
+CREATE INDEX IF NOT EXISTS idx_aux_pending_jobs_enqueued ON aux_pending_embedding_jobs(enqueued_at);
+
 CREATE TABLE IF NOT EXISTS chunk_vectors(
   chunk_id    TEXT NOT NULL,
   provider    TEXT NOT NULL,

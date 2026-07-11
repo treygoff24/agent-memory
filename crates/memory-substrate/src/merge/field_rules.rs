@@ -4,7 +4,10 @@ use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
+use unicode_normalization::UnicodeNormalization;
 
+use crate::frontmatter::canonicalize_cue_union;
 use crate::model::{Entity, Evidence, Frontmatter, Memory, Scope, Sensitivity, TombstoneEvent};
 
 use super::quarantine::EvidenceNearDuplicate;
@@ -218,6 +221,7 @@ fn apply_scalar_rules(
     take_theirs_if_ours_unchanged(&base.summary, &ours.summary, &theirs.summary, &mut merged.summary);
     take_theirs_if_ours_unchanged(&base.author, &ours.author, &theirs.author, &mut merged.author);
     take_theirs_if_ours_unchanged(&base.source, &ours.source, &theirs.source, &mut merged.source);
+    merge_abstraction(base, ours, theirs, merged, diagnostics);
 
     if ours.summary != theirs.summary && ours.summary != base.summary && theirs.summary != base.summary {
         let later_side = if theirs.updated_at > ours.updated_at { "theirs" } else { "ours" };
@@ -234,6 +238,53 @@ fn apply_scalar_rules(
             bucket: DiagnosticBucket::PreservedSources,
         });
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn merge_abstraction(
+    base: &Frontmatter,
+    ours: &Frontmatter,
+    theirs: &Frontmatter,
+    merged: &mut Frontmatter,
+    diagnostics: &mut Vec<FieldDiagnostic>,
+) {
+    let ours_changed = ours.abstraction != base.abstraction;
+    let theirs_changed = theirs.abstraction != base.abstraction;
+    match (ours_changed, theirs_changed) {
+        (false, true) => merged.abstraction = theirs.abstraction.clone(),
+        (true, false) | (false, false) => merged.abstraction = ours.abstraction.clone(),
+        (true, true) if ours.abstraction == theirs.abstraction => merged.abstraction = ours.abstraction.clone(),
+        (true, true) => {
+            let ours_wins = if ours.updated_at != theirs.updated_at {
+                ours.updated_at > theirs.updated_at
+            } else {
+                abstraction_tie_key(ours.abstraction.as_deref()) >= abstraction_tie_key(theirs.abstraction.as_deref())
+            };
+            let (winner, loser) = if ours_wins {
+                (&ours.abstraction, &theirs.abstraction)
+            } else {
+                (&theirs.abstraction, &ours.abstraction)
+            };
+            merged.abstraction = winner.clone();
+            diagnostics.push(FieldDiagnostic {
+                field: "abstraction".to_string(),
+                note: serde_json::json!({
+                    "field": "abstraction",
+                    "winner_value": winner,
+                    "loser_value": loser,
+                }),
+                bucket: DiagnosticBucket::PreservedSources,
+            });
+        }
+    }
+}
+
+fn abstraction_tie_key(value: Option<&str>) -> (bool, [u8; 32]) {
+    let Some(value) = value.filter(|value| !value.trim().is_empty()) else {
+        return (false, [0; 32]);
+    };
+    let normalized = value.nfc().collect::<String>();
+    (true, Sha256::digest(normalized.as_bytes()).into())
 }
 
 fn take_theirs_if_ours_unchanged<T: PartialEq + Clone>(base: &T, ours: &T, theirs: &T, merged: &mut T) {
@@ -466,6 +517,7 @@ fn merge_array_unions(
 ) {
     merged.tags = union_strings_sorted(&ours.tags, &theirs.tags);
     merged.aliases = union_strings_sorted(&ours.aliases, &theirs.aliases);
+    merged.cues = canonicalize_cue_union(ours.cues.iter().chain(&theirs.cues).map(String::as_str));
     merged.supersedes = union_memory_ids_sorted(&ours.supersedes, &theirs.supersedes);
     merged.superseded_by = union_memory_ids_sorted(&ours.superseded_by, &theirs.superseded_by);
     merged.related = union_memory_ids_sorted(&ours.related, &theirs.related);

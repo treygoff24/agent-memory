@@ -295,6 +295,8 @@ impl DreamRecallFixture {
                     expected_base_hash: None,
                 },
                 merge_diagnostics: None,
+                abstraction: None,
+                cues: Vec::new(),
                 extras: BTreeMap::new(),
             },
             body: "seed body".to_owned(),

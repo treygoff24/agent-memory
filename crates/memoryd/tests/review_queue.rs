@@ -430,6 +430,8 @@ fn review_memory() -> Memory {
                 "lifecycle_notes": [],
                 "evidence_near_duplicates": []
             })),
+            abstraction: None,
+            cues: Vec::new(),
             extras: [("governance_reason".to_string(), serde_json::json!("contradiction requires review"))]
                 .into_iter()
                 .collect(),

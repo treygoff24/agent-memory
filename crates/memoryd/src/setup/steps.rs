@@ -1781,7 +1781,8 @@ mod tests {
                 ResponsePayload::Doctor(DoctorResponse {
                     healthy: true,
                     findings: Vec::new(),
-                    guidance: String::new()
+                    guidance: String::new(),
+                    embedding_counts: std::collections::BTreeMap::new(),
                 }),
             ))
             .status,

@@ -334,6 +334,50 @@ fn updated_at_takes_max_created_at_takes_min() {
 }
 
 #[test]
+fn abstraction_conflict_uses_updated_at_then_side_independent_hash_and_preserves_loser() {
+    let base = doc_with_extra_yaml("base", "body", "abstraction: Base concept\n");
+    let ours = doc_with_extra_yaml("base", "body", "abstraction: OAuth policy\n");
+    let theirs = doc_with_extra_yaml("base", "body", "abstraction: Token policy\n")
+        .replace("updated_at: 2026-04-24T12:00:00Z", "updated_at: 2026-04-25T12:00:00Z");
+    let MergeResult::Clean(text) = merge(&base, &ours, &theirs) else { panic!("clean merge") };
+    let parsed = parse_document(&text, None).expect("parse");
+    assert_eq!(parsed.memory.frontmatter.abstraction.as_deref(), Some("Token policy"));
+    assert!(first_diagnostic(&parsed.memory.frontmatter.merge_diagnostics)["preserved_sources"]
+        .as_array()
+        .expect("preserved")
+        .iter()
+        .any(|entry| entry["field"] == "abstraction" && entry["loser_value"] == "OAuth policy"));
+
+    let ours_equal_time = ours;
+    let theirs_equal_time = doc_with_extra_yaml("base", "body", "abstraction: Token policy\n");
+    let forward = merge(&base, &ours_equal_time, &theirs_equal_time);
+    let reverse = merge(&base, &theirs_equal_time, &ours_equal_time);
+    assert_eq!(merge_text(&forward), merge_text(&reverse));
+    let forward = parse_document(merge_text(&forward), None).expect("forward parse");
+    let reverse = parse_document(merge_text(&reverse), None).expect("reverse parse");
+    assert_eq!(forward.memory.frontmatter.abstraction, reverse.memory.frontmatter.abstraction);
+    for parsed in [forward, reverse] {
+        assert!(first_diagnostic(&parsed.memory.frontmatter.merge_diagnostics)["preserved_sources"]
+            .as_array()
+            .expect("preserved")
+            .iter()
+            .any(|entry| entry["field"] == "abstraction" && entry["loser_value"] == "Token policy"));
+    }
+}
+
+#[test]
+fn cue_union_converges_with_overflow_and_casing_only_duplicates() {
+    let base = doc("base", "body");
+    let ours = doc_with_extra_yaml("base", "body", "cues:\n  - oauth\n  - Straße auth\n  - Zebra state\n");
+    let theirs = doc_with_extra_yaml("base", "body", "cues:\n  - OAuth\n  - STRASSE auth\n  - Alpha state\n");
+    let forward = merge(&base, &ours, &theirs);
+    let reverse = merge(&base, &theirs, &ours);
+    assert_eq!(merge_text(&forward), merge_text(&reverse));
+    let parsed = parse_document(merge_text(&forward), None).expect("parse");
+    assert_eq!(parsed.memory.frontmatter.cues, vec!["Alpha state", "OAuth", "STRASSE auth"]);
+}
+
+#[test]
 fn swap_order_yields_identical_output_curated_fixtures() {
     // Smoke fixtures asserting commutativity of `(ours, theirs)` swaps.
     // The fuzz target covers the property at scale; this test ensures the
@@ -399,6 +443,12 @@ fn merge(base: &str, ours: &str, theirs: &str) -> MergeResult {
 
 fn merge_at(base: &str, ours: &str, theirs: &str) -> MergeResult {
     merge_markdown(MergeInput { base, ours, theirs, path: "agent/patterns/m.md" }).expect("merge")
+}
+
+fn merge_text(result: &MergeResult) -> &str {
+    match result {
+        MergeResult::Clean(text) | MergeResult::Quarantine(text) => text,
+    }
 }
 
 fn first_diagnostic(slot: &Option<Value>) -> Value {

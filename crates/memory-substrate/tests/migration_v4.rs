@@ -5,8 +5,8 @@ use memory_substrate::{DeviceId, EventId, InitOptions, MemoryId, OperationId, Ro
 use rusqlite::Connection;
 
 #[test]
-fn index_supported_schema_version_is_5() {
-    assert_eq!(INDEX_SUPPORTED_SCHEMA_VERSION, 5);
+fn index_supported_schema_version_is_6() {
+    assert_eq!(INDEX_SUPPORTED_SCHEMA_VERSION, 6);
 }
 
 #[test]
@@ -25,7 +25,7 @@ fn fresh_schema_includes_v4_tables_and_original_confidence() {
     let max_version: u32 = conn
         .query_row("SELECT COALESCE(MAX(version), 0) FROM schema_migrations", [], |row| row.get(0))
         .expect("read schema migration version");
-    assert_eq!(max_version, 5);
+    assert_eq!(max_version, 6);
 
     let user_version: u32 = conn.pragma_query_value(None, "user_version", |row| row.get(0)).expect("user_version");
     assert_eq!(user_version, 0, "schema_migrations, not PRAGMA user_version, is canonical");
@@ -52,7 +52,7 @@ fn opening_v3_database_migrates_to_v4_idempotently() {
     let max_version: u32 = conn
         .query_row("SELECT COALESCE(MAX(version), 0) FROM schema_migrations", [], |row| row.get(0))
         .expect("read schema migration version");
-    assert_eq!(max_version, 5);
+    assert_eq!(max_version, 6);
     drop(conn);
 
     let reopened = open_index(&db_path).expect("second open idempotent");

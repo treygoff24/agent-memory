@@ -182,6 +182,8 @@ fn sample_memory(
                 expected_base_hash: None,
             },
             merge_diagnostics: None,
+            abstraction: None,
+            cues: Vec::new(),
             extras: Default::default(),
         },
         body: format!("body {id}"),

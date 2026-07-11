@@ -206,6 +206,7 @@ pub(crate) async fn review_decision_response(
     }
     let status = decision.apply(&mut memory);
     let summary = bounded(&memory.frontmatter.summary, REVIEW_DECISION_SUMMARY_MAX);
+    let classification = super::governance::classify_plaintext_memory(&memory)?;
 
     substrate
         .write_memory(SubstrateWriteRequest {
@@ -219,7 +220,7 @@ pub(crate) async fn review_decision_response(
                 reason: Some(format!("review {status}")),
             },
             allow_best_effort_durability: true,
-            classification: ClassificationOutcome::Trusted,
+            classification,
         })
         .await
         .map_err(HandlerError::substrate)?;
@@ -319,6 +320,7 @@ async fn quarantine_for_grounding_rehydration(substrate: &Substrate, mut memory:
         "lifecycle_notes": ["dream grounding rehydration failed before review approval"],
         "evidence_near_duplicates": []
     }));
+    let classification = super::governance::classify_plaintext_memory(&memory)?;
 
     substrate
         .write_memory(SubstrateWriteRequest {
@@ -332,7 +334,7 @@ async fn quarantine_for_grounding_rehydration(substrate: &Substrate, mut memory:
                 reason: Some("review grounding_rehydration_failed".to_string()),
             },
             allow_best_effort_durability: true,
-            classification: ClassificationOutcome::Trusted,
+            classification,
         })
         .await
         .map_err(HandlerError::substrate)?;

@@ -47,11 +47,16 @@ pub async fn run_get(args: GetArgs) -> anyhow::Result<()> {
 
 pub async fn run_write_note(args: WriteNoteArgs) -> anyhow::Result<()> {
     let socket = resolve_socket_arg(&args.socket);
-    let response =
-        match crate::client::request(&socket, "cli-write-note", RequestPayload::WriteNote { text: args.text }).await {
-            Ok(response) => response,
-            Err(error) => emit_transport_error_and_exit(error, &socket),
-        };
+    let response = match crate::client::request(
+        &socket,
+        "cli-write-note",
+        RequestPayload::WriteNote { text: args.text, meta: resolve_meta(args.meta) },
+    )
+    .await
+    {
+        Ok(response) => response,
+        Err(error) => emit_transport_error_and_exit(error, &socket),
+    };
     emit_write_with_banner(response, &socket, write_note_response_id).await
 }
 

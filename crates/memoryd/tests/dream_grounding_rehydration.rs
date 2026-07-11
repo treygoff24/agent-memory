@@ -564,6 +564,8 @@ fn base_memory(id: &str, status: MemoryStatus, trust_level: TrustLevel) -> Memor
                 expected_base_hash: None,
             },
             merge_diagnostics: None,
+            abstraction: None,
+            cues: Vec::new(),
             extras: Default::default(),
         },
         body: "candidate body".to_string(),

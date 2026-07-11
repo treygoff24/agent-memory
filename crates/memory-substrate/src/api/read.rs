@@ -286,6 +286,8 @@ fn placeholder_frontmatter(id: &MemoryId) -> Frontmatter {
             expected_base_hash: None,
         },
         merge_diagnostics: None,
+        abstraction: None,
+        cues: Vec::new(),
         extras: std::collections::BTreeMap::new(),
     }
 }

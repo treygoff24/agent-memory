@@ -297,6 +297,8 @@ impl RecallHitFixture {
                     expected_base_hash: None,
                 },
                 merge_diagnostics: None,
+                abstraction: None,
+                cues: Vec::new(),
                 extras: BTreeMap::new(),
             },
             body: summary.to_owned(),

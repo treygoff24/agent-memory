@@ -64,6 +64,7 @@ pub(crate) async fn quarantine_resolve_response(
     memory.frontmatter.review_state = None;
     memory.frontmatter.write_policy.human_review_required = false;
     memory.frontmatter.updated_at = chrono::Utc::now();
+    let classification = super::governance::classify_plaintext_memory(&memory)?;
 
     substrate
         .write_memory(SubstrateWriteRequest {
@@ -77,7 +78,7 @@ pub(crate) async fn quarantine_resolve_response(
                 reason: Some(format!("quarantine resolve {}", mode.as_str())),
             },
             allow_best_effort_durability: true,
-            classification: ClassificationOutcome::Trusted,
+            classification,
         })
         .await
         .map_err(HandlerError::substrate)?;

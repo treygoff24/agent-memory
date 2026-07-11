@@ -14,9 +14,10 @@ use rusqlite::{params, params_from_iter, types::Value, Connection};
 use crate::error::{SubstrateResult, VectorError};
 use crate::events::{Event, EventKind};
 use crate::model::{
-    ChunkResult, EmbeddingLaneEligibility, EmbeddingTriple, EmbeddingUpdate, Entity, EventsLogMirrorHealth,
-    HybridMemoryCandidate, HybridScoreBreakdown, HybridVectorQuery, Memory, MemoryId, MemoryQuery, MemoryStatus,
-    QueryResult, RecallIndexQuery, RecallIndexRow, RepoPath, ReviewQueuePage, ReviewQueueRow, Scope, Sha256,
+    AbstractionVectorHit, AuxEmbeddingUpdate, AuxPendingEmbeddingJob, AuxRowKind, ChunkResult, CueVectorHit,
+    EmbeddingLaneEligibility, EmbeddingTriple, EmbeddingUpdate, Entity, EventsLogMirrorHealth, HybridMemoryCandidate,
+    HybridScoreBreakdown, HybridVectorQuery, Memory, MemoryId, MemoryQuery, MemoryStatus, QueryResult,
+    RecallIndexQuery, RecallIndexRow, RepoPath, ReviewQueuePage, ReviewQueueRow, Scope, Sha256,
 };
 
 use super::embedding::{
@@ -50,6 +51,18 @@ pub struct Index {
 }
 
 impl Index {
+    /// Active/pinned memories missing an abstraction or stale against the body hash.
+    pub fn abstraction_compile_candidates(&self, limit: usize) -> rusqlite::Result<Vec<MemoryId>> {
+        let mut stmt = self.connection.prepare_cached(
+            "SELECT memories.id FROM memories
+             LEFT JOIN memory_abstractions ON memory_abstractions.memory_id=memories.id
+             WHERE memories.status IN ('active','pinned')
+               AND (memory_abstractions.memory_id IS NULL OR memory_abstractions.source_body_hash<>memories.body_hash)
+             ORDER BY memories.updated_at LIMIT ?1",
+        )?;
+        let ids = stmt.query_map([limit as i64], |row| Ok(MemoryId::new(row.get::<_, String>(0)?)))?.collect();
+        ids
+    }
     /// Construct an index handle with an explicit active embedding triple.
     ///
     /// Spec §10.2.2 #5: the triple is identity, not flavor.  No silent
@@ -169,6 +182,17 @@ impl Index {
     /// reindex paths, and out-of-band encrypted deletions are not pruned by this
     /// plaintext clear.
     pub fn clear_plaintext_memory_index(&mut self) -> rusqlite::Result<()> {
+        let aux_vector_tables = {
+            let mut stmt = self.connection.prepare(
+                "SELECT name FROM sqlite_master WHERE type='table'
+                   AND (name LIKE 'vec_abstractions_%' OR name LIKE 'vec_cues_%')",
+            )?;
+            let tables = stmt.query_map([], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            tables
+        };
+        for table in aux_vector_tables {
+            self.connection.execute(&format!("DROP TABLE IF EXISTS {table}"), [])?;
+        }
         let txn = self.connection.transaction()?;
         txn.execute(
             "DELETE FROM memory_chunks
@@ -176,6 +200,8 @@ impl Index {
             [],
         )?;
         txn.execute("DELETE FROM memories WHERE path NOT LIKE 'encrypted/%'", [])?;
+        txn.execute("DELETE FROM aux_embedding_meta", [])?;
+        txn.execute("DELETE FROM aux_pending_embedding_jobs", [])?;
         txn.execute("DELETE FROM chunk_vectors WHERE chunk_id NOT IN (SELECT chunk_id FROM memory_chunks)", [])?;
         txn.execute("DELETE FROM chunk_embedding_meta WHERE chunk_id NOT IN (SELECT chunk_id FROM memory_chunks)", [])?;
         txn.execute(
@@ -363,16 +389,24 @@ impl Index {
         &mut self,
         triple: &EmbeddingTriple,
     ) -> Result<crate::model::DropTripleReport, VectorError> {
-        let vectors_removed = self.connection.execute(
+        let mut vectors_removed = self.connection.execute(
             &format!("DELETE FROM chunk_vectors WHERE {EMBEDDING_TRIPLE_PREDICATE}"),
             params![triple.provider, triple.model_ref, i64::from(triple.dimension)],
         )? as u64;
-        let meta_rows_removed = self.connection.execute(
+        let mut meta_rows_removed = self.connection.execute(
             &format!("DELETE FROM chunk_embedding_meta WHERE {EMBEDDING_TRIPLE_PREDICATE}"),
             params![triple.provider, triple.model_ref, i64::from(triple.dimension)],
         )? as u64;
-        let pending_jobs_dropped = self.connection.execute(
+        let mut pending_jobs_dropped = self.connection.execute(
             &format!("DELETE FROM pending_embedding_jobs WHERE {EMBEDDING_TRIPLE_PREDICATE}"),
+            params![triple.provider, triple.model_ref, i64::from(triple.dimension)],
+        )? as u64;
+        meta_rows_removed += self.connection.execute(
+            &format!("DELETE FROM aux_embedding_meta WHERE {EMBEDDING_TRIPLE_PREDICATE}"),
+            params![triple.provider, triple.model_ref, i64::from(triple.dimension)],
+        )? as u64;
+        pending_jobs_dropped += self.connection.execute(
+            &format!("DELETE FROM aux_pending_embedding_jobs WHERE {EMBEDDING_TRIPLE_PREDICATE}"),
             params![triple.provider, triple.model_ref, i64::from(triple.dimension)],
         )? as u64;
         let table = crate::index::sqlite_vec::vector_table_name(triple);
@@ -382,6 +416,16 @@ impl Index {
             params![triple.provider, triple.model_ref, i64::from(triple.dimension)],
         )?;
         self.connection.execute(&format!("DROP TABLE IF EXISTS {table}"), [])?;
+        for kind in [AuxRowKind::Abstraction, AuxRowKind::Cue] {
+            let aux_table = crate::index::sqlite_vec::aux_vector_table_name(kind, triple);
+            if table_exists(&self.connection, &aux_table)? {
+                vectors_removed +=
+                    self.connection
+                        .query_row(&format!("SELECT COUNT(*) FROM {aux_table}"), [], |row| row.get::<_, i64>(0))?
+                        as u64;
+            }
+            self.connection.execute(&format!("DROP TABLE IF EXISTS {aux_table}"), [])?;
+        }
         Ok(crate::model::DropTripleReport { vectors_removed, meta_rows_removed, pending_jobs_dropped, table_dropped })
     }
 
@@ -504,6 +548,224 @@ impl Index {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    /// Drainable abstraction/cue jobs for the active triple.
+    pub fn pending_aux_embedding_jobs(
+        &self,
+        limit: usize,
+        eligibility: EmbeddingLaneEligibility,
+    ) -> Result<Vec<AuxPendingEmbeddingJob>, VectorError> {
+        let triple = &self.active_embedding;
+        let allowed = eligibility.allowed_sensitivity_db_strs();
+        let mut sql = String::from(
+            "SELECT jobs.row_kind, jobs.target_id,
+                    CASE jobs.row_kind WHEN 'abstraction' THEN abstractions.abstraction ELSE cues.cue_text END,
+                    jobs.content_hash
+             FROM aux_pending_embedding_jobs jobs
+             LEFT JOIN memory_abstractions abstractions
+               ON jobs.row_kind='abstraction' AND abstractions.memory_id=jobs.target_id
+             LEFT JOIN memory_cues cues
+               ON jobs.row_kind='cue'
+              AND cues.memory_id=substr(jobs.target_id,1,instr(jobs.target_id,':')-1)
+              AND cues.ordinal=CAST(substr(jobs.target_id,instr(jobs.target_id,':')+1) AS INTEGER)
+             JOIN memories ON memories.id=COALESCE(abstractions.memory_id,cues.memory_id)
+             WHERE jobs.provider=? AND jobs.model_ref=? AND jobs.dimension=?
+               AND jobs.content_hash=CASE jobs.row_kind WHEN 'abstraction' THEN abstractions.abstraction_hash ELSE cues.cue_hash END",
+        );
+        if eligibility.requires_plaintext_filter() {
+            sql.push_str(" AND memories.sensitivity IN (");
+            sql.push_str(&sql_placeholders(allowed.len()));
+            sql.push(')');
+        }
+        sql.push_str(" ORDER BY jobs.enqueued_at LIMIT ?");
+        let mut bindings = vec![
+            Value::from(triple.provider.clone()),
+            Value::from(triple.model_ref.clone()),
+            Value::from(i64::from(triple.dimension)),
+        ];
+        bindings.extend(allowed.into_iter().map(|value| Value::from(value.to_string())));
+        bindings.push(Value::from(limit as i64));
+        let mut stmt = self.connection.prepare(&sql)?;
+        let rows = stmt
+            .query_map(params_from_iter(bindings), |row| {
+                let kind: String = row.get(0)?;
+                Ok(AuxPendingEmbeddingJob {
+                    row_kind: if kind == "abstraction" { AuxRowKind::Abstraction } else { AuxRowKind::Cue },
+                    target_id: row.get(1)?,
+                    text: row.get(2)?,
+                    content_hash: Sha256::new(row.get::<_, String>(3)?),
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Commit one stale-fenced abstraction/cue embedding.
+    pub fn update_aux_embedding(&mut self, update: &AuxEmbeddingUpdate) -> Result<(), VectorError> {
+        crate::index::sqlite_vec::validate_dimension(&update.triple, &update.vector)?;
+        if is_dropped_triple(&self.connection, &update.triple)? {
+            return Err(VectorError::UnknownEmbeddingTriple(update.triple.clone()));
+        }
+        let (rowid, actual_hash) = self.aux_target_row(update.row_kind, &update.target_id)?;
+        if actual_hash != update.expected_content_hash.as_str() {
+            return Err(VectorError::StaleAux {
+                row_kind: update.row_kind.as_db_str().to_string(),
+                target_id: update.target_id.clone(),
+                expected: update.expected_content_hash.clone(),
+                found: Sha256::new(actual_hash),
+            });
+        }
+        let table = crate::index::sqlite_vec::aux_vector_table_name(update.row_kind, &update.triple);
+        self.connection.execute(
+            &format!(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS {table} USING vec0(embedding float[{}])",
+                update.triple.dimension
+            ),
+            [],
+        )?;
+        self.connection.execute(
+            &format!("INSERT OR REPLACE INTO {table}(rowid,embedding) VALUES (?1,?2)"),
+            params![rowid, crate::index::sqlite_vec::serialize_f32(&update.vector)],
+        )?;
+        let txn = self.connection.transaction()?;
+        txn.execute(
+            "INSERT INTO aux_embedding_meta(row_kind,target_id,content_hash,provider,model_ref,dimension,embedded_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7)
+             ON CONFLICT(row_kind,target_id,provider,model_ref,dimension) DO UPDATE SET
+               content_hash=excluded.content_hash,embedded_at=excluded.embedded_at",
+            params![
+                update.row_kind.as_db_str(),
+                update.target_id,
+                update.expected_content_hash.as_str(),
+                update.triple.provider,
+                update.triple.model_ref,
+                i64::from(update.triple.dimension),
+                Utc::now().to_rfc3339()
+            ],
+        )?;
+        txn.execute(
+            "DELETE FROM aux_pending_embedding_jobs
+             WHERE row_kind=?1 AND target_id=?2 AND provider=?3 AND model_ref=?4 AND dimension=?5",
+            params![
+                update.row_kind.as_db_str(),
+                update.target_id,
+                update.triple.provider,
+                update.triple.model_ref,
+                i64::from(update.triple.dimension)
+            ],
+        )?;
+        txn.commit()?;
+        Ok(())
+    }
+
+    fn aux_target_row(&self, kind: AuxRowKind, target_id: &str) -> Result<(i64, String), VectorError> {
+        let result = match kind {
+            AuxRowKind::Abstraction => self.connection.query_row(
+                "SELECT rowid,abstraction_hash FROM memory_abstractions WHERE memory_id=?1",
+                [target_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            ),
+            AuxRowKind::Cue => {
+                let (memory_id, ordinal) = target_id.rsplit_once(':').ok_or_else(|| VectorError::StaleAux {
+                    row_kind: "cue".to_string(),
+                    target_id: target_id.to_string(),
+                    expected: Sha256::new("missing"),
+                    found: Sha256::new("missing"),
+                })?;
+                self.connection.query_row(
+                    "SELECT rowid,cue_hash FROM memory_cues WHERE memory_id=?1 AND ordinal=?2",
+                    params![memory_id, ordinal.parse::<i64>().unwrap_or(-1)],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+            }
+        };
+        result.map_err(|_| VectorError::StaleAux {
+            row_kind: kind.as_db_str().to_string(),
+            target_id: target_id.to_string(),
+            expected: Sha256::new("missing"),
+            found: Sha256::new("missing"),
+        })
+    }
+
+    /// KNN query over abstraction vectors. W2 deliberately does not wire this into recall.
+    pub fn query_abstraction_vectors(
+        &self,
+        triple: &EmbeddingTriple,
+        vector: &[f32],
+        limit: usize,
+    ) -> Result<Vec<AbstractionVectorHit>, VectorError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        crate::index::sqlite_vec::validate_dimension(triple, vector)?;
+        let table = crate::index::sqlite_vec::aux_vector_table_name(AuxRowKind::Abstraction, triple);
+        if is_dropped_triple(&self.connection, triple)? || !table_exists(&self.connection, &table)? {
+            return Err(VectorError::UnknownEmbeddingTriple(triple.clone()));
+        }
+        let sql = format!(
+            "SELECT abstractions.memory_id,{table}.distance FROM {table}
+             JOIN memory_abstractions abstractions ON abstractions.rowid={table}.rowid
+             JOIN aux_embedding_meta meta ON meta.row_kind='abstraction' AND meta.target_id=abstractions.memory_id
+               AND meta.provider=?3 AND meta.model_ref=?4 AND meta.dimension=?5
+               AND meta.content_hash=abstractions.abstraction_hash
+             JOIN memories ON memories.id=abstractions.memory_id AND memories.status IN ('active','pinned')
+             WHERE embedding MATCH ?1 AND k=?2 ORDER BY {table}.distance"
+        );
+        let blob = crate::index::sqlite_vec::serialize_f32(vector);
+        let mut stmt = self.connection.prepare(&sql)?;
+        let hits = stmt
+            .query_map(
+                params![blob, limit as i64, triple.provider, triple.model_ref, i64::from(triple.dimension)],
+                |row| {
+                    Ok(AbstractionVectorHit {
+                        memory_id: MemoryId::new(row.get::<_, String>(0)?),
+                        distance: row.get::<_, f64>(1)? as f32,
+                    })
+                },
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(hits)
+    }
+
+    /// KNN query over cue vectors. W2 deliberately does not wire this into recall.
+    pub fn query_cue_vectors(
+        &self,
+        triple: &EmbeddingTriple,
+        vector: &[f32],
+        limit: usize,
+    ) -> Result<Vec<CueVectorHit>, VectorError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        crate::index::sqlite_vec::validate_dimension(triple, vector)?;
+        let table = crate::index::sqlite_vec::aux_vector_table_name(AuxRowKind::Cue, triple);
+        if is_dropped_triple(&self.connection, triple)? || !table_exists(&self.connection, &table)? {
+            return Err(VectorError::UnknownEmbeddingTriple(triple.clone()));
+        }
+        let sql = format!(
+            "SELECT cues.memory_id,cues.ordinal,{table}.distance FROM {table}
+             JOIN memory_cues cues ON cues.rowid={table}.rowid
+             JOIN aux_embedding_meta meta ON meta.row_kind='cue' AND meta.target_id=cues.memory_id||':'||cues.ordinal
+               AND meta.provider=?3 AND meta.model_ref=?4 AND meta.dimension=?5 AND meta.content_hash=cues.cue_hash
+             JOIN memories ON memories.id=cues.memory_id AND memories.status IN ('active','pinned')
+             WHERE embedding MATCH ?1 AND k=?2 ORDER BY {table}.distance"
+        );
+        let blob = crate::index::sqlite_vec::serialize_f32(vector);
+        let mut stmt = self.connection.prepare(&sql)?;
+        let hits = stmt
+            .query_map(
+                params![blob, limit as i64, triple.provider, triple.model_ref, i64::from(triple.dimension)],
+                |row| {
+                    Ok(CueVectorHit {
+                        memory_id: MemoryId::new(row.get::<_, String>(0)?),
+                        ordinal: row.get::<_, i64>(1)? as u8,
+                        distance: row.get::<_, f64>(2)? as f32,
+                    })
+                },
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(hits)
     }
 
     /// Query chunks through FTS.
@@ -1596,6 +1858,8 @@ mod tests {
                     expected_base_hash: None,
                 },
                 merge_diagnostics: None,
+                abstraction: None,
+                cues: Vec::new(),
                 extras: std::collections::BTreeMap::new(),
             },
             body: "bm25 relaxed fallback body".to_string(),

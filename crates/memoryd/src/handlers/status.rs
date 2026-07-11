@@ -93,6 +93,13 @@ fn embedding_status(
         idle_unload_source: snapshot.idle_unload_source.to_string(),
         in_flight: snapshot.in_flight,
         held_local_jobs,
+        row_kind_counts: substrate
+            .active_embedding_triple()
+            .ok()
+            .and_then(|triple| {
+                substrate.embedding_row_kind_counts(crate::embedding::embedding_lane_eligibility(&triple)).ok()
+            })
+            .unwrap_or_default(),
         last_error: snapshot.last_error,
     }
 }
