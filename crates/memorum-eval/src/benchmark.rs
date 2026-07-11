@@ -13,6 +13,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::daemon_scaffold::DaemonScaffold;
+use crate::enrichment::{item_key, load_sidecar, Enrichment, EnrichmentSidecar};
 use crate::judge::{BenchmarkJudge, BenchmarkJudgeInput, BenchmarkJudgeVerdict, JudgeError};
 
 const TOP_K: usize = 10;
@@ -28,6 +29,7 @@ pub enum Split {
 pub enum BenchmarkEmbeddingLane {
     FtsOnly,
     DaemonConfigured,
+    GeminiApi,
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +68,7 @@ pub struct BaselineReport {
     pub governance_drag: GovernanceDrag,
     pub metrics: MetricReport,
     pub ingestion: Vec<IngestionRecord>,
+    pub enrichment: EnrichmentIngestionCounts,
     pub items: Vec<ItemOutcome>,
     pub judge_inputs: Vec<BenchmarkJudgeInput>,
     pub judge_identity: Option<String>,
@@ -104,6 +107,13 @@ pub struct IngestionRecord {
     pub actual_classification: String,
     pub initial_status: String,
     pub promoted_after_review: bool,
+    pub enriched: bool,
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct EnrichmentIngestionCounts {
+    pub with_enrichment: usize,
+    pub without_enrichment: usize,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -257,6 +267,7 @@ fn split_config_from(config: &BenchmarkConfig) -> SplitConfig {
         embedding_lane: match config.embedding_lane {
             BenchmarkEmbeddingLane::FtsOnly => "fts_only",
             BenchmarkEmbeddingLane::DaemonConfigured => "daemon_configured",
+            BenchmarkEmbeddingLane::GeminiApi => "gemini_api",
         },
     }
 }
@@ -272,6 +283,7 @@ pub async fn run_baseline(
         vector_lane: match config.embedding_lane {
             BenchmarkEmbeddingLane::FtsOnly => "disabled explicitly; production daemon degraded to FTS-only",
             BenchmarkEmbeddingLane::DaemonConfigured => "daemon-configured vector lane live",
+            BenchmarkEmbeddingLane::GeminiApi => "gemini-api/gemini-embedding-2/768",
         },
         dataset_sha256s: BTreeMap::new(),
         split_config: split_config_from(config),
@@ -284,6 +296,7 @@ pub async fn run_baseline(
         governance_drag: GovernanceDrag::default(),
         metrics: MetricReport::default(),
         ingestion: Vec::new(),
+        enrichment: EnrichmentIngestionCounts::default(),
         items: Vec::new(),
         judge_inputs: Vec::new(),
         judge_identity: None,
@@ -303,6 +316,7 @@ async fn run_locomo(
 ) -> Result<(), String> {
     let path = config.dataset_dir.join("locomo/locomo10.json");
     let (conversations, sha256): (Vec<LocomoConversation>, String) = read_json_with_sha256(&path)?;
+    let enrichment = load_sidecar(&path)?;
     report.dataset_sha256s.insert("locomo/locomo10.json".to_string(), sha256);
     let mut used = 0;
     for (index, conversation) in conversations.into_iter().enumerate() {
@@ -315,6 +329,7 @@ async fn run_locomo(
         let scaffold = match config.embedding_lane {
             BenchmarkEmbeddingLane::FtsOnly => DaemonScaffold::fresh_fts_only().await,
             BenchmarkEmbeddingLane::DaemonConfigured => DaemonScaffold::fresh().await,
+            BenchmarkEmbeddingLane::GeminiApi => DaemonScaffold::fresh_gemini_api().await,
         };
         let project = scaffold.tree_dir().join("benchmark-project");
         fs::create_dir_all(&project).map_err(|error| error.to_string())?;
@@ -326,7 +341,8 @@ async fn run_locomo(
         let mut daemon = DaemonClient::new(scaffold.socket_path(), &project);
 
         let sessions = locomo_sessions(&conversation);
-        let ingested = ingest_sessions(&mut daemon, &path, &sessions, &config.expected_sensitivity, report)?;
+        let ingested =
+            ingest_sessions(&mut daemon, &path, &sessions, &config.expected_sensitivity, &enrichment, report)?;
         let sample_id = conversation.sample_id.clone();
         let questions = balanced_locomo_questions(conversation.qa, config.locomo_qa_per_conversation);
         for question in questions {
@@ -364,6 +380,7 @@ async fn run_longmemeval(
     // round-robin selection without loading the full (potentially large)
     // haystacks into memory. Compute the file hash in the same pass.
     let (headers, sha256) = read_longmemeval_headers(&path)?;
+    let enrichment = load_sidecar(&path)?;
     report.dataset_sha256s.insert(format!("longmemeval/{name}"), sha256);
 
     let mut selected_ids = BTreeSet::<String>::new();
@@ -395,6 +412,7 @@ async fn run_longmemeval(
             let scaffold = match config.embedding_lane {
                 BenchmarkEmbeddingLane::FtsOnly => DaemonScaffold::fresh_fts_only().await,
                 BenchmarkEmbeddingLane::DaemonConfigured => DaemonScaffold::fresh().await,
+                BenchmarkEmbeddingLane::GeminiApi => DaemonScaffold::fresh_gemini_api().await,
             };
             let project = scaffold.tree_dir().join("benchmark-project");
             fs::create_dir_all(&project).map_err(|error| error.to_string())?;
@@ -419,7 +437,8 @@ async fn run_longmemeval(
                 Some(format!("dangling answer_session_ids: {}", missing.join(", ")))
             };
             let evidence_turns = longmem_gold_turns(&sessions, &item.answer_session_ids);
-            let ingested = ingest_sessions(&mut daemon, &path, &sessions, &config.expected_sensitivity, report)?;
+            let ingested =
+                ingest_sessions(&mut daemon, &path, &sessions, &config.expected_sensitivity, &enrichment, report)?;
             score_item(
                 &mut daemon,
                 EvalItem {
@@ -452,6 +471,7 @@ fn ingest_sessions(
     dataset_path: &Path,
     sessions: &[Session],
     expected_sensitivity: &str,
+    enrichment: &EnrichmentSidecar,
     report: &mut BaselineReport,
 ) -> Result<IngestedSessions, String> {
     let mut turn_ids = BTreeMap::<String, Vec<String>>::new();
@@ -467,6 +487,7 @@ fn ingest_sessions(
                 false,
                 dataset_path,
                 expected_sensitivity,
+                enrichment,
                 report,
                 &mut dispositions,
             )? {}
@@ -475,9 +496,17 @@ fn ingest_sessions(
             let key =
                 turn.dia_id.clone().unwrap_or_else(|| format!("D{}:{}", session_label(&session.id), turn_index + 1));
             let body = format!("{}: {}", turn.speaker, turn.text);
-            if let Some(id) =
-                ingest_one(daemon, &body, "user", true, dataset_path, expected_sensitivity, report, &mut dispositions)?
-            {
+            if let Some(id) = ingest_one(
+                daemon,
+                &body,
+                "user",
+                true,
+                dataset_path,
+                expected_sensitivity,
+                enrichment,
+                report,
+                &mut dispositions,
+            )? {
                 turn_ids.entry(key).or_default().push(id.clone());
                 session_ids.entry(session.id.clone()).or_default().push(id);
             }
@@ -494,26 +523,32 @@ fn ingest_one(
     explicit_user_context: bool,
     dataset_path: &Path,
     expected_sensitivity: &str,
+    enrichment: &EnrichmentSidecar,
     report: &mut BaselineReport,
     item_dispositions: &mut DispositionCounts,
 ) -> Result<Option<String>, String> {
     let source_ref =
         if source_kind == "agent_primary" { Some(format!("file:{}", dataset_path.display())) } else { None };
+    let entry = enrichment.get(&item_key(body));
+    if entry.is_some() {
+        report.enrichment.with_enrichment += 1;
+    } else {
+        report.enrichment.without_enrichment += 1;
+    }
+    let mut meta = json!({
+        "namespace": "project", "type": "project", "confidence": 0.9, "source_kind": source_kind,
+        "source_ref": source_ref, "explicit_user_context": explicit_user_context, "cwd": daemon.cwd,
+        "session_id": "memorum-eval-benchmark", "harness": "memorum-eval"
+    });
+    if let Some(Enrichment { abstraction, cues, .. }) = entry {
+        meta["abstraction"] = json!(abstraction);
+        meta["cues"] = json!(cues);
+    }
     let response = daemon.request(json!({"write_memory": {
         "body": body,
         "title": null,
         "tags": ["benchmark", "baseline_0"],
-        "meta": {
-            "namespace": "project",
-            "type": "project",
-            "confidence": 0.9,
-            "source_kind": source_kind,
-            "source_ref": source_ref,
-            "explicit_user_context": explicit_user_context,
-            "cwd": daemon.cwd,
-            "session_id": "memorum-eval-benchmark",
-            "harness": "memorum-eval"
-        }
+        "meta": meta
     }}))?;
     // A typed daemon error (e.g. a secret refusal) is a governance outcome,
     // not a harness failure: record it as drag and move on. Per the ingestion
@@ -531,6 +566,7 @@ fn ingest_one(
             actual_classification: format!("write_error:{code}"),
             initial_status: "refused".to_owned(),
             promoted_after_review: false,
+            enriched: entry.is_some(),
         });
         return Ok(None);
     }
@@ -565,6 +601,7 @@ fn ingest_one(
             actual_classification: "unobservable_refusal".to_owned(),
             initial_status: status.to_owned(),
             promoted_after_review: false,
+            enriched: entry.is_some(),
         });
         return Ok(None);
     };
@@ -594,6 +631,7 @@ fn ingest_one(
             actual_classification: "unobservable_unpromoted".to_owned(),
             initial_status: status.to_owned(),
             promoted_after_review: false,
+            enriched: entry.is_some(),
         });
         return Ok(None);
     }
@@ -616,6 +654,7 @@ fn ingest_one(
         actual_classification: actual_classification.clone(),
         initial_status: status.to_owned(),
         promoted_after_review: true,
+        enriched: entry.is_some(),
     });
 
     if actual_classification != "unobservable" && actual_classification != expected_sensitivity {
@@ -1287,6 +1326,37 @@ mod tests {
     }
 
     #[test]
+    fn gemini_scaffold_records_the_api_lane_triple_without_a_real_key() {
+        let scaffold = crate::block_on(DaemonScaffold::fresh_gemini_api());
+        let config = fs::read_to_string(scaffold.tree_dir().join("config.yaml")).expect("config");
+        assert!(config.contains("api_embedding_consent: true"));
+        assert!(config.contains("provider: gemini-api"));
+        assert!(config.contains("model_ref: gemini-embedding-2"));
+        assert!(config.contains("dimension: 768"));
+    }
+
+    #[test]
+    fn sidecar_enrichment_is_forwarded_to_benchmark_writes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dataset_dir = dir.path();
+        empty_longmemeval_fixture(dataset_dir);
+        let dataset = write_fixture(
+            dataset_dir,
+            "locomo/locomo10.json",
+            r#"[{"sample_id":"x","conversation":{"session_1":[{"speaker":"A","dia_id":"D1:1","text":"hello"}]},"qa":[]}]"#,
+        );
+        let body = "A: hello";
+        let sidecar = serde_json::json!({ crate::enrichment::item_key(body): {"abstraction":"A greeting", "cues":["A greeting"], "source":"structural"} });
+        fs::write(crate::enrichment::sidecar_path(&dataset), serde_json::to_vec(&sidecar).expect("sidecar"))
+            .expect("write sidecar");
+        let mut config = fts_config(dataset_dir);
+        config.locomo_conversation_limit = Some(1);
+        let report = crate::block_on(run_baseline(&config, None)).expect("baseline");
+        assert_eq!(report.enrichment.with_enrichment, 1);
+        assert!(report.ingestion.iter().any(|record| record.enriched));
+    }
+
+    #[test]
     fn rank_metrics_hand_computed_rank_cutoff_and_partial_recall() {
         // 12 retrieved ids; relevant at ranks 2 and 11; gold size 3.
         let retrieved: Vec<String> = (1..=12).map(|i| format!("mem_{i:02}")).collect();
@@ -1363,6 +1433,7 @@ mod tests {
             governance_drag: GovernanceDrag::default(),
             metrics: MetricReport::default(),
             ingestion: Vec::new(),
+            enrichment: EnrichmentIngestionCounts::default(),
             items: vec![
                 item(1.0, 0.5, 0.5, None),
                 item(0.0, 0.0, 0.0, None),

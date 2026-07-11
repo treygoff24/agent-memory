@@ -17,6 +17,7 @@ enum SplitArg {
 enum EmbeddingArg {
     FtsOnly,
     Daemon,
+    GeminiApi,
 }
 
 #[derive(Debug, Parser)]
@@ -37,7 +38,7 @@ struct Cli {
     /// Use the full cleaned haystacks instead of the evidence-only oracle file.
     #[arg(long)]
     longmemeval_cleaned: bool,
-    #[arg(long, value_enum, default_value = "fts-only")]
+    #[arg(long = "embedding-lane", alias = "embedding", value_enum, default_value = "fts-only")]
     embedding: EmbeddingArg,
     /// External judge executable. It receives one JSON record on stdin and must
     /// emit {"score": number, "rationale": string} on stdout.
@@ -83,6 +84,7 @@ fn run(cli: Cli) -> Result<(), String> {
         embedding_lane: match cli.embedding {
             EmbeddingArg::FtsOnly => BenchmarkEmbeddingLane::FtsOnly,
             EmbeddingArg::Daemon => BenchmarkEmbeddingLane::DaemonConfigured,
+            EmbeddingArg::GeminiApi => BenchmarkEmbeddingLane::GeminiApi,
         },
         expected_sensitivity: cli.expected_sensitivity,
         judge_timeout: cli.judge_timeout,

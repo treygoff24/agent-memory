@@ -61,6 +61,28 @@ impl DaemonScaffold {
         Self::start(tree_dir)
     }
 
+    /// Provision the same synced consent/triple and ephemeral runtime key shape
+    /// as the API-lane ceremony. Missing credentials deliberately leave the
+    /// daemon in its production FTS-degraded state so CI never needs a real key.
+    /// Quality-gated: the key write goes through memoryd's canonical helper
+    /// (an optional dep behind `quality`) rather than a duplicated path.
+    #[cfg(feature = "quality")]
+    pub async fn fresh_gemini_api() -> Self {
+        let tree_dir = TempTree::fresh();
+        fs::write(
+            tree_dir.path().join("config.yaml"),
+            "schema_version: 1\napi_embedding_consent: true\nactive_embedding:\n  provider: gemini-api\n  model_ref: gemini-embedding-2\n  dimension: 768\n",
+        )
+        .expect("write Gemini API eval config");
+        provision_privacy_key(tree_dir.path());
+        if let Some(key) = std::env::var("MEMORUM_GEMINI_API_KEY").ok().or_else(|| std::env::var("GEMINI_API_KEY").ok())
+        {
+            memoryd::embedding::write_gemini_api_key(&tree_dir.path().join(".memoryd"), &key)
+                .expect("write ephemeral Gemini API key");
+        }
+        Self::start_with_privacy_key(tree_dir)
+    }
+
     pub async fn two_device() -> TwoDeviceScaffold {
         let remote_dir = TempTree::fresh();
         git(None, ["init", "--bare", "--initial-branch", "main", remote_dir.path_str().as_str()]);
@@ -79,11 +101,15 @@ impl DaemonScaffold {
     }
 
     fn start(tree_dir: TempTree) -> Self {
+        provision_privacy_key(tree_dir.path());
+        Self::start_with_privacy_key(tree_dir)
+    }
+
+    fn start_with_privacy_key(tree_dir: TempTree) -> Self {
         // Use a short /tmp socket directory to stay under macOS's 104-char Unix
         // domain socket path cap. The tree itself can stay in the long
         // tempfile path; only the socket name is path-length-sensitive.
         let socket_path = short_socket_path("memd-eval");
-        provision_privacy_key(tree_dir.path());
         let child = DaemonChild { child: spawn_memoryd(tree_dir.path(), &socket_path) };
         let scaffold = Self { tree_dir, socket_path, child: Some(child) };
         wait_for_socket(&scaffold.socket_path);

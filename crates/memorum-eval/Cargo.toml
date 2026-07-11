@@ -60,6 +60,12 @@ path = "src/bin/benchmark_runner.rs"
 required-features = ["quality", "judge"]
 test = false
 
+[[bin]]
+name = "memorum-eval-enrich"
+path = "src/bin/enrich_runner.rs"
+required-features = ["quality"]
+test = false
+
 [dev-dependencies]
 memory-source = { path = "../memory-source" }
 memoryd = { path = "../memoryd" }

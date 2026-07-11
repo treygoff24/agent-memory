@@ -77,6 +77,9 @@ mod json_escape_tests {
 
 use std::cell::Cell;
 
+#[cfg(feature = "quality")]
+pub mod enrichment;
+
 thread_local! {
     /// Per-test assertion counter. Incremented by `eval_assert!` / `eval_assert_eq!`
     /// macros. Printed as `MEMORUM_EVAL_ASSERTIONS=<n>` at test end so the
