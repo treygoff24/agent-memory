@@ -259,3 +259,15 @@ Outcome and verification: FINDINGS — 1 HIGH (F23 mixed-version reopen via serd
 Performance observations: ~8 min wall. Again the standout Cursor behavior: it computed evidence (traced the daemon error mapping through three files; checked live-corpus record shapes against the June bucket-fix commit) rather than pattern-matching the diff. The MAJOR is a finding class delegate fix lanes and the coordinator both missed across four prior rounds — it required reading OUTSIDE the diff (the daemon's error construction) to falsify the diff's core assumption (`not_found` ⇒ provably gone).
 
 Routing assessment: Cursor safe remains the verify lane of choice for fix diffs whose correctness hinges on cross-file contracts; give it the falsifiable assumption explicitly ("is not_found the ONLY code that means gone?") — that framing produced the MAJOR. Confidence: high.
+
+## 2026-07-11 - gpt-5.6-sol (high) via codex - W2 build lane died at finish line (codex-81)
+
+Command and run: `delegate --json --cwd <repo> --isolation worktree codex work --model sol --reasoning-effort high --forbid-commit --prompt-file thoughts/memora-build/w2-implement-prompt.md`; alias codex-81; run `del_20260711T044830Z_1e145a`; worktree `codex-20260711T044830Z_1e145a`.
+
+Task and expectation: full W2 build (six tasks: frontmatter fields, aux embedding lifecycle, privacy composition, schema 5→6, CLI surface, abstraction_compile dream job) from the ratified spec package.
+
+Outcome and verification: **failed (harness_error)** after ~35 min — but the work substantively landed: 118 files, +1579/−66 uncommitted in the worktree, and Sol's own final gate logs (/tmp/w2-gates/) show substrate 418/0, memoryd 1097/0, clippy clean on both crates. The harness transport died before the completion report; stderr shows MCP auth fatals (granola/composio rmcp AuthRequired) at startup and normal apply_patch retry noise, no model failure. Coordinator response: continuation Sol lane launched IN PLACE in the same worktree (--isolation none; local alias codex-1, arc alias codex-82) to audit the tree against the §A5 acceptance signals, close gaps, and deliver the report. No work discarded.
+
+Performance observations: excellent CPU discipline throughout (crate-scoped gates only, logs to files); the failure class is harness/transport, not model. Second observed instance of "codex lane dies after the meaty work, before the report" — treat a dead codex lane's worktree as probably-valuable; always inspect before relaunching from scratch.
+
+Routing assessment: keep Sol high as W2 author; the recovery pattern (new lane, same worktree, isolation none, audit-first prompt) is cheap and preserves sunk work. Confidence: high.
