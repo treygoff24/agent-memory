@@ -341,3 +341,15 @@ Routing assessment: Cursor safe remains the arc's verify lane; its test-fidelity
 Round 2 on `c84b2de`: convergent on the false pin (filed HIGH with the sharper mechanism statement) and the pub-export leak; unique real find: import forwarded unbounded cue arrays before any validation (accepted, severity adjusted to MAJOR — local self-DoS). Zero rejected this round (1-for-1 improvement over its round-1 layering misread).
 
 Routing assessment: keep as standing second lane. Confidence: high.
+
+## 2026-07-11 - meta/muse-spark-1.1 via opencode - W3 wave review round 1 (opencode-1, W3-worktree registry) — FIRST ARC OUTING
+
+Command and run: `delegate --json --cwd <w3-worktree> opencode safe --model muse --prompt-file thoughts/memora-build/w3-review-prompt.md`; DP6-approved test slot; safe mode (config-lockdown isolation; external skill reads correctly blocked by sandbox).
+
+Task and expectation: adversarial review of `0f680f3` (merge-on-dream) across 10 hunt areas, decorrelated from Cursor; calibration target = Grok 4.5 / GPT-5.5 class.
+
+Outcome and verification: FINDINGS (1 HIGH, 1 MAJOR, 3 MINOR) + an unusually rich verified-negative record: independently traced the availability-gap invariant at all five crash points, all four idempotency dedup keys, proposal exclusivity at generation AND apply, the journal matrix including a novel edge (valid-parse truncation → fail-closed quarantine, correctly judged safe-but-harsh), and reconcile-before-socket-bind ordering. Its MAJOR (central non-servability predicate unused by any read lane) was accepted over Cursor's MINOR framing of the same fact; two unique MINORs accepted (aux rows created at staging contra spec §3.6; over-strict sensitivity fence). Its HIGH (Agent-namespace probe under-classifies Me scope) was REJECTED — scanner-vs-floor conflation, mirror image of the June bug the probe design exists to fix, and unreachable anyway (Me-tier sources are fence-excluded). Its floor-order trace also missed that classify_plaintext_memory ignores frontmatter.sensitivity (Cursor caught the outcome-layer gap it declared correct).
+
+Performance observations: ~19 min wall (slowest lane this arc, no live progress events — expected for opencode). Report structure was the best-organized of any lane: per-hunt-area with file:line evidence, explicit negative results, and honest probability judgments. Weakness profile: privacy-layering subtleties (the one rejected HIGH and the missed outcome-layer gap are both floor/scanner/outcome composition errors) — same weak axis where Luna erred in W2 round 1.
+
+Routing assessment: comfortably Grok-4.5-class on structural/state-machine reasoning; below Cursor on privacy-composition subtlety. Worth keeping in the review rotation for state-machine-heavy waves; pair with Cursor (never solo) on privacy-critical diffs. Next comparison: give Muse and Luna the same scoped fix-diff verify and compare. Confidence: medium-high (one outing).
