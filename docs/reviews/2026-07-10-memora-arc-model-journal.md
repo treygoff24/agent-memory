@@ -283,3 +283,27 @@ Outcome and verification: succeeded, one file created (2,257 lines), no other fi
 Performance observations: fast (~7 min), obedient to the one-file constraint, section placement per the map otherwise correct including the tricky §10.2.1/10.2.2 integration. The two defects are exactly the "context-free paste" class a mechanical lane produces — cheap to catch on a structural diff read.
 
 Routing assessment: Luna medium is the right lane for version-splice work IF the coordinator reviews the version diff (mandatory anyway for spec files). Keep the pattern. Confidence: high.
+
+## 2026-07-11 - grok-4.5-fast-xhigh via cursor - W2 wave review round 1 (cursor-1, W2-worktree registry)
+
+Command and run: `delegate --json --cwd <w2-worktree> cursor safe --prompt-file thoughts/memora-build/w2-review-prompt.md`; safe/isolated copy.
+
+Task and expectation: adversarial review of wave commit `5667eea` (122 files) against the ratified package across 10 named hunt areas.
+
+Outcome and verification: FINDINGS — 1 BLOCKER (generation dual-classify drop dead for Scope::User under the Me-namespace floor; coordinator verified on disk and confirmed it reproduces the June review-reject bug class), 2 HIGH (aux drain starvation behind poisoned chunk path; aux fence TOCTOU + hashless job delete — both coordinator-verified), 2 MAJOR, 2 MINOR, 1 NIT. Also produced a per-hunt-area scorecard that CLEARED the areas the coordinator's own read had cleared (table identity, case folding, §A4 order) — convergent negative evidence is worth as much as the findings.
+
+Performance observations: ~12 min. The BLOCKER required composing the diff with an out-of-diff invariant (PrivacyPolicy floor semantics) — the same out-of-diff reasoning that produced its W1 V-MAJOR. It also correctly validated part of the author's mega-test claim (revocation paths real) instead of reflexively flagging it — low false-positive discipline.
+
+Routing assessment: Cursor stays the primary attack lane. Feed it the falsifiable invariants explicitly (the hunt-area framing keeps paying). Confidence: high.
+
+## 2026-07-11 - gpt-5.6-luna (high) via codex - W2 wave review round 1 (codex-2, W2-worktree registry)
+
+Command and run: `delegate --json --cwd <w2-worktree> codex safe --model luna --reasoning-effort high --prompt-file thoughts/memora-build/w2-review-prompt.md`.
+
+Task and expectation: same brief as cursor-1, decorrelated family.
+
+Outcome and verification: FINDINGS — converged independently on the aux fence TOCTOU, aux starvation, and spawn_blocking findings (3/3 of the shared set), and added 2 unique: the migration test being structurally green (SCHEMA_SQL pre-creates v6 tables, so migrate_v6 is never exercised — sharper than Cursor's fidelity note; upgraded to MAJOR in triage) and the encrypted-candidates-perpetually-skipped churn in abstraction_compile. Its BLOCKER (substrate should classify the combined payload) was REJECTED in triage as a layering misread — Stream A never scans content; classification is supplied per-write (invariant #2) — but its residue (audit every daemon entrypoint's classify input) was kept as fix-round verify work.
+
+Performance observations: ~14 min. One rejected top-severity finding out of six — an acceptable false-positive rate given the two unique real finds. The structurally-green-migration-test catch is exactly the test-fidelity class Luna has now caught twice in this arc (W0 H3 fixtures, this).
+
+Routing assessment: keep Luna high as the standing second review lane; weight its test-fidelity findings heavily, double-check its architecture-boundary findings against the layering contract before accepting. Confidence: high.
