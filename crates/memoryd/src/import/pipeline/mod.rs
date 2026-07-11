@@ -84,7 +84,7 @@ mod tests {
     // Cross-submodule items the tests reach through `super::*`. These are
     // private to the pipeline module (test-only or planner/execute internals),
     // so import them explicitly rather than re-exporting them publicly.
-    use super::daemon_client::{daemon_protocol_error, unexpected_daemon_payload};
+    use super::daemon_client::{daemon_protocol_error, unexpected_daemon_payload, ChainWalker};
     use super::execute::{bucket_repair_action, plan_action_for_record};
     use super::plan::topo_sort;
 
@@ -93,7 +93,9 @@ mod tests {
     use serde_json::Value;
 
     use crate::import::project_map::{ResolutionKind, ScopeBinding};
-    use crate::protocol::{GetResponse, GovernanceRefusalReason, GovernanceStatus, MemoryStatus, ProtocolError, ResponsePayload};
+    use crate::protocol::{
+        GetResponse, GovernanceRefusalReason, GovernanceStatus, MemoryStatus, ProtocolError, ResponsePayload,
+    };
 
     use crate::import::candidate::ParsedMemory;
     use crate::import::report::ImportReport;
@@ -197,8 +199,12 @@ mod tests {
     #[test]
     fn unchanged_project_import_with_matching_bucket_skips_idempotently() {
         let record = import_record("mem_existing", "sha256:same", Some("policy"), Some("proj_policy-c6698817853503be"));
-        let action =
-            plan_action_for_record(&record, "record_key", "sha256:same", &project_scope("policy", "proj_policy-c6698817853503be"));
+        let action = plan_action_for_record(
+            &record,
+            "record_key",
+            "sha256:same",
+            &project_scope("policy", "proj_policy-c6698817853503be"),
+        );
         assert!(
             matches!(action, PlanAction::SkipUnchanged { existing_memory_id, .. } if existing_memory_id == "mem_existing")
         );
@@ -207,8 +213,12 @@ mod tests {
     #[test]
     fn unchanged_project_import_with_different_bucket_repairs_instead_of_skipping() {
         let record = import_record("mem_wrong_bucket", "sha256:same", Some("agent-memory"), Some("proj_agent-memory"));
-        let action =
-            plan_action_for_record(&record, "record_key", "sha256:same", &project_scope("policy", "proj_policy-c6698817853503be"));
+        let action = plan_action_for_record(
+            &record,
+            "record_key",
+            "sha256:same",
+            &project_scope("policy", "proj_policy-c6698817853503be"),
+        );
         assert!(
             matches!(action, PlanAction::RepairBucket { prior_memory_id, prior_content_hash, .. } if prior_memory_id == "mem_wrong_bucket" && prior_content_hash == "sha256:same")
         );
@@ -261,6 +271,7 @@ mod tests {
                 provenance: None,
                 sensitivity: None,
                 status: None,
+                encrypted: false,
                 guidance: "private guidance".to_string(),
             }),
         );
@@ -477,9 +488,7 @@ mod tests {
                 resolution: ResolutionKind::YamlOverride,
                 project_yaml: None,
             },
-            action: bucket_repair_action(
-                state.imports.get("claude:proj/memory/a.md").expect("seeded record"),
-            ),
+            action: bucket_repair_action(state.imports.get("claude:proj/memory/a.md").expect("seeded record")),
             wiki_link_targets_resolvable: Vec::new(),
             wiki_link_targets_back_edge: Vec::new(),
         };
@@ -596,7 +605,12 @@ mod tests {
             .candidates
             .iter()
             .find(|c| c.source_key == "codex:memories/MEMORY.md#task-group-2-foo")
-            .unwrap_or_else(|| panic!("foo candidate not in {:?}", parse_output.candidates.iter().map(|c| &c.source_key).collect::<Vec<_>>()));
+            .unwrap_or_else(|| {
+                panic!(
+                    "foo candidate not in {:?}",
+                    parse_output.candidates.iter().map(|c| &c.source_key).collect::<Vec<_>>()
+                )
+            });
 
         let mut state = ImportState::default();
         state.imports.insert(
@@ -682,6 +696,13 @@ mod tests {
         supersede_responses: std::collections::VecDeque<SupersedeOutcome>,
         get_responses: std::collections::HashMap<String, crate::protocol::GetResponse>,
         superseded_by_chains: std::collections::HashMap<String, Vec<String>>,
+        /// Ids whose Get resolves daemon `not_found` (F20: provably gone → `Ok(None)`).
+        missing_memories: std::collections::HashSet<String>,
+        /// Ids whose TrustArtifact lookup fails with a non-`not_found` daemon
+        /// error (F20: fail closed). A dangling link (`not_found`) is modeled
+        /// by simply not configuring a chain entry — identical to production,
+        /// where a gone node contributes no children and the walk continues.
+        trust_artifact_transport_errors: std::collections::HashSet<String>,
         write_calls: Vec<MockWriteCall>,
         supersede_calls: Vec<MockSupersedeCall>,
         get_calls: Vec<String>,
@@ -723,6 +744,14 @@ mod tests {
             self.superseded_by_chains.insert(id.to_string(), chain);
             self
         }
+        fn with_missing_memory(mut self, id: &str) -> Self {
+            self.missing_memories.insert(id.to_string());
+            self
+        }
+        fn with_trust_artifact_transport_error(mut self, id: &str) -> Self {
+            self.trust_artifact_transport_errors.insert(id.to_string());
+            self
+        }
     }
 
     impl DaemonClient for MockDaemonClient {
@@ -755,31 +784,36 @@ mod tests {
         }
 
         async fn get_superseded_by_chain(&mut self, id: &str) -> ImportResult<Vec<String>> {
-            // Model the same transitive walk the real SocketDaemonClient performs.
-            let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
-            let mut queue: std::collections::VecDeque<String> = std::collections::VecDeque::new();
-            let mut chain: Vec<String> = Vec::new();
-            queue.push_back(id.to_string());
-            visited.insert(id.to_string());
-
-            while let Some(current_id) = queue.pop_front() {
-                if chain.len() >= 16 {
-                    break;
-                }
+            // Same walk as the real SocketDaemonClient: the bound semantics
+            // live in the shared ChainWalker (F22) and the error semantics
+            // mirror production (F20) — an unconfigured node is a leaf, a
+            // configured transport error fails closed.
+            let mut walker = ChainWalker::new(id);
+            while let Some((current_id, depth)) = walker.next_node() {
                 self.trust_artifact_calls.push(current_id.clone());
-                for next_id in self.superseded_by_chains.get(&current_id).cloned().unwrap_or_default() {
-                    if visited.insert(next_id.clone()) {
-                        chain.push(next_id.clone());
-                        queue.push_back(next_id);
-                    }
+                if self.trust_artifact_transport_errors.contains(&current_id) {
+                    return Err(ImportError::Parse {
+                        source_key: "<daemon>".to_string(),
+                        reason: format!(
+                            "TrustArtifact failed with daemon error substrate_error: mock transport error for {current_id} (retryable=true)"
+                        ),
+                    });
                 }
+                let links = self.superseded_by_chains.get(&current_id).cloned().unwrap_or_default();
+                walker.push_links(depth, links);
             }
-
-            Ok(chain)
+            Ok(walker.into_chain())
         }
 
-        async fn get_memory(&mut self, id: &str, full_body: bool) -> ImportResult<crate::protocol::GetResponse> {
+        async fn get_memory(
+            &mut self,
+            id: &str,
+            full_body: bool,
+        ) -> ImportResult<Option<crate::protocol::GetResponse>> {
             self.get_calls.push(id.to_string());
+            if self.missing_memories.contains(id) {
+                return Ok(None);
+            }
             let mut response = self.get_responses.get(id).cloned().ok_or_else(|| ImportError::Parse {
                 source_key: id.to_string(),
                 reason: "mock get response not configured".to_string(),
@@ -788,7 +822,7 @@ mod tests {
                 response.body = response.body.chars().take(4_096).collect();
                 response.truncated = true;
             }
-            Ok(response)
+            Ok(Some(response))
         }
     }
 
@@ -971,6 +1005,7 @@ mod tests {
                     truncated: false,
                     provenance: None,
                     status: Some(MemoryStatus::Active),
+                    encrypted: false,
                     guidance: String::new(),
                 },
             );
@@ -1188,15 +1223,16 @@ mod tests {
                 truncated: false,
                 provenance: None,
                 status: Some(MemoryStatus::Active),
+                encrypted: false,
                 guidance: String::new(),
             },
         );
 
-        let full = client.get_memory("mem_large", true).await.expect("get full");
+        let full = client.get_memory("mem_large", true).await.expect("get full").expect("mem_large present");
         assert_eq!(full.body.chars().count(), 5_000);
         assert!(!full.truncated);
 
-        let preview = client.get_memory("mem_large", false).await.expect("get preview");
+        let preview = client.get_memory("mem_large", false).await.expect("get preview").expect("mem_large present");
         assert_eq!(preview.body.chars().count(), 4_096);
         assert!(preview.truncated);
     }
@@ -1256,6 +1292,7 @@ mod tests {
                     truncated: false,
                     provenance: None,
                     status: Some(MemoryStatus::Active),
+                    encrypted: false,
                     guidance: String::new(),
                 },
             )
@@ -1268,6 +1305,7 @@ mod tests {
                     truncated: false,
                     provenance: None,
                     status: Some(MemoryStatus::Active),
+                    encrypted: false,
                     guidance: String::new(),
                 },
             );
@@ -1354,6 +1392,7 @@ mod tests {
                     truncated: false,
                     provenance: None,
                     status: Some(MemoryStatus::Tombstoned),
+                    encrypted: false,
                     guidance: String::new(),
                 },
             )
@@ -1383,6 +1422,289 @@ mod tests {
         assert_eq!(client.supersede_calls.len(), 1, "tombstoned replacement must fall through to supersede");
         let fresh_record = result.state.imports.get(&new_identity).expect("fresh supersede is recorded");
         assert_eq!(fresh_record.memory_id, "mem_fresh");
+    }
+
+    /// F20: a dangling supersession link (the linked node no longer exists) is
+    /// a provably-gone leaf. The walk skips it and the supersede proceeds —
+    /// the pre-fix behavior aborted the action on EVERY retry, permanently
+    /// livelocking the import for that memory.
+    #[tokio::test]
+    async fn execute_supersede_dangling_chain_link_does_not_livelock() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let engine = ImportEngine::new(tmp.path());
+        let candidate = make_candidate("a", "replacement", Vec::new());
+        let new_identity = candidate.import_identity(None);
+        let mut state = ImportState::default();
+        state.imports.insert(
+            "a".to_string(),
+            ImportRecord {
+                source_identity: String::new(),
+                source_key: String::new(),
+                source_memory_id: None,
+                memory_id: "mem_prior".to_string(),
+                content_hash: "sha256:STALE".to_string(),
+                imported_at: Utc::now(),
+                harness: "claude-code".to_string(),
+                source_path_at_import: PathBuf::from("/fixture/a"),
+                namespace: Some("me".to_string()),
+                canonical_namespace_id: None,
+                aliases: Vec::new(),
+                supersession_chain: Vec::new(),
+            },
+        );
+        let action = PlannedWrite {
+            source_key: candidate.source_key.clone(),
+            candidate,
+            scope: ScopeBinding {
+                scope: memory_substrate::Scope::User,
+                namespace: Some("me".to_string()),
+                namespace_alias: None,
+                canonical_namespace_id: None,
+                resolution: ResolutionKind::UserScope,
+                project_yaml: None,
+            },
+            action: PlanAction::Supersede {
+                prior_memory_id: "mem_prior".to_string(),
+                prior_content_hash: "sha256:STALE".to_string(),
+            },
+            wiki_link_targets_resolvable: Vec::new(),
+            wiki_link_targets_back_edge: Vec::new(),
+        };
+
+        // mem_prior's chain names mem_gone, but mem_gone is not_found on Get
+        // (and contributes no children — the dangling-link shape).
+        let mut client = MockDaemonClient::default()
+            .with_superseded_by_chain("mem_prior", vec!["mem_gone".to_string()])
+            .with_missing_memory("mem_gone")
+            .push_supersede(SupersedeOutcome {
+                status: GovernanceStatus::Promoted,
+                new_id: Some("mem_fresh".to_string()),
+                reason: None,
+            });
+
+        let result = engine
+            .execute(
+                ImportPlan {
+                    actions: vec![action],
+                    source_discovery_summary: DiscoverySummary::default(),
+                    unresolved_back_edges: Vec::new(),
+                    parse_errors: Vec::new(),
+                    frontmatter_recovered: Vec::new(),
+                    claude_roots_used: Vec::new(),
+                    state,
+                },
+                ExecuteOptions::default(),
+                &mut client,
+            )
+            .await
+            .expect("dangling link must not abort the action");
+
+        assert_eq!(client.supersede_calls.len(), 1, "supersede proceeds past a provably-gone chain node");
+        let fresh_record = result.state.imports.get(&new_identity).expect("fresh supersede is recorded");
+        assert_eq!(fresh_record.memory_id, "mem_fresh");
+    }
+
+    /// F20: a transport/protocol failure during the chain walk is NOT a leaf —
+    /// the action fails closed (no supersede issued) because the chain state is
+    /// unknown, not provably gone.
+    #[tokio::test]
+    async fn execute_supersede_chain_transport_error_fails_closed() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let engine = ImportEngine::new(tmp.path());
+        let candidate = make_candidate("a", "replacement", Vec::new());
+        let mut state = ImportState::default();
+        state.imports.insert(
+            "a".to_string(),
+            ImportRecord {
+                source_identity: String::new(),
+                source_key: String::new(),
+                source_memory_id: None,
+                memory_id: "mem_prior".to_string(),
+                content_hash: "sha256:STALE".to_string(),
+                imported_at: Utc::now(),
+                harness: "claude-code".to_string(),
+                source_path_at_import: PathBuf::from("/fixture/a"),
+                namespace: Some("me".to_string()),
+                canonical_namespace_id: None,
+                aliases: Vec::new(),
+                supersession_chain: Vec::new(),
+            },
+        );
+        let action = PlannedWrite {
+            source_key: candidate.source_key.clone(),
+            candidate,
+            scope: ScopeBinding {
+                scope: memory_substrate::Scope::User,
+                namespace: Some("me".to_string()),
+                namespace_alias: None,
+                canonical_namespace_id: None,
+                resolution: ResolutionKind::UserScope,
+                project_yaml: None,
+            },
+            action: PlanAction::Supersede {
+                prior_memory_id: "mem_prior".to_string(),
+                prior_content_hash: "sha256:STALE".to_string(),
+            },
+            wiki_link_targets_resolvable: Vec::new(),
+            wiki_link_targets_back_edge: Vec::new(),
+        };
+
+        let mut client = MockDaemonClient::default().with_trust_artifact_transport_error("mem_prior");
+
+        let result = engine
+            .execute(
+                ImportPlan {
+                    actions: vec![action],
+                    source_discovery_summary: DiscoverySummary::default(),
+                    unresolved_back_edges: Vec::new(),
+                    parse_errors: Vec::new(),
+                    frontmatter_recovered: Vec::new(),
+                    claude_roots_used: Vec::new(),
+                    state,
+                },
+                ExecuteOptions::default(),
+                &mut client,
+            )
+            .await;
+
+        assert!(result.is_err(), "transport error during chain walk must fail closed");
+        assert!(client.supersede_calls.is_empty(), "no supersede may be issued when the chain is unreadable");
+    }
+
+    /// F23: an encrypted replacement's Get body is a redaction sentinel, so
+    /// content comparison is impossible. Adoption fails closed — the pre-fix
+    /// behavior hashed the sentinel, mismatched, and minted a duplicate
+    /// supersede for every encrypted-tier replacement.
+    #[tokio::test]
+    async fn execute_supersede_encrypted_replacement_fails_closed() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let engine = ImportEngine::new(tmp.path());
+        let candidate = make_candidate("a", "replacement", Vec::new());
+        let mut state = ImportState::default();
+        state.imports.insert(
+            "a".to_string(),
+            ImportRecord {
+                source_identity: String::new(),
+                source_key: String::new(),
+                source_memory_id: None,
+                memory_id: "mem_prior".to_string(),
+                content_hash: "sha256:STALE".to_string(),
+                imported_at: Utc::now(),
+                harness: "claude-code".to_string(),
+                source_path_at_import: PathBuf::from("/fixture/a"),
+                namespace: Some("me".to_string()),
+                canonical_namespace_id: None,
+                aliases: Vec::new(),
+                supersession_chain: Vec::new(),
+            },
+        );
+        let action = PlannedWrite {
+            source_key: candidate.source_key.clone(),
+            candidate,
+            scope: ScopeBinding {
+                scope: memory_substrate::Scope::User,
+                namespace: Some("me".to_string()),
+                namespace_alias: None,
+                canonical_namespace_id: None,
+                resolution: ResolutionKind::UserScope,
+                project_yaml: None,
+            },
+            action: PlanAction::Supersede {
+                prior_memory_id: "mem_prior".to_string(),
+                prior_content_hash: "sha256:STALE".to_string(),
+            },
+            wiki_link_targets_resolvable: Vec::new(),
+            wiki_link_targets_back_edge: Vec::new(),
+        };
+
+        let mut client = MockDaemonClient::default()
+            .with_superseded_by_chain("mem_prior", vec!["mem_enc".to_string()])
+            .with_get_response(
+                "mem_enc",
+                GetResponse {
+                    id: "mem_enc".to_string(),
+                    summary: "encrypted replacement".to_string(),
+                    body: "[encrypted content omitted]".to_string(),
+                    truncated: false,
+                    provenance: None,
+                    status: Some(MemoryStatus::Active),
+                    encrypted: true,
+                    guidance: String::new(),
+                },
+            );
+
+        let result = engine
+            .execute(
+                ImportPlan {
+                    actions: vec![action],
+                    source_discovery_summary: DiscoverySummary::default(),
+                    unresolved_back_edges: Vec::new(),
+                    parse_errors: Vec::new(),
+                    frontmatter_recovered: Vec::new(),
+                    claude_roots_used: Vec::new(),
+                    state,
+                },
+                ExecuteOptions::default(),
+                &mut client,
+            )
+            .await;
+
+        assert!(result.is_err(), "encrypted replacement comparison must fail closed");
+        assert!(client.get_calls.contains(&"mem_enc".to_string()));
+        assert!(
+            client.supersede_calls.is_empty(),
+            "no supersede may be issued when the replacement content cannot be compared"
+        );
+    }
+
+    /// F22: the chain walk is bounded by DEPTH, not by collected-node count. A
+    /// wide first hop (>16 siblings) must not stop traversal to deeper
+    /// replacements — the pre-fix `chain.len() >= 16` pre-hop check did.
+    #[tokio::test]
+    async fn chain_walk_is_depth_bounded_not_sibling_bounded() {
+        let children: Vec<String> = (0..20).map(|i| format!("mem_child_{i:02}")).collect();
+        let mut client = MockDaemonClient::default()
+            .with_superseded_by_chain("mem_root", children.clone())
+            .with_superseded_by_chain("mem_child_00", vec!["mem_deep_target".to_string()]);
+
+        let chain = client.get_superseded_by_chain("mem_root").await.expect("walk ok");
+
+        for child in &children {
+            assert!(chain.contains(child), "all first-level siblings are collected ({child})");
+        }
+        assert!(
+            chain.contains(&"mem_deep_target".to_string()),
+            "a replacement below a wide fan-out must still be reachable"
+        );
+    }
+
+    /// F22: the depth bound terminates a deep linear chain, and the explicit
+    /// total-node backstop caps pathological fan-out.
+    #[tokio::test]
+    async fn chain_walk_bounds_depth_and_total_nodes() {
+        // Linear chain 20 hops deep: nodes past MAX_DEPTH hops are not walked.
+        let mut client = MockDaemonClient::default();
+        let mut prev = "mem_n00".to_string();
+        for i in 1..=20 {
+            let next = format!("mem_n{i:02}");
+            client = client.with_superseded_by_chain(&prev, vec![next.clone()]);
+            prev = next;
+        }
+        let chain = client.get_superseded_by_chain("mem_n00").await.expect("walk ok");
+        assert!(
+            chain.contains(&format!("mem_n{:02}", ChainWalker::MAX_DEPTH)),
+            "nodes within the depth bound are collected"
+        );
+        assert!(
+            !chain.contains(&format!("mem_n{:02}", ChainWalker::MAX_DEPTH + 1)),
+            "nodes beyond the depth bound are not walked"
+        );
+
+        // Pathological fan-out: total collected nodes are capped.
+        let wide_children: Vec<String> = (0..300).map(|i| format!("mem_w{i:03}")).collect();
+        let mut wide = MockDaemonClient::default().with_superseded_by_chain("mem_root", wide_children);
+        let chain = wide.get_superseded_by_chain("mem_root").await.expect("walk ok");
+        assert_eq!(chain.len(), ChainWalker::MAX_NODES, "total-node backstop caps the walk");
     }
 
     #[tokio::test]
@@ -1428,8 +1750,7 @@ mod tests {
         };
 
         // get_memory not configured for mem_new -> Err, which must fail closed.
-        let mut client = MockDaemonClient::default()
-            .with_superseded_by_chain("mem_prior", vec!["mem_new".to_string()]);
+        let mut client = MockDaemonClient::default().with_superseded_by_chain("mem_prior", vec!["mem_new".to_string()]);
 
         let result = engine
             .execute(
@@ -1454,7 +1775,8 @@ mod tests {
     async fn execute_alias_map_ignores_tuple_identity_keys() {
         let tmp = tempfile::tempdir().expect("tmp");
         let engine = ImportEngine::new(tmp.path());
-        let mut planned = make_planned("src/foo", "body", vec!["tuple:codex:/ignored:me:foo:bar".to_string()], PlanAction::WriteNew);
+        let mut planned =
+            make_planned("src/foo", "body", vec!["tuple:codex:/ignored:me:foo:bar".to_string()], PlanAction::WriteNew);
         // Simulate the planning resolution: this alias is the target of the wiki link.
         planned.wiki_link_targets_resolvable = vec!["tuple:codex:/ignored:me:foo:bar".to_string()];
 
@@ -1503,10 +1825,7 @@ mod tests {
             .expect("execute ok");
 
         let write_call = client.write_calls.first().expect("write called");
-        assert!(
-            write_call.meta.get("related").is_none(),
-            "tuple identity key must not be seeded as a wiki-link alias"
-        );
+        assert!(write_call.meta.get("related").is_none(), "tuple identity key must not be seeded as a wiki-link alias");
         // source_key is still a valid alias.
         assert!(write_call.meta.get("aliases").is_some());
     }
@@ -1555,13 +1874,9 @@ mod tests {
             wiki_link_targets_back_edge: Vec::new(),
         };
 
-        let mut client = MockDaemonClient::default()
-            .with_superseded_by_chain("mem_old", Vec::new())
-            .push_supersede(SupersedeOutcome {
-                status: GovernanceStatus::Promoted,
-                new_id: Some("mem_new".to_string()),
-                reason: None,
-            });
+        let mut client = MockDaemonClient::default().with_superseded_by_chain("mem_old", Vec::new()).push_supersede(
+            SupersedeOutcome { status: GovernanceStatus::Promoted, new_id: Some("mem_new".to_string()), reason: None },
+        );
 
         let result = engine
             .execute(

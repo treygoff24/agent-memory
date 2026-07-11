@@ -23,7 +23,11 @@ fn protocol_contract_round_trips_request_variants_as_snake_case_json() {
         ),
         RequestEnvelope::new(
             "req-get",
-            RequestPayload::Get { id: "mem_20260428_0123456789abcdef_000001".to_owned(), include_provenance: true, full_body: false },
+            RequestPayload::Get {
+                id: "mem_20260428_0123456789abcdef_000001".to_owned(),
+                include_provenance: true,
+                full_body: false,
+            },
         ),
         RequestEnvelope::new(
             "req-trust-artifact",
@@ -734,6 +738,7 @@ fn protocol_contract_success_responses_are_bounded_and_guided() {
             }),
             sensitivity: None,
             status: Some(MemoryStatus::Active),
+            encrypted: false,
             guidance: "Body preview truncated; call memory_get for full body.".to_owned(),
         }),
     );

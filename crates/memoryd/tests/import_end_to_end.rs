@@ -81,7 +81,7 @@ impl DaemonClient for AlwaysPromote {
         &mut self,
         _id: &str,
         _full_body: bool,
-    ) -> memoryd::import::ImportResult<memoryd::protocol::GetResponse> {
+    ) -> memoryd::import::ImportResult<Option<memoryd::protocol::GetResponse>> {
         Err(memoryd::import::ImportError::Parse {
             source_key: _id.to_string(),
             reason: "not configured in test double".to_string(),

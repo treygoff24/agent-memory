@@ -1015,6 +1015,12 @@ pub struct GetResponse {
     pub sensitivity: Option<Sensitivity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<MemoryStatus>,
+    /// True when the memory's content is encrypted at rest: `body` carries a
+    /// redaction sentinel, never plaintext. Additive (F23) so import adoption
+    /// can refuse hash comparison against a redacted body instead of silently
+    /// mismatching and minting a duplicate supersede.
+    #[serde(default)]
+    pub encrypted: bool,
     pub guidance: String,
 }
 

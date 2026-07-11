@@ -241,16 +241,13 @@ pub(crate) async fn get_response(
     let memory_id = HandlerError::parse_memory_id(id)?;
     let envelope = substrate.read_memory_envelope(&memory_id).await.map_err(HandlerError::read_memory)?;
     let provenance = include_provenance.then(|| get_provenance(&envelope.metadata));
+    let encrypted = matches!(envelope.content, MemoryContent::Ciphertext { .. });
     let body = match envelope.content {
         MemoryContent::Plaintext(body) => body,
         MemoryContent::MetadataOnly => String::new(),
         MemoryContent::Ciphertext { .. } => "[encrypted content omitted]".to_string(),
     };
-    let (body, truncated) = if full_body {
-        (body, false)
-    } else {
-        bounded_with_truncation(&body, GET_BODY_MAX)
-    };
+    let (body, truncated) = if full_body { (body, false) } else { bounded_with_truncation(&body, GET_BODY_MAX) };
     Ok(ResponsePayload::Get(GetResponse {
         id: envelope.metadata.frontmatter.id.as_str().to_string(),
         summary: envelope.metadata.frontmatter.summary,
@@ -259,6 +256,7 @@ pub(crate) async fn get_response(
         provenance,
         sensitivity: Some(envelope.metadata.frontmatter.sensitivity),
         status: Some(envelope.metadata.frontmatter.status),
+        encrypted,
         guidance: if full_body {
             "Returned the full Memorum record body.".to_string()
         } else {

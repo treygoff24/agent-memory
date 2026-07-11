@@ -6,11 +6,11 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 
-use crate::import::candidate::{compute_identity, ParsedMemory, short_hash};
+use crate::import::candidate::{compute_identity, short_hash, ParsedMemory};
 use crate::import::discovery::{discover_claude_memory_roots, discover_codex_memory_root};
-use crate::import::state::ImportRecord;
 use crate::import::project_map::{ProjectMapper, PromptBackend, ResolutionKind, ScopeBinding};
 use crate::import::sources::{candidate_aliases, claude, codex};
+use crate::import::state::ImportRecord;
 use crate::import::{ImportError, ImportResult};
 
 use super::execute::plan_action_for_record;
@@ -171,7 +171,9 @@ impl ImportEngine {
                 matches.dedup_by(|a, b| a.1.memory_id == b.1.memory_id);
                 match matches.as_slice() {
                     [] => PlanAction::WriteNew,
-                    [(record_key, record)] => plan_action_for_record(record, record_key, &candidate.content_hash, &scope),
+                    [(record_key, record)] => {
+                        plan_action_for_record(record, record_key, &candidate.content_hash, &scope)
+                    }
                     records => PlanAction::ReportAmbiguous {
                         matching_memory_ids: records.iter().map(|(_, record)| record.memory_id.clone()).collect(),
                     },
@@ -218,11 +220,17 @@ impl ImportEngine {
 /// recomputed both WITH and WITHOUT the content-hash suffix to survive a
 /// suffix toggle (e.g. a sibling was deleted and the remaining section
 /// renumbered).
+///
+/// F21: the recomputation uses the RECORD's persisted canonical namespace id —
+/// never the candidate's — so a project-A record can never match a project-B
+/// candidate and trigger a wrong-memory supersede. Legacy records that predate
+/// the persisted field fall back to the candidate's project id (the historical
+/// behavior; the exact-source-key compat path still covers them).
 fn record_identity_matches(
     record_key: &str,
     record: &ImportRecord,
     candidate_identity: &str,
-    canonical_project_id: &str,
+    candidate_project_id: &str,
 ) -> bool {
     if !record.source_identity.is_empty() && record.source_identity == candidate_identity {
         return true;
@@ -233,13 +241,9 @@ fn record_identity_matches(
         return false;
     }
 
-    let base = compute_identity(
-        source_key,
-        &record.source_path_at_import,
-        &record.harness,
-        canonical_project_id,
-        None,
-    );
+    let record_project_id = record.canonical_namespace_id.as_deref().unwrap_or(candidate_project_id);
+
+    let base = compute_identity(source_key, &record.source_path_at_import, &record.harness, record_project_id, None);
     if base == candidate_identity {
         return true;
     }
@@ -248,7 +252,7 @@ fn record_identity_matches(
         source_key,
         &record.source_path_at_import,
         &record.harness,
-        canonical_project_id,
+        record_project_id,
         Some(short_hash(&record.content_hash)),
     );
     suffixed == candidate_identity
@@ -445,10 +449,54 @@ mod tests {
         let candidate = codex_candidate("codex:memories/MEMORY.md#task-group-1-foo", "body");
         let candidate_identity = candidate.import_identity(None);
 
-        let record_a = record_with_identity(&candidate_identity, "sha256:1111111111111111111111111111111111111111111111111111111111111111", "mem_a");
-        let record_b = record_with_identity("", "sha256:2222222222222222222222222222222222222222222222222222222222222222", "mem_b");
+        let record_a = record_with_identity(
+            &candidate_identity,
+            "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "mem_a",
+        );
+        let record_b = record_with_identity(
+            "",
+            "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "mem_b",
+        );
 
         assert!(record_identity_matches("key_a", &record_a, &candidate_identity, "me"));
         assert!(record_identity_matches("key_b", &record_b, &candidate_identity, "me"));
+    }
+
+    /// F21: the legacy-record identity recompute must use the RECORD's
+    /// persisted canonical namespace id, never the candidate's — otherwise a
+    /// project-A record matches a same-shaped project-B candidate and the
+    /// import supersedes the wrong memory.
+    #[test]
+    fn record_identity_recompute_uses_record_namespace_not_candidates() {
+        let candidate = codex_candidate("codex:memories/MEMORY.md#task-group-1-foo", "body");
+        let candidate_identity = candidate.import_identity(Some("proj_b"));
+
+        let mut record = record_with_identity(
+            "",
+            "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "mem_a",
+        );
+
+        record.canonical_namespace_id = Some("proj_a".to_string());
+        assert!(
+            !record_identity_matches("old-key", &record, &candidate_identity, "proj_b"),
+            "a project-A record must not match a project-B candidate"
+        );
+
+        record.canonical_namespace_id = Some("proj_b".to_string());
+        assert!(
+            record_identity_matches("old-key", &record, &candidate_identity, "proj_b"),
+            "same-project record still matches"
+        );
+
+        // Legacy record with no persisted namespace: falls back to the
+        // candidate's project id (historical behavior, deliberately kept).
+        record.canonical_namespace_id = None;
+        assert!(
+            record_identity_matches("old-key", &record, &candidate_identity, "proj_b"),
+            "legacy record without a persisted namespace keeps the historical fallback"
+        );
     }
 }

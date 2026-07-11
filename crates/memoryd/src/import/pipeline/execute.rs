@@ -81,7 +81,8 @@ impl ImportEngine {
                 PlanAction::SkipUnchanged { existing_memory_id, existing_record_key } => {
                     counters_mut(&mut report, &harness_key).skipped_idempotent += 1;
                     if !opts.dry_run {
-                        let new_identity = action.candidate.import_identity(action.scope.canonical_namespace_id.as_deref());
+                        let new_identity =
+                            action.candidate.import_identity(action.scope.canonical_namespace_id.as_deref());
                         let new_source_key = action.source_key.clone();
                         let new_source_memory_id = action.candidate.recovered_memory_id().map(str::to_string);
                         if let Some(mut record) = state.imports.remove(existing_record_key) {
@@ -330,15 +331,40 @@ impl ImportEngine {
         // contains a replacement with the same content. Adopt it rather than
         // writing a duplicate. F15/F16/F17: walk the chain transitively, fail
         // closed on lookup errors, and only adopt active/pinned replacements.
+        // F20: a chain node the daemon reports `not_found` is provably gone —
+        // skipped, never a reason to abort the supersede (dangling links must
+        // not livelock the import). F23: an encrypted replacement's body is a
+        // redaction sentinel, so content comparison is impossible — adoption
+        // fails closed rather than superseding blind and minting a duplicate.
         let chain = client
             .get_superseded_by_chain(&old_id)
             .await
             .map_err(|error| partial_import_error(error, report, &action.source_key))?;
         for new_id in chain {
-            let get = client
+            let Some(get) = client
                 .get_memory(&new_id, true)
                 .await
-                .map_err(|error| partial_import_error(error, report, &action.source_key))?;
+                .map_err(|error| partial_import_error(error, report, &action.source_key))?
+            else {
+                // Provably gone between the chain walk and the get — a leaf.
+                continue;
+            };
+            if !matches!(get.status, Some(MemoryStatus::Active) | Some(MemoryStatus::Pinned)) {
+                continue;
+            }
+            if get.encrypted {
+                return Err(partial_import_error(
+                    ImportError::Parse {
+                        source_key: new_id.clone(),
+                        reason: format!(
+                            "supersede adoption cannot compare content against encrypted replacement {new_id} \
+                             (body is redacted); resolve the supersession of {old_id} manually before re-importing"
+                        ),
+                    },
+                    report,
+                    &action.source_key,
+                ));
+            }
             if get.truncated {
                 return Err(partial_import_error(
                     ImportError::Parse {
@@ -348,9 +374,6 @@ impl ImportEngine {
                     report,
                     &action.source_key,
                 ));
-            }
-            if !matches!(get.status, Some(MemoryStatus::Active) | Some(MemoryStatus::Pinned)) {
-                continue;
             }
             let computed = ParsedMemory::compute_content_hash(&action.candidate.frontmatter_hint, &get.body);
             if computed == action.candidate.content_hash {
@@ -481,10 +504,7 @@ pub(super) fn plan_action_for_record(
     if record.content_hash == candidate_content_hash {
         return bucket_repair_action(record);
     }
-    PlanAction::Supersede {
-        prior_memory_id: record.memory_id.clone(),
-        prior_content_hash: record.content_hash.clone(),
-    }
+    PlanAction::Supersede { prior_memory_id: record.memory_id.clone(), prior_content_hash: record.content_hash.clone() }
 }
 
 pub(super) fn bucket_repair_action(record: &ImportRecord) -> PlanAction {
