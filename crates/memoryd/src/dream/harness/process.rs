@@ -216,14 +216,14 @@ fn wait_with_timeout(
         }
 
         if std::time::Instant::now() >= deadline {
+            // Timeout path: group SIGTERM, a grace DELAY (no reap — reaping
+            // early would skip the group SIGKILL and let SIGTERM-resistant
+            // in-group descendants keep the pipes; round-3 verify finding),
+            // then group SIGKILL while the pgid is provably still ours, then
+            // reap. Costs at most kill_grace extra wall on the rare timeout
+            // path; matches the W0 judge semantics exactly.
             terminate_child_group(child)?;
-            let kill_deadline = std::time::Instant::now() + kill_grace;
-            while std::time::Instant::now() < kill_deadline {
-                if let Some(status) = child.try_wait()? {
-                    return Ok(WaitOutcome { status, timed_out: true });
-                }
-                thread::sleep(Duration::from_millis(10));
-            }
+            thread::sleep(kill_grace);
             #[cfg(unix)]
             {
                 // Group SIGKILL is safe pre-reap: the pgid is still ours.

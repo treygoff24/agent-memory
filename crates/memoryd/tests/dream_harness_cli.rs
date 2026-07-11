@@ -855,5 +855,9 @@ async fn timeout_with_pipe_holding_grandchild_is_bounded() {
     .await
     .expect_err("timeout expected");
     assert!(matches!(error, HarnessCliError::Timeout { .. }), "got: {error:?}");
-    assert!(start.elapsed() < Duration::from_secs(8), "capture must be bounded, took {:?}", start.elapsed());
+    assert!(
+        start.elapsed() < Duration::from_secs(2),
+        "group kill must beat the drain grace, took {:?}",
+        start.elapsed()
+    );
 }
