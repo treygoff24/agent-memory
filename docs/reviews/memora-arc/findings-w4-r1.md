@@ -12,3 +12,11 @@ Diff: `01ebc1c` in worktree `codex-20260711T155101Z_6f69ac`. Reviewers: coordina
 | W4-F6 | MEDIUM | C+L | Test gaps: RRF golden-value test covering all four weighted terms; preserved raw cue ranks after collapse; hung-FTS deadline test (part of F1). **Fix:** add them. |
 
 Rejected: none. Round 2 = scoped re-review of the fix diff (cap 3).
+
+## Rounds 2–3 — Cursor scoped verifies on the fix layer; LOOP CLOSED
+
+Round 2 (`git show` of the F1-F6 fix commit): 2 HIGH accepted — (a) the four-lane envelope clock restarted AFTER the embed, so a slow embed granted the lanes budget the surface no longer had; (b) the post-timeout FTS fallback got a ~0 residual (zero-duration tokio timeout loses to spawn_blocking → silent empty regression) and a fully-degraded Fused([]) never fell back to FTS at all. Coordinator-fixed in `6ecaf8d`: recall clock starts at collect_hybrid_recall entry; one shared bounded_fts_fallback with a 250ms floor serves all degraded search branches; Fused-empty-with-marker routes through it; zero-budget test made race-tolerant around the served+bounded invariant (3× sweep green). Also this round: Devin's fix lane had again exited with an empty report and 3 broken tests of its own — coordinator audited all six contracts on disk, repaired the tests (degraded-with-FTS-hits IS the ladder; either marker legal under the zero-duration race; hydration pin moved to the unit seam with a real substrate after the integration variant proved unreachable), and removed a dead helper.
+
+Round 3 (cap, on `6ecaf8d`): round-2 HIGHs verified correctly fixed; 1 MEDIUM (delta/hook returned an empty degraded block where search now falls back — mirrored the ladder onto delta) + 2 LOW (by-design +250ms worst-case fallback latency, documented; stale comment) — all coordinator-fixed under the cap exception (prescribed remedies), gates green (memoryd 1168/0).
+
+**W4 code loop CLOSED — 11 findings across 3 rounds.** The wave is NOT integrated yet: the plan's eval gate remains — A/B vs baseline₁ on the dev split in the worktree, config freeze, single holdout scoring showing a win with no material per-dataset regression, THEN ff main.
