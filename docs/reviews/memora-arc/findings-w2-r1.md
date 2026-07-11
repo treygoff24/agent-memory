@@ -32,3 +32,17 @@ Verdicts: Cursor FINDINGS (1 BLOCKER, 2 HIGH, 2 MAJOR, 2 MINOR, 1 NIT); Luna FIN
 - API-lane aux revocation exercised only on a synthetic local triple (no API-lane table in unit fixtures) — noted for the W4-prep vector-lane wiring, where a real API-lane fixture becomes available.
 
 Round 2: scoped re-review of the fix diff. Cap: 3 rounds (this is round 1).
+
+## Round 2 — Cursor (cursor-2) + Luna (codex-3) on fix commit `c84b2de`
+
+Verdicts: both FINDINGS. 3 accepted (2 convergent), 0 rejected. All coordinator-fixed inline in `037d3ef` (test-layer + one boundary guard — zero production-logic blast radius, W0 exception pattern).
+
+| # | Sev | Source | Finding → disposition |
+| --- | --- | --- | --- |
+| W2-R2-1 | MAJOR/HIGH | C+L convergent | F2 race test structurally green on pre-fix code — the TOCTOU window is unreachable through the public API post-fix, so no behavioral test can pin it. FIXED: replaced with the pinnable half (production hash-scoped delete predicate vs a fresh replacement job → 0 rows), untestability rationale written into the test. The transaction itself was inspection-cleared by both lanes. |
+| W2-R2-2 | MINOR | C+L convergent | Migration test overclaimed idempotency (one call), weakened rollback (no raw-v5 read), and leaked `migrate_v6` into the public API. FIXED: moved to a `migrations.rs` unit test (export dropped), second migrate_v6 call, raw-v5 rollback assertions, Result/? idiom per the substrate boundary-check. Bonus real-world catch while fixing: **WAL checkpoint required before the pre-migration file copy** — the same hazard applies to the live-migration runbook (W5 rehearsal step must checkpoint or stop the daemon before copying). |
+| W2-R2-3 | MAJOR (Luna filed HIGH; adjusted — local self-DoS during import, not remote surface) | L | Import forwarded unbounded cue arrays/abstraction strings before any validation. FIXED: count+byte caps at the import boundary (3 cues / 1 KiB each / 1 KiB abstraction); daemon caps remain the exact validator. |
+
+Round-2 closures worth recording: Cursor recomputed all 11 manifest bullet hashes (match) and verified the manifest fails on a lost entry; F1 probe cleared explicitly (Agent/Project share the same floor — Project drop behavior unweakened; refuses_storage checked on both probe texts; probe-clean-but-Me-encrypted = benign fields inside ciphertext, not a bypass); F3 starvation pin verified to fail pre-fix; F9 `path LIKE 'encrypted/%'` justified as the repo's real discriminator (metadata_only alone insufficient because encrypted_index_projection can set metadata_only=false with a safe body).
+
+Round 3 (scoped verify on `037d3ef`): MUST be dry — cap round.
