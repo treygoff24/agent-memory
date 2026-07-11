@@ -106,6 +106,14 @@ fn plain_yaml_string(value: &str) -> bool {
     if YAML_RESERVED.contains(&value) {
         return false;
     }
+    // YAML reserves `@` and `` ` `` as indicator characters that cannot START a
+    // plain scalar (spec: "reserved for future use" — parsers hard-error on
+    // read-back). Mid-string they're fine (emails, @handles), so only the first
+    // character matters. Found live: an agent-supplied cue "@artbylisa ..."
+    // serialized unquoted and made the canonical file unparseable.
+    if value.starts_with(['@', '`']) {
+        return false;
+    }
     // Reject strings that look like YAML numeric scalars:
     // integers, floats, hex (0x...), octal (0o...), binary (0b...),
     // and the special float literals (.inf, .Inf, .INF, .nan, .NaN, .NAN).
@@ -211,6 +219,21 @@ mod tests {
             let yaml = scalar_to_yaml(&Value::String(value.to_string()));
             assert_eq!(yaml, value);
         }
+    }
+
+    /// YAML reserves `@` and `` ` `` as indicators that cannot start a plain
+    /// scalar; unquoted output is unparseable by every YAML reader. Live repro:
+    /// an agent-supplied cue "@artbylisa feedback request" wrote a canonical
+    /// file the substrate could not read back (found by the W4 eval gate).
+    /// Mid-string `@` stays plain so emails/handles don't churn on rewrite.
+    #[test]
+    fn quotes_leading_reserved_indicator_chars() {
+        for value in ["@artbylisa feedback request", "@handle", "`backtick lead"] {
+            assert!(!plain_yaml_string(value), "{value:?} must not be a plain scalar");
+            let yaml = scalar_to_yaml(&Value::String(value.to_string()));
+            assert!(yaml.starts_with('"'), "{value:?} should be quoted, got {yaml}");
+        }
+        assert!(plain_yaml_string("user@example.com"), "mid-string @ must stay plain");
     }
 
     /// YAML reserved literals and numeric look-alikes must still be quoted.
