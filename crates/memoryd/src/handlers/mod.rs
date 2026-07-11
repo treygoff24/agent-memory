@@ -265,7 +265,9 @@ async fn dispatch(
         RequestPayload::Search { query, limit, include_body } => {
             search_response(substrate, state, SearchResponseRequest { query: &query, limit, include_body }).await
         }
-        RequestPayload::Get { id, include_provenance, full_body } => get_response(substrate, &id, include_provenance, full_body).await,
+        RequestPayload::Get { id, include_provenance, full_body } => {
+            get_response(substrate, &id, include_provenance, full_body).await
+        }
         RequestPayload::TrustArtifact { id } => trust_artifact_response(substrate, state, &id).await,
         RequestPayload::CaptureSource(payload) => capture_source_response(substrate, payload).await,
         RequestPayload::DashboardRoi { window_days } => crate::dashboard::roi::dashboard_roi(substrate, window_days)

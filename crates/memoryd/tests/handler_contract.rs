@@ -124,7 +124,11 @@ async fn search_and_get_return_bounded_protocol_responses_from_substrate() {
         &substrate,
         RequestEnvelope::new(
             "req-get",
-            RequestPayload::Get { id: memory.frontmatter.id.as_str().to_string(), include_provenance: false, full_body: false },
+            RequestPayload::Get {
+                id: memory.frontmatter.id.as_str().to_string(),
+                include_provenance: false,
+                full_body: false,
+            },
         ),
     )
     .await;
@@ -142,7 +146,11 @@ async fn search_and_get_return_bounded_protocol_responses_from_substrate() {
         &substrate,
         RequestEnvelope::new(
             "req-get-provenance",
-            RequestPayload::Get { id: memory.frontmatter.id.as_str().to_string(), include_provenance: true, full_body: false },
+            RequestPayload::Get {
+                id: memory.frontmatter.id.as_str().to_string(),
+                include_provenance: true,
+                full_body: false,
+            },
         ),
     )
     .await;
@@ -180,7 +188,11 @@ async fn get_full_body_returns_unbounded_body_for_large_memory() {
         &substrate,
         RequestEnvelope::new(
             "req-get-full",
-            RequestPayload::Get { id: memory.frontmatter.id.as_str().to_string(), include_provenance: false, full_body: true },
+            RequestPayload::Get {
+                id: memory.frontmatter.id.as_str().to_string(),
+                include_provenance: false,
+                full_body: true,
+            },
         ),
     )
     .await;
@@ -195,7 +207,11 @@ async fn get_full_body_returns_unbounded_body_for_large_memory() {
         &substrate,
         RequestEnvelope::new(
             "req-get-preview",
-            RequestPayload::Get { id: memory.frontmatter.id.as_str().to_string(), include_provenance: false, full_body: false },
+            RequestPayload::Get {
+                id: memory.frontmatter.id.as_str().to_string(),
+                include_provenance: false,
+                full_body: false,
+            },
         ),
     )
     .await;

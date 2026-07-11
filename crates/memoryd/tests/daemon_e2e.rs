@@ -76,10 +76,13 @@ async fn cli_client_write_note_then_search_then_get_through_live_daemon() {
     assert!(found.hits.iter().any(|hit| hit.id == note_id), "search must find the approved note");
 
     // Step 3: read back through the same path `memoryd get` uses.
-    let response =
-        client::request(&socket, "cli-get", RequestPayload::Get { id: note_id.clone(), include_provenance: false, full_body: false })
-            .await
-            .expect("get reaches daemon");
+    let response = client::request(
+        &socket,
+        "cli-get",
+        RequestPayload::Get { id: note_id.clone(), include_provenance: false, full_body: false },
+    )
+    .await
+    .expect("get reaches daemon");
     let ResponseResult::Success(ResponsePayload::Get(record)) = response.result else {
         panic!("expected Get success, got {:?}", response.result);
     };

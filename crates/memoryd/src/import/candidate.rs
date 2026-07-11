@@ -177,10 +177,7 @@ fn profile_identity_from_path(source_path: &Path) -> String {
     }) else {
         return "default".to_string();
     };
-    std::fs::canonicalize(profile_root)
-        .unwrap_or_else(|_| profile_root.to_path_buf())
-        .to_string_lossy()
-        .to_string()
+    std::fs::canonicalize(profile_root).unwrap_or_else(|_| profile_root.to_path_buf()).to_string_lossy().to_string()
 }
 
 /// First 8 hex digits of a `sha256:`-prefixed hash.
@@ -359,10 +356,7 @@ mod tests {
 
     #[test]
     fn section_disambiguation_survives_into_identity() {
-        let mut c = candidate(
-            "/u/.claude/projects/p/memory/topic.md",
-            "claude:projects/p/memory/topic.md#section-a",
-        );
+        let mut c = candidate("/u/.claude/projects/p/memory/topic.md", "claude:projects/p/memory/topic.md#section-a");
         c.section_disambiguation = Some("a1b2c3d4".to_string());
         let id = c.import_identity(Some("proj_p"));
         assert!(id.ends_with(":section-a-a1b2c3d4"), "identity: {id}");
