@@ -37,10 +37,7 @@ impl Substrate {
                     return Err(WriteFailure {
                         outcome,
                         kind: match err {
-                            ReadError::Io(io) => WriteFailureKind::IoTyped {
-                                kind: io.kind(),
-                                context: io.to_string(),
-                            },
+                            ReadError::Io(io) => WriteFailureKind::IoTyped { kind: io.kind(), context: io.to_string() },
                             err => WriteFailureKind::ValidationTyped(ValidationError::Other(err.to_string())),
                         },
                     });

@@ -106,22 +106,22 @@ fn merge_health(substrate: &Substrate) -> (std::collections::BTreeMap<String, u6
         ));
     }
     // A stuck Applying journal older than one reconcile cycle is a doctor error;
-    // a fresh Applying proposal is reported informationally.
+    // a fresh Applying proposal is reported informationally. A missing or
+    // unreadable journal is never "fresh" — if we have no evidence the apply
+    // completed, it is stale (fatal).
     let threshold = chrono::Duration::seconds(60);
     let now = chrono::Utc::now();
     let mut stale_applying = 0_u64;
     let mut fresh_applying = 0_u64;
     for proposal in proposals.iter().filter(|p| p.status == crate::dream::merge::MergeProposalStatus::Applying) {
-        let mtime = store
-            .journal_mtime(&proposal.proposal_id)
-            .ok()
-            .flatten()
-            .map(chrono::DateTime::<chrono::Utc>::from)
-            .unwrap_or(now);
-        if now.signed_duration_since(mtime) > threshold {
-            stale_applying += 1;
-        } else {
-            fresh_applying += 1;
+        let mtime = match store.journal_mtime(&proposal.proposal_id) {
+            Ok(Some(mtime)) => Some(chrono::DateTime::<chrono::Utc>::from(mtime)),
+            Ok(None) => None,
+            Err(_) => None,
+        };
+        match mtime {
+            Some(mtime) if now.signed_duration_since(mtime) <= threshold => fresh_applying += 1,
+            _ => stale_applying += 1,
         }
     }
     if stale_applying > 0 {
@@ -1086,6 +1086,17 @@ mod tests {
         proposal.status = MergeProposalStatus::Applying;
         store.save(&proposal).expect("save applying");
 
+        // A fresh Applying proposal must have a readable journal to be considered
+        // in-progress; missing/unreadable journals are now treated as stale.
+        let journal_path = temp
+            .path()
+            .join("runtime")
+            .join("governance/merge-proposals")
+            .join(&proposal.proposal_id)
+            .join("journal.jsonl");
+        std::fs::create_dir_all(journal_path.parent().expect("journal parent")).expect("journal dir");
+        std::fs::write(&journal_path, b"").expect("journal file");
+
         let substrate = memory_substrate::Substrate::init(
             memory_substrate::Roots::new(temp.path().join("repo"), temp.path().join("runtime")),
             memory_substrate::InitOptions { force_unsafe_durability: true, device_id: Some("dev_mergehealth".into()) },
@@ -1139,6 +1150,39 @@ mod tests {
         let (_counts, findings) = super::merge_health(&substrate);
         let fatal =
             findings.iter().find(|f| f.code == "merge_proposal_stuck_applying").expect("stale applying finding");
+        assert_eq!(fatal.severity, DoctorSeverity::Fatal);
+    }
+
+    #[tokio::test]
+    async fn merge_health_missing_journal_for_applying_is_fatal() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store = merge_store(&temp);
+        let proposal = MergeProposal::new(
+            vec![memory_substrate::MemoryId::new("mem_20260711_aaaaaaaaaaaaaaaa_000207")],
+            memory("mem_20260711_aaaaaaaaaaaaaaaa_000208"),
+            Vec::new(),
+            "doctor-test",
+        )
+        .expect("valid proposal");
+        store.create(&proposal).expect("create proposal");
+        let mut proposal = store.load(&proposal.proposal_id).expect("load proposal");
+        proposal.status = MergeProposalStatus::Applying;
+        store.save(&proposal).expect("save applying");
+
+        // Deliberately no journal file.
+
+        let substrate = memory_substrate::Substrate::init(
+            memory_substrate::Roots::new(temp.path().join("repo"), temp.path().join("runtime")),
+            memory_substrate::InitOptions { force_unsafe_durability: true, device_id: Some("dev_mergehealth".into()) },
+        )
+        .await
+        .expect("substrate init");
+
+        let (_counts, findings) = super::merge_health(&substrate);
+        let fatal = findings
+            .iter()
+            .find(|f| f.code == "merge_proposal_stuck_applying")
+            .expect("stale applying finding for missing journal");
         assert_eq!(fatal.severity, DoctorSeverity::Fatal);
     }
 }

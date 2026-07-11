@@ -332,6 +332,11 @@ impl MergeProposalStore {
 /// restored (the current body is preserved verbatim), the staged replacement is
 /// tombstoned if still non-servable, and the proposal is marked `RolledBack`
 /// with a `MergeRolledBack` event.
+///
+/// If the replacement is already servable (Active/Pinned with a non-staging
+/// policy), the merge has factually applied: we do not restore sources, but
+/// complete the proposal bookkeeping idempotently and report a typed
+/// "already applied" outcome.
 pub async fn reject_proposal(
     substrate: &Substrate,
     store: &MergeProposalStore,
@@ -344,9 +349,19 @@ pub async fn reject_proposal(
             store.save(&proposal).map_err(MergeApplyError::Other)?;
         }
         MergeProposalStatus::Quarantined | MergeProposalStatus::Applying => {
+            if is_replacement_servable(substrate, &proposal).await? {
+                proposal.status = MergeProposalStatus::Applied;
+                emit_merge_applied_once(substrate, &proposal)?;
+                append_journal(store, &proposal.proposal_id, "done", Value::Null)?;
+                store.save(&proposal).map_err(MergeApplyError::Other)?;
+                return Err(MergeApplyError::AlreadyApplied { proposal_id: proposal.proposal_id.clone() });
+            }
             safe_restore_from_reject(substrate, &mut proposal).await?;
             proposal.status = MergeProposalStatus::RolledBack;
             store.save(&proposal).map_err(MergeApplyError::Other)?;
+        }
+        MergeProposalStatus::Applied => {
+            return Err(MergeApplyError::AlreadyApplied { proposal_id: proposal.proposal_id.clone() });
         }
         _ => return Err(MergeApplyError::Other(anyhow::anyhow!("proposal cannot be rejected: {:?}", proposal.status))),
     }
@@ -414,6 +429,20 @@ async fn safe_restore_from_reject(substrate: &Substrate, proposal: &mut MergePro
     Ok(())
 }
 
+/// Servable replacement after a merge has factually applied: Active or Pinned
+/// with a non-staging policy. The replacement may be read only once; I/O errors
+/// are propagated because we cannot determine whether the merge has applied.
+async fn is_replacement_servable(substrate: &Substrate, proposal: &MergeProposal) -> Result<bool, MergeApplyError> {
+    let replacement = match substrate.read_memory(&proposal.replacement.frontmatter.id).await {
+        Ok(replacement) => replacement,
+        Err(memory_substrate::ReadError::NotFound(_)) => return Ok(false),
+        Err(error) => return Err(MergeApplyError::Other(anyhow::anyhow!(error))),
+    };
+    Ok((replacement.frontmatter.status == MemoryStatus::Active
+        || replacement.frontmatter.status == MemoryStatus::Pinned)
+        && replacement.frontmatter.write_policy.policy_applied != STAGING_POLICY)
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 struct JournalRecord {
     phase: String,
@@ -447,6 +476,8 @@ pub enum MergeApplyError {
     Quarantined(String),
     #[error("retryable merge activation error: {0}")]
     Retryable(String),
+    #[error("merge proposal {proposal_id} already applied; reject unavailable")]
+    AlreadyApplied { proposal_id: String },
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
@@ -555,6 +586,10 @@ pub async fn approve_and_apply(
                 maybe_crash(request.crash, SimulatedCrash::AfterActivation)?;
             }
             Err(MergeActivationError::Retryable(error)) => {
+                // The counter is incremented in memory before store.save; if
+                // the subsequent save fails (e.g., disk full), the persisted
+                // proposal remains at its old counter and the next reconcile
+                // will re-attempt from that value. This is an accepted residual.
                 proposal.reconcile_attempts += 1;
                 if proposal.reconcile_attempts >= MAX_RECONCILE_ATTEMPTS {
                     proposal.status = MergeProposalStatus::Quarantined;
@@ -624,7 +659,8 @@ async fn preflight(
 
     let triple = substrate.active_embedding_triple().map_err(|error| error.to_string())?;
     let vectors = substrate.all_abstraction_vectors(&triple).map_err(|error| error.to_string())?;
-    let vector_by_id = vectors.into_iter().map(|row| (row.memory_id, row.vector)).collect::<std::collections::HashMap<_, _>>();
+    let vector_by_id =
+        vectors.into_iter().map(|row| (row.memory_id, row.vector)).collect::<std::collections::HashMap<_, _>>();
     for left_id in &proposal.source_ids {
         for right_id in &proposal.source_ids {
             if left_id >= right_id {
@@ -636,11 +672,10 @@ async fn preflight(
             let right = vector_by_id
                 .get(right_id)
                 .ok_or_else(|| format!("source abstraction vector missing at approval time: {right_id}"))?;
-            let score = cosine(left, right).ok_or_else(|| "source abstraction vector empty or dimension mismatch".to_string())?;
+            let score = cosine(left, right)
+                .ok_or_else(|| "source abstraction vector empty or dimension mismatch".to_string())?;
             if score < DEFAULT_MERGE_SIMILARITY_THRESHOLD {
-                return Err(format!(
-                    "source pair cosine {score} below threshold {DEFAULT_MERGE_SIMILARITY_THRESHOLD}"
-                ));
+                return Err(format!("source pair cosine {score} below threshold {DEFAULT_MERGE_SIMILARITY_THRESHOLD}"));
             }
         }
     }
@@ -661,7 +696,9 @@ async fn preflight(
         .ok_or_else(|| "merge proposal has no source classification floor".to_string())?;
     let classification = rebound.max(floor);
     if classification == ClassificationOutcome::Secret || classification == ClassificationOutcome::RequiresEncryption {
-        return Err("merge replacement would require encryption or refused storage after classification floor".to_string());
+        return Err(
+            "merge replacement would require encryption or refused storage after classification floor".to_string()
+        );
     }
     Ok(captured)
 }
@@ -860,7 +897,9 @@ async fn activate_replacement(substrate: &Substrate, proposal: &MergeProposal) -
         .iter()
         .map(|source| source.original_sensitivity.classification_outcome())
         .max()
-        .ok_or_else(|| MergeActivationError::non_retryable(anyhow::anyhow!("merge proposal has no source classification floor")))?;
+        .ok_or_else(|| {
+            MergeActivationError::non_retryable(anyhow::anyhow!("merge proposal has no source classification floor"))
+        })?;
     let classification = rebound.max(floor);
     if classification == ClassificationOutcome::Secret || classification == ClassificationOutcome::RequiresEncryption {
         return Err(MergeActivationError::non_retryable(anyhow::anyhow!(
@@ -1858,10 +1897,7 @@ mod tests {
             .unwrap();
         assert!(hits.iter().all(|hit| hit.memory_id != staged_id));
 
-        let hybrid = substrate
-            .query_hybrid_chunks("body", None, 10)
-            .await
-            .unwrap();
+        let hybrid = substrate.query_hybrid_chunks("body", None, 10).await.unwrap();
         assert!(hybrid.iter().all(|hit| hit.memory_id != staged_id));
 
         // Backup/export surfaces with the exclusion flag disabled still see the staged row.
@@ -1874,6 +1910,134 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count, 1, "merge-staged candidate is visible when exclusion is disabled");
+    }
+
+    #[tokio::test]
+    async fn reject_after_activation_crash_completes_applied() {
+        let (temp, substrate) = substrate().await;
+        let source = memory("mem_20260711_aaaaaaaaaaaaaaaa_000201");
+        write(&substrate, source.clone()).await;
+        let proposal = MergeProposal::new(
+            vec![source.frontmatter.id.clone()],
+            memory("mem_20260711_aaaaaaaaaaaaaaaa_000202"),
+            Vec::new(),
+            "dream-test",
+        )
+        .unwrap();
+        let store = MergeProposalStore::new(&temp.path().join("runtime"));
+        store.create(&proposal).unwrap();
+
+        let result = apply!(
+            &substrate,
+            &store,
+            &proposal.proposal_id,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            Some(SimulatedCrash::AfterActivation)
+        )
+        .await;
+        assert!(matches!(result, Err(MergeApplyError::SimulatedCrash(SimulatedCrash::AfterActivation))));
+
+        let replacement = substrate.read_memory(&proposal.replacement.frontmatter.id).await.unwrap();
+        assert_eq!(replacement.frontmatter.status, MemoryStatus::Active);
+        assert_eq!(replacement.frontmatter.write_policy.policy_applied, "merge-applied-v1");
+        assert_eq!(
+            substrate.read_memory(&source.frontmatter.id).await.unwrap().frontmatter.status,
+            MemoryStatus::Superseded
+        );
+
+        let merge_applied_count = substrate
+            .events()
+            .unwrap()
+            .iter()
+            .filter(|event| matches!(&event.kind, EventKind::MergeApplied { proposal_id, .. } if proposal_id == &proposal.proposal_id))
+            .count();
+        assert_eq!(merge_applied_count, 1, "merge_applied event emitted exactly once");
+
+        let result = reject_proposal(&substrate, &store, &proposal.proposal_id).await;
+        assert!(matches!(result, Err(MergeApplyError::AlreadyApplied { .. })));
+
+        let proposal = store.load(&proposal.proposal_id).unwrap();
+        assert_eq!(proposal.status, MergeProposalStatus::Applied);
+
+        let replacement = substrate.read_memory(&proposal.replacement.frontmatter.id).await.unwrap();
+        assert_eq!(replacement.frontmatter.status, MemoryStatus::Active);
+        assert_eq!(
+            substrate.read_memory(&source.frontmatter.id).await.unwrap().frontmatter.status,
+            MemoryStatus::Superseded
+        );
+
+        let merge_applied_count = substrate
+            .events()
+            .unwrap()
+            .iter()
+            .filter(|event| matches!(&event.kind, EventKind::MergeApplied { proposal_id, .. } if proposal_id == &proposal.proposal_id))
+            .count();
+        assert_eq!(merge_applied_count, 1, "reject must not emit a second merge_applied event");
+
+        let journal = read_journal(&store.journal_path(&proposal.proposal_id), &proposal.proposal_id).unwrap();
+        assert!(journal.iter().any(|frame| frame.record.phase == "done"));
+        assert!(!journal.iter().any(|frame| frame.record.phase == "rolled_back"));
+    }
+
+    #[tokio::test]
+    async fn reject_pre_activation_quarantine_still_restores() {
+        let (temp, substrate) = substrate().await;
+        let first = memory("mem_20260711_aaaaaaaaaaaaaaaa_000211");
+        let second = memory("mem_20260711_aaaaaaaaaaaaaaaa_000212");
+        write(&substrate, first.clone()).await;
+        write(&substrate, second.clone()).await;
+        let proposal = MergeProposal::new(
+            vec![first.frontmatter.id.clone(), second.frontmatter.id.clone()],
+            memory("mem_20260711_aaaaaaaaaaaaaaaa_000213"),
+            Vec::new(),
+            "dream-test",
+        )
+        .unwrap();
+        let store = MergeProposalStore::new(&temp.path().join("runtime"));
+        store.create(&proposal).unwrap();
+
+        let result = apply!(
+            &substrate,
+            &store,
+            &proposal.proposal_id,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            Some(SimulatedCrash::AfterSupersede(0))
+        )
+        .await;
+        assert!(matches!(result, Err(MergeApplyError::SimulatedCrash(SimulatedCrash::AfterSupersede(0)))));
+
+        assert_eq!(
+            substrate.read_memory(&first.frontmatter.id).await.unwrap().frontmatter.status,
+            MemoryStatus::Superseded
+        );
+        let replacement = substrate.read_memory(&proposal.replacement.frontmatter.id).await.unwrap();
+        assert!(replacement.frontmatter.is_merge_non_servable());
+
+        // Simulate a pre-activation quarantine (e.g., a crash before activation).
+        let mut proposal = store.load(&proposal.proposal_id).unwrap();
+        proposal.status = MergeProposalStatus::Quarantined;
+        store.save(&proposal).unwrap();
+
+        let proposal = reject_proposal(&substrate, &store, &proposal.proposal_id).await.unwrap();
+        assert_eq!(proposal.status, MergeProposalStatus::RolledBack);
+
+        let first_restored = substrate.read_memory(&first.frontmatter.id).await.unwrap();
+        assert_eq!(first_restored.frontmatter.status, MemoryStatus::Active);
+        assert_eq!(first_restored.frontmatter.trust_level, TrustLevel::Trusted);
+        assert!(first_restored.frontmatter.superseded_by.is_empty());
+        assert_eq!(first_restored.body, first.body);
+
+        assert_eq!(
+            substrate.read_memory(&proposal.replacement.frontmatter.id).await.unwrap().frontmatter.status,
+            MemoryStatus::Tombstoned
+        );
+
+        assert!(substrate.events().unwrap().iter().any(|event| matches!(
+            &event.kind,
+            EventKind::MergeRolledBack { proposal_id, .. } if proposal_id == &proposal.proposal_id
+        )));
     }
 
     async fn substrate() -> (tempfile::TempDir, Substrate) {

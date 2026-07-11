@@ -72,13 +72,28 @@ pub fn validate_merge_candidates(
     let Some(first) = candidates.first() else {
         return Err(MergeCandidateError::Empty);
     };
+    // W3 sensitivity fence: compute the set's min/max once, then apply the
+    // no-downgrade rule relative to the whole set (not the first element). The
+    // replacement sensitivity floors at the strictest source (set max).
+    let mut set_min_rank = i32::MAX;
+    let mut set_max_rank = i32::MIN;
+    for candidate in candidates {
+        let rank = sensitivity_rank(&candidate.sensitivity);
+        if rank < set_min_rank {
+            set_min_rank = rank;
+        }
+        if rank > set_max_rank {
+            set_max_rank = rank;
+        }
+    }
+    assert!(set_max_rank >= set_min_rank, "set max rank must be at least min rank");
     let mut ids = BTreeSet::new();
     for candidate in candidates {
         if !ids.insert(candidate.id.as_str()) {
             return Err(MergeCandidateError::Duplicate(candidate.id.clone()));
         }
         validate_candidate(candidate, exclusions)?;
-        require_same(candidate, first)?;
+        require_same(candidate, first, set_max_rank)?;
     }
     Ok(())
 }
@@ -123,7 +138,11 @@ fn validate_candidate(
     Ok(())
 }
 
-fn require_same(candidate: &MergeCandidate, first: &MergeCandidate) -> Result<(), MergeCandidateError> {
+fn require_same(
+    candidate: &MergeCandidate,
+    first: &MergeCandidate,
+    set_sensitivity_floor: i32,
+) -> Result<(), MergeCandidateError> {
     let incompatible = |field| MergeCandidateError::Incompatible { id: candidate.id.clone(), field };
     if candidate.scope != first.scope {
         return Err(incompatible("scope"));
@@ -135,10 +154,10 @@ fn require_same(candidate: &MergeCandidate, first: &MergeCandidate) -> Result<()
         return Err(incompatible("memory type"));
     }
     // W3 no-downgrade sensitivity compatibility: the replacement sensitivity
-    // floors at the strictest source (max). A candidate whose sensitivity is
-    // lower than the first source would force the merged result below that
-    // source, so it is incompatible.
-    if sensitivity_rank(&candidate.sensitivity) < sensitivity_rank(&first.sensitivity) {
+    // floors at the strictest source (set max). A candidate whose sensitivity is
+    // lower than the set's max would be below the replacement's floor, so it is
+    // incompatible.
+    if sensitivity_rank(&candidate.sensitivity) < set_sensitivity_floor {
         return Err(incompatible("sensitivity"));
     }
     Ok(())
@@ -233,6 +252,22 @@ mod tests {
                 validate_merge_candidates(&[candidate("one"), other], &MergeCandidateExclusions::default()),
                 Err(MergeCandidateError::Incompatible { .. })
             ));
+        }
+    }
+
+    #[test]
+    fn sensitivity_mismatch_is_order_independent() {
+        for (first_id, second_id) in [("one", "two"), ("two", "one")] {
+            let mut first = candidate(first_id);
+            first.sensitivity = "internal".into();
+            let mut second = candidate(second_id);
+            second.sensitivity = "public".into();
+            let result = validate_merge_candidates(&[first, second], &MergeCandidateExclusions::default());
+            let err = result.expect_err("mixed public/internal sensitivity must be rejected regardless of order");
+            assert!(
+                matches!(err, MergeCandidateError::Incompatible { field, .. } if field == "sensitivity"),
+                "expected sensitivity mismatch, got {err:?}"
+            );
         }
     }
 }

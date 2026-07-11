@@ -53,7 +53,7 @@ pub fn validate_lifecycle_transition(
     }
     if existing.status == MemoryStatus::Pinned
         && new.status == MemoryStatus::Superseded
-        && new.trust_level == TrustLevel::Pinned
+        && (new.trust_level == TrustLevel::Pinned || actor != Some("memoryd-merge"))
     {
         return Err(ValidationError::LifecycleTransitionDenied {
             from: "pinned".to_string(),
@@ -206,4 +206,103 @@ fn privacy_scan_has_private_credential(frontmatter: &Frontmatter) -> bool {
         .is_some_and(|labels| {
             labels.iter().filter_map(serde_json::Value::as_str).any(|label| label == "private_credential")
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::frontmatter::{default_retrieval_policy, default_source, default_write_policy};
+    use crate::model::{Author, AuthorKind, MemoryId};
+
+    fn frontmatter(
+        id: &str,
+        status: MemoryStatus,
+        trust_level: TrustLevel,
+        superseded_by: Vec<MemoryId>,
+    ) -> Frontmatter {
+        let now = chrono::Utc::now();
+        let scope = Scope::Agent;
+        let sensitivity = Sensitivity::Internal;
+        Frontmatter {
+            schema_version: SUPPORTED_SCHEMA_VERSION,
+            id: MemoryId::new(id),
+            memory_type: MemoryType::Procedure,
+            scope,
+            summary: "summary".into(),
+            confidence: 0.8,
+            original_confidence: None,
+            trust_level,
+            sensitivity,
+            status,
+            created_at: now,
+            updated_at: now,
+            observed_at: None,
+            author: Author {
+                kind: AuthorKind::System,
+                user_handle: None,
+                harness: None,
+                harness_version: None,
+                session_id: None,
+                subagent_id: None,
+                phase: None,
+                component: Some("test".into()),
+            },
+            namespace: None,
+            canonical_namespace_id: None,
+            tags: Vec::new(),
+            entities: Vec::new(),
+            aliases: Vec::new(),
+            source: default_source(),
+            evidence: Vec::new(),
+            requires_user_confirmation: false,
+            review_state: None,
+            supersedes: Vec::new(),
+            superseded_by,
+            related: Vec::new(),
+            tombstone_events: Vec::new(),
+            retrieval_policy: default_retrieval_policy(scope, sensitivity),
+            write_policy: default_write_policy(),
+            merge_diagnostics: None,
+            abstraction: None,
+            cues: Vec::new(),
+            extras: Default::default(),
+        }
+    }
+
+    #[test]
+    fn pinned_to_superseded_requires_memoryd_merge_actor() {
+        let existing =
+            frontmatter("mem_20260711_aaaaaaaaaaaaaaaa_000001", MemoryStatus::Pinned, TrustLevel::Pinned, Vec::new());
+        let new = frontmatter(
+            "mem_20260711_aaaaaaaaaaaaaaaa_000002",
+            MemoryStatus::Superseded,
+            TrustLevel::Trusted,
+            vec![MemoryId::new("mem_20260711_aaaaaaaaaaaaaaaa_000003")],
+        );
+        assert!(validate_lifecycle_transition(Some(&existing), &new, Some("memoryd-merge")).is_ok());
+        assert!(matches!(
+            validate_lifecycle_transition(Some(&existing), &new, Some("memoryd-supersede")),
+            Err(ValidationError::LifecycleTransitionDenied { .. })
+        ));
+        assert!(matches!(
+            validate_lifecycle_transition(Some(&existing), &new, None),
+            Err(ValidationError::LifecycleTransitionDenied { .. })
+        ));
+    }
+
+    #[test]
+    fn pinned_to_superseded_rejects_pinned_trust_level() {
+        let existing =
+            frontmatter("mem_20260711_aaaaaaaaaaaaaaaa_000001", MemoryStatus::Pinned, TrustLevel::Pinned, Vec::new());
+        let new = frontmatter(
+            "mem_20260711_aaaaaaaaaaaaaaaa_000002",
+            MemoryStatus::Superseded,
+            TrustLevel::Pinned,
+            vec![MemoryId::new("mem_20260711_aaaaaaaaaaaaaaaa_000003")],
+        );
+        assert!(matches!(
+            validate_lifecycle_transition(Some(&existing), &new, Some("memoryd-merge")),
+            Err(ValidationError::LifecycleTransitionDenied { .. })
+        ));
+    }
 }
