@@ -64,3 +64,15 @@ Both FINDINGS — cap hit, but unlike W1 the residuals sit entirely in eval-harn
 Clean areas (both reviewers): G2 kill-on-drop ordering, G3 visitor memory shape + haystack clear, G7 RRF parity/monotonicity, G4/G5 machinery. G5 dedicated-test waiver stands (recorded in the r3 prompt).
 
 Cap disposition: coordinator inline fix (this section) + full crate gate + one scoped cross-family verify of the coordinator diff. No 4th delegate fix round.
+
+## Scoped verify of the coordinator fix (cursor-4)
+
+Verdict FINDINGS, but all core H1/H2/H3 claims verified (incl. independent nDCG arithmetic and behavior-preservation of `rank_metrics`). Three refinements, all accepted and applied by the coordinator:
+
+| # | Sev | Finding → fix |
+| --- | --- | --- |
+| V1 | MEDIUM | Sequential `recv_pipe(remaining)` calls stack to ~2× the configured timeout worst-case. **Fix:** one shared absolute `Instant` deadline for both drains. |
+| V2 | MEDIUM | Post-reap `kill(-pid)` in the recv-timeout path can hit a recycled pgid when every group member exited (setsid'd descendants). **Fix:** group kill only on the pre-reap wait-loop path; post-reap drain expiry detaches readers with no kill (in-group straggler leaks for its natural lifetime — acceptable in an eval harness). |
+| V3 | LOW | `short_socket_path` doc lead-in still said `/tmp/<prefix>-<pid>/`. **Fix:** comment synced. |
+
+Refinements implement cursor-4's own fix directions verbatim; loop closed on the coordinator's re-read + full crate gate (clippy `-D warnings` + full `cargo test -p memorum-eval`) rather than a further delegate round. W0 review loop DRY at this point.

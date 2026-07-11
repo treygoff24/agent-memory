@@ -223,3 +223,15 @@ Outcome and verification: FINDINGS — converged with Cursor on H1 (independent 
 Performance observations: this is the round where Luna beat Cursor on judgment (H2/H3 severity calls) while Cursor beat Luna on evidence (H1 repro). The pair remains disjoint-but-overlapping in exactly the useful way — 6 consecutive rounds now.
 
 Routing assessment: Cursor+Luna stays the standing review pair for this arc. Confidence: high.
+
+## 2026-07-10 - grok-4.5-fast-xhigh via cursor - W0 scoped verify of coordinator fix
+
+Command and run: `delegate --cwd <w0-worktree> --group memora-w0rev3 cursor safe --prompt-file thoughts/memora-build/w0-verify-coordfix-prompt.md`; alias cursor-4; safe/worktree-temp.
+
+Task and expectation: verify the coordinator's uncommitted H1/H2/H3 fix diff only; hunt list included pgid pitfalls and nDCG arithmetic.
+
+Outcome and verification: FINDINGS — 2 MEDIUM + 1 LOW, every one real and precisely the residual risk classes named in the hunt list (deadline stacking across sequential recvs; post-reap pgid recycling; comment drift). Independently re-derived the nDCG hand-math and confirmed `rank_metrics` is a pure move (incl. the full-list-MRR subtlety). No false positives. ~3 min.
+
+Performance observations: as a verifier of *someone else's fix* it's just as sharp as an attacker of author code — the pgid-recycling catch is genuinely expert Unix semantics. Handing it an explicit hunt list of failure classes returns maximum value per minute.
+
+Routing assessment: scoped verify prompts with named residual-risk classes are the highest-leverage way to spend this lane. Confidence: high.
