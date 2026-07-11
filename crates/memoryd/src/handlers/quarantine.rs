@@ -132,6 +132,7 @@ pub(crate) async fn blocking_conflict_paths(substrate: &Substrate) -> Result<Vec
             statuses: vec![MemoryStatus::Quarantined],
             hydrate: AuxScope::None,
             source_identity: false,
+            exclude_merge_non_servable: true,
             ..RecallIndexQuery::default()
         })
         .await

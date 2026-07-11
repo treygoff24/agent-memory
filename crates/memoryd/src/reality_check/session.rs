@@ -230,6 +230,7 @@ impl<'a> RcSessionHandler<'a> {
                 // touches tags/aliases/entities, so skip all hydration.
                 hydrate: AuxScope::None,
                 source_identity: false,
+                exclude_merge_non_servable: true,
                 ..RecallIndexQuery::default()
             })
             .await?;

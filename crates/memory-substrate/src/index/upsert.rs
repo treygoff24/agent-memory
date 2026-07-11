@@ -171,7 +171,10 @@ pub(super) fn upsert_memory_row_in_txn(
 
     // Rebuild chunks for this memory.
     txn.execute("DELETE FROM memory_chunks WHERE memory_id = ?1", [memory.frontmatter.id.as_str()])?;
-    if !options.metadata_only && memory.frontmatter.retrieval_policy.index_body {
+    let may_index_body = !options.metadata_only
+        && memory.frontmatter.retrieval_policy.index_body
+        && !memory.frontmatter.is_merge_non_servable();
+    if may_index_body {
         // Hoist the loop-invariant INSERTs out of the per-chunk loop: rusqlite's
         // `Transaction::execute` recompiles its SQL on every call, so a memory
         // with M chunks would re-parse+re-plan the same two statements M times.

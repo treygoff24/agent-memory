@@ -20,6 +20,49 @@ static SLUG_RE: LazyLock<Regex> = LazyLock::new(|| {
 /// here is redundant — if an invalid string somehow bypassed `MemoryId::try_new` it would
 /// already be unreachable, and adding the check again just duplicates the regex literal and
 /// the error path. The id is therefore accepted as-is.
+/// Validate a lifecycle transition from `existing` (the canonical file state before
+/// this write) to `new`. `None` means the write is a create, so there is no prior
+/// state to transition from. `actor` is the `event_context.actor` for contextual
+/// allowances (e.g. merge rollback restores).
+pub fn validate_lifecycle_transition(
+    existing: Option<&Frontmatter>,
+    new: &Frontmatter,
+    actor: Option<&str>,
+) -> Result<(), ValidationError> {
+    let Some(existing) = existing else {
+        return Ok(());
+    };
+    if existing.status == MemoryStatus::Candidate && new.status == MemoryStatus::Active {
+        let merge_activation = existing.write_policy.policy_applied == "merge-staged-v1";
+        let review_approval = existing.requires_user_confirmation && actor == Some("memoryd-review");
+        if !merge_activation && !review_approval {
+            return Err(ValidationError::LifecycleTransitionDenied {
+                from: "candidate".to_string(),
+                to: "active".to_string(),
+            });
+        }
+    }
+    if existing.status == MemoryStatus::Superseded
+        && (new.status == MemoryStatus::Active || new.status == MemoryStatus::Pinned)
+        && !matches!(actor, Some("memoryd-merge-rollback") | Some("memoryd-merge-reject"))
+    {
+        return Err(ValidationError::LifecycleTransitionDenied {
+            from: "superseded".to_string(),
+            to: new.status.as_db_str().to_string(),
+        });
+    }
+    if existing.status == MemoryStatus::Pinned
+        && new.status == MemoryStatus::Superseded
+        && new.trust_level == TrustLevel::Pinned
+    {
+        return Err(ValidationError::LifecycleTransitionDenied {
+            from: "pinned".to_string(),
+            to: "superseded".to_string(),
+        });
+    }
+    Ok(())
+}
+
 pub fn validate_frontmatter(frontmatter: &Frontmatter) -> Result<(), ValidationError> {
     let mut normalized = frontmatter.clone();
     normalize_abstraction_cues(&mut normalized)?;

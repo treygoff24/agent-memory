@@ -27,6 +27,10 @@ const EXPORT_ENVELOPE_READ_CONCURRENCY: usize = 16;
 /// runtime-directory creation, index-repair replay, and event-log mirror
 /// rebuild.  Stop any running `memoryd serve` daemon before exporting against
 /// the same `--repo` / `--runtime` pair.
+///
+/// W3: export is a complete backup snapshot, so merge-staged candidate rows
+/// and superseded rows are intentionally included (they are gated out of
+/// live recall surfaces, not removed from canonical storage).
 #[derive(Debug, clap::Args)]
 pub struct ExportArgs {
     /// Canonical memory repository root.

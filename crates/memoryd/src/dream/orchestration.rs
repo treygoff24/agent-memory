@@ -466,6 +466,7 @@ async fn load_active_memories(
                     // tags and aliases are never read, so hydrate entities only.
                     hydrate: AuxScope::Entities,
                     source_identity: false,
+                    exclude_merge_non_servable: true,
                 })
                 .await
                 .map_err(|err| DreamError::invalid_request(format!("failed to load active dream memories: {err}")))?,

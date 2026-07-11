@@ -227,6 +227,7 @@ async fn delta_peer_candidate_rows(
                     // Peer-write attribution reads source/author harness+session
                     // identity off each surviving row, so project those fields.
                     source_identity: true,
+                    exclude_merge_non_servable: true,
                 })
                 .await
                 .map_err(|error| RecallError::substrate_error(error.to_string()))?

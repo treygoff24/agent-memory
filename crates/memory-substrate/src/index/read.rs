@@ -13,6 +13,7 @@ use crate::model::{
 
 use super::util::{invalid_column_value, parse_index_time};
 use super::{bucketed_in_clause_width, pad_in_clause_bindings, sql_placeholders};
+use crate::index::query::MERGE_NON_SERVABLE_SQL;
 
 pub(super) fn append_memory_query_filters(
     query: &MemoryQuery,
@@ -64,6 +65,9 @@ pub(super) fn append_recall_index_filters(
     if let Some(updated_since) = query.updated_since.as_ref() {
         filters.push("memories.updated_at >= ?".to_string());
         bindings.push(rusqlite::types::Value::Text(updated_since.to_rfc3339()));
+    }
+    if query.exclude_merge_non_servable {
+        filters.push(MERGE_NON_SERVABLE_SQL.to_string());
     }
     Ok(())
 }

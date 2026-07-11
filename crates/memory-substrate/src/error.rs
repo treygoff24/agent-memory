@@ -216,6 +216,9 @@ pub enum ValidationError {
     /// Invalid lifecycle pair.
     #[error("invalid lifecycle pair")]
     InvalidLifecyclePair,
+    /// Lifecycle transition refused between the two states.
+    #[error("lifecycle transition from {from} to {to} refused")]
+    LifecycleTransitionDenied { from: String, to: String },
     /// Secret sensitivity persisted on disk at a specific path.
     #[error("secret sensitivity persisted on disk at {}", path.display())]
     SecretSensitivityOnDiskAt {

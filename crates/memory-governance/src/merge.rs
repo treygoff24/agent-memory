@@ -134,10 +134,24 @@ fn require_same(candidate: &MergeCandidate, first: &MergeCandidate) -> Result<()
     if candidate.memory_type != first.memory_type {
         return Err(incompatible("memory type"));
     }
-    if candidate.sensitivity != first.sensitivity {
+    // W3 no-downgrade sensitivity compatibility: the replacement sensitivity
+    // floors at the strictest source (max). A candidate whose sensitivity is
+    // lower than the first source would force the merged result below that
+    // source, so it is incompatible.
+    if sensitivity_rank(&candidate.sensitivity) < sensitivity_rank(&first.sensitivity) {
         return Err(incompatible("sensitivity"));
     }
     Ok(())
+}
+
+fn sensitivity_rank(sensitivity: &str) -> i32 {
+    match sensitivity {
+        "public" => 0,
+        "internal" => 1,
+        "confidential" => 2,
+        "personal" => 3,
+        _ => -1,
+    }
 }
 
 #[cfg(test)]

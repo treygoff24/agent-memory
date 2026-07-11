@@ -26,6 +26,37 @@ impl Substrate {
                 .map_err(|err| WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::ValidationTyped(err) }),
         )?;
         self.run_gate(&audit_ctx, self.enforce_plaintext_classification(&request, outcome.clone()))?;
+
+        let existing = match request.write_mode {
+            WriteMode::CreateNew => None,
+            WriteMode::AdminRepair => None,
+            WriteMode::ReplaceExisting => match self.read_memory_with_hash(&request.memory.frontmatter.id).await {
+                Ok((memory, _hash)) => Some(memory),
+                Err(ReadError::NotFound(_)) => None,
+                Err(err) => {
+                    return Err(WriteFailure {
+                        outcome,
+                        kind: match err {
+                            ReadError::Io(io) => WriteFailureKind::IoTyped {
+                                kind: io.kind(),
+                                context: io.to_string(),
+                            },
+                            err => WriteFailureKind::ValidationTyped(ValidationError::Other(err.to_string())),
+                        },
+                    });
+                }
+            },
+        };
+        self.run_gate(
+            &audit_ctx,
+            validate_lifecycle_transition(
+                existing.as_ref().map(|memory| &memory.frontmatter),
+                &request.memory.frontmatter,
+                request.event_context.actor.as_deref(),
+            )
+            .map_err(|err| WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::ValidationTyped(err) }),
+        )?;
+
         self.run_gate(
             &audit_ctx,
             validate_frontmatter(&request.memory.frontmatter)

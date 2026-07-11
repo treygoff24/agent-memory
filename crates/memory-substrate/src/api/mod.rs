@@ -21,7 +21,7 @@ use crate::events::{
     ensure_event_sequence_state, read_events, reserve_event_sequence, reserve_event_sequences,
     sync_event_sequence_state, Event, EventKind,
 };
-use crate::frontmatter::validate_frontmatter;
+use crate::frontmatter::{validate_frontmatter, validate_lifecycle_transition};
 use crate::git;
 use crate::ids::next_memory_id;
 use crate::index::{open_index, Index};

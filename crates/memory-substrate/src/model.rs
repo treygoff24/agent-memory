@@ -13,6 +13,10 @@ use std::sync::LazyLock;
 
 use crate::error::ValidationError;
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// Memory ID format. Mirrors spec §7.1.
 #[allow(clippy::expect_used)]
 static MEMORY_ID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
@@ -97,7 +101,7 @@ pub struct EventsLogMirrorHealth {
 }
 
 /// Caller-supplied classification result from Stream D.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ClassificationOutcome {
     /// Caller asserts plaintext is safe for public/internal sensitivity.
@@ -179,6 +183,16 @@ impl Sensitivity {
             .filter(|sensitivity| sensitivity.api_lane_eligible())
             .map(Self::as_db_str)
             .collect()
+    }
+
+    /// Classification outcome that is the minimum floor implied by this
+    /// sensitivity tier. Public/Internal content can be plaintext-trusted;
+    /// Confidential/Personal must be encrypted at rest.
+    pub fn classification_outcome(self) -> ClassificationOutcome {
+        match self {
+            Self::Public | Self::Internal => ClassificationOutcome::Trusted,
+            Self::Confidential | Self::Personal => ClassificationOutcome::RequiresEncryption,
+        }
     }
 }
 
@@ -1525,6 +1539,13 @@ pub struct RecallIndexQuery {
     /// `source_harness` is always projected from its materialized column
     /// regardless of this flag.
     pub source_identity: bool,
+    /// When `true`, exclude rows that are non-servable per the W3 merge
+    /// predicate: `status = 'superseded'` or `(status = 'candidate' AND
+    /// write_policy.policy_applied = 'merge-staged-v1')`. Gated read lanes set
+    /// this; backup/export surfaces leave it `false` so they can preserve
+    /// merge-staged and superseded rows.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub exclude_merge_non_servable: bool,
 }
 
 impl Default for RecallIndexQuery {
@@ -1537,6 +1558,7 @@ impl Default for RecallIndexQuery {
             match_terms: Vec::new(),
             hydrate: AuxScope::All,
             source_identity: true,
+            exclude_merge_non_servable: false,
         }
     }
 }

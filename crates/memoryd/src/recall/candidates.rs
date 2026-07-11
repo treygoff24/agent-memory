@@ -99,6 +99,7 @@ pub async fn collect_recall_candidates_from_index(
             // Ranking/omission reads none of the identity/merge-diagnostics
             // fields, so skip the per-row json_extract for them on this hot path.
             source_identity: false,
+            exclude_merge_non_servable: true,
         };
         for row in reader.query_recall_index(query).await? {
             rows.entry(row.id.to_string()).or_insert(row);

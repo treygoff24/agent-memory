@@ -383,6 +383,7 @@ async fn startup_peer_candidate_rows(
             // Peer-write attribution reads source/author harness+session identity
             // off each surviving row, so project those fields.
             source_identity: true,
+            exclude_merge_non_servable: true,
         })
         .await
         .map_err(map_substrate_error)?
@@ -621,6 +622,7 @@ pub(crate) async fn count_candidate_attention(
                 match_terms: Vec::new(),
                 hydrate: AuxScope::None,
                 source_identity: false,
+                exclude_merge_non_servable: false,
             })
             .await
             .map_err(map_substrate_error)?;

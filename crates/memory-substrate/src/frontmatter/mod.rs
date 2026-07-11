@@ -15,4 +15,4 @@ pub use semantic::{
     normalize_abstraction_cues, normalize_abstraction_value, normalize_cue_values, normalize_semantic_text,
 };
 pub use serialize::{serialize_document, serialize_frontmatter};
-pub use validate::validate_frontmatter;
+pub use validate::{validate_frontmatter, validate_lifecycle_transition};

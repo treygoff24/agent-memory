@@ -34,6 +34,12 @@ use super::fts::{sanitize_fts_query, sanitize_relaxed_fts_query, RELAXED_RANK_OF
 /// review finding).
 pub const AUX_PENDING_JOB_HASH_SCOPED_DELETE_SQL: &str = "DELETE FROM aux_pending_embedding_jobs
              WHERE row_kind=?1 AND target_id=?2 AND provider=?3 AND model_ref=?4 AND dimension=?5 AND content_hash=?6";
+
+/// W3 single-source non-servability predicate. Excludes `superseded` rows and
+/// merge-staged candidate replacements (`status = 'candidate'` with
+/// `write_policy.policy_applied = 'merge-staged-v1'`). Shared by every gated
+/// read lane so the SQL and Rust predicate stay one definition.
+pub const MERGE_NON_SERVABLE_SQL: &str = "NOT (memories.status = 'superseded' OR (memories.status = 'candidate' AND json_extract(memories.frontmatter_json, '$.write_policy.policy_applied') = 'merge-staged-v1'))";
 use super::read::{
     append_filters_and_order, append_match_term_filters, append_memory_query_filters, append_recall_index_filters,
     collect_query_results, hydrate_recall_index_auxiliary, read_all_entity_rows, read_entities_by_memory,
@@ -1518,32 +1524,10 @@ impl Index {
     /// are counted) is identical to fetching and calling `rows.len()` on the
     /// result. `query.hydrate` is irrelevant to a count and is ignored.
     pub fn count_recall_index(&self, query: &RecallIndexQuery) -> SubstrateResult<usize> {
-        self.count_recall_index_inner(query, false, false)
-    }
-
-    /// Count recall-index rows, but exclude `Candidate` memories whose
-    /// `write_policy.policy_applied` is `merge-staged-v1`. These are merge
-    /// replacements that are not yet reviewable and must not inflate the pending
-    /// attention counter.
-    pub fn count_recall_index_excluding_merge_staged(&self, query: &RecallIndexQuery) -> SubstrateResult<usize> {
-        self.count_recall_index_inner(query, false, true)
-    }
-
-    fn count_recall_index_inner(
-        &self,
-        query: &RecallIndexQuery,
-        include_metadata_only: bool,
-        exclude_merge_staged: bool,
-    ) -> SubstrateResult<usize> {
         let mut sql = String::from("SELECT COUNT(*) FROM memories");
         let mut filters = Vec::new();
         let mut bindings = Vec::new();
-        append_recall_index_filters(query, include_metadata_only, &mut filters, &mut bindings)?;
-        if exclude_merge_staged {
-            filters.push(
-                "NOT (memories.status = 'candidate' AND json_extract(memories.frontmatter_json, '$.write_policy.policy_applied') = 'merge-staged-v1')".to_string(),
-            );
-        }
+        append_recall_index_filters(query, false, &mut filters, &mut bindings)?;
         append_match_term_filters(query, &mut filters, &mut bindings);
         if !filters.is_empty() {
             sql.push_str(" WHERE ");
@@ -1552,6 +1536,16 @@ impl Index {
         let mut stmt = self.connection.prepare_cached(&sql)?;
         let count: i64 = stmt.query_row(params_from_iter(bindings.iter()), |row| row.get(0))?;
         Ok(count.max(0) as usize)
+    }
+
+    /// Count recall-index rows with the W3 non-servability predicate applied.
+    /// These are the same rows that gated read lanes surface, so counts such as
+    /// the pending-attention total never include merge-staged replacements or
+    /// superseded rows.
+    pub fn count_recall_index_excluding_merge_staged(&self, query: &RecallIndexQuery) -> SubstrateResult<usize> {
+        let mut query = query.clone();
+        query.exclude_merge_non_servable = true;
+        self.count_recall_index(&query)
     }
 
     /// Serve the review queue from the derived index instead of walking and

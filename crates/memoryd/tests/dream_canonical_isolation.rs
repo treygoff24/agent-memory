@@ -74,6 +74,7 @@ async fn daemon_visible_substrate_api_refuses_noncanonical_path_reads_and_query_
             match_terms: vec!["stream-f-isolation".to_string()],
             hydrate: AuxScope::All,
             source_identity: true,
+            exclude_merge_non_servable: false,
         })
         .await
         .expect("recall query");

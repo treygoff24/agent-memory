@@ -13,8 +13,8 @@ use memory_governance::{
 use memory_privacy::{PrivacyNamespace, PrivacyStorageAction};
 use memory_substrate::events::{EventKind, MergeAppliedSource};
 use memory_substrate::{
-    EventContext, Memory, MemoryContent, MemoryId, MemoryStatus, Sensitivity, Sha256, Substrate, TombstoneRequest,
-    TrustLevel, WriteMode, WriteRequest,
+    ClassificationOutcome, EventContext, Memory, MemoryContent, MemoryId, MemoryStatus, Sensitivity, Sha256, Substrate,
+    TombstoneRequest, TrustLevel, WriteMode, WriteRequest,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -621,6 +621,30 @@ async fn preflight(
         backfill_manifest: BTreeSet::new(),
     };
     validate_merge_candidates(&projected, &exclusions).map_err(|error| error.to_string())?;
+
+    let triple = substrate.active_embedding_triple().map_err(|error| error.to_string())?;
+    let vectors = substrate.all_abstraction_vectors(&triple).map_err(|error| error.to_string())?;
+    let vector_by_id = vectors.into_iter().map(|row| (row.memory_id, row.vector)).collect::<std::collections::HashMap<_, _>>();
+    for left_id in &proposal.source_ids {
+        for right_id in &proposal.source_ids {
+            if left_id >= right_id {
+                continue;
+            }
+            let left = vector_by_id
+                .get(left_id)
+                .ok_or_else(|| format!("source abstraction vector missing at approval time: {left_id}"))?;
+            let right = vector_by_id
+                .get(right_id)
+                .ok_or_else(|| format!("source abstraction vector missing at approval time: {right_id}"))?;
+            let score = cosine(left, right).ok_or_else(|| "source abstraction vector empty or dimension mismatch".to_string())?;
+            if score < DEFAULT_MERGE_SIMILARITY_THRESHOLD {
+                return Err(format!(
+                    "source pair cosine {score} below threshold {DEFAULT_MERGE_SIMILARITY_THRESHOLD}"
+                ));
+            }
+        }
+    }
+
     let mut replacement = proposal.replacement.clone();
     generation_privacy_rebind(&mut replacement).map_err(|error| error.to_string())?;
     replacement.frontmatter.sensitivity = captured
@@ -628,7 +652,17 @@ async fn preflight(
         .map(|source| source.original_sensitivity)
         .max()
         .ok_or_else(|| "merge proposal requires a source classification floor".to_string())?;
-    crate::handlers::governance::classify_plaintext_memory(&replacement).map_err(|error| error.message)?;
+    let rebound =
+        crate::handlers::governance::classify_plaintext_memory(&replacement).map_err(|error| error.message)?;
+    let floor = captured
+        .iter()
+        .map(|source| source.original_sensitivity.classification_outcome())
+        .max()
+        .ok_or_else(|| "merge proposal has no source classification floor".to_string())?;
+    let classification = rebound.max(floor);
+    if classification == ClassificationOutcome::Secret || classification == ClassificationOutcome::RequiresEncryption {
+        return Err("merge replacement would require encryption or refused storage after classification floor".to_string());
+    }
     Ok(captured)
 }
 
@@ -665,8 +699,18 @@ async fn stage_replacement(substrate: &Substrate, proposal: &mut MergeProposal) 
     fm.write_policy.expected_base_hash = None;
     fm.supersedes = proposal.source_ids.clone();
     fm.superseded_by.clear();
-    let classification = crate::handlers::governance::classify_plaintext_memory(&proposal.replacement)
+    let rebound = crate::handlers::governance::classify_plaintext_memory(&proposal.replacement)
         .map_err(|error| anyhow::anyhow!(error.message))?;
+    let floor = proposal
+        .captured_sources
+        .iter()
+        .map(|source| source.original_sensitivity.classification_outcome())
+        .max()
+        .ok_or_else(|| anyhow::anyhow!("merge proposal has no source classification floor"))?;
+    let classification = rebound.max(floor);
+    if classification == ClassificationOutcome::Secret || classification == ClassificationOutcome::RequiresEncryption {
+        anyhow::bail!("merge replacement would require encryption or refused storage after classification floor");
+    }
     substrate
         .write_memory(WriteRequest {
             operation_id: None,
@@ -809,8 +853,20 @@ async fn activate_replacement(substrate: &Substrate, proposal: &MergeProposal) -
         };
     replacement.frontmatter.write_policy.policy_applied = "merge-applied-v1".to_string();
     replacement.frontmatter.updated_at = Utc::now();
-    let classification = crate::handlers::governance::classify_plaintext_memory(&replacement)
+    let rebound = crate::handlers::governance::classify_plaintext_memory(&replacement)
         .map_err(|error| MergeActivationError::non_retryable(anyhow::anyhow!(error.message)))?;
+    let floor = proposal
+        .captured_sources
+        .iter()
+        .map(|source| source.original_sensitivity.classification_outcome())
+        .max()
+        .ok_or_else(|| MergeActivationError::non_retryable(anyhow::anyhow!("merge proposal has no source classification floor")))?;
+    let classification = rebound.max(floor);
+    if classification == ClassificationOutcome::Secret || classification == ClassificationOutcome::RequiresEncryption {
+        return Err(MergeActivationError::non_retryable(anyhow::anyhow!(
+            "merge replacement would require encryption or refused storage after classification floor"
+        )));
+    }
     substrate
         .write_memory(WriteRequest {
             operation_id: None,
@@ -1734,6 +1790,92 @@ mod tests {
         assert_eq!(count, 1, "candidate requiring confirmation must count");
     }
 
+    #[tokio::test]
+    async fn staged_replacement_invisible_to_gated_lanes() {
+        let (temp, substrate) = substrate().await;
+        let source = memory("mem_20260711_aaaaaaaaaaaaaaaa_000201");
+        write(&substrate, source.clone()).await;
+        let proposal = MergeProposal::new(
+            vec![source.frontmatter.id.clone()],
+            memory("mem_20260711_aaaaaaaaaaaaaaaa_000202"),
+            Vec::new(),
+            "dream-test",
+        )
+        .unwrap();
+        let store = MergeProposalStore::new(&temp.path().join("runtime"));
+        store.create(&proposal).unwrap();
+
+        let _ = apply!(
+            &substrate,
+            &store,
+            &proposal.proposal_id,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            Some(SimulatedCrash::AfterStage)
+        )
+        .await;
+
+        let staged = substrate.read_memory(&proposal.replacement.frontmatter.id).await.unwrap();
+        let staged_id = staged.frontmatter.id.clone();
+        assert!(staged.frontmatter.is_merge_non_servable());
+
+        // Gated recall surfaces exclude merge-staged candidates.
+        let rows = substrate
+            .query_recall_index(memory_substrate::RecallIndexQuery {
+                statuses: vec![MemoryStatus::Active, MemoryStatus::Pinned, MemoryStatus::Candidate],
+                exclude_merge_non_servable: true,
+                ..memory_substrate::RecallIndexQuery::default()
+            })
+            .await
+            .unwrap();
+        assert!(
+            rows.iter().all(|row| row.id != staged_id),
+            "merge-staged replacement must not appear in gated recall index"
+        );
+
+        // Counting through the gated helper must also exclude it.
+        let count = substrate
+            .count_recall_index_excluding_merge_staged(memory_substrate::RecallIndexQuery {
+                statuses: vec![MemoryStatus::Candidate],
+                ..memory_substrate::RecallIndexQuery::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(count, 0, "merge-staged candidate must not count as candidate");
+
+        // Review queue membership must not include the staged row.
+        let queue = substrate.review_queue(10).await.unwrap();
+        assert!(queue.rows.iter().all(|row| row.id != staged_id.as_str()));
+        assert_eq!(queue.total, 0);
+
+        // Chunk retrieval paths only cover active/pinned rows.
+        let hits = substrate
+            .query_chunks(memory_substrate::ChunkQuery {
+                text: Some("body".into()),
+                ..memory_substrate::ChunkQuery::default()
+            })
+            .await
+            .unwrap();
+        assert!(hits.iter().all(|hit| hit.memory_id != staged_id));
+
+        let hybrid = substrate
+            .query_hybrid_chunks("body", None, 10)
+            .await
+            .unwrap();
+        assert!(hybrid.iter().all(|hit| hit.memory_id != staged_id));
+
+        // Backup/export surfaces with the exclusion flag disabled still see the staged row.
+        let count = substrate
+            .count_recall_index(memory_substrate::RecallIndexQuery {
+                statuses: vec![MemoryStatus::Candidate],
+                exclude_merge_non_servable: false,
+                ..memory_substrate::RecallIndexQuery::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(count, 1, "merge-staged candidate is visible when exclusion is disabled");
+    }
+
     async fn substrate() -> (tempfile::TempDir, Substrate) {
         let temp = tempfile::tempdir().unwrap();
         let substrate = Substrate::init(
@@ -1746,6 +1888,10 @@ mod tests {
     }
 
     async fn write(substrate: &Substrate, memory: Memory) {
+        let id = memory.frontmatter.id.clone();
+        let status = memory.frontmatter.status;
+        let index_embeddings = memory.frontmatter.retrieval_policy.index_embeddings;
+        let abstraction = memory.frontmatter.abstraction.clone();
         substrate
             .write_memory(WriteRequest {
                 operation_id: None,
@@ -1759,6 +1905,22 @@ mod tests {
             })
             .await
             .unwrap();
+        if index_embeddings && matches!(status, MemoryStatus::Active | MemoryStatus::Pinned) {
+            if let Some(abstraction) = abstraction {
+                let triple = substrate.active_embedding_triple().expect("active triple");
+                let vector = vec![1.0; triple.dimension as usize];
+                substrate
+                    .update_aux_embedding(memory_substrate::AuxEmbeddingUpdate {
+                        row_kind: memory_substrate::AuxRowKind::Abstraction,
+                        target_id: id.as_str().to_string(),
+                        expected_content_hash: memory_substrate::markdown::hash_bytes(abstraction.as_bytes()),
+                        triple,
+                        vector,
+                    })
+                    .await
+                    .unwrap();
+            }
+        }
     }
 
     async fn replace(substrate: &Substrate, memory: Memory, hash: Sha256) {

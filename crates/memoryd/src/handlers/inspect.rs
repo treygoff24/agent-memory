@@ -205,6 +205,7 @@ pub(super) async fn conflicts_list_response(
             hydrate: AuxScope::None,
             // Reads `merge_diagnostics_json` per row to render the conflict reason.
             source_identity: true,
+            exclude_merge_non_servable: true,
             ..RecallIndexQuery::default()
         })
         .await
