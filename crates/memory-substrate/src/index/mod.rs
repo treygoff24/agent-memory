@@ -16,7 +16,7 @@ mod vector;
 
 pub use chunking::{chunk_memory, Chunk};
 pub use events_read::{EventsLogPage, MirrorEvent};
-pub use migrations::{migrate_v6, open_index, INDEX_SUPPORTED_SCHEMA_VERSION};
+pub use migrations::{open_index, INDEX_SUPPORTED_SCHEMA_VERSION};
 pub use query::Index;
 pub use vector::{
     held_local_embedding_jobs, reconcile_missing, reconcile_orphans, reconcile_pending_jobs, VectorStore,

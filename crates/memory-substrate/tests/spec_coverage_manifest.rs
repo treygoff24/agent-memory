@@ -503,7 +503,7 @@ const SPEC_COVERAGE: &[SpecCoverageEntry] = &[
     SpecCoverageEntry::covered(
         "10.6 Acceptance signals",
         "e0a42dbe8ef46d01",
-        "index_migration_v6::migrate_v6_is_idempotent_and_preserves_representative_data_and_rollback_is_readable",
+        "index/migrations::migrate_v6_is_idempotent_and_preserves_representative_data_and_rollback_is_readable",
     ),
     SpecCoverageEntry::covered(
         "10.6 Acceptance signals",
@@ -711,6 +711,7 @@ fn test_reference_exists(repo_root: &Path, test_path: &str) -> bool {
 fn test_file_candidates(repo_root: &Path, module: &str) -> Vec<PathBuf> {
     vec![
         repo_root.join("crates/memory-substrate/tests").join(format!("{module}.rs")),
+        repo_root.join("crates/memory-substrate/src").join(format!("{module}.rs")),
         repo_root.join("crates/memory-merge-driver/tests").join(format!("{module}.rs")),
         repo_root.join("crates/memoryd/src").join(format!("{module}.rs")),
     ]

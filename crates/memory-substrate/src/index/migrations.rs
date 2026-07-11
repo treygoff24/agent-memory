@@ -202,7 +202,7 @@ fn migrate_v5(connection: &mut Connection) -> rusqlite::Result<()> {
     tx.commit()
 }
 
-pub fn migrate_v6(connection: &mut Connection) -> rusqlite::Result<()> {
+fn migrate_v6(connection: &mut Connection) -> rusqlite::Result<()> {
     let tx = connection.transaction()?;
     tx.execute_batch(
         r#"
@@ -409,5 +409,147 @@ CREATE TABLE events_log(
         fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
             self.fields.push(format!("{}={value:?}", field.name()));
         }
+    }
+}
+
+#[cfg(test)]
+mod migrate_v6_tests {
+    use super::*;
+    use crate::index::{chunk_memory, Index};
+    use crate::{EmbeddingTriple, RepoPath};
+
+    fn fixture_memory() -> Result<crate::Memory, Box<dyn std::error::Error>> {
+        let markdown = r#"---
+schema_version: 1
+id: mem_20260424_a1b2c3d4e5f60718_000100
+type: pattern
+scope: agent
+summary: representative migration memory
+confidence: 1.0
+trust_level: trusted
+sensitivity: internal
+status: active
+created_at: 2026-04-24T12:00:00Z
+updated_at: 2026-04-24T12:00:00Z
+author:
+  kind: system
+  component: test
+tags:
+  - migration
+aliases:
+  - migration-alias
+---
+body text used for the migration fixture
+"#;
+        crate::frontmatter::parse_document(
+            markdown,
+            Some(RepoPath::new("agent/patterns/mem_20260424_a1b2c3d4e5f60718_000100.md")),
+        )
+        .map(|parsed| parsed.memory)
+        .map_err(Into::into)
+    }
+
+    /// W2-F6: `migrate_v6` is exercised directly (as a unit test so the
+    /// migration step needs no public export — round-2 review) on a database
+    /// downgraded to schema 5 WITH representative data. The migration must be
+    /// idempotent, the data must survive, and the rollback file copy must stay
+    /// readable as raw v5 before a normal open re-migrates it.
+    #[test]
+    fn migrate_v6_is_idempotent_and_preserves_representative_data_and_rollback_is_readable(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let live = temp.path().join("index.sqlite");
+        let backup = temp.path().join("index-v5.backup.sqlite");
+
+        let triple = EmbeddingTriple { provider: "synthetic".into(), model_ref: "aux".into(), dimension: 3 };
+        let memory = fixture_memory()?;
+        let expected_body_hash = crate::markdown::hash_bytes(memory.body.as_bytes()).to_string();
+        let expected_chunk_count = chunk_memory(&memory).len();
+        let expected_id = memory.frontmatter.id.as_str().to_string();
+        let expected_summary = memory.frontmatter.summary.clone();
+
+        let mut index = Index::with_active_embedding(open_index(&live)?, triple);
+        index.upsert_memory(&memory, false)?;
+        drop(index);
+
+        // Downgrade to a genuine schema-5 shape: drop the v6 tables and the v6
+        // version row on a raw connection (no open_index — nothing re-runs
+        // SCHEMA_SQL between here and the migrate_v6 call under test).
+        let mut conn = rusqlite::Connection::open(&live)?;
+        conn.execute_batch(
+            "DROP TABLE IF EXISTS memory_abstractions;
+             DROP TABLE IF EXISTS memory_cues;
+             DROP TABLE IF EXISTS aux_embedding_meta;
+             DROP TABLE IF EXISTS aux_pending_embedding_jobs;
+             DELETE FROM schema_migrations WHERE version = 6;",
+        )?;
+        let v5_version: i64 =
+            conn.query_row("SELECT COALESCE(MAX(version), 0) FROM schema_migrations", [], |row| row.get(0))?;
+        assert_eq!(v5_version, 5);
+
+        // WAL checkpoint before the file copy: without it the main DB file may
+        // predate the downgrade (the writes sit in -wal) and the "backup" is a
+        // lie. The SAME hazard applies to the operator runbook's pre-migration
+        // copy on the live corpus — checkpoint (or stop the daemon) first.
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+        std::fs::copy(&live, &backup)?;
+
+        // migrate_v6 is the only creator of the v6 tables in this path — twice,
+        // to pin idempotency.
+        migrate_v6(&mut conn)?;
+        migrate_v6(&mut conn)?;
+
+        let version: i64 =
+            conn.query_row("SELECT COALESCE(MAX(version), 0) FROM schema_migrations", [], |row| row.get(0))?;
+        assert_eq!(version, 6);
+        assert_eq!(INDEX_SUPPORTED_SCHEMA_VERSION, 6);
+        for table in ["memory_abstractions", "memory_cues", "aux_embedding_meta", "aux_pending_embedding_jobs"] {
+            let exists: i64 = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                [table],
+                |row| row.get(0),
+            )?;
+            assert_eq!(exists, 1, "{table}");
+        }
+
+        // Data integrity through the migration.
+        let summary: String =
+            conn.query_row("SELECT summary FROM memories WHERE id=?1", [expected_id.as_str()], |row| row.get(0))?;
+        assert_eq!(summary, expected_summary);
+        let body_hash: String =
+            conn.query_row("SELECT body_hash FROM memories WHERE id=?1", [expected_id.as_str()], |row| row.get(0))?;
+        assert_eq!(body_hash, expected_body_hash);
+        let chunk_count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM memory_chunks WHERE memory_id=?1", [expected_id.as_str()], |row| {
+                row.get(0)
+            })?;
+        assert_eq!(chunk_count, expected_chunk_count as i64);
+        drop(conn);
+
+        // Rollback: the pre-migration copy must be readable as RAW v5 first
+        // (version 5, no v6 tables, data present) — that is what "rollback =
+        // restore the copy" means for an operator on an old binary.
+        std::fs::copy(&backup, &live)?;
+        let raw = rusqlite::Connection::open(&live)?;
+        let raw_version: i64 =
+            raw.query_row("SELECT COALESCE(MAX(version), 0) FROM schema_migrations", [], |row| row.get(0))?;
+        assert_eq!(raw_version, 5, "restored backup is schema 5");
+        let v6_present: i64 = raw.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_abstractions')",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(v6_present, 0, "restored backup has no v6 tables");
+        let raw_summary: String =
+            raw.query_row("SELECT summary FROM memories WHERE id=?1", [expected_id.as_str()], |row| row.get(0))?;
+        assert_eq!(raw_summary, expected_summary);
+        drop(raw);
+
+        // A normal open then migrates the restored copy back to v6.
+        let reopened = open_index(&live)?;
+        let reopened_version: i64 =
+            reopened.query_row("SELECT COALESCE(MAX(version), 0) FROM schema_migrations", [], |row| row.get(0))?;
+        assert_eq!(reopened_version, 6);
+        Ok(())
     }
 }

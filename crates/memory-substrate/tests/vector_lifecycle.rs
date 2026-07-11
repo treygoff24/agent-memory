@@ -261,6 +261,39 @@ fn aux_hash_change_between_fetch_and_update_rejects_stale_and_preserves_replacem
         .expect("replacement abstraction job");
     assert_ne!(replacement.content_hash, old_hash, "replacement job must have the new hash");
     assert_eq!(replacement.target_id, job.target_id);
+
+    // W2-F2 predicate pin (round-2 review): the TOCTOU window itself — hash
+    // check passing, then a concurrent replace landing before the job delete —
+    // is unreachable through the public API without injection hooks, because
+    // the fix moved re-validation and the delete into one transaction on one
+    // `&mut` connection. What IS pinnable is the deletion-scoping half of the
+    // fix: the pending-job delete must be content_hash-scoped, so a delete
+    // keyed to a STALE hash can never remove a FRESH job. Run the exact
+    // production predicate against the replacement job and assert survival.
+    let deleted = index
+        .connection()
+        .execute(
+            "DELETE FROM aux_pending_embedding_jobs
+             WHERE row_kind=?1 AND target_id=?2 AND provider=?3 AND model_ref=?4 AND dimension=?5 AND content_hash=?6",
+            rusqlite::params![
+                "abstraction",
+                replacement.target_id,
+                triple.provider,
+                triple.model_ref,
+                i64::from(triple.dimension),
+                old_hash.as_str(),
+            ],
+        )
+        .expect("hash-scoped delete");
+    assert_eq!(deleted, 0, "a stale-hash-scoped delete must never remove the fresh replacement job");
+    assert!(
+        index
+            .pending_aux_embedding_jobs(1, EmbeddingLaneEligibility::AllTiers)
+            .expect("fresh job survives")
+            .iter()
+            .any(|job| job.row_kind == AuxRowKind::Abstraction),
+        "replacement job survives a stale-scoped delete"
+    );
 }
 
 #[tokio::test]

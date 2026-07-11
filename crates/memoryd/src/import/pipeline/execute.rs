@@ -565,15 +565,30 @@ fn build_write_meta(action: &PlannedWrite, related: &[String], supersedes: Optio
     meta.insert("explicit_user_context".to_string(), Value::Bool(false));
     // Forward abstraction/cues so the daemon's privacy classifier scans the full
     // v1.2 combined payload (body + abstraction + cues) instead of body alone.
-    if let Some(abstraction) = action.candidate.frontmatter_hint.get("abstraction") {
-        if matches!(abstraction, Value::String(_) | Value::Null) {
-            meta.insert("abstraction".to_string(), abstraction.clone());
+    // Source files are untrusted input: bound what rides the wire HERE (count +
+    // byte caps, generous vs the daemon's exact §C caps which remain the real
+    // validator) so a pathological file cannot exhaust memory/transport before
+    // daemon-side validation rejects it (round-2 review finding).
+    const IMPORT_ABSTRACTION_FORWARD_MAX_BYTES: usize = 1_024;
+    const IMPORT_CUE_FORWARD_MAX: usize = 3;
+    const IMPORT_CUE_FORWARD_MAX_BYTES: usize = 1_024;
+    match action.candidate.frontmatter_hint.get("abstraction") {
+        Some(Value::String(text)) if text.len() <= IMPORT_ABSTRACTION_FORWARD_MAX_BYTES => {
+            meta.insert("abstraction".to_string(), Value::String(text.clone()));
         }
+        Some(Value::Null) => {
+            meta.insert("abstraction".to_string(), Value::Null);
+        }
+        _ => {}
     }
-    if let Some(cues) = action.candidate.frontmatter_hint.get("cues") {
-        if matches!(cues, Value::Array(_)) {
-            meta.insert("cues".to_string(), cues.clone());
-        }
+    if let Some(Value::Array(entries)) = action.candidate.frontmatter_hint.get("cues") {
+        let bounded_cues: Vec<Value> = entries
+            .iter()
+            .filter(|entry| matches!(entry, Value::String(text) if text.len() <= IMPORT_CUE_FORWARD_MAX_BYTES))
+            .take(IMPORT_CUE_FORWARD_MAX)
+            .cloned()
+            .collect();
+        meta.insert("cues".to_string(), Value::Array(bounded_cues));
     }
     if let Some(canon) = &action.scope.canonical_namespace_id {
         meta.insert("canonical_namespace_id".to_string(), Value::String(canon.clone()));
