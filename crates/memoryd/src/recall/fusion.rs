@@ -72,7 +72,7 @@ pub fn fuse_rrf(
     fused
 }
 
-fn reciprocal_rank_score(k: f64, rank: usize) -> f64 {
+pub(crate) fn reciprocal_rank_score(k: f64, rank: usize) -> f64 {
     1.0 / (k + rank as f64)
 }
 
@@ -224,6 +224,15 @@ mod tests {
 
         assert_eq!(fused[0].memory_id.as_str(), "mem_20260610_0000000000000001_000001");
         assert_eq!(fused[1].memory_id.as_str(), "mem_20260610_0000000000000002_000002");
+    }
+
+    #[test]
+    fn default_k_rrf_score_matches_fts_score_shape() {
+        use crate::recall::config::DEFAULT_VECTOR_RECALL_RRF_K;
+
+        let k = f64::from(DEFAULT_VECTOR_RECALL_RRF_K);
+        assert!((reciprocal_rank_score(k, 1) - 1.0 / 61.0).abs() < f64::EPSILON);
+        assert!((reciprocal_rank_score(k, 2) - 1.0 / 62.0).abs() < f64::EPSILON);
     }
 
     #[test]

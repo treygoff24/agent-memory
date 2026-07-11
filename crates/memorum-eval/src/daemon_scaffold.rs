@@ -83,10 +83,10 @@ impl DaemonScaffold {
         // domain socket path cap. The tree itself can stay in the long
         // tempfile path; only the socket name is path-length-sensitive.
         let socket_path = short_socket_path("memd-eval");
-        let child = spawn_memoryd(tree_dir.path(), &socket_path);
-        wait_for_socket(&socket_path);
-
-        Self { tree_dir, socket_path, child: Some(DaemonChild { child }) }
+        let child = DaemonChild { child: spawn_memoryd(tree_dir.path(), &socket_path) };
+        let scaffold = Self { tree_dir, socket_path, child: Some(child) };
+        wait_for_socket(&scaffold.socket_path);
+        scaffold
     }
 
     pub async fn doctor(&self) -> DoctorReport {
@@ -136,12 +136,20 @@ impl Drop for DaemonScaffold {
         if let Some(child) = self.child.take() {
             drop(child);
         }
+        if let Some(parent) = self.socket_path.parent() {
+            let _ = fs::remove_file(&self.socket_path);
+            let _ = fs::remove_dir(parent);
+        }
     }
 }
 
 impl DaemonChild {
     pub fn id(&self) -> Option<u32> {
         Some(self.child.id())
+    }
+
+    pub fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        self.child.try_wait()
     }
 }
 
@@ -349,9 +357,10 @@ fn encode_crockford(mut value: u128, width: usize) -> String {
 mod tests {
     use std::fs;
     use std::os::unix::net::UnixListener;
+    use std::process::Command;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-    use super::wait_for_socket_for;
+    use super::{wait_for_socket_for, DaemonChild, DaemonScaffold, TempTree};
 
     #[test]
     fn wait_for_socket_requires_accepting_listener_not_only_path_existence() {
@@ -376,6 +385,46 @@ mod tests {
 
         drop(listener);
         let _ = fs::remove_file(socket_path);
+    }
+
+    #[test]
+    fn post_teardown_socket_path_absent() {
+        let socket_path = super::short_socket_path("post-teardown");
+        let tree_dir = TempTree::fresh();
+        let listener = UnixListener::bind(&socket_path).expect("bind listener");
+        let child = Command::new("sleep").arg("10").spawn().expect("spawn child");
+        let scaffold = DaemonScaffold {
+            tree_dir,
+            socket_path: socket_path.clone(),
+            child: Some(DaemonChild { child }),
+        };
+        drop(scaffold);
+        drop(listener);
+        assert!(!socket_path.exists(), "socket file should be removed after teardown");
+        if let Some(parent) = socket_path.parent() {
+            assert!(!parent.exists(), "socket pid dir should be removed when empty");
+        }
+    }
+
+    #[test]
+    fn readiness_failure_kills_child() {
+        let socket_path = temp_socket_path("readiness-fail");
+        fs::write(&socket_path, b"not a socket").expect("write placeholder");
+
+        let child = Command::new("sleep").arg("10").spawn().expect("spawn child");
+        let pid = child.id();
+        let mut child = DaemonChild { child };
+        assert!(child.try_wait().unwrap().is_none(), "child should be running before readiness failure");
+
+        let result = wait_for_socket_for(&socket_path, Duration::from_millis(50), Duration::from_millis(5));
+        assert!(result.is_err(), "readiness should fail when socket path is not a bound socket");
+
+        drop(child);
+        std::thread::sleep(Duration::from_millis(50));
+        let status = Command::new("kill").args(["-0", &pid.to_string()]).status().unwrap();
+        assert!(!status.success(), "kill-on-drop guard should reap the child after readiness failure");
+
+        let _ = fs::remove_file(&socket_path);
     }
 
     fn temp_socket_path(label: &str) -> std::path::PathBuf {

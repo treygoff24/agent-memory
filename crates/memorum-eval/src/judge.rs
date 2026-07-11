@@ -118,6 +118,9 @@ impl ExternalCommandJudge {
 
 impl BenchmarkJudge for ExternalCommandJudge {
     fn judge(&self, input: &BenchmarkJudgeInput) -> Result<BenchmarkJudgeVerdict, JudgeError> {
+        let input_json = serde_json::to_vec(input).map_err(|error| JudgeError::Serialize(error.to_string()))?;
+
+        let start = std::time::Instant::now();
         let mut child = Command::new(&self.program)
             .args(&self.args)
             .stdin(Stdio::piped())
@@ -126,19 +129,37 @@ impl BenchmarkJudge for ExternalCommandJudge {
             .spawn()
             .map_err(|error| JudgeError::Spawn(error.to_string()))?;
 
-        let input_json = serde_json::to_vec(input).map_err(|error| JudgeError::Serialize(error.to_string()))?;
-        child
-            .stdin
-            .take()
-            .expect("piped judge stdin")
-            .write_all(&input_json)
-            .map_err(|error| JudgeError::Io(error.to_string()))?;
+        let stdin = child.stdin.take().expect("piped judge stdin");
+        let stdout = child.stdout.take().expect("piped judge stdout");
+        let stderr = child.stderr.take().expect("piped judge stderr");
 
-        let start = std::time::Instant::now();
+        let stdin_handle = std::thread::spawn(move || {
+            let mut stdin = stdin;
+            let _ = stdin.write_all(&input_json);
+            let _ = stdin.flush();
+        });
+
+        let stdout_handle = std::thread::spawn(move || {
+            let mut stdout = stdout;
+            let mut buffer = Vec::new();
+            let _ = stdout.read_to_end(&mut buffer);
+            buffer
+        });
+
+        let stderr_handle = std::thread::spawn(move || {
+            let mut stderr = stderr;
+            let mut buffer = Vec::new();
+            let _ = stderr.read_to_end(&mut buffer);
+            String::from_utf8_lossy(&buffer).trim().to_owned()
+        });
+
         let status = loop {
             if start.elapsed() >= self.timeout {
                 let _ = child.kill();
                 let _ = child.wait();
+                let _ = stdin_handle.join();
+                let _ = stdout_handle.join();
+                let _ = stderr_handle.join();
                 return Err(JudgeError::Timeout);
             }
             match child.try_wait().map_err(|error| JudgeError::Io(error.to_string()))? {
@@ -147,21 +168,17 @@ impl BenchmarkJudge for ExternalCommandJudge {
             }
         };
 
+        let _ = child.wait();
+        let _ = stdin_handle.join();
+        let stdout = stdout_handle.join().map_err(|_| JudgeError::Io("stdout reader thread panicked".to_owned()))?;
+        let stderr = stderr_handle.join().map_err(|_| JudgeError::Io("stderr reader thread panicked".to_owned()))?;
+
         if !status.success() {
-            let stderr = read_pipe_to_string(child.stderr.as_mut());
             return Err(JudgeError::External {
                 status: status.to_string(),
                 stderr,
             });
         }
-
-        let mut stdout = Vec::new();
-        child
-            .stdout
-            .take()
-            .expect("piped judge stdout")
-            .read_to_end(&mut stdout)
-            .map_err(|error| JudgeError::Io(error.to_string()))?;
 
         let mut verdict: BenchmarkJudgeVerdict =
             serde_json::from_slice(&stdout).map_err(|error| match error.to_string().as_str() {
@@ -188,14 +205,6 @@ impl BenchmarkJudge for ExternalCommandJudge {
         let args = self.args.iter().map(|a| a.to_string_lossy()).collect::<Vec<_>>().join(" ");
         format!("{} {}", self.program.to_string_lossy(), args)
     }
-}
-
-fn read_pipe_to_string(pipe: Option<&mut std::process::ChildStderr>) -> String {
-    let mut text = Vec::new();
-    if let Some(pipe) = pipe {
-        let _ = pipe.read_to_end(&mut text);
-    }
-    String::from_utf8_lossy(&text).trim().to_owned()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -474,6 +483,22 @@ mod tests {
                 question: "q".to_owned(),
                 gold: "a".to_owned(),
                 retrieved_context: vec![],
+                answer_basis: String::new(),
+            })
+            .expect_err("judge should time out");
+        assert!(matches!(error, JudgeError::Timeout), "expected timeout, got {error:?}");
+    }
+
+    #[test]
+    fn external_command_judge_times_out_without_reading_stdin() {
+        // The deadline must cover spawn + stdin write + stdout read, even when the
+        // child never drains its input pipe.
+        let judge = ExternalCommandJudge::new("/bin/sh", ["-c", "sleep 5"]).with_timeout(Duration::from_millis(100));
+        let error = judge
+            .judge(&BenchmarkJudgeInput {
+                question: "q".to_owned(),
+                gold: "a".to_owned(),
+                retrieved_context: vec!["context".to_owned()],
                 answer_basis: String::new(),
             })
             .expect_err("judge should time out");

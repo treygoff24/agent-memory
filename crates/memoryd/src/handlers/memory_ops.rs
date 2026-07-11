@@ -6,6 +6,8 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 
 use super::governance::{classify_privacy, write_privacy_memory};
 use super::*;
+use crate::recall::config::DEFAULT_VECTOR_RECALL_RRF_K;
+use crate::recall::fusion::reciprocal_rank_score;
 use crate::util::serialized_enum_value;
 
 const SEARCH_LIMIT_DEFAULT: usize = 10;
@@ -167,6 +169,7 @@ async fn fts_search_hits(
         .query_hybrid_chunks(query, None, limit)
         .await
         .map_err(HandlerError::substrate)?;
+    let k = f64::from(DEFAULT_VECTOR_RECALL_RRF_K);
     let total = candidates.len();
     let hits = candidates
         .into_iter()
@@ -178,7 +181,7 @@ async fn fts_search_hits(
             score: candidate
                 .score_breakdown
                 .bm25_rank
-                .map_or(0.0, |rank| 1.0 / (rank as f64)),
+                .map_or(0.0, |rank| reciprocal_rank_score(k, rank)),
         })
         .collect::<Vec<_>>();
     Ok((total, hits))

@@ -3,10 +3,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
+use serde::de::{DeserializeSeed, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -120,9 +121,10 @@ pub struct SourceDrag {
     pub encrypted_not_retrievable: usize,
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct MetricReport {
     pub scored_items: usize,
+    pub excluded_items: usize,
     pub recall_at_10: f64,
     pub mrr: f64,
     pub ndcg_at_10: f64,
@@ -153,6 +155,8 @@ pub struct ItemOutcome {
     pub ndcg_at_10: f64,
     pub context_exact_match: bool,
     pub context_contains: bool,
+    pub unmatched_evidence: Vec<String>,
+    pub item_error: Option<String>,
     pub judge: Option<BenchmarkJudgeVerdict>,
     pub judge_error: Option<String>,
 }
@@ -218,6 +222,7 @@ struct EvalItem {
     question: String,
     gold: String,
     evidence_turns: BTreeSet<String>,
+    item_error: Option<String>,
 }
 
 #[derive(Debug)]
@@ -338,6 +343,7 @@ async fn run_locomo(
                     question: question.question,
                     gold: scalar_text(&question.answer),
                     evidence_turns: question.evidence.iter().cloned().collect(),
+                    item_error: None,
                 },
                 &ingested,
                 judge,
@@ -359,13 +365,17 @@ async fn run_longmemeval(
         "longmemeval_oracle.json"
     };
     let path = config.dataset_dir.join("longmemeval").join(name);
-    let (mut all, sha256): (Vec<LongMemItem>, String) = read_json_with_sha256(&path)?;
+
+    // First pass: read only the lightweight headers so we can run the split /
+    // round-robin selection without loading the full (potentially large)
+    // haystacks into memory. Compute the file hash in the same pass.
+    let (headers, sha256) = read_longmemeval_headers(&path)?;
     report.dataset_sha256s.insert(format!("longmemeval/{name}"), sha256);
 
     let mut selected_ids = BTreeSet::<String>::new();
     for split in &config.splits {
-        let split_refs: Vec<&LongMemItem> =
-            all.iter().filter(|item| longmem_split(&item.question_id) == *split).collect();
+        let split_refs: Vec<&LongMemItemHeader> =
+            headers.iter().filter(|item| longmem_split(&item.question_id) == *split).collect();
         let selected = round_robin_by(
             split_refs,
             config.longmemeval_per_split,
@@ -375,22 +385,21 @@ async fn run_longmemeval(
         selected_ids.extend(selected.iter().map(|item| item.question_id.clone()));
     }
 
-    for item in &mut all {
-        if !selected_ids.contains(&item.question_id) {
-            item.haystack_sessions.clear();
-            item.haystack_session_ids.clear();
-            item.haystack_dates.clear();
-        }
-    }
+    // Second pass: stream the full file and keep only the selected items.
+    // The custom visitor drops non-selected elements as they are parsed.
+    let (mut selected_items, _parsed) = read_longmemeval_selected(&path, &selected_ids)?;
 
     for split in &config.splits {
-        let mut split_items: Vec<LongMemItem> = all
-            .iter()
+        let mut split_items: Vec<&mut LongMemItem> = selected_items
+            .iter_mut()
             .filter(|item| longmem_split(&item.question_id) == *split)
-            .cloned()
             .collect();
-        let selected = balanced_longmem_items(&mut split_items, config.longmemeval_per_split);
-        for item in selected {
+        split_items.sort_by(|a, b| {
+            let a_key = (a.question_type.clone(), hash_bytes(&a.question_id));
+            let b_key = (b.question_type.clone(), hash_bytes(&b.question_id));
+            a_key.cmp(&b_key)
+        });
+        for item in split_items {
             let scaffold = match config.embedding_lane {
                 BenchmarkEmbeddingLane::FtsOnly => DaemonScaffold::fresh_fts_only().await,
                 BenchmarkEmbeddingLane::DaemonConfigured => DaemonScaffold::fresh().await,
@@ -405,6 +414,18 @@ async fn run_longmemeval(
             let mut daemon = DaemonClient::new(scaffold.socket_path(), &project);
 
             let sessions = longmem_sessions(item);
+            let session_ids: BTreeSet<String> = sessions.iter().map(|session| session.id.clone()).collect();
+            let missing: Vec<String> = item
+                .answer_session_ids
+                .iter()
+                .filter(|session_id| !session_ids.contains(*session_id))
+                .cloned()
+                .collect();
+            let item_error = if missing.is_empty() {
+                None
+            } else {
+                Some(format!("dangling answer_session_ids: {}", missing.join(", ")))
+            };
             let evidence_turns = longmem_gold_turns(&sessions, &item.answer_session_ids);
             let ingested = ingest_sessions(&mut daemon, &path, &sessions, &config.expected_sensitivity, report)?;
             score_item(
@@ -417,11 +438,17 @@ async fn run_longmemeval(
                     question: item.question.clone(),
                     gold: scalar_text(&item.answer),
                     evidence_turns,
+                    item_error,
                 },
                 &ingested,
                 judge,
                 report,
             )?;
+            // Drop the current question's haystack as soon as its scaffold is
+            // torn down; haystacks are not needed for aggregate metrics.
+            item.haystack_sessions.clear();
+            item.haystack_session_ids.clear();
+            item.haystack_dates.clear();
         }
     }
     Ok(())
@@ -457,7 +484,7 @@ fn ingest_sessions(
             let key = turn
                 .dia_id
                 .clone()
-                .unwrap_or_else(|| format!("D{}:{}", session.id, turn_index + 1));
+                .unwrap_or_else(|| format!("D{}:{}", session_label(&session.id), turn_index + 1));
             let body = format!("{}: {}", turn.speaker, turn.text);
             if let Some(id) = ingest_one(
                 daemon,
@@ -629,10 +656,45 @@ fn score_item(
         id: item.id.clone(),
         category: item.category.clone(),
     });
+
+    if let Some(item_error) = item.item_error {
+        report.items.push(ItemOutcome {
+            dataset: item.dataset,
+            split: item.split,
+            id: item.id,
+            category: item.category,
+            dispositions: ingested.dispositions.clone(),
+            relevant_promoted_ids: Vec::new(),
+            retrieved_ids: Vec::new(),
+            startup_context_bytes: 0,
+            startup_context_memory_ids: Vec::new(),
+            startup_coverage: 0.0,
+            search_hit_count: 0,
+            search_empty: true,
+            hit_at_10: 0.0,
+            reciprocal_rank: 0.0,
+            recall_at_10: 0.0,
+            ndcg_at_10: 0.0,
+            context_exact_match: false,
+            context_contains: false,
+            unmatched_evidence: Vec::new(),
+            item_error: Some(item_error),
+            judge: None,
+            judge_error: None,
+        });
+        return Ok(());
+    }
+
     let relevant: BTreeSet<String> = item
         .evidence_turns
         .iter()
         .flat_map(|turn_id| ingested.turn_ids.get(turn_id).into_iter().flatten().cloned())
+        .collect();
+    let unmatched_evidence: Vec<String> = item
+        .evidence_turns
+        .iter()
+        .filter(|turn_id| !ingested.turn_ids.contains_key(*turn_id))
+        .cloned()
         .collect();
 
     let search = daemon.request(json!({"search": {"query": item.question, "limit": TOP_K, "include_body": true}}))?;
@@ -726,6 +788,8 @@ fn score_item(
         ndcg_at_10: ndcg,
         context_exact_match: exact,
         context_contains: contains,
+        unmatched_evidence,
+        item_error: item.item_error,
         judge: verdict,
         judge_error,
     });
@@ -733,23 +797,27 @@ fn score_item(
 }
 
 fn finish_metrics(report: &mut BaselineReport) {
-    let count = report.items.len();
+    let total = report.items.len();
+    let excluded = report.items.iter().filter(|item| item.item_error.is_some()).count();
+    let count = total - excluded;
     report.metrics.scored_items = count;
+    report.metrics.excluded_items = excluded;
     if count == 0 {
         return;
     }
     let denominator = count as f64;
-    report.metrics.recall_at_10 = report.items.iter().map(|item| item.recall_at_10).sum::<f64>() / denominator;
-    report.metrics.mrr = report.items.iter().map(|item| item.reciprocal_rank).sum::<f64>() / denominator;
-    report.metrics.ndcg_at_10 = report.items.iter().map(|item| item.ndcg_at_10).sum::<f64>() / denominator;
-    report.metrics.hit_at_10 = report.items.iter().map(|item| item.hit_at_10).sum::<f64>() / denominator;
-    report.metrics.startup_coverage = report.items.iter().map(|item| item.startup_coverage).sum::<f64>() / denominator;
+    let scored = report.items.iter().filter(|item| item.item_error.is_none());
+    report.metrics.recall_at_10 = scored.clone().map(|item| item.recall_at_10).sum::<f64>() / denominator;
+    report.metrics.mrr = scored.clone().map(|item| item.reciprocal_rank).sum::<f64>() / denominator;
+    report.metrics.ndcg_at_10 = scored.clone().map(|item| item.ndcg_at_10).sum::<f64>() / denominator;
+    report.metrics.hit_at_10 = scored.clone().map(|item| item.hit_at_10).sum::<f64>() / denominator;
+    report.metrics.startup_coverage = scored.clone().map(|item| item.startup_coverage).sum::<f64>() / denominator;
     report.metrics.context_exact_match =
-        report.items.iter().filter(|item| item.context_exact_match).count() as f64 / denominator;
+        scored.clone().filter(|item| item.context_exact_match).count() as f64 / denominator;
     report.metrics.context_contains =
-        report.items.iter().filter(|item| item.context_contains).count() as f64 / denominator;
+        scored.clone().filter(|item| item.context_contains).count() as f64 / denominator;
     let judge_scores: Vec<f64> =
-        report.items.iter().filter_map(|item| item.judge.as_ref().map(|v| v.score)).collect();
+        scored.filter_map(|item| item.judge.as_ref().map(|v| v.score)).collect();
     report.metrics.judge_mean =
         (!judge_scores.is_empty()).then(|| judge_scores.iter().sum::<f64>() / judge_scores.len() as f64);
 }
@@ -794,6 +862,7 @@ fn longmem_sessions(item: &LongMemItem) -> Vec<Session> {
                 .get(index)
                 .cloned()
                 .unwrap_or_else(|| format!("session_{index}"));
+            let label = session_label(&id);
             let date = item.haystack_dates.get(index).cloned();
             let turns = turns
                 .iter()
@@ -804,7 +873,7 @@ fn longmem_sessions(item: &LongMemItem) -> Vec<Session> {
                     dia_id: turn
                         .dia_id
                         .clone()
-                        .or_else(|| Some(format!("D{id}:{}", turn_index + 1))),
+                        .or_else(|| Some(format!("D{label}:{}", turn_index + 1))),
                     has_answer: turn.has_answer,
                 })
                 .collect();
@@ -838,6 +907,7 @@ fn balanced_locomo_questions(questions: Vec<LocomoQuestion>, limit: Option<usize
     })
 }
 
+#[cfg(test)]
 fn balanced_longmem_items(items: &mut Vec<LongMemItem>, limit: usize) -> Vec<&LongMemItem> {
     let items_ref: &[LongMemItem] = &*items;
     let indices: Vec<usize> = (0..items_ref.len()).collect();
@@ -904,6 +974,15 @@ fn session_number(id: &str) -> usize {
     id.rsplit('_').next().and_then(|number| number.parse().ok()).unwrap_or(usize::MAX)
 }
 
+fn session_label(id: &str) -> String {
+    if let Some(suffix) = id.strip_prefix("session_") {
+        if let Ok(number) = suffix.parse::<usize>() {
+            return number.to_string();
+        }
+    }
+    id.to_owned()
+}
+
 fn normalize(value: &str) -> String {
     value.chars().filter(|character| character.is_alphanumeric()).flat_map(char::to_lowercase).collect()
 }
@@ -938,11 +1017,96 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, String> {
     serde_json::from_reader(BufReader::new(file)).map_err(|error| format!("parse {}: {error}", path.display()))
 }
 
+struct Sha256Reader<R> {
+    inner: R,
+    hasher: Sha256,
+}
+
+impl<R: Read> Read for Sha256Reader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        if n > 0 {
+            self.hasher.update(&buf[..n]);
+        }
+        Ok(n)
+    }
+}
+
 fn read_json_with_sha256<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<(T, String), String> {
-    let bytes = fs::read(path).map_err(|error| format!("read {}: {error}", path.display()))?;
-    let sha256 = hex::encode(Sha256::digest(&bytes));
-    let value = serde_json::from_slice(&bytes).map_err(|error| format!("parse {}: {error}", path.display()))?;
+    let file = fs::File::open(path).map_err(|error| format!("open {}: {error}", path.display()))?;
+    let mut reader = Sha256Reader { inner: BufReader::new(file), hasher: Sha256::new() };
+    let value = serde_json::from_reader(&mut reader).map_err(|error| format!("parse {}: {error}", path.display()))?;
+    let sha256 = hex::encode(reader.hasher.finalize());
     Ok((value, sha256))
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct LongMemItemHeader {
+    question_id: String,
+    question_type: String,
+}
+
+fn read_longmemeval_headers(path: &Path) -> Result<(Vec<LongMemItemHeader>, String), String> {
+    let file = fs::File::open(path).map_err(|error| format!("open {}: {error}", path.display()))?;
+    let mut reader = Sha256Reader { inner: BufReader::new(file), hasher: Sha256::new() };
+    let headers: Vec<LongMemItemHeader> =
+        serde_json::from_reader(&mut reader).map_err(|error| format!("parse {}: {error}", path.display()))?;
+    let sha256 = hex::encode(reader.hasher.finalize());
+    Ok((headers, sha256))
+}
+
+struct StreamingLongMemItems<'a> {
+    selected: &'a BTreeSet<String>,
+    parsed: usize,
+    items: Vec<LongMemItem>,
+}
+
+impl<'a> StreamingLongMemItems<'a> {
+    fn new(selected: &'a BTreeSet<String>) -> Self {
+        Self { selected, parsed: 0, items: Vec::new() }
+    }
+}
+
+impl<'de, 'a> serde::de::DeserializeSeed<'de> for StreamingLongMemItems<'a> {
+    type Value = (Vec<LongMemItem>, usize);
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(self)
+    }
+}
+
+impl<'de, 'a> Visitor<'de> for StreamingLongMemItems<'a> {
+    type Value = (Vec<LongMemItem>, usize);
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("an array of LongMemEval items")
+    }
+
+    fn visit_seq<A>(mut self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        while let Some(item) = seq.next_element::<LongMemItem>()? {
+            self.parsed += 1;
+            if self.selected.contains(&item.question_id) {
+                self.items.push(item);
+            }
+        }
+        Ok((self.items, self.parsed))
+    }
+}
+
+fn read_longmemeval_selected(path: &Path, selected: &BTreeSet<String>) -> Result<(Vec<LongMemItem>, usize), String> {
+    let file = fs::File::open(path).map_err(|error| format!("open {}: {error}", path.display()))?;
+    let reader = BufReader::new(file);
+    let mut deserializer = serde_json::Deserializer::from_reader(reader);
+    let (items, parsed) = StreamingLongMemItems::new(selected)
+        .deserialize(&mut deserializer)
+        .map_err(|error| format!("parse {}: {error}", path.display()))?;
+    Ok((items, parsed))
 }
 
 fn extract_memory_ids_from_recall_block(block: &str) -> Vec<String> {
@@ -1131,16 +1295,40 @@ mod tests {
         let mut config = fts_config(dataset_dir);
         config.locomo_conversation_limit = Some(1);
         let report = crate::block_on(run_baseline(&config, Some(&DeterministicMockJudge))).expect("baseline");
-        assert!(
-            report.metrics.hit_at_10 >= 0.0 && report.metrics.hit_at_10 <= 1.0,
-            "hit_at_10 is a ratio"
-        );
-        assert!(
-            report.metrics.recall_at_10 >= 0.0 && report.metrics.recall_at_10 <= 1.0,
-            "recall_at_10 is a ratio"
-        );
-        let expected_hit = report.items.iter().map(|item| item.hit_at_10).sum::<f64>() / report.items.len() as f64;
-        assert!((report.metrics.hit_at_10 - expected_hit).abs() < f64::EPSILON);
+        let item = report.items.iter().find(|i| i.dataset == "locomo").expect("locomo item");
+        assert!(item.retrieved_ids.len() == 1 && item.retrieved_ids[0].starts_with("mem_"));
+        assert!(item.relevant_promoted_ids.len() == 1 && item.relevant_promoted_ids[0].starts_with("mem_"));
+        assert!(item.startup_context_memory_ids.iter().all(|id| id.starts_with("mem_")));
+        assert_eq!(item.search_hit_count, 1);
+        assert!(!item.search_empty);
+        assert_eq!(item.hit_at_10, 1.0);
+        assert_eq!(item.recall_at_10, 1.0);
+        assert_eq!(item.reciprocal_rank, 1.0);
+        assert_eq!(item.ndcg_at_10, 1.0);
+        assert_eq!(item.startup_coverage, 1.0);
+        assert!(!item.context_exact_match);
+        assert!(!item.context_contains);
+        assert!(item.unmatched_evidence.is_empty());
+        assert!(item.item_error.is_none());
+        assert!(item.judge.as_ref().is_some_and(|v| v.score == 0.0));
+
+        assert_eq!(report.metrics.scored_items, 1);
+        assert_eq!(report.metrics.excluded_items, 0);
+        assert_eq!(report.metrics.hit_at_10, 1.0);
+        assert_eq!(report.metrics.recall_at_10, 1.0);
+        assert_eq!(report.metrics.mrr, 1.0);
+        assert_eq!(report.metrics.ndcg_at_10, 1.0);
+        assert_eq!(report.metrics.startup_coverage, 1.0);
+        assert_eq!(report.metrics.context_exact_match, 0.0);
+        assert_eq!(report.metrics.context_contains, 0.0);
+        assert_eq!(report.metrics.judge_mean, Some(0.0));
+
+        // Metrics round-trip through JSON without field loss.
+        let json = serde_json::to_string(&report.metrics).expect("serialize metrics");
+        let round: MetricReport = serde_json::from_str(&json).expect("deserialize metrics");
+        assert_eq!(round.scored_items, report.metrics.scored_items);
+        assert_eq!(round.excluded_items, report.metrics.excluded_items);
+        assert_eq!(round.hit_at_10, report.metrics.hit_at_10);
     }
 
     #[test]
