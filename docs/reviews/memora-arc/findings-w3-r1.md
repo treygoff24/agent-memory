@@ -45,3 +45,11 @@ Verdicts: both FINDINGS. Convergent BLOCKER; 5 accepted total.
 | W3-R2-5 | LOW | M | Retry-counter save failure (disk-full class) loses the increment → infinite retry. ACCEPTED-AS-DOCUMENTED: disk-full is doctor territory; a comment marks the residual. |
 
 Muse verified-negatives: retry counter otherwise correct (persisted, Retryable-only increments, threshold quarantine); §3.3 candidate→active rows cover both shipped flows (dream review-approve actor verified by coordinator on disk pre-review); single-sourced predicate agreed between SQL and Rust twins. Round 3 (cap): must-be-dry verify after Devin round C.
+
+## Round 3 — Cursor (cursor-3) must-be-dry verify on `343c004` — cap round; LOOP CLOSED
+
+Verdict FINDINGS — 1 Medium (encrypted metadata path bypasses the new lifecycle gate — no actor param, validate_lifecycle_transition never ran there), 1 Low (pinned-supersede refusal surfaced as retryable substrate_error). All load-bearing paths verified clean: AlreadyApplied bookkeeping cannot mark a partially-applied proposal (journal ordering proof), servability check fails toward safety, doctor has no false-fatal window, all round-C pins genuinely fail pre-fix.
+
+**Cap-round exception (written rationale):** both remedies were mechanical mirrors of existing patterns (wire the same validate_lifecycle_transition call with a caller-declared actor into the encrypted path — three call sites; discriminate LifecycleTransitionDenied into a typed invalid_request in the supersede mapping — the W1 V-MAJOR error-mapping pattern). Coordinator applied both in `840c1a3` (pre-rebase hash; `dd1dbb4` on main), full gates green (substrate 425/0, memoryd 1151/0→1152/0 post-rebase, governance 56/0).
+
+**W3 review loop CLOSED.** Totals: 21 findings across 3 rounds (r1: 13 accepted + 1 rejected; r2: 5; r3: 2), all fixed and verified. Wave integrated to main via ff at `dd1dbb4`. Devin process note: committed itself in rounds A and C despite doubled instructions — accepted both times after coordinator gates verified the exact tree; the lane cannot be trusted with the no-commit contract and future waves should either pass --forbid-commit-compatible isolation or expect it.
