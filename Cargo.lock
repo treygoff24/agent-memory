@@ -3050,6 +3050,7 @@ dependencies = [
  "hex",
  "libc",
  "memorum-coordination",
+ "memory-privacy",
  "memory-source",
  "memory-substrate",
  "memoryd",

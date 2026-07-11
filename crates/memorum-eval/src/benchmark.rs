@@ -114,6 +114,7 @@ pub struct IngestionRecord {
 pub struct EnrichmentIngestionCounts {
     pub with_enrichment: usize,
     pub without_enrichment: usize,
+    pub promoted: usize,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -621,6 +622,10 @@ fn ingest_one(
     } else {
         false
     };
+
+    if entry.is_some() && promoted {
+        report.enrichment.promoted += 1;
+    }
 
     if !promoted {
         drag.refused_or_unpromoted += 1;
@@ -1353,6 +1358,7 @@ mod tests {
         config.locomo_conversation_limit = Some(1);
         let report = crate::block_on(run_baseline(&config, None)).expect("baseline");
         assert_eq!(report.enrichment.with_enrichment, 1);
+        assert_eq!(report.enrichment.promoted, 1);
         assert!(report.ingestion.iter().any(|record| record.enriched));
     }
 
