@@ -247,3 +247,15 @@ Outcome and verification: 236/240 scored, 4 timeouts at 120s (recorded as typed 
 Performance observations: luna/low is reliable as a high-volume structured judge under --output-schema; the schema constraint appears load-bearing for the zero-drift behavior.
 
 Routing assessment: standing judge for the arc (frozen). For W4's A/B the same 4-timeout tail is expected; treat >2% timeout rate as an anomaly worth diagnosing. Confidence: high.
+
+## 2026-07-11 - grok-4.5-fast-xhigh via cursor - W1 verify round (cursor-4, W1-worktree registry)
+
+Command and run: `delegate --json --cwd <w1-worktree> cursor safe --prompt-file thoughts/memora-build/w1-verify-prompt.md`; alias cursor-4 (W1-worktree registry — distinct from the main-registry cursor-4 used in W0); mode/isolation: safe/isolated copy; run `del_20260711T050445Z_73a967`.
+
+Task and expectation: scoped adversarial verify of coordinator fix commit `cf30e96` (F20–F23) against six named hunt areas; expected DRY or a small number of high-quality findings.
+
+Outcome and verification: FINDINGS — 1 HIGH (F23 mixed-version reopen via serde-default `encrypted:false`; convergent with the coordinator's own pre-review flag), 1 MAJOR (corrupt supersession-mirror row mapped to `not_found` for the live parent — coordinator verified on disk at trust_artifact.rs:479-480 before accepting), 2 NITs (backstop tradeoff; one pairing test not solo-red). Also produced a correct per-test "would it fail pre-fix" table and correctly cleared the tombstone path with the actual daemon mapping as evidence. Both real findings fixed in `d28b677`, gate re-ran green (1117/0).
+
+Performance observations: ~8 min wall. Again the standout Cursor behavior: it computed evidence (traced the daemon error mapping through three files; checked live-corpus record shapes against the June bucket-fix commit) rather than pattern-matching the diff. The MAJOR is a finding class delegate fix lanes and the coordinator both missed across four prior rounds — it required reading OUTSIDE the diff (the daemon's error construction) to falsify the diff's core assumption (`not_found` ⇒ provably gone).
+
+Routing assessment: Cursor safe remains the verify lane of choice for fix diffs whose correctness hinges on cross-file contracts; give it the falsifiable assumption explicitly ("is not_found the ONLY code that means gone?") — that framing produced the MAJOR. Confidence: high.
