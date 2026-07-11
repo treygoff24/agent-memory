@@ -316,17 +316,10 @@ async fn run_locomo(
     report: &mut BaselineReport,
 ) -> Result<(), String> {
     let path = config.dataset_dir.join("locomo/locomo10.json");
-    let (conversations, sha256): (Vec<LocomoConversation>, String) = read_json_with_sha256(&path)?;
+    let (conversations, sha256) = sampled_locomo_conversations(config, &path)?;
     let enrichment = load_sidecar(&path)?;
     report.dataset_sha256s.insert("locomo/locomo10.json".to_string(), sha256);
-    let mut used = 0;
-    for (index, conversation) in conversations.into_iter().enumerate() {
-        let split = if index % 2 == 0 { Split::Dev } else { Split::Holdout };
-        if !config.splits.contains(&split) || config.locomo_conversation_limit.is_some_and(|limit| used >= limit) {
-            continue;
-        }
-        used += 1;
-
+    for (split, conversation) in conversations {
         let scaffold = match config.embedding_lane {
             BenchmarkEmbeddingLane::FtsOnly => DaemonScaffold::fresh_fts_only().await,
             BenchmarkEmbeddingLane::DaemonConfigured => DaemonScaffold::fresh().await,
@@ -384,18 +377,7 @@ async fn run_longmemeval(
     let enrichment = load_sidecar(&path)?;
     report.dataset_sha256s.insert(format!("longmemeval/{name}"), sha256);
 
-    let mut selected_ids = BTreeSet::<String>::new();
-    for split in &config.splits {
-        let split_refs: Vec<&LongMemItemHeader> =
-            headers.iter().filter(|item| longmem_split(&item.question_id) == *split).collect();
-        let selected = round_robin_by(
-            split_refs,
-            config.longmemeval_per_split,
-            |item| item.question_type.clone(),
-            |item| hash_bytes(&item.question_id),
-        );
-        selected_ids.extend(selected.iter().map(|item| item.question_id.clone()));
-    }
+    let selected_ids = selected_longmem_ids(config, &headers);
 
     // Second pass: stream the full file and keep only the selected items.
     // The custom visitor drops non-selected elements as they are parsed.
@@ -480,7 +462,7 @@ fn ingest_sessions(
     let mut dispositions = DispositionCounts::default();
     for session in sessions {
         if let Some(date) = &session.date {
-            let body = format!("Dataset session {} occurred at {date}.", session.id);
+            let body = session_date_body(&session.id, date);
             if let Some(_id) = ingest_one(
                 daemon,
                 &body,
@@ -496,7 +478,7 @@ fn ingest_sessions(
         for (turn_index, turn) in session.turns.iter().enumerate() {
             let key =
                 turn.dia_id.clone().unwrap_or_else(|| format!("D{}:{}", session_label(&session.id), turn_index + 1));
-            let body = format!("{}: {}", turn.speaker, turn.text);
+            let body = turn_body(turn);
             if let Some(id) = ingest_one(
                 daemon,
                 &body,
@@ -844,6 +826,90 @@ fn finish_metrics(report: &mut BaselineReport) {
     let judge_scores: Vec<f64> = scored.filter_map(|item| item.judge.as_ref().map(|v| v.score)).collect();
     report.metrics.judge_mean =
         (!judge_scores.is_empty()).then(|| judge_scores.iter().sum::<f64>() / judge_scores.len() as f64);
+}
+
+/// Enumerate the exact benchmark write bodies with the same selection and body
+/// construction used by `run_baseline`.
+pub(crate) fn sampled_corpus_bodies(config: &BenchmarkConfig) -> Result<Vec<(PathBuf, String)>, String> {
+    let locomo_path = config.dataset_dir.join("locomo/locomo10.json");
+    let longmem_name =
+        if config.longmemeval_cleaned { "longmemeval_s_cleaned.json" } else { "longmemeval_oracle.json" };
+    let longmem_path = config.dataset_dir.join("longmemeval").join(longmem_name);
+    let mut bodies = Vec::new();
+    if locomo_path.exists() {
+        let (conversations, _) = sampled_locomo_conversations(config, &locomo_path)?;
+        for (_, conversation) in conversations {
+            bodies.extend(
+                session_bodies(&locomo_sessions(&conversation)).into_iter().map(|body| (locomo_path.clone(), body)),
+            );
+        }
+    }
+    if longmem_path.exists() {
+        let (headers, _) = read_longmemeval_headers(&longmem_path)?;
+        let selected_ids = selected_longmem_ids(config, &headers);
+        let (items, _) = read_longmemeval_selected(&longmem_path, &selected_ids)?;
+        for item in items {
+            bodies
+                .extend(session_bodies(&longmem_sessions(&item)).into_iter().map(|body| (longmem_path.clone(), body)));
+        }
+    }
+    Ok(bodies)
+}
+
+fn sampled_locomo_conversations(
+    config: &BenchmarkConfig,
+    path: &Path,
+) -> Result<(Vec<(Split, LocomoConversation)>, String), String> {
+    let (conversations, sha256): (Vec<LocomoConversation>, String) = read_json_with_sha256(path)?;
+    let mut used = 0;
+    let selected = conversations
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, conversation)| {
+            let split = if index % 2 == 0 { Split::Dev } else { Split::Holdout };
+            if !config.splits.contains(&split) || config.locomo_conversation_limit.is_some_and(|limit| used >= limit) {
+                return None;
+            }
+            used += 1;
+            Some((split, conversation))
+        })
+        .collect();
+    Ok((selected, sha256))
+}
+
+fn selected_longmem_ids(config: &BenchmarkConfig, headers: &[LongMemItemHeader]) -> BTreeSet<String> {
+    let mut selected_ids = BTreeSet::new();
+    for split in &config.splits {
+        let split_refs: Vec<&LongMemItemHeader> =
+            headers.iter().filter(|item| longmem_split(&item.question_id) == *split).collect();
+        let selected = round_robin_by(
+            split_refs,
+            config.longmemeval_per_split,
+            |item| item.question_type.clone(),
+            |item| hash_bytes(&item.question_id),
+        );
+        selected_ids.extend(selected.into_iter().map(|item| item.question_id.clone()));
+    }
+    selected_ids
+}
+
+fn session_bodies(sessions: &[Session]) -> Vec<String> {
+    let mut bodies = Vec::new();
+    for session in sessions {
+        if let Some(date) = &session.date {
+            bodies.push(session_date_body(&session.id, date));
+        }
+        bodies.extend(session.turns.iter().map(turn_body));
+    }
+    bodies
+}
+
+fn session_date_body(id: &str, date: &str) -> String {
+    format!("Dataset session {id} occurred at {date}.")
+}
+
+fn turn_body(turn: &Turn) -> String {
+    format!("{}: {}", turn.speaker, turn.text)
 }
 
 fn locomo_sessions(conversation: &LocomoConversation) -> Vec<Session> {

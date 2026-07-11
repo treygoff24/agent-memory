@@ -10,7 +10,6 @@ use std::time::Duration;
 use memory_privacy::PrivacyClassifier;
 use memory_substrate::frontmatter::{normalize_abstraction_value, normalize_cue_values};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -26,6 +25,15 @@ pub struct EnrichmentReport {
     pub structural: usize,
     pub skipped: BTreeMap<String, usize>,
     pub dispositions: BTreeMap<String, usize>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EnrichmentOptions {
+    pub structural_only: bool,
+    pub harness: String,
+    pub limit: Option<usize>,
+    pub locomo_qa_per_conversation: Option<usize>,
+    pub longmemeval_per_split: usize,
 }
 
 pub type EnrichmentSidecar = BTreeMap<String, Enrichment>;
@@ -76,32 +84,46 @@ fn save_sidecar(path: &Path, sidecar: &EnrichmentSidecar) -> Result<(), String> 
     Ok(())
 }
 
-pub fn enrich_dataset_dir(
-    dataset_dir: &Path,
-    structural_only: bool,
-    harness: &str,
-    limit: Option<usize>,
-) -> Result<EnrichmentReport, String> {
-    let adapter = if structural_only {
+pub fn enrich_dataset_dir(dataset_dir: &Path, options: &EnrichmentOptions) -> Result<EnrichmentReport, String> {
+    let adapter = if options.structural_only {
         None
     } else {
         Some(
             memoryd::dream::registry::HarnessCliRegistry::builtin_v0_2()
-                .get(harness)
+                .get(&options.harness)
                 .ok_or_else(|| "unsupported_cli".to_string())?,
         )
     };
-    enrich_dataset_dir_with_adapter(dataset_dir, adapter, structural_only, limit)
+    enrich_dataset_dir_with_adapter_sampling(dataset_dir, adapter, options)
 }
 
+#[cfg(test)]
 pub(crate) fn enrich_dataset_dir_with_adapter(
     dataset_dir: &Path,
     adapter: Option<Arc<dyn memoryd::dream::harness::HarnessCli>>,
     structural_only: bool,
     limit: Option<usize>,
 ) -> Result<EnrichmentReport, String> {
+    enrich_dataset_dir_with_adapter_sampling(
+        dataset_dir,
+        adapter,
+        &EnrichmentOptions {
+            structural_only,
+            harness: String::new(),
+            limit,
+            locomo_qa_per_conversation: None,
+            longmemeval_per_split: 60,
+        },
+    )
+}
+
+fn enrich_dataset_dir_with_adapter_sampling(
+    dataset_dir: &Path,
+    adapter: Option<Arc<dyn memoryd::dream::harness::HarnessCli>>,
+    options: &EnrichmentOptions,
+) -> Result<EnrichmentReport, String> {
     let mut report = EnrichmentReport::default();
-    let (runtime, adapter) = if structural_only {
+    let (runtime, adapter) = if options.structural_only {
         (None, None)
     } else if let Some(adapter) = adapter {
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -118,19 +140,32 @@ pub(crate) fn enrich_dataset_dir_with_adapter(
         (None, None)
     };
 
-    for dataset in [
-        dataset_dir.join("locomo/locomo10.json"),
-        dataset_dir.join("longmemeval/longmemeval_oracle.json"),
-        dataset_dir.join("longmemeval/longmemeval_s_cleaned.json"),
-    ] {
-        if !dataset.exists() {
-            continue;
+    let config = crate::benchmark::BenchmarkConfig {
+        dataset_dir: dataset_dir.to_path_buf(),
+        splits: vec![crate::benchmark::Split::Dev, crate::benchmark::Split::Holdout],
+        locomo_conversation_limit: None,
+        locomo_qa_per_conversation: options.locomo_qa_per_conversation,
+        longmemeval_per_split: options.longmemeval_per_split,
+        longmemeval_cleaned: false,
+        embedding_lane: crate::benchmark::BenchmarkEmbeddingLane::FtsOnly,
+        expected_sensitivity: "internal".to_owned(),
+        judge_timeout: 60,
+    };
+    let corpus = crate::benchmark::sampled_corpus_bodies(&config)?;
+    eprintln!("enumerated {} benchmark write bodies", corpus.len());
+    let mut by_dataset = BTreeMap::<PathBuf, Vec<String>>::new();
+    for (dataset, body) in corpus {
+        by_dataset.entry(dataset).or_default().push(body);
+    }
+
+    let mut remaining = options.limit.unwrap_or(usize::MAX);
+    for (dataset, items) in by_dataset {
+        if remaining == 0 {
+            break;
         }
-        let items = corpus_bodies(&dataset)?;
         let mut sidecar = load_sidecar(&dataset)?;
         let pending: Vec<String> = items
             .into_iter()
-            .take(limit.unwrap_or(usize::MAX))
             .filter(|body| {
                 if sidecar.contains_key(&item_key(body)) {
                     *report.skipped.entry("already_enriched".to_owned()).or_default() += 1;
@@ -139,7 +174,9 @@ pub(crate) fn enrich_dataset_dir_with_adapter(
                     true
                 }
             })
+            .take(remaining)
             .collect();
+        remaining = remaining.saturating_sub(pending.len());
         let total = pending.len();
         let mut done = 0usize;
         // Batched fan-out: harness calls are ~10-15s each and independent, so a
@@ -319,63 +356,21 @@ fn map_harness_error(error: memoryd::dream::error::HarnessCliError) -> String {
         HarnessCliError::Timeout { .. } => "timeout".to_string(),
         HarnessCliError::NotInstalled => "harness:not_installed".to_string(),
         HarnessCliError::NotAuthenticated { .. } => "harness:not_authenticated".to_string(),
-        HarnessCliError::SubprocessExit { code, .. } => {
-            format!("harness:exit_{}", code.map(|c| c.to_string()).unwrap_or_else(|| "signal".to_string()))
+        HarnessCliError::SubprocessExit { code, stderr_tail } => {
+            format!(
+                "harness:exit_{}:{}",
+                code.map(|c| c.to_string()).unwrap_or_else(|| "signal".to_string()),
+                redact_stderr_tail(&stderr_tail),
+            )
         }
         HarnessCliError::MalformedJson { .. } => "harness:malformed_json".to_string(),
         HarnessCliError::Io(_) => "harness:io".to_string(),
     }
 }
 
-fn corpus_bodies(dataset: &Path) -> Result<Vec<String>, String> {
-    let value: Value = serde_json::from_slice(&fs::read(dataset).map_err(|error| error.to_string())?)
-        .map_err(|error| error.to_string())?;
-    let mut bodies = Vec::new();
-    for item in value.as_array().ok_or_else(|| "dataset must be an array".to_owned())? {
-        if let Some(conversation) = item.get("conversation").and_then(Value::as_object) {
-            for (key, session) in conversation {
-                if let Some(date) = key.strip_suffix("_date_time") {
-                    bodies
-                        .push(format!("Dataset session {date} occurred at {}.", session.as_str().unwrap_or_default()));
-                }
-                if let Some(turns) = session.as_array() {
-                    for turn in turns {
-                        push_turn(&mut bodies, turn, "speaker", "text");
-                    }
-                }
-            }
-        }
-        if let Some(sessions) = item.get("haystack_sessions").and_then(Value::as_array) {
-            let dates = item.get("haystack_dates").and_then(Value::as_array);
-            let ids = item.get("haystack_session_ids").and_then(Value::as_array);
-            for (index, session) in sessions.iter().enumerate() {
-                if let Some(date) = dates.and_then(|values| values.get(index)).and_then(Value::as_str) {
-                    let id = ids
-                        .and_then(|values| values.get(index))
-                        .and_then(Value::as_str)
-                        .map(str::to_owned)
-                        .unwrap_or_else(|| format!("session_{index}"));
-                    bodies.push(format!("Dataset session {id} occurred at {date}."));
-                }
-                if let Some(turns) = session.as_array() {
-                    for turn in turns {
-                        push_turn(&mut bodies, turn, "role", "content");
-                    }
-                }
-            }
-        }
-    }
-    bodies.sort();
-    bodies.dedup();
-    Ok(bodies)
-}
-
-fn push_turn(bodies: &mut Vec<String>, turn: &Value, speaker: &str, text: &str) {
-    if let (Some(speaker), Some(text)) =
-        (turn.get(speaker).and_then(Value::as_str), turn.get(text).and_then(Value::as_str))
-    {
-        bodies.push(format!("{speaker}: {text}"));
-    }
+fn redact_stderr_tail(stderr_tail: &str) -> String {
+    let tail: String = stderr_tail.chars().take(200).collect();
+    tail.replace(&std::env::current_dir().unwrap_or_default().display().to_string(), "<workspace>").replace("\n", " ")
 }
 
 #[cfg(test)]
@@ -632,5 +627,12 @@ mod tests {
         assert!(!tmp.exists(), "temp sidecar must be renamed away");
         let sidecar = load_sidecar(&dataset).unwrap();
         assert_eq!(sidecar.len(), 1);
+    }
+
+    #[test]
+    fn subprocess_exit_keeps_a_bounded_diagnostic() {
+        let reason = map_harness_error(HarnessCliError::SubprocessExit { code: Some(1), stderr_tail: "x".repeat(300) });
+        assert!(reason.starts_with("harness:exit_1:"));
+        assert_eq!(reason.len(), "harness:exit_1:".len() + 200);
     }
 }

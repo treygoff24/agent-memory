@@ -101,8 +101,8 @@ fn claude_and_codex_adapter_argv_never_contains_prompt() {
     let codex_json_args = CodexCli::new().command(true).args;
 
     assert_eq!(claude_args, ["--print"]);
-    assert_eq!(codex_text_args, ["exec", "-"]);
-    assert_eq!(codex_json_args, ["exec", "--json", "-"]);
+    assert_eq!(codex_text_args, ["exec", "--skip-git-repo-check", "-"]);
+    assert_eq!(codex_json_args, codex_text_args);
 
     for args in [&claude_args, &codex_text_args, &codex_json_args] {
         assert!(args.iter().all(|arg| !arg.contains(prompt)), "adapter argv must never include prompt bytes: {args:?}");

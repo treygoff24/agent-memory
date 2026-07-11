@@ -365,12 +365,11 @@ impl CodexCli {
         Self { path_env: Some(path_env) }
     }
 
-    pub fn command(&self, expect_json: bool) -> HarnessCommandPlan {
-        let args = if expect_json {
-            vec!["exec".to_owned(), "--json".to_owned(), "-".to_owned()]
-        } else {
-            vec!["exec".to_owned(), "-".to_owned()]
-        };
+    pub fn command(&self, _expect_json: bool) -> HarnessCommandPlan {
+        // The hardened process uses an empty scratch directory. Codex requires
+        // this opt-out there, and its `--json` mode is event JSONL rather than
+        // the final response JSON expected by callers.
+        let args = vec!["exec".to_owned(), "--skip-git-repo-check".to_owned(), "-".to_owned()];
 
         HarnessCommandPlan { program: "codex".to_owned(), args, prompt_transport: PromptTransport::Stdin }
     }
