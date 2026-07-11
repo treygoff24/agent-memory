@@ -1006,6 +1006,7 @@ mod tests {
                     provenance: None,
                     status: Some(MemoryStatus::Active),
                     encrypted: false,
+                    sensitivity: None,
                     guidance: String::new(),
                 },
             );
@@ -1224,6 +1225,7 @@ mod tests {
                 provenance: None,
                 status: Some(MemoryStatus::Active),
                 encrypted: false,
+                sensitivity: None,
                 guidance: String::new(),
             },
         );
@@ -1293,6 +1295,7 @@ mod tests {
                     provenance: None,
                     status: Some(MemoryStatus::Active),
                     encrypted: false,
+                    sensitivity: None,
                     guidance: String::new(),
                 },
             )
@@ -1306,6 +1309,7 @@ mod tests {
                     provenance: None,
                     status: Some(MemoryStatus::Active),
                     encrypted: false,
+                    sensitivity: None,
                     guidance: String::new(),
                 },
             );
@@ -1393,6 +1397,7 @@ mod tests {
                     provenance: None,
                     status: Some(MemoryStatus::Tombstoned),
                     encrypted: false,
+                    sensitivity: None,
                     guidance: String::new(),
                 },
             )
@@ -1629,6 +1634,7 @@ mod tests {
                     provenance: None,
                     status: Some(MemoryStatus::Active),
                     encrypted: true,
+                    sensitivity: None,
                     guidance: String::new(),
                 },
             );
@@ -1717,6 +1723,7 @@ mod tests {
                     provenance: None,
                     status: Some(MemoryStatus::Active),
                     encrypted: false,
+                    sensitivity: None,
                     guidance: String::new(),
                 },
             );
