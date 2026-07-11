@@ -165,10 +165,7 @@ async fn fts_search_hits(
     // Reuse the hybrid BM25 helper so FTS-only search gets the same two-stage
     // strict-AND -> relaxed-OR fallback and per-memory collapse as the fused
     // lane, without duplicating the query sanitizer.
-    let candidates = substrate
-        .query_hybrid_chunks(query, None, limit)
-        .await
-        .map_err(HandlerError::substrate)?;
+    let candidates = substrate.query_hybrid_chunks(query, None, limit).await.map_err(HandlerError::substrate)?;
     let k = f64::from(DEFAULT_VECTOR_RECALL_RRF_K);
     let total = candidates.len();
     let hits = candidates
@@ -178,10 +175,7 @@ async fn fts_search_hits(
             summary: bounded(&candidate.text, SEARCH_SNIPPET_MAX),
             snippet: bounded(&candidate.text, SEARCH_SNIPPET_MAX),
             body: None,
-            score: candidate
-                .score_breakdown
-                .bm25_rank
-                .map_or(0.0, |rank| reciprocal_rank_score(k, rank)),
+            score: candidate.score_breakdown.bm25_rank.map_or(0.0, |rank| reciprocal_rank_score(k, rank)),
         })
         .collect::<Vec<_>>();
     Ok((total, hits))
