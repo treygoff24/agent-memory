@@ -329,3 +329,15 @@ Outcome and verification: complete — file report delivered (`thoughts/memora-b
 Performance observations: ~13 min; the 4-item scope + file-report requirement fixed both round-1a failure modes (cutoff, empty report). The audit finding shows Devin CAN do discovery work when the audit is framed as a checklist with an explicit output table.
 
 Routing assessment: confirms the round-1a lesson — cap Devin lists at ~4-6 items and demand file reports. Keep. Confidence: high.
+
+## 2026-07-11 - grok-4.5-fast-xhigh via cursor - W2 rounds 2+3 (cursor-2, cursor-3, W2-worktree registry)
+
+Two scoped rounds on the W2 fix layer. Round 2 (`c84b2de`): convergent with Luna on the race-test false pin and the migrate_v6 pub leak; recomputed all 11 manifest bullet hashes as verification rather than trusting the report. Round 3 (`037d3ef`, cap verify): caught that the coordinator's own replacement pin was a DUPLICATED SQL literal — deleting the content_hash scope from production alone would have kept every test green. That is the third distinct false-pin catch of this arc (W0 H3 fixtures, W2 r2 race test, this) and the first one aimed at coordinator-authored code — the lane attacks all authors equally, which is exactly the property the loop needs. Remedies prescribed were applied verbatim (`701edec`, shared const binding production+test).
+
+Routing assessment: Cursor safe remains the arc's verify lane; its test-fidelity instincts now have a 3/3 hit rate. Confidence: high.
+
+## 2026-07-11 - gpt-5.6-luna (high) via codex - W2 round 2 (codex-3, W2-worktree registry)
+
+Round 2 on `c84b2de`: convergent on the false pin (filed HIGH with the sharper mechanism statement) and the pub-export leak; unique real find: import forwarded unbounded cue arrays before any validation (accepted, severity adjusted to MAJOR — local self-DoS). Zero rejected this round (1-for-1 improvement over its round-1 layering misread).
+
+Routing assessment: keep as standing second lane. Confidence: high.
