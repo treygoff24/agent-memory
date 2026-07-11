@@ -133,12 +133,12 @@ async fn collect_delta_items(
     vector_recall: Option<&VectorRecallContext>,
 ) -> Result<(Vec<DeltaRecallItem>, Option<String>), RecallError> {
     match collect_hybrid_recall(substrate, message, vector_recall).await {
-        HybridRecallDecision::Fused { candidates } => Ok((
+        HybridRecallDecision::Fused { candidates, degraded } => Ok((
             candidates
                 .into_iter()
                 .map(|candidate| DeltaRecallItem { id: candidate.id, text: candidate.text })
                 .collect(),
-            None,
+            degraded.map(str::to_owned),
         )),
         HybridRecallDecision::FtsOnly { degraded } => {
             let items = fts_delta_items(substrate, message).await?;

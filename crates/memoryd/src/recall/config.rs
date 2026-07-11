@@ -6,6 +6,13 @@ use serde::{Deserialize, Serialize};
 pub const DEFAULT_VECTOR_RECALL_ENABLED: bool = true;
 pub const DEFAULT_VECTOR_RECALL_KNN_LIMIT: usize = 20;
 pub const DEFAULT_VECTOR_RECALL_RRF_K: u32 = 60;
+pub const DEFAULT_CHUNK_VECTOR_WEIGHT: f64 = 1.0;
+pub const DEFAULT_BM25_WEIGHT: f64 = 1.0;
+pub const DEFAULT_ABSTRACTION_VECTOR_WEIGHT: f64 = 2.0;
+pub const DEFAULT_CUE_VECTOR_WEIGHT: f64 = 1.0;
+pub const DEFAULT_FOUR_LANE_TIMEOUT_MS: u64 = 100;
+pub const DEFAULT_SEARCH_TIMEOUT_MS: u64 = 2_000;
+pub const HOOK_DEADLINE_MS: u64 = 800;
 /// Small additive recency prior on fused RRF scores. Twice the old ε band (0.00025) so
 /// freshness can flip adjacent near-ties deep in the list without jumping a top-of-list gap.
 /// Set to `0.0` to recover pure RRF ordering.
@@ -43,6 +50,23 @@ pub struct VectorRecallConfig {
     /// (`LOCAL_EMBED_TIMEOUT_MS` or `API_EMBED_TIMEOUT_MS`).
     #[serde(default)]
     pub embed_timeout_ms: Option<u64>,
+    /// Enables abstraction/cue lanes on local hooks and all explicit searches.
+    #[serde(default = "default_four_lane_enabled")]
+    pub four_lane_enabled: bool,
+    #[serde(default = "default_chunk_vector_weight")]
+    pub chunk_vector_weight: f64,
+    #[serde(default = "default_bm25_weight")]
+    pub bm25_weight: f64,
+    #[serde(default = "default_abstraction_vector_weight")]
+    pub abstraction_vector_weight: f64,
+    #[serde(default = "default_cue_vector_weight")]
+    pub cue_vector_weight: f64,
+    /// Per-vector-lane query budget after the shared query embedding completes.
+    #[serde(default = "default_four_lane_timeout_ms")]
+    pub four_lane_timeout_ms: u64,
+    /// Overall budget for the explicit search pull surface.
+    #[serde(default = "default_search_timeout_ms")]
+    pub search_timeout_ms: u64,
 }
 
 impl Default for VectorRecallConfig {
@@ -54,6 +78,13 @@ impl Default for VectorRecallConfig {
             recency_lambda: default_recency_lambda(),
             recency_half_life_days: default_recency_half_life_days(),
             embed_timeout_ms: None,
+            four_lane_enabled: true,
+            chunk_vector_weight: DEFAULT_CHUNK_VECTOR_WEIGHT,
+            bm25_weight: DEFAULT_BM25_WEIGHT,
+            abstraction_vector_weight: DEFAULT_ABSTRACTION_VECTOR_WEIGHT,
+            cue_vector_weight: DEFAULT_CUE_VECTOR_WEIGHT,
+            four_lane_timeout_ms: DEFAULT_FOUR_LANE_TIMEOUT_MS,
+            search_timeout_ms: DEFAULT_SEARCH_TIMEOUT_MS,
         }
     }
 }
@@ -89,6 +120,34 @@ fn default_recency_lambda() -> f64 {
 
 fn default_recency_half_life_days() -> f64 {
     DEFAULT_VECTOR_RECALL_RECENCY_HALF_LIFE_DAYS
+}
+
+fn default_four_lane_enabled() -> bool {
+    true
+}
+
+fn default_chunk_vector_weight() -> f64 {
+    DEFAULT_CHUNK_VECTOR_WEIGHT
+}
+
+fn default_bm25_weight() -> f64 {
+    DEFAULT_BM25_WEIGHT
+}
+
+fn default_abstraction_vector_weight() -> f64 {
+    DEFAULT_ABSTRACTION_VECTOR_WEIGHT
+}
+
+fn default_cue_vector_weight() -> f64 {
+    DEFAULT_CUE_VECTOR_WEIGHT
+}
+
+fn default_four_lane_timeout_ms() -> u64 {
+    DEFAULT_FOUR_LANE_TIMEOUT_MS
+}
+
+fn default_search_timeout_ms() -> u64 {
+    DEFAULT_SEARCH_TIMEOUT_MS
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -140,6 +199,13 @@ mod tests {
                 recency_lambda: 0.0005,
                 recency_half_life_days: 90.0,
                 embed_timeout_ms: None,
+                four_lane_enabled: true,
+                chunk_vector_weight: 1.0,
+                bm25_weight: 1.0,
+                abstraction_vector_weight: 2.0,
+                cue_vector_weight: 1.0,
+                four_lane_timeout_ms: 100,
+                search_timeout_ms: 2_000,
             }
         );
     }

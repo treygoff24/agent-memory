@@ -100,6 +100,31 @@ async fn memory_search_uses_hybrid_vector_path_without_wire_shape_change() {
 }
 
 #[tokio::test]
+async fn search_latency_percentiles_are_exposed_on_status() {
+    let fixture = TestRepo::new("dev_veclatency").await;
+    fixture
+        .write_memory(memory_spec(
+            "mem_20260610_0000000000000013_000013",
+            "latency fixture",
+            "latency fixture body",
+            false,
+        ))
+        .await;
+    let state = HandlerState::new();
+    let _ = search(&fixture.substrate, &state, "latency fixture").await;
+    let response =
+        handle_request_with_state(&fixture.substrate, &state, RequestEnvelope::new("status", RequestPayload::Status))
+            .await;
+    let status = match response.result {
+        ResponseResult::Success(ResponsePayload::Status(status)) => status,
+        other => panic!("expected status success, got {other:?}"),
+    };
+    let latency = status.recall.latency.get("search_local").expect("search latency distribution");
+    assert_eq!(latency.count, 1);
+    assert!(latency.p50_us > 0);
+}
+
+#[tokio::test]
 async fn vector_degradation_rungs_mark_and_fallback_to_fts() {
     let fixture = TestRepo::new("dev_vecdegraderungs").await;
     fixture
@@ -211,6 +236,81 @@ async fn vector_recall_disabled_does_not_call_provider_or_mark_degraded() {
     assert_eq!(response.vector_recall_degraded, None);
     assert!(response.delta_block.contains("mem_20260610_0000000000000031_000031"));
     assert_eq!(provider.query_calls.load(Ordering::SeqCst), 0, "disabled vector recall must not embed");
+}
+
+#[tokio::test]
+async fn four_lane_reuses_one_query_embedding() {
+    let fixture = TestRepo::new("dev_vecsingleembed").await;
+    let indexing_provider = fixture.provider();
+    fixture
+        .write_memory(memory_spec(
+            "mem_20260610_0000000000000032_000032",
+            "single query embedding",
+            "All vector lanes must share one query embedding.",
+            true,
+        ))
+        .await;
+    drain_all(&fixture.substrate, &indexing_provider).await;
+
+    let provider = Arc::new(RecordingProvider::new(fixture.substrate.active_embedding_triple().expect("triple")));
+    let provider_dyn: Arc<dyn EmbeddingProvider> = provider.clone();
+    let response = build_delta_response_with_vector_recall(
+        &fixture.substrate,
+        fixture.delta_request("single query embedding"),
+        VectorRecallContext::new(Some(provider_dyn), VectorRecallConfig::default())
+            .with_mode(memoryd::recall::FusionMode::FourLaneHook),
+    )
+    .await
+    .expect("four-lane delta");
+
+    assert!(response.delta_block.contains("mem_20260610_0000000000000032_000032"));
+    assert_eq!(provider.query_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn abstraction_lane_surfaces_a_memory_missed_by_fts() {
+    let fixture = TestRepo::new("dev_vecabstraction").await;
+    let provider = fixture.provider();
+    fixture
+        .write_memory(TestMemorySpec {
+            id: "mem_20260610_0000000000000033_000033",
+            summary: "rollout notes",
+            body: "The canary sequence is recorded in the release notebook.",
+            index_embeddings: true,
+            abstraction: Some("oauth refresh rotation"),
+            cues: vec!["token renewal"],
+        })
+        .await;
+    fixture
+        .write_memory(TestMemorySpec {
+            id: "mem_20260610_0000000000000034_000034",
+            summary: "lexical decoy",
+            body: "oauth refresh rotation appears only in this decoy body",
+            index_embeddings: true,
+            abstraction: Some("kitchen inventory"),
+            cues: vec!["snack shelf"],
+        })
+        .await;
+    drain_all(&fixture.substrate, &provider).await;
+    let config = VectorRecallConfig { knn_limit: 1, ..VectorRecallConfig::default() };
+
+    let legacy = build_delta_response_with_vector_recall(
+        &fixture.substrate,
+        fixture.delta_request("oauth refresh rotation"),
+        VectorRecallContext::new(Some(Arc::clone(&provider)), config),
+    )
+    .await
+    .expect("legacy delta");
+    let four_lane = build_delta_response_with_vector_recall(
+        &fixture.substrate,
+        fixture.delta_request("oauth refresh rotation"),
+        VectorRecallContext::new(Some(provider), config).with_mode(memoryd::recall::FusionMode::FourLaneHook),
+    )
+    .await
+    .expect("four-lane delta");
+
+    assert!(!legacy.delta_block.contains("mem_20260610_0000000000000033_000033"));
+    assert!(four_lane.delta_block.contains("mem_20260610_0000000000000033_000033"));
 }
 
 #[tokio::test]
@@ -360,10 +460,12 @@ struct TestMemorySpec<'a> {
     summary: &'a str,
     body: &'a str,
     index_embeddings: bool,
+    abstraction: Option<&'a str>,
+    cues: Vec<&'a str>,
 }
 
 fn memory_spec<'a>(id: &'a str, summary: &'a str, body: &'a str, index_embeddings: bool) -> TestMemorySpec<'a> {
-    TestMemorySpec { id, summary, body, index_embeddings }
+    TestMemorySpec { id, summary, body, index_embeddings, abstraction: None, cues: Vec::new() }
 }
 
 impl TestRepo {
@@ -472,8 +574,8 @@ fn test_memory(spec: TestMemorySpec<'_>) -> Memory {
                 expected_base_hash: None,
             },
             merge_diagnostics: None,
-            abstraction: None,
-            cues: Vec::new(),
+            abstraction: spec.abstraction.map(str::to_owned),
+            cues: spec.cues.into_iter().map(str::to_owned).collect(),
             extras: std::collections::BTreeMap::new(),
         },
         body: spec.body.to_owned(),

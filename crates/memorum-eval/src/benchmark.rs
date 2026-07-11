@@ -32,6 +32,12 @@ pub enum BenchmarkEmbeddingLane {
     GeminiApi,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BenchmarkFusion {
+    Legacy,
+    FourLane,
+}
+
 #[derive(Debug, Clone)]
 pub struct BenchmarkConfig {
     pub dataset_dir: PathBuf,
@@ -41,6 +47,7 @@ pub struct BenchmarkConfig {
     pub longmemeval_per_split: usize,
     pub longmemeval_cleaned: bool,
     pub embedding_lane: BenchmarkEmbeddingLane,
+    pub fusion: BenchmarkFusion,
     pub expected_sensitivity: String,
     pub judge_timeout: u64,
 }
@@ -53,6 +60,7 @@ pub struct SplitConfig {
     pub longmemeval_per_split: usize,
     pub longmemeval_cleaned: bool,
     pub embedding_lane: &'static str,
+    pub fusion: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -270,6 +278,10 @@ fn split_config_from(config: &BenchmarkConfig) -> SplitConfig {
             BenchmarkEmbeddingLane::DaemonConfigured => "daemon_configured",
             BenchmarkEmbeddingLane::GeminiApi => "gemini_api",
         },
+        fusion: match config.fusion {
+            BenchmarkFusion::Legacy => "legacy",
+            BenchmarkFusion::FourLane => "four_lane",
+        },
     }
 }
 
@@ -280,7 +292,10 @@ pub async fn run_baseline(
     let mut report = BaselineReport {
         schema_version: "baseline_0.1",
         report_name: "baseline_0",
-        ranking_lanes: vec!["daemon_search_hybrid", "startup_recall"],
+        ranking_lanes: match config.fusion {
+            BenchmarkFusion::Legacy => vec!["daemon_search_hybrid_legacy", "startup_recall"],
+            BenchmarkFusion::FourLane => vec!["daemon_search_four_lane", "startup_recall"],
+        },
         vector_lane: match config.embedding_lane {
             BenchmarkEmbeddingLane::FtsOnly => "disabled explicitly; production daemon degraded to FTS-only",
             BenchmarkEmbeddingLane::DaemonConfigured => "daemon-configured vector lane live",
@@ -320,11 +335,7 @@ async fn run_locomo(
     let enrichment = load_sidecar(&path)?;
     report.dataset_sha256s.insert("locomo/locomo10.json".to_string(), sha256);
     for (split, conversation) in conversations {
-        let scaffold = match config.embedding_lane {
-            BenchmarkEmbeddingLane::FtsOnly => DaemonScaffold::fresh_fts_only().await,
-            BenchmarkEmbeddingLane::DaemonConfigured => DaemonScaffold::fresh().await,
-            BenchmarkEmbeddingLane::GeminiApi => DaemonScaffold::fresh_gemini_api().await,
-        };
+        let scaffold = benchmark_scaffold(config).await;
         let project = scaffold.tree_dir().join("benchmark-project");
         fs::create_dir_all(&project).map_err(|error| error.to_string())?;
         fs::write(
@@ -392,11 +403,7 @@ async fn run_longmemeval(
             a_key.cmp(&b_key)
         });
         for item in split_items {
-            let scaffold = match config.embedding_lane {
-                BenchmarkEmbeddingLane::FtsOnly => DaemonScaffold::fresh_fts_only().await,
-                BenchmarkEmbeddingLane::DaemonConfigured => DaemonScaffold::fresh().await,
-                BenchmarkEmbeddingLane::GeminiApi => DaemonScaffold::fresh_gemini_api().await,
-            };
+            let scaffold = benchmark_scaffold(config).await;
             let project = scaffold.tree_dir().join("benchmark-project");
             fs::create_dir_all(&project).map_err(|error| error.to_string())?;
             fs::write(
@@ -446,6 +453,16 @@ async fn run_longmemeval(
         }
     }
     Ok(())
+}
+
+async fn benchmark_scaffold(config: &BenchmarkConfig) -> DaemonScaffold {
+    let scaffold = match config.embedding_lane {
+        BenchmarkEmbeddingLane::FtsOnly => DaemonScaffold::fresh_fts_only().await,
+        BenchmarkEmbeddingLane::DaemonConfigured => DaemonScaffold::fresh().await,
+        BenchmarkEmbeddingLane::GeminiApi => DaemonScaffold::fresh_gemini_api().await,
+    };
+    scaffold.set_four_lane_fusion(config.fusion == BenchmarkFusion::FourLane);
+    scaffold
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1302,6 +1319,7 @@ mod tests {
             longmemeval_per_split: 1,
             longmemeval_cleaned: false,
             embedding_lane: BenchmarkEmbeddingLane::FtsOnly,
+            fusion: BenchmarkFusion::Legacy,
             expected_sensitivity: "internal".to_owned(),
             judge_timeout: 60,
         }
@@ -1499,6 +1517,7 @@ mod tests {
                 longmemeval_per_split: 0,
                 longmemeval_cleaned: false,
                 embedding_lane: "test",
+                fusion: "legacy",
             },
             sampling: SamplingReport::default(),
             dispositions: DispositionCounts::default(),

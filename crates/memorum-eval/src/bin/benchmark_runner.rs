@@ -3,7 +3,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::{Parser, ValueEnum};
-use memorum_eval::benchmark::{run_baseline, BenchmarkConfig, BenchmarkEmbeddingLane, Split};
+use memorum_eval::benchmark::{run_baseline, BenchmarkConfig, BenchmarkEmbeddingLane, BenchmarkFusion, Split};
 use memorum_eval::judge::{BenchmarkJudge, DeterministicMockJudge, ExternalCommandJudge};
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -18,6 +18,12 @@ enum EmbeddingArg {
     FtsOnly,
     Daemon,
     GeminiApi,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum FusionArg {
+    Legacy,
+    FourLane,
 }
 
 #[derive(Debug, Parser)]
@@ -40,6 +46,9 @@ struct Cli {
     longmemeval_cleaned: bool,
     #[arg(long = "embedding-lane", alias = "embedding", value_enum, default_value = "fts-only")]
     embedding: EmbeddingArg,
+    /// Retrieval fusion policy. Legacy is the frozen baseline control.
+    #[arg(long, value_enum, default_value = "legacy")]
+    fusion: FusionArg,
     /// External judge executable. It receives one JSON record on stdin and must
     /// emit {"score": number, "rationale": string} on stdout.
     #[arg(long)]
@@ -85,6 +94,10 @@ fn run(cli: Cli) -> Result<(), String> {
             EmbeddingArg::FtsOnly => BenchmarkEmbeddingLane::FtsOnly,
             EmbeddingArg::Daemon => BenchmarkEmbeddingLane::DaemonConfigured,
             EmbeddingArg::GeminiApi => BenchmarkEmbeddingLane::GeminiApi,
+        },
+        fusion: match cli.fusion {
+            FusionArg::Legacy => BenchmarkFusion::Legacy,
+            FusionArg::FourLane => BenchmarkFusion::FourLane,
         },
         expected_sensitivity: cli.expected_sensitivity,
         judge_timeout: cli.judge_timeout,

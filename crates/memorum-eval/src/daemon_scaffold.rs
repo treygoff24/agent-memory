@@ -43,6 +43,12 @@ struct TempTree {
 }
 
 impl DaemonScaffold {
+    pub fn set_four_lane_fusion(&self, enabled: bool) {
+        let path = self.tree_dir.path().join("config.yaml");
+        let mut config = fs::read_to_string(&path).unwrap_or_default();
+        config.push_str(&format!("recall:\n  vector_recall:\n    four_lane_enabled: {enabled}\n"));
+        fs::write(path, config).expect("write benchmark fusion config");
+    }
     pub async fn fresh() -> Self {
         let tree_dir = TempTree::fresh();
         Self::start(tree_dir)

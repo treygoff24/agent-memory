@@ -148,6 +148,7 @@ fn enrich_dataset_dir_with_adapter_sampling(
         longmemeval_per_split: options.longmemeval_per_split,
         longmemeval_cleaned: false,
         embedding_lane: crate::benchmark::BenchmarkEmbeddingLane::FtsOnly,
+        fusion: crate::benchmark::BenchmarkFusion::Legacy,
         expected_sensitivity: "internal".to_owned(),
         judge_timeout: 60,
     };

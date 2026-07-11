@@ -33,8 +33,8 @@ pub use delta::{
 };
 pub use entity::{resolve_entity_matches, EntityResolution};
 pub use error::RecallError;
-pub use fusion::{fuse_rrf, FusedHybridCandidate};
-pub use hybrid::VectorRecallContext;
+pub use fusion::{fuse_four_lane_rrf, fuse_rrf, FourLaneFusionConfig, FourLaneWeights, FusedHybridCandidate};
+pub use hybrid::{FusionMode, VectorRecallContext};
 pub use rank::{
     rank_recall_candidates, select_ranked_candidates, RankedRecallCandidate, RankedSelection, RankingContext,
 };

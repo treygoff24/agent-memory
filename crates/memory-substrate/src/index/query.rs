@@ -728,8 +728,11 @@ impl Index {
              JOIN aux_embedding_meta meta ON meta.row_kind='abstraction' AND meta.target_id=abstractions.memory_id
                AND meta.provider=?3 AND meta.model_ref=?4 AND meta.dimension=?5
                AND meta.content_hash=abstractions.abstraction_hash
-             JOIN memories ON memories.id=abstractions.memory_id AND memories.status IN ('active','pinned')
-             WHERE embedding MATCH ?1 AND k=?2 ORDER BY {table}.distance"
+             JOIN memories ON memories.id=abstractions.memory_id
+               AND memories.status IN ('active','pinned')
+               AND memories.metadata_only=0 AND memories.passive_recall=1 AND memories.index_body=1
+             WHERE embedding MATCH ?1 AND k=?2
+             ORDER BY {table}.distance, abstractions.memory_id"
         );
         let blob = crate::index::sqlite_vec::serialize_f32(vector);
         let mut stmt = self.connection.prepare(&sql)?;
@@ -795,8 +798,11 @@ impl Index {
              JOIN memory_cues cues ON cues.rowid={table}.rowid
              JOIN aux_embedding_meta meta ON meta.row_kind='cue' AND meta.target_id=cues.memory_id||':'||cues.ordinal
                AND meta.provider=?3 AND meta.model_ref=?4 AND meta.dimension=?5 AND meta.content_hash=cues.cue_hash
-             JOIN memories ON memories.id=cues.memory_id AND memories.status IN ('active','pinned')
-             WHERE embedding MATCH ?1 AND k=?2 ORDER BY {table}.distance"
+             JOIN memories ON memories.id=cues.memory_id
+               AND memories.status IN ('active','pinned')
+               AND memories.metadata_only=0 AND memories.passive_recall=1 AND memories.index_body=1
+             WHERE embedding MATCH ?1 AND k=?2
+             ORDER BY {table}.distance, cues.memory_id, cues.ordinal"
         );
         let blob = crate::index::sqlite_vec::serialize_f32(vector);
         let mut stmt = self.connection.prepare(&sql)?;

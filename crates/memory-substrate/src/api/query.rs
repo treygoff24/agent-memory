@@ -221,6 +221,46 @@ impl Substrate {
         .map_err(|err| VectorError::IndexUnavailable(format!("hybrid chunk query task panicked: {err}")))?
     }
 
+    /// Query recall-eligible abstraction vectors without blocking the async runtime.
+    pub async fn query_abstraction_vectors(
+        &self,
+        triple: &EmbeddingTriple,
+        vector: &[f32],
+        limit: usize,
+    ) -> Result<Vec<crate::model::AbstractionVectorHit>, VectorError> {
+        let index = Arc::clone(&self.index);
+        let triple = triple.clone();
+        let vector = vector.to_vec();
+        tokio::task::spawn_blocking(move || {
+            index
+                .lock()
+                .map_err(|err| VectorError::IndexUnavailable(format!("index mutex poisoned: {err}")))?
+                .query_abstraction_vectors(&triple, &vector, limit)
+        })
+        .await
+        .map_err(|err| VectorError::IndexUnavailable(format!("abstraction vector query task panicked: {err}")))?
+    }
+
+    /// Query recall-eligible cue vectors without blocking the async runtime.
+    pub async fn query_cue_vectors(
+        &self,
+        triple: &EmbeddingTriple,
+        vector: &[f32],
+        limit: usize,
+    ) -> Result<Vec<crate::model::CueVectorHit>, VectorError> {
+        let index = Arc::clone(&self.index);
+        let triple = triple.clone();
+        let vector = vector.to_vec();
+        tokio::task::spawn_blocking(move || {
+            index
+                .lock()
+                .map_err(|err| VectorError::IndexUnavailable(format!("index mutex poisoned: {err}")))?
+                .query_cue_vectors(&triple, &vector, limit)
+        })
+        .await
+        .map_err(|err| VectorError::IndexUnavailable(format!("cue vector query task panicked: {err}")))?
+    }
+
     /// KNN over a triple's vector table, collapsed to one row per active,
     /// in-scope memory.
     ///
@@ -336,29 +376,9 @@ impl Substrate {
         .map_err(|err| VectorError::IndexUnavailable(format!("update-aux-embedding task panicked: {err}")))?
     }
 
-    /// Query current abstraction vectors without wiring them into recall.
-    pub async fn query_abstraction_vectors(
-        &self,
-        triple: &EmbeddingTriple,
-        vector: &[f32],
-        limit: usize,
-    ) -> Result<Vec<AbstractionVectorHit>, VectorError> {
-        lock_index(&self.index).query_abstraction_vectors(triple, vector, limit)
-    }
-
     /// Enumerate current active/pinned abstraction vectors for dark governance jobs.
     pub fn all_abstraction_vectors(&self, triple: &EmbeddingTriple) -> Result<Vec<AbstractionVectorRow>, VectorError> {
         lock_index(&self.index).all_abstraction_vectors(triple)
-    }
-
-    /// Query current cue vectors without wiring them into recall.
-    pub async fn query_cue_vectors(
-        &self,
-        triple: &EmbeddingTriple,
-        vector: &[f32],
-        limit: usize,
-    ) -> Result<Vec<CueVectorHit>, VectorError> {
-        lock_index(&self.index).query_cue_vectors(triple, vector, limit)
     }
 
     /// Count pending embedding jobs for the active triple (doctor backlog).

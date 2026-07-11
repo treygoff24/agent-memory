@@ -3,6 +3,7 @@
 //! the delta/startup recall responses.
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use std::time::{Duration, Instant};
 
 use super::governance::{classify_privacy, write_privacy_memory};
 use super::*;
@@ -32,6 +33,7 @@ pub(crate) async fn delta_response(
     state: &HandlerState,
     request: crate::recall::DeltaRequest,
 ) -> Result<ResponsePayload, HandlerError> {
+    let started = Instant::now();
     let coordination = DeltaCoordinationContext {
         config: state.coordination_config(),
         presence: state.presence(),
@@ -39,11 +41,15 @@ pub(crate) async fn delta_response(
         delivery_recorder: Some(state),
         peer_cooldown: Some(state),
     };
-    let vector_recall = crate::recall::VectorRecallContext::from_lifecycle(
-        state.embedding_provider_slot(),
-        load_vector_recall_config(substrate),
-    );
-    match crate::recall::build_delta_response_with_vector_recall_and_coordination(
+    let config = load_vector_recall_config(substrate);
+    let mode = if active_embedding_is_api(substrate) {
+        crate::recall::FusionMode::Legacy
+    } else {
+        crate::recall::FusionMode::FourLaneHook
+    };
+    let vector_recall =
+        crate::recall::VectorRecallContext::from_lifecycle(state.embedding_provider_slot(), config).with_mode(mode);
+    let result = match crate::recall::build_delta_response_with_vector_recall_and_coordination(
         substrate,
         request,
         coordination,
@@ -59,7 +65,9 @@ pub(crate) async fn delta_response(
             state.recall.record_delta_failure(error.protocol_code());
             Err(HandlerError::from_recall(error))
         }
-    }
+    };
+    state.recall.record_latency(prompt_latency_surface(substrate), started.elapsed());
+    result
 }
 
 pub(crate) async fn startup_response(
@@ -67,7 +75,8 @@ pub(crate) async fn startup_response(
     state: &HandlerState,
     request: crate::recall::StartupRequest,
 ) -> Result<ResponsePayload, HandlerError> {
-    match build_startup_response_with_coordination_config(
+    let started = Instant::now();
+    let result = match build_startup_response_with_coordination_config(
         substrate,
         request,
         state.coordination_config().clone(),
@@ -85,7 +94,11 @@ pub(crate) async fn startup_response(
             state.recall.record_startup_failure(error.protocol_code());
             Err(HandlerError::from_recall(error))
         }
+    };
+    if !active_embedding_is_api(substrate) {
+        state.recall.record_latency("desk_cue_local", started.elapsed());
     }
+    result
 }
 
 fn record_budget_exhaustions(state: &HandlerState, response: &StartupResponse) {
@@ -107,13 +120,22 @@ pub(crate) async fn search_response(
     }
 
     let limit = request.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX);
-    let vector_recall = crate::recall::VectorRecallContext::from_lifecycle(
-        state.embedding_provider_slot(),
-        load_vector_recall_config(substrate),
-    );
-    let (total, mut hits) =
-        match crate::recall::hybrid::collect_hybrid_recall(substrate, query, Some(&vector_recall)).await {
-            crate::recall::hybrid::HybridRecallDecision::Fused { candidates } => {
+    let started = Instant::now();
+    let config = load_vector_recall_config(substrate);
+    let search_timeout = Duration::from_millis(config.search_timeout_ms);
+    let vector_recall = crate::recall::VectorRecallContext::from_lifecycle(state.embedding_provider_slot(), config)
+        .with_mode(crate::recall::FusionMode::FourLaneSearch);
+    let decision = tokio::time::timeout(
+        search_timeout,
+        crate::recall::hybrid::collect_hybrid_recall(substrate, query, Some(&vector_recall)),
+    )
+    .await;
+    let (total, mut hits) = match decision {
+        Ok(decision) => match decision {
+            crate::recall::hybrid::HybridRecallDecision::Fused { candidates, degraded } => {
+                if let Some(marker) = degraded {
+                    tracing::warn!(marker, "memory_search four-lane recall partially degraded");
+                }
                 let total = candidates.len();
                 let hits = candidates
                     .into_iter()
@@ -134,7 +156,15 @@ pub(crate) async fn search_response(
                 }
                 fts_search_hits(substrate, query, limit).await?
             }
-        };
+        },
+        Err(_) => {
+            tracing::warn!(
+                timeout_ms = search_timeout.as_millis(),
+                "memory_search timed out; falling back to FTS-only"
+            );
+            fts_search_hits(substrate, query, limit).await?
+        }
+    };
 
     if request.include_body {
         attach_search_bodies(substrate, &mut hits).await?;
@@ -145,7 +175,29 @@ pub(crate) async fn search_response(
     } else {
         "Bounded snippets only; call memory_get for full body access when policy allows.".to_string()
     };
-    Ok(ResponsePayload::Search(SearchResponse { hits, total, guidance }))
+    let response = ResponsePayload::Search(SearchResponse { hits, total, guidance });
+    state.recall.record_latency(search_latency_surface(substrate), started.elapsed());
+    Ok(response)
+}
+
+fn active_embedding_is_api(substrate: &Substrate) -> bool {
+    substrate.active_embedding_triple().is_ok_and(|triple| crate::embedding::is_api_embedding_lane(&triple))
+}
+
+fn prompt_latency_surface(substrate: &Substrate) -> &'static str {
+    if active_embedding_is_api(substrate) {
+        "prompt_cue_api"
+    } else {
+        "prompt_cue_local"
+    }
+}
+
+fn search_latency_surface(substrate: &Substrate) -> &'static str {
+    if active_embedding_is_api(substrate) {
+        "search_api"
+    } else {
+        "search_local"
+    }
 }
 
 fn load_vector_recall_config(substrate: &Substrate) -> crate::recall::VectorRecallConfig {
