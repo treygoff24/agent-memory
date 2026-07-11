@@ -271,3 +271,15 @@ Outcome and verification: **failed (harness_error)** after ~35 min — but the w
 Performance observations: excellent CPU discipline throughout (crate-scoped gates only, logs to files); the failure class is harness/transport, not model. Second observed instance of "codex lane dies after the meaty work, before the report" — treat a dead codex lane's worktree as probably-valuable; always inspect before relaunching from scratch.
 
 Routing assessment: keep Sol high as W2 author; the recovery pattern (new lane, same worktree, isolation none, audit-first prompt) is cheap and preserves sunk work. Confidence: high.
+
+## 2026-07-11 - gpt-5.6-luna (medium) via codex - Stream A v1.2 version splice (arc alias codex-83)
+
+Command and run: `delegate --json --cwd <repo> --isolation none codex work --model luna --reasoning-effort medium --prompt-file thoughts/memora-build/w2-spec-v12-prompt.md`; main-registry alias codex-82 (arc codex-83 — the W2 continuation holds arc codex-82).
+
+Task and expectation: mechanical splice — full v1.1 copy + ratified §A deltas into a new stream-a-core-substrate-v1.2.md, one file only, placement map provided.
+
+Outcome and verification: succeeded, one file created (2,257 lines), no other files touched. Coordinator diff-review (v1.1↔v1.2: 109 additions / 5 version-string replacements) found 2 splice defects — §A1 type-table rows duplicated into the §14.4 merge-rules table, and a dangling "(see deviation flag above)" reference to a package-only section — plus 1 improvement opportunity (the §A5 block landed as one giant bullet; split per-signal for manifest binding). All fixed by coordinator before commit (`v1.2` in `git log`).
+
+Performance observations: fast (~7 min), obedient to the one-file constraint, section placement per the map otherwise correct including the tricky §10.2.1/10.2.2 integration. The two defects are exactly the "context-free paste" class a mechanical lane produces — cheap to catch on a structural diff read.
+
+Routing assessment: Luna medium is the right lane for version-splice work IF the coordinator reviews the version diff (mandatory anyway for spec files). Keep the pattern. Confidence: high.
