@@ -42,7 +42,7 @@ When Trey says "the spec" or "the plan" without a version, he means the latest. 
 
 | Stream | Live spec                                    | Live plan                                                                   |
 | ------ | -------------------------------------------- | --------------------------------------------------------------------------- |
-| A      | `docs/specs/stream-a-core-substrate-v1.1.md` | `docs/plans/2026-04-26-stream-a-core-substrate-implementation-plan-v0.3.md` |
+| A      | `docs/specs/stream-a-core-substrate-v1.2.md` | `docs/plans/2026-04-26-stream-a-core-substrate-implementation-plan-v0.3.md` |
 | B      | (in system spec)                             | `docs/plans/2026-04-28-stream-b-daemon-mcp.md`                              |
 | C      | (in system spec)                             | `docs/plans/2026-04-29-stream-c-governance.md`                              |
 | D      | `docs/specs/stream-d-privacy-v0.1.md`        | (in Stream D plan)                                                          |
