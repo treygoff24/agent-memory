@@ -41,7 +41,22 @@ async fn forward_memory_note_then_search_then_get_round_trips_through_daemon() {
     assert!(!written.id.is_empty(), "memory id is assigned");
     assert!(written.summary.contains("captured pattern"), "summary echoes the note prefix");
 
-    // Step 2: search for the note we just wrote.
+    // Step 2a: a fresh note is a governance candidate and is fenced from
+    // search until approved (the pre-W0 FTS-degraded lane leaked candidates
+    // because it never filtered status). Approve through the daemon socket —
+    // the MCP surface is frozen at 10 tools and deliberately has no approve.
+    let approve = memoryd::client::request(
+        &socket,
+        "req-approve".to_string(),
+        RequestPayload::ReviewApprove { id: written.id.clone() },
+    )
+    .await
+    .expect("review approve reaches daemon");
+    let ResponseResult::Success(ResponsePayload::ReviewApprove(_)) = approve.result else {
+        panic!("expected ReviewApprove success, got {:?}", approve.result);
+    };
+
+    // Step 2b: search for the note we just wrote.
     let search = forward_to_daemon(
         &socket,
         "req-search",
@@ -56,7 +71,7 @@ async fn forward_memory_note_then_search_then_get_round_trips_through_daemon() {
     let ResponseResult::Success(ResponsePayload::Search(found)) = search.result else {
         panic!("expected Search success, got {:?}", search.result);
     };
-    assert!(found.total >= 1, "the note we just wrote must be searchable");
+    assert!(found.total >= 1, "the approved note must be searchable");
     let hit = found.hits.iter().find(|hit| hit.id == written.id).expect("hit matches the note we wrote");
     assert!(hit.snippet.len() <= 240, "snippets stay bounded by handler policy");
 

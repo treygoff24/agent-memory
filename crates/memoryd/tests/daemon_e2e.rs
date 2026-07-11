@@ -37,7 +37,32 @@ async fn cli_client_write_note_then_search_then_get_through_live_daemon() {
     assert_eq!(response.id, "cli-write-note");
     let note_id = write.id;
 
-    // Step 2: search through the same path `memoryd search` uses.
+    // Step 2a: a fresh note is a governance candidate — search must NOT
+    // surface it before review approval. (The pre-W0 FTS-degraded path leaked
+    // candidate-status memories because it never filtered status; the unified
+    // two-stage lane fences candidates exactly like the fused lane.)
+    let response = client::request(
+        &socket,
+        "cli-search-candidate",
+        RequestPayload::Search { query: "live daemon end-to-end".to_string(), limit: Some(5), include_body: false },
+    )
+    .await
+    .expect("search reaches daemon");
+    let ResponseResult::Success(ResponsePayload::Search(found)) = response.result else {
+        panic!("expected Search success, got {:?}", response.result);
+    };
+    assert!(
+        !found.hits.iter().any(|hit| hit.id == note_id),
+        "candidate-status note must be fenced from search before approval"
+    );
+
+    // Step 2b: approve the note, then search must find it.
+    let response = client::request(&socket, "cli-approve", RequestPayload::ReviewApprove { id: note_id.clone() })
+        .await
+        .expect("review approve reaches daemon");
+    let ResponseResult::Success(ResponsePayload::ReviewApprove(_)) = response.result else {
+        panic!("expected ReviewApprove success, got {:?}", response.result);
+    };
     let response = client::request(
         &socket,
         "cli-search",
@@ -48,7 +73,7 @@ async fn cli_client_write_note_then_search_then_get_through_live_daemon() {
     let ResponseResult::Success(ResponsePayload::Search(found)) = response.result else {
         panic!("expected Search success, got {:?}", response.result);
     };
-    assert!(found.hits.iter().any(|hit| hit.id == note_id), "search must find the just-written note");
+    assert!(found.hits.iter().any(|hit| hit.id == note_id), "search must find the approved note");
 
     // Step 3: read back through the same path `memoryd get` uses.
     let response =

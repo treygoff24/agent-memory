@@ -77,9 +77,17 @@ async fn memory_search_uses_hybrid_vector_path_without_wire_shape_change() {
         .await;
     drain_all(&fixture.substrate, &provider).await;
 
+    // Since the W0 strict-AND fix, degraded FTS-only search shares the fused
+    // lane's two-stage strict->relaxed-OR fallback, so the partial-overlap
+    // query now legitimately finds the fixture via "production". Pin that
+    // behavior here; the vector lane's added value over FTS is proven by the
+    // delta-lane test above (delta recall stays strict-AND).
     let empty_state = HandlerState::new();
     let fts_response = search(&fixture.substrate, &empty_state, "deploy production").await;
-    assert!(fts_response.hits.is_empty(), "FTS-only search should miss the paraphrase fixture");
+    assert!(
+        fts_response.hits.iter().any(|hit| hit.id == "mem_20260610_0000000000000011_000011"),
+        "relaxed FTS fallback should find the partial-overlap fixture"
+    );
 
     let state = HandlerState::new();
     state.embedding_provider_slot().set(Arc::clone(&provider));

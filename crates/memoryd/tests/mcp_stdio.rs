@@ -208,6 +208,24 @@ async fn mcp_stdio_tools_call_routes_through_daemon_forwarder() {
     let note_id = note_content["id"].as_str().expect("note id").to_owned();
     assert!(note_content["summary"].as_str().expect("summary").contains("MCP stdio fixture"));
 
+    // A fresh note is a governance candidate, fenced from search until
+    // approved (the pre-W0 FTS-degraded lane leaked candidate status). The MCP
+    // surface has no approve tool, so approve through the daemon socket.
+    let approve = memoryd::client::request(
+        &socket,
+        "call-approve",
+        memoryd::protocol::RequestPayload::ReviewApprove { id: note_id.clone() },
+    )
+    .await
+    .expect("review approve reaches daemon");
+    assert!(
+        matches!(
+            approve.result,
+            memoryd::protocol::ResponseResult::Success(memoryd::protocol::ResponsePayload::ReviewApprove(_))
+        ),
+        "expected ReviewApprove success"
+    );
+
     let search = server.request(json!({
         "jsonrpc": "2.0",
         "id": "call-search",
@@ -224,7 +242,7 @@ async fn mcp_stdio_tools_call_routes_through_daemon_forwarder() {
 
     assert_eq!(search["result"]["isError"], Value::Bool(false));
     let hits = search["result"]["structuredContent"]["hits"].as_array().expect("search hits array");
-    assert!(hits.iter().any(|hit| hit["id"] == note_id), "search should find the note written via stdio MCP");
+    assert!(hits.iter().any(|hit| hit["id"] == note_id), "search should find the approved note written via stdio MCP");
 
     let invalid_search = server.request(json!({
         "jsonrpc": "2.0",
