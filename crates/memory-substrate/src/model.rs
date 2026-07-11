@@ -725,6 +725,12 @@ pub struct Frontmatter {
 }
 
 impl Frontmatter {
+    /// W3's single canonical merge non-servability predicate.
+    pub fn is_merge_non_servable(&self) -> bool {
+        self.status == MemoryStatus::Superseded
+            || (self.status == MemoryStatus::Candidate && self.write_policy.policy_applied == "merge-staged-v1")
+    }
+
     /// Whether a dream-authored candidate must re-resolve cited grounding refs
     /// immediately before review approval.
     pub fn grounding_rehydration_required(&self) -> bool {
@@ -1409,6 +1415,13 @@ pub struct AbstractionVectorHit {
     pub memory_id: MemoryId,
     /// sqlite-vec L2 distance.
     pub distance: f32,
+}
+
+/// Current stored abstraction vector used by offline governance jobs.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AbstractionVectorRow {
+    pub memory_id: MemoryId,
+    pub vector: Vec<f32>,
 }
 
 /// Cue vector query hit.

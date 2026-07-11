@@ -338,6 +338,11 @@ impl Substrate {
         lock_index(&self.index).query_abstraction_vectors(triple, vector, limit)
     }
 
+    /// Enumerate current active/pinned abstraction vectors for dark governance jobs.
+    pub fn all_abstraction_vectors(&self, triple: &EmbeddingTriple) -> Result<Vec<AbstractionVectorRow>, VectorError> {
+        lock_index(&self.index).all_abstraction_vectors(triple)
+    }
+
     /// Query current cue vectors without wiring them into recall.
     pub async fn query_cue_vectors(
         &self,

@@ -1,5 +1,5 @@
 use clap::Parser as _;
-use memoryd::cli::{Cli, Command as CliCommand, PeerCommand, ReviewCommand, WebCommand};
+use memoryd::cli::{Cli, Command as CliCommand, PeerCommand, ReviewCommand, ReviewMergesCommand, WebCommand};
 use memoryd::socket::{probe_live_socket, resolve_socket_path, SocketProbe};
 
 #[test]
@@ -108,6 +108,11 @@ fn assert_socket_defaults_to_none(cli: Cli) {
             ReviewCommand::Queue(args) => assert!(args.socket.is_none()),
             ReviewCommand::Approve(args) => assert!(args.socket.is_none()),
             ReviewCommand::Reject(args) => assert!(args.socket.is_none()),
+            ReviewCommand::Merges(args) => match args.command {
+                ReviewMergesCommand::List(args) => assert!(args.socket.is_none()),
+                ReviewMergesCommand::Approve(args) => assert!(args.socket.is_none()),
+                ReviewMergesCommand::Reject(args) => assert!(args.socket.is_none()),
+            },
         },
         CliCommand::Peer(args) => match args.command {
             PeerCommand::Status(args) => assert!(args.socket.is_none()),

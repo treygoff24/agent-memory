@@ -1783,6 +1783,7 @@ mod tests {
                     findings: Vec::new(),
                     guidance: String::new(),
                     embedding_counts: std::collections::BTreeMap::new(),
+                    merge_proposal_counts: std::collections::BTreeMap::new(),
                 }),
             ))
             .status,

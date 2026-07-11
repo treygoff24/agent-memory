@@ -9,6 +9,7 @@ pub mod git;
 pub mod harness;
 pub mod lease;
 pub mod masking;
+pub mod merge;
 pub mod orchestration;
 pub mod pass1;
 pub mod pass2;

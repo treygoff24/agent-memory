@@ -34,6 +34,10 @@ fn auxiliary_vectors_are_stale_fenced_queryable_and_invalidated_on_hash_change()
         })
         .expect("update");
     assert_eq!(index.query_abstraction_vectors(&triple, &[1.0, 0.0, 0.0], 3).expect("query").len(), 1);
+    assert_eq!(
+        index.all_abstraction_vectors(&triple).expect("enumerate vectors"),
+        vec![AbstractionVectorRow { memory_id: memory.frontmatter.id.clone(), vector: vec![1.0, 0.0, 0.0] }]
+    );
     index
         .update_aux_embedding(&AuxEmbeddingUpdate {
             row_kind: AuxRowKind::Cue,

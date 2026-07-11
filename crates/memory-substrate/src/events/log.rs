@@ -155,11 +155,29 @@ pub enum EventKind {
         /// Plain YAML file name under the repository policies directory.
         file_name: String,
     },
+    /// A device-local merge proposal activated its canonical replacement.
+    MergeApplied {
+        proposal_id: String,
+        replacement_id: MemoryId,
+        source_ids: Vec<MemoryId>,
+        per_source: Vec<MergeAppliedSource>,
+        created_by_dream_run: String,
+    },
+    /// A partially applied merge restored every proposal-owned source.
+    MergeRolledBack { proposal_id: String, replacement_id: MemoryId, restored_source_ids: Vec<MemoryId> },
     // Deferred §12.2 event kinds: WriteStarted, WriteIndexed, WriteEventAppendFailed,
     // Deleted, Superseded, IndexUpdated, IndexFailed, VectorReconciled,
     // EmbeddingJobEnqueued, EventLogRecovered, MergeQuarantined,
     // PendingIndexReplayed, PendingEventReplayed, GitCommitted, GitFetched,
     // WatcherSuppressed, ReconciliationRepaired.
+}
+
+/// Captured source identity carried by [`EventKind::MergeApplied`].
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MergeAppliedSource {
+    pub id: MemoryId,
+    pub base_hash: String,
+    pub original_status: String,
 }
 
 impl EventKind {

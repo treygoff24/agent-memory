@@ -87,7 +87,9 @@ use peer::{
 };
 use quarantine::quarantine_resolve_response;
 use reality_check::reality_check_response;
-use review::{review_decision_response, review_queue_response, ReviewDecision};
+use review::{
+    review_decision_response, review_merges_response, review_queue_response, MergeReviewAction, ReviewDecision,
+};
 use source::{capture_source_response, trust_artifact_response};
 use status::status_response;
 use web_dashboard::{web_disable_response, web_enable_response, web_status_response, WebDashboardRuntime};
@@ -306,6 +308,13 @@ async fn dispatch(
         RequestPayload::ReviewApprove { id } => review_decision_response(substrate, &id, ReviewDecision::Approve).await,
         RequestPayload::ReviewReject { id, reason } => {
             review_decision_response(substrate, &id, ReviewDecision::Reject { reason }).await
+        }
+        RequestPayload::ReviewMerges => review_merges_response(substrate, state, MergeReviewAction::List).await,
+        RequestPayload::ReviewMergeApprove { proposal_id, approve_pinned } => {
+            review_merges_response(substrate, state, MergeReviewAction::Approve { proposal_id, approve_pinned }).await
+        }
+        RequestPayload::ReviewMergeReject { proposal_id } => {
+            review_merges_response(substrate, state, MergeReviewAction::Reject { proposal_id }).await
         }
         RequestPayload::Startup(request) => startup_response(substrate, state, request).await,
         RequestPayload::Delta(request) => delta_response(substrate, state, request).await,

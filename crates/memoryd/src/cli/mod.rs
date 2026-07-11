@@ -696,6 +696,40 @@ pub enum ReviewCommand {
     Approve(ReviewApproveArgs),
     /// Reject a memory from the review queue.
     Reject(ReviewRejectArgs),
+    /// Review device-local merge proposals.
+    Merges(ReviewMergesArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ReviewMergesArgs {
+    #[command(subcommand)]
+    pub command: ReviewMergesCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ReviewMergesCommand {
+    /// List merge proposals.
+    List(SocketArgs),
+    /// Approve and apply a merge proposal.
+    Approve(ReviewMergeApproveArgs),
+    /// Reject a merge proposal.
+    Reject(ReviewMergeRejectArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ReviewMergeApproveArgs {
+    #[arg(long)]
+    pub socket: Option<PathBuf>,
+    pub proposal_id: String,
+    #[arg(long = "approve-pinned")]
+    pub approve_pinned: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct ReviewMergeRejectArgs {
+    #[arg(long)]
+    pub socket: Option<PathBuf>,
+    pub proposal_id: String,
 }
 
 #[derive(Debug, Args)]

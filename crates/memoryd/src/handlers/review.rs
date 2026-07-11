@@ -5,6 +5,66 @@ use super::*;
 use crate::dream::calibration;
 use crate::util::serialized_enum_value;
 
+pub(crate) async fn review_merges_response(
+    substrate: &Substrate,
+    state: &HandlerState,
+    action: MergeReviewAction,
+) -> Result<ResponsePayload, HandlerError> {
+    use crate::dream::merge::{approve_and_apply, MergeApplyRequest, MergeProposalStore};
+    let store = MergeProposalStore::new(&substrate.roots().runtime);
+    let proposal = match action {
+        MergeReviewAction::List => None,
+        MergeReviewAction::Approve { proposal_id, approve_pinned } => {
+            let approved = approve_pinned
+                .into_iter()
+                .map(|id| HandlerError::parse_memory_id(&id))
+                .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
+            let proposal =
+                store.load(&proposal_id).map_err(|error| HandlerError::invalid_request(error.to_string()))?;
+            let claim_locked = proposal
+                .source_ids
+                .iter()
+                .filter(|id| state.claim_locks().get(id.as_str()).is_some())
+                .cloned()
+                .collect();
+            Some(
+                approve_and_apply(
+                    substrate,
+                    MergeApplyRequest {
+                        store: &store,
+                        proposal_id: &proposal_id,
+                        approved_pinned: &approved,
+                        claim_locked: &claim_locked,
+                        crash: None,
+                    },
+                )
+                .await
+                .map_err(|error| HandlerError::invalid_request(error.to_string()))?,
+            )
+        }
+        MergeReviewAction::Reject { proposal_id } => {
+            Some(store.reject(&proposal_id).map_err(|error| HandlerError::invalid_request(error.to_string()))?)
+        }
+    };
+    let proposals = match proposal {
+        Some(proposal) => vec![serde_json::to_value(proposal).map_err(HandlerError::substrate)?],
+        None => store
+            .list()
+            .map_err(|error| HandlerError::invalid_request(error.to_string()))?
+            .into_iter()
+            .map(serde_json::to_value)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(HandlerError::substrate)?,
+    };
+    Ok(ResponsePayload::ReviewMerges(crate::protocol::MergeReviewResponse { proposals }))
+}
+
+pub(crate) enum MergeReviewAction {
+    List,
+    Approve { proposal_id: String, approve_pinned: Vec<String> },
+    Reject { proposal_id: String },
+}
+
 pub(crate) enum ReviewDecision {
     Approve,
     Reject { reason: String },

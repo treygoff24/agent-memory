@@ -7,6 +7,7 @@ pub mod engine;
 pub mod error;
 pub mod grounding;
 pub(crate) mod hash;
+pub mod merge;
 pub mod policy;
 pub mod review;
 pub mod supersession;
@@ -22,6 +23,10 @@ pub use error::{GovernanceError, GovernanceResult};
 pub use grounding::{
     FileSourceResolver, GroundingContext, GroundingVerifier, NeverResolveWebCapture, SessionSpawnResolver, Source,
     SourceKind, SourceRefResolver, SourceResolution, WebCaptureResolver,
+};
+pub use merge::{
+    validate_merge_candidates, MergeCandidate, MergeCandidateError, MergeCandidateExclusions, MergeProposalStatus,
+    DEFAULT_MERGE_SIMILARITY_THRESHOLD,
 };
 pub use policy::{
     CandidateContext, ContradictionPolicy, ContradictionThresholds, Policy, PolicyError, PolicyPreview, PolicyResult,

@@ -47,6 +47,8 @@ pub(super) async fn doctor_response(substrate: &Substrate, state: &HandlerState)
     // before the worker first drains).
     findings.extend(embedding_health_findings(substrate, state).await);
     findings.extend(index_schema_findings(substrate));
+    let (merge_proposal_counts, merge_findings) = merge_health(substrate);
+    findings.extend(merge_findings);
     // Foundation-loop checks (F4 D1-D4): dream freshness (advisory), sync/quarantine
     // (fatal), stale uncommitted substrate (fatal), recall budget pressure (advisory).
     findings.extend(foundation_loop_findings(substrate, state).await);
@@ -72,7 +74,45 @@ pub(super) async fn doctor_response(substrate: &Substrate, state: &HandlerState)
         guidance: "Doctor reflects Memorum substrate validation, repair state, dreaming harness availability, and the runtime loop (dream freshness, sync, uncommitted substrate, recall budget)."
             .to_string(),
         embedding_counts: embedding_row_kind_counts(substrate),
+        merge_proposal_counts,
     }
+}
+
+fn merge_health(substrate: &Substrate) -> (std::collections::BTreeMap<String, u64>, Vec<DoctorFinding>) {
+    let store = crate::dream::merge::MergeProposalStore::new(&substrate.roots().runtime);
+    let proposals = match store.list() {
+        Ok(proposals) => proposals,
+        Err(error) => {
+            return (
+                Default::default(),
+                vec![fatal_finding(
+                    "merge_proposal_store",
+                    error.to_string(),
+                    Some("Inspect the device-local merge proposal store.".into()),
+                )],
+            )
+        }
+    };
+    let mut counts = std::collections::BTreeMap::new();
+    for proposal in &proposals {
+        *counts.entry(format!("{:?}", proposal.status).to_lowercase()).or_insert(0) += 1;
+    }
+    let mut findings = Vec::new();
+    if let Some(count) = counts.get("quarantined") {
+        findings.push(fatal_finding(
+            "merge_proposal_quarantined",
+            format!("{count} merge proposal(s) require operator repair"),
+            Some("Inspect with `memoryd review merges list`, then repair or reject the proposal.".into()),
+        ));
+    }
+    if let Some(count) = counts.get("applying") {
+        findings.push(fatal_finding(
+            "merge_proposal_stuck_applying",
+            format!("{count} merge proposal(s) remained Applying after reconciliation"),
+            Some("Restart memoryd once; if still Applying, inspect the proposal journal.".into()),
+        ));
+    }
+    (counts, findings)
 }
 
 fn index_schema_findings(substrate: &Substrate) -> Vec<DoctorFinding> {

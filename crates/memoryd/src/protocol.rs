@@ -118,6 +118,15 @@ pub enum RequestPayload {
         id: String,
         reason: String,
     },
+    ReviewMerges,
+    ReviewMergeApprove {
+        proposal_id: String,
+        #[serde(default)]
+        approve_pinned: Vec<String>,
+    },
+    ReviewMergeReject {
+        proposal_id: String,
+    },
     Startup(StartupRequest),
     Delta(DeltaRequest),
     PeerHeartbeat(PeerHeartbeat),
@@ -308,6 +317,7 @@ pub enum ResponsePayload {
     ReviewQueue(ReviewQueueResponse),
     ReviewApprove(ReviewDecisionResponse),
     ReviewReject(ReviewDecisionResponse),
+    ReviewMerges(MergeReviewResponse),
     Startup(Box<StartupResponse>),
     Delta(DeltaResponse),
     PeerHeartbeat(PeerHeartbeatAck),
@@ -970,6 +980,8 @@ pub struct DoctorResponse {
     /// Per-row-kind embedding lifecycle counts.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub embedding_counts: BTreeMap<String, u64>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub merge_proposal_counts: BTreeMap<String, u64>,
 }
 
 /// Severity of a doctor finding (F4 / I-F4.2). `Fatal` findings flip `healthy`
@@ -1145,6 +1157,11 @@ pub struct ReviewDecisionResponse {
     pub id: String,
     pub status: String,
     pub summary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MergeReviewResponse {
+    pub proposals: Vec<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

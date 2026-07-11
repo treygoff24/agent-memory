@@ -345,6 +345,16 @@ fn event_kind_view(kind: &EventKind) -> EventKindView {
         EventKind::PolicyChanged { file_name } => {
             EventKindView { memory_id: None, summary: format!("policy changed: {file_name}"), label: "policy_changed" }
         }
+        EventKind::MergeApplied { proposal_id, replacement_id, .. } => EventKindView {
+            memory_id: Some(replacement_id.clone()),
+            summary: format!("merge applied: {proposal_id}"),
+            label: "merge_applied",
+        },
+        EventKind::MergeRolledBack { proposal_id, replacement_id, .. } => EventKindView {
+            memory_id: Some(replacement_id.clone()),
+            summary: format!("merge rolled back: {proposal_id}"),
+            label: "merge_rolled_back",
+        },
     }
 }
 

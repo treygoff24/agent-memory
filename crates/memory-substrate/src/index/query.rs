@@ -14,10 +14,10 @@ use rusqlite::{params, params_from_iter, types::Value, Connection};
 use crate::error::{SubstrateResult, VectorError};
 use crate::events::{Event, EventKind};
 use crate::model::{
-    AbstractionVectorHit, AuxEmbeddingUpdate, AuxPendingEmbeddingJob, AuxRowKind, ChunkResult, CueVectorHit,
-    EmbeddingLaneEligibility, EmbeddingTriple, EmbeddingUpdate, Entity, EventsLogMirrorHealth, HybridMemoryCandidate,
-    HybridScoreBreakdown, HybridVectorQuery, Memory, MemoryId, MemoryQuery, MemoryStatus, QueryResult,
-    RecallIndexQuery, RecallIndexRow, RepoPath, ReviewQueuePage, ReviewQueueRow, Scope, Sha256,
+    AbstractionVectorHit, AbstractionVectorRow, AuxEmbeddingUpdate, AuxPendingEmbeddingJob, AuxRowKind, ChunkResult,
+    CueVectorHit, EmbeddingLaneEligibility, EmbeddingTriple, EmbeddingUpdate, Entity, EventsLogMirrorHealth,
+    HybridMemoryCandidate, HybridScoreBreakdown, HybridVectorQuery, Memory, MemoryId, MemoryQuery, MemoryStatus,
+    QueryResult, RecallIndexQuery, RecallIndexRow, RepoPath, ReviewQueuePage, ReviewQueueRow, Scope, Sha256,
 };
 
 use super::embedding::{
@@ -741,6 +741,34 @@ impl Index {
         Ok(hits)
     }
 
+    pub fn all_abstraction_vectors(&self, triple: &EmbeddingTriple) -> Result<Vec<AbstractionVectorRow>, VectorError> {
+        let table = crate::index::sqlite_vec::aux_vector_table_name(AuxRowKind::Abstraction, triple);
+        if is_dropped_triple(&self.connection, triple)? || !table_exists(&self.connection, &table)? {
+            return Err(VectorError::UnknownEmbeddingTriple(triple.clone()));
+        }
+        let sql = format!(
+            "SELECT abstractions.memory_id,{table}.embedding FROM {table}
+             JOIN memory_abstractions abstractions ON abstractions.rowid={table}.rowid
+             JOIN aux_embedding_meta meta ON meta.row_kind='abstraction' AND meta.target_id=abstractions.memory_id
+               AND meta.provider=?1 AND meta.model_ref=?2 AND meta.dimension=?3
+               AND meta.content_hash=abstractions.abstraction_hash
+             JOIN memories ON memories.id=abstractions.memory_id AND memories.status IN ('active','pinned')
+             ORDER BY abstractions.memory_id"
+        );
+        let mut stmt = self.connection.prepare(&sql)?;
+        let rows = stmt
+            .query_map(params![triple.provider, triple.model_ref, i64::from(triple.dimension)], |row| {
+                let bytes = row.get::<_, Vec<u8>>(1)?;
+                let vector = bytes
+                    .chunks_exact(4)
+                    .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+                    .collect();
+                Ok(AbstractionVectorRow { memory_id: MemoryId::new(row.get::<_, String>(0)?), vector })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     /// KNN query over cue vectors. W2 deliberately does not wire this into recall.
     pub fn query_cue_vectors(
         &self,
@@ -804,6 +832,7 @@ impl Index {
              WHERE memory_chunks_fts MATCH ?1
                AND memories.metadata_only = 0
                AND memories.passive_recall = 1
+               AND memories.status IN ('active','pinned')
              ORDER BY score
              LIMIT 20",
         )?;
@@ -846,6 +875,7 @@ impl Index {
                AND k = ?2
                AND memories.metadata_only = 0
                AND memories.passive_recall = 1
+               AND memories.status IN ('active','pinned')
              ORDER BY {table}.distance"
         );
         let blob = crate::index::sqlite_vec::serialize_f32(vector);
@@ -1668,6 +1698,8 @@ fn event_kind_name(kind: &EventKind) -> &'static str {
         EventKind::ClaimLockContention { .. } => "claim_lock_contention",
         EventKind::DeviceKeysRotated { .. } => "device_keys_rotated",
         EventKind::PolicyChanged { .. } => "policy_changed",
+        EventKind::MergeApplied { .. } => "merge_applied",
+        EventKind::MergeRolledBack { .. } => "merge_rolled_back",
     }
 }
 
@@ -1692,6 +1724,9 @@ fn event_memory_id(kind: &EventKind) -> Option<&str> {
         | EventKind::SubstrateFragmentWritten { .. }
         | EventKind::DeviceKeysRotated { .. }
         | EventKind::PolicyChanged { .. } => None,
+        EventKind::MergeApplied { replacement_id, .. } | EventKind::MergeRolledBack { replacement_id, .. } => {
+            Some(replacement_id.as_str())
+        }
     }
 }
 

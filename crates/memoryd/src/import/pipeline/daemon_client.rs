@@ -262,6 +262,7 @@ fn response_payload_kind(payload: &ResponsePayload) -> &'static str {
         ResponsePayload::ReviewQueue(_) => "ReviewQueue",
         ResponsePayload::ReviewApprove(_) => "ReviewApprove",
         ResponsePayload::ReviewReject(_) => "ReviewReject",
+        ResponsePayload::ReviewMerges(_) => "ReviewMerges",
         ResponsePayload::Startup(_) => "Startup",
         ResponsePayload::Delta(_) => "Delta",
         ResponsePayload::PeerHeartbeat(_) => "PeerHeartbeat",

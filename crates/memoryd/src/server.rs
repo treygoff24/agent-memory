@@ -68,6 +68,9 @@ pub async fn serve_substrate_with(
     shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
     let substrate = Arc::new(substrate);
+    for (proposal_id, error) in crate::dream::merge::reconcile_applying(&substrate).await {
+        tracing::error!(%proposal_id, %error, "merge proposal startup reconciliation failed");
+    }
     let state = Arc::new(state_for_substrate(substrate.as_ref())?);
     spawn_notification_dispatcher(&state);
     emit_startup_reconcile_notifications(&substrate, &state);
