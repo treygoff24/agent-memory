@@ -104,8 +104,11 @@ pub(crate) fn enrich_dataset_dir_with_adapter(
     let (runtime, adapter) = if structural_only {
         (None, None)
     } else if let Some(adapter) = adapter {
-        let runtime =
-            tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(ENRICH_CONCURRENCY)
+            .enable_all()
+            .build()
+            .map_err(|error| error.to_string())?;
         if runtime.block_on(adapter.is_authenticated()).unwrap_or(false) {
             (Some(runtime), Some(adapter))
         } else {
@@ -125,54 +128,99 @@ pub(crate) fn enrich_dataset_dir_with_adapter(
         }
         let items = corpus_bodies(&dataset)?;
         let mut sidecar = load_sidecar(&dataset)?;
-        for body in items.into_iter().take(limit.unwrap_or(usize::MAX)) {
-            let key = item_key(&body);
-            if sidecar.contains_key(&key) {
-                *report.skipped.entry("already_enriched".to_owned()).or_default() += 1;
-                continue;
-            }
+        let pending: Vec<String> = items
+            .into_iter()
+            .take(limit.unwrap_or(usize::MAX))
+            .filter(|body| {
+                if sidecar.contains_key(&item_key(body)) {
+                    *report.skipped.entry("already_enriched".to_owned()).or_default() += 1;
+                    false
+                } else {
+                    true
+                }
+            })
+            .collect();
+        let total = pending.len();
+        let mut done = 0usize;
+        // Batched fan-out: harness calls are ~10-15s each and independent, so a
+        // serial sweep over thousands of items is days of wall time and the
+        // once-per-dataset save loses everything on a crash. Each batch runs
+        // ENRICH_CONCURRENCY calls in parallel and persists atomically before
+        // the next batch — bounded loss (one batch) and ~Nx throughput.
+        for batch in pending.chunks(ENRICH_CONCURRENCY) {
+            let results: Vec<(String, Result<Enrichment, String>)> =
+                if let (Some(runtime), Some(adapter)) = (&runtime, &adapter) {
+                    runtime.block_on(async {
+                        let mut set = tokio::task::JoinSet::new();
+                        for body in batch {
+                            let adapter = Arc::clone(adapter);
+                            let body = body.clone();
+                            set.spawn(async move {
+                                let outcome = match generate(&adapter, &body).await {
+                                    Ok(enrichment) => Ok(enrichment),
+                                    Err(error) if error == "timeout" => structural(&body).map(|mut enrichment| {
+                                        enrichment.source = "timeout".to_owned();
+                                        enrichment
+                                    }),
+                                    Err(error)
+                                        if error == "harness:not_installed" || error == "harness:not_authenticated" =>
+                                    {
+                                        structural(&body)
+                                    }
+                                    Err(error) => Err(error),
+                                };
+                                (body, outcome)
+                            });
+                        }
+                        let mut results = Vec::new();
+                        while let Some(joined) = set.join_next().await {
+                            match joined {
+                                Ok(pair) => results.push(pair),
+                                Err(join_error) => {
+                                    results.push((String::new(), Err(format!("enrich task panicked: {join_error}"))))
+                                }
+                            }
+                        }
+                        results
+                    })
+                } else {
+                    batch.iter().map(|body| (body.clone(), structural(body))).collect()
+                };
 
-            let result = if let (Some(runtime), Some(adapter)) = (&runtime, &adapter) {
-                match runtime.block_on(generate(adapter, &body)) {
-                    Ok(enrichment) => Ok(enrichment),
-                    Err(error) if error == "timeout" => {
-                        let mut enrichment = structural(&body)?;
-                        enrichment.source = "timeout".to_owned();
-                        Ok(enrichment)
-                    }
-                    Err(error) if error == "harness:not_installed" || error == "harness:not_authenticated" => {
-                        structural(&body)
-                    }
+            for (body, result) in results {
+                let enrichment = match result {
+                    Ok(enrichment) => enrichment,
                     Err(error) => {
                         *report.skipped.entry(error).or_default() += 1;
                         continue;
                     }
+                };
+                let source = enrichment.source.clone();
+                *report.dispositions.entry(source.clone()).or_default() += 1;
+                if source == "harness" || source == "dropped_sensitive" {
+                    report.generated += 1;
+                } else {
+                    report.structural += 1;
                 }
-            } else {
-                structural(&body)
-            };
-
-            let enrichment = match result {
-                Ok(enrichment) => enrichment,
-                Err(error) => {
-                    *report.skipped.entry(error).or_default() += 1;
-                    continue;
-                }
-            };
-
-            let source = enrichment.source.clone();
-            *report.dispositions.entry(source.clone()).or_default() += 1;
-            if source == "harness" || source == "dropped_sensitive" {
-                report.generated += 1;
-            } else {
-                report.structural += 1;
+                sidecar.insert(item_key(&body), enrichment);
             }
-            sidecar.insert(key, enrichment);
+            done += batch.len();
+            save_sidecar(&sidecar_path(&dataset), &sidecar)?;
+            eprintln!(
+                "enrich {}: {done}/{total} (generated {}, structural {}, skipped {})",
+                dataset.file_name().unwrap_or_default().to_string_lossy(),
+                report.generated,
+                report.structural,
+                report.skipped.values().sum::<usize>()
+            );
         }
         save_sidecar(&sidecar_path(&dataset), &sidecar)?;
     }
     Ok(report)
 }
+
+/// Parallel harness calls per batch; one batch persists before the next starts.
+const ENRICH_CONCURRENCY: usize = 8;
 
 pub fn item_key(body: &str) -> String {
     hex::encode(Sha256::digest(body.as_bytes()))
