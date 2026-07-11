@@ -235,3 +235,15 @@ Outcome and verification: FINDINGS — 2 MEDIUM + 1 LOW, every one real and prec
 Performance observations: as a verifier of *someone else's fix* it's just as sharp as an attacker of author code — the pgid-recycling catch is genuinely expert Unix semantics. Handing it an explicit hunt list of failure classes returns maximum value per minute.
 
 Routing assessment: scoped verify prompts with named residual-risk classes are the highest-leverage way to spend this lane. Confidence: high.
+
+## 2026-07-10 - gpt-5.6 luna (low) via codex call - pinned judge, baseline₀ fleet (240 calls)
+
+Command and run: `scripts/eval/pinned-judge.sh` → `delegate --json codex call --read-only --model luna --reasoning-effort low --output-schema <score/rationale> --prompt-file <rubric+record>`; invoked serially by the benchmark harness.
+
+Task and expectation: score retrieved-context support for the gold answer on a frozen 1.0/0.5/0.0 rubric, 240 records.
+
+Outcome and verification: 236/240 scored, 4 timeouts at 120s (recorded as typed judge_error, excluded from judge_mean only). Score distribution exactly on the rubric points — no off-rubric drift across 236 calls. ~8.5s/call calibration held at fleet scale (42m total wall incl. harness). Spot-checked verdicts during calibration were correct.
+
+Performance observations: luna/low is reliable as a high-volume structured judge under --output-schema; the schema constraint appears load-bearing for the zero-drift behavior.
+
+Routing assessment: standing judge for the arc (frozen). For W4's A/B the same 4-timeout tail is expected; treat >2% timeout rate as an anomaly worth diagnosing. Confidence: high.
