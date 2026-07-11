@@ -319,3 +319,13 @@ Outcome and verification: **partial with empty report** — exited 0 with result
 Performance observations: the substantive FIXES it did land are high quality (the F2 transaction restructure is exactly the contract). Failure modes: window cutoff before trailing items (known class), no gate run, no report. 16 min wall.
 
 Routing assessment: keep Devin for findings-list fixes but (a) cap list size ~5-6 items per launch, (b) always require a file-written report, (c) never trust its gate claim — it makes none. Confidence: high.
+
+## 2026-07-11 - devin swe-1.7 via devin - W2 fix round 1b (devin-2, W2-worktree registry)
+
+Command and run: `delegate --json --cwd <w2-worktree> --isolation none devin work --prompt-file thoughts/memora-build/w2-fix-r1b-prompt.md`; scoped to the 4 items round 1a dropped (F6/F7/F9/F10) + the entrypoint-classify audit; report REQUIRED as a file.
+
+Outcome and verification: complete — file report delivered (`thoughts/memora-build/w2-fix-r1b-report.md` in the worktree), all 4 items landed and coordinator-verified on disk: the migration test now genuinely drives `migrate_v6` over a downgraded DB with data (would fail on a no-op); freshness + candidate-exclusion tests added; manifest re-pointed to v1.2 with all 11 signals bound. BONUS: the audit surfaced a REAL gap — the importer's `build_write_meta` never forwarded abstraction/cues into the daemon write meta, so import-path classification saw body-only; fixed with type-guarded forwarding. Coordinator gate: clippy ×2 clean, substrate 423/0, memoryd 1130/0.
+
+Performance observations: ~13 min; the 4-item scope + file-report requirement fixed both round-1a failure modes (cutoff, empty report). The audit finding shows Devin CAN do discovery work when the audit is framed as a checklist with an explicit output table.
+
+Routing assessment: confirms the round-1a lesson — cap Devin lists at ~4-6 items and demand file reports. Keep. Confidence: high.
