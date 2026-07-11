@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const SPEC_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/specs/stream-a-core-substrate-v1.1.md");
+const SPEC_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/specs/stream-a-core-substrate-v1.2.md");
 const COVERAGE_REVIEW_PATH: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/reviews/stream-a-test-coverage-review.md");
 
@@ -475,6 +475,61 @@ const SPEC_COVERAGE: &[SpecCoverageEntry] = &[
         "ad632c62e0a1fe36",
         "spec_coverage_manifest::covered_manifest_references_existing_tests",
     ),
+    SpecCoverageEntry::covered(
+        "10.6 Acceptance signals",
+        "00ce217474efea9b",
+        "dream/abstraction_compile::user_scoped_secret_cue_refuses_before_disk",
+    ),
+    SpecCoverageEntry::covered(
+        "10.6 Acceptance signals",
+        "6c8cede48034047c",
+        "dream/abstraction_compile::sensitive_generated_fields_persist_body_only_without_aux_state",
+    ),
+    SpecCoverageEntry::covered(
+        "10.6 Acceptance signals",
+        "28c1089159ffa68c",
+        "vector_lifecycle::auxiliary_vectors_are_stale_fenced_queryable_and_invalidated_on_hash_change",
+    ),
+    SpecCoverageEntry::covered(
+        "10.6 Acceptance signals",
+        "7f45d41c5015e55a",
+        "merge_rules::cue_union_converges_with_overflow_and_casing_only_duplicates",
+    ),
+    SpecCoverageEntry::covered(
+        "10.6 Acceptance signals",
+        "5ab8b0f208a7bc3d",
+        "merge_rules::abstraction_conflict_uses_updated_at_then_side_independent_hash_and_preserves_loser",
+    ),
+    SpecCoverageEntry::covered(
+        "10.6 Acceptance signals",
+        "e0a42dbe8ef46d01",
+        "index_migration_v6::migrate_v6_is_idempotent_and_preserves_representative_data_and_rollback_is_readable",
+    ),
+    SpecCoverageEntry::covered(
+        "10.6 Acceptance signals",
+        "a88a4a3f79f8e798",
+        "reindex_reconciliation::reindex_from_files_rebuilds_semantic_rows_and_jobs",
+    ),
+    SpecCoverageEntry::covered(
+        "10.6 Acceptance signals",
+        "cc5e566ae895e66b",
+        "vector_lifecycle::aux_hash_change_between_fetch_and_update_rejects_stale_and_preserves_replacement_job",
+    ),
+    SpecCoverageEntry::covered(
+        "10.6 Acceptance signals",
+        "592dd0d0bdf1c351",
+        "vector_lifecycle::auxiliary_vectors_are_stale_fenced_queryable_and_invalidated_on_hash_change",
+    ),
+    SpecCoverageEntry::covered(
+        "10.6 Acceptance signals",
+        "032c6e620bb0455c",
+        "vector_lifecycle::active_triple_switch_reenqueues_abstraction_and_cue_rows",
+    ),
+    SpecCoverageEntry::covered(
+        "10.6 Acceptance signals",
+        "eeaaaa10f842b7f7",
+        "handlers/doctor::doctor_reports_embedding_counts_for_each_row_kind",
+    ),
 ];
 
 #[derive(Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -653,10 +708,11 @@ fn test_reference_exists(repo_root: &Path, test_path: &str) -> bool {
         .any(|path| fs::read_to_string(path).map(|source| source.contains(&format!("fn {test_name}"))).unwrap_or(false))
 }
 
-fn test_file_candidates(repo_root: &Path, module: &str) -> [PathBuf; 2] {
-    [
+fn test_file_candidates(repo_root: &Path, module: &str) -> Vec<PathBuf> {
+    vec![
         repo_root.join("crates/memory-substrate/tests").join(format!("{module}.rs")),
         repo_root.join("crates/memory-merge-driver/tests").join(format!("{module}.rs")),
+        repo_root.join("crates/memoryd/src").join(format!("{module}.rs")),
     ]
 }
 

@@ -358,7 +358,8 @@ async fn drain_batch_with_budget(
         })
         .collect();
     if live_jobs.is_empty() {
-        return Ok(DrainOutcome { requested, fetched, succeeded });
+        let aux = drain_aux_batch(substrate, provider, requested, active_triple, eligibility).await?;
+        return Ok(DrainOutcome { requested, fetched: fetched.saturating_add(aux.fetched), succeeded: aux.succeeded });
     }
 
     // Embed the whole live batch in one off-runtime forward pass. candle compute
@@ -380,13 +381,19 @@ async fn drain_batch_with_budget(
         // forward pass (`Err(join_error)`) both fall back to embedding each job
         // individually, so only chunks that fail on their own burn retry budget —
         // a single poisoned input never fails the whole batch toward exhaustion.
+        // Then drain the aux queue too: aux must advance regardless of chunk outcome.
         Ok(Err(EmbeddingError::RateLimit { retry_after, message })) => {
             return Err(DrainError::RateLimit { retry_after, message });
         }
         Ok(Err(_)) | Err(_) => {
             succeeded =
                 succeeded.saturating_add(embed_jobs_individually(provider, live_jobs, substrate, retry_budget).await?);
-            return Ok(DrainOutcome { requested, fetched, succeeded });
+            let aux = drain_aux_batch(substrate, provider, requested, active_triple, eligibility).await?;
+            return Ok(DrainOutcome {
+                requested,
+                fetched: fetched.saturating_add(aux.fetched),
+                succeeded: succeeded.saturating_add(aux.succeeded),
+            });
         }
     };
     if vectors.len() != live_jobs.len() {
@@ -398,7 +405,8 @@ async fn drain_batch_with_budget(
         for job in &live_jobs {
             retry_budget.record_failure(&job.chunk_id, &error);
         }
-        return Ok(DrainOutcome { requested, fetched, succeeded });
+        let aux = drain_aux_batch(substrate, provider, requested, active_triple, eligibility).await?;
+        return Ok(DrainOutcome { requested, fetched: fetched.saturating_add(aux.fetched), succeeded: aux.succeeded });
     }
 
     let pairs: Vec<(PendingEmbeddingJob, Vec<f32>)> = live_jobs.into_iter().zip(vectors).collect();
@@ -428,8 +436,21 @@ async fn drain_aux_batch(
     if jobs.is_empty() {
         return Ok(DrainOutcome { requested, fetched, succeeded: 0 });
     }
-    let texts = jobs.iter().map(|job| job.text.as_str()).collect::<Vec<_>>();
-    let vectors = provider.embed_documents(&texts).map_err(|error| DrainError::Other(error.to_string()))?;
+    let texts: Vec<String> = jobs.iter().map(|job| job.text.clone()).collect();
+    let embed_provider = Arc::clone(provider);
+    let vectors = match tokio::task::spawn_blocking(move || {
+        let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+        embed_provider.embed_documents(&refs)
+    })
+    .await
+    {
+        Ok(Ok(vectors)) => vectors,
+        Ok(Err(EmbeddingError::RateLimit { retry_after, message })) => {
+            return Err(DrainError::RateLimit { retry_after, message });
+        }
+        Ok(Err(error)) => return Err(DrainError::Other(error.to_string())),
+        Err(join_error) => return Err(DrainError::Other(join_error.to_string())),
+    };
     let mut succeeded = 0;
     for (job, vector) in jobs.into_iter().zip(vectors) {
         let update = AuxEmbeddingUpdate {
@@ -741,6 +762,128 @@ mod tests {
         assert_eq!(substrate.pending_embedding_job_count(eligibility).expect("pending count"), 1);
         assert_eq!(server.requests().len(), 1);
         tokio::task::spawn_blocking(move || drop(provider)).await.expect("drop blocking client");
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn write_project_memory_with_aux(
+        substrate: &Substrate,
+        summary: &str,
+        body: &str,
+        abstraction: &str,
+        cues: &[&str],
+    ) -> String {
+        let response = handle_request_with_state(
+            substrate,
+            &HandlerState::new(),
+            RequestEnvelope::new(
+                "worker-test-write",
+                RequestPayload::WriteMemory {
+                    body: body.to_string(),
+                    title: Some(summary.to_string()),
+                    tags: Vec::new(),
+                    meta: serde_json::json!({
+                        "namespace": "project",
+                        "type": "claim",
+                        "summary": summary,
+                        "canonical_namespace_id": "proj_embedding_worker_test",
+                        "namespace_alias": "embedding-worker-test",
+                        "confidence": 0.95,
+                        "sensitivity": "internal",
+                        "source_kind": "user",
+                        "explicit_user_context": true,
+                        "abstraction": abstraction,
+                        "cues": cues
+                    }),
+                },
+            ),
+        )
+        .await;
+        match response.result {
+            ResponseResult::Success(ResponsePayload::GovernanceWrite(write)) => write.id.expect("write id"),
+            other => panic!("expected governed write success, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn poisoned_chunk_does_not_starve_aux_drain() {
+        let (_temp, substrate) = init_substrate().await;
+        write_project_memory_with_aux(
+            &substrate,
+            "poisoned chunk with aux",
+            "The poisoned embedding worker fixture must trigger poison deterministic embedding failure.",
+            "Public deployment",
+            &["public procedure"],
+        )
+        .await;
+
+        let triple = substrate.active_embedding_triple().expect("triple");
+        let provider: Arc<dyn EmbeddingProvider> = Arc::new(PoisonProvider { triple: triple.clone() });
+        let mut retry_budget = JobRetryBudget::default();
+        let eligibility = embedding_lane_eligibility(&triple);
+
+        let outcome = drain_batch_with_budget(&substrate, &provider, 64, &triple, eligibility, &mut retry_budget)
+            .await
+            .expect("drain with poisoned chunk");
+
+        // The chunk fails because its text contains "poison"; the abstraction and
+        // cue are benign and should still drain in the same pass.
+        assert!(outcome.succeeded >= 2, "aux jobs should drain even though chunk failed: {outcome:?}");
+        assert!(
+            substrate.pending_aux_embedding_jobs(100, eligibility).await.expect("pending aux count").is_empty(),
+            "aux pending queue should be empty after drain"
+        );
+    }
+
+    #[tokio::test]
+    async fn exhausted_chunk_retry_budget_still_drains_aux() {
+        let (_temp, substrate) = init_substrate().await;
+        write_project_memory_with_aux(
+            &substrate,
+            "exhausted chunk with aux",
+            "The poisoned embedding worker fixture must trigger poison deterministic embedding failure.",
+            "Public deployment",
+            &["public procedure"],
+        )
+        .await;
+
+        let triple = substrate.active_embedding_triple().expect("triple");
+        let provider: Arc<dyn EmbeddingProvider> = Arc::new(PoisonProvider { triple: triple.clone() });
+        let mut retry_budget = JobRetryBudget::default();
+        let eligibility = embedding_lane_eligibility(&triple);
+
+        let first = drain_batch_with_budget(&substrate, &provider, 1, &triple, eligibility, &mut retry_budget)
+            .await
+            .expect("drain poison");
+        assert!(first.succeeded >= 1, "aux progresses in the first pass despite the poisoned chunk head: {first:?}");
+        for _ in 1..MAX_JOB_ATTEMPTS {
+            drain_batch_with_budget(&substrate, &provider, 1, &triple, eligibility, &mut retry_budget)
+                .await
+                .expect("drain poison");
+        }
+        assert_eq!(retry_budget.exhausted_count(), 1);
+
+        // New aux-bearing work arrives while the exhausted poisoned chunk still
+        // heads the pending queue — the exact starvation scenario W2-F3 fixes.
+        write_project_memory_with_aux(
+            &substrate,
+            "fresh memory behind exhausted head",
+            "A benign body that embeds cleanly.",
+            "Fresh deployment",
+            &["fresh procedure"],
+        )
+        .await;
+
+        let final_outcome = drain_batch_with_budget(&substrate, &provider, 1, &triple, eligibility, &mut retry_budget)
+            .await
+            .expect("drain after chunk exhausted");
+        assert!(
+            final_outcome.succeeded >= 2,
+            "new chunk + aux work must progress past the exhausted head: {final_outcome:?}"
+        );
+        assert!(
+            substrate.pending_aux_embedding_jobs(100, eligibility).await.expect("pending aux count").is_empty(),
+            "aux pending queue should be empty after chunk is exhausted"
+        );
     }
 
     #[tokio::test]

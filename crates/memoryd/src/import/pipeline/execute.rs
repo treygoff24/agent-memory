@@ -563,6 +563,18 @@ fn build_write_meta(action: &PlannedWrite, related: &[String], supersedes: Optio
     meta.insert("confidence".to_string(), serde_json::json!(0.7));
     meta.insert("requires_user_confirmation".to_string(), Value::Bool(false));
     meta.insert("explicit_user_context".to_string(), Value::Bool(false));
+    // Forward abstraction/cues so the daemon's privacy classifier scans the full
+    // v1.2 combined payload (body + abstraction + cues) instead of body alone.
+    if let Some(abstraction) = action.candidate.frontmatter_hint.get("abstraction") {
+        if matches!(abstraction, Value::String(_) | Value::Null) {
+            meta.insert("abstraction".to_string(), abstraction.clone());
+        }
+    }
+    if let Some(cues) = action.candidate.frontmatter_hint.get("cues") {
+        if matches!(cues, Value::Array(_)) {
+            meta.insert("cues".to_string(), cues.clone());
+        }
+    }
     if let Some(canon) = &action.scope.canonical_namespace_id {
         meta.insert("canonical_namespace_id".to_string(), Value::String(canon.clone()));
     }

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use memory_privacy::PrivacyStorageAction;
+use memory_privacy::{PrivacyNamespace, PrivacyStorageAction};
 use memory_substrate::{Memory, Roots, Scope, Substrate};
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +15,7 @@ pub struct AbstractionCompileReport {
     pub applied: usize,
     pub skipped: usize,
     pub structural: usize,
+    pub exclusion_policy: &'static str,
     pub items: Vec<AbstractionCompileItem>,
 }
 
@@ -43,6 +44,7 @@ pub async fn run(args: crate::cli::DreamAbstractionCompileArgs) -> anyhow::Resul
         applied: 0,
         skipped: 0,
         structural: 0,
+        exclusion_policy: "metadata-only and encrypted memories are not eligible for abstraction_compile",
         items: Vec::with_capacity(ids.len()),
     };
     for id in ids {
@@ -169,16 +171,16 @@ fn validate_output(mut output: HarnessOutput) -> Result<HarnessOutput, String> {
 }
 
 fn generation_privacy_rebind(memory: &Memory, output: HarnessOutput) -> anyhow::Result<(Option<String>, Vec<String>)> {
-    let namespace = match memory.frontmatter.scope {
-        Scope::User => memory_privacy::PrivacyNamespace::Me,
-        Scope::Project | Scope::Org => memory_privacy::PrivacyNamespace::Project,
-        Scope::Agent | Scope::Subagent => memory_privacy::PrivacyNamespace::Agent,
-    };
+    // Probe the strictness contributed by the generated fields under the lowest
+    // privacy floor (Agent / Internal / Plaintext). The memory's real namespace
+    // determines the final persisted classification, but the Agent probe lets us
+    // detect whether the abstraction/cues are what made the combined payload
+    // stricter than the body alone.
     let body_text = format!("{}\n{}", memory.frontmatter.summary, memory.body);
     let combined = format!("{body_text}\n{}\n{}", output.abstraction, output.cues.join("\n"));
-    let body = crate::handlers::governance::classify_privacy(&body_text, namespace, None)
+    let body = crate::handlers::governance::classify_privacy(&body_text, PrivacyNamespace::Agent, None)
         .map_err(|error| anyhow::anyhow!(error.message))?;
-    let combined = crate::handlers::governance::classify_privacy(&combined, namespace, None)
+    let combined = crate::handlers::governance::classify_privacy(&combined, PrivacyNamespace::Agent, None)
         .map_err(|error| anyhow::anyhow!(error.message))?;
     if combined.storage_action.refuses_storage() || body.storage_action.refuses_storage() {
         anyhow::bail!("secret refused before disk effects");
@@ -227,6 +229,43 @@ mod tests {
         .expect("body-only rebind");
         assert_eq!(abstraction, None);
         assert!(cues.is_empty());
+    }
+
+    #[test]
+    fn user_scoped_sensitive_cue_drops_generated_fields_and_keeps_body() {
+        let memory = memory_with_scope("user", "Public summary", "Public deployment procedure");
+        let (abstraction, cues) = generation_privacy_rebind(
+            &memory,
+            HarnessOutput {
+                abstraction: "Contact reviewer@example.com".to_string(),
+                cues: vec!["Review contact".to_string()],
+            },
+        )
+        .expect("body-only rebind");
+        assert_eq!(abstraction, None);
+        assert!(cues.is_empty());
+    }
+
+    #[test]
+    fn user_scoped_benign_cue_keeps_generated_fields() {
+        let memory = memory_with_scope("user", "Public summary", "Public deployment procedure");
+        let (abstraction, cues) = generation_privacy_rebind(
+            &memory,
+            HarnessOutput { abstraction: "Public deployment".to_string(), cues: vec!["Public procedure".to_string()] },
+        )
+        .expect("fields stay");
+        assert_eq!(abstraction.as_deref(), Some("Public deployment"));
+        assert_eq!(cues, vec!["Public procedure".to_string()]);
+    }
+
+    #[test]
+    fn user_scoped_secret_cue_refuses_before_disk() {
+        let memory = memory_with_scope("user", "Public summary", "Public deployment procedure");
+        let result = generation_privacy_rebind(
+            &memory,
+            HarnessOutput { abstraction: "Card 4111111111111111".to_string(), cues: vec!["Secret card".to_string()] },
+        );
+        assert!(result.is_err(), "secret generated content must be refused before any disk effect");
     }
 
     #[tokio::test]
@@ -290,9 +329,17 @@ mod tests {
     }
 
     fn memory(summary: &str, body: &str) -> memory_substrate::Memory {
+        memory_with_scope_and_id("agent", summary, body, "mem_20260710_aaaaaaaaaaaaaaaa_000001")
+    }
+
+    fn memory_with_scope(scope: &str, summary: &str, body: &str) -> memory_substrate::Memory {
+        memory_with_scope_and_id(scope, summary, body, "mem_20260710_aaaaaaaaaaaaaaaa_000002")
+    }
+
+    fn memory_with_scope_and_id(scope: &str, summary: &str, body: &str, id: &str) -> memory_substrate::Memory {
         memory_substrate::frontmatter::parse_document(
             &format!(
-                "---\nschema_version: 1\nid: mem_20260710_aaaaaaaaaaaaaaaa_000001\ntype: pattern\nscope: agent\nsummary: {summary}\nconfidence: 0.9\ntrust_level: trusted\nsensitivity: public\nstatus: active\ncreated_at: 2026-07-10T00:00:00Z\nupdated_at: 2026-07-10T00:00:00Z\nauthor:\n  kind: system\n  component: test\n---\n{body}"
+                "---\nschema_version: 1\nid: {id}\ntype: pattern\nscope: {scope}\nsummary: {summary}\nconfidence: 0.9\ntrust_level: trusted\nsensitivity: public\nstatus: active\ncreated_at: 2026-07-10T00:00:00Z\nupdated_at: 2026-07-10T00:00:00Z\nauthor:\n  kind: system\n  component: test\n---\n{body}"
             ),
             None,
         )

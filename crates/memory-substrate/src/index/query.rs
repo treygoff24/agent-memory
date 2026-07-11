@@ -57,6 +57,8 @@ impl Index {
             "SELECT memories.id FROM memories
              LEFT JOIN memory_abstractions ON memory_abstractions.memory_id=memories.id
              WHERE memories.status IN ('active','pinned')
+               AND memories.metadata_only = 0
+               AND NOT memories.path LIKE 'encrypted/%'
                AND (memory_abstractions.memory_id IS NULL OR memory_abstractions.source_body_hash<>memories.body_hash)
              ORDER BY memories.updated_at LIMIT ?1",
         )?;
@@ -607,7 +609,9 @@ impl Index {
         if is_dropped_triple(&self.connection, &update.triple)? {
             return Err(VectorError::UnknownEmbeddingTriple(update.triple.clone()));
         }
-        let (rowid, actual_hash) = self.aux_target_row(update.row_kind, &update.target_id)?;
+        let table = crate::index::sqlite_vec::aux_vector_table_name(update.row_kind, &update.triple);
+        let txn = self.connection.transaction()?;
+        let (rowid, actual_hash) = Self::aux_target_row_conn(&txn, update.row_kind, &update.target_id)?;
         if actual_hash != update.expected_content_hash.as_str() {
             return Err(VectorError::StaleAux {
                 row_kind: update.row_kind.as_db_str().to_string(),
@@ -616,19 +620,20 @@ impl Index {
                 found: Sha256::new(actual_hash),
             });
         }
-        let table = crate::index::sqlite_vec::aux_vector_table_name(update.row_kind, &update.triple);
-        self.connection.execute(
+        // Vector table creation/insert, meta upsert, and job delete all happen in
+        // one transaction so the hash fence cannot be invalidated between the
+        // read and the delete.
+        txn.execute(
             &format!(
                 "CREATE VIRTUAL TABLE IF NOT EXISTS {table} USING vec0(embedding float[{}])",
                 update.triple.dimension
             ),
             [],
         )?;
-        self.connection.execute(
+        txn.execute(
             &format!("INSERT OR REPLACE INTO {table}(rowid,embedding) VALUES (?1,?2)"),
             params![rowid, crate::index::sqlite_vec::serialize_f32(&update.vector)],
         )?;
-        let txn = self.connection.transaction()?;
         txn.execute(
             "INSERT INTO aux_embedding_meta(row_kind,target_id,content_hash,provider,model_ref,dimension,embedded_at)
              VALUES (?1,?2,?3,?4,?5,?6,?7)
@@ -646,22 +651,23 @@ impl Index {
         )?;
         txn.execute(
             "DELETE FROM aux_pending_embedding_jobs
-             WHERE row_kind=?1 AND target_id=?2 AND provider=?3 AND model_ref=?4 AND dimension=?5",
+             WHERE row_kind=?1 AND target_id=?2 AND provider=?3 AND model_ref=?4 AND dimension=?5 AND content_hash=?6",
             params![
                 update.row_kind.as_db_str(),
                 update.target_id,
                 update.triple.provider,
                 update.triple.model_ref,
-                i64::from(update.triple.dimension)
+                i64::from(update.triple.dimension),
+                update.expected_content_hash.as_str()
             ],
         )?;
         txn.commit()?;
         Ok(())
     }
 
-    fn aux_target_row(&self, kind: AuxRowKind, target_id: &str) -> Result<(i64, String), VectorError> {
+    fn aux_target_row_conn(conn: &Connection, kind: AuxRowKind, target_id: &str) -> Result<(i64, String), VectorError> {
         let result = match kind {
-            AuxRowKind::Abstraction => self.connection.query_row(
+            AuxRowKind::Abstraction => conn.query_row(
                 "SELECT rowid,abstraction_hash FROM memory_abstractions WHERE memory_id=?1",
                 [target_id],
                 |row| Ok((row.get(0)?, row.get(1)?)),
@@ -673,7 +679,7 @@ impl Index {
                     expected: Sha256::new("missing"),
                     found: Sha256::new("missing"),
                 })?;
-                self.connection.query_row(
+                conn.query_row(
                     "SELECT rowid,cue_hash FROM memory_cues WHERE memory_id=?1 AND ordinal=?2",
                     params![memory_id, ordinal.parse::<i64>().unwrap_or(-1)],
                     |row| Ok((row.get(0)?, row.get(1)?)),

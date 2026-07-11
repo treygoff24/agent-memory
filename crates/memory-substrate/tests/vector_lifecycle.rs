@@ -117,7 +117,9 @@ fn auxiliary_vectors_are_stale_fenced_queryable_and_invalidated_on_hash_change()
         .iter()
         .any(|job| job.row_kind == AuxRowKind::Abstraction && job.content_hash != abstraction.content_hash));
 
-    for status in [MemoryStatus::Superseded, MemoryStatus::Tombstoned, MemoryStatus::Quarantined] {
+    for status in
+        [MemoryStatus::Superseded, MemoryStatus::Archived, MemoryStatus::Tombstoned, MemoryStatus::Quarantined]
+    {
         memory.frontmatter.status = status;
         index.upsert_memory(&memory, false).expect("leave servable set");
         assert_eq!(
@@ -215,6 +217,50 @@ async fn update_embedding_rejects_wrong_dimension_and_stale_hash() {
         .await
         .expect_err("stale hash");
     assert!(matches!(stale, VectorError::StaleChunk { .. }));
+}
+
+#[test]
+fn aux_hash_change_between_fetch_and_update_rejects_stale_and_preserves_replacement_job() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("index.sqlite");
+    let triple = EmbeddingTriple { provider: "synthetic".into(), model_ref: "aux".into(), dimension: 3 };
+    let connection = memory_substrate::index::open_index(&path).expect("index");
+    let mut index = memory_substrate::index::Index::with_active_embedding(connection, triple.clone());
+    let mut memory = sample_memory("mem_20260424_a1b2c3d4e5f60718_000097");
+    memory.frontmatter.abstraction = Some("OAuth token policy".into());
+    index.upsert_memory(&memory, false).expect("seed abstraction");
+
+    let job = index
+        .pending_aux_embedding_jobs(1, EmbeddingLaneEligibility::AllTiers)
+        .expect("jobs")
+        .into_iter()
+        .find(|job| job.row_kind == AuxRowKind::Abstraction)
+        .expect("abstraction job");
+    let old_hash = job.content_hash.clone();
+
+    // Interleaved edit: the abstraction changes before the worker writes the vector.
+    memory.frontmatter.abstraction = Some("Rotated token policy".into());
+    index.upsert_memory(&memory, false).expect("hash change");
+
+    let stale = index
+        .update_aux_embedding(&AuxEmbeddingUpdate {
+            row_kind: AuxRowKind::Abstraction,
+            target_id: job.target_id.clone(),
+            expected_content_hash: old_hash.clone(),
+            triple: triple.clone(),
+            vector: vec![1.0, 0.0, 0.0],
+        })
+        .expect_err("stale aux");
+    assert!(matches!(stale, VectorError::StaleAux { .. }));
+
+    let replacement = index
+        .pending_aux_embedding_jobs(1, EmbeddingLaneEligibility::AllTiers)
+        .expect("replacement job")
+        .into_iter()
+        .find(|job| job.row_kind == AuxRowKind::Abstraction)
+        .expect("replacement abstraction job");
+    assert_ne!(replacement.content_hash, old_hash, "replacement job must have the new hash");
+    assert_eq!(replacement.target_id, job.target_id);
 }
 
 #[tokio::test]
@@ -577,4 +623,66 @@ fn sample_memory(id: &str) -> Memory {
 
 fn first_index_chunk(memory: &Memory) -> memory_substrate::index::Chunk {
     memory_substrate::index::chunk_memory(memory).into_iter().next().expect("memory has one chunk")
+}
+
+#[test]
+fn abstraction_compile_candidates_excludes_encrypted_and_metadata_only() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("index.sqlite");
+    let triple = EmbeddingTriple { provider: "synthetic".into(), model_ref: "aux".into(), dimension: 3 };
+    let connection = memory_substrate::index::open_index(&path).expect("index");
+    let mut index = memory_substrate::index::Index::with_active_embedding(connection, triple);
+
+    let plaintext = sample_memory("mem_20260424_a1b2c3d4e5f60718_000090");
+    index.upsert_memory(&plaintext, false).expect("plaintext active");
+
+    let mut encrypted = sample_memory("mem_20260424_a1b2c3d4e5f60718_000091");
+    encrypted.path = Some(RepoPath::new("encrypted/mem_20260424_a1b2c3d4e5f60718_000091.md"));
+    index.upsert_memory(&encrypted, false).expect("encrypted active");
+
+    let mut metadata_only = sample_memory("mem_20260424_a1b2c3d4e5f60718_000092");
+    metadata_only.frontmatter.retrieval_policy.index_body = false;
+    metadata_only.frontmatter.retrieval_policy.index_embeddings = false;
+    index.upsert_memory(&metadata_only, true).expect("metadata-only active");
+
+    let candidates = index.abstraction_compile_candidates(10).expect("candidates");
+    assert_eq!(candidates, vec![plaintext.frontmatter.id.clone()]);
+}
+
+#[test]
+fn source_body_hash_preserved_on_body_only_edit_and_refreshed_on_remint() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("index.sqlite");
+    let triple = EmbeddingTriple { provider: "synthetic".into(), model_ref: "aux".into(), dimension: 3 };
+    let connection = memory_substrate::index::open_index(&path).expect("index");
+    let mut index = memory_substrate::index::Index::with_active_embedding(connection, triple);
+
+    let mut memory = sample_memory("mem_20260424_a1b2c3d4e5f60718_000093");
+    memory.body = "first body".to_string();
+    memory.frontmatter.abstraction = Some("first abstraction".to_string());
+    memory.frontmatter.cues = vec!["first cue".to_string()];
+    index.upsert_memory(&memory, false).expect("mint");
+
+    let first_body_hash = memory_substrate::markdown::hash_bytes(memory.body.as_bytes()).to_string();
+    let source_hash = |index: &memory_substrate::index::Index, memory: &memory_substrate::Memory| -> String {
+        let id = memory.frontmatter.id.as_str();
+        index
+            .connection()
+            .query_row("SELECT source_body_hash FROM memory_abstractions WHERE memory_id=?1", [id], |row| {
+                row.get::<_, String>(0)
+            })
+            .expect("source_body_hash")
+    };
+    assert_eq!(source_hash(&index, &memory), first_body_hash);
+
+    memory.body = "second body".to_string();
+    memory.frontmatter.updated_at = chrono::Utc::now();
+    index.upsert_memory(&memory, false).expect("body-only edit");
+    let second_body_hash = memory_substrate::markdown::hash_bytes(memory.body.as_bytes()).to_string();
+    assert_eq!(source_hash(&index, &memory), first_body_hash, "body-only edit must keep mint-time source_body_hash");
+
+    memory.frontmatter.abstraction = Some("second abstraction".to_string());
+    memory.frontmatter.updated_at = chrono::Utc::now();
+    index.upsert_memory(&memory, false).expect("abstraction re-mint");
+    assert_eq!(source_hash(&index, &memory), second_body_hash, "abstraction re-mint must refresh source_body_hash");
 }

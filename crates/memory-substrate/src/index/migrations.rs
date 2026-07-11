@@ -202,7 +202,7 @@ fn migrate_v5(connection: &mut Connection) -> rusqlite::Result<()> {
     tx.commit()
 }
 
-fn migrate_v6(connection: &mut Connection) -> rusqlite::Result<()> {
+pub fn migrate_v6(connection: &mut Connection) -> rusqlite::Result<()> {
     let tx = connection.transaction()?;
     tx.execute_batch(
         r#"
