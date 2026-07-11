@@ -279,6 +279,7 @@ async fn abstraction_lane_surfaces_a_memory_missed_by_fts() {
             index_embeddings: true,
             abstraction: Some("oauth refresh rotation"),
             cues: vec!["token renewal"],
+            sensitivity: Sensitivity::Internal,
         })
         .await;
     fixture
@@ -289,6 +290,7 @@ async fn abstraction_lane_surfaces_a_memory_missed_by_fts() {
             index_embeddings: true,
             abstraction: Some("kitchen inventory"),
             cues: vec!["snack shelf"],
+            sensitivity: Sensitivity::Internal,
         })
         .await;
     drain_all(&fixture.substrate, &provider).await;
@@ -424,6 +426,111 @@ async fn assert_degrades_to_fts(
     assert!(response.delta_block.contains("mem_20260610_0000000000000021_000021"));
 }
 
+#[tokio::test]
+async fn four_lane_fts_lane_respects_envelope_and_degrades() {
+    let config = "schema_version: 1
+active_embedding:
+  provider: synthetic
+  model_ref: stream-a-test
+  dimension: 32
+recall:
+  vector_recall:
+    four_lane_timeout_ms: 0
+    search_timeout_ms: 100
+";
+    let fixture = TestRepo::new_with_config("dev_vecfts", config).await;
+    let provider = fixture.provider();
+    fixture
+        .write_memory(memory_spec(
+            "mem_20260610_0000000000000061_000061",
+            "envelope fixture",
+            "envelope fixture body contains the exact keyword",
+            true,
+        ))
+        .await;
+    drain_all(&fixture.substrate, &provider).await;
+
+    let state = HandlerState::new();
+    state.embedding_provider_slot().set(Arc::clone(&provider));
+    let response = search(&fixture.substrate, &state, "exact keyword").await;
+
+    // Zero lane budget: every four-lane primitive expires, and the bounded
+    // FTS fallback still serves within the search envelope — degraded WITH
+    // results is the documented ladder, not emptiness.
+    assert_eq!(response.vector_recall_degraded.as_deref(), Some("four_lane_timeout"));
+    assert_eq!(response.total, 1);
+    assert!(!response.hits.is_empty());
+}
+
+#[tokio::test]
+async fn zero_search_timeout_makes_embedding_budget_zero_and_falls_back_to_fts() {
+    let fixture = TestRepo::new("dev_veczero").await;
+    let provider = fixture.provider();
+    fixture
+        .write_memory(memory_spec(
+            "mem_20260610_0000000000000062_000062",
+            "zero budget fixture",
+            "zero budget fixture body contains the fallback keyword",
+            true,
+        ))
+        .await;
+    drain_all(&fixture.substrate, &provider).await;
+
+    let response = build_delta_response_with_vector_recall(
+        &fixture.substrate,
+        fixture.delta_request("fallback keyword"),
+        VectorRecallContext::new(Some(provider), VectorRecallConfig { search_timeout_ms: 0, ..Default::default() })
+            .with_mode(memoryd::recall::FusionMode::FourLaneSearch),
+    )
+    .await
+    .expect("zero budget delta");
+
+    // A zero envelope may expire at the embed (embedding_timeout) or, when the
+    // instant synthetic embed wins the zero-duration timeout race, at the lane
+    // phase (four_lane_timeout). Both are documented degraded results; the
+    // invariant is bounded degradation WITH the FTS fallback served.
+    let marker = response.vector_recall_degraded.as_deref();
+    assert!(
+        matches!(marker, Some("embedding_timeout") | Some("four_lane_timeout")),
+        "expected a documented degraded marker, got {marker:?}"
+    );
+    assert!(response.delta_block.contains("mem_20260610_0000000000000062_000062"));
+}
+
+#[tokio::test]
+async fn api_provider_delta_recall_stays_legacy_two_lane() {
+    let config = "schema_version: 1\napi_embedding_consent: true\nactive_embedding:\n  provider: gemini-api\n  model_ref: gemini-embedding-2\n  dimension: 768\n";
+    let fixture = TestRepo::new_with_config("dev_apilegacy", config).await;
+    let provider = fixture.provider();
+    fixture
+        .write_memory(memory_spec(
+            "mem_20260610_0000000000000081_000081",
+            "shipping production rollout",
+            "The release team documented a shipping production rollout checklist.",
+            true,
+        ))
+        .await;
+    drain_all(&fixture.substrate, &provider).await;
+
+    let state = HandlerState::new();
+    state.embedding_provider_slot().set(Arc::clone(&provider));
+    let response = handle_request_with_state(
+        &fixture.substrate,
+        &state,
+        RequestEnvelope::new("delta", RequestPayload::Delta(fixture.delta_request("deploy production"))),
+    )
+    .await;
+
+    let delta = match response.result {
+        ResponseResult::Success(ResponsePayload::Delta(delta)) => delta,
+        other => panic!("expected delta success, got {other:?}"),
+    };
+
+    assert_eq!(delta.vector_recall_degraded, None);
+    assert!(delta.delta_block.contains("mem_20260610_0000000000000081_000081"));
+    assert!(delta.delta_block.contains("shipping production rollout checklist"));
+}
+
 async fn search(substrate: &Substrate, state: &HandlerState, query: &str) -> memoryd::protocol::SearchResponse {
     let response = handle_request_with_state(
         substrate,
@@ -462,10 +569,19 @@ struct TestMemorySpec<'a> {
     index_embeddings: bool,
     abstraction: Option<&'a str>,
     cues: Vec<&'a str>,
+    sensitivity: Sensitivity,
 }
 
 fn memory_spec<'a>(id: &'a str, summary: &'a str, body: &'a str, index_embeddings: bool) -> TestMemorySpec<'a> {
-    TestMemorySpec { id, summary, body, index_embeddings, abstraction: None, cues: Vec::new() }
+    TestMemorySpec {
+        id,
+        summary,
+        body,
+        index_embeddings,
+        abstraction: None,
+        cues: Vec::new(),
+        sensitivity: Sensitivity::Internal,
+    }
 }
 
 impl TestRepo {
@@ -473,6 +589,21 @@ impl TestRepo {
         let temp = tempfile::tempdir().expect("tempdir");
         let repo = temp.path().join("repo");
         let runtime = temp.path().join("runtime");
+        let substrate = Substrate::init(
+            Roots::new(&repo, &runtime),
+            InitOptions { force_unsafe_durability: true, device_id: Some(device_id.to_owned()) },
+        )
+        .await
+        .expect("substrate init");
+        Self { _temp: temp, repo, substrate }
+    }
+
+    async fn new_with_config(device_id: &str, config: &str) -> Self {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = temp.path().join("repo");
+        let runtime = temp.path().join("runtime");
+        std::fs::create_dir_all(&repo).expect("create repo");
+        std::fs::write(repo.join("config.yaml"), config).expect("write config");
         let substrate = Substrate::init(
             Roots::new(&repo, &runtime),
             InitOptions { force_unsafe_durability: true, device_id: Some(device_id.to_owned()) },
@@ -525,7 +656,7 @@ fn test_memory(spec: TestMemorySpec<'_>) -> Memory {
             confidence: 0.9,
             original_confidence: None,
             trust_level: TrustLevel::Trusted,
-            sensitivity: Sensitivity::Internal,
+            sensitivity: spec.sensitivity,
             status: MemoryStatus::Active,
             created_at: instant("2026-06-10T12:00:00Z"),
             updated_at: instant("2026-06-10T12:00:00Z"),

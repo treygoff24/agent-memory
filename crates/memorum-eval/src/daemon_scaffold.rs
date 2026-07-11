@@ -43,11 +43,33 @@ struct TempTree {
 }
 
 impl DaemonScaffold {
+    #[cfg(feature = "quality")]
     pub fn set_four_lane_fusion(&self, enabled: bool) {
         let path = self.tree_dir.path().join("config.yaml");
-        let mut config = fs::read_to_string(&path).unwrap_or_default();
-        config.push_str(&format!("recall:\n  vector_recall:\n    four_lane_enabled: {enabled}\n"));
-        fs::write(path, config).expect("write benchmark fusion config");
+        let text = fs::read_to_string(&path).unwrap_or_default();
+        let mut value: serde_yaml::Value =
+            serde_yaml::from_str(&text).unwrap_or_else(|_| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+        if let Some(mapping) = value.as_mapping_mut() {
+            let recall = mapping
+                .entry(serde_yaml::Value::String("recall".to_owned()))
+                .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+            if let Some(recall_map) = recall.as_mapping_mut() {
+                let vector_recall = recall_map
+                    .entry(serde_yaml::Value::String("vector_recall".to_owned()))
+                    .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+                if let Some(vector_recall_map) = vector_recall.as_mapping_mut() {
+                    vector_recall_map.insert(
+                        serde_yaml::Value::String("four_lane_enabled".to_owned()),
+                        serde_yaml::Value::Bool(enabled),
+                    );
+                }
+            }
+        }
+        let mut yaml = serde_yaml::to_string(&value).expect("serialize benchmark fusion config");
+        if let Some(stripped) = yaml.strip_prefix("---\n") {
+            yaml = stripped.to_owned();
+        }
+        fs::write(path, yaml).expect("write benchmark fusion config");
     }
     pub async fn fresh() -> Self {
         let tree_dir = TempTree::fresh();
@@ -490,6 +512,24 @@ mod tests {
         assert!(!status.success(), "kill-on-drop guard should reap the child after readiness failure");
 
         let _ = fs::remove_file(&socket_path);
+    }
+
+    #[cfg(feature = "quality")]
+    #[test]
+    fn set_four_lane_fusion_merges_single_recall_key() {
+        let scaffold = crate::block_on(DaemonScaffold::fresh());
+        scaffold.set_four_lane_fusion(true);
+        let content = fs::read_to_string(scaffold.tree_dir().join("config.yaml")).expect("read config");
+        // top-level `recall` must appear exactly once (no duplicate-key last-wins)
+        assert_eq!(content.lines().filter(|line| line.starts_with("recall:")).count(), 1);
+        let value: serde_yaml::Value = serde_yaml::from_str(&content).expect("parse config");
+        assert_eq!(value["recall"]["vector_recall"]["four_lane_enabled"], serde_yaml::Value::Bool(true));
+
+        scaffold.set_four_lane_fusion(false);
+        let content = fs::read_to_string(scaffold.tree_dir().join("config.yaml")).expect("read config");
+        assert_eq!(content.lines().filter(|line| line.starts_with("recall:")).count(), 1);
+        let value: serde_yaml::Value = serde_yaml::from_str(&content).expect("parse config");
+        assert_eq!(value["recall"]["vector_recall"]["four_lane_enabled"], serde_yaml::Value::Bool(false));
     }
 
     fn temp_socket_path(label: &str) -> std::path::PathBuf {

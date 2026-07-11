@@ -130,39 +130,55 @@ pub(crate) async fn search_response(
         crate::recall::hybrid::collect_hybrid_recall(substrate, query, Some(&vector_recall)),
     )
     .await;
-    let (total, mut hits) = match decision {
-        Ok(decision) => match decision {
-            crate::recall::hybrid::HybridRecallDecision::Fused { candidates, degraded } => {
-                if let Some(marker) = degraded {
-                    tracing::warn!(marker, "memory_search four-lane recall partially degraded");
-                }
-                let total = candidates.len();
-                let hits = candidates
-                    .into_iter()
-                    .take(limit)
-                    .map(|candidate| SearchHit {
-                        id: candidate.id,
-                        summary: bounded(&candidate.text, SEARCH_SNIPPET_MAX),
-                        snippet: bounded(&candidate.text, SEARCH_SNIPPET_MAX),
-                        body: None,
-                        score: candidate.final_score,
-                    })
-                    .collect::<Vec<_>>();
-                (total, hits)
+    let (total, mut hits, vector_recall_degraded) = match decision {
+        Ok(crate::recall::hybrid::HybridRecallDecision::Fused { candidates, degraded }) => {
+            if let Some(marker) = degraded {
+                tracing::warn!(marker, "memory_search four-lane recall partially degraded");
             }
-            crate::recall::hybrid::HybridRecallDecision::FtsOnly { degraded } => {
-                if let Some(marker) = degraded {
-                    tracing::warn!(marker, "memory_search vector recall degraded; falling back to FTS-only");
-                }
-                fts_search_hits(substrate, query, limit).await?
+            let total = candidates.len();
+            let hits = candidates
+                .into_iter()
+                .take(limit)
+                .map(|candidate| SearchHit {
+                    id: candidate.id,
+                    summary: bounded(&candidate.text, SEARCH_SNIPPET_MAX),
+                    snippet: bounded(&candidate.text, SEARCH_SNIPPET_MAX),
+                    body: None,
+                    score: candidate.final_score,
+                })
+                .collect::<Vec<_>>();
+            (total, hits, degraded.map(str::to_owned))
+        }
+        Ok(crate::recall::hybrid::HybridRecallDecision::FtsOnly { degraded }) => {
+            if let Some(marker) = degraded {
+                tracing::warn!(marker, "memory_search vector recall degraded; falling back to FTS-only");
             }
-        },
+            let remaining = search_timeout.saturating_sub(started.elapsed());
+            match tokio::time::timeout(remaining, fts_search_hits(substrate, query, limit)).await {
+                Ok(Ok((total, hits))) => (total, hits, degraded.map(str::to_owned)),
+                Ok(Err(error)) => return Err(error),
+                Err(_) => {
+                    tracing::warn!("memory_search fallback FTS timed out within the search envelope");
+                    (0, Vec::new(), Some(crate::recall::hybrid::DEGRADED_FOUR_LANE_TIMEOUT.to_owned()))
+                }
+            }
+        }
         Err(_) => {
             tracing::warn!(
                 timeout_ms = search_timeout.as_millis(),
                 "memory_search timed out; falling back to FTS-only"
             );
-            fts_search_hits(substrate, query, limit).await?
+            let remaining = search_timeout.saturating_sub(started.elapsed());
+            match tokio::time::timeout(remaining, fts_search_hits(substrate, query, limit)).await {
+                Ok(Ok((total, hits))) => {
+                    (total, hits, Some(crate::recall::hybrid::DEGRADED_FOUR_LANE_TIMEOUT.to_owned()))
+                }
+                Ok(Err(error)) => return Err(error),
+                Err(_) => {
+                    tracing::warn!("memory_search fallback FTS timed out within the search envelope");
+                    (0, Vec::new(), Some(crate::recall::hybrid::DEGRADED_FOUR_LANE_TIMEOUT.to_owned()))
+                }
+            }
         }
     };
 
@@ -175,7 +191,7 @@ pub(crate) async fn search_response(
     } else {
         "Bounded snippets only; call memory_get for full body access when policy allows.".to_string()
     };
-    let response = ResponsePayload::Search(SearchResponse { hits, total, guidance });
+    let response = ResponsePayload::Search(SearchResponse { hits, total, guidance, vector_recall_degraded });
     state.recall.record_latency(search_latency_surface(substrate), started.elapsed());
     Ok(response)
 }

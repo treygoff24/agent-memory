@@ -76,8 +76,12 @@ fn write_note_success_is_ok_true_on_stdout_exit_0() {
 
 #[test]
 fn empty_search_is_success_with_broadening_warning() {
-    let render =
-        success(ResponsePayload::Search(SearchResponse { hits: Vec::new(), total: 0, guidance: "none".to_string() }));
+    let render = success(ResponsePayload::Search(SearchResponse {
+        hits: Vec::new(),
+        total: 0,
+        guidance: "none".to_string(),
+        vector_recall_degraded: None,
+    }));
     assert_eq!(render.exit_code, 0);
     assert!(!render.to_stderr);
     let json = envelope_json(&render);
@@ -100,6 +104,7 @@ fn nonempty_search_has_no_warning() {
         }],
         total: 1,
         guidance: "ok".to_string(),
+        vector_recall_degraded: None,
     }));
     assert_eq!(render.exit_code, 0);
     assert_eq!(envelope_json(&render)["meta"]["warnings"].as_array().unwrap().len(), 0);

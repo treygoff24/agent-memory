@@ -1011,6 +1011,8 @@ pub struct SearchResponse {
     pub hits: Vec<SearchHit>,
     pub total: usize,
     pub guidance: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vector_recall_degraded: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

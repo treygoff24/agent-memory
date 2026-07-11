@@ -721,6 +721,7 @@ fn protocol_contract_success_responses_are_bounded_and_guided() {
             }],
             total: 1,
             guidance: "Bounded snippets only; call memory_get for full body.".to_owned(),
+            vector_recall_degraded: None,
         }),
     );
     let get = ResponseEnvelope::success(

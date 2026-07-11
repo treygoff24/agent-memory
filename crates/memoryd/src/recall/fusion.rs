@@ -388,4 +388,61 @@ mod tests {
         assert_eq!(fused[0].memory_id.as_str(), "mem_20260610_0000000000000001_000001");
         assert_eq!(fused[1].memory_id.as_str(), "mem_20260610_0000000000000002_000002");
     }
+
+    #[test]
+    fn four_lane_rrf_score_matches_hand_computed_golden_value() {
+        let first = MemoryId::new("mem_20260610_0000000000000001_000001");
+        let second = MemoryId::new("mem_20260610_0000000000000002_000002");
+        let fused = fuse_four_lane_rrf(
+            vec![
+                candidate(first.as_str(), Some(1), Some(0.8), None),
+                candidate(second.as_str(), Some(2), Some(0.9), None),
+            ],
+            vec![
+                AbstractionVectorHit { memory_id: first.clone(), distance: 0.1 },
+                AbstractionVectorHit { memory_id: second.clone(), distance: 0.2 },
+            ],
+            vec![
+                CueVectorHit { memory_id: first.clone(), ordinal: 0, distance: 0.1 },
+                CueVectorHit { memory_id: second.clone(), ordinal: 0, distance: 0.3 },
+            ],
+            four_lane_config(),
+        );
+
+        let first = fused.iter().find(|c| c.memory_id == first).expect("first candidate");
+        let second = fused.iter().find(|c| c.memory_id == second).expect("second candidate");
+
+        // first: bm25=1, chunk=2 (cosine 0.8 < 0.9), abstraction=2, cue=1 => 4/61 + 1/62
+        let expected_first = 4.0 / 61.0 + 1.0 / 62.0;
+        assert!((first.rrf_score - expected_first).abs() < 1e-12, "first RRF score: got {}", first.rrf_score);
+
+        // second: bm25=2 (1/62), chunk=1 (1/61), abstraction=2 (2/62), cue=2 (1/62) => 1/61 + 4/62
+        let expected_second = 1.0 / 61.0 + 4.0 / 62.0;
+        assert!((second.rrf_score - expected_second).abs() < 1e-12, "second RRF score: got {}", second.rrf_score);
+    }
+
+    #[test]
+    fn cue_rank_collapse_preserves_best_raw_rank() {
+        let first = MemoryId::new("mem_20260610_0000000000000001_000001");
+        let second = MemoryId::new("mem_20260610_0000000000000002_000002");
+        let cues = vec![
+            CueVectorHit { memory_id: first.clone(), ordinal: 0, distance: 0.1 },
+            CueVectorHit { memory_id: first.clone(), ordinal: 1, distance: 0.2 },
+            CueVectorHit { memory_id: second.clone(), ordinal: 0, distance: 0.3 },
+        ];
+
+        let ranks = best_rank_by_memory(cues.iter().map(|c| &c.memory_id));
+        assert_eq!(ranks.get(first.as_str()), Some(&1));
+        assert_eq!(ranks.get(second.as_str()), Some(&3));
+
+        let fused = fuse_four_lane_rrf(
+            vec![candidate(first.as_str(), None, None, None), candidate(second.as_str(), None, None, None)],
+            Vec::new(),
+            cues,
+            four_lane_config(),
+        );
+        let first_candidate = fused.iter().find(|c| c.memory_id == first).expect("first candidate");
+        let expected = reciprocal_rank_score(60.0, 1);
+        assert!((first_candidate.rrf_score - expected).abs() < 1e-12, "cue rank 1 should survive collapse");
+    }
 }

@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use memory_substrate::{HybridVectorQuery, Substrate, VectorError};
+use memory_substrate::{HybridVectorQuery, MemoryContent, Substrate, VectorError};
 
 use crate::embedding::{EmbeddingProvider, EmbeddingProviderAcquire, EmbeddingProviderSlot, ProviderGuard};
 use crate::recall::config::{VectorRecallConfig, HOOK_DEADLINE_MS};
@@ -132,11 +132,20 @@ pub(crate) async fn collect_hybrid_recall(
     };
 
     if context.mode != FusionMode::Legacy && context.config.four_lane_enabled {
+        let started = Instant::now();
+        let deadline_ms = match context.mode {
+            FusionMode::FourLaneHook => HOOK_DEADLINE_MS,
+            FusionMode::FourLaneSearch => context.config.search_timeout_ms,
+            FusionMode::Legacy => unreachable!("legacy mode is handled above"),
+        };
+        let deadline = Duration::from_millis(deadline_ms);
+        let remaining = deadline.saturating_sub(started.elapsed());
         return collect_four_lane_recall(
             substrate,
             message,
             context,
             HybridVectorQuery { triple: &active_triple, vector: &vector },
+            remaining,
         )
         .await;
     }
@@ -169,50 +178,46 @@ pub(crate) async fn collect_hybrid_recall(
     HybridRecallDecision::Fused { candidates: hydrated, degraded: None }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn collect_four_lane_recall(
     substrate: &Substrate,
     message: &str,
     context: &VectorRecallContext,
     vector_query: HybridVectorQuery<'_>,
+    remaining: Duration,
 ) -> HybridRecallDecision {
-    // FTS is collected independently and retained as the worst-case fallback.
-    // Each vector lane may be absent, fail, or time out without suppressing the
-    // others. The single query vector above is borrowed by every vector lane.
-    let fts = match substrate.query_hybrid_chunks(message, None, context.config.knn_limit).await {
-        Ok(candidates) => candidates,
-        Err(error) => {
-            tracing::warn!(%error, "four-lane recall degraded: FTS query failed");
-            Vec::new()
-        }
-    };
-    let lane_timeout = Duration::from_millis(context.config.four_lane_timeout_ms);
-    let chunk = lane_result(
-        "chunk-vector",
-        lane_timeout,
-        substrate.query_hybrid_chunks(message, Some(vector_query), context.config.knn_limit),
-    )
-    .await;
-    let abstractions = lane_result(
-        "abstraction-vector",
-        lane_timeout,
-        substrate.query_abstraction_vectors(vector_query.triple, vector_query.vector, context.config.knn_limit),
-    )
-    .await;
-    // Fetch enough cue rows for every allowed cue to compete before the
-    // best-rank-per-memory collapse. W2 caps cues at three per memory.
-    let cues = lane_result(
-        "cue-vector",
-        lane_timeout,
-        substrate.query_cue_vectors(
-            vector_query.triple,
-            vector_query.vector,
-            context.config.knn_limit.saturating_mul(3),
+    // Run the four primitive lanes concurrently. Each is timed by its own per-
+    // lane budget; the whole set is also bounded by the remaining post-embed
+    // envelope. The blocking threads underlying `spawn_blocking` queries stay
+    // parked until their SQLite query returns, so index-connection contention
+    // can still serialize them past the wall budget; the timeout surfaces that
+    // as a degraded lane rather than a hang.
+    let lane_timeout = std::cmp::min(Duration::from_millis(context.config.four_lane_timeout_ms), remaining);
+    let (fts, chunk, abstractions, cues) = tokio::join!(
+        lane_result("fts", lane_timeout, substrate.query_hybrid_chunks(message, None, context.config.knn_limit)),
+        lane_result(
+            "chunk-vector",
+            lane_timeout,
+            substrate.query_hybrid_chunks(message, Some(vector_query), context.config.knn_limit)
         ),
-    )
-    .await;
+        lane_result(
+            "abstraction-vector",
+            lane_timeout,
+            substrate.query_abstraction_vectors(vector_query.triple, vector_query.vector, context.config.knn_limit)
+        ),
+        lane_result(
+            "cue-vector",
+            lane_timeout,
+            substrate.query_cue_vectors(
+                vector_query.triple,
+                vector_query.vector,
+                context.config.knn_limit.saturating_mul(3)
+            )
+        )
+    );
 
-    let timed_out = chunk.timed_out || abstractions.timed_out || cues.timed_out;
-    let mut candidates = fts;
+    let timed_out = fts.timed_out || chunk.timed_out || abstractions.timed_out || cues.timed_out;
+    let mut candidates = fts.value.unwrap_or_default();
     if let Some(chunk_candidates) = chunk.value {
         merge_chunk_candidates(&mut candidates, chunk_candidates);
     }
@@ -293,12 +298,20 @@ fn merge_chunk_candidates(
 async fn hydrate_aux_only_candidates(substrate: &Substrate, candidates: &mut Vec<FusedHybridCandidate>) {
     for candidate in candidates.iter_mut().filter(|candidate| candidate.text.is_empty()) {
         match substrate.read_memory_envelope(&candidate.memory_id).await {
-            Ok(envelope) => {
-                let frontmatter = envelope.metadata.frontmatter;
-                candidate.recency_at =
-                    Some(frontmatter.observed_at.unwrap_or(frontmatter.updated_at).max(frontmatter.updated_at));
-                candidate.text = frontmatter.summary;
-            }
+            Ok(envelope) => match envelope.content {
+                MemoryContent::Plaintext(body) => {
+                    let frontmatter = envelope.metadata.frontmatter;
+                    candidate.recency_at =
+                        Some(frontmatter.observed_at.unwrap_or(frontmatter.updated_at).max(frontmatter.updated_at));
+                    candidate.text = body;
+                }
+                MemoryContent::Ciphertext { .. } => {
+                    tracing::debug!(memory_id = %candidate.memory_id, "dropping auxiliary-only ciphertext hit from recall");
+                }
+                MemoryContent::MetadataOnly => {
+                    tracing::debug!(memory_id = %candidate.memory_id, "dropping auxiliary-only metadata-only hit from recall");
+                }
+            },
             Err(error) => {
                 tracing::warn!(memory_id = %candidate.memory_id, %error, "four-lane recall could not hydrate auxiliary-only hit")
             }
@@ -309,17 +322,24 @@ async fn hydrate_aux_only_candidates(substrate: &Substrate, candidates: &mut Vec
 
 fn effective_embed_budget_ms(context: &VectorRecallContext, triple: &memory_substrate::EmbeddingTriple) -> u64 {
     let lane_budget = context.config.effective_embed_timeout_ms(triple);
-    if context.mode != FusionMode::FourLaneHook {
-        return lane_budget;
-    }
+    let deadline_ms = match context.mode {
+        FusionMode::Legacy => return lane_budget,
+        FusionMode::FourLaneHook => HOOK_DEADLINE_MS,
+        FusionMode::FourLaneSearch => context.config.search_timeout_ms,
+    };
     let reserve = measured_fusion_reserve();
-    let deadline = Duration::from_millis(HOOK_DEADLINE_MS);
-    let residual = deadline.saturating_sub(reserve).as_millis().min(u128::from(u64::MAX)) as u64;
+    let residual =
+        Duration::from_millis(deadline_ms).saturating_sub(reserve).as_millis().min(u128::from(u64::MAX)) as u64;
+    // reserve >= deadline saturates residual to zero, so embedding gets a zero-
+    // budget timeout and the caller falls back to FTS-only.
     lane_budget.min(residual)
 }
 
-/// Calibrate deterministic fusion overhead once per process. The hook embed
-/// budget reserves this measured duration rather than a guessed constant.
+/// Advisory lower-bound on fusion overhead, measured on empty inputs.
+///
+/// The hook embed budget uses this as a proxy, but the real bound is the F2
+/// envelope (lanes + fusion + hydration). Empty-input calibration is a cheap
+/// proxy, not a guarantee on real workloads.
 fn measured_fusion_reserve() -> Duration {
     static RESERVE: OnceLock<Duration> = OnceLock::new();
     *RESERVE.get_or_init(|| {
@@ -418,6 +438,7 @@ fn hydrate_fused_candidates(fused: Vec<FusedHybridCandidate>) -> Vec<HydratedHyb
 mod tests {
     use super::*;
     use crate::embedding::EmbeddingError;
+    use crate::recall::config::API_EMBED_TIMEOUT_MS;
     use memory_substrate::EmbeddingTriple;
 
     struct FailingProvider {
@@ -436,6 +457,60 @@ mod tests {
         fn embed_document(&self, _text: &str) -> Result<Vec<f32>, EmbeddingError> {
             Err(EmbeddingError::Inference("fixture failure".to_owned()))
         }
+    }
+
+    /// W4-F4 pin: hydrate_aux_only_candidates surfaces content ONLY from
+    /// Plaintext canonical envelopes. A candidate whose canonical memory is
+    /// missing (the stale-index race class — the same fail-closed match family
+    /// as Ciphertext/MetadataOnly) is dropped; a plaintext one hydrates.
+    #[tokio::test]
+    async fn aux_only_hydration_is_plaintext_fail_closed() {
+        use memory_substrate::{
+            ClassificationOutcome, EventContext, InitOptions, Roots, Substrate, WriteMode, WriteRequest,
+        };
+        let temp = tempfile::tempdir().expect("tempdir");
+        let substrate = Substrate::init(
+            Roots::new(temp.path().join("repo"), temp.path().join("runtime")),
+            InitOptions { force_unsafe_durability: true, device_id: Some("dev_hydrate".into()) },
+        )
+        .await
+        .expect("init substrate");
+        let memory = memory_substrate::frontmatter::parse_document(
+            "---\nschema_version: 1\nid: mem_20260610_00000000000000aa_000001\ntype: pattern\nscope: agent\nsummary: hydratable\nconfidence: 1.0\ntrust_level: trusted\nsensitivity: internal\nstatus: active\ncreated_at: 2026-06-10T00:00:00Z\nupdated_at: 2026-06-10T00:00:00Z\nauthor:\n  kind: system\n  component: test\n---\nplaintext body\n",
+            Some(memory_substrate::RepoPath::new("agent/patterns/mem_20260610_00000000000000aa_000001.md")),
+        )
+        .expect("parse")
+        .memory;
+        substrate
+            .write_memory(WriteRequest {
+                operation_id: None,
+                memory,
+                expected_base_hash: None,
+                write_mode: WriteMode::CreateNew,
+                index_projection: None,
+                event_context: EventContext::default(),
+                allow_best_effort_durability: true,
+                classification: ClassificationOutcome::Trusted,
+            })
+            .await
+            .expect("write plaintext");
+
+        let aux_only = |id: &str| FusedHybridCandidate {
+            memory_id: memory_substrate::MemoryId::new(id),
+            text: String::new(),
+            score_breakdown: Default::default(),
+            rrf_score: 1.0,
+            recency_at: None,
+            final_score: 1.0,
+        };
+        let mut candidates = vec![
+            aux_only("mem_20260610_00000000000000aa_000001"),
+            aux_only("mem_20260610_00000000000000bb_000002"), // no canonical file — the race class
+        ];
+        hydrate_aux_only_candidates(&substrate, &mut candidates).await;
+        assert_eq!(candidates.len(), 1, "unreadable aux-only hit must be dropped");
+        assert_eq!(candidates[0].memory_id.as_str(), "mem_20260610_00000000000000aa_000001");
+        assert_eq!(candidates[0].text.trim_end(), "plaintext body");
     }
 
     #[tokio::test]
@@ -467,11 +542,45 @@ mod tests {
     }
 
     #[test]
-    fn hook_embed_budget_reserves_measured_fusion_time() {
-        let triple = EmbeddingTriple { provider: "local".to_owned(), model_ref: "fixture".to_owned(), dimension: 1 };
-        let context =
-            VectorRecallContext::new(None, VectorRecallConfig { embed_timeout_ms: Some(1_000), ..Default::default() })
-                .with_mode(FusionMode::FourLaneHook);
-        assert!(effective_embed_budget_ms(&context, &triple) <= HOOK_DEADLINE_MS);
+    fn legacy_embed_budget_is_uncapped() {
+        let api = EmbeddingTriple {
+            provider: "gemini-api".to_owned(),
+            model_ref: "gemini-embedding-2".to_owned(),
+            dimension: 768,
+        };
+        let context = VectorRecallContext::new(None, VectorRecallConfig::default()).with_mode(FusionMode::Legacy);
+        assert_eq!(effective_embed_budget_ms(&context, &api), API_EMBED_TIMEOUT_MS);
+    }
+
+    #[test]
+    fn search_embed_budget_saturates_at_zero_deadline() {
+        let api = EmbeddingTriple {
+            provider: "gemini-api".to_owned(),
+            model_ref: "gemini-embedding-2".to_owned(),
+            dimension: 768,
+        };
+        let config = VectorRecallConfig {
+            search_timeout_ms: 0,
+            embed_timeout_ms: Some(10_000),
+            ..VectorRecallConfig::default()
+        };
+        let context = VectorRecallContext::new(None, config).with_mode(FusionMode::FourLaneSearch);
+        // reserve >= deadline (0 ms) saturates residual to 0, so the API lane
+        // gets a zero budget and the call will fall back to FTS-only.
+        assert_eq!(effective_embed_budget_ms(&context, &api), 0);
+    }
+
+    #[test]
+    fn hook_embed_budget_caps_at_hook_deadline() {
+        let local = EmbeddingTriple {
+            provider: "fastembed-candle".to_owned(),
+            model_ref: "all-minilm-l6-v2".to_owned(),
+            dimension: 384,
+        };
+        let config = VectorRecallConfig { embed_timeout_ms: Some(10_000), ..VectorRecallConfig::default() };
+        let context = VectorRecallContext::new(None, config).with_mode(FusionMode::FourLaneHook);
+        let budget = effective_embed_budget_ms(&context, &local);
+        assert!(budget <= HOOK_DEADLINE_MS, "hook budget {budget} should not exceed {HOOK_DEADLINE_MS} ms");
+        assert!(budget < 10_000, "hook budget should be capped by the deadline, not the lane timeout");
     }
 }
