@@ -43,9 +43,13 @@ pub fn load_sidecar(dataset: &Path) -> Result<EnrichmentSidecar, String> {
     match serde_json::from_slice(&bytes) {
         Ok(sidecar) => Ok(sidecar),
         Err(error) => {
-            let ts = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
-            let name = path.file_name().unwrap_or_default().to_string_lossy();
-            let quarantine = path.with_file_name(format!("{name}.corrupt-{ts}"));
+            // Non-clobbering quarantine-aside: probe for a free suffix so a
+            // prior quarantine artifact is never overwritten (round-2 F2).
+            let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            let quarantine = (0u32..10_000)
+                .map(|n| path.with_file_name(format!("{name}.corrupt-{n:04}")))
+                .find(|candidate| !candidate.exists())
+                .ok_or_else(|| format!("parse {}: {error}; no free quarantine slot", path.display()))?;
             fs::rename(&path, &quarantine).map_err(|rename_error| {
                 format!("parse {}: {error}; quarantine {} failed: {rename_error}", path.display(), quarantine.display())
             })?;
@@ -235,6 +239,12 @@ fn validate(raw: RawHarnessOutput) -> Result<Enrichment, String> {
     Ok(Enrichment { abstraction: Some(abstraction), cues, source: "harness".to_owned() })
 }
 
+/// Round-2 F4 contract: a dropped-sensitive item IS persisted into the sidecar
+/// with `abstraction: None` / empty cues — deliberately. The null entry marks
+/// the item as processed (resume skips it; no regeneration retry loop against
+/// content that will drop again) and ingestion forwards a §C-valid explicit
+/// null, which the daemon treats as no-abstraction. Attempted-vs-promoted
+/// counts stay honest via the separate disposition key.
 fn privacy_rebind(body: &str, abstraction: &str, cues: &[String]) -> Result<(Option<String>, Vec<String>), String> {
     let classifier = memory_privacy::DeterministicPrivacyClassifier::new();
     let combined = format!("{body}\n{abstraction}\n{}", cues.join("\n"));
@@ -553,6 +563,10 @@ mod tests {
     }
 
     #[test]
+    /// Round-2 F3 note: this asserts the temp file is cleaned up, which a
+    /// pre-fix direct write also satisfies — the fsync+rename property itself
+    /// is not pinnable without crash injection. The corrupt-sidecar quarantine
+    /// test is the behavioral pin for torn-write recovery.
     fn sidecar_is_written_atomically() {
         let dir = tempfile::tempdir().unwrap();
         let dataset_dir = dir.path();

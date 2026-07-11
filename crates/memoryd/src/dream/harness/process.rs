@@ -67,8 +67,8 @@ fn run_hardened_command_blocking(command: HardenedCommand, prompt: &str) -> Resu
 }
 
 struct SpawnedHardenedChild {
-    stdout_reader: thread::JoinHandle<std::io::Result<Vec<u8>>>,
-    stderr_reader: thread::JoinHandle<std::io::Result<Vec<u8>>>,
+    stdout_reader: std::sync::mpsc::Receiver<std::io::Result<Vec<u8>>>,
+    stderr_reader: std::sync::mpsc::Receiver<std::io::Result<Vec<u8>>>,
     stdin_writer: Option<thread::JoinHandle<std::io::Result<()>>>,
 }
 
@@ -109,13 +109,30 @@ fn spawn_hardened_child(
         })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // Own process group: a forking harness CLI (W0 H1 class) must be killable
+    // as a GROUP on timeout, or setsid'd/forked descendants survive the child
+    // kill and hold the inherited pipes forever.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        process.process_group(0);
+    }
     command.environment.apply_to(&mut process);
 
     let mut child = process.spawn()?;
     let stdout = child.stdout.take().expect("stdout was piped");
     let stderr = child.stderr.take().expect("stderr was piped");
-    let stdout_reader = thread::spawn(move || read_first_bytes(stdout, STDOUT_CAPTURE_LIMIT_BYTES));
-    let stderr_reader = thread::spawn(move || read_last_bytes(stderr, STDERR_TAIL_LIMIT_BYTES));
+    // Channel-delivered reads (never bare joins): a grandchild holding the
+    // inherited pipe write-ends must not stall capture past the drain grace
+    // (W0 H1/V1 pattern, ported from memorum-eval judge.rs).
+    let (stdout_tx, stdout_reader) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        let _ = stdout_tx.send(read_first_bytes(stdout, STDOUT_CAPTURE_LIMIT_BYTES));
+    });
+    let (stderr_tx, stderr_reader) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        let _ = stderr_tx.send(read_last_bytes(stderr, STDERR_TAIL_LIMIT_BYTES));
+    });
     let stdin_writer = if command.prompt_transport == PromptTransport::Stdin {
         child.stdin.take().map(|stdin| spawn_stdin_writer(stdin, prompt.to_owned()))
     } else {
@@ -132,8 +149,14 @@ fn capture_hardened_child(
 ) -> Result<CapturedHardenedChild, HarnessCliError> {
     let outcome = wait_with_timeout(child, options.timeout, options.kill_grace)?;
     let stdin_write_result = join_stdin_writer(handles.stdin_writer);
-    let stdout = join_reader(handles.stdout_reader)?;
-    let stderr_tail = join_reader(handles.stderr_reader)?;
+    // One shared absolute drain deadline for both pipes, after the child is
+    // reaped. On a group-killed timeout the pipes close immediately; the grace
+    // only matters when an in-group straggler escaped (or a non-unix build
+    // cannot group-kill) — then we return Timeout instead of hanging. Never
+    // group-kill here: the child is reaped and the pgid may be recycled.
+    let drain_deadline = std::time::Instant::now() + PIPE_DRAIN_GRACE;
+    let stdout = recv_reader(&handles.stdout_reader, drain_deadline, options.timeout)?;
+    let stderr_tail = recv_reader(&handles.stderr_reader, drain_deadline, options.timeout)?;
     let auth_stdout_tail = (!options.redact_stderr).then(|| auth_diagnostic_tail(&stdout));
     let stdout = String::from_utf8_lossy(&stdout).into_owned();
     let stderr_tail = if options.redact_stderr {
@@ -193,13 +216,18 @@ fn wait_with_timeout(
         }
 
         if std::time::Instant::now() >= deadline {
-            terminate_child(child)?;
+            terminate_child_group(child)?;
             let kill_deadline = std::time::Instant::now() + kill_grace;
             while std::time::Instant::now() < kill_deadline {
                 if let Some(status) = child.try_wait()? {
                     return Ok(WaitOutcome { status, timed_out: true });
                 }
                 thread::sleep(Duration::from_millis(10));
+            }
+            #[cfg(unix)]
+            {
+                // Group SIGKILL is safe pre-reap: the pgid is still ours.
+                let _ = send_signal(-(child.id() as i32), SIGKILL);
             }
             child.kill()?;
             let status = child.wait()?;
@@ -210,10 +238,13 @@ fn wait_with_timeout(
     }
 }
 
-fn terminate_child(child: &mut std::process::Child) -> std::io::Result<()> {
+fn terminate_child_group(child: &mut std::process::Child) -> std::io::Result<()> {
     #[cfg(unix)]
     {
-        if send_sigterm(child.id()).is_ok() {
+        // Negative pid = the whole process group (we spawned with
+        // process_group(0), so the group id equals the child pid). Fall back
+        // to the single child if the group signal fails.
+        if send_signal(-(child.id() as i32), SIGTERM).is_ok() || send_signal(child.id() as i32, SIGTERM).is_ok() {
             return Ok(());
         }
     }
@@ -222,13 +253,17 @@ fn terminate_child(child: &mut std::process::Child) -> std::io::Result<()> {
 }
 
 #[cfg(unix)]
-fn send_sigterm(pid: u32) -> std::io::Result<()> {
-    const SIGTERM: i32 = 15;
+const SIGTERM: i32 = 15;
+#[cfg(unix)]
+const SIGKILL: i32 = 9;
 
-    // SAFETY: `pid` comes from `std::process::Child::id` for a child process
-    // we spawned, and `SIGTERM` is a plain signal number. `kill(2)` does not
-    // dereference Rust pointers or retain references across the FFI boundary.
-    let result = unsafe { posix_kill(pid as i32, SIGTERM) };
+#[cfg(unix)]
+fn send_signal(pid: i32, signal: i32) -> std::io::Result<()> {
+    // SAFETY: `pid` derives from `std::process::Child::id` for a child (or its
+    // process group, negated) that we spawned and have not yet reaped, and the
+    // signal is a plain number. `kill(2)` does not dereference Rust pointers
+    // or retain references across the FFI boundary.
+    let result = unsafe { posix_kill(pid, signal) };
     if result == 0 {
         Ok(())
     } else {
@@ -294,8 +329,28 @@ fn successful_stdout_allows_stdin_error(stdout: &str, result: &Result<(), Harnes
         )
 }
 
-fn join_reader(handle: thread::JoinHandle<std::io::Result<Vec<u8>>>) -> Result<Vec<u8>, HarnessCliError> {
-    handle.join().map_err(|_| std::io::Error::other("hardened command reader panicked"))?.map_err(HarnessCliError::Io)
+/// How long capture waits for the pipe readers after the child is reaped.
+/// Pipes close instantly in the normal case; the grace only bounds the
+/// straggler-holding-the-pipe case.
+const PIPE_DRAIN_GRACE: Duration = Duration::from_secs(5);
+
+fn recv_reader(
+    rx: &std::sync::mpsc::Receiver<std::io::Result<Vec<u8>>>,
+    deadline: std::time::Instant,
+    command_timeout: Duration,
+) -> Result<Vec<u8>, HarnessCliError> {
+    let remaining = deadline.saturating_duration_since(std::time::Instant::now()).max(Duration::from_millis(50));
+    match rx.recv_timeout(remaining) {
+        Ok(result) => result.map_err(HarnessCliError::Io),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            // Detach: the reader thread dies when the straggler releases the
+            // pipe. Bounded failure beats an unbounded join.
+            Err(HarnessCliError::Timeout { duration: command_timeout })
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            Err(HarnessCliError::Io(std::io::Error::other("hardened command reader panicked")))
+        }
+    }
 }
 
 pub(super) fn validate_json_if_expected(output: String, expect_json: bool) -> Result<String, HarnessCliError> {

@@ -827,3 +827,33 @@ fn process_is_alive(pid: u32) -> bool {
         .map(|status| status.success())
         .unwrap_or(false)
 }
+
+/// W4-prep round-2 F1 (the W0 H1 grandchild-stall class, ported): a harness
+/// CLI that forks a background descendant holding the inherited pipes must not
+/// stall capture past the timeout + drain grace. Pre-port, wait_with_timeout
+/// killed only the direct child and the reader joins blocked until the
+/// grandchild's natural exit (~20s here); post-port the group kill reaps the
+/// whole tree and the channel drain bounds the wait.
+#[tokio::test]
+async fn timeout_with_pipe_holding_grandchild_is_bounded() {
+    let scratch_root = tempfile::tempdir().expect("scratch root");
+    let start = std::time::Instant::now();
+    let error = run_hardened_command(
+        HardenedCommand {
+            program: "sh".into(),
+            args: vec!["-c".to_string(), "sleep 20 & sleep 20".to_string()],
+            prompt_transport: PromptTransport::Stdin,
+            expect_json: false,
+            timeout: Duration::from_millis(200),
+            kill_grace: Duration::from_millis(200),
+            scratch_root: scratch_root.path().to_path_buf(),
+            environment: MinimalEnvironment::from_pairs::<&str, String, _>([]),
+            redact_stderr: true,
+        },
+        "prompt",
+    )
+    .await
+    .expect_err("timeout expected");
+    assert!(matches!(error, HarnessCliError::Timeout { .. }), "got: {error:?}");
+    assert!(start.elapsed() < Duration::from_secs(8), "capture must be bounded, took {:?}", start.elapsed());
+}
