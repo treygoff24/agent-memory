@@ -26,6 +26,14 @@ use super::embedding::{
     upsert_vector_payload, validate_update_preconditions,
 };
 use super::fts::{sanitize_fts_query, sanitize_relaxed_fts_query, RELAXED_RANK_OFFSET};
+
+/// The hash-scoped pending-aux-job delete used by `update_aux_embedding`.
+/// `pub` solely so the vector-lifecycle predicate pin executes the SAME SQL as
+/// production — the `AND content_hash=?6` scoping is the W2-F2 fix; a drifted
+/// copy in the test would let a regression ship behind a green pin (round-3
+/// review finding).
+pub const AUX_PENDING_JOB_HASH_SCOPED_DELETE_SQL: &str = "DELETE FROM aux_pending_embedding_jobs
+             WHERE row_kind=?1 AND target_id=?2 AND provider=?3 AND model_ref=?4 AND dimension=?5 AND content_hash=?6";
 use super::read::{
     append_filters_and_order, append_match_term_filters, append_memory_query_filters, append_recall_index_filters,
     collect_query_results, hydrate_recall_index_auxiliary, read_all_entity_rows, read_entities_by_memory,
@@ -650,8 +658,7 @@ impl Index {
             ],
         )?;
         txn.execute(
-            "DELETE FROM aux_pending_embedding_jobs
-             WHERE row_kind=?1 AND target_id=?2 AND provider=?3 AND model_ref=?4 AND dimension=?5 AND content_hash=?6",
+            AUX_PENDING_JOB_HASH_SCOPED_DELETE_SQL,
             params![
                 update.row_kind.as_db_str(),
                 update.target_id,

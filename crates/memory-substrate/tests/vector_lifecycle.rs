@@ -273,8 +273,7 @@ fn aux_hash_change_between_fetch_and_update_rejects_stale_and_preserves_replacem
     let deleted = index
         .connection()
         .execute(
-            "DELETE FROM aux_pending_embedding_jobs
-             WHERE row_kind=?1 AND target_id=?2 AND provider=?3 AND model_ref=?4 AND dimension=?5 AND content_hash=?6",
+            memory_substrate::index::AUX_PENDING_JOB_HASH_SCOPED_DELETE_SQL,
             rusqlite::params![
                 "abstraction",
                 replacement.target_id,

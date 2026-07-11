@@ -524,6 +524,22 @@ body text used for the migration fixture
                 row.get(0)
             })?;
         assert_eq!(chunk_count, expected_chunk_count as i64);
+        let pending_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pending_embedding_jobs WHERE chunk_id IN (SELECT chunk_id FROM memory_chunks WHERE memory_id=?1)",
+            [expected_id.as_str()],
+            |row| row.get(0),
+        )?;
+        assert_eq!(pending_count, expected_chunk_count as i64);
+        let tag_count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM memory_tags WHERE memory_id=?1", [expected_id.as_str()], |row| {
+                row.get(0)
+            })?;
+        assert_eq!(tag_count, 1);
+        let alias_count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM memory_aliases WHERE memory_id=?1", [expected_id.as_str()], |row| {
+                row.get(0)
+            })?;
+        assert_eq!(alias_count, 1);
         drop(conn);
 
         // Rollback: the pre-migration copy must be readable as RAW v5 first
@@ -550,6 +566,9 @@ body text used for the migration fixture
         let reopened_version: i64 =
             reopened.query_row("SELECT COALESCE(MAX(version), 0) FROM schema_migrations", [], |row| row.get(0))?;
         assert_eq!(reopened_version, 6);
+        let reopened_summary: String =
+            reopened.query_row("SELECT summary FROM memories WHERE id=?1", [expected_id.as_str()], |row| row.get(0))?;
+        assert_eq!(reopened_summary, expected_summary);
         Ok(())
     }
 }
