@@ -1,6 +1,6 @@
 # W3 merge-proposal operation spec — near-duplicate consolidation
 
-Status: **DRAFT r3 — awaiting Trey ratification** (companion to `docs/specs/2026-07-10-w2-spec-ratification-package.md`; ratify together). Plan: `docs/plans/2026-07-10-memora-lessons-memorum-upgrades.md` §W3 (r5, approved). Spec home on ratification: system-spec governance section amendment + this document referenced as the operation contract. Depends on W2's abstraction vectors and §A4 write pipeline.
+Status: **RATIFIED AS-IS by Trey 2026-07-10** (r3; torn-tail-resume deviation accepted; via in-session AskUserQuestion, recorded in BUILD-STATE approval record #8) (companion to `docs/specs/2026-07-10-w2-spec-ratification-package.md`; ratify together). Plan: `docs/plans/2026-07-10-memora-lessons-memorum-upgrades.md` §W3 (r5, approved). Spec home on ratification: system-spec governance section amendment + this document referenced as the operation contract. Depends on W2's abstraction vectors and §A4 write pipeline.
 
 Revision goal (r2, 2026-07-10): applies all 11 accepted findings from Luna round 1 (`docs/reviews/memora-arc/findings-w3spec-r1.md`) — central non-servability predicate, explicit lifecycle-transition amendments, concurrency fences (apply mutex + CAS everywhere), real event definitions replacing phantom ones, rollback hash safety, shipped-review-predicate reuse + pinned-approval DTO field, no-aux-at-staging rule, fail-closed journal framing, ratified availability-gap decision, ratified N=1 new-ID supersession + two-clone contract, and documented direct-get behavior.
 
