@@ -245,7 +245,7 @@ pub(crate) async fn get_response(
     let body = match envelope.content {
         MemoryContent::Plaintext(body) => body,
         MemoryContent::MetadataOnly => String::new(),
-        MemoryContent::Ciphertext { .. } => "[encrypted content omitted]".to_string(),
+        MemoryContent::Ciphertext { .. } => crate::protocol::ENCRYPTED_BODY_SENTINEL.to_string(),
     };
     let (body, truncated) = if full_body { (body, false) } else { bounded_with_truncation(&body, GET_BODY_MAX) };
     Ok(ResponsePayload::Get(GetResponse {

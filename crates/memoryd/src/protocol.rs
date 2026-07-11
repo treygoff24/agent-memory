@@ -1003,6 +1003,12 @@ pub struct SearchHit {
     pub score: f64,
 }
 
+/// The body string the daemon returns in place of encrypted-at-rest content.
+/// Part of the wire contract: consumers that compare body content (import
+/// supersede adoption) must treat this sentinel as "content unavailable" even
+/// when talking to an older daemon that predates [`GetResponse::encrypted`].
+pub const ENCRYPTED_BODY_SENTINEL: &str = "[encrypted content omitted]";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetResponse {
     pub id: String,

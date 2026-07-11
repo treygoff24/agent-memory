@@ -1657,6 +1657,90 @@ mod tests {
         );
     }
 
+    /// V-HIGH (verify round): an OLD daemon predating `GetResponse.encrypted`
+    /// emits frames without the field, which deserializes to `false` — the
+    /// redaction-sentinel body is the stable cross-version signal and must fail
+    /// closed on its own, or the mixed-version install (upgraded binary, stale
+    /// running daemon) re-opens the F23 duplicate-supersede hole.
+    #[tokio::test]
+    async fn execute_supersede_sentinel_body_fails_closed_without_encrypted_flag() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let engine = ImportEngine::new(tmp.path());
+        let candidate = make_candidate("a", "replacement", Vec::new());
+        let mut state = ImportState::default();
+        state.imports.insert(
+            "a".to_string(),
+            ImportRecord {
+                source_identity: String::new(),
+                source_key: String::new(),
+                source_memory_id: None,
+                memory_id: "mem_prior".to_string(),
+                content_hash: "sha256:STALE".to_string(),
+                imported_at: Utc::now(),
+                harness: "claude-code".to_string(),
+                source_path_at_import: PathBuf::from("/fixture/a"),
+                namespace: Some("me".to_string()),
+                canonical_namespace_id: None,
+                aliases: Vec::new(),
+                supersession_chain: Vec::new(),
+            },
+        );
+        let action = PlannedWrite {
+            source_key: candidate.source_key.clone(),
+            candidate,
+            scope: ScopeBinding {
+                scope: memory_substrate::Scope::User,
+                namespace: Some("me".to_string()),
+                namespace_alias: None,
+                canonical_namespace_id: None,
+                resolution: ResolutionKind::UserScope,
+                project_yaml: None,
+            },
+            action: PlanAction::Supersede {
+                prior_memory_id: "mem_prior".to_string(),
+                prior_content_hash: "sha256:STALE".to_string(),
+            },
+            wiki_link_targets_resolvable: Vec::new(),
+            wiki_link_targets_back_edge: Vec::new(),
+        };
+
+        // Old-daemon frame shape: sentinel body, `encrypted` absent → false.
+        let mut client = MockDaemonClient::default()
+            .with_superseded_by_chain("mem_prior", vec!["mem_enc_old".to_string()])
+            .with_get_response(
+                "mem_enc_old",
+                GetResponse {
+                    id: "mem_enc_old".to_string(),
+                    summary: "encrypted replacement from an old daemon".to_string(),
+                    body: crate::protocol::ENCRYPTED_BODY_SENTINEL.to_string(),
+                    truncated: false,
+                    provenance: None,
+                    status: Some(MemoryStatus::Active),
+                    encrypted: false,
+                    guidance: String::new(),
+                },
+            );
+
+        let result = engine
+            .execute(
+                ImportPlan {
+                    actions: vec![action],
+                    source_discovery_summary: DiscoverySummary::default(),
+                    unresolved_back_edges: Vec::new(),
+                    parse_errors: Vec::new(),
+                    frontmatter_recovered: Vec::new(),
+                    claude_roots_used: Vec::new(),
+                    state,
+                },
+                ExecuteOptions::default(),
+                &mut client,
+            )
+            .await;
+
+        assert!(result.is_err(), "sentinel body must fail closed even without the encrypted flag");
+        assert!(client.supersede_calls.is_empty(), "mixed-version skew must not mint a duplicate supersede");
+    }
+
     /// F22: the chain walk is bounded by DEPTH, not by collected-node count. A
     /// wide first hop (>16 siblings) must not stop traversal to deeper
     /// replacements — the pre-fix `chain.len() >= 16` pre-hop check did.

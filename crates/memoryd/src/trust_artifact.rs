@@ -129,6 +129,14 @@ pub struct WebSourceEvidence {
 pub enum TrustArtifactError {
     #[error("memory {0} was not found")]
     MemoryNotFound(MemoryId),
+    /// A `memory_supersession` mirror row holds a string that is not a valid
+    /// memory id. This is mirror corruption for a memory that EXISTS — it must
+    /// never surface as `not_found`, or fail-open consumers (the import
+    /// chain-walk's provably-gone leaf skip) treat the live parent as deleted
+    /// and act on an incomplete supersession chain (verify finding V-MAJOR on
+    /// F20).
+    #[error("supersession mirror row for {parent} holds an invalid memory id: {raw}")]
+    CorruptSupersessionRow { parent: MemoryId, raw: String },
     #[error("read memory {id}: {source}")]
     ReadMemory { id: MemoryId, source: memory_substrate::ReadError },
     #[error("open events-log mirror: {0}")]
@@ -476,8 +484,9 @@ fn query_supersession_ids(
 
     let mut ids = Vec::new();
     for row in rows {
-        let linked_id = MemoryId::try_new(row.map_err(TrustArtifactError::QueryMirror)?)
-            .map_err(|_| TrustArtifactError::MemoryNotFound(id.clone()))?;
+        let raw = row.map_err(TrustArtifactError::QueryMirror)?;
+        let linked_id = MemoryId::try_new(raw.clone())
+            .map_err(|_| TrustArtifactError::CorruptSupersessionRow { parent: id.clone(), raw })?;
         ids.push(linked_id);
     }
     Ok(ids)

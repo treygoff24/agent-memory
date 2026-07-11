@@ -172,3 +172,28 @@ impl HandlerError {
         Self { code: error.code().to_string(), message: bounded(&error.to_string(), 240), retryable }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::trust_artifact::TrustArtifactError;
+
+    /// V-MAJOR on F20: a corrupt supersession-mirror row is corruption for a
+    /// memory that EXISTS. It must map to the fail-closed `trust_artifact_error`
+    /// code — mapping it to `not_found` makes the import chain-walk treat the
+    /// live parent as a provably-gone leaf and act on an incomplete chain.
+    #[test]
+    fn corrupt_supersession_row_is_not_not_found() {
+        let corrupt = HandlerError::trust_artifact(TrustArtifactError::CorruptSupersessionRow {
+            parent: MemoryId::new("mem_20260428_0123456789abcdef_000001"),
+            raw: "definitely-not-a-memory-id".to_string(),
+        });
+        assert_eq!(corrupt.code, "trust_artifact_error");
+        assert!(corrupt.retryable);
+
+        let gone = HandlerError::trust_artifact(TrustArtifactError::MemoryNotFound(MemoryId::new(
+            "mem_20260428_0123456789abcdef_000001",
+        )));
+        assert_eq!(gone.code, "not_found", "a truly missing memory stays not_found");
+    }
+}

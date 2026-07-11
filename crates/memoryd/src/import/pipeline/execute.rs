@@ -352,7 +352,11 @@ impl ImportEngine {
             if !matches!(get.status, Some(MemoryStatus::Active) | Some(MemoryStatus::Pinned)) {
                 continue;
             }
-            if get.encrypted {
+            // The sentinel-body check backstops the typed flag: an old daemon
+            // (upgraded binary, not yet restarted) emits frames without the
+            // `encrypted` field, which deserializes to `false` — the sentinel
+            // is the stable wire artifact across versions (verify V-HIGH).
+            if get.encrypted || get.body == crate::protocol::ENCRYPTED_BODY_SENTINEL {
                 return Err(partial_import_error(
                     ImportError::Parse {
                         source_key: new_id.clone(),
