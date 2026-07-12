@@ -25,6 +25,10 @@ pub struct AbstractionCompileItem {
     pub new_id: Option<String>,
     pub source: &'static str,
     pub outcome: String,
+    /// Governance refusal detail when `outcome` is not `promoted` — without it
+    /// a refused backfill run cannot self-diagnose (W5 rehearsal lesson).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -61,6 +65,7 @@ pub async fn run(args: crate::cli::DreamAbstractionCompileArgs) -> anyhow::Resul
                     new_id: None,
                     source: "read",
                     outcome: error.to_string(),
+                    reason: None,
                 });
                 continue;
             }
@@ -82,6 +87,7 @@ pub async fn run(args: crate::cli::DreamAbstractionCompileArgs) -> anyhow::Resul
                     new_id: None,
                     source,
                     outcome: error,
+                    reason: None,
                 });
                 continue;
             }
@@ -95,6 +101,7 @@ pub async fn run(args: crate::cli::DreamAbstractionCompileArgs) -> anyhow::Resul
                     new_id: None,
                     source,
                     outcome: error.to_string(),
+                    reason: None,
                 });
                 continue;
             }
@@ -120,6 +127,7 @@ pub async fn run(args: crate::cli::DreamAbstractionCompileArgs) -> anyhow::Resul
                     new_id: None,
                     source,
                     outcome: error.message,
+                    reason: None,
                 });
                 continue;
             }
@@ -135,6 +143,7 @@ pub async fn run(args: crate::cli::DreamAbstractionCompileArgs) -> anyhow::Resul
             new_id: response.new_id,
             source,
             outcome: format!("{:?}", response.status).to_lowercase(),
+            reason: response.reason.as_ref().map(|reason| format!("{reason:?}")),
         });
     }
     Ok(report)
