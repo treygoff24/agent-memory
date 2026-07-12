@@ -78,7 +78,7 @@ impl Default for VectorRecallConfig {
             recency_lambda: default_recency_lambda(),
             recency_half_life_days: default_recency_half_life_days(),
             embed_timeout_ms: None,
-            four_lane_enabled: true,
+            four_lane_enabled: false,
             chunk_vector_weight: DEFAULT_CHUNK_VECTOR_WEIGHT,
             bm25_weight: DEFAULT_BM25_WEIGHT,
             abstraction_vector_weight: DEFAULT_ABSTRACTION_VECTOR_WEIGHT,
@@ -123,7 +123,11 @@ fn default_recency_half_life_days() -> f64 {
 }
 
 fn default_four_lane_enabled() -> bool {
-    true
+    // Ships DARK: the W4 eval gate showed four-lane at current aux-input quality
+    // loses to legacy fusion on identical vectors (dev judge 0.658 best vs 0.700;
+    // docs/reviews/memora-arc/w4-eval-gate-results.md). Flip via config once
+    // dream-quality abstractions land (W5) and a re-run of the gate shows a win.
+    false
 }
 
 fn default_chunk_vector_weight() -> f64 {
@@ -172,6 +176,17 @@ mod tests {
     use super::*;
     use crate::embedding::{FASTEMBED_CANDLE_PROVIDER, GEMINI_API_PROVIDER};
 
+    /// W4 merge condition: four-lane fusion ships DARK. A config.yaml with no
+    /// `four_lane_enabled` key — every deployment that has not opted in — must
+    /// resolve to legacy fusion until the eval gate is re-run and won.
+    #[test]
+    fn four_lane_fusion_defaults_dark() {
+        assert!(!VectorRecallConfig::default().four_lane_enabled);
+        let parsed: ConfigRecallEnvelope =
+            serde_yaml::from_str("recall:\n  vector_recall:\n    knn_limit: 20\n").unwrap();
+        assert!(!parsed.recall.unwrap().vector_recall.four_lane_enabled);
+    }
+
     fn gemini_triple() -> EmbeddingTriple {
         EmbeddingTriple {
             provider: GEMINI_API_PROVIDER.to_string(),
@@ -199,7 +214,7 @@ mod tests {
                 recency_lambda: 0.0005,
                 recency_half_life_days: 90.0,
                 embed_timeout_ms: None,
-                four_lane_enabled: true,
+                four_lane_enabled: false,
                 chunk_vector_weight: 1.0,
                 bm25_weight: 1.0,
                 abstraction_vector_weight: 2.0,

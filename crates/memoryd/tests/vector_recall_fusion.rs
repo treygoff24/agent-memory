@@ -294,7 +294,8 @@ async fn abstraction_lane_surfaces_a_memory_missed_by_fts() {
         })
         .await;
     drain_all(&fixture.substrate, &provider).await;
-    let config = VectorRecallConfig { knn_limit: 1, ..VectorRecallConfig::default() };
+    // Explicit opt-in: four-lane ships dark (W4 merge condition), and this test exists to exercise it.
+    let config = VectorRecallConfig { knn_limit: 1, four_lane_enabled: true, ..VectorRecallConfig::default() };
 
     let legacy = build_delta_response_with_vector_recall(
         &fixture.substrate,
@@ -488,8 +489,11 @@ async fn zero_search_timeout_makes_embedding_budget_zero_and_falls_back_to_fts()
     let response = build_delta_response_with_vector_recall(
         &fixture.substrate,
         fixture.delta_request("fallback keyword"),
-        VectorRecallContext::new(Some(provider), VectorRecallConfig { search_timeout_ms: 0, ..Default::default() })
-            .with_mode(memoryd::recall::FusionMode::FourLaneSearch),
+        VectorRecallContext::new(
+            Some(provider),
+            VectorRecallConfig { search_timeout_ms: 0, four_lane_enabled: true, ..Default::default() },
+        )
+        .with_mode(memoryd::recall::FusionMode::FourLaneSearch),
     )
     .await
     .expect("zero budget delta");
