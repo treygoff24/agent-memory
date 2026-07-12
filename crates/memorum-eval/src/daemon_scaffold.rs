@@ -45,6 +45,24 @@ struct TempTree {
 impl DaemonScaffold {
     #[cfg(feature = "quality")]
     pub fn set_four_lane_fusion(&self, enabled: bool) {
+        self.merge_vector_recall_keys(&[("four_lane_enabled", serde_yaml::Value::Bool(enabled))]);
+    }
+
+    /// Override the four RRF lane weights in the scaffold's `config.yaml` so the
+    /// benchmark A/B can sweep dev-split weights without rebuilding the daemon.
+    #[cfg(feature = "quality")]
+    pub fn set_fusion_weights(&self, [chunk, bm25, abstraction, cue]: [f64; 4]) {
+        let num = |v: f64| serde_yaml::Value::Number(serde_yaml::Number::from(v));
+        self.merge_vector_recall_keys(&[
+            ("chunk_vector_weight", num(chunk)),
+            ("bm25_weight", num(bm25)),
+            ("abstraction_vector_weight", num(abstraction)),
+            ("cue_vector_weight", num(cue)),
+        ]);
+    }
+
+    #[cfg(feature = "quality")]
+    fn merge_vector_recall_keys(&self, entries: &[(&str, serde_yaml::Value)]) {
         let path = self.tree_dir.path().join("config.yaml");
         let text = fs::read_to_string(&path).unwrap_or_default();
         let mut value: serde_yaml::Value =
@@ -58,10 +76,9 @@ impl DaemonScaffold {
                     .entry(serde_yaml::Value::String("vector_recall".to_owned()))
                     .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
                 if let Some(vector_recall_map) = vector_recall.as_mapping_mut() {
-                    vector_recall_map.insert(
-                        serde_yaml::Value::String("four_lane_enabled".to_owned()),
-                        serde_yaml::Value::Bool(enabled),
-                    );
+                    for (key, entry) in entries {
+                        vector_recall_map.insert(serde_yaml::Value::String((*key).to_owned()), entry.clone());
+                    }
                 }
             }
         }

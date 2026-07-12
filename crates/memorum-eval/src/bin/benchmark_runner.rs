@@ -3,7 +3,9 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::{Parser, ValueEnum};
-use memorum_eval::benchmark::{run_baseline, BenchmarkConfig, BenchmarkEmbeddingLane, BenchmarkFusion, Split};
+use memorum_eval::benchmark::{
+    run_baseline, BenchmarkConfig, BenchmarkEmbeddingLane, BenchmarkFusion, FusionWeights, Split,
+};
 use memorum_eval::judge::{BenchmarkJudge, DeterministicMockJudge, ExternalCommandJudge};
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -49,6 +51,17 @@ struct Cli {
     /// Retrieval fusion policy. Legacy is the frozen baseline control.
     #[arg(long, value_enum, default_value = "legacy")]
     fusion: FusionArg,
+    /// Dev-split RRF weight-sweep overrides. Setting ANY of these overrides all
+    /// four lane weights (unset ones fall back to the daemon defaults). Only
+    /// meaningful with --fusion four-lane; recorded in the report.
+    #[arg(long)]
+    w_chunk: Option<f64>,
+    #[arg(long)]
+    w_bm25: Option<f64>,
+    #[arg(long)]
+    w_abstraction: Option<f64>,
+    #[arg(long)]
+    w_cue: Option<f64>,
     /// External judge executable. It receives one JSON record on stdin and must
     /// emit {"score": number, "rationale": string} on stdout.
     #[arg(long)]
@@ -99,6 +112,14 @@ fn run(cli: Cli) -> Result<(), String> {
             FusionArg::Legacy => BenchmarkFusion::Legacy,
             FusionArg::FourLane => BenchmarkFusion::FourLane,
         },
+        fusion_weights: [cli.w_chunk, cli.w_bm25, cli.w_abstraction, cli.w_cue].iter().any(Option::is_some).then(
+            || FusionWeights {
+                chunk: cli.w_chunk.unwrap_or(memoryd::recall::DEFAULT_CHUNK_VECTOR_WEIGHT),
+                bm25: cli.w_bm25.unwrap_or(memoryd::recall::DEFAULT_BM25_WEIGHT),
+                abstraction: cli.w_abstraction.unwrap_or(memoryd::recall::DEFAULT_ABSTRACTION_VECTOR_WEIGHT),
+                cue: cli.w_cue.unwrap_or(memoryd::recall::DEFAULT_CUE_VECTOR_WEIGHT),
+            },
+        ),
         expected_sensitivity: cli.expected_sensitivity,
         judge_timeout: cli.judge_timeout,
     };

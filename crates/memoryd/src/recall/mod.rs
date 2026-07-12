@@ -23,7 +23,10 @@ pub use candidates::{
     collect_recall_candidates, collect_recall_candidates_from_index, hydrate_candidate_strength, CandidateCollection,
     RecallCandidate, RecallCollectionRequest, RecallIndexFuture, RecallIndexReader, StrengthHydration,
 };
-pub use config::{load_recall_config, RecallConfig, VectorRecallConfig};
+pub use config::{
+    load_recall_config, RecallConfig, VectorRecallConfig, DEFAULT_ABSTRACTION_VECTOR_WEIGHT, DEFAULT_BM25_WEIGHT,
+    DEFAULT_CHUNK_VECTOR_WEIGHT, DEFAULT_CUE_VECTOR_WEIGHT,
+};
 pub use counters::{RecallStatusCounters, SharedRecallCounters};
 pub use dedup_state::RecallDedupState;
 pub use delta::{

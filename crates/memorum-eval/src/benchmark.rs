@@ -48,8 +48,19 @@ pub struct BenchmarkConfig {
     pub longmemeval_cleaned: bool,
     pub embedding_lane: BenchmarkEmbeddingLane,
     pub fusion: BenchmarkFusion,
+    /// Dev-split weight-sweep override for the four RRF lanes; `None` keeps the
+    /// daemon defaults. Recorded in the report for artifact provenance.
+    pub fusion_weights: Option<FusionWeights>,
     pub expected_sensitivity: String,
     pub judge_timeout: u64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct FusionWeights {
+    pub chunk: f64,
+    pub bm25: f64,
+    pub abstraction: f64,
+    pub cue: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -61,6 +72,7 @@ pub struct SplitConfig {
     pub longmemeval_cleaned: bool,
     pub embedding_lane: &'static str,
     pub fusion: &'static str,
+    pub fusion_weights: Option<FusionWeights>,
 }
 
 #[derive(Debug, Serialize)]
@@ -282,6 +294,7 @@ fn split_config_from(config: &BenchmarkConfig) -> SplitConfig {
             BenchmarkFusion::Legacy => "legacy",
             BenchmarkFusion::FourLane => "four_lane",
         },
+        fusion_weights: config.fusion_weights,
     }
 }
 
@@ -462,6 +475,9 @@ async fn benchmark_scaffold(config: &BenchmarkConfig) -> DaemonScaffold {
         BenchmarkEmbeddingLane::GeminiApi => DaemonScaffold::fresh_gemini_api().await,
     };
     scaffold.set_four_lane_fusion(config.fusion == BenchmarkFusion::FourLane);
+    if let Some(weights) = config.fusion_weights {
+        scaffold.set_fusion_weights([weights.chunk, weights.bm25, weights.abstraction, weights.cue]);
+    }
     scaffold
 }
 
@@ -1320,6 +1336,7 @@ mod tests {
             longmemeval_cleaned: false,
             embedding_lane: BenchmarkEmbeddingLane::FtsOnly,
             fusion: BenchmarkFusion::Legacy,
+            fusion_weights: None,
             expected_sensitivity: "internal".to_owned(),
             judge_timeout: 60,
         }
@@ -1518,6 +1535,7 @@ mod tests {
                 longmemeval_cleaned: false,
                 embedding_lane: "test",
                 fusion: "legacy",
+                fusion_weights: None,
             },
             sampling: SamplingReport::default(),
             dispositions: DispositionCounts::default(),
