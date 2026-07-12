@@ -683,8 +683,13 @@ async fn privacy_e2e_note_secret_is_refused() {
     assert!(!repo_contains(temp.path(), secret), "secret note must not be written");
 }
 
+/// Encrypted candidates are reviewable: a review decision is a frontmatter-only
+/// mutation routed through the encrypted-metadata path (W3 lifecycle validator,
+/// actor `memoryd-review`). Found live: the entire 13-item import-dup drain on
+/// the real corpus was encrypted and the old wholesale refusal made the W1
+/// repair pass a no-op.
 #[tokio::test]
-async fn privacy_e2e_encrypted_review_decision_fails_closed_without_not_found() {
+async fn privacy_e2e_encrypted_candidate_reject_archives_via_encrypted_metadata_path() {
     let temp = tempfile::tempdir().expect("tempdir");
     let substrate = init_substrate(&temp).await;
     FileKeyProvider::runtime_default(&temp.path().join("runtime")).onboard_local_file().expect("privacy key");
@@ -705,15 +710,77 @@ async fn privacy_e2e_encrypted_review_decision_fails_closed_without_not_found() 
         &substrate,
         RequestEnvelope::new(
             "reject-encrypted-note",
-            RequestPayload::ReviewReject { id: note.id, reason: "not useful".to_string() },
+            RequestPayload::ReviewReject { id: note.id.clone(), reason: "not useful".to_string() },
         ),
     )
     .await;
-    let ResponseResult::Error(error) = review.result else {
-        panic!("expected fail-closed review error, got {:?}", review.result);
+    let ResponseResult::Success(ResponsePayload::ReviewReject(decision)) = review.result else {
+        panic!("expected encrypted candidate reject to succeed, got {:?}", review.result);
+    };
+    assert_eq!(decision.status, "rejected");
+
+    // The decision landed as a frontmatter-only archive; a second decision now
+    // fails eligibility (no longer in the queue) rather than leaking not-found.
+    let again = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "reject-encrypted-note-again",
+            RequestPayload::ReviewReject { id: note.id, reason: "still not useful".to_string() },
+        ),
+    )
+    .await;
+    let ResponseResult::Error(error) = again.result else {
+        panic!("expected post-decision reject to fail eligibility, got {:?}", again.result);
     };
     assert_eq!(error.code, "invalid_request");
-    assert!(error.message.contains("encrypted review decisions"));
+    assert!(error.message.contains("not eligible"));
+}
+
+#[tokio::test]
+async fn privacy_e2e_encrypted_candidate_approve_activates_via_encrypted_metadata_path() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let substrate = init_substrate(&temp).await;
+    FileKeyProvider::runtime_default(&temp.path().join("runtime")).onboard_local_file().expect("privacy key");
+
+    let write = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "encrypted-note-approve",
+            RequestPayload::WriteNote { text: "email approver@example.com".into(), meta: serde_json::Value::Null },
+        ),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::WriteNote(note)) = write.result else {
+        panic!("expected encrypted note write, got {:?}", write.result);
+    };
+
+    let review = handle_request(
+        &substrate,
+        RequestEnvelope::new("approve-encrypted-note", RequestPayload::ReviewApprove { id: note.id.clone() }),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::ReviewApprove(decision)) = review.result else {
+        panic!("expected encrypted candidate approve to succeed, got {:?}", review.result);
+    };
+    assert_eq!(decision.status, "approved");
+
+    let get = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "get-approved-encrypted",
+            RequestPayload::Get { id: note.id, include_provenance: false, full_body: false },
+        ),
+    )
+    .await;
+    let ResponseResult::Success(ResponsePayload::Get(got)) = get.result else {
+        panic!("expected get of approved encrypted memory, got {:?}", get.result);
+    };
+    assert_eq!(
+        got.status.map(|status| status.as_db_str().to_string()).as_deref(),
+        Some("active"),
+        "approve must persist candidate→active on disk"
+    );
+    assert!(got.encrypted, "memory must remain encrypted after the decision");
 }
 
 async fn governed_project_write(

@@ -363,3 +363,15 @@ Routing assessment: comfortably Grok-4.5-class on structural/state-machine reaso
 **Cursor (grok-4.5-fast-xhigh) — W4-prep rounds 1-3 + W3 round 2.** Four more verified catches: the dream-harness grandchild-stall port gap (W0 H1 class in PRODUCTION dreaming — the single highest-value find of the arc's second half), the early-reap-skips-group-SIGKILL escalate gap in the coordinator's own port, the enrichment structural-fallback cap bypass, and the convergent W3 post-activation-reject BLOCKER with a full pre-fix trace of the pinning test. Also confirmed-or-refuted every attack it was handed (the pin-trace confirmation is as valuable as the findings). Standing: the arc's verify lane, unchallenged. Confidence: high.
 
 **Muse Spark 1.1 (opencode) — W3 round 2 (second outing).** Convergent on the BLOCKER with an independent trace (journal-record-level), unique MAJOR (pinned→superseded open to all actors — a spec-conformance catch Cursor missed), and precise verified-negatives on the retry counter. Two solid outings: state-machine reasoning at Cursor's level; privacy-composition remains its weak axis (round-1 rejected HIGH). Rotation-worthy for governance/state-machine waves. Confidence: medium-high.
+
+## 2026-07-11 - gpt-5.6-luna via codex - B1/B2 encrypted-review-decision diff review
+
+Command and run: `delegate codex safe --model luna --reasoning-effort high --prompt-file thoughts/memora-build/b1b2-review-prompt.md`; alias codex-86; mode/isolation: safe/isolated copy.
+
+Task and expectation: adversarial review of the uncommitted B1 (encrypted review decisions) + B2 (raw-frame exit codes) diff with six named hunt areas; expected it to probe the TOCTOU seam and contract coherence.
+
+Outcome and verification: 3 findings, ALL REAL. F1 HIGH TOCTOU (closure applies onto a fresh read without revalidation — archived→active resurrection is validator-legal; also routes into the plaintext-only quarantine arm) — ACCEPTED, fixed by closure-revalidation (only a still-queued Candidate is decidable), which also collapses its F5 calibration-staleness note. F2/F6 HIGH (covered-command crosswalk not contract-coherent for admin commands, §2 pins them to 1/2-style codes) — ACCEPTED; independently self-addressed minutes before the report landed (exit 1 + contract doc amendment), so convergent confirmation. Hunt areas 2/3/4 explicitly cleared with correct reasoning (ciphertext preserved, W3 actor honored, only review/quarantine/doctor call print_response).
+
+Performance observations: ~20 min wall; read the substrate API, validator, contract doc, and all callers unprompted; zero noise findings; the archived→active validator-gap observation required composing three files. Verification burden low — both findings checked out on first read.
+
+Routing assessment: Luna high remains the default cheap review lane for governance-critical diffs; this is its third field validation catching a real lifecycle defect Opus-family authorship missed. Confidence: high.

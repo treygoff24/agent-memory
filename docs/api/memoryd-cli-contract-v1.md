@@ -63,10 +63,10 @@ Rules:
 
 The table above applies **only** to the covered commands (§4). Documented exceptions keep their own dictionaries, all published in `schema` output:
 
-- **`doctor`** — linter-style dictionary: `0` healthy, `1` unhealthy. Un-enveloped by decision: it emits the raw daemon frame `{"id":...,"result":{"success":{"doctor":{"healthy":bool,...}}}}`, so read `.result.success.doctor.healthy`, **not** `.ok`/`.data`. A future pass that envelopes it is contract v2.
+- **`doctor`** — linter-style dictionary: `0` healthy, `1` unhealthy (a daemon-error frame also exits `1`; it is not a healthy report). Un-enveloped by decision: it emits the raw daemon frame `{"id":...,"result":{"success":{"doctor":{"healthy":bool,...}}}}`, so read `.result.success.doctor.healthy`, **not** `.ok`/`.data`. A future pass that envelopes it is contract v2.
 - **`recall startup-block` / `recall delta-block` / `recall hook`** — the pinned Stream E v0.7 dictionary (`src/cli/exit.rs::recall_exit_code`): `1` invalid/disabled, `2` substrate/recall/dream unavailable, `3` privacy, `4` not-implemented/pass-failed, `5` lease. `recall hook` is fail-open: always exit 0, zero bytes on failure. These emit raw block output, **not** the envelope.
 - **`dream *`** — lease/dream dictionary via `LeaseError::cli_exit_code` / `DreamError`.
-- **Admin / setup** (`init`, `uninstall`, `export`, `review`, `quarantine`, `peer`, `web`, `reality-check`, `privacy`, `device`, `ui`, `import`) — keep their current codes (typically `1`/`2`) until contract v2.
+- **Admin / setup** (`init`, `uninstall`, `export`, `review`, `quarantine`, `peer`, `web`, `reality-check`, `privacy`, `device`, `ui`, `import`) — keep their current codes (typically `1`/`2`) until contract v2. As of 2026-07-11 a daemon-error frame printed by these commands exits `1` — previously it exited `0`, which read as success to scripted callers.
 
 ## 3. Daemon-code → exit crosswalk
 

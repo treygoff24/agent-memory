@@ -13,6 +13,19 @@ use crate::util::serialized_enum_value;
 
 pub(crate) fn print_response(response: ResponseEnvelope) -> anyhow::Result<()> {
     println!("{}", serde_json::to_string_pretty(&response)?);
+    // Raw-frame admin commands must still exit non-zero on a daemon error: a
+    // scripted caller checking `$?` was, until this, told an `invalid_request`
+    // succeeded (found live by the W1 drain rehearsal — 13 review rejects
+    // "passed" while every one was refused). Exit 1, not the covered-command
+    // crosswalk: contract v1 §2 pins admin commands to their current 1/2-style
+    // codes until v2, and 1 also sits inside doctor's documented {0,1}
+    // dictionary (an errored doctor is not healthy). The frame is already
+    // printed, so this changes only the exit code, never the output.
+    if matches!(&response.result, ResponseResult::Error(_)) {
+        use std::io::Write as _;
+        std::io::stdout().flush().ok();
+        std::process::exit(1);
+    }
     Ok(())
 }
 

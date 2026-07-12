@@ -219,12 +219,18 @@ pub(crate) async fn review_decision_response(
 ) -> Result<ResponsePayload, HandlerError> {
     let memory_id = HandlerError::parse_memory_id(id)?;
     let envelope = substrate.read_memory_envelope(&memory_id).await.map_err(HandlerError::substrate)?;
-    if !matches!(envelope.content, MemoryContent::Plaintext(_)) {
+    let encrypted = !matches!(envelope.content, MemoryContent::Plaintext(_));
+    let mut memory = envelope.metadata;
+    // Encrypted CANDIDATES route through the W3-hardened encrypted-metadata path
+    // below (a review decision is a frontmatter-only mutation; encryption covers
+    // the body). Encrypted QUARANTINED memories stay refused: the quarantine
+    // approve arm restores index/recall flags under a documented plaintext-only
+    // policy, and guessing the encrypted-tier equivalents here would be wrong.
+    if encrypted && matches!(memory.frontmatter.status, MemoryStatus::Quarantined) {
         return Err(HandlerError::invalid_request(
-            "encrypted review decisions require an encrypted lifecycle update API",
+            "encrypted quarantined memories are not reviewable via review decisions; resolve the quarantine first",
         ));
     }
-    let mut memory = envelope.metadata;
     if !matches!(memory.frontmatter.status, MemoryStatus::Candidate | MemoryStatus::Quarantined)
         || !review_queue_contains(&memory)
     {
@@ -281,26 +287,54 @@ pub(crate) async fn review_decision_response(
             ));
         }
     }
-    let status = decision.apply(&mut memory);
     let summary = bounded(&memory.frontmatter.summary, REVIEW_DECISION_SUMMARY_MAX);
-    let classification = super::governance::classify_plaintext_memory(&memory)?;
-
-    substrate
-        .write_memory(SubstrateWriteRequest {
-            operation_id: None,
-            memory,
-            expected_base_hash: None,
-            write_mode: WriteMode::ReplaceExisting,
-            index_projection: None,
-            event_context: EventContext {
-                actor: Some("memoryd-review".to_string()),
-                reason: Some(format!("review {status}")),
-            },
-            allow_best_effort_durability: true,
-            classification,
-        })
-        .await
-        .map_err(HandlerError::substrate)?;
+    let status = if encrypted {
+        // Frontmatter-only decision through the encrypted-metadata path: the
+        // mutate closure runs on the API's own fresh read (CAS-written against
+        // that read's hash), and W3's lifecycle validator gates the transition
+        // (candidate→active requires this exact `memoryd-review` actor;
+        // candidate→archived is unrestricted).
+        let mut applied_status = None;
+        substrate
+            .update_encrypted_memory_metadata(&memory_id, Some("memoryd-review"), |target| {
+                // Revalidate on the fresh read (review round F1): between the
+                // eligibility read above and this closure, a racing decision may
+                // have landed (approve/reject) or the memory may have been
+                // quarantined. Mutating then would resurrect an archived memory
+                // (the validator does not restrict archived→active) or route an
+                // encrypted memory into the plaintext-only quarantine-restore
+                // arm. Only a still-queued candidate is decidable.
+                if matches!(target.frontmatter.status, MemoryStatus::Candidate) && review_queue_contains(target) {
+                    applied_status = Some(decision.apply(target));
+                }
+            })
+            .await
+            .map_err(|err| HandlerError::substrate(format!("update encrypted metadata: {err:?}")))?;
+        let Some(applied_status) = applied_status else {
+            return Err(HandlerError::invalid_request("memory is not eligible for the review queue"));
+        };
+        applied_status
+    } else {
+        let status = decision.apply(&mut memory);
+        let classification = super::governance::classify_plaintext_memory(&memory)?;
+        substrate
+            .write_memory(SubstrateWriteRequest {
+                operation_id: None,
+                memory,
+                expected_base_hash: None,
+                write_mode: WriteMode::ReplaceExisting,
+                index_projection: None,
+                event_context: EventContext {
+                    actor: Some("memoryd-review".to_string()),
+                    reason: Some(format!("review {status}")),
+                },
+                allow_best_effort_durability: true,
+                classification,
+            })
+            .await
+            .map_err(HandlerError::substrate)?;
+        status
+    };
 
     // The decision landed: append a calibration record for eligible candidates.
     // A failed append must not fail the review (the user's decision already
