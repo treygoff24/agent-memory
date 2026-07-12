@@ -138,3 +138,15 @@ honest-failure-reporting virtues; none showed cursor-style scope creep.
 - GPT-5.5 Codex baseline this run: T1.1/T1.2/T2.0/T2.1a/T2.1b all landed near-right first try; one latent
   clippy failure slipped through MY gate (not the lane's fault — grep-based exit detection). cursor/Grok 4.5
   showed scope creep into `doctor.rs` on T2.3.
+
+## 2026-07-12 - gpt-5.6 Sol via codex - W4b plan review (xhigh, safe)
+
+Command and run: `delegate codex safe --model sol --reasoning-effort xhigh --prompt-file <review brief>`; alias/variant/effort: sol / xhigh; mode/isolation: safe / temporary git-worktree; run handle: codex-87.
+
+Task and expectation: adversarial review of `docs/plans/2026-07-12-w4b-context-enrichment-regate.md` (overnight eval-protocol plan), focus on protocol validity, mechanism-vs-code mismatches, overnight operational risk. Expected a handful of protocol nits.
+
+Outcome and verification: 5 blockers / 4 risks / 1 nit, verdict REWORK, in 5m31s. Coordinator spot-verified the load-bearing claims: LoCoMo session-label reuse (benchmark.rs:915-937), enrichment hardcoding both splits (enrichment.rs:143-146), structural fallback minting non-null abstractions (enrichment.rs:196-207), abstraction/cues feeding write-time privacy classification (governance/meta.rs:370-381), judge_mean dropping failed judgments (benchmark.rs:826-828). All confirmed; all 10 findings accepted into r2.
+
+Performance observations: exceptional evidence discipline — every finding carried file:line, including jq spelunking into a 6MB tracked artifact (baseline0.json) to disprove the plan's "holdout uncontaminated" claim. Caught two protocol flaws the author (Claude, this session) had rationalized past: adaptive holdout leakage via the prompt-tuning pilot, and the corpus-level confound in the attribution control. Zero scope creep, honored all three "do NOT" fences, no re-review of already-reviewed fusion code. 5m31s wall at xhigh is remarkable for the depth.
+
+Routing assessment: Sol xhigh confirmed as the premier plan/protocol reviewer for experiment-design work, not just code — it reasons about statistics (paired deltas, silent item-set divergence) and contamination like a methods reviewer. Use again for any pre-registered-protocol plan. Next comparison worth running: Sol xhigh vs native plan-reviewer (opus) head-to-head on the same plan. Confidence: high.
