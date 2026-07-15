@@ -326,6 +326,7 @@ fn enrich_dataset_dir_with_adapter_sampling(
         fusion_weights: None,
         expected_sensitivity: "internal".to_owned(),
         judge_timeout: 60,
+        excluded_keys: Default::default(),
     };
     let corpus: Vec<(PathBuf, PendingItem)> = match options.generation {
         Generation::V1 => crate::benchmark::sampled_corpus_bodies(&config)?

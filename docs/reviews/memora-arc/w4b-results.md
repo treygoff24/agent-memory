@@ -35,6 +35,14 @@ operates on identical item sets, so exclusion preserves validity; power cost 1/4
 runs are parked until the ruling. Two diagnostics-only eprintlns added to enrichment.rs to surface
 failure identity (commit `1a4112d`); no semantic changes.
 
+**Ruling (Trey, 2026-07-15): exclude from both arms.** Implemented as `--exclude-key
+3d788bc44ebeacca4959ac535a11ffa80472de99f4c08e5cf799bc3f9b2c7125` on the benchmark runner —
+exclusions match the canonical v2 context-item key in every arm and generation, are recorded in
+each artifact's `split_config.excluded_keys`, and skip the write body at ingestion. Consequence
+for the runs ledger: the banked dev-legacy-v1 reference was run WITHOUT the exclusion, so it is
+superseded by a re-run with the flag (an exclusion that hits only one side would invalidate the
+invariance comparison); all T3/T4 arms carry the flag.
+
 ## Runs ledger (appended as they land)
 
 | run | arms/config | artifact | scored | judge_mean | recall@10 | mrr | notes |

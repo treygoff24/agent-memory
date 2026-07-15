@@ -57,6 +57,11 @@ pub struct BenchmarkConfig {
     pub fusion_weights: Option<FusionWeights>,
     pub expected_sensitivity: String,
     pub judge_timeout: u64,
+    /// Write bodies excluded from ingestion in EVERY arm, identified by their
+    /// canonical v2 context-item key (Trey ruling 2026-07-15: a paired
+    /// comparison stays valid only when an exclusion hits both sides).
+    /// Recorded in the report for artifact provenance.
+    pub excluded_keys: std::collections::BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -80,6 +85,7 @@ pub struct SplitConfig {
     pub embedding_lane: &'static str,
     pub fusion: &'static str,
     pub fusion_weights: Option<FusionWeights>,
+    pub excluded_keys: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -317,6 +323,7 @@ fn split_config_from(config: &BenchmarkConfig) -> SplitConfig {
             BenchmarkFusion::FourLane => "four_lane",
         },
         fusion_weights: config.fusion_weights,
+        excluded_keys: config.excluded_keys.iter().cloned().collect(),
     }
 }
 
@@ -395,6 +402,7 @@ async fn run_locomo(
             config.generation,
             &config.expected_sensitivity,
             &enrichment,
+            &config.excluded_keys,
             report,
         )?;
         let questions = balanced_locomo_questions(conversation.qa, config.locomo_qa_per_conversation);
@@ -486,6 +494,7 @@ async fn run_longmemeval(
                 config.generation,
                 &config.expected_sensitivity,
                 &enrichment,
+                &config.excluded_keys,
                 report,
             )?;
             score_item(
@@ -551,14 +560,27 @@ fn ingest_sessions(
     generation: Generation,
     expected_sensitivity: &str,
     enrichment: &EnrichmentSidecar,
+    excluded_keys: &std::collections::BTreeSet<String>,
     report: &mut BaselineReport,
 ) -> Result<IngestedSessions, String> {
     let mut turn_ids = BTreeMap::<String, Vec<String>>::new();
     let mut session_ids = BTreeMap::<String, Vec<String>>::new();
     let mut dispositions = DispositionCounts::default();
+    // Exclusions match on the canonical v2 context-item key in every arm and
+    // generation, so one identifier removes the same body from both sides of a
+    // paired comparison.
+    let is_excluded = |session_id: &str, ordinal: usize, body: &str| {
+        !excluded_keys.is_empty()
+            && excluded_keys.contains(&crate::enrichment::context_item_key(
+                corpus_instance_id,
+                session_id,
+                ordinal,
+                body,
+            ))
+    };
     for session in sessions {
-        if let Some(date) = &session.date {
-            let body = session_date_body(&session.id, date);
+        let date_body = session.date.as_ref().map(|date| session_date_body(&session.id, date));
+        if let Some(body) = date_body.filter(|body| !is_excluded(&session.id, session.turns.len(), body)) {
             let key = enrichment_key(generation, (corpus_instance_id, &session.id, session.turns.len(), &body));
             if let Some(_id) = ingest_one(
                 daemon,
@@ -578,6 +600,9 @@ fn ingest_sessions(
             let key =
                 turn.dia_id.clone().unwrap_or_else(|| format!("D{}:{}", session_label(&session.id), turn_index + 1));
             let body = turn_body(turn);
+            if is_excluded(&session.id, turn_index, &body) {
+                continue;
+            }
             let enrichment_key = enrichment_key(generation, (corpus_instance_id, &session.id, turn_index, &body));
             if let Some(id) = ingest_one(
                 daemon,
@@ -1443,6 +1468,7 @@ mod tests {
             fusion_weights: None,
             expected_sensitivity: "internal".to_owned(),
             judge_timeout: 60,
+            excluded_keys: Default::default(),
         }
     }
 
@@ -1778,6 +1804,7 @@ mod tests {
                 embedding_lane: "test",
                 fusion: "legacy",
                 fusion_weights: None,
+                excluded_keys: Vec::new(),
             },
             sampling: SamplingReport::default(),
             dispositions: DispositionCounts::default(),

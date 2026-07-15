@@ -80,6 +80,10 @@ struct Cli {
     /// Timeout in seconds for external judge commands.
     #[arg(long, default_value_t = 60)]
     judge_timeout: u64,
+    /// Canonical v2 context-item keys excluded from ingestion (repeatable).
+    /// An exclusion must be passed to EVERY arm of a paired comparison.
+    #[arg(long = "exclude-key")]
+    exclude_keys: Vec<String>,
 }
 
 fn main() -> ExitCode {
@@ -126,6 +130,7 @@ fn run(cli: Cli) -> Result<(), String> {
         ),
         expected_sensitivity: cli.expected_sensitivity,
         judge_timeout: cli.judge_timeout,
+        excluded_keys: cli.exclude_keys.into_iter().collect(),
     };
     let external = cli.judge_command.map(|program| {
         ExternalCommandJudge::new(program, cli.judge_arg).with_timeout(Duration::from_secs(cli.judge_timeout))
