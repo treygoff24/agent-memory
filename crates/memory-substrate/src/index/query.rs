@@ -67,11 +67,19 @@ pub struct Index {
 impl Index {
     /// Active/pinned memories missing an abstraction or stale against the body hash.
     pub fn abstraction_compile_candidates(&self, limit: usize) -> rusqlite::Result<Vec<MemoryId>> {
+        // "Already compiled" is a frontmatter fact, not a servable-vector fact:
+        // encrypted rows carry their amended abstraction in frontmatter but are
+        // never servable, so `memory_abstractions` stays intentionally empty for
+        // them — keying candidacy on that table alone re-selects (and re-amends)
+        // every encrypted row forever. Body-drift recompiles still key on the
+        // servable row's source hash, which only plaintext rows have.
         let mut stmt = self.connection.prepare_cached(
             "SELECT memories.id FROM memories
              LEFT JOIN memory_abstractions ON memory_abstractions.memory_id=memories.id
              WHERE memories.status IN ('active','pinned')
-               AND (memory_abstractions.memory_id IS NULL OR memory_abstractions.source_body_hash<>memories.body_hash)
+               AND (json_extract(memories.frontmatter_json,'$.abstraction') IS NULL
+                    OR (memory_abstractions.memory_id IS NOT NULL
+                        AND memory_abstractions.source_body_hash<>memories.body_hash))
              ORDER BY memories.updated_at LIMIT ?1",
         )?;
         let ids = stmt.query_map([limit as i64], |row| Ok(MemoryId::new(row.get::<_, String>(0)?)))?.collect();

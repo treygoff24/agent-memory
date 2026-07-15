@@ -689,6 +689,56 @@ fn abstraction_compile_candidates_include_encrypted_and_metadata_only() {
 }
 
 #[test]
+fn amended_rows_leave_candidate_pool_even_without_servable_abstraction_row() {
+    // W5 live-backfill regression: encrypted/metadata-only rows never get a
+    // servable `memory_abstractions` row, so candidacy keyed on that table
+    // alone re-selected (and re-amended) every encrypted row forever. The
+    // "already compiled" marker is the frontmatter abstraction.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("index.sqlite");
+    let triple = EmbeddingTriple { provider: "synthetic".into(), model_ref: "aux".into(), dimension: 3 };
+    let connection = memory_substrate::index::open_index(&path).expect("index");
+    let mut index = memory_substrate::index::Index::with_active_embedding(connection, triple);
+
+    let mut encrypted = sample_memory("mem_20260424_a1b2c3d4e5f60718_000094");
+    encrypted.path = Some(RepoPath::new("encrypted/mem_20260424_a1b2c3d4e5f60718_000094.md"));
+    encrypted.frontmatter.retrieval_policy.index_embeddings = false;
+    index.upsert_memory(&encrypted, true).expect("encrypted active");
+    assert_eq!(index.abstraction_compile_candidates(10).expect("candidates").len(), 1);
+
+    // Amend lands abstraction in frontmatter; still no servable abstraction row.
+    encrypted.frontmatter.abstraction = Some("durable encrypted fact".to_string());
+    encrypted.frontmatter.cues = vec!["entity aspect".to_string()];
+    index.upsert_memory(&encrypted, true).expect("encrypted amended");
+    let servable: i64 = index
+        .connection()
+        .query_row("SELECT count(*) FROM memory_abstractions WHERE memory_id=?1", [encrypted.frontmatter.id.as_str()], |row| {
+            row.get(0)
+        })
+        .expect("servable row count");
+    assert_eq!(servable, 0, "encrypted rows must not gain a servable abstraction row");
+    assert!(
+        index.abstraction_compile_candidates(10).expect("candidates").is_empty(),
+        "amended encrypted row must leave the candidate pool"
+    );
+
+    // Plaintext body drift still re-selects via the servable row's source hash.
+    let mut plaintext = sample_memory("mem_20260424_a1b2c3d4e5f60718_000095");
+    plaintext.frontmatter.abstraction = Some("compiled from old body".to_string());
+    index.upsert_memory(&plaintext, false).expect("plaintext with abstraction");
+    assert!(index.abstraction_compile_candidates(10).expect("candidates").is_empty());
+    plaintext.body = "a different body that drifts the hash".to_string();
+    // Simulate a body edit that preserves the previously compiled abstraction:
+    // upsert keeps source_body_hash when the abstraction text is unchanged.
+    index.upsert_memory(&plaintext, false).expect("plaintext body drift");
+    assert_eq!(
+        index.abstraction_compile_candidates(10).expect("candidates"),
+        vec![plaintext.frontmatter.id.clone()],
+        "body drift on a plaintext row must re-enter the candidate pool"
+    );
+}
+
+#[test]
 fn source_body_hash_preserved_on_body_only_edit_and_refreshed_on_remint() {
     let temp = tempfile::tempdir().expect("tempdir");
     let path = temp.path().join("index.sqlite");
