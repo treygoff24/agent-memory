@@ -448,6 +448,13 @@ fn enrich_dataset_dir_with_adapter_sampling(
                 let enrichment = match result {
                     Ok(enrichment) => enrichment,
                     Err(error) => {
+                        // Diagnostics only: identify persistently-failing items.
+                        eprintln!(
+                            "v2 enrichment item failure key={} ordinal={} body_head={:?}: {error}",
+                            item.key,
+                            item.target_ordinal,
+                            item.body.chars().take(160).collect::<String>()
+                        );
                         *report.skipped.entry(error).or_default() += 1;
                         continue;
                     }
@@ -496,6 +503,11 @@ fn enrich_dataset_dir_with_adapter_sampling(
             Ok::<_, String>(count + keys.iter().filter(|key| !sidecar.entries().contains_key(*key)).count())
         })?;
         if missing > 0 {
+            // Diagnostics only: surface the per-item failure reasons so a
+            // persistently-pending key is debuggable without instrumenting a run.
+            for (error, count) in &report.skipped {
+                eprintln!("v2 enrichment failure ({count}x): {error}");
+            }
             eprintln!("v2 enrichment incomplete: {missing} enumerated keys remain pending");
             return Err(format!("v2 enrichment incomplete: {missing} enumerated keys remain pending"));
         }
