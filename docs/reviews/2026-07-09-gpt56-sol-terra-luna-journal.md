@@ -150,3 +150,15 @@ Outcome and verification: 5 blockers / 4 risks / 1 nit, verdict REWORK, in 5m31s
 Performance observations: exceptional evidence discipline — every finding carried file:line, including jq spelunking into a 6MB tracked artifact (baseline0.json) to disprove the plan's "holdout uncontaminated" claim. Caught two protocol flaws the author (Claude, this session) had rationalized past: adaptive holdout leakage via the prompt-tuning pilot, and the corpus-level confound in the attribution control. Zero scope creep, honored all three "do NOT" fences, no re-review of already-reviewed fusion code. 5m31s wall at xhigh is remarkable for the depth.
 
 Routing assessment: Sol xhigh confirmed as the premier plan/protocol reviewer for experiment-design work, not just code — it reasons about statistics (paired deltas, silent item-set divergence) and contamination like a methods reviewer. Use again for any pre-registered-protocol plan. Next comparison worth running: Sol xhigh vs native plan-reviewer (opus) head-to-head on the same plan. Confidence: high.
+
+## 2026-07-15 - terra (gpt-5.6) via codex + grok-4.5 via cursor - B3 spec amendment loop
+
+Commands: `delegate --cwd <repo> --group memora-b3 --isolation worktree codex work --model terra --reasoning-effort medium` (author, codex-88), two `cursor safe` reviews on the worktree (cursor-1/2), two `--isolation none` Terra fix rounds in the same worktree (codex-1/2 in the worktree registry).
+
+Task: author + iterate the B3 metadata-amendment spec (Stream A/F + CLI contract + design note) through a 3-round review loop.
+
+Outcome: Terra r0 draft was structurally strong (6-clause contract, CAS story, aux fence) but carried 4 blockers — §8.7 drop/rebind contradiction, Stream F drift, "ordinary write path" event/timestamp impossibility, encrypted-scan unimplementability. Grok-via-cursor found all four (plus the honest behavior-change framing catch); native Opus converged on two independently and contributed exact line-level evidence (write.rs:146 updated_at bump). Terra landed 14/14 r1 fixes and 3/3 r2 residuals with zero disagreements and no scope creep; r2 Grok verification table confirmed every fix on disk.
+
+Performance: Terra medium ~6-9 min/round, docs-only, no window expiry issues. Grok r1 was the standout — cross-spec contradiction hunting (reading Stream F against Stream A) is exactly its attack profile. One operational bug mine, not the models': misplaced_global_option on the first fix launch (globals after subcommand), and a near-miss triaging stale cursor-29 findings from the wrong workspace registry.
+
+Routing: keep Terra-medium as spec-amendment author with Grok-via-cursor as primary spec attacker; Opus adds convergence + line-precision. Confidence: high.
