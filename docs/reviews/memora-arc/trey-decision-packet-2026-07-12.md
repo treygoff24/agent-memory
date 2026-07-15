@@ -33,7 +33,7 @@ evidence; 100/100 probe). Options:
 
 Mechanics fully verified on the copy (13/13 dup drain, queue 30→17). The live pass = import →
 rebuild drain manifest from a live export → apply your dispositions below → quarantine triage →
-doctor + reindex. The 13 dup-rejects need no decision (older twins of live active memories).
+`memoryd doctor --repo "$MEMORUM_REPO" --runtime "$MEMORUM_RUNTIME" --reindex` (rebuilds the SQLite event-log mirror from canonical JSONL). The 13 dup-rejects need no decision (older twins of live active memories).
 
 **17 candidates** (me-scope, held by me-strict policy; ENC = encrypted at rest):
 
