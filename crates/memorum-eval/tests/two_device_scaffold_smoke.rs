@@ -26,7 +26,12 @@ fn two_device_scaffold_shares_a_git_remote_between_healthy_daemons() {
         git(scaffold.device_a.tree_dir(), ["commit", "-m", "device A memory"]);
         git(scaffold.device_a.tree_dir(), ["push", "origin", "HEAD:main"]);
 
-        git(scaffold.device_b.tree_dir(), ["pull", "--ff-only", "origin", "main"]);
+        // Rebase, not --ff-only: device B's daemon is live and its F1 commit-on-write
+        // worker legitimately lands local commits (onboarding/config writes) on its
+        // own schedule, so B can diverge from origin between setup and this pull.
+        // This smoke test asserts the shared-remote wiring, not convergence semantics
+        // (those are spec §13.6.1, merge-driver territory).
+        git(scaffold.device_b.tree_dir(), ["pull", "--rebase", "origin", "main"]);
 
         let pulled_file = scaffold.device_b.tree_dir().join("device-a-memory.md");
         assert_eq!(std::fs::read_to_string(pulled_file).expect("read pulled file"), "from device A\n");
