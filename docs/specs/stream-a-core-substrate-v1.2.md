@@ -35,8 +35,6 @@
 19. `Substrate::update_encrypted_memory_metadata(&self, id: &MemoryId, mutate: impl FnOnce(&mut Memory)) -> Result<(), WriteFailure>` may update safe metadata for an encrypted canonical memory without decrypting or replacing ciphertext. The implementation must reject plaintext memories, preserve the encrypted ciphertext bytes and encryption envelope, preserve the encrypted path, validate the mutated frontmatter, and apply the same compare-and-swap atomic write semantics as other metadata writes.
 20. `Substrate::query_recall_index_including_metadata_only(&self, query: RecallIndexQuery) -> SubstrateResult<Vec<RecallIndexRow>>` may include encrypted metadata-only rows in the recall-index projection for observability/scoring consumers. It must project only indexed safe metadata and auxiliary tables; it must not hydrate encrypted envelopes or expose plaintext body fragments from encrypted rows.
 
----
-
 ## 1. Purpose
 
 Stream A produces:
@@ -798,9 +796,9 @@ Enforcement rules:
 
 This makes `WriteFailureKind::SecretRefused` a real, testable Stream A code path even before Stream D exists: tests pass `classification = Secret` directly and assert the refusal contract.
 
-**One shared pipeline for every write entrypoint** — `write`, `write-note`, supersede, import execute, `review approve`, `quarantine resolve --edited`, dream fragment→memory, `abstraction_compile`, backfill, merge staging (W3) — in this fixed order: **normalize/cap-validate → classify → drop/refuse/encrypt decision → validate the final payload → persist/index/enqueue.** No canonical file write, no index row, no aux row, and no embedding job may be created before the pipeline completes. The combined payload = title + summary + body + `abstraction` + every `cues` entry; strictest outcome controls the whole write. `secret` anywhere (including in a cue) refuses before any disk effect (invariant #1).
+**One shared pipeline for every create/supersede write entrypoint** — `write`, `write-note`, supersede, import execute, `review approve`, `quarantine resolve --edited`, dream fragment→memory, backfill, merge staging (W3) — in this fixed order: **normalize/cap-validate → classify → drop/refuse/encrypt decision → validate the final payload → persist/index/enqueue.** No canonical file write, no index row, no aux row, and no embedding job may be created before the pipeline completes. The combined payload = title + summary + body + `abstraction` + every `cues` entry; strictest outcome controls the whole write. `secret` anywhere (including in a cue) refuses before any disk effect (invariant #1). The in-place `metadata_amend` operation in the 2026-07-15 amendment is not a create/supersede write: it refuses a tier increase and never invokes this generation-context drop/rebind path.
 
-**Generation-context drop semantics (dual classification + outcome rebind):** in generation contexts (dream compile, backfill, W3 merge staging — which additionally floors the result at the strictest source classification, applied *after* the rebind), the classify step runs **twice** — once over the combined payload, once over the body-only payload (title + summary + body). If the combined outcome is stricter than the body-only outcome (the strictness caused *by* the generated fields, now well-defined), the pipeline drops `abstraction`/`cues` and **rebinds the write to the body-only `ClassificationOutcome`** (and its sensitivity) before persisting — without the rebind, the write would still carry `RequiresEncryption` and the plaintext path would refuse, losing the body. `secret` in either classification still refuses the whole write. Acceptance: a sensitive-cue-on-public-body dream compile commits the body with `abstraction: null`/`cues: []`, creates no aux rows or jobs, and the write's persisted outcome is the body-only one. Interactive writes do not drop — they refuse/error per the existing contract.
+**Generation-context drop semantics (dual classification + outcome rebind):** for create/supersede generation writes only, in dream fragment→memory and W3 merge staging (which additionally floors the result at the strictest source classification, applied *after* the rebind), the classify step runs **twice** — once over the combined payload, once over the body-only payload (title + summary + body). If the combined outcome is stricter than the body-only outcome (the strictness caused *by* the generated fields, now well-defined), the pipeline drops `abstraction`/`cues` and **rebinds the write to the body-only `ClassificationOutcome`** (and its sensitivity) before persisting — without the rebind, the write would still carry `RequiresEncryption` and the plaintext path would refuse, losing the body. `secret` in either classification still refuses the whole write. Acceptance: a sensitive-cue-on-public-body fragment→memory or W3 staging write commits the body with `abstraction: null`/`cues: []`, creates no aux rows or jobs, and the write's persisted outcome is the body-only one. This does not apply to in-place `metadata_amend`, which refuses a tier increase. Interactive writes do not drop — they refuse/error per the existing contract.
 
 Entrypoint enumeration and the hardcoded-`Trusted` audit are W2 implementation deliverables (plan task 3); the contract here is the pipeline they must all route through — including the shipped substrate path (`api/write.rs`), which today classifies before frontmatter validation and must be reconciled to this order.
 
@@ -1283,7 +1281,8 @@ Raw mutable SQLite access is not exported. A test-only read-only SQL API may exi
 - **Vector orphan/missing reconciliation test:** seed an orphan vector and a missing vector before `Substrate::open`, verify orphan deletion and missing-vector job requeue on startup.
 - Query p95 targets are measured for real Stream E shapes: namespace + status + sensitivity cap + entity/alias + updated_at sort.
 - **Secret-in-cue refusal (v1.2):** a `secret` classification triggered by any cue refuses the whole write before any disk effect.
-- **Sensitive-generation drop (v1.2):** sensitive-abstraction-on-public-body in a generation context drops the generated fields, keeps the body, creates no aux rows/jobs, and persists the body-only outcome (dual-classification rebind).
+- **Sensitive-generation drop (v1.2):** sensitive-abstraction-on-public-body in a fragment→memory or W3 staging write drops the generated fields, keeps the body, creates no aux rows/jobs, and persists the body-only outcome (dual-classification rebind).
+- **B3 amendment tier refusal (v1.2):** sensitive generated fields on `metadata_amend` return `MetadataAmendmentTierIncreaseRefused` and leave the body untouched.
 - **Upgrade revocation (v1.2):** sensitivity upgrade deletes API-lane vectors across all row kinds and, under default policy, local ones too — both the default-delete and override-re-enqueue paths tested.
 - **Two-clone cue-merge convergence (v1.2):** opposite merge directions with overflowing unions and casing-only duplicates produce identical results.
 - **Abstraction merge tie-break (v1.2):** conflict resolves by `updated_at` with the sha256 tie-break; loser preserved in `_merge_diagnostics`.
@@ -1395,6 +1394,7 @@ Each line is one framed event:
 - `OperatorRepairRequired`
 - `ReconciliationRepaired`
 - `StartupReconciliationCompleted`
+- `MetadataAmended`
 
 Every kind has a typed data schema in code and fixtures. Free-form `data` is not permitted in implementation even if rendered schematically in docs.
 
@@ -1799,7 +1799,7 @@ impl Substrate {
     pub async fn read_path(&self, path: &RepoPath) -> Result<MemoryEnvelope, ReadError>;
     pub async fn write_memory(&self, req: WriteRequest) -> Result<WriteOutcome, WriteFailure>;
     pub async fn write_encrypted(&self, req: EncryptedWriteRequest) -> Result<WriteOutcome, WriteFailure>;
-    pub async fn update_encrypted_memory_metadata(&self, id: &MemoryId, mutate: impl FnOnce(&mut Memory)) -> Result<(), WriteFailure>;
+    pub async fn update_encrypted_memory_metadata(&self, id: &MemoryId, actor: Option<&str>, mutate: impl FnOnce(&mut Memory)) -> Result<(), WriteFailure>;
     pub async fn tombstone_memory(&self, req: TombstoneRequest) -> Result<WriteOutcome, WriteFailure>;
 }
 ```
@@ -2175,7 +2175,21 @@ The spec also deliberately does **not** legislate the following implementation-p
 
 ## Amendments
 
-Dated additive clarifications that do not change a required behavior carry no version bump (per the repo's spec/plan conventions). Each amendment records the date, the sections it touches, and the rationale.
+Dated additive clarifications that do not change a required behavior carry no version bump (per the repo's spec/plan conventions). A behavior change requires explicit Trey authorization. Each amendment records the date, the sections it touches, and the rationale.
+
+### 2026-07-15 — B3 abstraction/cue metadata amendment
+
+**Trey-authorized behavior-change amendment.** Authorized 2026-07-15, in-version per explicit authorization; it replaces the shipped `abstraction_compile` apply behavior for this bounded path. **Touches:** §8.7 (generation-context carve-out), §12 (`MetadataAmended` event), `docs/specs/stream-f-dreaming-v0.3.md` (compile apply path), and `docs/api/memoryd-cli-contract-v1.md` §8 (report contract). **Rationale:** imported memories need retrieval metadata without a body/evidence rewrite or the supersede grounding gate.
+
+`metadata_amend` is an internal, validator-gated operation with fixed request shape `{ id, expected_base_hash, abstraction, cues }`. It is not a general metadata patch API. At the compile-to-handler boundary, the actor is hardcoded to `memoryd-abstraction-compile`; MCP callers, `write`, `supersede`, and a free-form operator patch command cannot reach it. Only `abstraction` and `cues` may change. The fresh canonical read supplies namespace, storage form, and immutable state. The body, id, lifecycle/status, namespace and canonical binding, sensitivity, evidence/provenance, encryption envelope, and path remain unchanged; `created_at` remains unchanged and `updated_at` advances on a changed amendment.
+
+The operation normalizes and validates the proposed fields with `memory_substrate::frontmatter::{normalize_abstraction_cues, validate_frontmatter}` and the §9.1 caps. It uses `handlers/governance/privacy.rs::classify_plaintext_memory`, extended for this operation to scan proposed abstraction/cues always and stored plaintext body, summary, and tags only when those plaintext fields are available. It derives `PrivacyNamespace` from the stored scope, including `User` to `Me`. It never decrypts solely to scan: encrypted body content is outside this scan by construction. `Secret` refuses before disk effects and corresponds to `WriteFailureKind::SecretRefused`. A classification that needs a tier higher than the stored memory's sensitivity/storage posture returns `MetadataAmendmentTierIncreaseRefused`; the operation does not re-tier, encrypt, drop generated fields, or use §8.7's drop/rebind behavior.
+
+The handler compares `expected_base_hash` before its idempotent short-circuit. A mismatch is `MetadataAmendmentStaleBase`, even when the requested canonical fields already match. A matching unchanged amendment returns `changed: false` with no event, index work, or git work. A changed amendment uses a dedicated thin amend write: CAS-write the canonical file, update the index and §10.2.1 auxiliary fence, and append exactly one `MetadataAmended { id, path, actor, changed_fields }` event, where `changed_fields` is the exact nonempty subset of `{abstraction, cues}`. The F1 commit worker handles it as a durable canonical write.
+
+Plaintext and encrypted rows use that same amend contract. `update_encrypted_memory_metadata` retains its `(id, actor, mutate)` signature; the worker-hash comparison occurs inside `mutate`, so its fresh-read CAS protects the check while ciphertext and its envelope remain intact. The handler appends `MetadataAmended` only after the mutation succeeds.
+
+The handler refuses unless the stored status is `active` or `pinned`; otherwise it returns `MetadataAmendmentLifecycleNotAmendable`. The closed refusal set is `MetadataAmendmentStaleBase`, `MetadataAmendmentTierIncreaseRefused`, `MetadataAmendmentValidationFailed`, `MetadataAmendmentMissingId`, `MetadataAmendmentActorMismatch`, `SecretRefused`, and `MetadataAmendmentLifecycleNotAmendable`. The arm does not re-run grounding because it cannot change body or evidence, and it does not create a superseding version. The canonical diff, event, index hashes, and F1 git history are its audit trail.
 
 ### 2026-06-09 — Default active-embedding triple updated to the shipped production model
 

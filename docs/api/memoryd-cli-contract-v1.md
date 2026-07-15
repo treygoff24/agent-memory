@@ -194,3 +194,24 @@ Both are surfaced in `schema` output.
 ## 7. Amendment 2026-07-11 — abstraction/cues meta fields (additive, in-version)
 
 Ratified 2026-07-10 as §C of `docs/specs/2026-07-10-w2-spec-ratification-package.md`. `memoryd write` / `write-note` accept `abstraction` and `cues` via meta; protocol DTO, generated schema, and envelope tests updated together. Validation order at the trust boundary follows the Stream A v1.2 §A4 composed pipeline: normalize/cap-validate → classify (combined payload; strictest outcome controls; `secret` anywhere refuses before any disk effect) → drop/refuse/encrypt decision → validate final payload → persist/index/enqueue. Caps: `abstraction` ≤ 8 words / ≤ 120 chars, single line; `cues` 0–3 entries, each ≤ 6 words / ≤ 64 chars. `skills/using-memorum/SKILL.md` documents cue authoring (`[Main Entity] + [Key Aspect]`, 2–4 words) in the same change.
+
+## 8. Amendment 2026-07-15 — B3 backfill surface
+
+**Trey-authorized behavior-change amendment.** `memoryd dream abstraction-compile [--repo PATH] [--runtime PATH] [--limit N] [--cli PATH]` remains an admin/dream command under §2.2, rather than becoming a covered free-form metadata mutation command. Its apply path is the sole operator-facing route to the Stream A v1.2 B3 `metadata_amend` arm and identifies itself as `memoryd-abstraction-compile`; neither MCP nor the general `write`/`supersede` commands expose that arm.
+
+For each selected memory, the report retains `old_id`, `source`, `outcome`, `new_id`, and optional `reason`. `old_id` remains the canonical id and `new_id` is always absent. The closed outcome contract is:
+
+| outcome | new_id | reason | counter |
+|---|---|---|---|
+| `amended` | absent | absent | `applied` |
+| `unchanged` | absent | absent | `skipped` |
+| `refused` | absent | `metadata_amendment_stale_base` | `skipped` |
+| `refused` | absent | `metadata_amendment_tier_increase_refused` | `skipped` |
+| `refused` | absent | `metadata_amendment_validation_failed` | `skipped` |
+| `refused` | absent | `metadata_amendment_missing_id` | `skipped` |
+| `refused` | absent | `metadata_amendment_actor_mismatch` | `skipped` |
+| `refused` | absent | `secret_refused` | `skipped` |
+| `refused` | absent | `metadata_amendment_lifecycle_not_amendable` | `skipped` |
+| `validation_skipped` | absent | `validation_failed` | `skipped` |
+
+Stream A refusal reasons are wire-stable snake_case spellings of the closed typed refusal set. `secret_refused` is the CLI rendering of `WriteFailureKind::SecretRefused`. `validation_skipped` with `validation_failed` is a job-local harness-output skip before `metadata_amend`, not a Stream A refusal variant. Harness-output validation checks malformed generated output before apply; `metadata_amendment_validation_failed` is Stream A validation of a proposed amendment. No other refusal reason or outcome is valid for this command; it never reports a supersede or a new id for a metadata amendment.

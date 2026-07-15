@@ -940,3 +940,7 @@ Ratified 2026-07-10 as §B of `docs/specs/2026-07-10-w2-spec-ratification-packag
 - Application = **governed supersede** through the standard write path, carrying a fresh `ClassificationOutcome` per the Stream A v1.2 §A4 composed pipeline (generation-context dual classification: drop-fields-keep-body + outcome rebind on sensitive generation).
 - Structural fallback when no harness CLI is available: `abstraction` = `summary` truncated to caps, no cues, marked `source: structural` in the job report.
 - This job is the single generation mechanism for the eval-corpus backfill (W4-prep), the live-corpus backfill (W5), and ongoing dream repair — production parity by construction.
+
+### 2026-07-15 — B3 compile-apply behavior change
+
+**Trey-authorized behavior-change amendment.** The preceding `abstraction_compile` application clause is replaced for this job: apply uses Stream A v1.2's bounded `metadata_amend` operation, not governed supersede and not the §8.7 generation-context drop/rebind path. The compile boundary hardcodes actor `memoryd-abstraction-compile`; it supplies the worker's expected base hash and generated `abstraction`/`cues`, and reports the amendment outcome. Stream A owns validation, privacy scanning, tier-increase refusal, CAS, indexing, and `MetadataAmended`; this job neither creates a new memory id nor changes body/evidence.
