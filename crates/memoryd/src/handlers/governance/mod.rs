@@ -15,14 +15,18 @@
 //! `handlers::mod`, `handlers::memory_ops`, and `handlers::review` stay the same.
 
 pub(crate) mod meta;
+mod metadata_amend;
 mod pipeline;
 mod policy;
 pub(super) mod privacy;
 
 pub(crate) use meta::GovernanceMeta;
+pub(crate) use metadata_amend::{metadata_amend, MetadataAmendRequest};
 pub(crate) use pipeline::{
     governance_forget_response, governance_supersede_response, governance_write_response, write_privacy_memory,
     GovernanceSupersedeRequest, GovernanceWriteRequest,
 };
 pub(crate) use policy::load_policy_set;
-pub(crate) use privacy::{classify_plaintext_memory, classify_privacy};
+pub(crate) use privacy::{
+    classify_metadata_amendment_decision, classify_plaintext_memory, classify_privacy,
+};

@@ -164,6 +164,9 @@ pub enum WriteFailureKind {
     /// Stale base hash.
     #[error("stale base")]
     StaleBase,
+    /// Metadata amendment was attempted after the memory left an amendable lifecycle state.
+    #[error("metadata amendment lifecycle is not amendable")]
+    MetadataAmendmentLifecycleNotAmendable,
     /// Target already exists.
     #[error("target already exists")]
     AlreadyExists,

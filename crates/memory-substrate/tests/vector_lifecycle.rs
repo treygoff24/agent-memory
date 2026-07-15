@@ -662,7 +662,7 @@ fn first_index_chunk(memory: &Memory) -> memory_substrate::index::Chunk {
 }
 
 #[test]
-fn abstraction_compile_candidates_excludes_encrypted_and_metadata_only() {
+fn abstraction_compile_candidates_include_encrypted_and_metadata_only() {
     let temp = tempfile::tempdir().expect("tempdir");
     let path = temp.path().join("index.sqlite");
     let triple = EmbeddingTriple { provider: "synthetic".into(), model_ref: "aux".into(), dimension: 3 };
@@ -682,7 +682,10 @@ fn abstraction_compile_candidates_excludes_encrypted_and_metadata_only() {
     index.upsert_memory(&metadata_only, true).expect("metadata-only active");
 
     let candidates = index.abstraction_compile_candidates(10).expect("candidates");
-    assert_eq!(candidates, vec![plaintext.frontmatter.id.clone()]);
+    assert_eq!(candidates.len(), 3);
+    assert!(candidates.contains(&plaintext.frontmatter.id));
+    assert!(candidates.contains(&encrypted.frontmatter.id));
+    assert!(candidates.contains(&metadata_only.frontmatter.id));
 }
 
 #[test]

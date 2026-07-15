@@ -274,6 +274,11 @@ fn event_kind_view(kind: &EventKind) -> EventKindView {
             summary: format!("encrypted memory write committed: {id}"),
             label: "encrypted_write_committed",
         },
+        EventKind::MetadataAmended { id, changed_fields, .. } => EventKindView {
+            memory_id: Some(id.clone()),
+            summary: format!("memory metadata amended: {id} ({})", changed_fields.join(", ")),
+            label: "metadata_amended",
+        },
         EventKind::TombstoneCommitted { id } => EventKindView {
             memory_id: Some(id.clone()),
             summary: format!("memory tombstoned: {id}"),

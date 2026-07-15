@@ -65,8 +65,13 @@ impl Substrate {
     /// memory is not yet indexed (B-API-7 fast path is index-first; the walk
     /// preserves legacy "found-on-disk" semantics).
     pub async fn read_memory_envelope(&self, id: &MemoryId) -> Result<MemoryEnvelope, ReadError> {
+        self.read_memory_envelope_with_hash(id).await.map(|(envelope, _)| envelope)
+    }
+
+    /// Read a memory envelope and the hash of the exact canonical bytes parsed.
+    pub async fn read_memory_envelope_with_hash(&self, id: &MemoryId) -> Result<(MemoryEnvelope, Sha256), ReadError> {
         let path = self.resolve_memory_id_to_path(id)?;
-        self.read_path_envelope(&path).await
+        self.read_path_envelope_with_hash_blocking(&path)
     }
 
     /// Synchronous, blocking-pool variant of [`Self::read_memory_envelope`].
@@ -105,15 +110,19 @@ impl Substrate {
     /// re-entering the async runtime. The async method above is a thin wrapper
     /// over this, so both paths produce an identical `MemoryEnvelope`.
     pub fn read_path_envelope_blocking(&self, path: &RepoPath) -> Result<MemoryEnvelope, ReadError> {
+        self.read_path_envelope_with_hash_blocking(path).map(|(envelope, _)| envelope)
+    }
+
+    fn read_path_envelope_with_hash_blocking(&self, path: &RepoPath) -> Result<(MemoryEnvelope, Sha256), ReadError> {
         if is_noncanonical_stream_f_repo_path(path.as_str()) {
             return Err(ReadError::NotACanonicalMemory { path: path.clone() });
         }
         if path.as_str().starts_with("encrypted/") {
-            return self.read_ciphertext_envelope(path);
+            return self.read_ciphertext_envelope_with_hash(path);
         }
-        let memory = read_memory_file(&self.roots.repo, path).map(|(memory, _)| memory)?;
+        let (memory, hash) = read_memory_file(&self.roots.repo, path)?;
         let body = memory.body.clone();
-        Ok(MemoryEnvelope { metadata: memory, content: MemoryContent::Plaintext(body) })
+        Ok((MemoryEnvelope { metadata: memory, content: MemoryContent::Plaintext(body) }, hash))
     }
 
     /// Read by repository path (legacy `Memory` shape).
@@ -121,9 +130,10 @@ impl Substrate {
         read_memory_file(&self.roots.repo, path).map(|(memory, _)| memory)
     }
 
-    fn read_ciphertext_envelope(&self, path: &RepoPath) -> Result<MemoryEnvelope, ReadError> {
+    fn read_ciphertext_envelope_with_hash(&self, path: &RepoPath) -> Result<(MemoryEnvelope, Sha256), ReadError> {
         let absolute = self.roots.repo.join(path.as_path());
         let bytes = std::fs::read(&absolute)?;
+        let hash = crate::markdown::hash_bytes(&bytes);
         // Try Markdown parse first — encrypted records now persist a parseable
         // metadata projection with base64-encoded ciphertext in the body. If
         // parsing fails, fall back to raw ciphertext bytes for legacy files.
@@ -147,7 +157,7 @@ impl Substrate {
                     Some(_) => MemoryContent::MetadataOnly,
                     None => MemoryContent::MetadataOnly,
                 };
-                return Ok(MemoryEnvelope { metadata, content });
+                return Ok((MemoryEnvelope { metadata, content }, hash));
             }
         }
         // Pure ciphertext: build a placeholder metadata from the path; Stream D
@@ -172,7 +182,7 @@ impl Substrate {
             recipient: "unspecified".to_string(),
             metadata: None,
         };
-        Ok(MemoryEnvelope { metadata, content: MemoryContent::Ciphertext { bytes, encryption: envelope } })
+        Ok((MemoryEnvelope { metadata, content: MemoryContent::Ciphertext { bytes, encryption: envelope } }, hash))
     }
 
     /// Resolve an id to its path via a single PK lookup on `memories.id`.

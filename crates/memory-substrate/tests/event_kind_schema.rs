@@ -14,6 +14,12 @@ fn every_current_event_kind_has_typed_payload_fixture() {
             path: RepoPath::new("encrypted/agent/patterns/mem_20260424_a1b2c3d4e5f60718_000002.md"),
             classification: ClassificationOutcome::RequiresEncryption,
         },
+        EventKind::MetadataAmended {
+            id: MemoryId::new("mem_20260424_a1b2c3d4e5f60718_000006"),
+            path: RepoPath::new("agent/patterns/mem_20260424_a1b2c3d4e5f60718_000006.md"),
+            actor: "memoryd-abstraction-compile".to_string(),
+            changed_fields: vec!["abstraction".to_string(), "cues".to_string()],
+        },
         EventKind::TombstoneCommitted { id: MemoryId::new("mem_20260424_a1b2c3d4e5f60718_000003") },
         EventKind::DuplicateIdRepaired {
             old_id: MemoryId::new("mem_20260424_a1b2c3d4e5f60718_000004"),
@@ -29,7 +35,7 @@ fn every_current_event_kind_has_typed_payload_fixture() {
             classification: ClassificationOutcome::Trusted,
         },
     ];
-    assert_eq!(events.len(), 9);
+    assert_eq!(events.len(), 10);
     for (index, kind) in events.into_iter().enumerate() {
         let event = Event {
             schema: memory_substrate::SUBSTRATE_SCHEMA_VERSION,

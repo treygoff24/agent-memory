@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::fmt::{Display, Formatter};
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
@@ -1090,6 +1090,64 @@ pub struct WriteOutcome {
     pub repair_required: Option<RepairRequired>,
     /// Operation id.
     pub operation_id: OperationId,
+}
+
+/// Result of the bounded abstraction/cue metadata-amend write.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MetadataAmendWriteOutcome {
+    /// Whether canonical metadata changed.
+    pub changed: bool,
+    /// Canonical path read and, when changed, rewritten by the operation.
+    pub path: RepoPath,
+    /// Exact changed subset of `abstraction` and `cues`.
+    pub changed_fields: Vec<String>,
+    /// Durable write pipeline outcome. Unchanged amendments are not committed.
+    pub write_outcome: WriteOutcome,
+}
+
+/// Canonical write inputs after the metadata amendment has been validated.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MetadataAmendWriteRequest {
+    /// Canonical memory id.
+    pub id: MemoryId,
+    /// Hash of the exact canonical bytes observed by the caller.
+    pub expected_base_hash: Sha256,
+    /// Canonical path observed by the caller.
+    pub expected_path: RepoPath,
+    /// Normalized replacement abstraction.
+    pub abstraction: Option<String>,
+    /// Normalized replacement cues.
+    pub cues: Vec<String>,
+}
+
+/// Return the changed subset of the metadata-amendable fields.
+pub fn metadata_amend_changed_fields(frontmatter: &Frontmatter, abstraction: Option<&String>, cues: &[String]) -> Vec<String> {
+    let mut fields = Vec::with_capacity(2);
+    if frontmatter.abstraction.as_ref() != abstraction {
+        fields.push("abstraction".to_string());
+    }
+    if frontmatter.cues != cues {
+        fields.push("cues".to_string());
+    }
+    fields
+}
+
+/// Advance an amendment timestamp without moving it backwards.
+pub fn metadata_amend_updated_at(current: DateTime<Utc>) -> DateTime<Utc> {
+    current.checked_add_signed(Duration::microseconds(1)).map_or_else(Utc::now, |next| Utc::now().max(next))
+}
+
+/// Payload for the durable event emitted after an encrypted metadata amend.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MetadataAmendedEvent {
+    /// Canonical memory id.
+    pub id: MemoryId,
+    /// Canonical encrypted path.
+    pub path: RepoPath,
+    /// Fixed internal actor.
+    pub actor: String,
+    /// Exact changed subset of `abstraction` and `cues`.
+    pub changed_fields: Vec<String>,
 }
 
 impl WriteOutcome {

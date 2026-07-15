@@ -478,12 +478,17 @@ const SPEC_COVERAGE: &[SpecCoverageEntry] = &[
     SpecCoverageEntry::covered(
         "10.6 Acceptance signals",
         "00ce217474efea9b",
-        "dream/abstraction_compile::user_scoped_secret_cue_refuses_before_disk",
+        "handlers/governance/metadata_amend::typed_refusals_leave_plaintext_unchanged",
     ),
     SpecCoverageEntry::covered(
         "10.6 Acceptance signals",
-        "6c8cede48034047c",
-        "dream/abstraction_compile::sensitive_generated_fields_persist_body_only_without_aux_state",
+        "0761b94c4967d537",
+        "dream/merge::sensitive_generation_drop_remains_limited_to_merge_staging",
+    ),
+    SpecCoverageEntry::covered(
+        "10.6 Acceptance signals",
+        "f01ce57c0adc3cf1",
+        "handlers/governance/metadata_amend::typed_refusals_leave_plaintext_unchanged",
     ),
     SpecCoverageEntry::covered(
         "10.6 Acceptance signals",

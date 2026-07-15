@@ -71,8 +71,6 @@ impl Index {
             "SELECT memories.id FROM memories
              LEFT JOIN memory_abstractions ON memory_abstractions.memory_id=memories.id
              WHERE memories.status IN ('active','pinned')
-               AND memories.metadata_only = 0
-               AND NOT memories.path LIKE 'encrypted/%'
                AND (memory_abstractions.memory_id IS NULL OR memory_abstractions.source_body_hash<>memories.body_hash)
              ORDER BY memories.updated_at LIMIT ?1",
         )?;
@@ -1696,6 +1694,7 @@ fn event_kind_name(kind: &EventKind) -> &'static str {
     match kind {
         EventKind::WriteCommitted { .. } => "write_committed",
         EventKind::EncryptedWriteCommitted { .. } => "encrypted_write_committed",
+        EventKind::MetadataAmended { .. } => "metadata_amended",
         EventKind::TombstoneCommitted { .. } => "tombstone_committed",
         EventKind::DuplicateIdRepaired { .. } => "duplicate_id_repaired",
         EventKind::EmbeddingModelChanged { .. } => "embedding_model_changed",
@@ -1721,6 +1720,7 @@ fn event_memory_id(kind: &EventKind) -> Option<&str> {
     match kind {
         EventKind::WriteCommitted { id, .. }
         | EventKind::EncryptedWriteCommitted { id, .. }
+        | EventKind::MetadataAmended { id, .. }
         | EventKind::TombstoneCommitted { id }
         | EventKind::WriteRefused { id: Some(id), .. }
         | EventKind::EncryptedContentRevealed { id, .. }

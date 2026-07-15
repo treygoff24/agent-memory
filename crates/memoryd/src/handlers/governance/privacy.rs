@@ -34,18 +34,7 @@ pub(super) fn attach_privacy_scan(memory: &mut Memory, privacy: &PrivacyDecision
 
 /// Reclassify the complete canonical payload before a plaintext lifecycle rewrite.
 pub(crate) fn classify_plaintext_memory(memory: &Memory) -> Result<ClassificationOutcome, HandlerError> {
-    let text = std::iter::once(memory.frontmatter.summary.as_str())
-        .chain(std::iter::once(memory.body.as_str()))
-        .chain(memory.frontmatter.abstraction.as_deref())
-        .chain(memory.frontmatter.cues.iter().map(String::as_str))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let namespace = match memory.frontmatter.scope {
-        Scope::User => PrivacyNamespace::Me,
-        Scope::Project | Scope::Org => PrivacyNamespace::Project,
-        Scope::Agent | Scope::Subagent => PrivacyNamespace::Agent,
-    };
-    let decision = classify_privacy(&text, namespace, None)?;
+    let decision = classify_plaintext_memory_decision(memory, true)?;
     if decision.storage_action.refuses_storage() {
         return Err(HandlerError::invalid_request("privacy refused secret before disk effects"));
     }
@@ -55,4 +44,44 @@ pub(crate) fn classify_plaintext_memory(memory: &Memory) -> Result<Classificatio
         ));
     }
     Ok(decision.tier.classification())
+}
+
+/// Classify stored plaintext metadata plus the memory body when it is available.
+/// Scan set matches the pre-B3 lifecycle baseline (summary, body, abstraction,
+/// cues — no tags); only the metadata-amend classifier below scans tags.
+pub(crate) fn classify_plaintext_memory_decision(
+    memory: &Memory,
+    body_available: bool,
+) -> Result<PrivacyDecision, HandlerError> {
+    let text = std::iter::once(memory.frontmatter.summary.as_str())
+        .chain(body_available.then_some(memory.body.as_str()))
+        .chain(memory.frontmatter.abstraction.as_deref())
+        .chain(memory.frontmatter.cues.iter().map(String::as_str))
+        .collect::<Vec<_>>()
+        .join("\n");
+    classify_memory_text(memory, text)
+}
+
+/// Classify the complete mutable payload before a metadata amendment.
+pub(crate) fn classify_metadata_amendment_decision(
+    memory: &Memory,
+    body_available: bool,
+) -> Result<PrivacyDecision, HandlerError> {
+    let text = std::iter::once(memory.frontmatter.summary.as_str())
+        .chain(memory.frontmatter.tags.iter().map(String::as_str))
+        .chain(body_available.then_some(memory.body.as_str()))
+        .chain(memory.frontmatter.abstraction.as_deref())
+        .chain(memory.frontmatter.cues.iter().map(String::as_str))
+        .collect::<Vec<_>>()
+        .join("\n");
+    classify_memory_text(memory, text)
+}
+
+fn classify_memory_text(memory: &Memory, text: String) -> Result<PrivacyDecision, HandlerError> {
+    let namespace = match memory.frontmatter.scope {
+        Scope::User => PrivacyNamespace::Me,
+        Scope::Project | Scope::Org => PrivacyNamespace::Project,
+        Scope::Agent | Scope::Subagent => PrivacyNamespace::Agent,
+    };
+    classify_privacy(&text, namespace, None)
 }

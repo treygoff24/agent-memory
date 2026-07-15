@@ -1276,6 +1276,21 @@ mod tests {
     }
 
     #[test]
+    fn sensitive_generation_drop_remains_limited_to_merge_staging() {
+        let mut replacement = memory("mem_20260711_aaaaaaaaaaaaaaaa_000004");
+        replacement.frontmatter.sensitivity = Sensitivity::Public;
+        replacement.frontmatter.abstraction = Some("Contact reviewer@example.com".to_string());
+        replacement.frontmatter.cues = vec!["Review contact".to_string()];
+        let body = replacement.body.clone();
+
+        generation_privacy_rebind(&mut replacement).expect("merge staging rebind");
+
+        assert_eq!(replacement.body, body);
+        assert!(replacement.frontmatter.abstraction.is_none());
+        assert!(replacement.frontmatter.cues.is_empty());
+    }
+
+    #[test]
     fn torn_tail_is_truncated_but_checksum_failure_is_corruption() {
         let temp = tempfile::tempdir().expect("tempdir");
         let store = MergeProposalStore::new(temp.path());

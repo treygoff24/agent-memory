@@ -3,8 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use memory_privacy::{PrivacyNamespace, PrivacyStorageAction};
-use memory_substrate::{Memory, Roots, Scope, Substrate};
+use memory_substrate::{Memory, MemoryContent, ReadError, Roots, Substrate};
 use serde::{Deserialize, Serialize};
 
 use super::harness::HarnessCli;
@@ -22,13 +21,22 @@ pub struct AbstractionCompileReport {
 #[derive(Debug, Serialize)]
 pub struct AbstractionCompileItem {
     pub old_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub new_id: Option<String>,
     pub source: &'static str,
-    pub outcome: String,
-    /// Governance refusal detail when `outcome` is not `promoted` — without it
-    /// a refused backfill run cannot self-diagnose (W5 rehearsal lesson).
+    pub outcome: AbstractionCompileOutcome,
+    /// Closed refusal/validation reason from CLI contract §8.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AbstractionCompileOutcome {
+    Amended,
+    Unchanged,
+    Refused,
+    ValidationSkipped,
 }
 
 #[derive(Debug, Deserialize)]
@@ -52,29 +60,35 @@ pub async fn run(args: crate::cli::DreamAbstractionCompileArgs) -> anyhow::Resul
         applied: 0,
         skipped: 0,
         structural: 0,
-        exclusion_policy: "metadata-only and encrypted memories are not eligible for abstraction_compile",
+        exclusion_policy: "active and pinned canonical memories only",
         items: Vec::with_capacity(ids.len()),
     };
     for id in ids {
-        let memory = match substrate.read_memory(&id).await {
-            Ok(memory) => memory,
-            Err(error) => {
+        let (envelope, expected_base_hash) = match substrate.read_memory_envelope_with_hash(&id).await {
+            Ok(read) => read,
+            Err(ReadError::NotFound(_)) => {
                 report.skipped += 1;
                 report.items.push(AbstractionCompileItem {
                     old_id: id.as_str().to_string(),
                     new_id: None,
                     source: "read",
-                    outcome: error.to_string(),
-                    reason: None,
+                    outcome: AbstractionCompileOutcome::Refused,
+                    reason: Some("metadata_amendment_missing_id".to_string()),
                 });
                 continue;
             }
+            Err(error) => return Err(error.into()),
+        };
+        let memory = &envelope.metadata;
+        let plaintext_body = match &envelope.content {
+            MemoryContent::Plaintext(body) => Some(body.as_str()),
+            MemoryContent::Ciphertext { .. } | MemoryContent::MetadataOnly => None,
         };
         let (source, generated) = match &harness {
-            Some(harness) => ("harness", generate_with_harness(harness, &memory).await),
+            Some(harness) => ("harness", generate_with_harness(harness, memory, plaintext_body).await),
             None => {
                 report.structural += 1;
-                ("structural", Ok(structural_output(&memory)))
+                ("structural", Ok(structural_output(memory)))
             }
         };
         let generated = match generated.and_then(validate_output) {
@@ -86,65 +100,52 @@ pub async fn run(args: crate::cli::DreamAbstractionCompileArgs) -> anyhow::Resul
                     old_id: id.as_str().to_string(),
                     new_id: None,
                     source,
-                    outcome: error,
-                    reason: None,
+                    outcome: AbstractionCompileOutcome::ValidationSkipped,
+                    reason: Some("validation_failed".to_string()),
                 });
                 continue;
             }
         };
-        let (abstraction, cues) = match generation_privacy_rebind(&memory, generated) {
-            Ok(fields) => fields,
-            Err(error) => {
-                report.skipped += 1;
-                report.items.push(AbstractionCompileItem {
-                    old_id: id.as_str().to_string(),
-                    new_id: None,
-                    source,
-                    outcome: error.to_string(),
-                    reason: None,
-                });
-                continue;
-            }
-        };
-        let response = crate::handlers::governance::governance_supersede_response(
+        let result = crate::handlers::governance::metadata_amend(
             &substrate,
-            None,
-            crate::handlers::governance::GovernanceSupersedeRequest {
-                old_id: id.as_str().to_string(),
-                content: memory.body.clone(),
-                reason: "abstraction_compile".to_string(),
-                preserve_frontmatter: true,
-                meta: generation_meta(&memory, abstraction, cues, source),
+            "memoryd-abstraction-compile",
+            crate::handlers::governance::MetadataAmendRequest {
+                id: id.as_str().to_string(),
+                expected_base_hash,
+                abstraction: Some(generated.abstraction),
+                cues: generated.cues,
             },
         )
         .await;
-        let response = match response {
-            Ok(response) => response,
-            Err(error) => {
+        match result {
+            Ok(outcome) => {
+                let item_outcome = if outcome.changed {
+                    report.applied += 1;
+                    AbstractionCompileOutcome::Amended
+                } else {
+                    report.skipped += 1;
+                    AbstractionCompileOutcome::Unchanged
+                };
+                report.items.push(AbstractionCompileItem {
+                    old_id: id.as_str().to_string(),
+                    new_id: None,
+                    source,
+                    outcome: item_outcome,
+                    reason: None,
+                });
+            }
+            Err(error) if error.refusal_reason().is_some() => {
                 report.skipped += 1;
                 report.items.push(AbstractionCompileItem {
                     old_id: id.as_str().to_string(),
                     new_id: None,
                     source,
-                    outcome: error.message,
-                    reason: None,
+                    outcome: AbstractionCompileOutcome::Refused,
+                    reason: error.refusal_reason().map(str::to_string),
                 });
-                continue;
             }
-        };
-        let crate::protocol::ResponsePayload::GovernanceSupersede(response) = response else {
-            unreachable!("supersede handler response variant")
-        };
-        let applied = matches!(response.status, crate::protocol::GovernanceStatus::Promoted);
-        report.applied += usize::from(applied);
-        report.skipped += usize::from(!applied);
-        report.items.push(AbstractionCompileItem {
-            old_id: id.as_str().to_string(),
-            new_id: response.new_id,
-            source,
-            outcome: format!("{:?}", response.status).to_lowercase(),
-            reason: response.reason.as_ref().map(|reason| format!("{reason:?}")),
-        });
+            Err(error) => return Err(error.into()),
+        }
     }
     Ok(report)
 }
@@ -158,10 +159,15 @@ async fn available_harness(override_name: Option<&str>) -> Option<Arc<dyn Harnes
     registry.select_first_available(&["claude".to_string(), "codex".to_string()]).await
 }
 
-async fn generate_with_harness(harness: &Arc<dyn HarnessCli>, memory: &Memory) -> Result<HarnessOutput, String> {
+async fn generate_with_harness(
+    harness: &Arc<dyn HarnessCli>,
+    memory: &Memory,
+    plaintext_body: Option<&str>,
+) -> Result<HarnessOutput, String> {
+    let body = plaintext_body.unwrap_or("[encrypted body unavailable]");
     let prompt = format!(
         "Return only JSON {{\"abstraction\":string,\"cues\":[string]}}. Abstraction: at most 8 words. Cues: 0-3 phrases, each 2-4 words, pattern [Main Entity] + [Key Aspect].\nSummary: {}\nBody:\n{}",
-        memory.frontmatter.summary, memory.body
+        memory.frontmatter.summary, body
     );
     let raw = harness.complete(&prompt, true, Duration::from_secs(60)).await.map_err(|error| error.to_string())?;
     serde_json::from_str(&raw).map_err(|error| format!("malformed abstraction_compile JSON: {error}"))
@@ -183,155 +189,9 @@ fn validate_output(mut output: HarnessOutput) -> Result<HarnessOutput, String> {
     Ok(output)
 }
 
-fn generation_privacy_rebind(memory: &Memory, output: HarnessOutput) -> anyhow::Result<(Option<String>, Vec<String>)> {
-    // Probe the strictness contributed by the generated fields under the lowest
-    // privacy floor (Agent / Internal / Plaintext). The memory's real namespace
-    // determines the final persisted classification, but the Agent probe lets us
-    // detect whether the abstraction/cues are what made the combined payload
-    // stricter than the body alone.
-    let body_text = format!("{}\n{}", memory.frontmatter.summary, memory.body);
-    let combined = format!("{body_text}\n{}\n{}", output.abstraction, output.cues.join("\n"));
-    let body = crate::handlers::governance::classify_privacy(&body_text, PrivacyNamespace::Agent, None)
-        .map_err(|error| anyhow::anyhow!(error.message))?;
-    let combined = crate::handlers::governance::classify_privacy(&combined, PrivacyNamespace::Agent, None)
-        .map_err(|error| anyhow::anyhow!(error.message))?;
-    if combined.storage_action.refuses_storage() || body.storage_action.refuses_storage() {
-        anyhow::bail!("secret refused before disk effects");
-    }
-    if matches!(combined.storage_action, PrivacyStorageAction::EncryptAtRest)
-        && matches!(body.storage_action, PrivacyStorageAction::Plaintext)
-    {
-        return Ok((None, Vec::new()));
-    }
-    Ok((Some(output.abstraction), output.cues))
-}
-
-fn generation_meta(memory: &Memory, abstraction: Option<String>, cues: Vec<String>, source: &str) -> serde_json::Value {
-    let namespace = match memory.frontmatter.scope {
-        Scope::User => "me",
-        Scope::Project | Scope::Org => "project",
-        Scope::Agent | Scope::Subagent => "agent",
-    };
-    serde_json::json!({
-        "namespace": namespace,
-        "canonical_namespace_id": memory.frontmatter.canonical_namespace_id,
-        "type": memory.frontmatter.memory_type.as_db_str(),
-        "summary": memory.frontmatter.summary,
-        "confidence": memory.frontmatter.confidence,
-        "source_kind": "agent_primary",
-        "harness": format!("abstraction_compile:{source}"),
-        "abstraction": abstraction,
-        "cues": cues,
-    })
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{generation_privacy_rebind, structural_output, HarnessOutput};
-
-    #[test]
-    fn sensitive_generated_fields_drop_and_rebind_to_public_body() {
-        let memory = memory("Public summary", "Public deployment procedure");
-        let (abstraction, cues) = generation_privacy_rebind(
-            &memory,
-            HarnessOutput {
-                abstraction: "Contact reviewer@example.com".to_string(),
-                cues: vec!["Review contact".to_string()],
-            },
-        )
-        .expect("body-only rebind");
-        assert_eq!(abstraction, None);
-        assert!(cues.is_empty());
-    }
-
-    #[test]
-    fn user_scoped_sensitive_cue_drops_generated_fields_and_keeps_body() {
-        let memory = memory_with_scope("user", "Public summary", "Public deployment procedure");
-        let (abstraction, cues) = generation_privacy_rebind(
-            &memory,
-            HarnessOutput {
-                abstraction: "Contact reviewer@example.com".to_string(),
-                cues: vec!["Review contact".to_string()],
-            },
-        )
-        .expect("body-only rebind");
-        assert_eq!(abstraction, None);
-        assert!(cues.is_empty());
-    }
-
-    #[test]
-    fn user_scoped_benign_cue_keeps_generated_fields() {
-        let memory = memory_with_scope("user", "Public summary", "Public deployment procedure");
-        let (abstraction, cues) = generation_privacy_rebind(
-            &memory,
-            HarnessOutput { abstraction: "Public deployment".to_string(), cues: vec!["Public procedure".to_string()] },
-        )
-        .expect("fields stay");
-        assert_eq!(abstraction.as_deref(), Some("Public deployment"));
-        assert_eq!(cues, vec!["Public procedure".to_string()]);
-    }
-
-    #[test]
-    fn user_scoped_secret_cue_refuses_before_disk() {
-        let memory = memory_with_scope("user", "Public summary", "Public deployment procedure");
-        let result = generation_privacy_rebind(
-            &memory,
-            HarnessOutput { abstraction: "Card 4111111111111111".to_string(), cues: vec!["Secret card".to_string()] },
-        );
-        assert!(result.is_err(), "secret generated content must be refused before any disk effect");
-    }
-
-    #[tokio::test]
-    async fn sensitive_generated_fields_persist_body_only_without_aux_state() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let substrate = memory_substrate::Substrate::init(
-            memory_substrate::Roots::new(temp.path().join("repo"), temp.path().join("runtime")),
-            memory_substrate::InitOptions {
-                force_unsafe_durability: true,
-                device_id: Some("dev_abstractioncompile".to_string()),
-            },
-        )
-        .await
-        .expect("substrate");
-        let mut memory = memory("Public summary", "Public deployment procedure");
-        memory.path = Some(memory_substrate::RepoPath::new("agent/patterns/abstraction-compile.md"));
-        let (abstraction, cues) = generation_privacy_rebind(
-            &memory,
-            HarnessOutput {
-                abstraction: "Contact reviewer@example.com".to_string(),
-                cues: vec!["Review contact".to_string()],
-            },
-        )
-        .expect("body-only rebind");
-        memory.frontmatter.abstraction = abstraction;
-        memory.frontmatter.cues = cues;
-        memory.frontmatter.sensitivity = memory_substrate::Sensitivity::Internal;
-        let id = memory.frontmatter.id.clone();
-        substrate
-            .write_memory(memory_substrate::WriteRequest {
-                operation_id: None,
-                memory,
-                expected_base_hash: None,
-                write_mode: memory_substrate::WriteMode::CreateNew,
-                index_projection: None,
-                event_context: memory_substrate::EventContext::default(),
-                allow_best_effort_durability: true,
-                classification: memory_substrate::ClassificationOutcome::Trusted,
-            })
-            .await
-            .expect("body-only write");
-        let persisted = substrate.read_memory(&id).await.expect("persisted body");
-        assert_eq!(persisted.body, "Public deployment procedure");
-        assert_eq!(persisted.frontmatter.abstraction, None);
-        assert!(persisted.frontmatter.cues.is_empty());
-        let counts = substrate
-            .embedding_row_kind_counts(memory_substrate::EmbeddingLaneEligibility::AllTiers)
-            .expect("embedding counts");
-        assert_eq!(counts["abstraction_indexed"], 0);
-        assert_eq!(counts["cue_indexed"], 0);
-        assert_eq!(counts["abstraction_pending"], 0);
-        assert_eq!(counts["cue_pending"], 0);
-    }
+    use super::{structural_output, AbstractionCompileItem, AbstractionCompileOutcome};
 
     #[test]
     fn structural_fallback_truncates_summary_to_eight_words() {
@@ -341,18 +201,46 @@ mod tests {
         assert!(output.cues.is_empty());
     }
 
+    #[test]
+    fn report_rows_serialize_to_cli_contract_vocabulary() {
+        let rows = [
+            (AbstractionCompileOutcome::Amended, None),
+            (AbstractionCompileOutcome::Unchanged, None),
+            (AbstractionCompileOutcome::Refused, Some("metadata_amendment_stale_base".to_string())),
+            (AbstractionCompileOutcome::Refused, Some("metadata_amendment_tier_increase_refused".to_string())),
+            (AbstractionCompileOutcome::Refused, Some("metadata_amendment_validation_failed".to_string())),
+            (AbstractionCompileOutcome::Refused, Some("metadata_amendment_missing_id".to_string())),
+            (AbstractionCompileOutcome::Refused, Some("metadata_amendment_actor_mismatch".to_string())),
+            (AbstractionCompileOutcome::Refused, Some("secret_refused".to_string())),
+            (AbstractionCompileOutcome::Refused, Some("metadata_amendment_lifecycle_not_amendable".to_string())),
+            (AbstractionCompileOutcome::ValidationSkipped, Some("validation_failed".to_string())),
+        ];
+        let encoded = rows
+            .into_iter()
+            .map(|(outcome, reason)| {
+                serde_json::to_value(AbstractionCompileItem {
+                    old_id: "mem_20260710_aaaaaaaaaaaaaaaa_000001".to_string(),
+                    new_id: None,
+                    source: "structural",
+                    outcome,
+                    reason,
+                })
+                .expect("serialize row")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(encoded[0]["outcome"], "amended");
+        assert_eq!(encoded[1]["outcome"], "unchanged");
+        assert!(encoded[2..9].iter().all(|row| row["outcome"] == "refused"));
+        assert_eq!(encoded[9]["outcome"], "validation_skipped");
+        assert!(encoded[..2].iter().all(|row| row.get("reason").is_none()));
+        assert!(encoded.iter().all(|row| row.get("new_id").is_none()));
+    }
+
     fn memory(summary: &str, body: &str) -> memory_substrate::Memory {
-        memory_with_scope_and_id("agent", summary, body, "mem_20260710_aaaaaaaaaaaaaaaa_000001")
-    }
-
-    fn memory_with_scope(scope: &str, summary: &str, body: &str) -> memory_substrate::Memory {
-        memory_with_scope_and_id(scope, summary, body, "mem_20260710_aaaaaaaaaaaaaaaa_000002")
-    }
-
-    fn memory_with_scope_and_id(scope: &str, summary: &str, body: &str, id: &str) -> memory_substrate::Memory {
+        let id = "mem_20260710_aaaaaaaaaaaaaaaa_000001";
         memory_substrate::frontmatter::parse_document(
             &format!(
-                "---\nschema_version: 1\nid: {id}\ntype: pattern\nscope: {scope}\nsummary: {summary}\nconfidence: 0.9\ntrust_level: trusted\nsensitivity: public\nstatus: active\ncreated_at: 2026-07-10T00:00:00Z\nupdated_at: 2026-07-10T00:00:00Z\nauthor:\n  kind: system\n  component: test\n---\n{body}"
+                "---\nschema_version: 1\nid: {id}\ntype: pattern\nscope: agent\nsummary: {summary}\nconfidence: 0.9\ntrust_level: trusted\nsensitivity: internal\nstatus: active\ncreated_at: 2026-07-10T00:00:00Z\nupdated_at: 2026-07-10T00:00:00Z\nauthor:\n  kind: system\n  component: test\n---\n{body}"
             ),
             None,
         )

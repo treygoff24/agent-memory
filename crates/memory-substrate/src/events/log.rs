@@ -58,6 +58,8 @@ pub enum EventKind {
     WriteCommitted { id: MemoryId, path: RepoPath, classification: ClassificationOutcome },
     /// Encrypted write committed.
     EncryptedWriteCommitted { id: MemoryId, path: RepoPath, classification: ClassificationOutcome },
+    /// A bounded abstraction/cue metadata amendment committed.
+    MetadataAmended { id: MemoryId, path: RepoPath, actor: String, changed_fields: Vec<String> },
     /// Tombstone committed.
     TombstoneCommitted { id: MemoryId },
     /// Duplicate id repaired.

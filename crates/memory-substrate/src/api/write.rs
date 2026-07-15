@@ -121,6 +121,119 @@ impl Substrate {
         self.commit_lifecycle_event(write_event_kind, &operation_id, "pending event enqueue failed", &outcome)
     }
 
+    /// CAS-write only the abstraction/cue metadata of a plaintext memory.
+    ///
+    /// The caller MUST run the privacy classification fence first; the
+    /// `memoryd` metadata-amend handler is the sanctioned entry point.
+    pub async fn amend_plaintext_memory_metadata(
+        &self,
+        request: MetadataAmendWriteRequest,
+        actor: &str,
+    ) -> Result<MetadataAmendWriteOutcome, WriteFailure> {
+        const METADATA_AMEND_ACTOR: &str = "memoryd-abstraction-compile";
+        debug_assert_eq!(actor, METADATA_AMEND_ACTOR);
+        let operation_id = new_operation_id();
+        let outcome = WriteOutcome::not_committed(operation_id.clone(), self.durability);
+        let (mut memory, current_hash) =
+            self.read_memory_with_hash(&request.id).await.map_err(|error| WriteFailure {
+                outcome: outcome.clone(),
+                kind: match error {
+                    ReadError::NotFound(_) => WriteFailureKind::StaleBase,
+                    other => WriteFailureKind::ValidationTyped(ValidationError::Other(other.to_string())),
+                },
+            })?;
+        let path = memory.path.clone().unwrap_or_else(|| default_memory_path(&memory));
+        if !matches!(memory.frontmatter.status, MemoryStatus::Active | MemoryStatus::Pinned) {
+            return Err(WriteFailure { outcome, kind: WriteFailureKind::MetadataAmendmentLifecycleNotAmendable });
+        }
+        if current_hash != request.expected_base_hash || path != request.expected_path {
+            return Err(WriteFailure { outcome, kind: WriteFailureKind::StaleBase });
+        }
+
+        let changed_fields = metadata_amend_changed_fields(&memory.frontmatter, request.abstraction.as_ref(), &request.cues);
+        if changed_fields.is_empty() {
+            return Ok(MetadataAmendWriteOutcome { changed: false, path, changed_fields, write_outcome: outcome });
+        }
+
+        memory.frontmatter.abstraction = request.abstraction;
+        memory.frontmatter.cues = request.cues;
+        memory.frontmatter.updated_at = metadata_amend_updated_at(memory.frontmatter.updated_at);
+        crate::frontmatter::normalize_abstraction_cues(&mut memory.frontmatter).map_err(|error| WriteFailure {
+            outcome: outcome.clone(),
+            kind: WriteFailureKind::ValidationTyped(error),
+        })?;
+        validate_frontmatter(&memory.frontmatter).map_err(|error| WriteFailure {
+            outcome: outcome.clone(),
+            kind: WriteFailureKind::ValidationTyped(error),
+        })?;
+        let final_hash = atomic_write(crate::markdown::AtomicWrite {
+            repo: &self.roots.repo,
+            memory: &memory,
+            expected_base_hash: Some(&current_hash),
+            mode: WriteMode::ReplaceExisting,
+            operation_id: &operation_id,
+            durability: self.durability,
+            suppression: Some(&self.suppression),
+            allow_encrypted_namespace: false,
+        })?;
+        lock_index(&self.index).upsert_memory_with_file_hash(&memory, false, Some(&final_hash)).map_err(|_error| {
+            RepairCascade {
+                runtime: &self.roots.runtime,
+                op: IndexRepairOp::Plain(PendingIndexOp {
+                    op_id: operation_id.clone(),
+                    kind: PendingIndexKind::UpsertPath,
+                    path: path.clone(),
+                    memory_id: Some(request.id.clone()),
+                    expected_file_hash: Some(final_hash.clone()),
+                    enqueued_at: Utc::now(),
+                    attempts: 0,
+                    last_error: None,
+                }),
+                marker_reason: "pending metadata amendment index enqueue failed",
+                failure_kinds: CascadeFailureKinds::AlwaysIndexAfterCommit,
+                durability: self.durability,
+                operation_id: operation_id.clone(),
+            }
+            .into_failure()
+        })?;
+        let write_outcome = self.commit_lifecycle_event(
+            EventKind::MetadataAmended {
+                id: request.id.clone(),
+                path: path.clone(),
+                actor: actor.to_string(),
+                changed_fields: changed_fields.clone(),
+            },
+            &operation_id,
+            "pending metadata amendment event enqueue failed",
+            &outcome,
+        )?;
+        Ok(MetadataAmendWriteOutcome { changed: true, path, changed_fields, write_outcome })
+    }
+
+    /// Append the durable audit event after an encrypted metadata amendment.
+    pub fn record_metadata_amended(&self, event: MetadataAmendedEvent) -> Result<WriteOutcome, WriteFailure> {
+        let operation_id = new_operation_id();
+        let committed = WriteOutcome {
+            committed: true,
+            indexed: true,
+            event_recorded: false,
+            durability: self.durability,
+            repair_required: None,
+            operation_id: operation_id.clone(),
+        };
+        self.commit_lifecycle_event(
+            EventKind::MetadataAmended {
+                id: event.id,
+                path: event.path,
+                actor: event.actor,
+                changed_fields: event.changed_fields,
+            },
+            &operation_id,
+            "pending encrypted metadata amendment event enqueue failed",
+            &committed,
+        )
+    }
+
     /// Supersede an existing memory with a replacement memory.
     ///
     /// Stream A cannot atomically write two Markdown files, so the visible order
@@ -343,6 +456,7 @@ impl Substrate {
         let preserved_body = memory.body.clone();
         let preserved_encryption = memory.frontmatter.extras.get("encryption").cloned();
 
+        let memory_before = memory.clone();
         let frontmatter_before = memory.frontmatter.clone();
         mutate(&mut memory);
         // The encrypted metadata path is a lifecycle write surface too (W3
@@ -360,6 +474,9 @@ impl Substrate {
             None => {
                 memory.frontmatter.extras.remove("encryption");
             }
+        }
+        if memory == memory_before {
+            return Ok(());
         }
         validate_frontmatter(&memory.frontmatter).map_err(|err| WriteFailure {
             outcome: outcome.clone(),
