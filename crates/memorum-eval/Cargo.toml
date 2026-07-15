@@ -73,7 +73,6 @@ test = false
 name = "memorum-eval-enrich"
 path = "src/bin/enrich_runner.rs"
 required-features = ["quality"]
-test = false
 
 [dev-dependencies]
 memory-source = { path = "../memory-source" }

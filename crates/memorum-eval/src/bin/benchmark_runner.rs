@@ -6,6 +6,7 @@ use clap::{Parser, ValueEnum};
 use memorum_eval::benchmark::{
     run_baseline, BenchmarkConfig, BenchmarkEmbeddingLane, BenchmarkFusion, FusionWeights, Split,
 };
+use memorum_eval::enrichment::Generation;
 use memorum_eval::judge::{BenchmarkJudge, DeterministicMockJudge, ExternalCommandJudge};
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -37,6 +38,8 @@ struct Cli {
     output_file: PathBuf,
     #[arg(long, value_enum, default_value = "both")]
     split: SplitArg,
+    #[arg(long, value_enum, default_value = "v1")]
+    generation: Generation,
     #[arg(long)]
     locomo_conversations: Option<usize>,
     #[arg(long)]
@@ -98,6 +101,7 @@ fn run(cli: Cli) -> Result<(), String> {
     };
     let config = BenchmarkConfig {
         dataset_dir: cli.dataset_dir,
+        generation: cli.generation,
         splits,
         locomo_conversation_limit: cli.locomo_conversations,
         locomo_qa_per_conversation: cli.locomo_qa_per_conversation,

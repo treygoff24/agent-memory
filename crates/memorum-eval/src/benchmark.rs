@@ -13,7 +13,10 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::daemon_scaffold::DaemonScaffold;
-use crate::enrichment::{item_key, load_sidecar, Enrichment, EnrichmentSidecar};
+use crate::enrichment::{
+    enrichment_key, load_sidecar, load_v2_sidecar, v2_prompt_sha256, Enrichment, EnrichmentProvenance,
+    EnrichmentSidecar, Generation, V2_WINDOW_POLICY,
+};
 use crate::judge::{BenchmarkJudge, BenchmarkJudgeInput, BenchmarkJudgeVerdict, JudgeError};
 
 const TOP_K: usize = 10;
@@ -41,6 +44,7 @@ pub enum BenchmarkFusion {
 #[derive(Debug, Clone)]
 pub struct BenchmarkConfig {
     pub dataset_dir: PathBuf,
+    pub generation: Generation,
     pub splits: Vec<Split>,
     pub locomo_conversation_limit: Option<usize>,
     pub locomo_qa_per_conversation: Option<usize>,
@@ -65,6 +69,9 @@ pub struct FusionWeights {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SplitConfig {
+    pub generation: Generation,
+    pub enrichment_prompt_sha256: Option<String>,
+    pub enrichment_window_policy: Option<&'static str>,
     pub splits: Vec<Split>,
     pub locomo_conversation_limit: Option<usize>,
     pub locomo_qa_per_conversation: Option<usize>,
@@ -82,6 +89,7 @@ pub struct BaselineReport {
     pub ranking_lanes: Vec<&'static str>,
     pub vector_lane: &'static str,
     pub dataset_sha256s: BTreeMap<String, String>,
+    pub enrichment_provenance: BTreeMap<String, EnrichmentProvenance>,
     pub split_config: SplitConfig,
     pub sampling: SamplingReport,
     pub dispositions: DispositionCounts,
@@ -263,6 +271,17 @@ struct Session {
     turns: Vec<Turn>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct CorpusContext {
+    pub dataset: PathBuf,
+    pub corpus_instance_id: String,
+    pub session_id: String,
+    pub target_ordinal: usize,
+    pub session_turns: std::sync::Arc<[String]>,
+    pub body: String,
+    pub date_metadata: bool,
+}
+
 struct IngestedSessions {
     turn_ids: BTreeMap<String, Vec<String>>,
     #[allow(dead_code)]
@@ -280,6 +299,9 @@ struct Turn {
 
 fn split_config_from(config: &BenchmarkConfig) -> SplitConfig {
     SplitConfig {
+        generation: config.generation,
+        enrichment_prompt_sha256: (config.generation == Generation::V2).then(v2_prompt_sha256),
+        enrichment_window_policy: (config.generation == Generation::V2).then_some(V2_WINDOW_POLICY),
         splits: config.splits.clone(),
         locomo_conversation_limit: config.locomo_conversation_limit,
         locomo_qa_per_conversation: config.locomo_qa_per_conversation,
@@ -315,6 +337,7 @@ pub async fn run_baseline(
             BenchmarkEmbeddingLane::GeminiApi => "gemini-api/gemini-embedding-2/768",
         },
         dataset_sha256s: BTreeMap::new(),
+        enrichment_provenance: BTreeMap::new(),
         split_config: split_config_from(config),
         sampling: SamplingReport {
             rule: "LoCoMo conversation parity; LongMemEval sha256(question_id) last-byte parity",
@@ -345,8 +368,11 @@ async fn run_locomo(
 ) -> Result<(), String> {
     let path = config.dataset_dir.join("locomo/locomo10.json");
     let (conversations, sha256) = sampled_locomo_conversations(config, &path)?;
-    let enrichment = load_sidecar(&path)?;
+    let (enrichment, provenance) = load_enrichment(&path, config.generation, &sha256)?;
     report.dataset_sha256s.insert("locomo/locomo10.json".to_string(), sha256);
+    if let Some(provenance) = provenance {
+        report.enrichment_provenance.insert("locomo/locomo10.json".to_owned(), provenance);
+    }
     for (split, conversation) in conversations {
         let scaffold = benchmark_scaffold(config).await;
         let project = scaffold.tree_dir().join("benchmark-project");
@@ -359,9 +385,18 @@ async fn run_locomo(
         let mut daemon = DaemonClient::new(scaffold.socket_path(), &project);
 
         let sessions = locomo_sessions(&conversation);
-        let ingested =
-            ingest_sessions(&mut daemon, &path, &sessions, &config.expected_sensitivity, &enrichment, report)?;
         let sample_id = conversation.sample_id.clone();
+        let corpus_instance_id = scalar_text(&sample_id);
+        let ingested = ingest_sessions(
+            &mut daemon,
+            &path,
+            &corpus_instance_id,
+            &sessions,
+            config.generation,
+            &config.expected_sensitivity,
+            &enrichment,
+            report,
+        )?;
         let questions = balanced_locomo_questions(conversation.qa, config.locomo_qa_per_conversation);
         for question in questions {
             let id = format!("{}:{}", scalar_text(&sample_id), short_hash(&question.question));
@@ -398,8 +433,11 @@ async fn run_longmemeval(
     // round-robin selection without loading the full (potentially large)
     // haystacks into memory. Compute the file hash in the same pass.
     let (headers, sha256) = read_longmemeval_headers(&path)?;
-    let enrichment = load_sidecar(&path)?;
+    let (enrichment, provenance) = load_enrichment(&path, config.generation, &sha256)?;
     report.dataset_sha256s.insert(format!("longmemeval/{name}"), sha256);
+    if let Some(provenance) = provenance {
+        report.enrichment_provenance.insert(format!("longmemeval/{name}"), provenance);
+    }
 
     let selected_ids = selected_longmem_ids(config, &headers);
 
@@ -440,8 +478,16 @@ async fn run_longmemeval(
                 Some(format!("dangling answer_session_ids: {}", missing.join(", ")))
             };
             let evidence_turns = longmem_gold_turns(&sessions, &item.answer_session_ids);
-            let ingested =
-                ingest_sessions(&mut daemon, &path, &sessions, &config.expected_sensitivity, &enrichment, report)?;
+            let ingested = ingest_sessions(
+                &mut daemon,
+                &path,
+                &item.question_id,
+                &sessions,
+                config.generation,
+                &config.expected_sensitivity,
+                &enrichment,
+                report,
+            )?;
             score_item(
                 &mut daemon,
                 EvalItem {
@@ -468,6 +514,21 @@ async fn run_longmemeval(
     Ok(())
 }
 
+fn load_enrichment(
+    dataset: &Path,
+    generation: Generation,
+    dataset_sha256: &str,
+) -> Result<(EnrichmentSidecar, Option<EnrichmentProvenance>), String> {
+    match generation {
+        Generation::V1 => load_sidecar(dataset).map(|entries| (entries, None)),
+        Generation::V2 => {
+            let sidecar = load_v2_sidecar(dataset, dataset_sha256)?;
+            let provenance = sidecar.provenance();
+            Ok((sidecar.entries, Some(provenance)))
+        }
+    }
+}
+
 async fn benchmark_scaffold(config: &BenchmarkConfig) -> DaemonScaffold {
     let scaffold = match config.embedding_lane {
         BenchmarkEmbeddingLane::FtsOnly => DaemonScaffold::fresh_fts_only().await,
@@ -485,7 +546,9 @@ async fn benchmark_scaffold(config: &BenchmarkConfig) -> DaemonScaffold {
 fn ingest_sessions(
     daemon: &mut DaemonClient<'_>,
     dataset_path: &Path,
+    corpus_instance_id: &str,
     sessions: &[Session],
+    generation: Generation,
     expected_sensitivity: &str,
     enrichment: &EnrichmentSidecar,
     report: &mut BaselineReport,
@@ -496,9 +559,12 @@ fn ingest_sessions(
     for session in sessions {
         if let Some(date) = &session.date {
             let body = session_date_body(&session.id, date);
+            let key = enrichment_key(generation, (corpus_instance_id, &session.id, session.turns.len(), &body));
             if let Some(_id) = ingest_one(
                 daemon,
                 &body,
+                &key,
+                generation,
                 "agent_primary",
                 false,
                 dataset_path,
@@ -512,9 +578,12 @@ fn ingest_sessions(
             let key =
                 turn.dia_id.clone().unwrap_or_else(|| format!("D{}:{}", session_label(&session.id), turn_index + 1));
             let body = turn_body(turn);
+            let enrichment_key = enrichment_key(generation, (corpus_instance_id, &session.id, turn_index, &body));
             if let Some(id) = ingest_one(
                 daemon,
                 &body,
+                &enrichment_key,
+                generation,
                 "user",
                 true,
                 dataset_path,
@@ -535,6 +604,8 @@ fn ingest_sessions(
 fn ingest_one(
     daemon: &mut DaemonClient<'_>,
     body: &str,
+    enrichment_key: &str,
+    generation: Generation,
     source_kind: &str,
     explicit_user_context: bool,
     dataset_path: &Path,
@@ -545,7 +616,10 @@ fn ingest_one(
 ) -> Result<Option<String>, String> {
     let source_ref =
         if source_kind == "agent_primary" { Some(format!("file:{}", dataset_path.display())) } else { None };
-    let entry = enrichment.get(&item_key(body));
+    let entry = enrichment.get(enrichment_key);
+    if generation == Generation::V2 && entry.is_none() {
+        return Err(format!("v2 enrichment incomplete: missing key {enrichment_key} for {}", dataset_path.display()));
+    }
     if entry.is_some() {
         report.enrichment.with_enrichment += 1;
     } else {
@@ -556,10 +630,7 @@ fn ingest_one(
         "source_ref": source_ref, "explicit_user_context": explicit_user_context, "cwd": daemon.cwd,
         "session_id": "memorum-eval-benchmark", "harness": "memorum-eval"
     });
-    if let Some(Enrichment { abstraction, cues, .. }) = entry {
-        meta["abstraction"] = json!(abstraction);
-        meta["cues"] = json!(cues);
-    }
+    apply_enrichment_meta(&mut meta, entry, generation)?;
     let response = daemon.request(json!({"write_memory": {
         "body": body,
         "title": null,
@@ -688,6 +759,17 @@ fn ingest_one(
         report.governance_drag.unobservable_classifications += 1;
     }
     Ok(Some(id))
+}
+
+fn apply_enrichment_meta(meta: &mut Value, entry: Option<&Enrichment>, generation: Generation) -> Result<(), String> {
+    if let Some(Enrichment { abstraction, cues, .. }) = entry {
+        if generation == Generation::V2 && abstraction.is_none() && !cues.is_empty() {
+            return Err("v2 enrichment invalid: null abstraction requires empty cues".to_owned());
+        }
+        meta["abstraction"] = json!(abstraction);
+        meta["cues"] = json!(cues);
+    }
+    Ok(())
 }
 
 fn approve_until(daemon: &mut DaemonClient<'_>, id: &str, max_attempts: usize) -> Result<bool, String> {
@@ -864,6 +946,12 @@ fn finish_metrics(report: &mut BaselineReport) {
 /// Enumerate the exact benchmark write bodies with the same selection and body
 /// construction used by `run_baseline`.
 pub(crate) fn sampled_corpus_bodies(config: &BenchmarkConfig) -> Result<Vec<(PathBuf, String)>, String> {
+    Ok(sampled_corpus_contexts(config)?.into_iter().map(|context| (context.dataset, context.body)).collect())
+}
+
+/// Enumerate benchmark write bodies together with the conversational identity
+/// needed by enrichment v2.
+pub(crate) fn sampled_corpus_contexts(config: &BenchmarkConfig) -> Result<Vec<CorpusContext>, String> {
     let locomo_path = config.dataset_dir.join("locomo/locomo10.json");
     let longmem_name =
         if config.longmemeval_cleaned { "longmemeval_s_cleaned.json" } else { "longmemeval_oracle.json" };
@@ -872,9 +960,8 @@ pub(crate) fn sampled_corpus_bodies(config: &BenchmarkConfig) -> Result<Vec<(Pat
     if locomo_path.exists() {
         let (conversations, _) = sampled_locomo_conversations(config, &locomo_path)?;
         for (_, conversation) in conversations {
-            bodies.extend(
-                session_bodies(&locomo_sessions(&conversation)).into_iter().map(|body| (locomo_path.clone(), body)),
-            );
+            let corpus_instance_id = scalar_text(&conversation.sample_id);
+            bodies.extend(session_contexts(&locomo_path, &corpus_instance_id, &locomo_sessions(&conversation)));
         }
     }
     if longmem_path.exists() {
@@ -882,11 +969,38 @@ pub(crate) fn sampled_corpus_bodies(config: &BenchmarkConfig) -> Result<Vec<(Pat
         let selected_ids = selected_longmem_ids(config, &headers);
         let (items, _) = read_longmemeval_selected(&longmem_path, &selected_ids)?;
         for item in items {
-            bodies
-                .extend(session_bodies(&longmem_sessions(&item)).into_iter().map(|body| (longmem_path.clone(), body)));
+            bodies.extend(session_contexts(&longmem_path, &item.question_id, &longmem_sessions(&item)));
         }
     }
     Ok(bodies)
+}
+
+fn session_contexts(dataset: &Path, corpus_instance_id: &str, sessions: &[Session]) -> Vec<CorpusContext> {
+    let mut contexts = Vec::new();
+    for session in sessions {
+        let session_turns: std::sync::Arc<[String]> = session.turns.iter().map(turn_body).collect::<Vec<_>>().into();
+        if let Some(date) = &session.date {
+            contexts.push(CorpusContext {
+                dataset: dataset.to_path_buf(),
+                corpus_instance_id: corpus_instance_id.to_owned(),
+                session_id: session.id.clone(),
+                target_ordinal: session_turns.len(),
+                session_turns: std::sync::Arc::clone(&session_turns),
+                body: session_date_body(&session.id, date),
+                date_metadata: true,
+            });
+        }
+        contexts.extend(session_turns.iter().enumerate().map(|(target_ordinal, body)| CorpusContext {
+            dataset: dataset.to_path_buf(),
+            corpus_instance_id: corpus_instance_id.to_owned(),
+            session_id: session.id.clone(),
+            target_ordinal,
+            session_turns: std::sync::Arc::clone(&session_turns),
+            body: body.clone(),
+            date_metadata: false,
+        }));
+    }
+    contexts
 }
 
 fn sampled_locomo_conversations(
@@ -924,17 +1038,6 @@ fn selected_longmem_ids(config: &BenchmarkConfig, headers: &[LongMemItemHeader])
         selected_ids.extend(selected.into_iter().map(|item| item.question_id.clone()));
     }
     selected_ids
-}
-
-fn session_bodies(sessions: &[Session]) -> Vec<String> {
-    let mut bodies = Vec::new();
-    for session in sessions {
-        if let Some(date) = &session.date {
-            bodies.push(session_date_body(&session.id, date));
-        }
-        bodies.extend(session.turns.iter().map(turn_body));
-    }
-    bodies
 }
 
 fn session_date_body(id: &str, date: &str) -> String {
@@ -1329,6 +1432,7 @@ mod tests {
     fn fts_config(dir: &Path) -> BenchmarkConfig {
         BenchmarkConfig {
             dataset_dir: dir.to_path_buf(),
+            generation: Generation::V1,
             splits: vec![Split::Dev],
             locomo_conversation_limit: Some(0),
             locomo_qa_per_conversation: Some(1),
@@ -1464,6 +1568,140 @@ mod tests {
     }
 
     #[test]
+    fn v2_producer_consumer_keys_match_and_null_is_forwarded_as_no_abstraction() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dataset_dir = dir.path();
+        let longmem = empty_longmemeval_fixture(dataset_dir);
+        let dataset = write_fixture(
+            dataset_dir,
+            "locomo/locomo10.json",
+            r#"[{"sample_id":"conversation-x","conversation":{"session_1":[{"speaker":"A","dia_id":"D1:1","text":"hello"}]},"qa":[]}]"#,
+        );
+        let mut config = fts_config(dataset_dir);
+        config.generation = Generation::V2;
+        config.locomo_conversation_limit = Some(1);
+
+        let context =
+            sampled_corpus_contexts(&config).unwrap().into_iter().find(|context| context.dataset == dataset).unwrap();
+        let key = enrichment_key(
+            Generation::V2,
+            (&context.corpus_instance_id, &context.session_id, context.target_ordinal, &context.body),
+        );
+        let enrichment = Enrichment { abstraction: None, cues: Vec::new(), source: "skipped_low_signal".to_owned() };
+        let mut locomo_sidecar =
+            crate::enrichment::EnrichmentSidecarV2::expected(&crate::enrichment::dataset_sha256(&dataset).unwrap());
+        locomo_sidecar.entries.insert(key, enrichment.clone());
+        crate::enrichment::save_v2_sidecar(&dataset, &locomo_sidecar).unwrap();
+        let longmem_sidecar =
+            crate::enrichment::EnrichmentSidecarV2::expected(&crate::enrichment::dataset_sha256(&longmem).unwrap());
+        crate::enrichment::save_v2_sidecar(&longmem, &longmem_sidecar).unwrap();
+
+        let mut meta = json!({});
+        apply_enrichment_meta(&mut meta, Some(&enrichment), Generation::V2).unwrap();
+        assert!(meta["abstraction"].is_null());
+        assert_eq!(meta["cues"], json!([]));
+
+        let report = crate::block_on(run_baseline(&config, None)).expect("v2 baseline");
+        assert_eq!(report.split_config.generation, Generation::V2);
+        assert_eq!(report.split_config.enrichment_prompt_sha256, Some(v2_prompt_sha256()));
+        assert_eq!(report.split_config.enrichment_window_policy, Some(V2_WINDOW_POLICY));
+        assert_eq!(report.enrichment.with_enrichment, 1);
+        assert!(report.ingestion.iter().any(|record| record.enriched));
+        assert_eq!(report.enrichment_provenance["locomo/locomo10.json"], locomo_sidecar.provenance());
+    }
+
+    #[test]
+    fn v2_ingestion_refuses_null_abstraction_with_cues() {
+        let mut meta = json!({});
+        let corrupt = Enrichment {
+            abstraction: None,
+            cues: vec!["invalid cue".to_owned()],
+            source: "skipped_low_signal".to_owned(),
+        };
+        let error = apply_enrichment_meta(&mut meta, Some(&corrupt), Generation::V2).unwrap_err();
+        assert!(error.contains("null abstraction requires empty cues"), "{error}");
+    }
+
+    #[test]
+    fn v2_ingests_date_metadata_at_one_past_last_ordinal() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dataset_dir = dir.path();
+        let longmem = empty_longmemeval_fixture(dataset_dir);
+        let dataset = write_fixture(
+            dataset_dir,
+            "locomo/locomo10.json",
+            r#"[{"sample_id":"conversation-x","conversation":{"session_1_date_time":"8 May 2023","session_1":[{"speaker":"A","dia_id":"D1:1","text":"hello"}]},"qa":[]}]"#,
+        );
+        let mut config = fts_config(dataset_dir);
+        config.generation = Generation::V2;
+        config.locomo_conversation_limit = Some(1);
+        let contexts = sampled_corpus_contexts(&config).unwrap();
+        let date_context = contexts.iter().find(|context| context.date_metadata).expect("date context");
+        assert_eq!(date_context.target_ordinal, date_context.session_turns.len());
+        let date_key = enrichment_key(
+            Generation::V2,
+            (
+                &date_context.corpus_instance_id,
+                &date_context.session_id,
+                date_context.target_ordinal,
+                &date_context.body,
+            ),
+        );
+        let mut locomo_sidecar =
+            crate::enrichment::EnrichmentSidecarV2::expected(&crate::enrichment::dataset_sha256(&dataset).unwrap());
+        locomo_sidecar.entries.insert(
+            date_key.clone(),
+            Enrichment { abstraction: None, cues: Vec::new(), source: "date_metadata".to_owned() },
+        );
+        let turn_context = contexts.iter().find(|context| !context.date_metadata).expect("turn context");
+        let turn_key = enrichment_key(
+            Generation::V2,
+            (
+                &turn_context.corpus_instance_id,
+                &turn_context.session_id,
+                turn_context.target_ordinal,
+                &turn_context.body,
+            ),
+        );
+        locomo_sidecar.entries.insert(
+            turn_key,
+            Enrichment { abstraction: None, cues: Vec::new(), source: "skipped_low_signal".to_owned() },
+        );
+        crate::enrichment::save_v2_sidecar(&dataset, &locomo_sidecar).unwrap();
+        let longmem_sidecar =
+            crate::enrichment::EnrichmentSidecarV2::expected(&crate::enrichment::dataset_sha256(&longmem).unwrap());
+        crate::enrichment::save_v2_sidecar(&longmem, &longmem_sidecar).unwrap();
+
+        let report = crate::block_on(run_baseline(&config, None)).expect("v2 baseline");
+        assert_eq!(report.enrichment.with_enrichment, 2);
+        assert_eq!(locomo_sidecar.entries[&date_key].source, "date_metadata");
+    }
+
+    #[test]
+    fn v2_benchmark_refuses_incomplete_enrichment() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dataset_dir = dir.path();
+        let longmem = empty_longmemeval_fixture(dataset_dir);
+        let dataset = write_fixture(
+            dataset_dir,
+            "locomo/locomo10.json",
+            r#"[{"sample_id":"conversation-x","conversation":{"session_1":[{"speaker":"A","dia_id":"D1:1","text":"hello"}]},"qa":[]}]"#,
+        );
+        let mut config = fts_config(dataset_dir);
+        config.generation = Generation::V2;
+        config.locomo_conversation_limit = Some(1);
+        let locomo_sidecar =
+            crate::enrichment::EnrichmentSidecarV2::expected(&crate::enrichment::dataset_sha256(&dataset).unwrap());
+        crate::enrichment::save_v2_sidecar(&dataset, &locomo_sidecar).unwrap();
+        let longmem_sidecar =
+            crate::enrichment::EnrichmentSidecarV2::expected(&crate::enrichment::dataset_sha256(&longmem).unwrap());
+        crate::enrichment::save_v2_sidecar(&longmem, &longmem_sidecar).unwrap();
+
+        let error = crate::block_on(run_baseline(&config, None)).unwrap_err();
+        assert!(error.contains("v2 enrichment incomplete"), "{error}");
+    }
+
+    #[test]
     fn rank_metrics_hand_computed_rank_cutoff_and_partial_recall() {
         // 12 retrieved ids; relevant at ranks 2 and 11; gold size 3.
         let retrieved: Vec<String> = (1..=12).map(|i| format!("mem_{i:02}")).collect();
@@ -1527,7 +1765,11 @@ mod tests {
             ranking_lanes: Vec::new(),
             vector_lane: "test",
             dataset_sha256s: BTreeMap::new(),
+            enrichment_provenance: BTreeMap::new(),
             split_config: SplitConfig {
+                generation: Generation::V1,
+                enrichment_prompt_sha256: None,
+                enrichment_window_policy: None,
                 splits: vec![Split::Dev],
                 locomo_conversation_limit: None,
                 locomo_qa_per_conversation: None,
@@ -2004,6 +2246,9 @@ mod tests {
         let report = crate::block_on(run_baseline(&config, Some(&DeterministicMockJudge))).expect("baseline");
         assert_eq!(report.schema_version, "baseline_0.1");
         assert!(!report.dataset_sha256s.is_empty());
+        assert_eq!(report.split_config.generation, Generation::V1);
+        assert_eq!(report.split_config.enrichment_prompt_sha256, None);
+        assert_eq!(report.split_config.enrichment_window_policy, None);
         assert_eq!(report.split_config.splits, vec![Split::Dev]);
         assert_eq!(report.judge_identity, Some("deterministic_mock".to_owned()));
     }
