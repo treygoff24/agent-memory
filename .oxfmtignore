@@ -57,3 +57,9 @@ docs/reviews/2026-06-28-wedge-origin-trace.md
 .foundry-scratch/
 datasets/
 docs/reviews/memora-arc/baseline0.json
+
+# Memora-arc hand-authored prose (findings, triage, decision packets, run
+# records) — multi-agent review output whose paragraphs oxfmt would mangle.
+docs/reviews/memora-arc/*.md
+docs/reviews/2026-07-10-memora-arc-model-journal.md
+docs/reviews/2026-07-10-w6-abstraction-transit-spike-memo.md

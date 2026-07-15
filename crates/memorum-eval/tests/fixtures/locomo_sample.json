@@ -5,20 +5,16 @@
       "speaker_a": "Caroline",
       "speaker_b": "Melanie",
       "session_1_date_time": "8 May 2023",
-      "session_1": [
-        {"speaker": "Caroline", "dia_id": "D1:1", "text": "I attended the support group yesterday."}
-      ]
+      "session_1": [{ "speaker": "Caroline", "dia_id": "D1:1", "text": "I attended the support group yesterday." }]
     },
-    "qa": [
-      {"question": "When was the group?", "answer": "7 May 2023", "evidence": ["D1:1"], "category": 2}
-    ]
+    "qa": [{ "question": "When was the group?", "answer": "7 May 2023", "evidence": ["D1:1"], "category": 2 }]
   },
   {
     "sample_id": "locomo-fixture-1",
     "conversation": {
       "session_1_date_time": "9 May 2023",
-      "session_1": [{"speaker": "Alex", "dia_id": "D1:1", "text": "The code is blue."}]
+      "session_1": [{ "speaker": "Alex", "dia_id": "D1:1", "text": "The code is blue." }]
     },
-    "qa": [{"question": "What color?", "answer": "blue", "evidence": ["D1:1"], "category": 1}]
+    "qa": [{ "question": "What color?", "answer": "blue", "evidence": ["D1:1"], "category": 1 }]
   }
 ]

@@ -38,7 +38,15 @@ stream-i-deps = ["dep:memorum-coordination"]
 # LLM-as-judge helper for the real-harness e2e tests (T13/T15); needs serde,
 # plus libc for the timeout path's process-group kill (round-3 G1).
 judge = ["dep:serde", "dep:serde_json", "dep:libc"]
-quality = ["dep:memory-privacy", "dep:memory-substrate", "dep:memoryd", "dep:serde", "dep:serde_json", "dep:serde_yaml", "dep:tempfile"]
+quality = [
+    "dep:memory-privacy",
+    "dep:memory-substrate",
+    "dep:memoryd",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:serde_yaml",
+    "dep:tempfile",
+]
 live-harness = []
 
 [[bin]]

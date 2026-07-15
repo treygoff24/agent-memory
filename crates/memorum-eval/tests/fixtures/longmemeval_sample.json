@@ -7,7 +7,7 @@
     "question_date": "2023/04/10",
     "haystack_dates": ["2023/04/09"],
     "haystack_session_ids": ["answer-a"],
-    "haystack_sessions": [[{"role": "user", "content": "The GPS failed after service.", "has_answer": true}]],
+    "haystack_sessions": [[{ "role": "user", "content": "The GPS failed after service.", "has_answer": true }]],
     "answer_session_ids": ["answer-a"]
   },
   {
@@ -18,7 +18,7 @@
     "question_date": "2023/04/11",
     "haystack_dates": ["Monday"],
     "haystack_session_ids": ["answer-b"],
-    "haystack_sessions": [[{"role": "user", "content": "It happened Monday.", "has_answer": true}]],
+    "haystack_sessions": [[{ "role": "user", "content": "It happened Monday.", "has_answer": true }]],
     "answer_session_ids": ["answer-b"]
   }
 ]
