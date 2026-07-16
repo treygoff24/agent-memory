@@ -47,4 +47,47 @@ invariance comparison); all T3/T4 arms carry the flag.
 
 | run | arms/config | artifact | scored | judge_mean | recall@10 | mrr | notes |
 |---|---|---|---|---|---|---|---|
-| dev-legacy-v1 (T3 ref) | L, legacy fusion, v1 sidecars | /tmp/memora-eval/dev-legacy-v1.json | 120 | 0.6167 | 0.6348 | 0.5082 | same-night v1 reference (plan T3.1; /tmp was wiped); invariance baseline for arm-L-on-v2 |
+| dev-legacy-v1 (T3 ref) | L, legacy fusion, v1 sidecars, fts-only | /tmp/memora-eval/dev-legacy-v1.json | 120 | 0.6167 | 0.6348 | 0.5082 | SUPERSEDED (no exclusion; wrong lane for the rule) |
+| dev-legacy-v1-excl | L, legacy, v1, fts-only, excluded | /tmp/memora-eval/dev-legacy-v1-excl.json | 120 | 0.5958 | 0.6348 | 0.5082 | wrong lane for the rule; retained as judge-noise calibration |
+| dev-legacy-v2 (fts) | L, legacy, v2, fts-only, excluded | /tmp/memora-eval/dev-legacy-v2.json | 120 | — | 0.6348 | 0.5082 | contexts identical to v1-excl; 0 quarantines both gens (no fence on fts lane) |
+| dev-fourlane-v2 (fts) | F, four-lane, v2, fts-only, excluded | /tmp/memora-eval/dev-fourlane-v2.json | 120 | 0.6000 | 0.6348 | 0.5082 | VOID as verdict — fts-only disables vector lanes, four-lane degenerated to legacy; retrieved contexts identical to arm L → paired delta +0.0042 (10W/9L/101T) is pure judge noise. Useful calibration: judge noise on identical contexts ≈ ±0.02 aggregate |
+| dev-legacy-api-v1 (rule-1 ref) | L, legacy, v1 sidecars, gemini-api, excluded | /tmp/memora-eval/dev-legacy-api-v1.json | 120 | 0.6303 | — | — | correct-protocol v1 reference; 1 judge_timeout (≤5 allowed) |
+| dev-legacy-api-v2 (rule-1 cand) | L, legacy, v2, gemini-api, excluded | /tmp/memora-eval/dev-legacy-api-v2.json | 120 | 0.5917 | — | — | RULE 1 DIVERGENCE — see verdict |
+
+## T3 verdict (2026-07-15): INCONCLUSIVE per pre-registered rule 1 — no treatment arms run
+
+**Rule 1 (legacy invariance control) FAILED on the correct-protocol gemini-api arms.** Comparing
+arm L on the v1 corpus vs arm L on the v2 corpus (both gemini-api + legacy fusion + exclusion):
+
+- Dispositions diverge: promoted 2282 → 2321, quarantined 1799 → 1760 (39 writes flip
+  quarantine→promoted under v2); refused identical at 231.
+- Retrieved-context sets diverge on **33/120 items — all LongMemEval**; LoCoMo unaffected.
+- judge_mean drift 0.6303 → 0.5917 (|Δ| 0.039 > 0.02 secondary alarm — flagged, though the two
+  runs are on materially different corpora so the drift is not interpretable as judge drift).
+
+The chain STOPPED before the four-lane treatment arm, exactly as pre-registered: "v2 changed the
+effective legacy corpus; any four-lane comparison would be confounded. Diagnose, report
+inconclusive; no treatment arms."
+
+**Diagnosis.** The divergence is enrichment-content-driven and only manifests under the
+production-like lane. On fts-only, write-time classification never gates (0 quarantines, both
+generations, corpora byte-identical). On gemini-api, the Stream A API-lane privacy fence engages
+per-write classification — abstraction/cues participate in the scanned payload — and ~1800 of
+4082 benchmark writes classify above the plaintext-embeddable tier (quarantine→auto-approve in
+the scaffold). There, v1's noisier structural/verbose abstractions push 39 additional writes over
+the sensitivity boundary that v2's cleaner, sparser (44%-null) enrichment does not. Those 39
+governance flips shift the retrievable corpus and move 33 LongMemEval retrieved-context sets.
+
+**Two readings for the morning summary (Trey's call, not tonight's rule):** (a) strictly per
+protocol, the A/B is confounded and four-lane stays dark — tonight's answerable question is
+closed; (b) mechanistically, the divergence direction says v1 enrichment was *distorting the
+corpus via privacy classification side-effects* and v2 reduces that distortion — which is
+itself evidence for v2's central design claim (sparse, high-precision aux metadata), but routing
+that into a verdict would require a new pre-registered rule on a v2-vs-v2 baseline, i.e. another
+night. Per rule 5, no post-hoc rule changes tonight.
+
+**Judge-noise calibration (bonus from the voided fts arms):** on provably identical retrieved
+contexts, the pinned judge produced an aggregate paired delta of +0.0042 with 10W/9L/101T and a
+0.021 aggregate judge_mean swing between identical re-runs. The pre-registered ±0.01 ambiguity
+band on paired deltas is of the same order as pure judge noise at n=120 — future rules should
+either raise n or widen the band.
