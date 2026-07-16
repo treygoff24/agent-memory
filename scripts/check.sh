@@ -8,7 +8,8 @@ export MEMORUM_DYNAMICS=off
 # Use an isolated target dir by default and make the risky accelerators opt-in.
 cleanup_cargo_target_dir=0
 if [[ -z "${CARGO_TARGET_DIR:-}" ]]; then
-  CARGO_TARGET_DIR="$(mktemp -d -t memorum-check-target)"
+  # Portable across BSD and GNU mktemp (GNU requires >=3 X's in the template).
+  CARGO_TARGET_DIR="$(mktemp -d "${TMPDIR:-/tmp}/memorum-check-target.XXXXXXXX")"
   export CARGO_TARGET_DIR
   cleanup_cargo_target_dir=1
 fi
