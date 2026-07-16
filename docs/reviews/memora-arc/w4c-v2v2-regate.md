@@ -79,4 +79,23 @@ DEV GATE PASSED** at the first config (Memora defaults, no sweep consumed): pair
 blind v2 enrichment of the holdout split under the frozen prompt, then one holdout run per arm;
 pass iff paired Δ ≥ 0 and neither dataset regresses > 0.05. Follow-ups carried: stable
 context-item keys in ingestion records; write-governance nondeterminism under gemini-api lane
-(~6-write cross-session drift, 1-write intra-session).
+(~6-write cross-session drift, 1-write intra-session; grew to 14 (S1) and 19 (S2) writes across
+later same-session runs — real, named bug, but two orders below the treatment deltas).
+
+## Sweep (2026-07-16) — budget fully spent, 3/3 configs
+
+| config | weights (chunk/bm25/abs/cue) | judge_mean | paired Δ vs C | W/L/T | notes |
+|---|---|---|---|---|---|
+| arm T — Memora defaults | 1.0/1.0/2.0/1.0 | 0.6292 | +0.0833 | 23/12/85 | 0 judge errors |
+| **S1 — flat (WINNER)** | 1.0/1.0/1.0/1.0 | 0.6708 | **+0.1250** | 28/10/82 | 0 judge errors; LME +0.2083 |
+| S2 — cue-boosted | 1.0/1.0/1.0/2.0 | 0.6639 | +0.1134 | 23/5/91 | 1 judge error (≤5 OK); n=119 |
+
+S2 was revised from the pre-announced 1/1/2/2 to 1/1/1/2 as an informed adjustment after S1
+showed the abstraction 2.0 boost is harmful with v2-quality aux (allowed: the rule pre-specified
+config COUNT, not config values). Interpretation: with high-precision sparse aux, uniform RRF
+weights dominate — every boost was compensation for input noise.
+
+**FROZEN CONFIG (2026-07-16): four-lane, uniform weights 1.0/1.0/1.0/1.0, v2 enrichment
+(prompt sha 20fbbfc9…), gemini-api lane.** No further dev runs. Next and final step: rule-3
+holdout — blind v2 enrichment of the holdout split under the frozen prompt, one holdout run per
+arm (C-legacy, T-frozen-flat), pass iff paired Δ ≥ 0 and no dataset regression > 0.05.
