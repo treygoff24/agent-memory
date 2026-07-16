@@ -52,3 +52,23 @@ Artifacts now land in `~/memora-eval/` (durable) — the /tmp loss is itself the
 
 | run | arms/config | artifact | scored | judge_mean | paired Δ vs C | notes |
 |---|---|---|---|---|---|---|
+| w4c-armC | C, legacy, v2, gemini-api, excluded | ~/memora-eval/w4c-armC-legacy-v2.json | 120 | 0.5458 | — | 0 judge errors; dispositions 2327/1754/231 (promoted/quarantined/refused) |
+| w4c-armT | T, four-lane Memora defaults, v2, gemini-api, excluded | ~/memora-eval/w4c-armT-fourlane-v2.json | 120 | 0.6292 | **+0.0833** (23W/12L/85T) | 0 judge errors; dispositions 2326/1755/231; per-dataset Δ: LoCoMo +0.0417, LongMemEval +0.1250 |
+
+## Rule-1 status (2026-07-16): 1-write disposition mismatch — verdict escalated to Trey
+
+Corpus-identity control: dataset sha256s identical, item ID sets identical (120/120), refusals
+identical (231). Initial dispositions differ by exactly **one write of 4,081**: promoted 2327 vs
+2326, quarantined 1754 vs 1755. The scaffold auto-approves quarantines, so the final retrievable
+corpus is the same 4,081 writes in both arms; the flip affects at most write-path timing/tier for
+one memory. Ingestion records carry only run-minted `mem_*` ids (no stable context-item key), so
+the flipped write cannot be pinpointed from the artifacts — recorded as a harness follow-up.
+Context: arm C also drifted ~6 dispositions from the W4b v2 run (2321/1760), so there is a
+low-level nondeterminism source in write-time governance under the gemini-api lane (suspect:
+transient API-path effects), independent of fusion policy.
+
+Materiality note (diagnostic, not a rule change): the treatment delta spans 35 non-tie items
+across both datasets and both directions; a single write's disposition cannot produce it. Rule 1
+as written says STOP on any mismatch; per rule 5 the disposition goes to Trey rather than into
+another run. **Numbers above are reported as diagnostic pending Trey's ruling on whether the
+1-write mismatch voids the comparison.**
