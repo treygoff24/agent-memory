@@ -162,3 +162,15 @@ Outcome: Terra r0 draft was structurally strong (6-clause contract, CAS story, a
 Performance: Terra medium ~6-9 min/round, docs-only, no window expiry issues. Grok r1 was the standout — cross-spec contradiction hunting (reading Stream F against Stream A) is exactly its attack profile. One operational bug mine, not the models': misplaced_global_option on the first fix launch (globals after subcommand), and a near-miss triaging stale cursor-29 findings from the wrong workspace registry.
 
 Routing: keep Terra-medium as spec-amendment author with Grok-via-cursor as primary spec attacker; Opus adds convergence + line-precision. Confidence: high.
+
+## 2026-07-15 - codex (default lane) via memoryd dream harness - W5 live backfill + W4b enrichment sweep
+
+Command and run: `memoryd dream abstraction-compile --cli codex` (live backfill, 16 batches × 50) and `memorum-eval-enrich --harness codex` (4,313-item dev sweep); mode/isolation: direct CLI shell-outs, no delegate; run handle: n/a.
+
+Task and expectation: per-item JSON generation under a strict output contract (8-word abstraction cap, 0-3 cues, null-for-chit-chat), thousands of independent calls.
+
+Outcome and verification: the W5 backfill contrast was stark — the claude CLI harness produced valid JSON on only ~55-60% of calls (fence-wrapping/over-cap) and then rate-limited into instant failures (batch of 50 dying in 78s), while codex ran 12 consecutive perfect 50/50 batches and also cleared the items claude had persistently failed. On the eval sweep codex resolved 4,312/4,313 with stochastic failures that converged on resume; the single deterministic failure was content-driven (model insists on abstracting a chit-chat turn past the cap), not harness-driven.
+
+Performance observations: ~7s/item sequential in the backfill; 8-wide in the sweep. Failure modes are honest (typed validation refusals, no hallucinated JSON).
+
+Routing assessment: for bulk structured-output generation under a tight schema, codex is now the proven default harness in this repo; claude CLI should not be used for >50-call unattended loops on this subscription (shared quota with interactive sessions is the killer, not just JSON discipline). Confidence: high.
