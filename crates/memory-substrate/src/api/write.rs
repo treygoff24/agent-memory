@@ -150,7 +150,8 @@ impl Substrate {
             return Err(WriteFailure { outcome, kind: WriteFailureKind::StaleBase });
         }
 
-        let changed_fields = metadata_amend_changed_fields(&memory.frontmatter, request.abstraction.as_ref(), &request.cues);
+        let changed_fields =
+            metadata_amend_changed_fields(&memory.frontmatter, request.abstraction.as_ref(), &request.cues);
         if changed_fields.is_empty() {
             return Ok(MetadataAmendWriteOutcome { changed: false, path, changed_fields, write_outcome: outcome });
         }

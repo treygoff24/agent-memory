@@ -712,9 +712,11 @@ fn amended_rows_leave_candidate_pool_even_without_servable_abstraction_row() {
     index.upsert_memory(&encrypted, true).expect("encrypted amended");
     let servable: i64 = index
         .connection()
-        .query_row("SELECT count(*) FROM memory_abstractions WHERE memory_id=?1", [encrypted.frontmatter.id.as_str()], |row| {
-            row.get(0)
-        })
+        .query_row(
+            "SELECT count(*) FROM memory_abstractions WHERE memory_id=?1",
+            [encrypted.frontmatter.id.as_str()],
+            |row| row.get(0),
+        )
         .expect("servable row count");
     assert_eq!(servable, 0, "encrypted rows must not gain a servable abstraction row");
     assert!(

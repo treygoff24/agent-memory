@@ -1121,7 +1121,11 @@ pub struct MetadataAmendWriteRequest {
 }
 
 /// Return the changed subset of the metadata-amendable fields.
-pub fn metadata_amend_changed_fields(frontmatter: &Frontmatter, abstraction: Option<&String>, cues: &[String]) -> Vec<String> {
+pub fn metadata_amend_changed_fields(
+    frontmatter: &Frontmatter,
+    abstraction: Option<&String>,
+    cues: &[String],
+) -> Vec<String> {
     let mut fields = Vec::with_capacity(2);
     if frontmatter.abstraction.as_ref() != abstraction {
         fields.push("abstraction".to_string());

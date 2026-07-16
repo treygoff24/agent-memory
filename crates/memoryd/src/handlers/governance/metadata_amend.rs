@@ -3,9 +3,9 @@
 use memory_privacy::PrivacyStorageAction;
 use memory_substrate::{
     frontmatter::{normalize_abstraction_cues, validate_frontmatter},
-    markdown::hash_bytes, metadata_amend_changed_fields, metadata_amend_updated_at, Memory, MemoryContent, MemoryId,
-    MemoryStatus, MetadataAmendWriteRequest, MetadataAmendedEvent, ReadError, Sha256, Substrate, WriteFailure,
-    WriteFailureKind,
+    markdown::hash_bytes,
+    metadata_amend_changed_fields, metadata_amend_updated_at, Memory, MemoryContent, MemoryId, MemoryStatus,
+    MetadataAmendWriteRequest, MetadataAmendedEvent, ReadError, Sha256, Substrate, WriteFailure, WriteFailureKind,
 };
 use serde::Deserialize;
 
@@ -232,8 +232,8 @@ fn map_write_failure(error: WriteFailure) -> MetadataAmendmentError {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::privacy::classify_plaintext_memory_decision;
+    use super::*;
     use memory_substrate::{
         events::EventKind,
         frontmatter::{default_retrieval_policy, serialize_document},
@@ -514,23 +514,24 @@ mod tests {
         let mut user_memory = fixture_memory();
         set_scope_and_sensitivity(&mut user_memory, Scope::User, Sensitivity::Personal);
         let user_id = user_memory.frontmatter.id.clone();
-        user
-            .write_encrypted(EncryptedWriteRequest {
-                operation_id: None,
-                metadata_memory: user_memory,
-                ciphertext: b"opaque ciphertext".to_vec(),
-                safe_index_projection: None,
-                event_context: EventContext::default(),
-                allow_best_effort_durability: true,
-                classification: ClassificationOutcome::RequiresEncryption,
-            })
-            .await
-            .expect("encrypted user fixture");
+        user.write_encrypted(EncryptedWriteRequest {
+            operation_id: None,
+            metadata_memory: user_memory,
+            ciphertext: b"opaque ciphertext".to_vec(),
+            safe_index_projection: None,
+            event_context: EventContext::default(),
+            allow_best_effort_durability: true,
+            classification: ClassificationOutcome::RequiresEncryption,
+        })
+        .await
+        .expect("encrypted user fixture");
         let (_, user_hash) = user.read_memory_envelope_with_hash(&user_id).await.expect("user hash");
-        assert!(metadata_amend(&user, METADATA_AMEND_ACTOR, request(&user_id, user_hash, Some("metadata"), &[]))
-            .await
-            .expect("encrypted user floor")
-            .changed);
+        assert!(
+            metadata_amend(&user, METADATA_AMEND_ACTOR, request(&user_id, user_hash, Some("metadata"), &[]))
+                .await
+                .expect("encrypted user floor")
+                .changed
+        );
 
         for (device, scope) in [("dev_b3agent", Scope::Agent), ("dev_b3project", Scope::Project)] {
             let (_temp, substrate) = substrate(device).await;
@@ -539,10 +540,12 @@ mod tests {
             let id = memory.frontmatter.id.clone();
             write_plaintext(&substrate, memory).await;
             let (_, hash) = substrate.read_memory_envelope_with_hash(&id).await.expect("plaintext hash");
-            assert!(metadata_amend(&substrate, METADATA_AMEND_ACTOR, request(&id, hash, Some("metadata"), &[]))
-                .await
-                .expect("plaintext floor")
-                .changed);
+            assert!(
+                metadata_amend(&substrate, METADATA_AMEND_ACTOR, request(&id, hash, Some("metadata"), &[]))
+                    .await
+                    .expect("plaintext floor")
+                    .changed
+            );
         }
     }
 
@@ -556,8 +559,11 @@ mod tests {
         let path = before.metadata.path.clone().expect("path");
         let mut legacy = before.metadata;
         set_scope_and_sensitivity(&mut legacy, Scope::User, Sensitivity::Confidential);
-        std::fs::write(substrate.roots().repo.join(path.as_path()), serialize_document(&legacy).expect("legacy document"))
-            .expect("write legacy fixture");
+        std::fs::write(
+            substrate.roots().repo.join(path.as_path()),
+            serialize_document(&legacy).expect("legacy document"),
+        )
+        .expect("write legacy fixture");
         let (_, hash) = substrate.read_memory_envelope_with_hash(&id).await.expect("legacy hash");
 
         let error = metadata_amend(&substrate, METADATA_AMEND_ACTOR, request(&id, hash, Some("metadata"), &[]))
@@ -678,7 +684,8 @@ mod tests {
         .expect("parse canonical document")
         .memory;
         memory.frontmatter.status = MemoryStatus::Archived;
-        std::fs::write(canonical, serialize_document(&memory).expect("archived document")).expect("archive canonical memory");
+        std::fs::write(canonical, serialize_document(&memory).expect("archived document"))
+            .expect("archive canonical memory");
     }
 
     fn set_scope_and_sensitivity(memory: &mut Memory, scope: Scope, sensitivity: Sensitivity) {
