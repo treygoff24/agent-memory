@@ -72,3 +72,11 @@ across both datasets and both directions; a single write's disposition cannot pr
 as written says STOP on any mismatch; per rule 5 the disposition goes to Trey rather than into
 another run. **Numbers above are reported as diagnostic pending Trey's ruling on whether the
 1-write mismatch voids the comparison.**
+
+**Ruling (Trey, 2026-07-16): 1-write flip immaterial — rule-1 waived for this comparison.
+DEV GATE PASSED** at the first config (Memora defaults, no sweep consumed): paired Δ +0.0833
+≥ +0.03, both datasets positive. Remaining before the flag flips: rule-3 holdout freeze —
+blind v2 enrichment of the holdout split under the frozen prompt, then one holdout run per arm;
+pass iff paired Δ ≥ 0 and neither dataset regresses > 0.05. Follow-ups carried: stable
+context-item keys in ingestion records; write-governance nondeterminism under gemini-api lane
+(~6-write cross-session drift, 1-write intra-session).
