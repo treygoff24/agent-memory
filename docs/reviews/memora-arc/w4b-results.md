@@ -25,7 +25,7 @@ reported 4,117 keys pending under --limit (exit 1, resumable).
 Completed 2026-07-15 across ~5 resume passes (transient-failure retries are free): locomo
 2900/2900 + longmemeval_oracle 1217/1217 processed; cumulative dispositions at final full pass —
 generated 2368 / skipped_low_signal 1511 / date_metadata 222 / dropped_sensitive 0 (null rate
-≈ 42% of harness-called turns, in band). **Eligibility: 4312/4313 (99.98%).** One LoCoMo dev item
+≈ 39% of harness-called turns — 1511/3879, in band). **Eligibility: 4312/4313 (99.98%).** One LoCoMo dev item
 (key `3d788bc44ebeacca4959ac535a11ffa80472de99f4c08e5cf799bc3f9b2c7125`, ordinal 14, chit-chat
 turn "Just the GoT series…") fails deterministically — 18 consecutive
 `harness:validate:bad shape for abstraction` (model over-caps instead of nulling; prompt frozen,
@@ -87,7 +87,18 @@ that into a verdict would require a new pre-registered rule on a v2-vs-v2 baseli
 night. Per rule 5, no post-hoc rule changes tonight.
 
 **Judge-noise calibration (bonus from the voided fts arms):** on provably identical retrieved
-contexts, the pinned judge produced an aggregate paired delta of +0.0042 with 10W/9L/101T and a
-0.021 aggregate judge_mean swing between identical re-runs. The pre-registered ±0.01 ambiguity
+contexts, the pinned judge produced an aggregate paired delta of +0.0042 with 10W/9L/101T.
+(A same-corpus judge_mean swing of similar order appears between the superseded v1 run and its
+exclusion re-run, but those differ by the exclusion, so only the paired-identical figure is a
+clean calibration.) The pre-registered ±0.01 ambiguity
 band on paired deltas is of the same order as pure judge noise at n=120 — future rules should
 either raise n or widen the band.
+
+## Pre-ship review (2026-07-15)
+
+Grok (cursor safe, cursor-30) integrated read of `91c51ab^..HEAD`: **no BLOCKER / no MAJOR**;
+seams, critical invariants, debris, and verdict math all SHIP-CLEAN. Recorded follow-up: add an
+ingest-level test for `--exclude-key` (a one-sided exclusion would silently invalidate rule 1 —
+only `split_config.excluded_keys` provenance and the invariance check would catch it). The Fable
+pre-ship gate was NOT pre-approved for this autonomous session and was skipped per protocol;
+listed for Trey's review.
