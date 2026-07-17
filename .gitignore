@@ -19,6 +19,7 @@ node_modules/
 .memoryd/
 
 # Local agent/tool runtime state
+.papercuts.jsonl
 .clawpatch/
 .delegate/
 .desloppify/
