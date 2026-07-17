@@ -8,7 +8,10 @@ pub const DEFAULT_VECTOR_RECALL_KNN_LIMIT: usize = 20;
 pub const DEFAULT_VECTOR_RECALL_RRF_K: u32 = 60;
 pub const DEFAULT_CHUNK_VECTOR_WEIGHT: f64 = 1.0;
 pub const DEFAULT_BM25_WEIGHT: f64 = 1.0;
-pub const DEFAULT_ABSTRACTION_VECTOR_WEIGHT: f64 = 2.0;
+// W4c sweep (docs/reviews/memora-arc/w4c-v2v2-regate.md): with v2-quality aux,
+// Memora's 2.0 abstraction boost LOSES to uniform weights (+0.083 vs +0.125
+// paired over legacy). Frozen winning config is uniform 1/1/1/1.
+pub const DEFAULT_ABSTRACTION_VECTOR_WEIGHT: f64 = 1.0;
 pub const DEFAULT_CUE_VECTOR_WEIGHT: f64 = 1.0;
 pub const DEFAULT_FOUR_LANE_TIMEOUT_MS: u64 = 100;
 pub const DEFAULT_SEARCH_TIMEOUT_MS: u64 = 2_000;
@@ -78,7 +81,7 @@ impl Default for VectorRecallConfig {
             recency_lambda: default_recency_lambda(),
             recency_half_life_days: default_recency_half_life_days(),
             embed_timeout_ms: None,
-            four_lane_enabled: false,
+            four_lane_enabled: true,
             chunk_vector_weight: DEFAULT_CHUNK_VECTOR_WEIGHT,
             bm25_weight: DEFAULT_BM25_WEIGHT,
             abstraction_vector_weight: DEFAULT_ABSTRACTION_VECTOR_WEIGHT,
@@ -123,11 +126,12 @@ fn default_recency_half_life_days() -> f64 {
 }
 
 fn default_four_lane_enabled() -> bool {
-    // Ships DARK: the W4 eval gate showed four-lane at current aux-input quality
-    // loses to legacy fusion on identical vectors (dev judge 0.658 best vs 0.700;
-    // docs/reviews/memora-arc/w4-eval-gate-results.md). Flip via config once
-    // dream-quality abstractions land (W5) and a re-run of the gate shows a win.
-    false
+    // Ships ON since W4c (2026-07-16): on the v2-enriched corpus, four-lane with
+    // uniform weights beat legacy fusion +0.125 paired on dev and passed the
+    // one-shot holdout gate (+0.021 paired, no dataset collapse) under the
+    // pre-registered rule (docs/reviews/memora-arc/w4c-v2v2-regate.md).
+    // Opt out via config `four_lane_enabled: false`.
+    true
 }
 
 fn default_chunk_vector_weight() -> f64 {
@@ -176,15 +180,21 @@ mod tests {
     use super::*;
     use crate::embedding::{FASTEMBED_CANDLE_PROVIDER, GEMINI_API_PROVIDER};
 
-    /// W4 merge condition: four-lane fusion ships DARK. A config.yaml with no
-    /// `four_lane_enabled` key — every deployment that has not opted in — must
-    /// resolve to legacy fusion until the eval gate is re-run and won.
+    /// W4c gate result (2026-07-16): four-lane fusion ships ON with uniform lane
+    /// weights. A config.yaml with no `four_lane_enabled` key resolves to
+    /// four-lane; an explicit `false` opts the deployment out.
     #[test]
-    fn four_lane_fusion_defaults_dark() {
-        assert!(!VectorRecallConfig::default().four_lane_enabled);
+    fn four_lane_fusion_defaults_on_with_uniform_weights() {
+        let default = VectorRecallConfig::default();
+        assert!(default.four_lane_enabled);
+        assert_eq!(default.abstraction_vector_weight, 1.0);
+        assert_eq!(default.cue_vector_weight, 1.0);
         let parsed: ConfigRecallEnvelope =
             serde_yaml::from_str("recall:\n  vector_recall:\n    knn_limit: 20\n").unwrap();
-        assert!(!parsed.recall.unwrap().vector_recall.four_lane_enabled);
+        assert!(parsed.recall.unwrap().vector_recall.four_lane_enabled);
+        let opt_out: ConfigRecallEnvelope =
+            serde_yaml::from_str("recall:\n  vector_recall:\n    four_lane_enabled: false\n").unwrap();
+        assert!(!opt_out.recall.unwrap().vector_recall.four_lane_enabled);
     }
 
     fn gemini_triple() -> EmbeddingTriple {
@@ -214,10 +224,10 @@ mod tests {
                 recency_lambda: 0.0005,
                 recency_half_life_days: 90.0,
                 embed_timeout_ms: None,
-                four_lane_enabled: false,
+                four_lane_enabled: true,
                 chunk_vector_weight: 1.0,
                 bm25_weight: 1.0,
-                abstraction_vector_weight: 2.0,
+                abstraction_vector_weight: 1.0,
                 cue_vector_weight: 1.0,
                 four_lane_timeout_ms: 100,
                 search_timeout_ms: 2_000,
