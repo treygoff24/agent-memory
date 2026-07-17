@@ -99,3 +99,47 @@ weights dominate — every boost was compensation for input noise.
 (prompt sha 20fbbfc9…), gemini-api lane.** No further dev runs. Next and final step: rule-3
 holdout — blind v2 enrichment of the holdout split under the frozen prompt, one holdout run per
 arm (C-legacy, T-frozen-flat), pass iff paired Δ ≥ 0 and no dataset regression > 0.05.
+
+## HOLDOUT VERDICT (2026-07-16 evening): PASS — four_lane_enabled flipped ON
+
+Blind holdout v2 enrichment completed under the frozen prompt (resumable passes; 4 transient
+timeouts retried clean). One deterministic `bad shape for abstraction` item surfaced —
+key `6d5c2eeb…` (LoCoMo, "Calvin… Japanese mansion") — same class as the dev item; **Trey ruled
+exclude-from-both-arms** (AskUserQuestion, 2026-07-16). Both holdout arms ran with BOTH exclusion
+keys, one shot each, 120/120 scored, 0 judge errors each:
+
+| arm | judge_mean | paired Δ | LoCoMo Δ | LongMemEval Δ |
+|---|---|---|---|---|
+| holdout C — legacy | 0.6042 | — | — | — |
+| holdout T — four-lane flat (frozen) | 0.6250 | **+0.0208** (17W/14L/89T) | −0.0083 | +0.0500 |
+
+Rule 3: paired Δ ≥ 0 ✅ · no dataset regression > 0.05 ✅ (LoCoMo −0.008 is inside noise;
+collapse guard threshold 0.05). **PASS.** Expected dev→holdout shrinkage noted honestly:
++0.125 dev → +0.021 holdout; the gate was designed as "confirm no manufactured win," and the
+LongMemEval +0.05 with LoCoMo flat is consistent with the dev picture (aux lanes help most on
+long-horizon retrieval).
+
+Shipped as `2b3cb34`: `four_lane_enabled` default → `true`,
+`DEFAULT_ABSTRACTION_VECTOR_WEIGHT` 2.0 → 1.0 (frozen uniform config), pinning tests inverted
+(defaults-on + explicit opt-out). Gates: clippy -D warnings clean; `cargo test -p memoryd`
+1,180 passed / 0 failed. Artifacts: `~/memora-eval/w4c-holdout-arm{C,T}-*.json`.
+
+## Handoff (2026-07-16 night — Trey unplugging; next session picks up here)
+
+- **DONE tonight:** W4c end-to-end — pre-registration → dev arms (+0.083 defaults, +0.125 flat
+  winner, +0.113 cue-boost) → Trey waived 1-write rule-1 mismatch → config frozen → blind holdout
+  enrichment (2 exclusions total, both Trey-ruled) → holdout PASS → **four-lane shipped ON**
+  (`2b3cb34`). Earlier today: 152-commit backlog pushed to origin (through `2a57f68`).
+- **NOT done / next session:**
+  1. `bash scripts/check.sh` on main — the blessed full gate has NOT run over the flag-flip
+     commit (crate gates green; bench-regression stage is known-flaky, 3-run rule).
+  2. **Live daemon still runs the old binary** — `cargo install` + `launchctl kickstart` to put
+     four-lane live in `~/memorum` (its 898 rows already carry W5 abstractions+cues, so it
+     benefits immediately). Live smoke: `memoryd search` sanity + doctor.
+  3. Push: commits after `2a57f68` (W4c docs ×4 + `2b3cb34`) are unpushed — needs Trey's word.
+  4. Follow-ups carried: stable context-item keys in ingestion records; write-governance
+     nondeterminism under gemini-api lane (1–19 write drift across same-config runs); ingest-level
+     `--exclude-key` test (Grok); Trey's privacy-calibration suspicion (deferred by his call —
+     the ~44% above-plaintext classification rate on benchmark chitchat is the evidence pointer);
+     Fable pre-ship gate never run on the arc (Grok read: ship-clean).
+  5. CLAUDE.md + auto-memory still describe four-lane as dark — update both next session.
