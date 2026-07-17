@@ -3,7 +3,7 @@
 ## Current project frame
 
 - This repo is Memorum (`agent-memory`): a local-first, daemon-backed shared memory layer for agent harnesses.
-- Treat `README.md`, `docs/specs/system-v0.2.md`, `docs/getting-started.md`, `docs/mcp-wiring.md`, and any user-named current plan/spec as the best orientation points.
+- Treat `README.md`, `docs/specs/system-v0.3.md`, `docs/getting-started.md`, `docs/mcp-wiring.md`, and any user-named current plan/spec as the best orientation points.
 - Older stream-specific plans/specs are historical unless the user explicitly names one as the active contract for the current task.
 - Do not resurrect Stream A/F/G/H/I execution assumptions just because those docs still exist in the tree.
 
