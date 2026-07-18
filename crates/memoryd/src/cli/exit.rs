@@ -9,10 +9,6 @@ pub(crate) const EXIT_NOT_FOUND: i32 = 66;
 pub(crate) const EXIT_INTERNAL: i32 = 70;
 pub(crate) const EXIT_TRANSIENT: i32 = 75;
 pub(crate) const EXIT_CLIENT_GATE: i32 = 77;
-// Reserved by the contract for pre-connect config problems; no covered command
-// surfaces it yet (socket resolution never fails), so it is documented-not-emitted.
-#[allow(dead_code)]
-pub(crate) const EXIT_CONFIG: i32 = 78;
 
 /// Crosswalk a daemon error-code string to a contract exit code, or `None` if the
 /// code is unmapped. The public wrapper defaults unmapped codes to the internal

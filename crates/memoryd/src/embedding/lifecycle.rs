@@ -80,9 +80,8 @@ pub enum EmbeddingProviderAcquire {
 
 /// Lifecycle owner for the embedding provider.
 ///
-/// The historical name is kept because handler tests already use
-/// `embedding_provider_slot()`. The implementation is no longer a passive slot:
-/// it is the sole long-lived owner, and callers get short-lived guards.
+/// The name matches the established `embedding_provider_slot()` API; this type
+/// is the sole long-lived owner, and callers get short-lived guards.
 #[derive(Clone)]
 pub struct EmbeddingProviderSlot {
     inner: Arc<Inner>,

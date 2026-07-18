@@ -14,7 +14,7 @@ export const apiSurfaceViews = [
 
 export const allSurfaceViews = [...apiSurfaceViews, { id: 'settings', label: 'Settings', title: 'Settings' }] as const;
 
-export async function gotoSurfaceView(page: Page, view: { id: string }, params: Record<string, string> = {}) {
+export async function gotoSurfaceView(page: Page, view: { id: string }, params: { recallState?: string } = {}) {
     const query = new URLSearchParams({ view: view.id, ...params });
     await page.goto(`/?${query.toString()}`);
 }

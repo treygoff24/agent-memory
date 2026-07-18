@@ -9,7 +9,8 @@ use tokio::time::{interval_at, Instant as TokioInstant, MissedTickBehavior};
 
 use crate::claim_lock::{ClaimLockClock, ClaimLockRegistry, ClaimLockRenewRequest};
 use crate::config::PresenceConfig;
-use crate::{ActivePeer, ClaimLockInfo, ConcurrentSessionMode, PeerHeartbeat, PeerHeartbeatAck, ProjectBinding};
+use crate::protocol::{ActivePeer, ClaimLockInfo, PeerHeartbeat, PeerHeartbeatAck};
+use crate::session::{ConcurrentSessionMode, ProjectBinding};
 
 const MAX_SESSION_ID_BYTES: usize = 128;
 const MAX_HARNESS_BYTES: usize = 128;
@@ -258,7 +259,7 @@ pub fn handle_peer_heartbeat(
                 stale_threshold: options.stale_threshold,
             })
             .into_iter()
-            .map(ActivePeer::from)
+            .map(active_peer_from_record)
             .collect::<Vec<_>>()
     } else {
         Vec::new()
@@ -334,14 +335,12 @@ impl ValidatedHeartbeat {
     }
 }
 
-impl From<PresenceRecord> for ActivePeer {
-    fn from(record: PresenceRecord) -> Self {
-        Self {
-            session_id: truncate_for_display(&record.session_id, ACTIVE_PEER_SESSION_ID_BYTES),
-            harness: record.harness,
-            salient_entities: record.salient_entities.into_iter().take(MAX_ACTIVE_PEER_ENTITIES).collect(),
-            started_at: record.started_at,
-        }
+fn active_peer_from_record(record: PresenceRecord) -> ActivePeer {
+    ActivePeer {
+        session_id: truncate_for_display(&record.session_id, ACTIVE_PEER_SESSION_ID_BYTES),
+        harness: record.harness,
+        salient_entities: record.salient_entities.into_iter().take(MAX_ACTIVE_PEER_ENTITIES).collect(),
+        started_at: record.started_at,
     }
 }
 

@@ -1,9 +1,17 @@
+use std::path::Path;
+
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    BorderGlyphs, BorderStyle, ColorTokens, Density, Glyphs, Keymap, Loader, LoaderError, MotionConfig,
-    ResolvedColorTokens, Resolver,
-};
+use crate::border::BorderGlyphs;
+use crate::border::BorderStyle;
+use crate::density::Density;
+use crate::glyphs::Glyphs;
+use crate::keymap::Keymap;
+use crate::motion::MotionConfig;
+use crate::presets;
+use crate::resolver::Resolver;
+use crate::theme_load_error::LoaderError;
+use crate::tokens::{ColorTokens, ResolvedColorTokens};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -35,7 +43,7 @@ pub struct ResolvedTheme {
 
 impl Theme {
     pub fn default_warm_dark() -> Self {
-        Loader::resolve(Some("default-warm-dark"), None).expect("embedded default preset is valid")
+        load_theme(Some("default-warm-dark"), None).expect("embedded default preset is valid")
     }
 
     pub fn for_test() -> Self {
@@ -55,7 +63,7 @@ impl Theme {
     }
 
     pub fn from_loader(name: Option<&str>, config_path: Option<&std::path::Path>) -> Result<Self, LoaderError> {
-        Loader::resolve(name, config_path)
+        load_theme(name, config_path)
     }
     pub fn resolve(&self, resolver: &Resolver) -> ResolvedTheme {
         ResolvedTheme {
@@ -68,4 +76,31 @@ impl Theme {
             keymap: self.keymap.clone(),
         }
     }
+}
+
+pub(crate) fn load_theme(name: Option<&str>, config_path: Option<&Path>) -> Result<Theme, LoaderError> {
+    if let Some(name) = name {
+        let body = presets::get(name).ok_or_else(|| LoaderError::UnknownPreset(name.to_string()))?;
+        return parse_theme(body);
+    }
+    if let Some(path) = config_path {
+        return parse_theme(&std::fs::read_to_string(path)?);
+    }
+    let body =
+        presets::get("default-warm-dark").ok_or_else(|| LoaderError::UnknownPreset("default-warm-dark".to_string()))?;
+    parse_theme(body)
+}
+
+pub(crate) fn parse_theme(text: &str) -> Result<Theme, LoaderError> {
+    let value = text.parse::<toml::Value>().map_err(|err| LoaderError::ParseFailed(err.to_string()))?;
+    let colors = value
+        .get("colors")
+        .and_then(toml::Value::as_table)
+        .ok_or_else(|| LoaderError::MissingToken("colors".to_string()))?;
+    for token in ColorTokens::REQUIRED {
+        if !colors.contains_key(token) {
+            return Err(LoaderError::MissingToken(token.to_string()));
+        }
+    }
+    toml::from_str::<Theme>(text).map_err(|err| LoaderError::ParseFailed(err.to_string()))
 }

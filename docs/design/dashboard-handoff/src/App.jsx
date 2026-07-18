@@ -152,7 +152,6 @@ function App() {
         setToasts((ts) => (id == null ? ts.slice(1) : ts.filter((x) => x.id !== id)));
     }
 
-    // Open inspector affordance for drawer/modal layouts
     function selectItem(id) {
         setSelectedId(id);
         if (t.layout === 'drawer') setDrawerOpen(true);

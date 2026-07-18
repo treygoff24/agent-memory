@@ -156,8 +156,7 @@ mod tests {
 
     #[test]
     fn dynamics_config_keeps_fragment_deferral_keys_working() {
-        // The keys the cleanup layer (dream/fragment_archival.rs) previously parsed
-        // locally must keep resolving against the consolidated struct.
+        // Cleanup and ranking share this config, so both sets of keys must resolve.
         let yaml = "dynamics:\n  enabled: false\n  citation_defer_threshold: 5\n  max_fragment_lifetime_days: 28\n";
         let envelope: ConfigDynamicsEnvelope = serde_yaml::from_str(yaml).expect("parse");
         let config = envelope.dynamics.expect("dynamics present");

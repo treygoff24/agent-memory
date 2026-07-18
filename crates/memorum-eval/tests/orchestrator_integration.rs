@@ -364,7 +364,7 @@ fn t17_and_t18_dispatch_through_cargo_not_permanently_skipped() {
     }
 }
 
-/// H-B2 regression: T19 must not be skipped in default builds now that Stream I is shipped.
+/// H-B2 regression: default builds must run T19.
 #[test]
 fn t19_is_not_skipped_by_default_with_stream_i_feature() {
     let fake_cargo = fake_failing_cargo();
@@ -397,7 +397,6 @@ fn skip_marker_in_cargo_stdout_produces_skipped_result_not_pass() {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
 
-    // Create a fake cargo that exits 0 but emits a skip marker in test stdout
     let path = std::env::temp_dir().join(format!("memorum-eval-skip-cargo-{}.sh", std::process::id()));
     fs::write(
         &path,

@@ -99,8 +99,8 @@ pub(crate) async fn governance_write_response(
     // Production contradiction detection: embed the candidate (query side) and
     // KNN against the active triple's vec table, restricted to in-scope active
     // memories. Normal daemon and public handler entrypoints carry a
-    // `HandlerState` (the legacy `handle_request` shim now creates a fresh one),
-    // so missing/failed embedding is reported as a degradation marker. The only
+    // `HandlerState`, so missing or failed embedding is reported as a
+    // degradation marker. The only
     // live `state: None` caller is the reality-check supersede utility path,
     // which intentionally does not participate in write-path similarity. When
     // state is present but the model hasn't loaded yet (or its triple disagrees,
@@ -407,8 +407,7 @@ async fn mark_old_superseded(
         .map_err(|err| {
             // A lifecycle-transition denial (e.g. superseding a pinned memory
             // outside merge apply) is an intentional refusal, not a transient
-            // substrate fault — surface it typed and non-retryable (W3 round-3
-            // verify Low).
+            // substrate fault; surface it as typed and non-retryable.
             if matches!(
                 &err,
                 memory_substrate::WriteFailure {

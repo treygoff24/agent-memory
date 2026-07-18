@@ -106,7 +106,7 @@ impl ParsedMemory {
     /// `serde_yaml` produces, which is deterministic for a `BTreeMap`-keyed
     /// hint map.
     pub fn compute_content_hash(frontmatter_hint: &BTreeMap<String, Value>, body: &str) -> String {
-        let yaml = serde_yaml::to_string(frontmatter_hint).unwrap_or_default();
+        let yaml = serde_yaml::to_string(frontmatter_hint).expect("frontmatter hint serializes to YAML");
         let mut hasher = Sha256::new();
         hasher.update(yaml.as_bytes());
         hasher.update(b"\n");

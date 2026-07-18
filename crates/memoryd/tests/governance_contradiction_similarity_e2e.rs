@@ -1,4 +1,4 @@
-//! End-to-end: production embedding-backed contradiction detection (Task 3.2).
+//! End-to-end production embedding-backed contradiction detection.
 //!
 //! Writes memory A, drains its vector into the active triple's vec table, then
 //! writes a semantically-similar *contradicting* memory B through the same

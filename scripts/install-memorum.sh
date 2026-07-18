@@ -218,9 +218,8 @@ claude_mcp_command() {
 }
 
 emit_agent_summary() {
-  # The recommended next step is to verify the daemon is reachable and start
-  # driving the CLI — not to wire MCP. The MCP one-liner is still emitted, but
-  # as an opt-in `mcp_command` field, no longer as `next_command`.
+  # Reachability verification is the default next step; MCP wiring remains an
+  # explicit opt-in field.
   local next_command="memoryd status --socket $(shell_word "$socket")"
   local next_command_argv=(memoryd status --socket "$socket")
   local mcp_command

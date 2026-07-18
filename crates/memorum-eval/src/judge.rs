@@ -123,9 +123,7 @@ impl BenchmarkJudge for ExternalCommandJudge {
         let start = std::time::Instant::now();
         // Own process group: on timeout we kill the whole group, so a judge
         // wrapper's grandchildren holding inherited stdio die too — otherwise
-        // the pipe-drain threads below block until those descendants exit
-        // (round-3 G1: `sh -c 'sleep 600 & wait'` stalled the harness minutes
-        // past a 100ms deadline).
+        // the pipe-drain threads below block until those descendants exit.
         let mut command = Command::new(&self.program);
         command.args(&self.args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         std::os::unix::process::CommandExt::process_group(&mut command, 0);
@@ -351,7 +349,7 @@ pub async fn judge_recall_served_task(runner: &HarnessRunner, request: JudgeRequ
 /// Build the judge prompt: a fixed rubric plus the task context and the agent's
 /// own output, instructing the judge to return only the rubric JSON object.
 fn build_judge_prompt(task_summary: &str, agent_output: &Value) -> String {
-    let agent_output_pretty = serde_json::to_string_pretty(agent_output).unwrap_or_else(|_| agent_output.to_string());
+    let agent_output_pretty = serde_json::to_string_pretty(agent_output).expect("JSON value serializes");
     format!(
         "You are scoring a Memorum eval transcript. An agent was asked to recall a memory and use it to \
          complete a task. Judge whether the agent's recall and usage of the memory actually served the task.\n\n\
@@ -541,9 +539,8 @@ mod tests {
 
     #[test]
     fn external_command_judge_timeout_not_extended_by_grandchild_holding_pipes() {
-        // A wrapper that leaves a backgrounded grandchild holding inherited
-        // stdio must not stall the timeout path: pre-fix, the unbounded joins
-        // blocked until the grandchild exited (~5s here) instead of ~100ms.
+        // A backgrounded grandchild may retain inherited stdio, but it must not
+        // extend the judge timeout.
         let judge =
             ExternalCommandJudge::new("/bin/sh", ["-c", "sleep 5 & wait"]).with_timeout(Duration::from_millis(100));
         let start = std::time::Instant::now();

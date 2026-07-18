@@ -184,8 +184,6 @@ async fn call_daemon(socket: &Path, payload: RequestPayload) -> Option<String> {
 
 /// Serialize the harness injection envelope:
 /// `{"hookSpecificOutput":{"hookEventName":<event>,"additionalContext":<block>}}`.
-/// Returns `None` if serialization fails (it cannot for these inputs, but a
-/// serialization error must still fail open rather than panic).
 fn build_hook_output(event: &str, block: &str) -> Option<String> {
     let value = serde_json::json!({
         "hookSpecificOutput": {
@@ -193,7 +191,7 @@ fn build_hook_output(event: &str, block: &str) -> Option<String> {
             "additionalContext": block,
         }
     });
-    serde_json::to_string(&value).ok()
+    Some(serde_json::to_string(&value).expect("hook envelope JSON value serializes"))
 }
 
 /// Read all of stdin to bytes.

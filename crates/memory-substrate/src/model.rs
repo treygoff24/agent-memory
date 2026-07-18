@@ -1,6 +1,5 @@
 #![allow(unknown_lints, file_too_long)]
-//! Public DTO contract is intentionally centralized for Task 2 seam stability.
-//! Public data model for Stream A.
+//! Centralized public DTO contract and data model for Stream A.
 
 use std::collections::BTreeMap;
 use std::fmt::{Display, Formatter};

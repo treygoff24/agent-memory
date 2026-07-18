@@ -104,9 +104,8 @@ pub async fn shutdown(shutdown_tx: watch::Sender<bool>, server: JoinHandle<anyho
 
 /// Poll the Unix socket until a connection succeeds (up to 60s @ 10ms cadence).
 ///
-/// The 60s budget (was 2s) gives headroom for the now-heavier memoryd test
-/// binary — linking the embedding stack (candle/ort/fastembed) slows the
-/// in-process multi-thread daemon's first bind under test-runner contention.
+/// The 60s budget gives the embedding-heavy test binary enough headroom to bind
+/// its in-process daemon under test-runner contention.
 /// The real `memoryd serve` binary binds in well under a second.
 #[allow(dead_code)]
 pub async fn wait_for_socket(socket: &Path) {

@@ -267,7 +267,7 @@ fn test_embedding_triple_mismatch_yields_zero() {
     assert!(gate().evaluate(&mut session, &[candidate], fixture_now()).peer_updates.is_empty());
 }
 
-// ── path_fraction prefix-matching tests ──────────────────────────────────────
+// path_fraction prefix-matching tests
 
 /// Session directory covers a file inside it (session prefix → candidate file).
 #[test]
@@ -286,7 +286,6 @@ fn path_fraction_non_boundary_prefix_does_not_match() {
     assert_eq!(path_fraction(&candidate_paths, &session_paths), 0.0);
 }
 
-/// Exact match still works after the refactor.
 #[test]
 fn path_fraction_exact_match_still_works() {
     let session_paths = set(["/src/auth/service.rs"]);

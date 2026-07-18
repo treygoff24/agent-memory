@@ -137,10 +137,9 @@ pub fn repair_duplicate_ids(repo: &Path, runtime: &Path, device_id: &str) -> Res
         }
     }
 
-    // Validate the staged future state: all IDs unique.
+    // Refuse every disk change unless the staged IDs are unique.
     validate_no_duplicate_ids(&records, &entries).map_err(|err| IdError::InvalidState(err.to_string()))?;
 
-    // Phase 4: commit to disk.
     let mut rollback_stack: Vec<(PathBuf, Option<Vec<u8>>)> = Vec::new();
     let commit_result = commit_staged(repo, &staged, &entries, &mut rollback_stack);
     if let Err(err) = commit_result {
@@ -256,7 +255,6 @@ fn commit_staged(
         let abs_old = repo.join(old_path);
         let abs_new = repo.join(new_path);
 
-        // Save rollback information.
         let original_bytes = if abs_old.exists() { Some(std::fs::read(&abs_old)?) } else { None };
         rollback_stack.push((abs_old.clone(), original_bytes));
 

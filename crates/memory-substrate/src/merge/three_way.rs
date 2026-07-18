@@ -344,7 +344,9 @@ fn splice_clean_diagnostics(
     if diagnostic.conflicting_fields == ["abstraction"] {
         diagnostic.created_at = ours.frontmatter.updated_at.max(theirs.frontmatter.updated_at);
         let mut hasher = Sha256::new();
-        hasher.update(serde_json::to_vec(&diagnostic.preserved_sources).unwrap_or_default());
+        let preserved_sources = serde_json::to_vec(&diagnostic.preserved_sources)
+            .map_err(|error| MergeError::Serialize { message: error.to_string() })?;
+        hasher.update(preserved_sources);
         diagnostic.merge_id = format!("merge_{}", hex::encode(&hasher.finalize()[..16]));
     }
     let unioned = union_diagnostics(
@@ -529,7 +531,7 @@ mod tests {
         assert!(!frontmatter_carries_secret_sensitivity(raw));
     }
 
-    // ---- Golden tests: byte-exact behavior locked before the merge-driver dedup refactor.
+    // Golden tests lock byte-exact behavior shared with the merge driver.
 
     #[test]
     fn clean_fastpath_ours_equals_theirs_returns_ours_bytes() {

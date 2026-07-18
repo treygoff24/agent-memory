@@ -10,16 +10,7 @@ const PEER_STATUS_RECENT_DELIVERIES: usize = 5;
 
 impl DeltaPeerDeliveryRecorder for HandlerState {
     fn record_delta_peer_delivery(&self, delivery: DeltaPeerDelivery) {
-        self.record_peer_delivery(PeerDeliveryAuditEntry {
-            delivered_at: delivery.delivered_at,
-            from_harness: delivery.from_harness,
-            from_session_id: delivery.from_session_id,
-            to_harness: delivery.to_harness,
-            to_session_id: delivery.to_session_id,
-            memory_id: delivery.memory_id,
-            relevance: delivery.relevance,
-            summary: delivery.summary,
-        });
+        self.record_peer_delivery(delivery);
     }
 }
 

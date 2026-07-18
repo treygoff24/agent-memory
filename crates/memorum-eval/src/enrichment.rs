@@ -110,8 +110,7 @@ pub fn load_sidecar(dataset: &Path) -> Result<EnrichmentSidecar, String> {
     match serde_json::from_slice(&bytes) {
         Ok(sidecar) => Ok(sidecar),
         Err(error) => {
-            // Non-clobbering quarantine-aside: probe for a free suffix so a
-            // prior quarantine artifact is never overwritten (round-2 F2).
+            // Probe for a free quarantine suffix rather than overwrite evidence.
             let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
             let quarantine = (0u32..10_000)
                 .map(|n| path.with_file_name(format!("{name}.corrupt-{n:04}")))
@@ -1044,10 +1043,8 @@ mod tests {
     }
 
     #[test]
-    /// Round-2 F3 note: this asserts the temp file is cleaned up, which a
-    /// pre-fix direct write also satisfies — the fsync+rename property itself
-    /// is not pinnable without crash injection. The corrupt-sidecar quarantine
-    /// test is the behavioral pin for torn-write recovery.
+    /// Temp cleanup alone cannot prove fsync-and-rename atomicity without crash
+    /// injection; the corrupt-sidecar quarantine test pins torn-write recovery.
     fn sidecar_is_written_atomically() {
         let dir = tempfile::tempdir().unwrap();
         let dataset_dir = dir.path();

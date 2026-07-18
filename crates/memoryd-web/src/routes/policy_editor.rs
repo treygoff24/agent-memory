@@ -12,6 +12,8 @@ use memoryd::protocol::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+pub use memoryd::protocol::PolicyEditorMutationResponse as PolicyEditorPostResponse;
+
 use crate::routes::status::daemon_error;
 use crate::state::{backend_unavailable, WebState};
 
@@ -40,13 +42,6 @@ pub struct PolicyEditorResponse {
 pub struct PolicyEditorPostRequest {
     pub raw_yaml: String,
     pub file_name: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct PolicyEditorPostResponse {
-    pub accepted: bool,
-    pub file_name: String,
-    pub policies: Vec<GovernancePolicySummary>,
 }
 
 pub async fn policy_editor_get(State(state): State<WebState>) -> impl IntoResponse {

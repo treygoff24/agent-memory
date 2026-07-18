@@ -1,4 +1,4 @@
-//! Standalone golden-corpus quality-metrics runner (Task 4.2).
+//! Standalone golden-corpus quality-metrics runner.
 //!
 //! Loads the golden corpus into a scratch substrate, replays every labeled query
 //! through the real recall ranking seams (bm25 FTS + structural points), and

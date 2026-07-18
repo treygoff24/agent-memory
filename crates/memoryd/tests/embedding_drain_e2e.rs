@@ -1,6 +1,6 @@
 //! End-to-end: write → drain → vector present → KNN orders correctly.
 //!
-//! Task 3.0 acceptance test. Exercises the real production write path (the
+//! Exercises the real production write path (the
 //! governance `WriteMemory` handler, which produces chunks and
 //! `pending_embedding_jobs`), the real drain unit (`worker::drain_batch`), and
 //! the real vector query path — all on the deterministic [`FixtureProvider`] so
@@ -89,7 +89,6 @@ async fn write_drain_vector_present_and_knn_orders_correctly() {
     // No vectors yet — only chunks + pending jobs.
     assert_eq!(substrate.vector_count(triple.clone()).await.expect("count before"), 0, "no vectors before drain");
 
-    // Drain the backlog.
     let mut total = 0usize;
     loop {
         let n = worker::drain_batch(&substrate, &provider, 64).await.expect("drain");
@@ -100,11 +99,9 @@ async fn write_drain_vector_present_and_knn_orders_correctly() {
     }
     assert!(total >= 2, "both memories produced at least one chunk job each, got {total}");
 
-    // Vectors are now present for the active triple.
     let vectors = substrate.vector_count(triple.clone()).await.expect("count after");
     assert!(vectors >= 2, "expected vectors after drain, got {vectors}");
 
-    // KNN: embed a query close to the rust memory and confirm it ranks first.
     let query_vector =
         provider.embed_query("which async runtime did we pick for the rust daemon").expect("embed query");
     let results = substrate

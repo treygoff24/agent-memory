@@ -113,11 +113,6 @@ impl Substrate {
         git::auto_commit(&self.roots.repo, "Stream A auto-commit\n\nStream-A: true").map(|_| ())
     }
 
-    /// Fetch and merge.
-    pub async fn fetch_and_merge(&self) -> Result<(), crate::error::GitError> {
-        git::fetch_and_merge(&self.roots.repo)
-    }
-
     /// Push.
     pub async fn push(&self) -> Result<(), crate::error::GitError> {
         git::push(&self.roots.repo)

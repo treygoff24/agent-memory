@@ -265,7 +265,7 @@ impl PolicySet {
                 name: "me-strict",
                 version: 1,
                 scope: Scope::Me,
-                // 2026-05-07: lowered for dogfood profile, see Task 2.
+                // Dogfood profile accepts grounded claims at this confidence.
                 confidence_floor: 0.85,
                 requires_grounding: true,
                 tombstone_enforcement: TombstoneEnforcementMode::Refuse,

@@ -794,7 +794,6 @@ mod tests {
         let under = "<memory-recall>\n  <line/>\n</memory-recall>\n".to_owned();
         assert_eq!(cap_passive_block(under.clone()), under, "blocks under the cap pass through untouched");
 
-        // Build an oversized block out of many newline-delimited lines.
         let mut oversized = String::from("<memory-recall>\n");
         for index in 0..2_000 {
             oversized.push_str(&format!("  <line n=\"{index}\">{}</line>\n", "y".repeat(20)));

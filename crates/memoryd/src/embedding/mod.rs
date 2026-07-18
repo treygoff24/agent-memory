@@ -1,11 +1,7 @@
-//! Production embedding inference (Stream B, Task 3.0).
+//! Production embedding inference for Stream B.
 //!
 //! Every write produces chunks and `pending_embedding_jobs` against the active
-//! embedding triple, but until this module shipped nothing consumed them — the
-//! only vector-write API (`Substrate::update_embedding`) was exercised solely by
-//! benches and tests, so production recall silently degraded to FTS-only bm25.
-//!
-//! This module supplies:
+//! embedding triple. This module consumes those jobs and supplies:
 //!
 //! - [`EmbeddingProvider`], a small trait with **asymmetric** prompting:
 //!   [`EmbeddingProvider::embed_query`] applies the model-card instruction

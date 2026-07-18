@@ -40,7 +40,7 @@ def case(cid, query, scope, essential=None, useful=None, traps=None):
         },
     })
 
-# --- EXACT-IDENTIFIER RECALL (query is a literal MemoryId) -------------------
+# Exact-identifier recall (query is a literal MemoryId)
 case("q01-exact-id-ledger-head",
      i("projects/atlas/decisions/2025-12-15-ledger-migration-plan-v3.md"),
      ["project"],
@@ -54,7 +54,7 @@ case("q03-exact-id-money-invariant",
      ["project"],
      essential=["projects/atlas/invariants.md"])
 
-# --- ENTITY QUERIES (incl. cross-project collisions) -------------------------
+# Entity queries (including cross-project collisions)
 case("q04-atlas-gateway",
      "What is the gateway in the Atlas billing project and how is it rate-limited?",
      ["project:atlas"],
@@ -100,7 +100,7 @@ case("q11-security-reviewer-auth",
      essential=["me/relationship/facts/marco.md"],
      useful=["projects/orbit/invariants.md"])
 
-# --- TOPICAL QUERIES ---------------------------------------------------------
+# Topical queries
 case("q12-ledger-migration-approach",
      "How did we migrate the Atlas ledger table, and how do we roll it back?",
      ["project:atlas"],
@@ -165,7 +165,7 @@ case("q23-user-comm-style",
      ["me"],
      essential=["me/relationship/preferences/communication.md"])
 
-# --- SUPERSESSION-HEAD SELECTION (head essential, tails are traps) -----------
+# Supersession-head selection (head essential, tails are traps)
 case("q24-ledger-current-plan",
      "What is the ledger migration plan we actually executed (not the abandoned ones)?",
      ["project:atlas"],
@@ -195,7 +195,7 @@ case("q28-orbit-auth-history-context",
      useful=["projects/orbit/decisions/2025-11-10-session-cookies.md",
              "agent/postmortems/auth-rolling-deploy.md"])
 
-# --- CROSS-PROJECT ISOLATION (scope must keep other projects out) ------------
+# Cross-project isolation (scope must keep other projects out)
 case("q29-gateway-atlas-only",
      "Within Atlas only: what is the gateway and its retry policy?",
      ["project:atlas"],
@@ -215,7 +215,7 @@ case("q31-invariants-orbit-only",
      essential=["projects/orbit/invariants.md"],
      traps=["projects/atlas/invariants.md", "projects/atlas/invariants-idempotency.md"])
 
-# --- AGENT-SCOPE PATTERN/POSTMORTEM RECALL -----------------------------------
+# Agent-scope pattern and postmortem recall
 case("q32-anti-pattern-flaky-retry",
      "Is auto-retrying flaky tests a good idea?",
      ["agent"],
@@ -262,7 +262,7 @@ case("q40-hermetic-build-flaky",
      essential=["agent/patterns/hermetic-builds.md"],
      useful=["projects/quill/invariants.md"])
 
-# --- NEAR-DUPLICATE COLLAPSE (both relevant; either acceptable, prefer one) --
+# Near-duplicate collapse (both relevant; either acceptable, prefer one)
 case("q41-standup-time",
      "When does the user want the daily standup, and how long?",
      ["me"],
@@ -274,7 +274,7 @@ case("q42-gateway-retry-policy-dup",
      essential=["projects/atlas/decisions/2025-12-10-processor-retry.md"],
      useful=["projects/atlas/decisions/2025-12-11-gateway-retry-policy.md"])
 
-# --- CORRECTIONS & TOMBSTONE TRAPS -------------------------------------------
+# Corrections and tombstone traps
 case("q43-user-timezone",
      "What timezone is the user in?",
      ["me"],
@@ -297,7 +297,7 @@ case("q46-third-payment-processor",
      useful=[],
      traps=["projects/atlas/decisions/2025-12-05-vendor-pick.md"])
 
-# --- ABSTENTION CASES (zero relevant memories: empty essential + useful) -----
+# Abstention cases (zero relevant memories: empty essential and useful)
 case("q47-abstain-kubernetes",
      "What is our Kubernetes cluster autoscaling configuration?",
      ["me", "project:atlas", "project:orbit", "project:quill", "agent"],
@@ -315,7 +315,7 @@ case("q50-abstain-out-of-scope-secret",
      ["me"],
      essential=[], useful=[])
 
-# --- KEYWORD / ENTITY SEARCH-SEAM PROBES ------------------------------------
+# Keyword and entity search-seam probes
 case("q51-keyword-atlas-gateway",
      "payment gateway Stripe Adyen",
      ["project:atlas"],
@@ -354,7 +354,7 @@ case("q56-keyword-idempotency",
 
 
 HEADER = """\
-# Golden recall corpus — labeled query cases (Task 4.1).
+# Golden recall corpus: labeled query cases.
 #
 # Schema (per case):
 #   id               unique case id (kebab, qNN-...)

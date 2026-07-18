@@ -16,12 +16,6 @@ export interface InboxItem {
     confidence: number;
 }
 
-export interface InboxFilterDefinition {
-    id: InboxFilterId;
-    label: string;
-    key: string;
-}
-
 export interface InboxViewItem extends InboxItem {
     glyph: string;
     sub: string[];

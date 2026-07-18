@@ -1,4 +1,4 @@
-//! Task 3: `memoryd schema` publishes the machine contract and agrees, at field
+//! `memoryd schema` publishes the machine contract and agrees, at field
 //! level, with both the clap definitions and `docs/api/memoryd-cli-contract-v1.md`.
 
 use std::collections::BTreeMap;
@@ -58,7 +58,6 @@ fn schema_all_carries_every_covered_command_with_side_effect_and_exit_codes() {
 fn schema_pins_field_level_argument_shapes() {
     let contract = schema(&["--json"]);
 
-    // search: required positional query, --limit option, --include-body flag.
     let search = command_named(&contract, "search");
     let query = arg_named(search, "query");
     assert_eq!(query["kind"], "positional");
@@ -66,18 +65,15 @@ fn schema_pins_field_level_argument_shapes() {
     assert_eq!(arg_named(search, "limit")["kind"], "option");
     assert_eq!(arg_named(search, "include_body")["kind"], "flag");
 
-    // get: required positional id.
     let get = command_named(&contract, "get");
     assert_eq!(arg_named(get, "id")["kind"], "positional");
     assert_eq!(arg_named(get, "id")["required"], true);
 
-    // write: required positional body, --meta option, repeatable --tag.
     let write = command_named(&contract, "write");
     assert_eq!(arg_named(write, "body")["kind"], "positional");
     assert_eq!(arg_named(write, "meta")["kind"], "option");
     assert_eq!(arg_named(write, "tags")["repeatable"], true);
 
-    // forget: --reason is a required option.
     let forget = command_named(&contract, "forget");
     let reason = arg_named(forget, "reason");
     assert_eq!(reason["kind"], "option");

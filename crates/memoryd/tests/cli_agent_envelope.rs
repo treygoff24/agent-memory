@@ -1,4 +1,4 @@
-//! Task 2 matrix: the agent envelope + exit-code contract
+//! Agent envelope and exit-code contract matrix
 //! (`docs/api/memoryd-cli-contract-v1.md`).
 //!
 //! The synthetic cells drive the pure renderer `render_agent_response` with
@@ -27,7 +27,7 @@ fn success(payload: ResponsePayload) -> AgentRender {
     render_agent_response(&ResponseEnvelope::success("cli-test", payload))
 }
 
-// --- daemon-error cells (command-agnostic error rendering) ---------------------
+// Daemon-error cells (command-agnostic error rendering)
 
 #[test]
 fn daemon_error_not_found_maps_to_66_on_stderr() {
@@ -57,7 +57,7 @@ fn daemon_error_invalid_request_maps_to_65() {
     assert!(render.to_stderr);
 }
 
-// --- success + empty-result cells ---------------------------------------------
+// Success and empty-result cells
 
 #[test]
 fn write_note_success_is_ok_true_on_stdout_exit_0() {
@@ -110,7 +110,7 @@ fn nonempty_search_has_no_warning() {
     assert_eq!(envelope_json(&render)["meta"]["warnings"].as_array().unwrap().len(), 0);
 }
 
-// --- DECISION-4 governance write-status cells ---------------------------------
+// DECISION-4 governance write-status cells
 
 fn governance_write(status: GovernanceStatus, reason: Option<GovernanceRefusalReason>) -> GovernanceWriteResponse {
     GovernanceWriteResponse {
@@ -186,7 +186,7 @@ fn refused_write_tombstone_reason_points_at_search() {
     assert_eq!(envelope_json(&render)["error"]["code"], "tombstone");
 }
 
-// --- live binary cells --------------------------------------------------------
+// Live binary cells
 
 #[test]
 fn daemon_down_is_exit_75_error_on_stderr_nothing_on_stdout() {
@@ -271,7 +271,7 @@ fn identical_search_invocations_are_byte_identical_on_stdout() {
     assert_eq!(json["meta"]["schema_version"], "1.0");
 }
 
-// --- Task 5: error pedagogy -------------------------------------------------
+// Error pedagogy
 
 #[test]
 fn daemon_error_suggested_fixes_name_the_corrective_move() {

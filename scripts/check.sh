@@ -48,7 +48,7 @@ else
   NICE=""
 fi
 
-# --- Phase 1: cheap independent checks, fanned out in parallel -------------
+# Phase 1: cheap independent checks, fanned out in parallel
 # Each step writes to its own log; we surface the log only on failure so a
 # clean run stays readable.
 
@@ -118,7 +118,7 @@ else
 fi
 wait_parallel
 
-# --- Phase 2: cargo-heavy work, serial (shared target dir) -----------------
+# Phase 2: cargo-heavy work, serial (shared target dir)
 
 $NICE cargo clippy --workspace --all-targets --all-features -- -D warnings
 
@@ -142,7 +142,7 @@ fi
 
 $NICE env RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 
-# --- Phase 3: convergence / durability / bench (perf-sensitive, serial) ----
+# Phase 3: convergence / durability / bench (perf-sensitive, serial)
 
 ./scripts/rust-boundary-check.sh
 ./scripts/two-clone-convergence.sh --full

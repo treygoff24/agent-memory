@@ -11,7 +11,7 @@ use std::path::Path as FsPath;
 
 use memoryd::protocol::{RecallHitsResponse, RequestPayload, ResponsePayload, ResponseResult, StatusResponse};
 
-use crate::routes::status::daemon_error;
+use crate::routes::error::daemon_error;
 
 /// Extract the one [`ResponsePayload`] variant a route expects.
 ///

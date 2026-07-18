@@ -15,7 +15,6 @@
 //! - Re-running on the same fixtures with the previous state file produces
 //!   zero new socket writes (idempotency).
 
-use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
 use memoryd::import::pipeline::{
@@ -31,17 +30,6 @@ use serial_test::serial;
 struct AlwaysPromote {
     next_id: usize,
     write_calls: usize,
-    #[allow(dead_code)]
-    supersede_calls: usize,
-    forced_responses: VecDeque<WriteMemoryOutcome>,
-}
-
-impl AlwaysPromote {
-    #[allow(dead_code)]
-    fn with_response(mut self, outcome: WriteMemoryOutcome) -> Self {
-        self.forced_responses.push_back(outcome);
-        self
-    }
 }
 
 impl DaemonClient for AlwaysPromote {
@@ -50,9 +38,6 @@ impl DaemonClient for AlwaysPromote {
         _request: WriteMemoryRequest,
     ) -> memoryd::import::ImportResult<WriteMemoryOutcome> {
         self.write_calls += 1;
-        if let Some(forced) = self.forced_responses.pop_front() {
-            return Ok(forced);
-        }
         self.next_id += 1;
         Ok(WriteMemoryOutcome {
             status: GovernanceStatus::Promoted,
@@ -64,7 +49,6 @@ impl DaemonClient for AlwaysPromote {
     }
 
     async fn supersede(&mut self, _request: SupersedeRequest) -> memoryd::import::ImportResult<SupersedeOutcome> {
-        self.supersede_calls += 1;
         self.next_id += 1;
         Ok(SupersedeOutcome {
             status: GovernanceStatus::Promoted,

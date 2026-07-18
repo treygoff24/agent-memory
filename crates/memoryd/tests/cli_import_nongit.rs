@@ -17,10 +17,8 @@ fn absent_non_git_default_derives_active_project_scope() {
     let fixture = ImportFixture::new();
     let report_path = fixture.temp.path().join("report.json");
 
-    // With no `--non-git-cwd-default` flag and no TTY, the default is now to
-    // derive a project namespace from the cwd so the memories are saved and land
-    // active (project scope, default policy) rather than being skipped. `--dry-run`
-    // keeps the test daemon-free while still exercising the disposition path.
+    // Non-interactive imports derive project scope from cwd rather than skip;
+    // `--dry-run` exercises that disposition without a daemon.
     let output = run_import([
         "import",
         "--harness",

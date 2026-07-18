@@ -555,7 +555,7 @@ body
             .any(|e| matches!(e, ImportError::Parse { source_key, .. } if source_key.contains("missing-scope"))));
     }
 
-    // ── parse_applies_to_cwd path-shape tests ──────────────────────────────
+    // parse_applies_to_cwd path-shape tests
 
     #[test]
     fn parse_applies_to_cwd_accepts_absolute_path() {

@@ -1,7 +1,7 @@
-//! Golden corpus fixture lint (Task 4.1).
+//! Golden corpus fixture lint.
 //!
 //! This is the integrity gate for the dynamics-program measuring instrument
-//! (`fixtures/golden/`). It does NOT measure recall quality — that is Task 4.2's
+//! (`fixtures/golden/`). It does not measure recall quality; the quality runner's
 //! `quality.rs` runner. It only guarantees the corpus is well-formed so the
 //! quality runner can trust it:
 //!

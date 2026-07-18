@@ -1,6 +1,6 @@
-//! Task 1.2 — incremental `Substrate::open` reindexing.
+//! Incremental `Substrate::open` reindexing.
 //!
-//! `open` no longer runs a full O(n) reindex. It runs an incremental sweep:
+//! `open` runs an incremental sweep:
 //! orphan-row cleanup + encrypted-tier hash-compare reindex +
 //! `reconcile_active_embedding_jobs`, leaving plaintext freshness to phase-6
 //! stale detection. These tests pin the five behaviors the review called out.
@@ -148,8 +148,7 @@ async fn warm_open_reindexes_drift_set_spanning_multiple_commit_chunks() {
     .expect("init");
     drop(substrate);
 
-    // Write the memory files straight to disk (no API write, so they stay
-    // unindexed); the next open must reindex them through the chunked walk.
+    // Bypassing the API leaves these files unindexed for the next open.
     let memories = (0..UNINDEXED_MEMORY_COUNT)
         .map(|offset| sample_memory(&format!("mem_20260424_a1b2c3d4e5f60718_{:06}", 80_000 + offset)))
         .collect::<Vec<_>>();
@@ -275,12 +274,11 @@ async fn open_orphan_sweep_removes_row_for_deleted_file() {
     write_through_api(&substrate, &doomed).await;
     drop(substrate);
 
-    // Remove the canonical file out of band (simulating a deleted/moved memory).
+    // Bypassing the API simulates a deleted or moved memory with a stale index row.
     std::fs::remove_file(roots.repo.join(doomed.path.clone().expect("path").as_path())).expect("remove file");
 
     let reopened = Substrate::open(roots.clone()).await.expect("reopen");
 
-    // The doomed memory's index row is gone; the kept one survives.
     assert!(
         query_by_id(&reopened, &doomed.frontmatter.id).await.is_empty(),
         "orphan sweep should delete the index row for the deleted file"

@@ -10,6 +10,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::daemon_scaffold::DaemonScaffold;
+use crate::support::json_escape;
 #[cfg(feature = "stream-i-deps")]
 use memorum_coordination::framing_tests::{assert_framing, FramingAssertionInput};
 
@@ -185,8 +186,8 @@ impl HarnessRunner {
                 "  }}\n",
                 "}}\n"
             ),
-            server = crate::json_escape(MCP_SERVER_NAME),
-            socket = crate::json_escape(&self.socket_path.to_string_lossy())
+            server = json_escape(MCP_SERVER_NAME),
+            socket = json_escape(&self.socket_path.to_string_lossy())
         )
     }
 
@@ -230,8 +231,8 @@ fn run_harness_subprocess(request: HarnessSubprocessRequest<'_>) -> io::Result<H
 
     let (exit_code, timed_out) = wait_for_harness(&mut child, request.timeout)?;
     let stdin_error = join_io_thread(stdin_writer).err();
-    let stdout = join_io_thread(Some(stdout_reader))?.unwrap_or_default();
-    let mut stderr = join_io_thread(Some(stderr_reader))?.unwrap_or_default();
+    let stdout = join_io_thread(Some(stdout_reader))?.expect("stdout reader was provided");
+    let mut stderr = join_io_thread(Some(stderr_reader))?.expect("stderr reader was provided");
 
     if let Some(error) = stdin_error {
         if stderr.is_empty() {
@@ -272,7 +273,8 @@ fn wait_for_harness(child: &mut std::process::Child, timeout: Duration) -> io::R
     let deadline = Instant::now() + timeout;
     loop {
         if let Some(status) = child.try_wait()? {
-            return Ok((status.code().unwrap_or_default(), false));
+            let exit_code = status.code().ok_or_else(|| io::Error::other("harness terminated without an exit code"))?;
+            return Ok((exit_code, false));
         }
         if Instant::now() >= deadline {
             let _ = child.kill();

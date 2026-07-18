@@ -9,6 +9,8 @@ use serde_json::Value;
 use crate::recall::counters::RecallStatusCounters;
 use crate::recall::types::{DeltaRequest, DeltaResponse, StartupRequest, StartupResponse};
 
+pub use crate::recall::DeltaPeerDelivery as PeerDeliveryAuditEntry;
+pub use crate::state::RcSessionHistoryEntry as RealityCheckHistorySession;
 pub use memorum_coordination::{ClaimLockInfo, PeerHeartbeat, PeerHeartbeatAck};
 pub use memory_governance::{GovernanceRefusalReason, ReviewStatus};
 pub use memory_source::CaptureStatus;
@@ -638,21 +640,6 @@ pub enum RealityCheckResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RealityCheckHistorySession {
-    pub session_id: String,
-    pub started_at: DateTime<Utc>,
-    pub completed_at: DateTime<Utc>,
-    pub items_total: usize,
-    pub reviewed: u32,
-    pub confirmed: u32,
-    pub corrected: u32,
-    pub forgotten: u32,
-    pub not_relevant: u32,
-    pub deferred: u32,
-    pub remaining: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RealityCheckItem {
     pub memory_id: MemoryId,
     pub title: String,
@@ -831,18 +818,6 @@ pub struct PeerActivityResponse {
     pub entries: Vec<PeerDeliveryAuditEntry>,
     pub limit: usize,
     pub total_recorded: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PeerDeliveryAuditEntry {
-    pub delivered_at: DateTime<Utc>,
-    pub from_harness: String,
-    pub from_session_id: String,
-    pub to_harness: String,
-    pub to_session_id: String,
-    pub memory_id: String,
-    pub relevance: f64,
-    pub summary: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

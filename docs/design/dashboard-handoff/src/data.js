@@ -459,10 +459,7 @@ window.MEMORUM_DATA = (() => {
         { name: 'Help: keyboard reference', cat: 'Help', scope: 'global', kbd: '?', id: 'help-keys' },
     ];
 
-    // ====================================================================
-    // RECALL LEDGER — chronological audit feed
-    // Heavy: ~9k events over 30 days (must scale)
-    // ====================================================================
+    // Recall ledger: ~9k events over 30 days, so rendering must scale.
     const NAMESPACES = [
         'coding/typescript',
         'project:atlasos',
@@ -566,9 +563,7 @@ window.MEMORUM_DATA = (() => {
         return { hour: h, count: h < 6 ? Math.max(0, v - 14) : v };
     });
 
-    // ====================================================================
-    // DREAMS — async background jobs / proposals
-    // ====================================================================
+    // Dreams: async background jobs and proposals
     const dreamItems = [
         {
             id: 'drm_rust_pref',
@@ -683,9 +678,7 @@ window.MEMORUM_DATA = (() => {
         },
     ];
 
-    // ====================================================================
-    // PEERS — trust ledger
-    // ====================================================================
+    // Peers trust ledger
     const peers = [
         {
             id: 'peer_mini',
@@ -770,9 +763,7 @@ window.MEMORUM_DATA = (() => {
         },
     ];
 
-    // ====================================================================
-    // GOVERNANCE — review queue (NOT policy editor)
-    // ====================================================================
+    // Governance review queue, not the policy editor
     const governanceItems = [
         {
             id: 'gov_ssh_key_quarantine',
@@ -923,9 +914,7 @@ window.MEMORUM_DATA = (() => {
         },
     ];
 
-    // ====================================================================
-    // ENTITIES — sortable table
-    // ====================================================================
+    // Sortable entities table
     const entities = [
         {
             id: 'ent_acme',

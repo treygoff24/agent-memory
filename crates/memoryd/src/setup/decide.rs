@@ -108,8 +108,7 @@ pub enum DaemonStrategy {
 mod tests {
     use super::*;
 
-    /// CLI-first surface: MCP wiring is opt-in, everything else stays on by
-    /// default. Pins both halves of the Task 6 flip so a regression is loud.
+    /// CLI-first surface: MCP wiring is opt-in while hooks stay on by default.
     #[test]
     fn default_decisions_skip_mcp_but_keep_hooks() {
         let decisions = SetupDecisions::default();

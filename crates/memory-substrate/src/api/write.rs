@@ -460,9 +460,8 @@ impl Substrate {
         let memory_before = memory.clone();
         let frontmatter_before = memory.frontmatter.clone();
         mutate(&mut memory);
-        // The encrypted metadata path is a lifecycle write surface too (W3
-        // round-3 verify): the same §3.3 transition rows that gate plaintext
-        // writes gate it, with the caller-declared actor.
+        // Encrypted metadata must obey the same §3.3 lifecycle transitions as
+        // plaintext writes, using the caller-declared actor.
         validate_lifecycle_transition(Some(&frontmatter_before), &memory.frontmatter, actor)
             .map_err(|err| WriteFailure { outcome: outcome.clone(), kind: WriteFailureKind::ValidationTyped(err) })?;
 

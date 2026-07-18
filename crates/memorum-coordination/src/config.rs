@@ -40,10 +40,9 @@ pub struct CoordinationConfig {
     #[serde(default)]
     pub claim_lock: ClaimLockConfig,
     /// Optional runtime override for the set of harnesses granted full
-    /// coordination. When present it *replaces* the built-in
-    /// full-coordination set (formerly the hard-coded
-    /// `FULL_COORDINATION_HARNESSES` allowlist). When `None`, the built-in
-    /// descriptor registry decides (claude-code + codex are full).
+    /// coordination. When present it *replaces* the built-in descriptor
+    /// registry defaults. When `None`, the registry decides (claude-code and
+    /// codex are full).
     #[serde(default)]
     pub full_coordination_harnesses: Option<Vec<String>>,
 }
@@ -99,15 +98,6 @@ fn validate_unit_threshold(label: &'static str, value: f64) -> Result<(), Config
 }
 
 impl CoordinationConfig {
-    /// Validate the full coordination configuration.
-    ///
-    /// This compatibility boundary returns `String` diagnostics for existing
-    /// callers. New Rust callers should prefer [`Self::validate_typed`] so
-    /// they can match on [`ConfigValidationError`] directly.
-    pub fn validate(&self) -> Result<(), String> {
-        self.validate_typed().map_err(|error| error.to_string())
-    }
-
     /// Validate the full coordination configuration with typed errors.
     pub fn validate_typed(&self) -> Result<(), ConfigValidationError> {
         if !(1..=3).contains(&self.level) {

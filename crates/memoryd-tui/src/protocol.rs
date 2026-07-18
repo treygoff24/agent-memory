@@ -2,8 +2,7 @@
 //!
 //! These types form a leaf module so that [`crate::client`] can construct and
 //! consume daemon snapshots without depending on [`crate::app`] (the UI
-//! orchestrator). Keeping the DTOs here breaks the former `app` <-> `client`
-//! module cycle: both sides now depend on this leaf instead of each other.
+//! orchestrator), avoiding an `app` <-> `client` module cycle.
 
 use std::path::Path;
 

@@ -290,8 +290,6 @@ pub(crate) struct CorpusContext {
 
 struct IngestedSessions {
     turn_ids: BTreeMap<String, Vec<String>>,
-    #[allow(dead_code)]
-    session_ids: BTreeMap<String, Vec<String>>,
     dispositions: DispositionCounts,
 }
 
@@ -564,7 +562,6 @@ fn ingest_sessions(
     report: &mut BaselineReport,
 ) -> Result<IngestedSessions, String> {
     let mut turn_ids = BTreeMap::<String, Vec<String>>::new();
-    let mut session_ids = BTreeMap::<String, Vec<String>>::new();
     let mut dispositions = DispositionCounts::default();
     // Exclusions match on the canonical v2 context-item key in every arm and
     // generation, so one identifier removes the same body from both sides of a
@@ -617,12 +614,11 @@ fn ingest_sessions(
                 report,
                 &mut dispositions,
             )? {
-                turn_ids.entry(key).or_default().push(id.clone());
-                session_ids.entry(session.id.clone()).or_default().push(id);
+                turn_ids.entry(key).or_default().push(id);
             }
         }
     }
-    Ok(IngestedSessions { turn_ids, session_ids, dispositions })
+    Ok(IngestedSessions { turn_ids, dispositions })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1236,10 +1232,8 @@ fn scalar_text(value: &Value) -> String {
     }
 }
 
-/// Per-item rank-cutoff metrics, factored pure so tests can pin hand-computed
-/// values (round-3 G6: the pipeline-level fixture had a single relevant item
-/// at rank 1 and could not discriminate rank-cutoff, partial-recall, or
-/// averaging bugs from a correct implementation).
+/// Per-item rank-cutoff metrics, factored pure so tests can distinguish
+/// rank-cutoff, partial-recall, and averaging bugs.
 struct RankMetrics {
     hit_at_10: f64,
     reciprocal_rank: f64,

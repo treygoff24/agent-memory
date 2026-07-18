@@ -98,14 +98,13 @@ fn event_log_recovery_byte_stable_after_garbage_suffix() {
     let temp = tempfile::tempdir().expect("tempdir");
     let path = temp.path().join("events/prop.jsonl");
 
-    // Write several valid events.
     let events: Vec<Event> = (0..5).map(|i| sample_event(&format!("evt_{i}"), &format!("op_{i}"))).collect();
     for ev in &events {
         append_event(&path, ev).expect("append");
     }
     let valid_bytes = std::fs::read(&path).expect("read valid bytes");
 
-    // Append garbage without a newline (partial write simulation).
+    // No trailing newline simulates a partial write.
     std::fs::OpenOptions::new()
         .append(true)
         .open(&path)

@@ -59,7 +59,6 @@ def encode_docs_queries(model_key, spec):
     device = "mps" if torch.backends.mps.is_available() else "cpu"
     kind = spec["kind"]
 
-    # ---- load ----
     model = None
     if kind == "qwen3":
         try:
@@ -107,7 +106,6 @@ def encode_docs_queries(model_key, spec):
                 raise RuntimeError(f"gated failed AND all onnx fallbacks failed: {repr(last)[:300]}") from last
     meta["device"] = device
 
-    # ---- doc embedding ----
     t0 = time.time()
     if kind == "qwen3":
         doc_emb = model.encode(docs, batch_size=16, convert_to_numpy=True,
@@ -130,7 +128,6 @@ def encode_docs_queries(model_key, spec):
     doc_emb = normalize(doc_emb)
     meta["dims"] = int(doc_emb.shape[1])
 
-    # ---- query embedding ----
     query_emb_by_case = {}
     per_query_times = []
     for case in cases:

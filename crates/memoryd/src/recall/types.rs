@@ -99,7 +99,7 @@ pub struct DeltaResponse {
     pub vector_recall_degraded: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeltaPeerDelivery {
     pub delivered_at: DateTime<Utc>,
     pub from_harness: String,

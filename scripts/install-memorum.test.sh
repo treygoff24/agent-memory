@@ -55,7 +55,7 @@ grep -Fq 'kill -KILL "$existing_pid"' "$repo_root/scripts/install-memorum.sh"
 grep -Fq 'readiness_seconds=30' "$repo_root/scripts/install-memorum.sh"
 grep -Fq 'PATH="$HOME/.cargo/bin:$PATH"' "$repo_root/scripts/install-memorum.sh"
 
-# --- Relative path canonicalization (repo/runtime defaults) ---
+# Relative path canonicalization (repo/runtime defaults)
 rel_tmp="$(mktemp -d)"
 rel_physical="$(cd "$rel_tmp" && pwd -P)"
 rel_out="$rel_tmp/install.out"
@@ -95,7 +95,7 @@ rel_not_contains "--repo repo" "relative-repo"
 rel_not_contains "/tmp/memoryd.sock" "tmp-socket"
 rm -rf "$rel_tmp"
 
-# --- Absolute installer path with --with-scheduler works outside repo root ---
+# Absolute installer path with --with-scheduler works outside repo root
 scheduler_tmp="$(mktemp -d)"
 scheduler_physical="$(cd "$scheduler_tmp" && pwd -P)"
 scheduler_out="$scheduler_tmp/install-with-scheduler.out"
@@ -125,7 +125,7 @@ if grep -Fq -- "No such file or directory" "$scheduler_out"; then
 fi
 rm -rf "$scheduler_tmp"
 
-# --- Explicit relative --socket canonicalization ---
+# Explicit relative --socket canonicalization
 socket_tmp="$(mktemp -d)"
 socket_physical="$(cd "$socket_tmp" && pwd -P)"
 socket_out="$socket_tmp/install.out"
@@ -151,7 +151,7 @@ if ! grep -Fq -- "memoryd status --socket $socket_expected" "$socket_out"; then
 fi
 rm -rf "$socket_tmp"
 
-# --- Agent mode emits parseable summary with absolute socket and next command ---
+# Agent mode emits parseable summary with absolute socket and next command
 agent_tmp="$(mktemp -d)"
 agent_physical="$(cd "$agent_tmp" && pwd -P)"
 agent_out="$agent_tmp/install-agent.out"
@@ -194,7 +194,7 @@ assert summary["mcp_command"] == f'claude mcp add --scope user memorum -- memory
 PY
 rm -rf "$agent_tmp"
 
-# --- Agent command is shell-safe for pasteable socket paths ---
+# Agent command is shell-safe for pasteable socket paths
 shell_tmp="$(mktemp -d)"
 shell_physical="$(cd "$shell_tmp" && pwd -P)"
 shell_marker="$shell_physical/should-not-exist"
@@ -239,7 +239,7 @@ if [ -e "$shell_marker" ]; then
 fi
 rm -rf "$shell_tmp"
 
-# --- Control characters are rejected before JSON emission ---
+# Control characters are rejected before JSON emission
 control_tmp="$(mktemp -d)"
 control_stdout="$control_tmp/stdout"
 control_stderr="$control_tmp/stderr"
@@ -267,7 +267,7 @@ if grep -Fq -- 'MEMORUM_AGENT_SUMMARY_JSON=' "$control_stdout"; then
 fi
 rm -rf "$control_tmp"
 
-# --- Empty argument rejection ---
+# Empty argument rejection
 expect_empty_rejection() {
   local flag="$1"
   local label="$2"
@@ -337,7 +337,7 @@ expect_missing_rejection_before_next_flag "--repo" "--runtime" "repo"
 expect_missing_rejection_before_next_flag "--runtime" "--socket" "runtime"
 expect_missing_rejection_before_next_flag "--socket" "--with-scheduler" "socket"
 
-# --- Leading literal tilde rejection ---
+# Leading literal tilde rejection
 expect_tilde_rejection() {
   local flag="$1"
   local value="$2"
@@ -388,7 +388,7 @@ if ! grep -Fq -- 'MCP client snippet' "$mid_tilde_out"; then
 fi
 rm -rf "$mid_tilde_tmp"
 
-# --- Onboarding docs use platform-neutral placeholders ---
+# Onboarding docs use platform-neutral placeholders
 grep -Fq '/absolute/path/to/memorum/.memoryd/memoryd.sock' "$repo_root/docs/mcp-wiring.md"
 grep -Fq '[mcp_servers.memorum]' "$repo_root/docs/mcp-wiring.md"
 grep -Fq '/absolute/path/to/memorum/.memoryd/memoryd.sock' "$repo_root/README.md"
@@ -412,7 +412,7 @@ if rg -q '^\[mcp\.' "$repo_root/docs/mcp-wiring.md"; then
   exit 1
 fi
 
-# --- docs-command-validity.sh passes on current docs ---
+# docs-command-validity.sh passes on current docs
 bash "$repo_root/scripts/docs-command-validity.sh"
 
 echo "install-memorum.test.sh: all checks passed"

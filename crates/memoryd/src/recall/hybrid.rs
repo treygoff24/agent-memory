@@ -75,10 +75,7 @@ pub(crate) async fn collect_hybrid_recall(
     message: &str,
     context: Option<&VectorRecallContext>,
 ) -> HybridRecallDecision {
-    // The recall clock starts BEFORE the query embed: the four-lane envelope
-    // is deadline − (embed + everything else), not a fresh post-embed budget
-    // (round-2 verify HIGH — restarting the clock let a slow embed grant the
-    // lanes a full envelope the surface deadline no longer had).
+    // Query embedding consumes the same surface deadline as the recall lanes.
     let recall_started = Instant::now();
     let Some(context) = context else {
         return HybridRecallDecision::FtsOnly { degraded: None };

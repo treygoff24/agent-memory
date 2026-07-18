@@ -1086,8 +1086,7 @@ mod tests {
         proposal.status = MergeProposalStatus::Applying;
         store.save(&proposal).expect("save applying");
 
-        // A fresh Applying proposal must have a readable journal to be considered
-        // in-progress; missing/unreadable journals are now treated as stale.
+        // Applying is in progress only while its journal remains readable.
         let journal_path = temp
             .path()
             .join("runtime")

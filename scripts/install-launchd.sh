@@ -159,7 +159,7 @@ memoryd_bin_xml="$(xml_escape "$memoryd_bin")"
 
 # Build the daemon PATH. launchd does not inherit the user's shell PATH, so the
 # dream harness cannot find `claude`/`codex` unless their directories are named
-# here explicitly. Resolve them now (bash sees the real binaries on PATH, not the
+# here explicitly. Bash resolves the real binaries on PATH rather than the
 # interactive shell-function wrappers) and add the standard user bin locations.
 # Dedup is order-preserving and bash 3.2-safe (no associative arrays).
 daemon_path=""
@@ -188,7 +188,7 @@ daemon_path_xml="$(xml_escape "$daemon_path")"
 
 # launchd user agents do not get USER in their environment, but Claude's macOS
 # keychain lookup needs it (without USER, `claude auth status` reports
-# loggedIn:false even with a valid CLAUDE_CONFIG_DIR). Resolve it now so both
+# loggedIn:false even with a valid CLAUDE_CONFIG_DIR). Resolve it so both
 # plists carry it. `id -un` is robust even when $USER is unset.
 user_name="$(id -un)"
 user_name_xml="$(xml_escape "$user_name")"

@@ -8,30 +8,7 @@ use memory_substrate::{events::EventKind, Substrate};
 use crate::protocol::{GovernancePolicySnapshot, GovernancePolicySummary, PolicyEditorMutationResponse};
 
 pub fn snapshot(repo: &Path) -> Result<GovernancePolicySnapshot, String> {
-    let policy_dir = repo.join("policies");
-    if !policy_dir_has_yaml(&policy_dir)? {
-        if policy_dir_is_writable(&policy_dir) {
-            materialize_builtin_policies(&policy_dir, None)?;
-        } else {
-            return builtin_snapshot(false);
-        }
-    }
-    let policies = PolicySet::load_from_dir(&policy_dir).map_err(|error| error.to_string())?;
-    let files = policy_files(&policy_dir)?;
-    let current_file = files.first().cloned();
-    let raw_yaml = current_file
-        .as_ref()
-        .map(|file| fs::read_to_string(policy_dir.join(file)).map_err(|error| error.to_string()))
-        .transpose()?;
-
-    Ok(GovernancePolicySnapshot {
-        source: "disk".to_owned(),
-        raw_yaml,
-        policies: summarize_policy_set(&policies, "disk"),
-        writable: policy_dir_is_writable(&policy_dir),
-        files,
-        current_file,
-    })
+    snapshot_from_dir(&repo.join("policies"))
 }
 
 pub fn validate(repo: &Path, raw_yaml: &str, file_name: Option<&str>) -> Result<PolicyEditorMutationResponse, String> {
@@ -46,19 +23,11 @@ pub fn write(
     raw_yaml: &str,
     file_name: Option<&str>,
 ) -> Result<PolicyEditorMutationResponse, String> {
-    let repo = substrate.roots().repo.as_path();
-    let policy_dir = repo.join("policies");
-    let file_name = target_file_name(raw_yaml, file_name)?;
-    let needs_bootstrap = !policy_dir_has_yaml(&policy_dir)?;
-    let policies = validate_full_policy_set(&policy_dir, &file_name, raw_yaml)?;
-    if needs_bootstrap {
-        materialize_builtin_policies(&policy_dir, Some(&file_name))?;
-    }
-    atomic_write(policy_dir.join(&file_name), raw_yaml)?;
+    let response = write_to_dir(&substrate.roots().repo.join("policies"), raw_yaml, file_name)?;
     substrate
-        .record_event_best_effort(EventKind::PolicyChanged { file_name: file_name.clone() })
+        .record_event_best_effort(EventKind::PolicyChanged { file_name: response.file_name.clone() })
         .map_err(|error| error.to_string())?;
-    Ok(PolicyEditorMutationResponse { accepted: true, file_name, policies: summarize_policy_set(&policies, "disk") })
+    Ok(response)
 }
 
 pub fn write_to_dir(

@@ -1,4 +1,4 @@
-//! Quality-metrics baseline gate (Task 4.2).
+//! Quality-metrics baseline gate.
 //!
 //! Runs the golden-corpus quality report through the REAL recall ranking seams
 //! (bm25 FTS + structural points) and compares it against the human-committed

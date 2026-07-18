@@ -19,25 +19,7 @@ pub(crate) async fn reality_check_response(
             let history = crate::state::RcHistoryStore::new(&substrate.roots().runtime)
                 .load(chrono::Utc::now(), limit)
                 .map_err(HandlerError::substrate)?;
-            Ok(ResponsePayload::RealityCheck(RealityCheckResponse::History {
-                sessions: history
-                    .sessions
-                    .into_iter()
-                    .map(|entry| RealityCheckHistorySession {
-                        session_id: entry.session_id,
-                        started_at: entry.started_at,
-                        completed_at: entry.completed_at,
-                        items_total: entry.items_total,
-                        reviewed: entry.reviewed,
-                        confirmed: entry.confirmed,
-                        corrected: entry.corrected,
-                        forgotten: entry.forgotten,
-                        not_relevant: entry.not_relevant,
-                        deferred: entry.deferred,
-                        remaining: entry.remaining,
-                    })
-                    .collect(),
-            }))
+            Ok(ResponsePayload::RealityCheck(RealityCheckResponse::History { sessions: history.sessions }))
         }
         mutating_request => {
             let _guard = state.reality_check_lock.lock().await;

@@ -70,7 +70,11 @@ impl<'a> RcSessionHandler<'a> {
         self.store.save(&session)?;
         RcPendingCache {
             computed_at: now,
-            items: scored.items.iter().filter_map(|item| serde_json::to_value(item).ok()).collect(),
+            items: scored
+                .items
+                .iter()
+                .map(|item| serde_json::to_value(item).map_err(std::io::Error::other))
+                .collect::<Result<Vec<_>, _>>()?,
             ..RcPendingCache::default()
         }
         .save(&self.substrate.roots().runtime)?;

@@ -7,12 +7,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::import::candidate::Harness;
 use crate::import::project_map::ProjectYamlAction;
-use crate::import::report::{
-    BackEdgeEntry, CwdDispositionEntry, CwdProjectYamlEntry, HarnessCounters, ImportReport, ParseErrorEntry,
-};
+use crate::import::report::{CwdDispositionEntry, CwdProjectYamlEntry, HarnessCounters, ImportReport, ParseErrorEntry};
 use crate::import::ImportError;
 
-use super::model::{ImportPlan, WikiLinkBackEdge};
+use super::model::ImportPlan;
 
 impl ImportReport {
     /// Build an empty report seeded from a plan's discovery + parse-error data.
@@ -52,12 +50,7 @@ impl ImportReport {
             });
         }
 
-        let unresolved_back_edges = plan
-            .unresolved_back_edges
-            .iter()
-            .map(WikiLinkBackEdge::clone)
-            .map(|edge| BackEdgeEntry { source_key: edge.source_key, alias: edge.alias })
-            .collect();
+        let unresolved_back_edges = plan.unresolved_back_edges.clone();
 
         let parse_errors = plan
             .parse_errors

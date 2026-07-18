@@ -29,16 +29,9 @@ pub(super) struct FieldDiagnostic {
 
 /// Top-level diagnostic buckets defined by spec §6.10.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(dead_code)] // `LifecycleNotes` / `EvidenceNearDuplicates` are reserved
-                    // for future per-field diagnostics; orchestrator currently
-                    // populates them via direct `Vec` accumulation.
 pub(super) enum DiagnosticBucket {
     /// `_merge_diagnostics.preserved_sources[]`.
     PreservedSources,
-    /// `_merge_diagnostics.lifecycle_notes[]`.
-    LifecycleNotes,
-    /// `_merge_diagnostics.evidence_near_duplicates[]`.
-    EvidenceNearDuplicates,
 }
 
 /// Reasons a field merge can force a whole-document quarantine.

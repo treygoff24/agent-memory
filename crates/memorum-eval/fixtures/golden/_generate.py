@@ -14,11 +14,15 @@ Output lands beside this file under memories/ and queries.yaml.
 import os
 import hashlib
 import textwrap
+from typing import TypeAlias
+
+YamlValue: TypeAlias = str | int | float | bool | None | list["YamlValue"] | dict[str, "YamlValue"]
+Frontmatter: TypeAlias = dict[str, YamlValue]
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MEM_ROOT = os.path.join(HERE, "memories")
 
-# --- Project identities (deterministic proj_<hex>) ----------------------------
+# Project identities (deterministic proj_<hex>)
 def proj_id(name: str) -> str:
     return "proj_" + hashlib.sha256(name.encode()).hexdigest()[:12]
 
@@ -32,7 +36,7 @@ PROJECTS = {
     "quill": {"ns": "quill/docs", "cid": QUILL},
 }
 
-# --- MemoryId minting ----------------------------------------------------------
+# MemoryId minting
 # Format (spec §7.1): mem_YYYYMMDD_<16 hex>_<6 digits>
 _seq = {}
 def mem_id(date: str, seed: str) -> str:
@@ -42,7 +46,7 @@ def mem_id(date: str, seed: str) -> str:
     hexpart = hashlib.sha256(f"{date}:{seed}".encode()).hexdigest()[:16]
     return f"mem_{date}_{hexpart}_{n:06d}"
 
-# --- Author blocks -------------------------------------------------------------
+# Author blocks
 def author_user(handle="trey"):
     return {"kind": "user", "user_handle": handle}
 
@@ -52,7 +56,7 @@ def author_agent(harness="claude-code", session="sess_g0001"):
 def author_system(component="grounding"):
     return {"kind": "system", "component": component}
 
-# --- YAML emission (minimal, deterministic) ------------------------------------
+# YAML emission (minimal, deterministic)
 def yaml_scalar(v):
     if isinstance(v, bool):
         return "true" if v else "false"
@@ -99,7 +103,7 @@ def emit_block(key, val, indent=0):
     return lines
 
 
-def render(fm: dict, body: str) -> str:
+def render(fm: Frontmatter, body: str) -> str:
     lines = ["---"]
     for k, v in fm.items():
         lines.extend(emit_block(k, v))
@@ -107,7 +111,7 @@ def render(fm: dict, body: str) -> str:
     return "\n".join(lines) + "\n" + body.strip() + "\n"
 
 
-# --- Memory builder ------------------------------------------------------------
+# Memory builder
 CORPUS = []  # list of (relpath, fm dict, body)
 
 def memory(*, path, mid, mtype, scope, summary, body,
@@ -187,7 +191,7 @@ def tombstone(tid, applied_at, actor_kind, actor_ref, reason, prior_status, reas
 
 # ME NAMESPACE (~40)
 
-# --- Identity ---
+# Identity
 mid_role = mem_id("20250918", "role")
 memory(path="me/identity/role.md", mid=mid_role, mtype="person", scope="user",
     summary="User is Dana Okafor, a staff backend engineer and tech lead on the Atlas billing platform.",
@@ -202,7 +206,7 @@ memory(path="me/identity/principles.md", mid=mid_principles, mtype="claim", scop
     created="2025-09-18T09:05:00Z",
     body="Core working principles:\n- Ship small, reversible PRs. A PR over ~400 lines gets split.\n- No Friday deploys to payment paths. Ever.\n- Write the operational runbook before merging the feature, not after.\n- Prefer boring technology.")
 
-# --- Relationship facts (people, teams) ---
+# Relationship facts (people, teams)
 mid_fact_pat = mem_id("20251002", "fact-pat")
 memory(path="me/relationship/facts/priya.md", mid=mid_fact_pat, mtype="person", scope="user",
     summary="Priya Raman is the staff SRE who owns the payments observability stack and is the escalation contact for Atlas incidents.",
@@ -226,7 +230,7 @@ memory(path="me/relationship/facts/dana-wu.md", mid=mid_fact_dana2, mtype="perso
     author=author_user(), created="2025-11-14T11:00:00Z",
     body="Dana Wu leads the Quill docs frontend. NOT the same person as Dana Okafor (the user, Atlas lead). The shared first name causes routing mistakes in standup notes and PR assignments — always disambiguate by last name or team.")
 
-# --- Preferences ---
+# Preferences
 mid_pref_editor = mem_id("20250920", "pref-editor")
 memory(path="me/relationship/preferences/editor.md", mid=mid_pref_editor, mtype="claim", scope="user",
     summary="User prefers Neovim with a minimal config; dislikes IDE autoformat-on-save that reflows unrelated lines.",
@@ -259,7 +263,7 @@ memory(path="me/relationship/preferences/language.md", mid=mid_pref_lang_new, mt
     related=[mid_pref_lang_old],
     body="Current (2026) preference: Rust for new performance-sensitive backend services — the type system caught a class of money-rounding bugs in Atlas that Go did not. Go is still fine for simple glue/CLI services. This supersedes the 2025 Go-by-default stance in spirit but not as a formal supersession (it's a softening, not a contradiction).")
 
-# --- Corrections ---
+# Corrections
 mid_corr_tz = mem_id("20251010", "corr-tz")
 memory(path="me/relationship/corrections/timezone.md", mid=mid_corr_tz, mtype="correction", scope="user",
     summary="Correction: user is in US-Eastern, not US-Pacific as an earlier session assumed.",
@@ -275,7 +279,7 @@ memory(path="me/relationship/corrections/company-name.md", mid=mid_corr_name, mt
     created="2025-10-10T16:05:00Z",
     body="The legal company name is Northwind Systems, Inc. An agent once wrote 'Northwind Software' in a customer-facing doc. Always 'Northwind Systems'.")
 
-# --- Knowledge (personal topical) ---
+# Knowledge (personal topical)
 mid_know_oncall = mem_id("20251101", "know-oncall")
 memory(path="me/knowledge/oncall-rotation.md", mid=mid_know_oncall, mtype="procedure", scope="user",
     summary="User's personal notes on running the payments on-call rotation: handoff at 10am ET Monday, runbook link in the pinned channel topic.",
@@ -805,7 +809,7 @@ memory(path="agent/patterns/instant-revert.md", mid=ag_dup_b, mtype="pattern", s
 
 # ADDITIONAL HARD STRUCTURES (chains 5 & 6, extra near-dup, volume fillers)
 
-# --- Supersession chain #5 (me): user's job title changed (senior -> staff -> tech lead).
+# Supersession chain #5 (me): user's job title changed (senior -> staff -> tech lead).
 # Three-link chain; only the head (tech-lead) should recall for "what is Dana's role".
 role_v1 = mem_id("20240601", "me-role-v1")
 role_v2 = mem_id("20250115", "me-role-v2")
@@ -832,7 +836,7 @@ memory(path="me/relationship/facts/title.md", mid=role_v3, mtype="person", scope
     author=author_user(), created="2025-09-01T09:00:00Z",
     body="Dana Okafor is Staff Backend Engineer and tech lead of the Atlas billing platform — current role as of late 2025. Recall THIS for 'what is Dana's current role/title'. (Consistent with me/identity/role.md.)")
 
-# --- Supersession chain #6 (orbit): rate-limit policy revised twice.
+# Supersession chain #6 (orbit): rate-limit policy revised twice.
 rl_v1 = mem_id("20251122", "orbit-rl-v1")
 rl_v2 = mem_id("20251205", "orbit-rl-v2")
 memory(path="projects/orbit/decisions/2025-11-22-rate-limit-fixed.md", mid=rl_v1, mtype="decision", scope="project", project="orbit",
@@ -848,7 +852,7 @@ memory(path="projects/orbit/decisions/2025-12-05-rate-limit-tiered.md", mid=rl_v
     created="2025-12-05T10:00:00Z",
     body="DECISION (current): rate-limit auth endpoints per-account via a token-bucket (handles shared-NAT corporate clients), PLUS a strict per-IP limit on FAILED logins only (credential-stuffing defense). Recall THIS for Orbit rate-limiting.")
 
-# --- Extra near-duplicate pair #4 (atlas idempotency restated as a how-to note vs invariant).
+# Extra near-duplicate pair #4 (atlas idempotency restated as a how-to note vs invariant).
 atlas_dup_idem = mem_id("20251204", "atlas-dup-idem")
 memory(path="projects/atlas/playbooks/idempotency-keys.md", mid=atlas_dup_idem, mtype="playbook", scope="project", project="atlas",
     summary="How-to: pass an Idempotency-Key on every money-moving request; the gateway dedupes on it for 24 hours so retries never double-charge.",
@@ -856,7 +860,7 @@ memory(path="projects/atlas/playbooks/idempotency-keys.md", mid=atlas_dup_idem, 
     created="2025-12-04T10:00:00Z",
     body="HOW-TO: every money-moving request carries an Idempotency-Key header; the gateway caches the result keyed on it for 24h, so a retried request returns the original result instead of charging again. (Restates the idempotency invariant as an operational note — near-duplicate of invariants-idempotency.md.)")
 
-# --- Volume fillers: me episodic + project episodic + a few more agent notes.
+# Volume fillers: me episodic + project episodic + a few more agent notes.
 me_episodic = [
     ("2025-12-18", "Worked through the Atlas ledger backfill double-count in staging with Lena; agreed on the entry_id dedupe.",
      ["episodic", "atlas", "migration"]),

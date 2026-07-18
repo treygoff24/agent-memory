@@ -7,7 +7,10 @@ use memoryd::protocol::{ResponsePayload, ResponseResult};
 use serde::Serialize;
 use serde_json::json;
 
+pub use memoryd::protocol::{DaemonProcessStatus as DaemonStatus, IndexStats as IndexStatus};
+
 use crate::routes::daemon::daemon_call;
+pub use crate::routes::error::daemon_error;
 use crate::state::{backend_unavailable, Backend, WebState};
 
 #[derive(Clone, Debug, Serialize)]
@@ -23,19 +26,6 @@ pub struct StatusDashboardResponse {
     pub active_sessions: Vec<ActiveSession>,
     pub dreaming: DreamingStatus,
     pub recall: RecallStatus,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct DaemonStatus {
-    pub version: String,
-    pub pid: u32,
-    pub uptime_seconds: Option<u64>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct IndexStatus {
-    pub active_memories: u64,
-    pub last_reindex: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -260,22 +250,6 @@ impl StatusDashboardResponse {
 
 fn saturating_u32(value: u64) -> u32 {
     value.try_into().unwrap_or(u32::MAX)
-}
-
-pub fn daemon_error(
-    route: &'static str,
-    code: impl Into<String>,
-    message: impl Into<String>,
-) -> (StatusCode, Json<serde_json::Value>) {
-    (
-        StatusCode::BAD_GATEWAY,
-        Json(json!({
-            "error": "daemon_request_failed",
-            "route": route,
-            "code": code.into(),
-            "message": message.into()
-        })),
-    )
 }
 
 #[cfg(test)]

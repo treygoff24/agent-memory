@@ -9,8 +9,9 @@ use governance_fixtures::{
 };
 use memory_governance::{
     CandidateMemory, ContradictionTiebreaker, ExistingMemorySummary, FileSourceResolver, GovernanceEngine,
-    GovernanceProviders, GovernanceRefusalReason, GovernanceWriteDecision, GroundingVerifier, NextWriteAction,
-    PolicySet, Scope, SessionSpawnResolver, SimilaritySearch, Source, SourceKind, TiebreakOutcome, TombstoneIndex,
+    GovernanceProviders, GovernanceRefusalReason, GovernanceWriteDecision, GroundingVerifier, NeverResolveWebCapture,
+    NextWriteAction, PolicySet, Scope, SessionSpawnResolver, SimilaritySearch, Source, SourceKind, TiebreakOutcome,
+    TombstoneIndex,
 };
 
 #[test]
@@ -253,7 +254,11 @@ fn engine_with_tombstones(
 ) -> GovernanceEngine<FakeSimilaritySearch, FakeTiebreaker, FakeSessionSpawnResolver> {
     GovernanceEngine::new(
         PolicySet::builtin(),
-        GroundingVerifier::new(FileSourceResolver, FakeSessionSpawnResolver),
+        GroundingVerifier::new_with_web_capture_resolver(
+            FileSourceResolver,
+            FakeSessionSpawnResolver,
+            NeverResolveWebCapture,
+        ),
         tombstones,
         GovernanceProviders::new(search, tiebreaker),
     )

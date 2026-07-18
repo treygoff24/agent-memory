@@ -564,10 +564,8 @@ Promote to prod.\n";
 
     #[test]
     fn malformed_frontmatter_is_recovered_via_lenient_fallback_not_dropped() {
-        // The old behavior dropped this file with a per-file Parse error; the
-        // lenient line-scan now salvages whatever flat `key: value` lines exist
-        // (here none) but still produces a candidate with the body intact rather
-        // than losing the memory.
+        // Lenient recovery must preserve the body even when no flat
+        // `key: value` lines can be salvaged.
         let tmp = tempfile::tempdir().expect("tmp");
         write_fixture(
             tmp.path(),

@@ -2,9 +2,8 @@
 //!
 //! Tracks which reality-check pending-attention items and dream-attention
 //! questions have already been surfaced, so the same item is not re-emitted
-//! within its cool-down window. This state was previously held in process-wide
-//! `static Mutex` globals; it now lives on `HandlerState` (one per daemon) so
-//! that two daemons can run in the same process without cross-test state bleed.
+//! within its cool-down window. The state lives on each daemon's `HandlerState`
+//! so daemons in the same process cannot bleed state into one another.
 //!
 //! Both fields are `Arc<Mutex<_>>` so a clone can be moved into the
 //! `spawn_blocking` closure that runs the (synchronous, disk-reading) dream

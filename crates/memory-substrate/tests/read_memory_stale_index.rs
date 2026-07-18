@@ -23,8 +23,7 @@ async fn read_memory_falls_back_to_disk_walk_when_index_path_is_stale() {
     let new_path = roots.repo.join("agent/patterns/relocated.md");
     std::fs::rename(&old_path, &new_path).expect("relocate canonical file");
 
-    // Pre-fix this returned ReadError::Io(NotFound) from the stale index path;
-    // now it falls through to the disk-walk and finds the id at its new path.
+    // A stale indexed path must fall through to the disk walk.
     let memory = substrate.read_memory(&id).await.expect("stale index still resolves via disk-walk");
     assert_eq!(memory.frontmatter.id, id);
 }
@@ -43,8 +42,7 @@ async fn read_memory_rejects_index_hit_resolving_to_a_different_id() {
     let markdown = memory_substrate::frontmatter::serialize_document(&other).expect("serialize other id");
     std::fs::write(&resolved_path, markdown).expect("repoint file to a different id");
 
-    // Pre-fix this returned the OTHER memory (silent wrong-id read). Now the
-    // mismatch falls through to the disk-walk, which finds no `requested` id.
+    // An id mismatch must fall through rather than return the wrong memory.
     let result = substrate.read_memory(&requested).await;
     assert!(
         matches!(result, Err(ReadError::NotFound(_))),

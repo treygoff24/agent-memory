@@ -6,49 +6,49 @@ export interface ApiErrorBody {
     action?: string;
 }
 
-export interface DaemonStatus {
+interface DaemonStatus {
     version: string;
     pid: number;
     uptime_seconds: number | null;
 }
 
-export interface IndexStatus {
+interface IndexStatus {
     active_memories: number;
     last_reindex: string | null;
 }
 
-export interface SyncStatus {
+interface SyncStatus {
     ahead: number;
     behind: number;
     remote: string;
     last_push: string | null;
 }
 
-export interface ReviewStatus {
+interface ReviewStatus {
     candidate: number;
     quarantined: number;
     dream_low_confidence: number;
 }
 
-export interface ActiveSession {
+interface ActiveSession {
     harness: string;
     session_id: string;
 }
 
-export interface DreamRunSummary {
+interface DreamRunSummary {
     at: string | null;
     promoted: number | null;
     queued: number | null;
     dropped: number | null;
 }
 
-export interface DreamingStatus {
+interface DreamingStatus {
     status: string;
     next_run: string | null;
     last_run: DreamRunSummary;
 }
 
-export interface RecallStatus {
+interface RecallStatus {
     startup_total: number;
     delta_total: number;
     peer_update_snapshot_count: number;
@@ -76,7 +76,7 @@ export interface EntityNode {
     memory_count: number;
 }
 
-export interface EntityEdge {
+interface EntityEdge {
     source: string;
     target: string;
     kind: string;
@@ -90,7 +90,7 @@ export interface EntityGraphResponse {
     edges: EntityEdge[];
 }
 
-export interface EntityMemorySummary {
+interface EntityMemorySummary {
     id: string;
     namespace: string;
     status: string;
@@ -109,25 +109,7 @@ export interface EntityDetailResponse {
     recall_history: Array<{ at: string; count: number }>;
 }
 
-export interface DashboardRoiResponse {
-    window_days: number;
-    promotion_rate: number;
-    promotion_precision: number;
-    refusal_breakdown: Record<string, number>;
-    dreaming: {
-        candidates_generated: number;
-        promoted_silent: number;
-        entered_review_queue: number;
-        dropped: number;
-        review_queue_approval_rate: number;
-    };
-    reality_check_adherence: {
-        weeks_completed: number;
-        weeks_skipped: number;
-    };
-}
-
-export interface RealityCheckComponentScores {
+interface RealityCheckComponentScores {
     days_since_observed_norm: number;
     recall_frequency_norm: number;
     cross_source_corroboration: number;
@@ -157,22 +139,6 @@ export interface RealityCheckStatusResponse {
     last_completed_at?: string | null;
 }
 
-export interface RealityCheckHistoryResponse {
-    sessions: Array<{
-        session_id: string;
-        started_at: string;
-        completed_at: string;
-        items_total: number;
-        reviewed: number;
-        confirmed: number;
-        corrected: number;
-        forgotten: number;
-        not_relevant: number;
-        deferred: number;
-        remaining: number;
-    }>;
-}
-
 export interface RealityCheckRespondRequest {
     session_id: string;
     memory_id: string;
@@ -180,7 +146,7 @@ export interface RealityCheckRespondRequest {
     correction?: string;
 }
 
-export type RealityCheckCompletion =
+type RealityCheckCompletion =
     | { progress: { remaining: number; deferred: number } }
     | { complete: { reviewed: number; deferred: number; completed_at: string } };
 
@@ -220,127 +186,6 @@ export interface DashboardSearchResponse {
     guidance: string;
 }
 
-export interface ProvenanceEvent {
-    timestamp: string;
-    kind: string;
-    summary: string;
-    evidence: string;
-    device: string;
-}
-
-export interface PolicyDecision {
-    policy_applied: string;
-    policy_source: string;
-    confidence_floor_pass: string;
-    grounding_satisfied: string;
-    contradiction_result: string;
-    tombstone_enforced: string;
-    sensitivity_gate_result: string;
-}
-
-export interface PrivacyScan {
-    labels_detected: string[];
-    storage_action: string;
-}
-
-export type SupersessionDirection = 'supersedes' | 'superseded_by';
-
-export interface SupersessionHistoryEntry {
-    direction: SupersessionDirection;
-    memory_id: string;
-    at: string | null;
-    title: string;
-}
-
-export interface SyncStateDetail {
-    devices: string[];
-    merge_status: string;
-    claim_lock_status: string | null;
-}
-
-export interface AuditMemoryResponse {
-    memory_id: string;
-    title: string;
-    body: string;
-    status: string;
-    namespace: string;
-    confidence: number;
-    confidence_reason?: string | null;
-    recall_count_total: number;
-    recall_count_30d: number;
-    last_recalled?: string | null;
-    provenance_chain: ProvenanceEvent[];
-    policy_decisions: PolicyDecision[];
-    privacy_scan: PrivacyScan;
-    supersession_history: SupersessionHistoryEntry[];
-    sync_state: SyncStateDetail;
-}
-
-export interface ProvenanceWalkResponse {
-    memory_id: string;
-    direction: string;
-    depth: number;
-    nodes: Array<{ id: string; kind: string; label: string }>;
-    edges: Array<{ source: string; target: string; kind: string }>;
-}
-
-export type SafeContent = { kind: 'plaintext'; value: string } | { kind: 'encrypted' };
-
-export interface RecallStats {
-    total: number;
-    last_30_days: number;
-    last_recalled_at: string | null;
-    /** Use-driven strength in [0, 1], rendered to 2 decimals (memory-dynamics-v0.1 §3). */
-    strength: string;
-}
-
-export interface SupersessionLink {
-    id: string;
-    timestamp: string | null;
-    title: SafeContent;
-}
-
-export interface WebSourceEvidence {
-    kind: string;
-    artifact_id: string;
-    excerpt_id: string;
-    available: boolean;
-    original_url?: string | null;
-    final_url?: string | null;
-    captured_at?: string | null;
-    quote?: string | null;
-    unavailable_reason?: string | null;
-}
-
-export interface TrustArtifact {
-    id: string;
-    namespace: string;
-    status: string;
-    sensitivity: string;
-    source: string;
-    source_evidence?: WebSourceEvidence;
-    title: SafeContent;
-    body: SafeContent;
-    current_confidence: string;
-    original_confidence: string;
-    confidence_reason: string | null;
-    trust_summary: string;
-    recall: RecallStats;
-    provenance_chain: ProvenanceEvent[];
-    policy_decisions: PolicyDecision[];
-    privacy_scan: PrivacyScan;
-    supersedes: SupersessionLink[];
-    superseded_by: SupersessionLink[];
-    sync_state: SyncStateDetail;
-}
-
-export interface TemporalStateResponse {
-    memory_id: string;
-    at?: string | null;
-    viewing_historical_state: boolean;
-    artifact: TrustArtifact;
-}
-
 export interface ReviewQueueItem {
     id: string;
     summary: string;
@@ -369,7 +214,7 @@ export interface ReviewActionResponse {
     action: string;
 }
 
-export interface GovernancePolicySummary {
+interface GovernancePolicySummary {
     scope: string;
     selected_policy: string;
     policy_source?: string;

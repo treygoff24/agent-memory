@@ -2,8 +2,8 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use memory_governance::{
-    FileSourceResolver, GovernanceDecision, GovernanceRefusalReason, GroundingContext, GroundingVerifier, NextAction,
-    SessionSpawnResolver, Source, SourceKind, SourceResolution, WebCaptureResolver,
+    FileSourceResolver, GovernanceDecision, GovernanceRefusalReason, GroundingContext, GroundingVerifier,
+    NeverResolveWebCapture, NextAction, SessionSpawnResolver, Source, SourceKind, SourceResolution, WebCaptureResolver,
 };
 
 #[test]
@@ -141,7 +141,11 @@ fn context_with_user_source(source: Source) -> GroundingContext<'static> {
 fn verifier_with_known_subagents<const N: usize>(
     known_spawn_ids: [&'static str; N],
 ) -> GroundingVerifier<FakeSessionSpawnResolver> {
-    GroundingVerifier::new(FileSourceResolver, FakeSessionSpawnResolver::new(known_spawn_ids))
+    GroundingVerifier::new_with_web_capture_resolver(
+        FileSourceResolver,
+        FakeSessionSpawnResolver::new(known_spawn_ids),
+        NeverResolveWebCapture,
+    )
 }
 
 fn fixture_path(file_name: &str) -> PathBuf {

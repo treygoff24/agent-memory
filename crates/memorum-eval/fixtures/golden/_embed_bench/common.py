@@ -46,7 +46,7 @@ def is_abstain(case):
     return "abstain" in case["id"]
 
 
-# ---- metrics ----
+# Metrics
 
 def ndcg_at_k(ranked_ids, gains, k=10):
     """ranked_ids: list of doc ids best-first. gains: {id: gain}."""

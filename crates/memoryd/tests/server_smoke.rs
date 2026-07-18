@@ -104,7 +104,6 @@ async fn server_smoke_returns_error_for_malformed_json() {
     let stream = connect_with_retry(&socket_path).await;
     let mut stream = BufReader::new(stream);
 
-    // Send a line that is not valid JSON.
     stream.get_mut().write_all(b"not valid json at all\n").await.expect("malformed request writes");
 
     let mut line = String::new();
@@ -182,7 +181,6 @@ async fn server_smoke_refuses_oversized_lines_without_killing_server() {
     let socket_path = unique_socket_path("oversized");
     let server = tokio::spawn(serve(socket_path.clone()));
 
-    // Send oversized frame and read the error back on the same connection.
     let stream = connect_with_retry(&socket_path).await;
     let mut stream = BufReader::new(stream);
 

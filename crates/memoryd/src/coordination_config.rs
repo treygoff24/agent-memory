@@ -19,6 +19,6 @@ pub fn load_coordination_config(repo: &Path) -> Result<CoordinationConfig, Strin
     let root: CoordinationConfigRoot =
         serde_yaml::from_str(&text).map_err(|error| format!("parse {}: {error}", path.display()))?;
     let config = root.coordination.unwrap_or_default();
-    config.validate()?;
+    config.validate_typed().map_err(|error| error.to_string())?;
     Ok(config)
 }

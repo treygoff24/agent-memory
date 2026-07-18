@@ -571,10 +571,8 @@ impl Drop for TransientImportDaemon {
 
 fn install_launchd(request: DaemonStepRequest<'_>) -> Result<String, String> {
     let script = std::env::current_dir().map_err(|error| error.to_string())?.join("scripts/install-launchd.sh");
-    // Omit `--daemon` so the script installs both the daemon agent *and* the
-    // dream-scheduler agent (the script's default when neither `--daemon` nor
-    // `--dream-scheduler` is passed). Previously, `--daemon` was passed here,
-    // which installed only the persistent daemon and left the dream agent absent.
+    // Omitting both selector flags installs the daemon and dream scheduler;
+    // `--daemon` alone would silently omit the scheduler.
     let mut cmd = Command::new("bash");
     cmd.arg(&script).arg("--repo").arg(request.repo).arg("--runtime").arg(request.runtime);
 
@@ -1608,7 +1606,6 @@ mod tests {
     async fn launchd_ensure_daemon_step_threads_claude_config_dir_from_env() {
         let fixture = SetupFixture::new("launchd-ccd-env");
 
-        // Create a real directory so `canonicalize` succeeds.
         let ccd = fixture._temp.path().join("claude-config-from-env");
         std::fs::create_dir_all(&ccd).expect("ccd dir");
         let canonical_ccd = std::fs::canonicalize(&ccd).expect("canonicalize ccd");
@@ -1620,9 +1617,7 @@ mod tests {
         let decisions = crate::setup::collect_setup_decisions(&mut io, &detection).expect("decisions");
         let plan = SetupPlan { detection, decisions };
 
-        // Run only the daemon step (not full run_all) to isolate the assertion.
         let mut runtime = ScriptedRuntime::default();
-        // Set the env var before calling ensure_daemon_step.
         std::env::set_var("CLAUDE_CONFIG_DIR", &ccd);
         let _completion = ensure_daemon_step(&fixture.engine(), &plan, &mut runtime).await;
         std::env::remove_var("CLAUDE_CONFIG_DIR");

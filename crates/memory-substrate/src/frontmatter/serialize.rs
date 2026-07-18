@@ -16,7 +16,7 @@ pub fn serialize_document(memory: &Memory) -> Result<String, ValidationError> {
 
 /// Serialize frontmatter with canonical key order.
 ///
-/// `Frontmatter::extras` is now `#[serde(flatten)]`, so `serde_json::to_value`
+/// `Frontmatter::extras` uses `#[serde(flatten)]`, so `serde_json::to_value`
 /// merges unknown fields into the same root object. We re-split on the way
 /// out: known keys are emitted in spec §6.2 canonical order, then extras
 /// follow in deterministic (`BTreeMap`) order. Unknown fields survive a full
@@ -84,7 +84,7 @@ fn scalar_to_yaml(value: &Value) -> String {
         Value::Bool(value) => value.to_string(),
         Value::Number(value) => value.to_string(),
         Value::String(value) if plain_yaml_string(value) => value.clone(),
-        Value::String(value) => serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_string()),
+        Value::String(value) => serde_json::to_string(value).expect("JSON string serializes"), // expect-justified: string
         Value::Array(_) | Value::Object(_) => "null".to_string(),
     }
 }
@@ -183,9 +183,8 @@ mod tests {
 
     /// Strings the writer must wrap in double quotes because YAML would otherwise
     /// reparse them as a different shape (nested mapping / null key / sequence).
-    /// The repro case for the write-note bug is `"Useful: memoryd doctor ..."`,
-    /// which previously round-tripped as `summary: Useful: memoryd doctor ...`
-    /// and made the substrate refuse to start on reindex.
+    /// For example, leaving `"Useful: memoryd doctor ..."` unquoted makes YAML
+    /// parse it as a nested mapping and causes reindex to refuse startup.
     #[test]
     fn quotes_strings_that_look_like_yaml_indicators() {
         for value in [

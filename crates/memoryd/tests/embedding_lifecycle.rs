@@ -389,22 +389,17 @@ async fn f06_failed_load_backoff_rejects_then_retries() {
         loads_for_loader.fetch_add(1, Ordering::SeqCst);
         Err(EmbeddingError::Load("fixture load failure".to_string()))
     });
-    // Set a very short backoff so the test can exercise the retry boundary.
     slot.set_load_retry_backoff_for_tests(Duration::from_millis(50));
 
-    // First load: fails.
     assert!(slot.ensure_loaded().await.is_err(), "first load must fail");
     assert_eq!(loads.load(Ordering::SeqCst), 1, "loader invoked once");
     assert_eq!(slot.snapshot().state, "failed");
 
-    // Within backoff: ensure_loaded returns Err WITHOUT invoking the loader again.
     assert!(slot.ensure_loaded().await.is_err(), "ensure_loaded within backoff must return Err");
     assert_eq!(loads.load(Ordering::SeqCst), 1, "loader must not be invoked again within backoff");
 
-    // Wait for the short backoff to elapse.
     tokio::time::sleep(Duration::from_millis(60)).await;
 
-    // After backoff: ensure_loaded invokes the loader again (and fails again).
     assert!(slot.ensure_loaded().await.is_err(), "retry after backoff must still fail (fixture)");
     assert_eq!(loads.load(Ordering::SeqCst), 2, "loader invoked again after backoff elapsed");
 }
@@ -464,11 +459,9 @@ async fn f01_doctor_idle_finding_for_failed_slot_with_backlog() {
     slot.configure_loader(triple, idle(Some(Duration::from_secs(60))), || {
         Err(EmbeddingError::Load("fixture load failure".to_string()))
     });
-    // Fail the load so the slot is in Failed state.
     assert!(slot.ensure_loaded().await.is_err());
     assert_eq!(slot.snapshot().state, "failed");
 
-    // Write a memory to create pending embedding jobs (backlog > 0).
     write_project_memory(&fixture.substrate, "failed doctor keyword", "failed doctor keyword body").await;
 
     let doctor = request_doctor_with_state(&fixture.substrate, &state).await;
@@ -539,7 +532,6 @@ async fn f1_stale_load_completion_does_not_clobber_newer_active() {
         }
     });
 
-    // Start load A in the background. It enters Loading and blocks.
     let slot_for_load_a = slot.clone();
     let load_a_handle = tokio::spawn(async move { slot_for_load_a.ensure_loaded().await });
     eventually("load A enters loading", || slot.snapshot().state == "loading").await;
@@ -555,12 +547,10 @@ async fn f1_stale_load_completion_does_not_clobber_newer_active() {
         Ok(provider)
     });
 
-    // Load B succeeds and reaches Active.
     slot.ensure_loaded().await.expect("load B succeeds");
     assert_eq!(slot.snapshot().state, "active");
     assert_eq!(loads_b.load(Ordering::SeqCst), 1);
 
-    // Capture B's provider identity for later comparison.
     let guard_b = match slot.acquire() {
         EmbeddingProviderAcquire::Active(guard) => guard,
         _ => panic!("expected active provider from loader B"),
@@ -571,13 +561,10 @@ async fn f1_stale_load_completion_does_not_clobber_newer_active() {
     // Release loader A with a FAILING result. The stale completion must NOT
     // clobber B's Active state.
     release_a_tx.send(Err(EmbeddingError::Load("stale loader A failure".to_string()))).expect("release A");
-    // Wait for the stale completion task to finish.
     eventually("stale load A completion is processed", || load_a_handle.is_finished()).await;
 
-    // State must remain Active — the stale failure was discarded.
     assert_eq!(slot.snapshot().state, "active", "stale load A failure must not clobber B's Active state",);
 
-    // B's provider must still be the one served.
     let guard_after = match slot.acquire() {
         EmbeddingProviderAcquire::Active(guard) => guard,
         _ => panic!("expected active provider after stale A completion"),
@@ -600,9 +587,7 @@ async fn f2_stale_idle_timer_does_not_unload_new_provider_or_strand_armed_flag()
     let fixture = TestRepo::new("dev_f2stale").await;
     let triple = fixture.triple();
 
-    // Configure with a short idle window so a timer arms quickly.
     let slot = configured_slot(triple.clone(), idle(Some(Duration::from_millis(20))), Arc::new(AtomicUsize::new(0)));
-    // Load the provider. This arms an idle timer (generation 1).
     slot.ensure_loaded().await.expect("load");
     assert_eq!(slot.snapshot().state, "active");
 
@@ -633,9 +618,8 @@ async fn f2_stale_idle_timer_does_not_unload_new_provider_or_strand_armed_flag()
     assert_eq!(slot.snapshot().state, "active", "stale idle timer must not unload the freshly-reloaded provider early",);
     assert_eq!(slot.snapshot().unload_count, 0, "stale idle timer must not increment unload_count",);
 
-    // Now verify the fresh 200ms idle TIMER unloads on its own — deliberately
-    // no `check_idle_now()`, so a broken timer re-arm path cannot hide behind
-    // the manual fallback.
+    // Avoid `check_idle_now()` so a broken timer re-arm cannot hide behind the
+    // manual fallback.
     eventually("fresh idle timer unloads on schedule without manual check", || slot.snapshot().state == "dormant")
         .await;
     assert_eq!(slot.snapshot().unload_count, 1, "unload_count must be 1 after the fresh idle cycle unloads",);
@@ -686,26 +670,19 @@ async fn f3_configure_loader_clears_stale_global_model_load_failure() {
     let slot = state.embedding_provider_slot();
     let triple = fixture.triple();
 
-    // Step 1: mark_failed to set the global MODEL_LOAD_FAILURE.
     slot.mark_failed("stale failure to be cleared");
-    // Verify doctor sees the embedding_model_load_failed finding.
     let doctor_before = request_doctor_with_state(&fixture.substrate, &state).await;
     assert!(
         doctor_before.findings.iter().any(|f| f.code == "embedding_model_load_failed"),
         "mark_failed must produce an embedding_model_load_failed finding before configure_loader",
     );
 
-    // Step 2: configure_loader clears the global.
     let triple_for_loader = triple.clone();
     slot.configure_loader(triple, idle(Some(Duration::from_secs(60))), move || {
         let provider: Arc<dyn EmbeddingProvider> = Arc::new(FixtureProvider::new(triple_for_loader.clone()));
         Ok(provider)
     });
 
-    // Step 3: doctor must NOT emit embedding_model_load_failed for the healthy
-    // reconfigured (dormant) slot. The lifecycle state is "dormant" (not
-    // "failed"), so doctor reads model_load_failure() directly — which must
-    // be None after configure_loader cleared it.
     let doctor_after = request_doctor_with_state(&fixture.substrate, &state).await;
     assert!(
         !doctor_after.findings.iter().any(|f| f.code == "embedding_model_load_failed"),

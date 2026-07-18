@@ -567,8 +567,8 @@ fn build_write_meta(action: &PlannedWrite, related: &[String], supersedes: Optio
     // v1.2 combined payload (body + abstraction + cues) instead of body alone.
     // Source files are untrusted input: bound what rides the wire HERE (count +
     // byte caps, generous vs the daemon's exact §C caps which remain the real
-    // validator) so a pathological file cannot exhaust memory/transport before
-    // daemon-side validation rejects it (round-2 review finding).
+    // validator) so a pathological file cannot exhaust memory or transport
+    // before daemon-side validation rejects it.
     const IMPORT_ABSTRACTION_FORWARD_MAX_BYTES: usize = 1_024;
     const IMPORT_CUE_FORWARD_MAX: usize = 3;
     const IMPORT_CUE_FORWARD_MAX_BYTES: usize = 1_024;

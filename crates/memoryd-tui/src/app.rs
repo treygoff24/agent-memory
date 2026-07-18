@@ -17,9 +17,8 @@ use ratatui::{Frame, Terminal};
 use crate::client::DaemonClient;
 use crate::config::UiConfig;
 use crate::focus::correct_editor::CorrectEditorState;
-// Daemon DTOs live in the `protocol` leaf module so that `client` no longer
-// depends on `app`; re-exported here to keep `app`'s internal call sites
-// referring to the bare type names.
+// Re-export the leaf-module DTOs so app call sites keep their bare type names
+// without creating a client/app dependency cycle.
 use crate::inbox::{self, FilterCounts, InboxFilter, InboxItem};
 use crate::palette::commands::PaletteAction;
 use crate::palette::{PaletteKeyResult, PaletteState};

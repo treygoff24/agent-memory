@@ -4,7 +4,7 @@
 
 export type GovernanceDecision = 'redact_proposed' | 'review_required' | 'auto_approve' | 'consent_required';
 
-export interface PolicyTraceStep {
+interface PolicyTraceStep {
     rule: string;
     action: 'allow' | 'match' | 'deny' | 'quarantine';
     outcome: string;

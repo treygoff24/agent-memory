@@ -170,7 +170,7 @@ parse_owned_files() {
         gsub(/^[[:space:]]+|[[:space:]]+$/, "", entry)
         gsub(/`/, "", entry)
         if (length(entry) == 0) continue
-        # Now expand braces (commas inside braces protected as \001).
+        # Expand braces only after protecting their embedded commas as \001.
         expanded = expand_one(entry)
         m = split(expanded, sub_parts, "\002")
         for (j = 1; j <= m; j++) {

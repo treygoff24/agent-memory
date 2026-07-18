@@ -10,13 +10,13 @@ describe('App', () => {
     });
 
     it('renders daemon-shaped notification messages in the bell drawer and toast', async () => {
-        let heartbeatListener: ((event: MessageEvent<string>) => unknown) | undefined;
+        let heartbeatListener: ((event: MessageEvent<string>) => void) | undefined;
         class FakeEventSource {
-            onerror: ((event: globalThis.Event) => unknown) | null = null;
+            onerror: ((event: globalThis.Event) => void) | null = null;
             constructor(url: string) {
                 void url;
             }
-            addEventListener(type: string, listener: (event: MessageEvent<string>) => unknown) {
+            addEventListener(type: string, listener: (event: MessageEvent<string>) => void) {
                 if (type === 'heartbeat') heartbeatListener = listener;
             }
             close() {

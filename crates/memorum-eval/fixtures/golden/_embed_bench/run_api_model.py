@@ -58,7 +58,7 @@ def _post_json(url, payload, headers):
     raise RuntimeError("unreachable")
 
 
-# ---- per-vendor embed helpers; each returns list[list[float]] ----
+# Per-vendor embed helpers; each returns list[list[float]]
 
 def gemini_embed(texts, spec, is_query):
     key = os.environ["MEMORUM_GEMINI_API_KEY"]

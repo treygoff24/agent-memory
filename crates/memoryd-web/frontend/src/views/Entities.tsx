@@ -7,7 +7,7 @@ import { Inspector, type InspectorItem } from '../inspector';
 import { EntityTable } from './entitiesView';
 import { QueryErrorBanner, QueryLoadingBanner } from './QueryFeedback';
 
-export type { EntityKind, EntitySortKey, EntityViewItem } from './entitiesView/types';
+export type { EntitySortKey, EntityViewItem } from './entitiesView/types';
 
 export type EntityFilter = 'all' | EntityKind;
 

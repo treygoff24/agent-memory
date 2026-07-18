@@ -131,10 +131,8 @@ pub(crate) async fn search_response(
     )
     .await;
     let (total, mut hits, vector_recall_degraded) = match decision {
-        // Every lane timing out yields Fused([], marker) — that is NOT a
-        // servable result; route it through the FTS fallback ladder like
-        // FtsOnly (round-2 verify HIGH: this branch previously returned empty
-        // and never called FTS at all).
+        // Every lane timing out yields Fused([], marker), which must use the
+        // same FTS fallback as FtsOnly.
         Ok(crate::recall::hybrid::HybridRecallDecision::Fused { candidates, degraded: Some(marker) })
             if candidates.is_empty() =>
         {
@@ -220,11 +218,8 @@ fn load_vector_recall_config(substrate: &Substrate) -> crate::recall::VectorReca
         })
 }
 
-/// The degraded-search ladder always gets a real chance at FTS: the fallback
-/// budget is floored (round-2 verify HIGH — after an outer timeout the naive
-/// residual is ~0, and a zero-duration tokio timeout elapses before the
-/// spawn_blocking FTS can answer, silently regressing pre-W4 behavior of
-/// serving FTS hits on degradation).
+/// Floor the degraded-search budget so an exhausted outer timeout cannot give
+/// the blocking FTS fallback a zero-duration deadline.
 const MIN_FTS_FALLBACK_MS: u64 = 250;
 
 #[expect(clippy::too_many_arguments, reason = "fallback threads the search envelope context explicitly")]

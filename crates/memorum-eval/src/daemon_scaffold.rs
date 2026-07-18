@@ -7,8 +7,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::harness_runner::HarnessRunnerError;
-
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DaemonScaffoldConfig;
 
@@ -64,23 +62,19 @@ impl DaemonScaffold {
     #[cfg(feature = "quality")]
     fn merge_vector_recall_keys(&self, entries: &[(&str, serde_yaml::Value)]) {
         let path = self.tree_dir.path().join("config.yaml");
-        let text = fs::read_to_string(&path).unwrap_or_default();
-        let mut value: serde_yaml::Value =
-            serde_yaml::from_str(&text).unwrap_or_else(|_| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
-        if let Some(mapping) = value.as_mapping_mut() {
-            let recall = mapping
-                .entry(serde_yaml::Value::String("recall".to_owned()))
-                .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
-            if let Some(recall_map) = recall.as_mapping_mut() {
-                let vector_recall = recall_map
-                    .entry(serde_yaml::Value::String("vector_recall".to_owned()))
-                    .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
-                if let Some(vector_recall_map) = vector_recall.as_mapping_mut() {
-                    for (key, entry) in entries {
-                        vector_recall_map.insert(serde_yaml::Value::String((*key).to_owned()), entry.clone());
-                    }
-                }
-            }
+        let text = fs::read_to_string(&path).expect("read benchmark config");
+        let mut value: serde_yaml::Value = serde_yaml::from_str(&text).expect("parse benchmark config");
+        let mapping = value.as_mapping_mut().expect("benchmark config is a mapping");
+        let recall = mapping
+            .entry(serde_yaml::Value::String("recall".to_owned()))
+            .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+        let recall_map = recall.as_mapping_mut().expect("benchmark recall config is a mapping");
+        let vector_recall = recall_map
+            .entry(serde_yaml::Value::String("vector_recall".to_owned()))
+            .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+        let vector_recall_map = vector_recall.as_mapping_mut().expect("benchmark vector recall config is a mapping");
+        for (key, entry) in entries {
+            vector_recall_map.insert(serde_yaml::Value::String((*key).to_owned()), entry.clone());
         }
         let mut yaml = serde_yaml::to_string(&value).expect("serialize benchmark fusion config");
         if let Some(stripped) = yaml.strip_prefix("---\n") {
@@ -271,9 +265,8 @@ impl Drop for TempTree {
 ///
 /// The parent dir is ALSO per-scaffold (`<prefix>-<pid>-<seq>`), never shared:
 /// with a shared parent, one scaffold's Drop (`remove_file` + `remove_dir`)
-/// can race a sibling daemon inside its prepare→bind window and flake its
-/// readiness poll (round-3 G2). A unique parent makes Drop's cleanup safe by
-/// construction.
+/// can race a sibling daemon inside its prepare→bind window. A unique parent
+/// makes Drop's cleanup safe by construction.
 fn short_socket_path(prefix: &str) -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH).expect("system clock before unix epoch").as_nanos();
@@ -406,11 +399,7 @@ fn wait_for_socket(socket_path: &Path) {
         .unwrap_or_else(|error| panic!("{error}"));
 }
 
-fn wait_for_socket_for(
-    socket_path: &Path,
-    timeout: Duration,
-    poll_interval: Duration,
-) -> Result<(), HarnessRunnerError> {
+fn wait_for_socket_for(socket_path: &Path, timeout: Duration, poll_interval: Duration) -> Result<(), String> {
     let deadline = std::time::Instant::now() + timeout;
     let mut last_error = None;
     while std::time::Instant::now() < deadline {
@@ -420,12 +409,12 @@ fn wait_for_socket_for(
         }
         std::thread::sleep(poll_interval);
     }
-    Err(HarnessRunnerError::SocketNotReady(format!(
+    Err(format!(
         "memoryd socket did not accept connections within {:?}: {}{}",
         timeout,
         socket_path.display(),
         last_error.map(|error| format!(" ({error})")).unwrap_or_default()
-    )))
+    ))
 }
 
 fn new_ulid_like_id() -> String {
@@ -483,9 +472,8 @@ mod tests {
 
     #[test]
     fn concurrent_scaffold_socket_parents_are_distinct() {
-        // Shared socket parents let one scaffold's Drop remove_dir race a
-        // sibling daemon's prepare→bind window (round-3 G2). Pin the
-        // per-scaffold-parent contract.
+        // Shared socket parents let one scaffold's Drop race a sibling daemon's
+        // prepare-to-bind window.
         let a = super::short_socket_path("parent-distinct");
         let b = super::short_socket_path("parent-distinct");
         assert_ne!(a.parent(), b.parent(), "each scaffold must own its socket parent dir");
@@ -534,7 +522,7 @@ mod tests {
     #[cfg(feature = "quality")]
     #[test]
     fn set_four_lane_fusion_merges_single_recall_key() {
-        let scaffold = crate::block_on(DaemonScaffold::fresh());
+        let scaffold = crate::support::block_on(DaemonScaffold::fresh());
         scaffold.set_four_lane_fusion(true);
         let content = fs::read_to_string(scaffold.tree_dir().join("config.yaml")).expect("read config");
         // top-level `recall` must appear exactly once (no duplicate-key last-wins)

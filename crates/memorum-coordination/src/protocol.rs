@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::ProjectBinding;
+use crate::session::ProjectBinding;
 
 /// Sent by a Tier 1 harness session to register or refresh Level 3 presence.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

@@ -6,7 +6,7 @@ use std::time::Duration;
 use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::watch;
 
-use crate::loader::parse_theme;
+use crate::theme::parse_theme;
 use crate::Theme;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(100);

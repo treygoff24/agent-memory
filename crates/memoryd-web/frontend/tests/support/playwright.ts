@@ -1,6 +1,6 @@
 import { expect, test as base, type Page } from '@playwright/test';
 
-import { payloadForApiRequest, type ApiScenario } from '../msw/payloads';
+import { payloadForApiRequest, type ApiRequestBody, type ApiScenario } from '../msw/payloads';
 
 async function installApiMocks(page: Page, scenario: ApiScenario) {
     await page.route('**/api/**', async (route) => {
@@ -10,10 +10,10 @@ async function installApiMocks(page: Page, scenario: ApiScenario) {
             await route.continue();
             return;
         }
-        let body: unknown;
+        let body: ApiRequestBody | undefined;
         if (request.method() !== 'GET') {
             try {
-                body = request.postDataJSON();
+                body = request.postDataJSON() as ApiRequestBody;
             } catch {
                 body = undefined;
             }

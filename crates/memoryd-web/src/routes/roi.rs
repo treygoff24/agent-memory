@@ -4,6 +4,7 @@ use axum::extract::{Query, State};
 use axum::response::IntoResponse;
 use axum::Json;
 use memoryd::protocol::RequestPayload;
+pub use memoryd::protocol::{DreamingRoiSummary as DreamingRoi, RealityCheckAdherenceSummary as RealityCheckAdherence};
 use serde::{Deserialize, Serialize};
 
 use crate::routes::daemon::daemon_call;
@@ -22,21 +23,6 @@ pub struct RoiResponse {
     pub refusal_breakdown: BTreeMap<String, u32>,
     pub dreaming: DreamingRoi,
     pub reality_check_adherence: RealityCheckAdherence,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct DreamingRoi {
-    pub candidates_generated: u32,
-    pub promoted_silent: u32,
-    pub entered_review_queue: u32,
-    pub dropped: u32,
-    pub review_queue_approval_rate: f64,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct RealityCheckAdherence {
-    pub weeks_completed: u32,
-    pub weeks_skipped: u32,
 }
 
 #[cfg(feature = "dev-fixtures")]
@@ -72,17 +58,8 @@ impl From<memoryd::protocol::DashboardRoiResponse> for RoiResponse {
             promotion_rate: value.promotion_rate,
             promotion_precision: value.promotion_precision,
             refusal_breakdown: value.refusal_breakdown,
-            dreaming: DreamingRoi {
-                candidates_generated: value.dreaming.candidates_generated,
-                promoted_silent: value.dreaming.promoted_silent,
-                entered_review_queue: value.dreaming.entered_review_queue,
-                dropped: value.dreaming.dropped,
-                review_queue_approval_rate: value.dreaming.review_queue_approval_rate,
-            },
-            reality_check_adherence: RealityCheckAdherence {
-                weeks_completed: value.reality_check_adherence.weeks_completed,
-                weeks_skipped: value.reality_check_adherence.weeks_skipped,
-            },
+            dreaming: value.dreaming,
+            reality_check_adherence: value.reality_check_adherence,
         }
     }
 }

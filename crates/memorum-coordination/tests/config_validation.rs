@@ -7,7 +7,6 @@ fn validate_typed_accepts_default_config() {
     let config = CoordinationConfig::default();
 
     assert_eq!(config.validate_typed(), Ok(()));
-    assert_eq!(config.validate(), Ok(()));
 }
 
 #[test]
@@ -163,5 +162,4 @@ fn assert_config_error(config: CoordinationConfig, expected: ConfigValidationErr
 
     assert_eq!(typed_error, expected);
     assert_eq!(typed_error.to_string(), display);
-    assert_eq!(config.validate().expect_err("config should fail compatibility validation"), display);
 }

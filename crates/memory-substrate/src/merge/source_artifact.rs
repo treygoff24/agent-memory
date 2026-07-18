@@ -169,7 +169,7 @@ fn bounded_sha(text: &str) -> String {
 mod tests {
     use super::*;
 
-    // ---- Golden tests: byte-exact behavior locked before the merge-driver dedup refactor.
+    // Golden tests lock byte-exact behavior shared with the merge driver.
 
     #[test]
     fn clean_fastpath_ours_equals_theirs_returns_ours_bytes() {
@@ -207,8 +207,7 @@ mod tests {
 
     #[test]
     fn shared_trailing_newline_appends_when_missing_and_noop_when_present() {
-        // source_artifact now routes through the shared ensure_trailing_newline;
-        // lock the byte behavior it relies on (was the local with_trailing_newline).
+        // Lock the shared newline helper's byte contract for source artifacts.
         assert_eq!(ensure_trailing_newline("no-nl"), "no-nl\n");
         assert_eq!(ensure_trailing_newline("has-nl\n"), "has-nl\n");
         assert_eq!(ensure_trailing_newline(""), "\n");

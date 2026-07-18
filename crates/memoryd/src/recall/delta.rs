@@ -133,10 +133,8 @@ async fn collect_delta_items(
     vector_recall: Option<&VectorRecallContext>,
 ) -> Result<(Vec<DeltaRecallItem>, Option<String>), RecallError> {
     match collect_hybrid_recall(substrate, message, vector_recall).await {
-        // A fully-degraded fusion (every lane expired) is not a servable
-        // result — mirror the search ladder and serve FTS with the marker
-        // (W4 round-3 verify: delta previously returned an empty degraded
-        // block while search fell back).
+        // A fully degraded fusion is not servable; use the search ladder's FTS
+        // fallback and preserve the degradation marker.
         HybridRecallDecision::Fused { candidates, degraded: Some(marker) } if candidates.is_empty() => {
             let items = fts_delta_items(substrate, message).await?;
             Ok((items, Some(marker.to_owned())))

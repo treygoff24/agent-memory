@@ -165,7 +165,7 @@ pub(super) fn union_diagnostics(
     }
     let mut entries: Vec<MergeDiagnostic> = by_id.into_values().collect();
     entries.sort_by_key(|entry| entry.created_at);
-    serde_json::to_value(entries).ok()
+    Some(serde_json::to_value(entries).expect("merge diagnostics serialize")) // expect-justified: typed fields only
 }
 
 fn normalize_diagnostic_array(value: &Value) -> Vec<MergeDiagnostic> {

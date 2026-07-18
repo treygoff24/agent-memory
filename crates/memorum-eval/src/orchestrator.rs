@@ -7,9 +7,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use chrono::SecondsFormat;
 use clap::ValueEnum;
 
-use crate::block_on;
 use crate::daemon_scaffold::DaemonScaffold;
 use crate::harness_runner::{HarnessRunner, MockHarness, RealHarness, TestOutcome};
+use crate::support::{block_on, json_escape};
 
 const CLAUDE_KEY_ENV: &str = "MEMORUM_EVAL_CLAUDE_KEY";
 const CODEX_KEY_ENV: &str = "MEMORUM_EVAL_CODEX_KEY";
@@ -502,9 +502,9 @@ pub fn report_to_json(report: &EvalReport) -> String {
             "  \"tests\": [\n{}\n  ]\n",
             "}}\n"
         ),
-        crate::json_escape(&report.run_id),
-        crate::json_escape(&report.started_at),
-        crate::json_escape(&report.finished_at),
+        json_escape(&report.run_id),
+        json_escape(&report.started_at),
+        json_escape(&report.finished_at),
         report.harness_mode,
         report.total,
         report.passed,
@@ -934,7 +934,7 @@ fn test_result_to_json(test: &EvalTestResult) -> String {
             "    }}"
         ),
         test.number,
-        crate::json_escape(test.name),
+        json_escape(test.name),
         test.group,
         test.mode,
         test.deferred,
@@ -950,12 +950,12 @@ fn test_result_to_json(test: &EvalTestResult) -> String {
 }
 
 fn string_array_to_json(values: &[String]) -> String {
-    let body = values.iter().map(|value| format!("\"{}\"", crate::json_escape(value))).collect::<Vec<_>>().join(", ");
+    let body = values.iter().map(|value| format!("\"{}\"", json_escape(value))).collect::<Vec<_>>().join(", ");
     format!("[{body}]")
 }
 
 fn optional_string_to_json(value: Option<&str>) -> String {
-    value.map_or_else(|| "null".to_owned(), |value| format!("\"{}\"", crate::json_escape(value)))
+    value.map_or_else(|| "null".to_owned(), |value| format!("\"{}\"", json_escape(value)))
 }
 
 fn optional_skip_kind_to_json(value: Option<SkipKind>) -> String {
@@ -976,7 +976,7 @@ fn timestamp_string() -> String {
 }
 
 fn unix_millis() -> u128 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|duration| duration.as_millis()).unwrap_or_default()
+    SystemTime::now().duration_since(UNIX_EPOCH).expect("system clock is after Unix epoch").as_millis()
 }
 
 impl fmt::Display for OrchestratorError {

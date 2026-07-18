@@ -1,3 +1,5 @@
+import type { PolicyEditorPostRequest, RealityCheckRespondRequest, ReviewActionRequest } from '../../src/api';
+
 export const apiScenarioNames = [
     'happy',
     'empty',
@@ -36,10 +38,17 @@ export interface ApiMockResponse {
     body: string;
 }
 
+export type ApiRequestBody =
+    | Partial<RealityCheckRespondRequest>
+    | Partial<ReviewActionRequest>
+    | Partial<PolicyEditorPostRequest>;
+
+type JsonValue = string | number | boolean | null | { [key: string]: JsonValue } | JsonValue[];
+
 const now = '2026-05-08T14:00:00Z';
 const earlier = '2026-05-08T03:04:00Z';
 
-function jsonResponse(body: unknown, status = 200): ApiMockResponse {
+function jsonResponse(body: JsonValue, status = 200): ApiMockResponse {
     return { status, contentType: 'application/json', body: JSON.stringify(body) };
 }
 
@@ -569,7 +578,7 @@ export function payloadForApiRequest(
     method: string,
     requestUrl: string,
     scenario: ApiScenario = 'happy',
-    body?: unknown,
+    body?: ApiRequestBody,
 ): ApiMockResponse {
     const url = new globalThis.URL(requestUrl, 'http://127.0.0.1:5173');
     const route = `${method.toUpperCase()} ${url.pathname}`;
@@ -620,7 +629,7 @@ export function payloadForApiRequest(
         });
     }
     if (method === 'POST' && url.pathname === '/api/reality-check/respond') {
-        const payload = (body ?? {}) as { session_id?: string; memory_id?: string; action?: string };
+        const payload = (body ?? {}) as Partial<RealityCheckRespondRequest>;
         return jsonResponse({
             accepted: true,
             session_id: payload.session_id ?? 'rc_20260507_001',
@@ -658,7 +667,7 @@ export function payloadForApiRequest(
         });
     }
     if (method === 'POST' && url.pathname === '/api/review/action') {
-        const payload = (body ?? {}) as { id?: string; action?: string };
+        const payload = (body ?? {}) as Partial<ReviewActionRequest>;
         return jsonResponse({
             ok: true,
             id: payload.id ?? 'mem_unknown',
@@ -668,7 +677,7 @@ export function payloadForApiRequest(
     if (method === 'GET' && url.pathname === '/api/notifications/stream') return notificationsStream();
     if (method === 'GET' && url.pathname === '/api/policy-editor') return jsonResponse(policyPayload());
     if (method === 'POST' && url.pathname === '/api/policy-editor') {
-        const payload = (body ?? {}) as { file_name?: string };
+        const payload = (body ?? {}) as Partial<PolicyEditorPostRequest>;
         return jsonResponse({
             accepted: true,
             file_name: payload.file_name ?? 'project-standard.yaml',

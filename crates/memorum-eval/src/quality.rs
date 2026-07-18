@@ -1,4 +1,4 @@
-//! Quality-metrics runner for the golden recall corpus (Task 4.2).
+//! Quality-metrics runner for the golden recall corpus.
 //!
 //! This is the *measuring instrument* for the dynamics program. It loads the
 //! hand-curated golden corpus (`fixtures/golden/`) into a real scratch

@@ -15,6 +15,14 @@ export type RealityCheckRespondPayload = Omit<RealityCheckRespondRequest, 'actio
     action: RealityCheckActionName;
 };
 
+export interface RealityCheckScoreBreakdown {
+    recency: number;
+    recall_frequency: number;
+    corroboration: number;
+    confidence_decay: number;
+    sensitivity: number;
+}
+
 export interface RealityCheckMemory {
     id: string;
     namespace: string;
@@ -25,7 +33,7 @@ export interface RealityCheckMemory {
     written: string;
     last_verified_days: number;
     score: number;
-    component_scores: Record<string, number>;
+    component_scores: RealityCheckScoreBreakdown;
     encrypted?: boolean;
 }
 

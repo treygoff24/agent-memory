@@ -160,8 +160,8 @@ fn mcp_stdio_unknown_notifications_do_not_emit_responses() {
 // scheduler when run under nextest (see `.config/nextest.toml`, which reserves
 // the full thread budget for it). This is the only test in the file that runs an
 // in-process multi-thread tokio daemon AND a subprocess MCP bridge talking back
-// over a Unix socket; under full-suite parallel load — heavy now that the
-// embedding stack (candle/fastembed/Metal) makes each test binary ~100 MB — the
+// over a Unix socket; under full-suite parallel load, the embedding stack makes
+// each test binary ~100 MB and the
 // round-trip occasionally missed its completion deadline. The forwarding itself
 // is correct; the deadline is a "did it finish" bound, not a latency SLO.
 #[tokio::test(flavor = "multi_thread")]

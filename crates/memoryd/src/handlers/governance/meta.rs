@@ -1131,7 +1131,7 @@ mod tests {
         assert!(matches!(meta.source_kind, GovernanceSourceKindMeta::Import));
     }
 
-    // ── sanitize_namespace_alias chokepoint tests ──────────────────────────
+    // sanitize_namespace_alias chokepoint tests
 
     #[test]
     fn sanitize_namespace_alias_is_noop_for_clean_aliases() {

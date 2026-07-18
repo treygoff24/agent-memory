@@ -26,9 +26,8 @@ pub struct RankedRecallCandidate {
 impl RankedRecallCandidate {
     /// Candidate id, borrowed from the embedded [`RecallCandidate`].
     ///
-    /// `RankedRecallCandidate` previously carried its own `id: String` field that
-    /// duplicated `candidate.id`; this accessor reads the single owned copy
-    /// instead, removing one heap allocation per candidate on the ranking path.
+    /// The id stays owned only by `candidate` to avoid a duplicate allocation on
+    /// the ranking path.
     pub fn id(&self) -> &str {
         &self.candidate.id
     }

@@ -1,1 +1,1 @@
-export type { InboxFilterId, InboxItem, InboxKind, InboxLayout, InboxLayoutProps, InboxViewItem } from './types';
+export type { InboxFilterId, InboxItem, InboxKind, InboxLayout, InboxViewItem } from './types';

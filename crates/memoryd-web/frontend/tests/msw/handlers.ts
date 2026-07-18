@@ -1,6 +1,6 @@
 import { http, HttpResponse, type HttpHandler } from 'msw';
 
-import { apiScenarioNames, payloadForApiRequest, type ApiScenario } from './payloads';
+import { apiScenarioNames, payloadForApiRequest, type ApiRequestBody, type ApiScenario } from './payloads';
 
 const routes = [
     ['GET', '/api/status'],
@@ -23,9 +23,9 @@ const routes = [
     ['GET', '/api/sync-dashboard'],
 ] as const;
 
-async function requestBody(request: globalThis.Request) {
+async function requestBody(request: globalThis.Request): Promise<ApiRequestBody | undefined> {
     if (request.method === 'GET') return undefined;
-    return request.json().catch(() => undefined) as Promise<unknown>;
+    return request.json().catch(() => undefined) as Promise<ApiRequestBody | undefined>;
 }
 
 function handlerFor(method: string, path: string, scenario: ApiScenario): HttpHandler {

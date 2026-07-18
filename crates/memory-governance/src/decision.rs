@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{GovernanceError, GovernanceResult};
 
-/// Baseline policy marker used until Task 3 adds policy loading.
+/// Stable marker emitted by baseline governance decisions.
 pub const BASELINE_POLICY_APPLIED: &str = "stream_c_governance_v0_1";
 
 /// Governance outcome category.

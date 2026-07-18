@@ -16,6 +16,7 @@ use memoryd::trust_artifact::{
 pub mod audit;
 pub(crate) mod daemon;
 pub mod entity_graph;
+mod error;
 pub mod policy_editor;
 pub mod reality_check;
 pub mod recall_hits;

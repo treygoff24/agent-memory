@@ -139,9 +139,9 @@ impl SimulatorAgent {
         let budget_tokens = budget_tokens.map_or_else(|| "null".to_owned(), |budget| budget.to_string());
         let request = format!(
             r#"{{"startup":{{"cwd":"{}","session_id":"{}","harness":"{}","harness_version":null,"include_recent":true,"since_event_id":{},"budget_tokens":{budget_tokens}}}}}"#,
-            crate::json_escape(&self.cwd()),
-            crate::json_escape(&self.session_id()),
-            crate::json_escape(&self.harness()),
+            crate::support::json_escape(&self.cwd()),
+            crate::support::json_escape(&self.session_id()),
+            crate::support::json_escape(&self.harness()),
             optional_string_json(since_event_id.as_deref())
         );
         let response = self.request(request);
@@ -153,7 +153,7 @@ impl SimulatorAgent {
         let query = namespace.map_or_else(|| query.to_owned(), |ns| format!("{query} namespace:{ns}"));
         let response = self.request(format!(
             r#"{{"search":{{"query":"{}","limit":null,"include_body":true}}}}"#,
-            crate::json_escape(&query)
+            crate::support::json_escape(&query)
         ));
         self.observations.last_search_result_count = extract_usize_field(&response, "total");
         self.observations.last_search_json = Some(response);
@@ -166,7 +166,7 @@ impl SimulatorAgent {
     fn write_memory_with_meta_json(&mut self, body: &str, title: Option<&str>, meta_json: &str) {
         let response = self.request(format!(
             r#"{{"write_memory":{{"body":"{}","title":{},"tags":[],"meta":{}}}}}"#,
-            crate::json_escape(body),
+            crate::support::json_escape(body),
             optional_string_json(title),
             self.meta_json_with_session_cwd(meta_json)
         ));
@@ -177,9 +177,9 @@ impl SimulatorAgent {
     fn supersede(&mut self, request: SupersedeRequest<'_>) {
         let response = self.request(format!(
             r#"{{"supersede":{{"old_id":"{}","content":"{}","reason":"{}","meta":{}}}}}"#,
-            crate::json_escape(request.old_id),
-            crate::json_escape(request.new_body),
-            crate::json_escape(request.reason),
+            crate::support::json_escape(request.old_id),
+            crate::support::json_escape(request.new_body),
+            crate::support::json_escape(request.reason),
             self.meta_json_with_session_cwd(&request.meta.to_json(request.new_body))
         ));
         self.observations.last_supersede_outcome = extract_string_field(&response, "status");
@@ -189,8 +189,8 @@ impl SimulatorAgent {
     fn forget(&mut self, id: &str, reason: &str) {
         let response = self.request(format!(
             r#"{{"forget":{{"id":"{}","reason":"{}"}}}}"#,
-            crate::json_escape(id),
-            crate::json_escape(reason)
+            crate::support::json_escape(id),
+            crate::support::json_escape(reason)
         ));
         self.observations.last_forget_outcome = extract_string_field(&response, "status");
         self.observations.last_forget_json = Some(response);
@@ -198,14 +198,17 @@ impl SimulatorAgent {
 
     fn get(&mut self, id: &str) {
         self.observations.last_get_json =
-            Some(self.request(format!(r#"{{"get":{{"id":"{}","include_provenance":true}}}}"#, crate::json_escape(id))));
+            Some(self.request(format!(
+                r#"{{"get":{{"id":"{}","include_provenance":true}}}}"#,
+                crate::support::json_escape(id)
+            )));
     }
 
     fn reveal(&mut self, id: &str, reason: &str) {
         self.observations.last_reveal_json = Some(self.request(format!(
             r#"{{"reveal":{{"id":"{}","reason":"{}"}}}}"#,
-            crate::json_escape(id),
-            crate::json_escape(reason)
+            crate::support::json_escape(id),
+            crate::support::json_escape(reason)
         )));
     }
 
@@ -262,7 +265,7 @@ impl SimulatorAgent {
             return trimmed.to_owned();
         }
         let rest = trimmed.strip_prefix('{').expect("simulator meta_json is a JSON object");
-        let cwd = crate::json_escape(&self.cwd());
+        let cwd = crate::support::json_escape(&self.cwd());
         if rest.trim_start() == "}" {
             format!(r#"{{"cwd":"{cwd}"}}"#)
         } else {
@@ -293,7 +296,7 @@ impl GovernanceMeta {
         format!(
             r#"{{"namespace":"project","type":"project","confidence":{},"source_kind":"{}","source_ref":{},"explicit_user_context":true}}"#,
             self.confidence,
-            crate::json_escape(&self.source_kind),
+            crate::support::json_escape(&self.source_kind),
             optional_string_json(self.daemon_source_ref(grounding_body).as_deref())
         )
     }
@@ -349,7 +352,7 @@ fn extract_usize_field(json: &str, field: &str) -> Option<usize> {
 }
 
 fn optional_string_json(value: Option<&str>) -> String {
-    value.map_or_else(|| "null".to_owned(), |value| format!(r#""{}""#, crate::json_escape(value)))
+    value.map_or_else(|| "null".to_owned(), |value| format!(r#""{}""#, crate::support::json_escape(value)))
 }
 
 struct SupersedeRequest<'a> {

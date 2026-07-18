@@ -6,9 +6,9 @@ use std::sync::{Arc, Mutex};
 
 use chrono::{NaiveDate, Utc};
 use memory_privacy::{safe_plaintext_fragment, DeterministicPrivacyClassifier, SafeFragmentDecision};
-use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+use crate::dream::pass3::DreamQuestionRecord;
 use crate::recall::budget::truncate_utf8_bytes;
 use crate::recall::render::escape_xml_text;
 
@@ -37,12 +37,6 @@ struct CandidateQuestion {
     overlap: usize,
     date: NaiveDate,
     novelty_hash: [u8; 32],
-}
-
-#[derive(Debug, Deserialize)]
-struct QuestionRecord {
-    entities: Vec<String>,
-    question: String,
 }
 
 pub fn select_pending_attention_questions(
@@ -97,7 +91,7 @@ fn collect_candidates_from_file(
         if line.is_empty() {
             continue;
         }
-        let Ok(record) = serde_json::from_str::<QuestionRecord>(line) else {
+        let Ok(record) = serde_json::from_str::<DreamQuestionRecord>(line) else {
             increment(omitted_total, MALFORMED_RECORD);
             continue;
         };

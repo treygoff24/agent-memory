@@ -38,9 +38,10 @@ export const queryKeys = {
     sync: ['sync'] as const,
 };
 
-type QueryParamValue = string | number | boolean | undefined;
+type SearchParams = { q: string; limit: number };
+type QueryParams = RecallHitsParams | ReviewQueueParams | SearchParams;
 
-function withParams(path: string, params: Record<string, QueryParamValue>): string {
+function withParams(path: string, params: QueryParams): string {
     const search = new URLSearchParams();
     for (const [key, value] of Object.entries(params)) {
         if (value !== undefined) search.set(key, String(value));

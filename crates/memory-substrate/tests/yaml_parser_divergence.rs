@@ -1,19 +1,8 @@
-//! YAML parser round-trip byte-stability fixture (Task 1.5).
+//! YAML parser round-trip byte-stability fixture.
 //!
-//! Origin: before consolidating the workspace off `yaml_serde` onto
-//! `serde_yaml`, this corpus parsed a battery of edge-case frontmatter scalars
-//! through BOTH YAML libraries and asserted byte-identical `serde_json::Value`
-//! trees. `yaml_serde` is the actively-maintained YAML-org fork of dtolnay's
-//! `serde-yaml`, and the parity assertion passed across the entire corpus
-//! below, authorizing the swap. With `yaml_serde` now gone from the dependency
-//! graph, the surviving value of this corpus is the round-trip byte-stability
-//! test: parsing each document through the now-`serde_yaml`-backed parser and
-//! re-serializing through the hand-rolled canonical serializer must produce a
-//! fixed point (identical bytes on the second pass).
-//!
-//! The historical cross-library corpus is preserved verbatim in [`corpus`] so
-//! the exact set of edge cases the swap was validated against stays on the
-//! record.
+//! The corpus preserves the edge cases used to validate the `yaml_serde` to
+//! `serde_yaml` migration. Parsing through `serde_yaml` and the canonical
+//! serializer must reach a byte-identical fixed point on the second pass.
 
 /// Edge-case YAML frontmatter snippets validated for cross-library parity
 /// (`yaml_serde` vs `serde_yaml`) prior to consolidation. Each is a complete

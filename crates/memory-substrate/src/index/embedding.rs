@@ -2,7 +2,7 @@
 //! pending-job resolution, the active-triple reconcile sweep, and the
 //! dropped-triple / table-existence probes shared with the query facade.
 
-use rusqlite::{params, params_from_iter, types::Value, Connection};
+use rusqlite::{params, params_from_iter, types::Value, Connection, OptionalExtension};
 
 use crate::error::VectorError;
 use crate::model::{AuxRowKind, EmbeddingLaneEligibility, EmbeddingTriple, EmbeddingUpdate};
@@ -20,10 +20,16 @@ pub(super) fn validate_update_preconditions(conn: &Connection, update: &Embeddin
         conn.query_row("SELECT body_hash FROM memory_chunks WHERE chunk_id=?1", [update.chunk_id.as_str()], |row| {
             row.get(0)
         });
-    let actual_hash = actual_hash.map_err(|_| VectorError::StaleChunk {
-        expected: update.expected_chunk_hash.clone(),
-        found: crate::model::Sha256::new("missing"),
-    })?;
+    let actual_hash = match actual_hash {
+        Ok(actual_hash) => actual_hash,
+        Err(rusqlite::Error::QueryReturnedNoRows) => {
+            return Err(VectorError::StaleChunk {
+                expected: update.expected_chunk_hash.clone(),
+                found: crate::model::Sha256::new("missing"),
+            });
+        }
+        Err(error) => return Err(error.into()),
+    };
     if actual_hash != update.expected_chunk_hash.as_str() {
         return Err(VectorError::StaleChunk {
             expected: update.expected_chunk_hash.clone(),
@@ -250,15 +256,20 @@ fn reconcile_aux_vector_state(txn: &rusqlite::Transaction<'_>) -> rusqlite::Resu
                 .query_row("SELECT rowid FROM memory_abstractions WHERE memory_id=?1", [&target_id], |row| {
                     row.get::<_, i64>(0)
                 })
-                .ok(),
-            AuxRowKind::Cue => target_id.rsplit_once(':').and_then(|(memory_id, ordinal)| {
-                txn.query_row(
-                    "SELECT rowid FROM memory_cues WHERE memory_id=?1 AND ordinal=?2",
-                    params![memory_id, ordinal.parse::<i64>().ok()?],
-                    |row| row.get::<_, i64>(0),
-                )
-                .ok()
-            }),
+                .optional()?,
+            AuxRowKind::Cue => match target_id
+                .rsplit_once(':')
+                .and_then(|(memory_id, ordinal)| ordinal.parse::<i64>().ok().map(|ordinal| (memory_id, ordinal)))
+            {
+                Some((memory_id, ordinal)) => txn
+                    .query_row(
+                        "SELECT rowid FROM memory_cues WHERE memory_id=?1 AND ordinal=?2",
+                        params![memory_id, ordinal],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .optional()?,
+                None => None,
+            },
         };
         let table = crate::index::sqlite_vec::aux_vector_table_name(kind, &triple);
         let exists: i64 = txn.query_row(

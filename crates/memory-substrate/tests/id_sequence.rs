@@ -118,15 +118,10 @@ fn copied_device_duplicate_ids_are_repaired_to_repo_visible_free_ids() {
         memory_substrate::tree::validate_tree(temp.path(), memory_substrate::tree::TreeValidationMode::FullySynced)
             .expect("valid after repair");
 
-    // B-FT-1: exactly one duplicate was reminted.
     assert_eq!(repair_report.repaired, 1, "one ID was reminted");
-    // B-FT-1: the report struct is correct type.
     assert!(matches!(repair_report, RepairReport { repaired: 1, .. }));
-    // Tree now has two unique IDs.
     assert_eq!(tree_report.ids.len(), 2, "two unique IDs after repair");
-    // The survivor keeps the original duplicate ID.
     assert!(tree_report.ids.keys().any(|id| id.as_str() == duplicate), "survivor keeps original id");
-    // The loser has a freshly allocated ID in the test-device's shard.
     let new_shard = shard_for_device(device_id);
     assert!(tree_report.ids.keys().any(|id| id.as_str().contains(&new_shard)), "reminted id uses device shard");
 }
@@ -182,7 +177,6 @@ fn repair_atomicity_on_partial_failure() {
     // / related pointing at the old dup ID). Only the reminted file is staged.
     assert!(!report.touched_paths.is_empty(), "at least one file touched");
 
-    // Validate the tree is clean after repair (no duplicates, no missing refs).
     memory_substrate::tree::validate_tree(temp.path(), memory_substrate::tree::TreeValidationMode::FullySynced)
         .expect("clean tree after repair");
 }

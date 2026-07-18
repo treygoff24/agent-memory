@@ -105,7 +105,7 @@ pub trait WebCaptureResolver {
     fn resolve_web_capture(&self, source_ref: &str) -> SourceResolution;
 }
 
-/// Default resolver used by compatibility constructors: never resolves web captures.
+/// Resolver for contexts that intentionally do not support web captures.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NeverResolveWebCapture;
 
@@ -137,17 +137,6 @@ pub struct GroundingVerifier<S, W = NeverResolveWebCapture> {
     file_resolver: FileSourceResolver,
     session_spawn_resolver: S,
     web_capture_resolver: W,
-}
-
-impl<S> GroundingVerifier<S, NeverResolveWebCapture>
-where
-    S: SessionSpawnResolver,
-{
-    /// Create a grounding verifier.
-    #[must_use]
-    pub fn new(file_resolver: FileSourceResolver, session_spawn_resolver: S) -> Self {
-        Self { file_resolver, session_spawn_resolver, web_capture_resolver: NeverResolveWebCapture }
-    }
 }
 
 impl<S, W> GroundingVerifier<S, W>

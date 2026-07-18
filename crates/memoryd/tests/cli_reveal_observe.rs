@@ -1,4 +1,4 @@
-//! Task 4: the `reveal` client-side gate and `observe` validation, end to end.
+//! End-to-end coverage for the `reveal` client gate and `observe` validation.
 //!
 //! `reveal` without `--allow-reveal` must refuse (exit 77) before any socket
 //! connection — proven by pointing it at a socket path that does not exist and

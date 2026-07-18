@@ -20,19 +20,19 @@ export interface InspectorProps {
     onAction?: (action: InspectorAction, item: InspectorItem) => void;
 }
 
-const inboxReviewKeys: Record<string, InspectorAction> = {
-    a: 'approve',
-    r: 'reject',
-    e: 'edit',
-    f: 'forget',
-};
+const inboxReviewKeys = new Map<string, InspectorAction>([
+    ['a', 'approve'],
+    ['r', 'reject'],
+    ['e', 'edit'],
+    ['f', 'forget'],
+]);
 
 export function Inspector({ item, layout = 'wide', onAction }: InspectorProps) {
     useEffect(() => {
         if (!item || item.kind !== 'inbox-review' || !onAction) return undefined;
         const onKeyDown = (event: KeyboardEvent) => {
             if (isTextInputTarget(event.target) || isTextInputTarget(document.activeElement)) return;
-            const action = inboxReviewKeys[event.key.toLowerCase()];
+            const action = inboxReviewKeys.get(event.key.toLowerCase());
             if (!action) return;
             event.preventDefault();
             onAction(action, item);

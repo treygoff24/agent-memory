@@ -83,13 +83,13 @@ pub async fn verify_dream_candidate(
     // verification O(fragments + citations). Build it lazily — a candidate whose
     // citations are all file/memory refs never touches `substrate/`.
     let fragment_index = if citations.iter().any(|citation| references_substrate_fragment(citation.reference)) {
-        Some(build_substrate_fragment_index(substrate.roots().repo.as_path())?)
+        build_substrate_fragment_index(substrate.roots().repo.as_path())?
     } else {
-        None
+        BTreeMap::new()
     };
 
     for citation in citations {
-        verify_citation(substrate, &config, fragment_index.as_ref(), citation).await?;
+        verify_citation(substrate, &config, &fragment_index, citation).await?;
     }
 
     Ok(())
@@ -109,7 +109,7 @@ pub fn requires_rehydration(memory: &Memory) -> bool {
 async fn verify_citation(
     substrate: &Substrate,
     config: &RehydrationConfig,
-    fragment_index: Option<&BTreeMap<String, FragmentRecord>>,
+    fragment_index: &BTreeMap<String, FragmentRecord>,
     citation: GroundingCitation<'_>,
 ) -> Result<(), GroundingRehydrationError> {
     let reference = normalize_reference(citation.reference);
@@ -117,11 +117,7 @@ async fn verify_citation(
         return Err(GroundingRehydrationError::DreamProse(reference.to_string()));
     }
     if reference.starts_with("sub_") {
-        // `fragment_index` is always `Some` here: `verify_dream_candidate` builds
-        // it whenever any citation references a substrate fragment. The empty map
-        // fallback keeps this total without an unwrap if that invariant ever moves.
-        let empty = BTreeMap::new();
-        return verify_substrate_fragment(config, fragment_index.unwrap_or(&empty), reference, citation.quote);
+        return verify_substrate_fragment(config, fragment_index, reference, citation.quote);
     }
     if reference.starts_with("mem_") {
         return verify_memory_ref(substrate, config, reference, citation.quote).await;

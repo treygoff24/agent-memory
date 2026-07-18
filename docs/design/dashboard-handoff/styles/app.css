@@ -72,7 +72,7 @@ a:hover {
     border: 0;
 }
 
-/* ===== Shell ===== */
+/* Shell */
 .app {
     display: grid;
     grid-template-rows: 44px 1fr 28px;
@@ -380,7 +380,7 @@ a:hover {
     color: var(--fg-2);
 }
 
-/* ===== Inbox view ===== */
+/* Inbox view */
 .view-header {
     display: flex;
     align-items: center;
@@ -1662,9 +1662,7 @@ a:hover {
     max-width: 480px;
 }
 
-/* ============================================================
-   Recall ledger
-============================================================ */
+/* Recall ledger */
 .rl-strip {
     border-bottom: 1px solid var(--border-soft);
     padding: 12px 18px 8px;
@@ -1815,9 +1813,7 @@ a:hover {
     min-width: 0;
 }
 
-/* ============================================================
-   Dreams
-============================================================ */
+/* Dreams */
 .dream-status {
     font-family: var(--font-mono);
     font-size: 10.5px;
@@ -1934,9 +1930,7 @@ a:hover {
     color: var(--accent);
 }
 
-/* ============================================================
-   Peers
-============================================================ */
+/* Peers */
 .pr-table-head,
 .pr-row {
     display: grid;
@@ -1999,9 +1993,7 @@ a:hover {
     font-variant-numeric: tabular-nums;
 }
 
-/* ============================================================
-   Governance
-============================================================ */
+/* Governance */
 .gov-row {
     padding-left: 4px !important;
 }
@@ -2105,9 +2097,7 @@ a:hover {
     font-variant-numeric: tabular-nums;
 }
 
-/* ============================================================
-   Entities
-============================================================ */
+/* Entities */
 .ent-search {
     font-family: var(--font-mono);
     font-size: var(--text-xs);

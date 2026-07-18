@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::import::project_map::ProjectYamlAction;
 
+pub use crate::import::pipeline::WikiLinkBackEdge as BackEdgeEntry;
+
 /// Top-level import report. JSON-serializable; the text rendering is built
 /// from the same struct so the two views stay in sync.
 ///
@@ -98,12 +100,6 @@ pub struct AmbiguousImportEntry {
     pub source_key: String,
     pub harness: String,
     pub matching_memory_ids: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BackEdgeEntry {
-    pub source_key: String,
-    pub alias: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

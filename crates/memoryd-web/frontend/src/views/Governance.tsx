@@ -7,7 +7,7 @@ import { Inspector, type InspectorItem } from '../inspector';
 import { ReviewQueue } from './governanceView';
 import { QueryErrorBanner, QueryLoadingBanner } from './QueryFeedback';
 
-export type { GovernanceDecision, GovernanceViewItem, PolicyTraceStep } from './governanceView/types';
+export type { GovernanceViewItem } from './governanceView/types';
 
 export type GovernanceFilter = 'all' | 'block' | 'warn' | 'info' | 'consent_required' | 'redact_proposed';
 

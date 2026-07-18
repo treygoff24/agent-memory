@@ -23,7 +23,6 @@ async fn cli_client_write_note_then_search_then_get_through_live_daemon() {
     let (shutdown_tx, server) = spawn_daemon(&socket, substrate);
     wait_for_socket(&socket).await;
 
-    // Step 1: write through the same path `memoryd write-note` uses.
     let response = client::request(
         &socket,
         "cli-write-note",
@@ -37,7 +36,7 @@ async fn cli_client_write_note_then_search_then_get_through_live_daemon() {
     assert_eq!(response.id, "cli-write-note");
     let note_id = write.id;
 
-    // Step 2a: a fresh note is a governance candidate — search must NOT
+    // A fresh note is a governance candidate, so search must not
     // surface it before review approval. (The pre-W0 FTS-degraded path leaked
     // candidate-status memories because it never filtered status; the unified
     // two-stage lane fences candidates exactly like the fused lane.)
@@ -56,7 +55,6 @@ async fn cli_client_write_note_then_search_then_get_through_live_daemon() {
         "candidate-status note must be fenced from search before approval"
     );
 
-    // Step 2b: approve the note, then search must find it.
     let response = client::request(&socket, "cli-approve", RequestPayload::ReviewApprove { id: note_id.clone() })
         .await
         .expect("review approve reaches daemon");
@@ -75,7 +73,6 @@ async fn cli_client_write_note_then_search_then_get_through_live_daemon() {
     };
     assert!(found.hits.iter().any(|hit| hit.id == note_id), "search must find the approved note");
 
-    // Step 3: read back through the same path `memoryd get` uses.
     let response = client::request(
         &socket,
         "cli-get",
@@ -89,14 +86,12 @@ async fn cli_client_write_note_then_search_then_get_through_live_daemon() {
     assert_eq!(record.id, note_id);
     assert_eq!(record.body, "live daemon end-to-end note");
 
-    // Step 4: shut down cleanly. This is the only path that drops the
+    // Clean shutdown is the only path that drops the
     // substrate's runtime lock; without it the reopen below would block.
     shutdown(shutdown_tx, server, &socket).await;
 
-    // Step 5: prove the side effect actually persisted to disk by reopening
-    // the substrate fresh and reading the memory directly. This catches a
-    // class of bug — daemon caching lying to us — that no through-protocol
-    // assertion can catch on its own.
+    // Reopening catches daemon-cache false positives that a through-protocol
+    // assertion cannot.
     let reopened = Substrate::open(roots.clone()).await.expect("substrate reopens after shutdown");
     let memory = reopened.read_memory(&MemoryId::new(&note_id)).await.expect("memory persisted");
     assert_eq!(memory.body, "live daemon end-to-end note", "body matches what we wrote");

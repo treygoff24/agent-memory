@@ -27,7 +27,6 @@ async fn forward_memory_note_then_search_then_get_round_trips_through_daemon() {
     let (shutdown_tx, server) = spawn_daemon(&socket, substrate);
     wait_for_socket(&socket).await;
 
-    // Step 1: write a note via MemoryNote — this is the substrate-touching path.
     let note = forward_to_daemon(
         &socket,
         "req-note",
@@ -41,7 +40,7 @@ async fn forward_memory_note_then_search_then_get_round_trips_through_daemon() {
     assert!(!written.id.is_empty(), "memory id is assigned");
     assert!(written.summary.contains("captured pattern"), "summary echoes the note prefix");
 
-    // Step 2a: a fresh note is a governance candidate and is fenced from
+    // A fresh note is a governance candidate and is fenced from
     // search until approved (the pre-W0 FTS-degraded lane leaked candidates
     // because it never filtered status). Approve through the daemon socket —
     // the MCP surface is frozen at 10 tools and deliberately has no approve.
@@ -56,7 +55,6 @@ async fn forward_memory_note_then_search_then_get_round_trips_through_daemon() {
         panic!("expected ReviewApprove success, got {:?}", approve.result);
     };
 
-    // Step 2b: search for the note we just wrote.
     let search = forward_to_daemon(
         &socket,
         "req-search",
@@ -75,7 +73,6 @@ async fn forward_memory_note_then_search_then_get_round_trips_through_daemon() {
     let hit = found.hits.iter().find(|hit| hit.id == written.id).expect("hit matches the note we wrote");
     assert!(hit.snippet.len() <= 240, "snippets stay bounded by handler policy");
 
-    // Step 3: read it back via MemoryGet.
     let get = forward_to_daemon(
         &socket,
         "req-get",

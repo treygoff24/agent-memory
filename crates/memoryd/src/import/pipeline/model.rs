@@ -4,6 +4,8 @@
 
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+
 use crate::import::candidate::{Harness, ParsedMemory};
 use crate::import::discovery::{ClaudeMemoryRoot, CodexMemoryRoot};
 use crate::import::project_map::ScopeBinding;
@@ -90,7 +92,7 @@ pub enum PlanAction {
 
 /// A back-edge wiki link that the topo sort had to break. Surfaced in the
 /// import report for transparency.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WikiLinkBackEdge {
     pub source_key: String,
     pub alias: String,

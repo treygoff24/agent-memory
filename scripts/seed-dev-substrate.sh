@@ -251,7 +251,7 @@ capture_envelope() {
 # Loud failure: any unexpected error from a governed write should stop the
 # script so we don't silently lose memories like the first cut of this script did.
 # Parses the v1 agent envelope (docs/api/memoryd-cli-contract-v1.md): governance
-# refusals now arrive as `ok:false` with `error.code` = the refusal reason, while
+# refusals arrive as `ok:false` with `error.code` = the refusal reason, while
 # queued writes are `ok:true` with `data.status` = candidate/quarantined.
 check_gw_response() {
   local resp="$1" allow_review="${2:-0}"

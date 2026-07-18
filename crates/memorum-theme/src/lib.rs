@@ -17,6 +17,7 @@ pub mod oklch;
 pub mod presets;
 pub mod resolver;
 pub mod theme;
+mod theme_load_error;
 pub mod tokens;
 
 pub use border::{BorderGlyphs, BorderStyle};

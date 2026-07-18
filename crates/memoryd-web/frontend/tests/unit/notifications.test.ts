@@ -6,7 +6,7 @@ describe('notifications stream', () => {
     it('uses contextual copy when live notification updates disconnect', () => {
         let triggerError: () => void = () => undefined;
         class FakeEventSource {
-            onerror: ((event: globalThis.Event) => unknown) | null = null;
+            onerror: ((event: globalThis.Event) => void) | null = null;
             constructor(url: string) {
                 void url;
                 triggerError = () => {
@@ -34,17 +34,17 @@ describe('notifications stream', () => {
     });
 
     it('deduplicates repeated daemon recent notifications by stable id', () => {
-        let heartbeatListener: ((event: MessageEvent<string>) => unknown) | undefined;
+        let heartbeatListener: ((event: MessageEvent<string>) => void) | undefined;
         let triggerStreamError: () => void = () => undefined;
         class FakeEventSource {
-            onerror: ((event: globalThis.Event) => unknown) | null = null;
+            onerror: ((event: globalThis.Event) => void) | null = null;
             constructor(url: string) {
                 void url;
                 triggerStreamError = () => {
                     this.onerror?.(new globalThis.Event('error'));
                 };
             }
-            addEventListener(type: string, listener: (event: MessageEvent<string>) => unknown) {
+            addEventListener(type: string, listener: (event: MessageEvent<string>) => void) {
                 if (type === 'heartbeat') heartbeatListener = listener;
             }
             close() {

@@ -28,10 +28,8 @@ use super::embedding::{
 use super::fts::{sanitize_fts_query, sanitize_relaxed_fts_query, RELAXED_RANK_OFFSET};
 
 /// The hash-scoped pending-aux-job delete used by `update_aux_embedding`.
-/// `pub` solely so the vector-lifecycle predicate pin executes the SAME SQL as
-/// production — the `AND content_hash=?6` scoping is the W2-F2 fix; a drifted
-/// copy in the test would let a regression ship behind a green pin (round-3
-/// review finding).
+/// `pub` solely so the vector-lifecycle test executes the same hash-scoped SQL
+/// as production rather than a drift-prone copy.
 pub const AUX_PENDING_JOB_HASH_SCOPED_DELETE_SQL: &str = "DELETE FROM aux_pending_embedding_jobs
              WHERE row_kind=?1 AND target_id=?2 AND provider=?3 AND model_ref=?4 AND dimension=?5 AND content_hash=?6";
 
@@ -291,15 +289,12 @@ impl Index {
     /// `pending_embedding_jobs`.  Taking `&mut self` prevents concurrent
     /// transactions on the same connection.
     pub fn update_embedding(&mut self, update: &EmbeddingUpdate) -> Result<(), VectorError> {
-        // Validate before touching anything.
         validate_update_preconditions(&self.connection, update)?;
         let chunk_rowid = read_chunk_rowid(&self.connection, update.chunk_id.as_str())?;
 
-        // Step 1: vector upsert — outside any SQLite transaction.
         ensure_vector_table(&self.connection, &update.triple)?;
         upsert_vector_payload(&self.connection, &update.triple, update.chunk_id.as_str(), chunk_rowid, &update.vector)?;
 
-        // Step 2: one SQLite transaction for metadata + job resolution.
         let txn = self.connection.transaction()?;
         upsert_chunk_embedding_meta(&txn, update)?;
         resolve_pending_embedding_job(&txn, update)?;
@@ -336,8 +331,6 @@ impl Index {
         // therefore still need their metadata/job rows written in the shared txn.
         let mut committed_indices: Vec<usize> = Vec::with_capacity(updates.len());
 
-        // Step 1: per-chunk validation + vector upsert, OUTSIDE any transaction
-        // (spec §10.2.1 step 4). Mirrors the head of `update_embedding`.
         for update in updates {
             let outcome = (|| {
                 validate_update_preconditions(&self.connection, update)?;
@@ -362,9 +355,7 @@ impl Index {
             return results;
         }
 
-        // Step 2: one SQLite transaction for the metadata + job resolution of
-        // every chunk that upserted cleanly. If opening or committing the txn
-        // fails, downgrade the affected entries to that error so callers do not
+        // Report transaction failures on every affected chunk so callers never
         // observe a vector without its resolved job.
         let mut txn = match self.connection.transaction() {
             Ok(txn) => txn,
@@ -698,19 +689,29 @@ impl Index {
                     expected: Sha256::new("missing"),
                     found: Sha256::new("missing"),
                 })?;
+                let ordinal = ordinal.parse::<i64>().map_err(|_| VectorError::StaleAux {
+                    row_kind: "cue".to_string(),
+                    target_id: target_id.to_string(),
+                    expected: Sha256::new("missing"),
+                    found: Sha256::new("missing"),
+                })?;
                 conn.query_row(
                     "SELECT rowid,cue_hash FROM memory_cues WHERE memory_id=?1 AND ordinal=?2",
-                    params![memory_id, ordinal.parse::<i64>().unwrap_or(-1)],
+                    params![memory_id, ordinal],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
             }
         };
-        result.map_err(|_| VectorError::StaleAux {
-            row_kind: kind.as_db_str().to_string(),
-            target_id: target_id.to_string(),
-            expected: Sha256::new("missing"),
-            found: Sha256::new("missing"),
-        })
+        match result {
+            Ok(row) => Ok(row),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Err(VectorError::StaleAux {
+                row_kind: kind.as_db_str().to_string(),
+                target_id: target_id.to_string(),
+                expected: Sha256::new("missing"),
+                found: Sha256::new("missing"),
+            }),
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// KNN query over abstraction vectors. W2 deliberately does not wire this into recall.

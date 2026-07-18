@@ -2,7 +2,7 @@
 //! aliases, entities, evidence, supersession), chunk rebuild + embedding-job
 //! enqueue, plus the file-consistency probe and supersession resync SQL.
 
-use rusqlite::{named_params, params, Connection, Transaction};
+use rusqlite::{named_params, params, Connection, OptionalExtension, Transaction};
 
 use crate::index::chunking::chunk_memory;
 use crate::markdown::hash_bytes;
@@ -53,7 +53,7 @@ pub(super) fn upsert_memory_row_in_txn(
         .query_row("SELECT sensitivity FROM memories WHERE id=?1", [memory.frontmatter.id.as_str()], |row| {
             row.get::<_, String>(0)
         })
-        .ok()
+        .optional()?
         .and_then(|value| Sensitivity::from_db_str(&value));
     let sensitivity_upgraded = previous_sensitivity
         .is_some_and(|previous| previous.api_lane_eligible() && !memory.frontmatter.sensitivity.api_lane_eligible());
@@ -66,7 +66,8 @@ pub(super) fn upsert_memory_row_in_txn(
     let author = memory.frontmatter.author.kind.as_db_str();
     let source_kind = memory.frontmatter.source.kind.as_db_str();
     let body_hash = hash_bytes(memory.body.as_bytes()).to_string();
-    let frontmatter_json = serde_json::to_string(&memory.frontmatter).unwrap_or_else(|_| "{}".to_string());
+    let frontmatter_json = serde_json::to_string(&memory.frontmatter)
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
     let file_hash = options.file_hash.map_or_else(|| body_hash.clone(), ToString::to_string);
     let file_mtime_ns: i64 = 0; // placeholder; deferred: plumb from fs::metadata
     let indexed_at = chrono::Utc::now().to_rfc3339();
@@ -284,7 +285,7 @@ fn sync_semantic_embedding_rows(
                 [memory_id],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
-            .ok();
+            .optional()?;
         let source_body_hash = previous
             .as_ref()
             .filter(|(old_hash, _)| old_hash == &abstraction_hash)
@@ -393,15 +394,20 @@ fn delete_aux_vectors(
             .query_row("SELECT rowid FROM memory_abstractions WHERE memory_id=?1", [target_id], |row| {
                 row.get::<_, i64>(0)
             })
-            .ok(),
-        "cue" => target_id.rsplit_once(':').and_then(|(memory_id, ordinal)| {
-            txn.query_row(
-                "SELECT rowid FROM memory_cues WHERE memory_id=?1 AND ordinal=?2",
-                params![memory_id, ordinal.parse::<i64>().ok()?],
-                |row| row.get::<_, i64>(0),
-            )
-            .ok()
-        }),
+            .optional()?,
+        "cue" => match target_id
+            .rsplit_once(':')
+            .and_then(|(memory_id, ordinal)| ordinal.parse::<i64>().ok().map(|ordinal| (memory_id, ordinal)))
+        {
+            Some((memory_id, ordinal)) => txn
+                .query_row(
+                    "SELECT rowid FROM memory_cues WHERE memory_id=?1 AND ordinal=?2",
+                    params![memory_id, ordinal],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?,
+            None => None,
+        },
         _ => None,
     };
     let Some(rowid) = rowid else { return Ok(()) };

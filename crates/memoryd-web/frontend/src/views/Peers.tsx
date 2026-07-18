@@ -7,7 +7,7 @@ import { Inspector, type InspectorItem } from '../inspector';
 import { TrustLedger } from './peersView';
 import { QueryErrorBanner, QueryLoadingBanner } from './QueryFeedback';
 
-export type { PeerSortKey, PeerSync, PeerTrust, PeerViewItem } from './peersView/types';
+export type { PeerSortKey, PeerViewItem } from './peersView/types';
 
 interface SortState {
     key: PeerSortKey;

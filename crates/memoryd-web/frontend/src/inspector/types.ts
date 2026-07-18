@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 
-export type InspectorKind =
+type InspectorKind =
     | 'inbox-review'
     | 'inbox-recall'
     | 'inbox-conflict'
@@ -26,7 +26,7 @@ export type InspectorAction =
     | 'queue-question'
     | 'dismiss';
 
-export interface ProvenanceInfo {
+interface ProvenanceInfo {
     written?: string;
     session?: string;
     grounding?: string;
@@ -36,32 +36,32 @@ export interface ProvenanceInfo {
     firstSeen?: string;
 }
 
-export interface PolicyInfo {
+interface PolicyInfo {
     privacy?: string;
     governance?: string;
     tombstone?: string;
 }
 
-export interface EvidenceItem {
+interface EvidenceItem {
     id: string;
     title: string;
     score?: number;
 }
 
-export interface RecallEventInfo {
+interface RecallEventInfo {
     when: string;
     who: string;
     session: string;
 }
 
-export interface ConflictSide {
+interface ConflictSide {
     device: string;
     body: string;
     written: string;
     session: string;
 }
 
-export interface InspectorBase {
+interface InspectorBase {
     kind: InspectorKind;
     id: string;
     title: string;

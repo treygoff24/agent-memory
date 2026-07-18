@@ -449,9 +449,8 @@ body text used for the migration fixture
         .map_err(Into::into)
     }
 
-    /// W2-F6: `migrate_v6` is exercised directly (as a unit test so the
-    /// migration step needs no public export — round-2 review) on a database
-    /// downgraded to schema 5 WITH representative data. The migration must be
+    /// Exercise `migrate_v6` directly so the migration needs no public export,
+    /// using a schema-5 database with representative data. The migration must be
     /// idempotent, the data must survive, and the rollback file copy must stay
     /// readable as raw v5 before a normal open re-migrates it.
     #[test]

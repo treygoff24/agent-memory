@@ -34,10 +34,10 @@ use crate::protocol::{
     GetResponse, GovernanceStatus, IndexStats, NotificationEvent, ObserveResponse, ObserveTarget,
     PassiveNotificationStatus, PeerActivityResponse, PeerDeliveryAuditEntry, PeerReleaseLockResponse,
     PeerReleaseLockStatus, PeerSessionStatus, PeerStatusResponse, QuarantineResolutionMode, QuarantineResolveResponse,
-    RealityCheckAction, RealityCheckHistorySession, RealityCheckRequest, RealityCheckResponse, RequestEnvelope,
-    RequestPayload, RespondRefusalKind, ResponseEnvelope, ResponsePayload, RevealResponse, ReviewDecisionResponse,
-    ReviewQueueCounts, ReviewQueueItemResponse, ReviewQueueResponse, SearchHit, SearchResponse, SourceCapturePayload,
-    StatusResponse, WebDashboardStatus, WriteNoteResponse, MAX_FRAME_BYTES, NOTIFICATION_CHANNEL_CAPACITY,
+    RealityCheckAction, RealityCheckRequest, RealityCheckResponse, RequestEnvelope, RequestPayload, RespondRefusalKind,
+    ResponseEnvelope, ResponsePayload, RevealResponse, ReviewDecisionResponse, ReviewQueueCounts,
+    ReviewQueueItemResponse, ReviewQueueResponse, SearchHit, SearchResponse, SourceCapturePayload, StatusResponse,
+    WebDashboardStatus, WriteNoteResponse, MAX_FRAME_BYTES, NOTIFICATION_CHANNEL_CAPACITY,
 };
 use crate::reality_check::{RcAdvanceRequest, RcRunRequest, RcSessionAdvance, RcSessionHandler};
 use crate::recall::{

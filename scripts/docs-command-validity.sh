@@ -147,10 +147,7 @@ if stale_tui_command="$(rg -n '`memory ui`|memory ui' README.md docs/getting-sta
   fi
 fi
 
-# `memoryd init` shipped (agent-driven onboarding); it replaced `memoryd serve
-# --init` as the documented bootstrap entrypoint. The old guard here forbade
-# uncaveated `memoryd init` references; the invariant is now the inverse — the
-# one-install-story reconciliation (2026-06 docs pass) must not regress.
+# Agent-driven onboarding has one bootstrap entrypoint: `memoryd init`.
 if ! rg -q 'memoryd init' docs/getting-started.md; then
   echo "docs/getting-started.md must document memoryd init as the bootstrap entrypoint" >&2
   failed=1

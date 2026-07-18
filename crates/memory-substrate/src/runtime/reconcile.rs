@@ -430,10 +430,8 @@ struct IndexConsistencyOutcome {
 
 /// Reindex stale memories and collect blocking conflicts in a SINGLE tree walk.
 ///
-/// Previously phase 6 walked the repo twice — once to reindex drifted files and
-/// again, re-reading and re-parsing every `.md`, purely to inspect
-/// `status`/`trust_level` for quarantine. This merges both jobs into one walk and
-/// additionally gates the expensive Markdown parse behind a cheap raw-bytes hash:
+/// A single walk handles both reindexing and quarantine inspection, with the
+/// expensive Markdown parse gated behind a cheap raw-bytes hash:
 ///
 /// - Compute the on-disk file hash from raw bytes (no parse).
 /// - Compare against the indexed `(file_hash, is_quarantined)`.

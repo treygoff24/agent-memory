@@ -25,7 +25,6 @@ async fn missing_device_config_fails_export_with_exit_1() {
     )
     .await;
 
-    // Remove the device config file to simulate a bare clone (no `memoryd serve --init` run).
     let device_config = temp.path().join("runtime").join("local-device.yaml");
     std::fs::remove_file(&device_config)
         .unwrap_or_else(|e| panic!("expected local-device.yaml at {}: {e}", device_config.display()));

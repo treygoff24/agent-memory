@@ -9,36 +9,19 @@ pub mod orchestrator;
 #[cfg(feature = "quality")]
 pub mod quality;
 pub mod simulator;
+mod support;
 
-/// Escape a string for embedding inside a JSON double-quoted string value.
+/// Drive a future to completion from a synchronous context.
 ///
-/// Handles the mandatory JSON escapes (`"`, `\`, `\n`, `\r`, `\t`) and escapes
-/// every other ASCII control character as `\uXXXX`. Non-ASCII printable Unicode
-/// passes through unchanged.
-///
-/// Single canonical implementation for the crate: every control character
-/// other than `\n`/`\r`/`\t` is escaped as `\uXXXX` rather than passed verbatim.
-pub(crate) fn json_escape(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-    for character in value.chars() {
-        match character {
-            '"' => escaped.push_str("\\\""),
-            '\\' => escaped.push_str("\\\\"),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            character if character.is_control() => {
-                escaped.push_str(&format!("\\u{:04x}", character as u32));
-            }
-            character => escaped.push(character),
-        }
-    }
-    escaped
-}
-
+/// Uses a per-call single-threaded tokio runtime. Smoke tests and the
+/// orchestrator both call into this; a `current_thread` runtime is lightweight
+/// and avoids the busy-spin + `yield_now()` of the prior home-rolled no-op-waker
+/// executor. This is the single canonical `block_on` for the crate — the
+/// orchestrator's worker threads call it too. (H-R2)
+pub use support::block_on;
 #[cfg(test)]
 mod json_escape_tests {
-    use super::json_escape;
+    use super::support::json_escape;
 
     #[test]
     fn escapes_double_quote() {
@@ -128,21 +111,6 @@ macro_rules! eval_assert_eq {
         $crate::eval_assertion_tick();
         assert_eq!($left, $right $(, $msg)*);
     }};
-}
-
-/// Drive a future to completion from a synchronous context.
-///
-/// Uses a per-call single-threaded tokio runtime. Smoke tests and the
-/// orchestrator both call into this; a `current_thread` runtime is lightweight
-/// and avoids the busy-spin + `yield_now()` of the prior home-rolled no-op-waker
-/// executor. This is the single canonical `block_on` for the crate — the
-/// orchestrator's worker threads call it too. (H-R2)
-pub fn block_on<F: std::future::Future>(future: F) -> F::Output {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("block_on: failed to build single-threaded tokio runtime")
-        .block_on(future)
 }
 
 use std::path::PathBuf;

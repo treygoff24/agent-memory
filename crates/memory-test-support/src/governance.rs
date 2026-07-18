@@ -87,7 +87,7 @@ pub const TOMBSTONED_CLAIM: &str = "Claim: Keep The Red Door";
 /// Entity that matches the Stream C tombstone fixture.
 pub const TOMBSTONED_ENTITY: &str = "Home";
 
-/// Actor/source fixtures required by Task 11.
+/// Actor and source fixtures spanning each governance actor class.
 pub const ACTOR_FIXTURES: &[ActorFixture] = &[
     ActorFixture {
         name: "user_write",
@@ -115,7 +115,7 @@ pub const ACTOR_FIXTURES: &[ActorFixture] = &[
     },
 ];
 
-/// Scope policy fixtures required by Task 11.
+/// Policy fixtures spanning each governance scope.
 pub const SCOPE_POLICY_FIXTURES: &[ScopePolicyFixture] = &[
     ScopePolicyFixture {
         name: "me_policy",
@@ -143,7 +143,7 @@ pub const SCOPE_POLICY_FIXTURES: &[ScopePolicyFixture] = &[
     },
 ];
 
-/// Duplicate/refinement/contradiction/tombstone fixtures required by Task 11.
+/// Fixtures spanning the supported governance relations.
 pub const RELATION_FIXTURES: &[RelationFixture] = &[
     RelationFixture {
         name: "fresh",
