@@ -341,7 +341,15 @@ fn splice_clean_diagnostics(
     diagnostic.preserved_sources = preserved_sources;
     diagnostic.evidence_near_duplicates = near_duplicates;
     diagnostic.lifecycle_notes = lifecycle_notes;
-    if diagnostic.conflicting_fields == ["abstraction"] {
+    // Fields whose same-field conflict resolves side-independently (value-hash
+    // tie-break) must also carry a side-independent `merge_id`/`created_at`,
+    // else two clones merging in opposite directions diverge on the diagnostic
+    // metadata alone (invariant #6, §13.6.1). `confidence`/`entities`/`author`
+    // still use side-dependent newer-wins rules (issues.md deferred audit), so
+    // they stay out of this set.
+    let all_convergent = !diagnostic.conflicting_fields.is_empty()
+        && diagnostic.conflicting_fields.iter().all(|field| matches!(field.as_str(), "abstraction" | "summary"));
+    if all_convergent {
         diagnostic.created_at = ours.frontmatter.updated_at.max(theirs.frontmatter.updated_at);
         let mut hasher = Sha256::new();
         let preserved_sources = serde_json::to_vec(&diagnostic.preserved_sources)

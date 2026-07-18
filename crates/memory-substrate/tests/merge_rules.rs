@@ -366,6 +366,32 @@ fn abstraction_conflict_uses_updated_at_then_side_independent_hash_and_preserves
 }
 
 #[test]
+fn summary_conflict_uses_updated_at_then_side_independent_hash_and_preserves_loser() {
+    let base = doc("base", "body");
+    let ours = doc("Alpha summary", "body");
+    let theirs_newer =
+        doc("Bravo summary", "body").replace("updated_at: 2026-04-24T12:00:00Z", "updated_at: 2026-04-25T12:00:00Z");
+    let MergeResult::Clean(text) = merge(&base, &ours, &theirs_newer) else { panic!("clean merge") };
+    let parsed = parse_document(&text, None).expect("parse");
+    assert_eq!(parsed.memory.frontmatter.summary, "Bravo summary");
+    assert!(first_diagnostic(&parsed.memory.frontmatter.merge_diagnostics)["preserved_sources"]
+        .as_array()
+        .expect("preserved")
+        .iter()
+        .any(|entry| entry["field"] == "summary" && entry["loser_value"] == "Alpha summary"));
+
+    // Equal timestamps: opposite merge directions must produce byte-identical
+    // output (invariant #6, §13.6.1) — no Git-side-dependent ours-wins.
+    let theirs_equal = doc("Bravo summary", "body");
+    let forward = merge(&base, &ours, &theirs_equal);
+    let reverse = merge(&base, &theirs_equal, &ours);
+    assert_eq!(merge_text(&forward), merge_text(&reverse));
+    let forward = parse_document(merge_text(&forward), None).expect("forward parse");
+    let reverse = parse_document(merge_text(&reverse), None).expect("reverse parse");
+    assert_eq!(forward.memory.frontmatter.summary, reverse.memory.frontmatter.summary);
+}
+
+#[test]
 fn cue_union_converges_with_overflow_and_casing_only_duplicates() {
     let base = doc("base", "body");
     let ours = doc_with_extra_yaml("base", "body", "cues:\n  - oauth\n  - Straße auth\n  - Zebra state\n");

@@ -217,16 +217,24 @@ fn apply_scalar_rules(
     merge_abstraction(base, ours, theirs, merged, diagnostics);
 
     if ours.summary != theirs.summary && ours.summary != base.summary && theirs.summary != base.summary {
-        let later_side = if theirs.updated_at > ours.updated_at { "theirs" } else { "ours" };
-        let later = if later_side == "theirs" { theirs } else { ours };
-        merged.summary = later.summary.clone();
+        // Later `updated_at` wins; at equal timestamps a Git-side-dependent
+        // ours-wins would let two clones merging in opposite directions
+        // diverge (invariant #6, spec §13.6.1), so break the tie on the value
+        // hash — mirroring the ratified `abstraction` rule (§14.4).
+        let ours_wins = if ours.updated_at != theirs.updated_at {
+            ours.updated_at > theirs.updated_at
+        } else {
+            summary_tie_key(&ours.summary) >= summary_tie_key(&theirs.summary)
+        };
+        let (winner, loser) =
+            if ours_wins { (&ours.summary, &theirs.summary) } else { (&theirs.summary, &ours.summary) };
+        merged.summary = winner.clone();
         diagnostics.push(FieldDiagnostic {
             field: "summary".to_string(),
             note: serde_json::json!({
                 "field": "summary",
-                "winner": later_side,
-                "loser_side": if later_side == "theirs" { "ours" } else { "theirs" },
-                "loser_value": if later_side == "theirs" { ours.summary.clone() } else { theirs.summary.clone() },
+                "winner_value": winner,
+                "loser_value": loser,
             }),
             bucket: DiagnosticBucket::PreservedSources,
         });
@@ -270,6 +278,13 @@ fn merge_abstraction(
             });
         }
     }
+}
+
+/// Side-independent tie-break key for `summary` at equal `updated_at`:
+/// `sha256(NFC(value))`. The larger key wins, so opposite-direction clone
+/// merges converge (invariant #6, spec §13.6.1).
+fn summary_tie_key(value: &str) -> [u8; 32] {
+    Sha256::digest(value.nfc().collect::<String>().as_bytes()).into()
 }
 
 fn abstraction_tie_key(value: Option<&str>) -> (bool, [u8; 32]) {
