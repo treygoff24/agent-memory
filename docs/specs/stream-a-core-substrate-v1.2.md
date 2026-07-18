@@ -1642,7 +1642,7 @@ For each field, first classify changes:
 | `_merge_diagnostics` | union diagnostics by ID/content hash |
 | `abstraction` | true 3-way; same-field conflict selects the side with later `updated_at`; equal timestamps → **any non-null beats null; null vs null is a no-op; both non-null → lexicographically greater `sha256(NFC(value))` wins** (null/empty-after-trim are equivalent and normalize to null before comparison); loser preserved in `_merge_diagnostics`. (Ratified 2026-07-10 deviation from the originating plan's ours-wins rule: ours-wins is Git-side-dependent and violates two-clone convergence, §13.6.1) |
 | `cues` | set union of both sides → NFC canonicalize → sort by the strict total order **`(case_fold(NFC(value)), NFC(value) bytes)`** where `case_fold` is **Unicode default (full) case folding — never locale-aware lowercasing** (`I`/`İ`, `ß` hazards) → dedup under case-fold equality keeping the first entry in that order (canonical casing = the byte-lexicographically smaller spelling; never insertion- or side-order) → keep first 3. Worked example: union `{OAuth, oauth}` → both fold to `oauth`, `O` < `o` byte-wise → keep `OAuth`; identical in both merge directions. Two-clone convergence fixtures required for opposite merge directions with overflowing unions **and with casing-only duplicates** |
-| unknown `_extras` | per-key true 3-way when key exists in base; add/add same key conflict quarantines unless values equal |
+| unknown `_extras` | per-key true 3-way; both non-null/add-add same-key conflict → lexicographically greater `sha256(canonical value)` wins (canonical value recursively sorts object keys and NFC-normalizes string values); equal values are a no-op; loser preserved in `_merge_diagnostics`. (Ratified 2026-07-18, Trey; supersedes the prior quarantine-as-written rule which was Git-side-dependent for add/add and violated two-clone convergence §13.6.1) |
 
 ### 14.5 Lifecycle/status merge table
 
@@ -2176,6 +2176,10 @@ The spec also deliberately does **not** legislate the following implementation-p
 ## Amendments
 
 Dated additive clarifications that do not change a required behavior carry no version bump (per the repo's spec/plan conventions). A behavior change requires explicit Trey authorization. Each amendment records the date, the sections it touches, and the rationale.
+
+### 2026-07-18 — `_extras` deterministic value-hash merge tie-break
+
+**Trey-authorized behavior-change amendment.** Authorized 2026-07-18, in-version per explicit authorization. **Touches:** §14.4 unknown `_extras` field rule. **Rationale:** replace the prior quarantine-as-written add/add rule with the same side-independent value-hash resolution pattern used for `abstraction` and `summary`; the prior rule was Git-side-dependent in practice and violated two-clone convergence (§13.6.1).
 
 ### 2026-07-15 — B3 abstraction/cue metadata amendment
 

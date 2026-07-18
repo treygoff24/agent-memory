@@ -144,7 +144,14 @@ pub(super) fn merge_frontmatter_scalars(base: &Memory, ours: &Memory, theirs: &M
         &mut evidence_near_duplicates,
     );
 
-    merge_extras(&base.frontmatter.extras, &ours.frontmatter.extras, &theirs.frontmatter.extras, &mut merged);
+    merge_extras(
+        &base.frontmatter.extras,
+        &ours.frontmatter.extras,
+        &theirs.frontmatter.extras,
+        &mut merged,
+        &mut diagnostics,
+        &mut conflicting_fields,
+    );
 
     merge_retrieval_policy_per_key(&base.frontmatter, &ours.frontmatter, &theirs.frontmatter, &mut merged);
     merge_write_policy_per_key(&base.frontmatter, &ours.frontmatter, &theirs.frontmatter, &mut merged);
@@ -613,11 +620,14 @@ fn secondary_key(evidence: &Evidence) -> (String, String) {
 
 /// Spec §14.4: per-key 3-way merge of `extras`. `regression.occurrences[]`
 /// gets the special G-counter union path.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn merge_extras(
     base: &BTreeMap<String, Value>,
     ours: &BTreeMap<String, Value>,
     theirs: &BTreeMap<String, Value>,
     merged: &mut Frontmatter,
+    diagnostics: &mut Vec<FieldDiagnostic>,
+    conflicting_fields: &mut Vec<String>,
 ) {
     let keys: std::collections::BTreeSet<String> =
         base.keys().chain(ours.keys()).chain(theirs.keys()).cloned().collect();
@@ -629,7 +639,31 @@ pub(super) fn merge_extras(
             }
             continue;
         }
-        if let Some(value) = three_way_value(base.get(&key), ours.get(&key), theirs.get(&key)) {
+        let base_value = base.get(&key);
+        let ours_value = ours.get(&key);
+        let theirs_value = theirs.get(&key);
+        let conflict = is_true_three_way_extra_conflict(base_value, ours_value, theirs_value);
+        if let Some(value) = three_way_value(base_value, ours_value, theirs_value) {
+            if conflict {
+                if let (Some(ours_value), Some(theirs_value)) = (ours_value, theirs_value) {
+                    let (winner, loser) = if extra_value_tie_key(ours_value) >= extra_value_tie_key(theirs_value) {
+                        (ours_value, theirs_value)
+                    } else {
+                        (theirs_value, ours_value)
+                    };
+                    let field = format!("_extras:{key}");
+                    diagnostics.push(FieldDiagnostic {
+                        field: field.clone(),
+                        note: serde_json::json!({
+                            "field": field,
+                            "winner_value": winner,
+                            "loser_value": loser,
+                        }),
+                        bucket: DiagnosticBucket::PreservedSources,
+                    });
+                    conflicting_fields.push(field);
+                }
+            }
             extras.insert(key, value);
         }
     }
@@ -643,13 +677,42 @@ fn three_way_value(base: Option<&Value>, ours: Option<&Value>, theirs: Option<&V
         (Some(b), Some(o), Some(t)) if values_equivalent(t, b) => Some(o.clone()),
         (None, Some(o), None) | (Some(_), Some(o), None) => Some(o.clone()),
         (None, None, Some(t)) | (Some(_), None, Some(t)) => Some(t.clone()),
-        // True 3-way conflict: ours wins on the file, conflict surfaced via
-        // diagnostics in the orchestrator. Phase 4 punts a per-key diagnostic
-        // for unknown extras — they remain rare in practice and the spec
-        // §14.4 text places them in `clean_with_warnings` rather than
-        // quarantining.
-        (_, Some(o), Some(_)) => Some(o.clone()),
+        // True 3-way conflict: a canonical value hash picks the same winner
+        // regardless of Git's ours/theirs direction (spec §14.4).
+        (_, Some(o), Some(t)) => {
+            Some(if extra_value_tie_key(o) >= extra_value_tie_key(t) { o.clone() } else { t.clone() })
+        }
         _ => None,
+    }
+}
+
+fn is_true_three_way_extra_conflict(base: Option<&Value>, ours: Option<&Value>, theirs: Option<&Value>) -> bool {
+    let (Some(ours), Some(theirs)) = (ours, theirs) else {
+        return false;
+    };
+    !values_equivalent(ours, theirs)
+        && !base.is_some_and(|base| values_equivalent(ours, base) || values_equivalent(theirs, base))
+}
+
+/// Side-independent tie-break key for unknown `_extras` values. Objects are
+/// recursively key-sorted and string values NFC-normalized before hashing, so
+/// semantically identical values do not depend on map insertion order.
+fn extra_value_tie_key(value: &Value) -> [u8; 32] {
+    let canonical = canonical_extra_value(value);
+    // Display for Value is infallible and emits the same compact JSON as to_vec.
+    Sha256::digest(canonical.to_string().as_bytes()).into()
+}
+
+fn canonical_extra_value(value: &Value) -> Value {
+    match value {
+        Value::String(value) => Value::String(value.nfc().collect()),
+        Value::Array(values) => Value::Array(values.iter().map(canonical_extra_value).collect()),
+        Value::Object(values) => {
+            let mut entries: Vec<_> = values.iter().collect();
+            entries.sort_by_key(|(key, _)| *key);
+            Value::Object(entries.into_iter().map(|(key, value)| (key.clone(), canonical_extra_value(value))).collect())
+        }
+        _ => value.clone(),
     }
 }
 

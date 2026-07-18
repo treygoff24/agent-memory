@@ -348,7 +348,10 @@ fn splice_clean_diagnostics(
     // still use side-dependent newer-wins rules (issues.md deferred audit), so
     // they stay out of this set.
     let all_convergent = !diagnostic.conflicting_fields.is_empty()
-        && diagnostic.conflicting_fields.iter().all(|field| matches!(field.as_str(), "abstraction" | "summary"));
+        && diagnostic
+            .conflicting_fields
+            .iter()
+            .all(|field| field == "abstraction" || field == "summary" || field.starts_with("_extras:"));
     if all_convergent {
         diagnostic.created_at = ours.frontmatter.updated_at.max(theirs.frontmatter.updated_at);
         let mut hasher = Sha256::new();

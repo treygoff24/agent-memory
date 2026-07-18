@@ -392,6 +392,51 @@ fn summary_conflict_uses_updated_at_then_side_independent_hash_and_preserves_los
 }
 
 #[test]
+fn extras_conflict_uses_canonical_value_hash_and_preserves_loser() {
+    let base = doc("base", "body");
+    let ours = doc_with_extra_yaml("base", "body", "plugin: { b: Bravo, a: Alpha }\n");
+    let theirs = doc_with_extra_yaml("base", "body", "plugin: { a: Alpha, b: Charlie }\n");
+
+    let forward = merge(&base, &ours, &theirs);
+    let reverse = merge(&base, &theirs, &ours);
+    assert_eq!(merge_text(&forward), merge_text(&reverse));
+
+    let parsed = parse_document(merge_text(&forward), None).expect("parse");
+    let winner = serde_json::json!({"a": "Alpha", "b": "Charlie"});
+    let loser = serde_json::json!({"a": "Alpha", "b": "Bravo"});
+    assert_eq!(parsed.memory.frontmatter.extras.get("plugin"), Some(&winner));
+    assert!(first_diagnostic(&parsed.memory.frontmatter.merge_diagnostics)["preserved_sources"]
+        .as_array()
+        .expect("preserved")
+        .iter()
+        .any(|entry| {
+            entry["field"] == "_extras:plugin" && entry["winner_value"] == winner && entry["loser_value"] == loser
+        }));
+}
+
+#[test]
+fn extras_scalar_editedit_conflict_converges_byte_identical() {
+    // Coordinator-authored independent convergence check, a different shape than
+    // the object add/add above: an edit/edit 3-way on a scalar string _extras
+    // value with base present. Opposite-direction merges must be byte-identical
+    // (invariant #6, §13.6.1), and the loser must survive in diagnostics.
+    let base = doc_with_extra_yaml("base", "body", "vendor: acme\n");
+    let ours = doc_with_extra_yaml("base", "body", "vendor: umbra\n");
+    let theirs = doc_with_extra_yaml("base", "body", "vendor: zephyr\n");
+    let forward = merge(&base, &ours, &theirs);
+    let reverse = merge(&base, &theirs, &ours);
+    assert_eq!(merge_text(&forward), merge_text(&reverse), "opposite-direction merges must be byte-identical");
+    let parsed = parse_document(merge_text(&forward), None).expect("parse");
+    let vendor = parsed.memory.frontmatter.extras.get("vendor").and_then(Value::as_str).expect("vendor extra present");
+    assert!(vendor == "umbra" || vendor == "zephyr", "winner is one of the two edits, got {vendor:?}");
+    assert!(first_diagnostic(&parsed.memory.frontmatter.merge_diagnostics)["preserved_sources"]
+        .as_array()
+        .expect("preserved")
+        .iter()
+        .any(|entry| entry["field"] == "_extras:vendor"));
+}
+
+#[test]
 fn cue_union_converges_with_overflow_and_casing_only_duplicates() {
     let base = doc("base", "body");
     let ours = doc_with_extra_yaml("base", "body", "cues:\n  - oauth\n  - Straße auth\n  - Zebra state\n");
