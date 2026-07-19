@@ -72,7 +72,8 @@ struct BenchRun {
 
 pub(crate) fn generate_bench_input(seed: u64, corpus: usize, runs: usize) -> GeneratedBenchInput {
     let memories = (0..corpus).map(|index| sample_memory(index, seed)).collect::<Vec<_>>();
-    let device = DeviceId::try_new("dev_bench").expect("static bench device id must be valid");
+    let device = DeviceId::try_new("dev_bench").expect("static bench device id"); // expect-justified: static literal id
+
     let events =
         memories.iter().enumerate().map(|(index, memory)| sample_event(memory, &device, index, seed)).collect();
     let embedding_vectors =
@@ -448,7 +449,7 @@ fn sample_event(memory: &Memory, device: &DeviceId, index: usize, seed: u64) -> 
         operation_id: Some(OperationId::new(format!("op_bench_{seed:016x}_{index:08}"))),
         kind: EventKind::WriteCommitted {
             id: memory.frontmatter.id.clone(),
-            path: memory.path.clone().expect("sample_memory always assigns a path"),
+            path: memory.path.clone().expect("sample_memory always assigns a path"), // expect-justified: fixture invariant
             classification: ClassificationOutcome::Trusted,
         },
         crc32c: 0,
