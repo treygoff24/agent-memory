@@ -1,4 +1,4 @@
-const TOKEN_ESTIMATOR_BYTES_PER_TOKEN: usize = 4;
+pub(crate) const TOKEN_ESTIMATOR_BYTES_PER_TOKEN: usize = 4;
 const ELLIPSIS: &str = "…";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
