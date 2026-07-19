@@ -27,10 +27,17 @@ async fn request_and_emit(socket: &Path, request_id: &str, payload: RequestPaylo
 
 pub async fn run_search(args: SearchArgs) -> anyhow::Result<()> {
     let socket = resolve_socket_arg(&args.socket);
+    // Scope to the namespaces visible from the invoking directory by default,
+    // mirroring passive recall; --all-namespaces restores store-wide search.
+    let cwd = if args.all_namespaces {
+        None
+    } else {
+        std::env::current_dir().ok().map(|dir| dir.to_string_lossy().into_owned())
+    };
     request_and_emit(
         &socket,
         "cli-search",
-        RequestPayload::Search { query: args.query, limit: Some(args.limit), include_body: args.include_body },
+        RequestPayload::Search { query: args.query, limit: Some(args.limit), include_body: args.include_body, cwd },
     )
     .await
 }

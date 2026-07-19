@@ -505,6 +505,10 @@ pub struct SearchArgs {
     /// Include full bodies instead of bounded summaries.
     #[arg(long)]
     pub include_body: bool,
+    /// Search every namespace instead of scoping to the current directory's
+    /// visible set (me + project + agent).
+    #[arg(long)]
+    pub all_namespaces: bool,
 }
 
 #[derive(Debug, Args)]

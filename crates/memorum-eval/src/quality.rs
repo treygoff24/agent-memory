@@ -320,7 +320,7 @@ impl GoldenCorpus {
     async fn rank_via_search(&self, query: &str) -> Result<Vec<String>, QualityError> {
         let chunks = self
             .substrate
-            .query_chunks(ChunkQuery { text: Some(query.to_string()), triple: None, vector: None })
+            .query_chunks(ChunkQuery { text: Some(query.to_string()), triple: None, vector: None, namespaces: None })
             .await
             .map_err(|e| QualityError::Substrate(format!("query_chunks: {e:?}")))?;
 
@@ -361,6 +361,7 @@ impl GoldenCorpus {
                 query,
                 Some(HybridVectorQuery { triple: &active_triple, vector: &vector }),
                 config.knn_limit,
+                None,
             )
             .await
             .map_err(|e| QualityError::Substrate(format!("query_hybrid_chunks: {e:?}")))?;

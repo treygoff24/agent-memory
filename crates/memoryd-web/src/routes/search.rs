@@ -24,7 +24,9 @@ pub async fn search(State(state): State<WebState>, Query(query): Query<SearchQue
         socket_path,
         "search",
         "web-search",
-        RequestPayload::Search { query: query.q, limit, include_body: false },
+        // Dashboard search is store-wide by design: it is the operator's
+        // whole-store lens, not a session surface.
+        RequestPayload::Search { query: query.q, limit, include_body: false, cwd: None },
     )
     .await
     {

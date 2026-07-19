@@ -1355,7 +1355,7 @@ mod tests {
         let staged = substrate.read_memory(&proposal.replacement.frontmatter.id).await.unwrap();
         assert!(staged.frontmatter.is_merge_non_servable());
         let fts = substrate
-            .query_chunks(memory_substrate::ChunkQuery { text: Some("body".into()), triple: None, vector: None })
+            .query_chunks(memory_substrate::ChunkQuery { text: Some("body".into()), triple: None, vector: None, namespaces: None })
             .await
             .unwrap();
         assert!(fts.iter().all(|hit| hit.memory_id != proposal.replacement.frontmatter.id));
@@ -1912,7 +1912,7 @@ mod tests {
             .unwrap();
         assert!(hits.iter().all(|hit| hit.memory_id != staged_id));
 
-        let hybrid = substrate.query_hybrid_chunks("body", None, 10).await.unwrap();
+        let hybrid = substrate.query_hybrid_chunks("body", None, 10, None).await.unwrap();
         assert!(hybrid.iter().all(|hit| hit.memory_id != staged_id));
 
         // Backup/export surfaces with the exclusion flag disabled still see the staged row.

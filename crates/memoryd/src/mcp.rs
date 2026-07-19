@@ -299,10 +299,12 @@ pub async fn forward_to_daemon(
 ) -> Result<ResponseEnvelope> {
     let id = id.into();
     let payload = match request {
+        // The frozen MCP tool surface has no cwd; MCP searches stay unscoped.
         ToolRequest::MemorySearch(args) => RequestPayload::Search {
             query: args.query,
             limit: args.limit.map(|n| n as usize),
             include_body: args.include_body,
+            cwd: None,
         },
         ToolRequest::MemoryGet(args) => {
             RequestPayload::Get { id: args.id, include_provenance: args.include_provenance, full_body: false }

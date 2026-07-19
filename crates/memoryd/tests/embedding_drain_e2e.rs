@@ -105,7 +105,7 @@ async fn write_drain_vector_present_and_knn_orders_correctly() {
     let query_vector =
         provider.embed_query("which async runtime did we pick for the rust daemon").expect("embed query");
     let results = substrate
-        .query_chunks(ChunkQuery { text: None, triple: Some(triple), vector: Some(query_vector) })
+        .query_chunks(ChunkQuery { text: None, triple: Some(triple), vector: Some(query_vector), namespaces: None })
         .await
         .expect("vector query");
 

@@ -550,7 +550,7 @@ async fn search(substrate: &Substrate, state: &HandlerState, query: &str) -> mem
         state,
         RequestEnvelope::new(
             "search",
-            RequestPayload::Search { query: query.to_owned(), limit: Some(5), include_body: false },
+            RequestPayload::Search { query: query.to_owned(), limit: Some(5), include_body: false, cwd: None },
         ),
     )
     .await;

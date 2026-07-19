@@ -90,7 +90,11 @@ async fn build_delta_response_inner(
     let budget_tokens =
         request.budget_tokens.unwrap_or(if passive { HOOK_DELTA_BUDGET_TOKENS } else { DEFAULT_DELTA_BUDGET_TOKENS });
     let message = request.message.trim();
-    let (items, vector_recall_degraded) = collect_delta_items(substrate, message, vector_recall.as_ref()).await?;
+    // Spec stream-e v0.7 §6: delta candidates must be visible from the active
+    // namespace set. Without this scope an out-of-project memory can win the
+    // BM25/vector lanes and leak into an unrelated session's injection.
+    let (items, vector_recall_degraded) =
+        collect_delta_items(substrate, message, vector_recall.as_ref(), &session_binding.namespaces_in_scope).await?;
     let delta_coordination = match coordination {
         Some(context) => build_delta_coordination(substrate, &session_binding, message, context).await?,
         None => DeltaCoordination::default(),
@@ -131,12 +135,13 @@ async fn collect_delta_items(
     substrate: &Substrate,
     message: &str,
     vector_recall: Option<&VectorRecallContext>,
+    namespaces: &[String],
 ) -> Result<(Vec<DeltaRecallItem>, Option<String>), RecallError> {
-    match collect_hybrid_recall(substrate, message, vector_recall).await {
+    match collect_hybrid_recall(substrate, message, vector_recall, Some(namespaces)).await {
         // A fully degraded fusion is not servable; use the search ladder's FTS
         // fallback and preserve the degradation marker.
         HybridRecallDecision::Fused { candidates, degraded: Some(marker) } if candidates.is_empty() => {
-            let items = fts_delta_items(substrate, message).await?;
+            let items = fts_delta_items(substrate, message, namespaces).await?;
             Ok((items, Some(marker.to_owned())))
         }
         HybridRecallDecision::Fused { candidates, degraded } => Ok((
@@ -147,15 +152,24 @@ async fn collect_delta_items(
             degraded.map(str::to_owned),
         )),
         HybridRecallDecision::FtsOnly { degraded } => {
-            let items = fts_delta_items(substrate, message).await?;
+            let items = fts_delta_items(substrate, message, namespaces).await?;
             Ok((items, degraded.map(ToOwned::to_owned)))
         }
     }
 }
 
-async fn fts_delta_items(substrate: &Substrate, message: &str) -> Result<Vec<DeltaRecallItem>, RecallError> {
+async fn fts_delta_items(
+    substrate: &Substrate,
+    message: &str,
+    namespaces: &[String],
+) -> Result<Vec<DeltaRecallItem>, RecallError> {
     let chunks = substrate
-        .query_chunks(ChunkQuery { text: Some(message.to_owned()), triple: None, vector: None })
+        .query_chunks(ChunkQuery {
+            text: Some(message.to_owned()),
+            triple: None,
+            vector: None,
+            namespaces: Some(namespaces.to_vec()),
+        })
         .await
         .map_err(|error| RecallError::substrate_error(error.to_string()))?;
 

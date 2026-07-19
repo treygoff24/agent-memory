@@ -56,6 +56,12 @@ pub enum RequestPayload {
         query: String,
         limit: Option<usize>,
         include_body: bool,
+        /// When present, results are scoped to the namespaces visible from this
+        /// directory (me + project + agent), matching passive-recall scoping.
+        /// Absent means unscoped (store-wide) — the pre-scoping behavior kept
+        /// for the frozen MCP surface and explicit all-namespace searches.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
     },
     Get {
         id: String,

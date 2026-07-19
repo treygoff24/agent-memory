@@ -19,7 +19,7 @@ fn protocol_contract_round_trips_request_variants_as_snake_case_json() {
         RequestEnvelope::new("req-doctor", RequestPayload::Doctor),
         RequestEnvelope::new(
             "req-search",
-            RequestPayload::Search { query: "daemon socket protocol".to_owned(), limit: Some(5), include_body: false },
+            RequestPayload::Search { query: "daemon socket protocol".to_owned(), limit: Some(5), include_body: false, cwd: None },
         ),
         RequestEnvelope::new(
             "req-get",
@@ -433,6 +433,9 @@ fn test_existing_protocol_variants_unchanged() {
                 query: "stable".to_owned(),
                 limit: Some(5),
                 include_body: false,
+                // Additive field: absent when None, so pre-cwd clients and the
+                // frozen MCP surface see an unchanged wire shape.
+                cwd: None,
             })
             .unwrap(),
             serde_json::json!({"search":{"query":"stable","limit":5,"include_body":false}}),

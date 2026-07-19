@@ -122,7 +122,7 @@ async fn privacy_e2e_personal_write_is_encrypted_and_not_raw_searchable() {
         &substrate,
         RequestEnvelope::new(
             "search-raw",
-            RequestPayload::Search { query: raw.to_string(), limit: Some(10), include_body: false },
+            RequestPayload::Search { query: raw.to_string(), limit: Some(10), include_body: false, cwd: None },
         ),
     )
     .await;
@@ -188,7 +188,7 @@ async fn privacy_e2e_caller_confidential_without_spans_is_metadata_only_encrypte
         &substrate,
         RequestEnvelope::new(
             "search-confidential-raw",
-            RequestPayload::Search { query: "Northstar".to_string(), limit: Some(10), include_body: false },
+            RequestPayload::Search { query: "Northstar".to_string(), limit: Some(10), include_body: false, cwd: None },
         ),
     )
     .await;
@@ -238,7 +238,7 @@ async fn privacy_e2e_project_url_and_date_stay_plaintext_and_searchable() {
         &substrate,
         RequestEnvelope::new(
             "search-url",
-            RequestPayload::Search { query: "docs.example.com".to_string(), limit: Some(10), include_body: false },
+            RequestPayload::Search { query: "docs.example.com".to_string(), limit: Some(10), include_body: false, cwd: None },
         ),
     )
     .await;
@@ -300,7 +300,7 @@ async fn privacy_e2e_phone_contact_is_encrypted_findable_and_revealable() {
         &substrate,
         RequestEnvelope::new(
             "search-descriptor",
-            RequestPayload::Search { query: "chief staff cell".to_string(), limit: Some(10), include_body: false },
+            RequestPayload::Search { query: "chief staff cell".to_string(), limit: Some(10), include_body: false, cwd: None },
         ),
     )
     .await;
@@ -313,7 +313,7 @@ async fn privacy_e2e_phone_contact_is_encrypted_findable_and_revealable() {
         &substrate,
         RequestEnvelope::new(
             "search-phone",
-            RequestPayload::Search { query: raw_phone.to_string(), limit: Some(10), include_body: false },
+            RequestPayload::Search { query: raw_phone.to_string(), limit: Some(10), include_body: false, cwd: None },
         ),
     )
     .await;

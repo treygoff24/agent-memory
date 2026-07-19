@@ -40,6 +40,15 @@ pub(crate) async fn validate_session_fields(
     })
 }
 
+/// Resolve the namespace set visible from `cwd` (me + optional project +
+/// agent) for surfaces that scope by directory without a full session binding
+/// (`memory_search` with a caller-supplied cwd).
+pub(crate) async fn namespaces_for_cwd(cwd: &str) -> Result<Vec<String>, RecallError> {
+    let cwd = validate_cwd(cwd).await?;
+    let project = resolve_project_binding(&cwd).await?;
+    Ok(namespaces_for(project.as_ref()))
+}
+
 async fn validate_cwd(cwd: &str) -> Result<PathBuf, RecallError> {
     let path = PathBuf::from(cwd.trim());
     if !path.is_absolute() {

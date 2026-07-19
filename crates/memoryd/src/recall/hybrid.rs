@@ -74,6 +74,7 @@ pub(crate) async fn collect_hybrid_recall(
     substrate: &Substrate,
     message: &str,
     context: Option<&VectorRecallContext>,
+    namespaces: Option<&[String]>,
 ) -> HybridRecallDecision {
     // Query embedding consumes the same surface deadline as the recall lanes.
     let recall_started = Instant::now();
@@ -147,6 +148,7 @@ pub(crate) async fn collect_hybrid_recall(
             context,
             HybridVectorQuery { triple: &active_triple, vector: &vector },
             remaining,
+            namespaces,
         )
         .await;
     }
@@ -156,6 +158,7 @@ pub(crate) async fn collect_hybrid_recall(
             message,
             Some(HybridVectorQuery { triple: &active_triple, vector: &vector }),
             context.config.knn_limit,
+            namespaces,
         )
         .await
     {
@@ -186,6 +189,7 @@ async fn collect_four_lane_recall(
     context: &VectorRecallContext,
     vector_query: HybridVectorQuery<'_>,
     remaining: Duration,
+    namespaces: Option<&[String]>,
 ) -> HybridRecallDecision {
     // Run the four primitive lanes concurrently. Each is timed by its own per-
     // lane budget; the whole set is also bounded by the remaining post-embed
@@ -195,16 +199,25 @@ async fn collect_four_lane_recall(
     // as a degraded lane rather than a hang.
     let lane_timeout = std::cmp::min(Duration::from_millis(context.config.four_lane_timeout_ms), remaining);
     let (fts, chunk, abstractions, cues) = tokio::join!(
-        lane_result("fts", lane_timeout, substrate.query_hybrid_chunks(message, None, context.config.knn_limit)),
+        lane_result(
+            "fts",
+            lane_timeout,
+            substrate.query_hybrid_chunks(message, None, context.config.knn_limit, namespaces)
+        ),
         lane_result(
             "chunk-vector",
             lane_timeout,
-            substrate.query_hybrid_chunks(message, Some(vector_query), context.config.knn_limit)
+            substrate.query_hybrid_chunks(message, Some(vector_query), context.config.knn_limit, namespaces)
         ),
         lane_result(
             "abstraction-vector",
             lane_timeout,
-            substrate.query_abstraction_vectors(vector_query.triple, vector_query.vector, context.config.knn_limit)
+            substrate.query_abstraction_vectors(
+                vector_query.triple,
+                vector_query.vector,
+                context.config.knn_limit,
+                namespaces
+            )
         ),
         lane_result(
             "cue-vector",
@@ -212,7 +225,8 @@ async fn collect_four_lane_recall(
             substrate.query_cue_vectors(
                 vector_query.triple,
                 vector_query.vector,
-                context.config.knn_limit.saturating_mul(3)
+                context.config.knn_limit.saturating_mul(3),
+                namespaces
             )
         )
     );

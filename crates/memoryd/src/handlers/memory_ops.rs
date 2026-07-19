@@ -26,6 +26,9 @@ pub(crate) struct SearchResponseRequest<'a> {
     pub query: &'a str,
     pub limit: Option<usize>,
     pub include_body: bool,
+    /// Scope results to the namespaces visible from this directory; `None`
+    /// searches every namespace (frozen MCP surface, `--all-namespaces`).
+    pub cwd: Option<&'a str>,
 }
 
 pub(crate) async fn delta_response(
@@ -120,6 +123,18 @@ pub(crate) async fn search_response(
     }
 
     let limit = request.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX);
+    // A supplied cwd scopes results to its visible namespace set, mirroring
+    // passive recall; an unresolvable cwd is a caller error, not a silent
+    // fall-open to store-wide search.
+    let namespaces = match request.cwd {
+        Some(cwd) => Some(
+            crate::recall::binding::namespaces_for_cwd(cwd)
+                .await
+                .map_err(|error| HandlerError::invalid_request(format!("search cwd: {error}")))?,
+        ),
+        None => None,
+    };
+    let namespaces = namespaces.as_deref();
     let started = Instant::now();
     let config = load_vector_recall_config(substrate);
     let search_timeout = Duration::from_millis(config.search_timeout_ms);
@@ -127,7 +142,7 @@ pub(crate) async fn search_response(
         .with_mode(crate::recall::FusionMode::FourLaneSearch);
     let decision = tokio::time::timeout(
         search_timeout,
-        crate::recall::hybrid::collect_hybrid_recall(substrate, query, Some(&vector_recall)),
+        crate::recall::hybrid::collect_hybrid_recall(substrate, query, Some(&vector_recall), namespaces),
     )
     .await;
     let (total, mut hits, vector_recall_degraded) = match decision {
@@ -137,7 +152,7 @@ pub(crate) async fn search_response(
             if candidates.is_empty() =>
         {
             tracing::warn!(marker, "memory_search four-lane recall fully degraded; falling back to FTS-only");
-            let (total, hits) = bounded_fts_fallback(substrate, query, limit, search_timeout, started).await?;
+            let (total, hits) = bounded_fts_fallback(substrate, query, limit, search_timeout, started, namespaces).await?;
             (total, hits, Some(marker.to_owned()))
         }
         Ok(crate::recall::hybrid::HybridRecallDecision::Fused { candidates, degraded }) => {
@@ -162,7 +177,7 @@ pub(crate) async fn search_response(
             if let Some(marker) = degraded {
                 tracing::warn!(marker, "memory_search vector recall degraded; falling back to FTS-only");
             }
-            let (total, hits) = bounded_fts_fallback(substrate, query, limit, search_timeout, started).await?;
+            let (total, hits) = bounded_fts_fallback(substrate, query, limit, search_timeout, started, namespaces).await?;
             (total, hits, degraded.map(str::to_owned))
         }
         Err(_) => {
@@ -170,7 +185,7 @@ pub(crate) async fn search_response(
                 timeout_ms = search_timeout.as_millis(),
                 "memory_search timed out; falling back to FTS-only"
             );
-            let (total, hits) = bounded_fts_fallback(substrate, query, limit, search_timeout, started).await?;
+            let (total, hits) = bounded_fts_fallback(substrate, query, limit, search_timeout, started, namespaces).await?;
             (total, hits, Some(crate::recall::hybrid::DEGRADED_FOUR_LANE_TIMEOUT.to_owned()))
         }
     };
@@ -229,10 +244,11 @@ async fn bounded_fts_fallback(
     limit: usize,
     search_timeout: std::time::Duration,
     started: std::time::Instant,
+    namespaces: Option<&[String]>,
 ) -> Result<(usize, Vec<SearchHit>), HandlerError> {
     let remaining =
         search_timeout.saturating_sub(started.elapsed()).max(std::time::Duration::from_millis(MIN_FTS_FALLBACK_MS));
-    match tokio::time::timeout(remaining, fts_search_hits(substrate, query, limit)).await {
+    match tokio::time::timeout(remaining, fts_search_hits(substrate, query, limit, namespaces)).await {
         Ok(result) => result,
         Err(_) => {
             tracing::warn!("memory_search fallback FTS timed out within the floored fallback budget");
@@ -245,11 +261,13 @@ async fn fts_search_hits(
     substrate: &Substrate,
     query: &str,
     limit: usize,
+    namespaces: Option<&[String]>,
 ) -> Result<(usize, Vec<SearchHit>), HandlerError> {
     // Reuse the hybrid BM25 helper so FTS-only search gets the same two-stage
     // strict-AND -> relaxed-OR fallback and per-memory collapse as the fused
     // lane, without duplicating the query sanitizer.
-    let candidates = substrate.query_hybrid_chunks(query, None, limit).await.map_err(HandlerError::substrate)?;
+    let candidates =
+        substrate.query_hybrid_chunks(query, None, limit, namespaces).await.map_err(HandlerError::substrate)?;
     let k = f64::from(DEFAULT_VECTOR_RECALL_RRF_K);
     let total = candidates.len();
     let hits = candidates

@@ -88,6 +88,7 @@ async fn search_and_get_return_bounded_protocol_responses_from_substrate() {
                 query: "bounded protocol snippets".to_string(),
                 limit: Some(1),
                 include_body: false,
+                cwd: None,
             },
         ),
     )
@@ -111,6 +112,7 @@ async fn search_and_get_return_bounded_protocol_responses_from_substrate() {
                 query: "bounded protocol snippets".to_string(),
                 limit: Some(1),
                 include_body: true,
+                cwd: None,
             },
         ),
     )
@@ -307,6 +309,7 @@ async fn search_include_body_is_bounded_to_the_get_cap() {
                 query: "oversize disclosure canary".to_string(),
                 limit: Some(1),
                 include_body: true,
+                cwd: None,
             },
         ),
     )
