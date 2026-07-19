@@ -1,3 +1,8 @@
+// This suite drives the dashboard against dev-fixture auth, which only exists
+// behind the feature — gate the whole file so plain `cargo check --all-targets`
+// (without `--features dev-fixtures`) compiles. check.sh enables the feature.
+#![cfg(feature = "dev-fixtures")]
+
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Request, StatusCode};
 use memory_substrate::{InitOptions, Roots, Substrate};

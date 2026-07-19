@@ -1,3 +1,7 @@
+// Depends on dev-fixture auth; gated so plain `cargo check --all-targets`
+// compiles without `--features dev-fixtures` (check.sh enables it).
+#![cfg(feature = "dev-fixtures")]
+
 use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
 use memory_substrate::{InitOptions, Roots, Substrate};
