@@ -494,7 +494,11 @@ mod tests {
     async fn delta_excludes_project_memories_outside_session_namespaces() {
         let fixture = DeltaFixture::new("dev_nsleak").await;
         fixture
-            .write_project_memory("mem_20260619_bbbbbbbbbbbbbbbb_000001", "nsleakneedle atlas phase review", "proj_atlas")
+            .write_project_memory(
+                "mem_20260619_bbbbbbbbbbbbbbbb_000001",
+                "nsleakneedle atlas phase review",
+                "proj_atlas",
+            )
             .await;
         fixture.write_memory("mem_20260619_bbbbbbbbbbbbbbbb_000002", "nsleakneedle in-scope me fact").await;
 

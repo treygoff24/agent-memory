@@ -79,7 +79,12 @@ async fn daemon_visible_substrate_api_refuses_noncanonical_path_reads_and_query_
         .await
         .expect("recall query");
     let chunk_hits = substrate
-        .query_chunks(ChunkQuery { text: Some("stream-f-isolation".to_string()), triple: None, vector: None, namespaces: None })
+        .query_chunks(ChunkQuery {
+            text: Some("stream-f-isolation".to_string()),
+            triple: None,
+            vector: None,
+            namespaces: None,
+        })
         .await
         .expect("chunk query");
 

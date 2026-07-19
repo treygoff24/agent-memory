@@ -222,7 +222,12 @@ async fn stream_f_noncanonical_files_are_never_indexed_or_returned_by_queries() 
         .await
         .expect("recall query");
     let chunk_hits = substrate
-        .query_chunks(ChunkQuery { text: Some("stream-f-isolation".to_string()), triple: None, vector: None })
+        .query_chunks(ChunkQuery {
+            text: Some("stream-f-isolation".to_string()),
+            triple: None,
+            vector: None,
+            namespaces: None,
+        })
         .await
         .expect("chunk query");
 

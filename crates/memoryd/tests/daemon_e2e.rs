@@ -43,7 +43,12 @@ async fn cli_client_write_note_then_search_then_get_through_live_daemon() {
     let response = client::request(
         &socket,
         "cli-search-candidate",
-        RequestPayload::Search { query: "live daemon end-to-end".to_string(), limit: Some(5), include_body: false },
+        RequestPayload::Search {
+            query: "live daemon end-to-end".to_string(),
+            limit: Some(5),
+            include_body: false,
+            cwd: None,
+        },
     )
     .await
     .expect("search reaches daemon");
@@ -64,7 +69,12 @@ async fn cli_client_write_note_then_search_then_get_through_live_daemon() {
     let response = client::request(
         &socket,
         "cli-search",
-        RequestPayload::Search { query: "live daemon end-to-end".to_string(), limit: Some(5), include_body: false },
+        RequestPayload::Search {
+            query: "live daemon end-to-end".to_string(),
+            limit: Some(5),
+            include_body: false,
+            cwd: None,
+        },
     )
     .await
     .expect("search reaches daemon");

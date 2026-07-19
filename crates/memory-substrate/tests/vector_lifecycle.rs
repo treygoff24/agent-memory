@@ -353,7 +353,12 @@ async fn dropped_triple_returns_unknown_and_cannot_be_recreated_by_stale_worker(
     assert_eq!(substrate.drop_embedding_model_report(triple.clone()).await.expect("drop").vectors_removed, 1);
 
     let query_err = substrate
-        .query_chunks(ChunkQuery { text: None, triple: Some(triple.clone()), vector: Some(vec![1.0, 0.0, 0.0]), namespaces: None })
+        .query_chunks(ChunkQuery {
+            text: None,
+            triple: Some(triple.clone()),
+            vector: Some(vec![1.0, 0.0, 0.0]),
+            namespaces: None,
+        })
         .await
         .expect_err("dropped query is unknown");
     assert!(matches!(query_err, SubstrateError::Vector(VectorError::UnknownEmbeddingTriple(_))));
@@ -458,7 +463,12 @@ async fn query_chunks_uses_sqlite_vec_nearest_neighbors() {
     }
 
     let hits = substrate
-        .query_chunks(ChunkQuery { text: None, triple: Some(triple), vector: Some(vec![1.0, 0.0, 0.0]), namespaces: None })
+        .query_chunks(ChunkQuery {
+            text: None,
+            triple: Some(triple),
+            vector: Some(vec![1.0, 0.0, 0.0]),
+            namespaces: None,
+        })
         .await
         .expect("vector query");
 

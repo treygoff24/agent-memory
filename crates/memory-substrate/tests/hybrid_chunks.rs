@@ -314,10 +314,7 @@ async fn hybrid_chunks_namespace_scoping_filters_both_lanes() {
         })
         .await
         .expect("fts query");
-    assert_eq!(
-        fts_hits.iter().map(|hit| hit.memory_id.as_str().to_string()).collect::<Vec<_>>(),
-        vec![me_id]
-    );
+    assert_eq!(fts_hits.iter().map(|hit| hit.memory_id.as_str().to_string()).collect::<Vec<_>>(), vec![me_id]);
 }
 
 async fn new_substrate() -> (tempfile::TempDir, Roots, Substrate) {

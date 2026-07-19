@@ -91,7 +91,12 @@ async fn search_with_cwd_scopes_to_visible_namespaces() {
                 substrate,
                 RequestEnvelope::new(
                     "req-scoped-search",
-                    RequestPayload::Search { query: "nsscopeneedle".to_string(), limit: Some(10), include_body: false, cwd },
+                    RequestPayload::Search {
+                        query: "nsscopeneedle".to_string(),
+                        limit: Some(10),
+                        include_body: false,
+                        cwd,
+                    },
                 ),
             )
             .await;

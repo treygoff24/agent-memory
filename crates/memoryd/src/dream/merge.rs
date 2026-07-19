@@ -1355,7 +1355,12 @@ mod tests {
         let staged = substrate.read_memory(&proposal.replacement.frontmatter.id).await.unwrap();
         assert!(staged.frontmatter.is_merge_non_servable());
         let fts = substrate
-            .query_chunks(memory_substrate::ChunkQuery { text: Some("body".into()), triple: None, vector: None, namespaces: None })
+            .query_chunks(memory_substrate::ChunkQuery {
+                text: Some("body".into()),
+                triple: None,
+                vector: None,
+                namespaces: None,
+            })
             .await
             .unwrap();
         assert!(fts.iter().all(|hit| hit.memory_id != proposal.replacement.frontmatter.id));

@@ -238,7 +238,12 @@ async fn privacy_e2e_project_url_and_date_stay_plaintext_and_searchable() {
         &substrate,
         RequestEnvelope::new(
             "search-url",
-            RequestPayload::Search { query: "docs.example.com".to_string(), limit: Some(10), include_body: false, cwd: None },
+            RequestPayload::Search {
+                query: "docs.example.com".to_string(),
+                limit: Some(10),
+                include_body: false,
+                cwd: None,
+            },
         ),
     )
     .await;
@@ -300,7 +305,12 @@ async fn privacy_e2e_phone_contact_is_encrypted_findable_and_revealable() {
         &substrate,
         RequestEnvelope::new(
             "search-descriptor",
-            RequestPayload::Search { query: "chief staff cell".to_string(), limit: Some(10), include_body: false, cwd: None },
+            RequestPayload::Search {
+                query: "chief staff cell".to_string(),
+                limit: Some(10),
+                include_body: false,
+                cwd: None,
+            },
         ),
     )
     .await;

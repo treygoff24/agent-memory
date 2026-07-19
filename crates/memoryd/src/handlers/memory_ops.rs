@@ -152,7 +152,8 @@ pub(crate) async fn search_response(
             if candidates.is_empty() =>
         {
             tracing::warn!(marker, "memory_search four-lane recall fully degraded; falling back to FTS-only");
-            let (total, hits) = bounded_fts_fallback(substrate, query, limit, search_timeout, started, namespaces).await?;
+            let (total, hits) =
+                bounded_fts_fallback(substrate, query, limit, search_timeout, started, namespaces).await?;
             (total, hits, Some(marker.to_owned()))
         }
         Ok(crate::recall::hybrid::HybridRecallDecision::Fused { candidates, degraded }) => {
@@ -177,7 +178,8 @@ pub(crate) async fn search_response(
             if let Some(marker) = degraded {
                 tracing::warn!(marker, "memory_search vector recall degraded; falling back to FTS-only");
             }
-            let (total, hits) = bounded_fts_fallback(substrate, query, limit, search_timeout, started, namespaces).await?;
+            let (total, hits) =
+                bounded_fts_fallback(substrate, query, limit, search_timeout, started, namespaces).await?;
             (total, hits, degraded.map(str::to_owned))
         }
         Err(_) => {
@@ -185,7 +187,8 @@ pub(crate) async fn search_response(
                 timeout_ms = search_timeout.as_millis(),
                 "memory_search timed out; falling back to FTS-only"
             );
-            let (total, hits) = bounded_fts_fallback(substrate, query, limit, search_timeout, started, namespaces).await?;
+            let (total, hits) =
+                bounded_fts_fallback(substrate, query, limit, search_timeout, started, namespaces).await?;
             (total, hits, Some(crate::recall::hybrid::DEGRADED_FOUR_LANE_TIMEOUT.to_owned()))
         }
     };

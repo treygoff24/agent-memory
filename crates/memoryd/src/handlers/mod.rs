@@ -265,12 +265,11 @@ async fn dispatch(
         RequestPayload::Status => Ok(ResponsePayload::Status(status_response(substrate, state).await)),
         RequestPayload::Doctor => Ok(ResponsePayload::Doctor(doctor_response(substrate, state).await)),
         RequestPayload::Search { query, limit, include_body, cwd } => {
-            search_response(substrate, state, SearchResponseRequest {
-                query: &query,
-                limit,
-                include_body,
-                cwd: cwd.as_deref(),
-            })
+            search_response(
+                substrate,
+                state,
+                SearchResponseRequest { query: &query, limit, include_body, cwd: cwd.as_deref() },
+            )
             .await
         }
         RequestPayload::Get { id, include_provenance, full_body } => {

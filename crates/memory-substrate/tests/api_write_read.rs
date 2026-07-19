@@ -554,7 +554,7 @@ async fn query_chunks_returns_fts_hits() {
         .await
         .expect("write");
     let hits = substrate
-        .query_chunks(ChunkQuery { text: Some("needle".to_string()), triple: None, vector: None })
+        .query_chunks(ChunkQuery { text: Some("needle".to_string()), triple: None, vector: None, namespaces: None })
         .await
         .expect("chunk query");
     assert_eq!(hits.len(), 1);
@@ -594,7 +594,12 @@ async fn query_chunks_excludes_passive_recall_disabled_rows() {
     }
 
     let hits = substrate
-        .query_chunks(ChunkQuery { text: Some("sharedneedle".to_string()), triple: None, vector: None })
+        .query_chunks(ChunkQuery {
+            text: Some("sharedneedle".to_string()),
+            triple: None,
+            vector: None,
+            namespaces: None,
+        })
         .await
         .expect("chunk query");
 
@@ -630,7 +635,12 @@ async fn fts_mutation_removes_old_terms_after_replace() {
         .expect("write");
     assert_eq!(
         substrate
-            .query_chunks(ChunkQuery { text: Some("oldterm".to_string()), triple: None, vector: None })
+            .query_chunks(ChunkQuery {
+                text: Some("oldterm".to_string()),
+                triple: None,
+                vector: None,
+                namespaces: None
+            })
             .await
             .expect("oldterm query")
             .len(),
@@ -655,13 +665,18 @@ async fn fts_mutation_removes_old_terms_after_replace() {
         .expect("replace");
 
     assert!(substrate
-        .query_chunks(ChunkQuery { text: Some("oldterm".to_string()), triple: None, vector: None })
+        .query_chunks(ChunkQuery { text: Some("oldterm".to_string()), triple: None, vector: None, namespaces: None })
         .await
         .expect("oldterm gone")
         .is_empty());
     assert_eq!(
         substrate
-            .query_chunks(ChunkQuery { text: Some("newterm".to_string()), triple: None, vector: None })
+            .query_chunks(ChunkQuery {
+                text: Some("newterm".to_string()),
+                triple: None,
+                vector: None,
+                namespaces: None
+            })
             .await
             .expect("newterm query")
             .len(),
@@ -694,7 +709,12 @@ async fn tombstone_memory_persists_status_updates_index_and_records_event() {
         .expect("write");
     assert_eq!(
         substrate
-            .query_chunks(ChunkQuery { text: Some("tombstoneindexedterm".to_string()), triple: None, vector: None })
+            .query_chunks(ChunkQuery {
+                text: Some("tombstoneindexedterm".to_string()),
+                triple: None,
+                vector: None,
+                namespaces: None
+            })
             .await
             .expect("pre-tombstone query")
             .len(),
@@ -713,7 +733,12 @@ async fn tombstone_memory_persists_status_updates_index_and_records_event() {
     assert_eq!(tombstoned.frontmatter.status, MemoryStatus::Tombstoned);
     assert_eq!(tombstoned.frontmatter.tombstone_events.len(), 1);
     assert!(substrate
-        .query_chunks(ChunkQuery { text: Some("tombstoneindexedterm".to_string()), triple: None, vector: None })
+        .query_chunks(ChunkQuery {
+            text: Some("tombstoneindexedterm".to_string()),
+            triple: None,
+            vector: None,
+            namespaces: None
+        })
         .await
         .expect("post-tombstone query")
         .is_empty());
@@ -900,7 +925,7 @@ async fn encrypted_write_uses_encrypted_path_and_metadata_only_index() {
         .expect("query");
     assert_eq!(hits[0].path.as_str(), format!("encrypted/agent/patterns/{}.md", memory.frontmatter.id.as_str()));
     let chunks = substrate
-        .query_chunks(ChunkQuery { text: Some("ciphertext".to_string()), triple: None, vector: None })
+        .query_chunks(ChunkQuery { text: Some("ciphertext".to_string()), triple: None, vector: None, namespaces: None })
         .await
         .expect("chunks");
     assert!(chunks.is_empty());
@@ -1204,14 +1229,24 @@ async fn encrypted_safe_projection_indexes_only_safe_body() {
 
     assert_eq!(
         substrate
-            .query_chunks(ChunkQuery { text: Some("safeprojectionneedle".to_string()), triple: None, vector: None })
+            .query_chunks(ChunkQuery {
+                text: Some("safeprojectionneedle".to_string()),
+                triple: None,
+                vector: None,
+                namespaces: None
+            })
             .await
             .expect("safe query")
             .len(),
         1
     );
     assert!(substrate
-        .query_chunks(ChunkQuery { text: Some("unsafesecretneedle".to_string()), triple: None, vector: None })
+        .query_chunks(ChunkQuery {
+            text: Some("unsafesecretneedle".to_string()),
+            triple: None,
+            vector: None,
+            namespaces: None
+        })
         .await
         .expect("unsafe query")
         .is_empty());
@@ -1398,7 +1433,12 @@ async fn encrypted_index_after_ciphertext_commit_is_durably_replayed_on_startup(
     let reopened = Substrate::open(roots.clone()).await.expect("reopen");
     assert_eq!(
         reopened
-            .query_chunks(ChunkQuery { text: Some("replayablesafeprojection".to_string()), triple: None, vector: None })
+            .query_chunks(ChunkQuery {
+                text: Some("replayablesafeprojection".to_string()),
+                triple: None,
+                vector: None,
+                namespaces: None
+            })
             .await
             .expect("safe projection replayed")
             .len(),

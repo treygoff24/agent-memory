@@ -82,7 +82,12 @@ async fn startup_reindex_ingests_valid_offline_edits_without_manual_reindex() {
 
     let reopened = Substrate::open(roots).await.expect("reopen");
     let hits = reopened
-        .query_chunks(ChunkQuery { text: Some("offlineeditneedle".to_string()), triple: None, vector: None, namespaces: None })
+        .query_chunks(ChunkQuery {
+            text: Some("offlineeditneedle".to_string()),
+            triple: None,
+            vector: None,
+            namespaces: None,
+        })
         .await
         .expect("query");
     assert_eq!(hits.len(), 1);

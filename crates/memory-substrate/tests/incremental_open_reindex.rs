@@ -74,7 +74,12 @@ async fn warm_open_reindexes_only_modified_plaintext() {
     assert_eq!(reopened.startup_reconcile_report().reindexed_memories, 1, "only the modified file should reindex");
 
     let hits = reopened
-        .query_chunks(ChunkQuery { text: Some("warmeditneedle".to_string()), triple: None, vector: None, namespaces: None })
+        .query_chunks(ChunkQuery {
+            text: Some("warmeditneedle".to_string()),
+            triple: None,
+            vector: None,
+            namespaces: None,
+        })
         .await
         .expect("query edited");
     assert_eq!(hits.len(), 1, "edited body should be searchable after open");
@@ -221,7 +226,12 @@ async fn warm_open_rolls_back_reindex_transaction_when_later_stale_file_is_malfo
     );
     for offset in [0, 63, 64, DRIFTED_MEMORY_COUNT - 1] {
         let hits = reopened
-            .query_chunks(ChunkQuery { text: Some(format!("rollbackneedle_{offset:03}")), triple: None, vector: None, namespaces: None })
+            .query_chunks(ChunkQuery {
+                text: Some(format!("rollbackneedle_{offset:03}")),
+                triple: None,
+                vector: None,
+                namespaces: None,
+            })
             .await
             .expect("query reindexed edit");
         assert_eq!(hits.len(), 1, "edited body should be searchable after repaired open for offset {offset}");

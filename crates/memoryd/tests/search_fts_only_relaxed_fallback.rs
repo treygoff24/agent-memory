@@ -143,7 +143,7 @@ impl Fixture {
             &self.substrate,
             RequestEnvelope::new(
                 "search",
-                RequestPayload::Search { query: query.to_owned(), limit: Some(10), include_body: false },
+                RequestPayload::Search { query: query.to_owned(), limit: Some(10), include_body: false, cwd: None },
             ),
         )
         .await

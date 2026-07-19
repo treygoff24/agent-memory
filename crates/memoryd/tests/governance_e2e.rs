@@ -426,7 +426,12 @@ async fn governance_e2e_forget_tombstones_memory_and_removes_term_from_fts_hits(
         &substrate,
         RequestEnvelope::new(
             "search-after-forget",
-            RequestPayload::Search { query: "ForgettableUniqueTerm".to_string(), limit: Some(10), include_body: false },
+            RequestPayload::Search {
+                query: "ForgettableUniqueTerm".to_string(),
+                limit: Some(10),
+                include_body: false,
+                cwd: None,
+            },
         ),
     )
     .await;
