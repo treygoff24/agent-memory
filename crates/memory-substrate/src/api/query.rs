@@ -179,15 +179,16 @@ impl Substrate {
 
     /// Query chunks.
     pub async fn query_chunks(&self, query: ChunkQuery) -> SubstrateResult<Vec<ChunkResult>> {
+        let namespaces = query.namespaces.as_deref();
         if let (Some(triple), Some(vector)) = (query.triple.as_ref(), query.vector.as_ref()) {
             let index = lock_index(&self.index);
-            return Ok(index.query_vector_chunks(triple, vector, 20)?);
+            return Ok(index.query_vector_chunks(triple, vector, 20, namespaces)?);
         }
         let Some(text) = query.text else {
             return Ok(Vec::new());
         };
         let index = lock_index(&self.index);
-        Ok(index.query_chunks(&text)?)
+        Ok(index.query_chunks(&text, namespaces)?)
     }
 
     /// Query recall-eligible chunks through BM25 and, optionally, a structurally
@@ -198,11 +199,13 @@ impl Substrate {
     /// A supplied vector lane always carries the exact embedding triple, and a
     /// missing/dropped vector table returns [`VectorError::UnknownEmbeddingTriple`]
     /// rather than silently falling back to BM25-only results.
+    #[allow(clippy::too_many_arguments)]
     pub async fn query_hybrid_chunks(
         &self,
         text: &str,
         vector_query: Option<HybridVectorQuery<'_>>,
         limit: usize,
+        namespaces: Option<&[String]>,
     ) -> Result<Vec<HybridMemoryCandidate>, VectorError> {
         // Own the borrowed query inputs so the FTS + KNN scan can run on a
         // blocking thread (the borrowed `text`/vector do not outlive this call).
@@ -210,52 +213,59 @@ impl Substrate {
         let index = Arc::clone(&self.index);
         let text = text.to_owned();
         let vector_query = vector_query.map(|q| (q.triple.clone(), q.vector.to_vec()));
+        let namespaces = namespaces.map(<[String]>::to_vec);
         tokio::task::spawn_blocking(move || {
             let vector_query = vector_query.as_ref().map(|(triple, vector)| HybridVectorQuery { triple, vector });
             index
                 .lock()
                 .map_err(|err| VectorError::IndexUnavailable(format!("index mutex poisoned: {err}")))?
-                .query_hybrid_chunks(&text, vector_query, limit)
+                .query_hybrid_chunks(&text, vector_query, limit, namespaces.as_deref())
         })
         .await
         .map_err(|err| VectorError::IndexUnavailable(format!("hybrid chunk query task panicked: {err}")))?
     }
 
     /// Query recall-eligible abstraction vectors without blocking the async runtime.
+    #[allow(clippy::too_many_arguments)]
     pub async fn query_abstraction_vectors(
         &self,
         triple: &EmbeddingTriple,
         vector: &[f32],
         limit: usize,
+        namespaces: Option<&[String]>,
     ) -> Result<Vec<crate::model::AbstractionVectorHit>, VectorError> {
         let index = Arc::clone(&self.index);
         let triple = triple.clone();
         let vector = vector.to_vec();
+        let namespaces = namespaces.map(<[String]>::to_vec);
         tokio::task::spawn_blocking(move || {
             index
                 .lock()
                 .map_err(|err| VectorError::IndexUnavailable(format!("index mutex poisoned: {err}")))?
-                .query_abstraction_vectors(&triple, &vector, limit)
+                .query_abstraction_vectors(&triple, &vector, limit, namespaces.as_deref())
         })
         .await
         .map_err(|err| VectorError::IndexUnavailable(format!("abstraction vector query task panicked: {err}")))?
     }
 
     /// Query recall-eligible cue vectors without blocking the async runtime.
+    #[allow(clippy::too_many_arguments)]
     pub async fn query_cue_vectors(
         &self,
         triple: &EmbeddingTriple,
         vector: &[f32],
         limit: usize,
+        namespaces: Option<&[String]>,
     ) -> Result<Vec<crate::model::CueVectorHit>, VectorError> {
         let index = Arc::clone(&self.index);
         let triple = triple.clone();
         let vector = vector.to_vec();
+        let namespaces = namespaces.map(<[String]>::to_vec);
         tokio::task::spawn_blocking(move || {
             index
                 .lock()
                 .map_err(|err| VectorError::IndexUnavailable(format!("index mutex poisoned: {err}")))?
-                .query_cue_vectors(&triple, &vector, limit)
+                .query_cue_vectors(&triple, &vector, limit, namespaces.as_deref())
         })
         .await
         .map_err(|err| VectorError::IndexUnavailable(format!("cue vector query task panicked: {err}")))?

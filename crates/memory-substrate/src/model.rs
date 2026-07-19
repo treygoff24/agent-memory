@@ -1736,6 +1736,11 @@ pub struct ChunkQuery {
     pub triple: Option<EmbeddingTriple>,
     /// Optional query vector for sqlite-vec KNN search.
     pub vector: Option<Vec<f32>>,
+    /// Namespace-prefix set restricting results to visible namespaces
+    /// (spec stream-e §6). `None` is unscoped; entries use the
+    /// `namespace_prefix` grammar (`me`, `agent`, `project:<id>`, `org:<id>`).
+    #[serde(default)]
+    pub namespaces: Option<Vec<String>>,
 }
 
 /// Chunk result.

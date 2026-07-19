@@ -172,6 +172,7 @@ async fn run_iterations(fixture: &Fixture, runs: usize, seed: u64) -> Result<Met
                         text: Some(format!("{}", corpus.saturating_sub(1))),
                         triple: None,
                         vector: None,
+                        namespaces: None,
                     })
                     .await
                     .map(|_| ())
@@ -188,6 +189,7 @@ async fn run_iterations(fixture: &Fixture, runs: usize, seed: u64) -> Result<Met
                         text: None,
                         triple: Some(fixture.triple.clone()),
                         vector: Some(query_vector),
+                        namespaces: None,
                     })
                     .await
                     .map(|_| ())

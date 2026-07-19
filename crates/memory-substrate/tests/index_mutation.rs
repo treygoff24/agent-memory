@@ -11,18 +11,18 @@ fn fts_update_and_delete_remove_old_terms() {
     let mut index = Index::new(open_index(&temp.path().join("index.sqlite")).expect("open index"));
     let mut memory = sample_memory("mem_20260424_a1b2c3d4e5f60718_010001", "oldneedle body");
     index.upsert_memory(&memory, false).expect("initial upsert");
-    assert_eq!(index.query_chunks("oldneedle").expect("old query").len(), 1);
+    assert_eq!(index.query_chunks("oldneedle", None).expect("old query").len(), 1);
 
     memory.body = "newneedle body".to_string();
     index.upsert_memory(&memory, false).expect("update upsert");
-    assert!(index.query_chunks("oldneedle").expect("old query after update").is_empty());
-    assert_eq!(index.query_chunks("newneedle").expect("new query").len(), 1);
+    assert!(index.query_chunks("oldneedle", None).expect("old query after update").is_empty());
+    assert_eq!(index.query_chunks("newneedle", None).expect("new query").len(), 1);
 
     index
         .connection()
         .execute("DELETE FROM memory_chunks WHERE memory_id=?1", [memory.frontmatter.id.as_str()])
         .expect("delete chunks");
-    assert!(index.query_chunks("newneedle").expect("new query after delete").is_empty());
+    assert!(index.query_chunks("newneedle", None).expect("new query after delete").is_empty());
 }
 
 #[test]
@@ -51,10 +51,10 @@ fn vacuum_preserves_chunk_fts_matches() {
         let id = format!("mem_20260424_a1b2c3d4e5f60718_{seq:06}");
         index.upsert_memory(&sample_memory(&id, &token), false).expect("upsert fixture");
     }
-    let before = index.query_chunks("vacuumneedle777").expect("before vacuum");
+    let before = index.query_chunks("vacuumneedle777", None).expect("before vacuum");
 
     index.connection().execute_batch("VACUUM").expect("vacuum");
-    let after = index.query_chunks("vacuumneedle777").expect("after vacuum");
+    let after = index.query_chunks("vacuumneedle777", None).expect("after vacuum");
 
     assert_eq!(before.len(), 1);
     assert_eq!(after.len(), 1);

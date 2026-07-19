@@ -40,8 +40,8 @@ pub const AUX_PENDING_JOB_HASH_SCOPED_DELETE_SQL: &str = "DELETE FROM aux_pendin
 pub const MERGE_NON_SERVABLE_SQL: &str = "NOT (memories.status = 'superseded' OR (memories.status = 'candidate' AND json_extract(memories.frontmatter_json, '$.write_policy.policy_applied') = 'merge-staged-v1'))";
 use super::read::{
     append_filters_and_order, append_match_term_filters, append_memory_query_filters, append_recall_index_filters,
-    collect_query_results, hydrate_recall_index_auxiliary, read_all_entity_rows, read_entities_by_memory,
-    row_to_recall_index_row,
+    collect_query_results, hydrate_recall_index_auxiliary, namespace_set_predicate, read_all_entity_rows,
+    read_entities_by_memory, row_to_recall_index_row,
 };
 use super::search::{
     bm25_chunk_hit_from_row, chunk_texts_by_rowid, collapse_bm25_memory_hits, compare_hybrid_candidates,
@@ -715,11 +715,13 @@ impl Index {
     }
 
     /// KNN query over abstraction vectors. W2 deliberately does not wire this into recall.
+    #[allow(clippy::too_many_arguments)]
     pub fn query_abstraction_vectors(
         &self,
         triple: &EmbeddingTriple,
         vector: &[f32],
         limit: usize,
+        namespaces: Option<&[String]>,
     ) -> Result<Vec<AbstractionVectorHit>, VectorError> {
         if limit == 0 {
             return Ok(Vec::new());
@@ -729,30 +731,38 @@ impl Index {
         if is_dropped_triple(&self.connection, triple)? || !table_exists(&self.connection, &table)? {
             return Err(VectorError::UnknownEmbeddingTriple(triple.clone()));
         }
+        let (ns_clause, ns_bindings) = namespace_clause(namespaces);
         let sql = format!(
             "SELECT abstractions.memory_id,{table}.distance FROM {table}
              JOIN memory_abstractions abstractions ON abstractions.rowid={table}.rowid
              JOIN aux_embedding_meta meta ON meta.row_kind='abstraction' AND meta.target_id=abstractions.memory_id
-               AND meta.provider=?3 AND meta.model_ref=?4 AND meta.dimension=?5
+               AND meta.provider=? AND meta.model_ref=? AND meta.dimension=?
                AND meta.content_hash=abstractions.abstraction_hash
              JOIN memories ON memories.id=abstractions.memory_id
                AND memories.status IN ('active','pinned')
-               AND memories.metadata_only=0 AND memories.passive_recall=1 AND memories.index_body=1
-             WHERE embedding MATCH ?1 AND k=?2
+               AND memories.metadata_only=0 AND memories.passive_recall=1 AND memories.index_body=1{ns_clause}
+             WHERE embedding MATCH ? AND k=?
              ORDER BY {table}.distance, abstractions.memory_id"
         );
         let blob = crate::index::sqlite_vec::serialize_f32(vector);
+        // Bindings in textual order: meta triple columns, namespace clause
+        // (inside the memories JOIN), then the KNN MATCH + k.
+        let mut bindings = vec![
+            Value::Text(triple.provider.clone()),
+            Value::Text(triple.model_ref.clone()),
+            Value::Integer(i64::from(triple.dimension)),
+        ];
+        bindings.extend(ns_bindings);
+        bindings.push(Value::Blob(blob));
+        bindings.push(Value::Integer(limit as i64));
         let mut stmt = self.connection.prepare(&sql)?;
         let hits = stmt
-            .query_map(
-                params![blob, limit as i64, triple.provider, triple.model_ref, i64::from(triple.dimension)],
-                |row| {
-                    Ok(AbstractionVectorHit {
-                        memory_id: MemoryId::new(row.get::<_, String>(0)?),
-                        distance: row.get::<_, f64>(1)? as f32,
-                    })
-                },
-            )?
+            .query_map(params_from_iter(bindings.iter()), |row| {
+                Ok(AbstractionVectorHit {
+                    memory_id: MemoryId::new(row.get::<_, String>(0)?),
+                    distance: row.get::<_, f64>(1)? as f32,
+                })
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(hits)
     }
@@ -786,11 +796,13 @@ impl Index {
     }
 
     /// KNN query over cue vectors. W2 deliberately does not wire this into recall.
+    #[allow(clippy::too_many_arguments)]
     pub fn query_cue_vectors(
         &self,
         triple: &EmbeddingTriple,
         vector: &[f32],
         limit: usize,
+        namespaces: Option<&[String]>,
     ) -> Result<Vec<CueVectorHit>, VectorError> {
         if limit == 0 {
             return Ok(Vec::new());
@@ -800,30 +812,37 @@ impl Index {
         if is_dropped_triple(&self.connection, triple)? || !table_exists(&self.connection, &table)? {
             return Err(VectorError::UnknownEmbeddingTriple(triple.clone()));
         }
+        let (ns_clause, ns_bindings) = namespace_clause(namespaces);
         let sql = format!(
             "SELECT cues.memory_id,cues.ordinal,{table}.distance FROM {table}
              JOIN memory_cues cues ON cues.rowid={table}.rowid
              JOIN aux_embedding_meta meta ON meta.row_kind='cue' AND meta.target_id=cues.memory_id||':'||cues.ordinal
-               AND meta.provider=?3 AND meta.model_ref=?4 AND meta.dimension=?5 AND meta.content_hash=cues.cue_hash
+               AND meta.provider=? AND meta.model_ref=? AND meta.dimension=? AND meta.content_hash=cues.cue_hash
              JOIN memories ON memories.id=cues.memory_id
                AND memories.status IN ('active','pinned')
-               AND memories.metadata_only=0 AND memories.passive_recall=1 AND memories.index_body=1
-             WHERE embedding MATCH ?1 AND k=?2
+               AND memories.metadata_only=0 AND memories.passive_recall=1 AND memories.index_body=1{ns_clause}
+             WHERE embedding MATCH ? AND k=?
              ORDER BY {table}.distance, cues.memory_id, cues.ordinal"
         );
         let blob = crate::index::sqlite_vec::serialize_f32(vector);
+        // Bindings in textual order: meta triple, namespace clause, MATCH, k.
+        let mut bindings = vec![
+            Value::Text(triple.provider.clone()),
+            Value::Text(triple.model_ref.clone()),
+            Value::Integer(i64::from(triple.dimension)),
+        ];
+        bindings.extend(ns_bindings);
+        bindings.push(Value::Blob(blob));
+        bindings.push(Value::Integer(limit as i64));
         let mut stmt = self.connection.prepare(&sql)?;
         let hits = stmt
-            .query_map(
-                params![blob, limit as i64, triple.provider, triple.model_ref, i64::from(triple.dimension)],
-                |row| {
-                    Ok(CueVectorHit {
-                        memory_id: MemoryId::new(row.get::<_, String>(0)?),
-                        ordinal: row.get::<_, i64>(1)? as u8,
-                        distance: row.get::<_, f64>(2)? as f32,
-                    })
-                },
-            )?
+            .query_map(params_from_iter(bindings.iter()), |row| {
+                Ok(CueVectorHit {
+                    memory_id: MemoryId::new(row.get::<_, String>(0)?),
+                    ordinal: row.get::<_, i64>(1)? as u8,
+                    distance: row.get::<_, f64>(2)? as f32,
+                })
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(hits)
     }
@@ -838,26 +857,30 @@ impl Index {
     /// R-IX-1 defense-in-depth: the join against `memories` filters out
     /// encrypted-memory chunks (`metadata_only = 1`) and rows disabled for
     /// passive recall even if upstream forgot.
-    pub fn query_chunks(&self, text: &str) -> rusqlite::Result<Vec<ChunkResult>> {
+    pub fn query_chunks(&self, text: &str, namespaces: Option<&[String]>) -> rusqlite::Result<Vec<ChunkResult>> {
         let sanitized = sanitize_fts_query(text);
         if sanitized.is_empty() {
             return Ok(Vec::new());
         }
-        let mut stmt = self.connection.prepare_cached(
+        let (ns_clause, ns_bindings) = namespace_clause(namespaces);
+        let sql = format!(
             "SELECT memory_chunks.memory_id, memory_chunks.text, bm25(memory_chunks_fts) AS score
              FROM memory_chunks_fts
              JOIN memory_chunks ON memory_chunks_fts.rowid = memory_chunks.chunk_rowid
              JOIN memories      ON memories.id = memory_chunks.memory_id
-             WHERE memory_chunks_fts MATCH ?1
+             WHERE memory_chunks_fts MATCH ?
                AND memories.metadata_only = 0
                AND memories.passive_recall = 1
-               AND memories.status IN ('active','pinned')
+               AND memories.status IN ('active','pinned'){ns_clause}
              ORDER BY score
-             LIMIT 20",
-        )?;
+             LIMIT 20"
+        );
+        let mut bindings = vec![Value::Text(sanitized)];
+        bindings.extend(ns_bindings);
+        let mut stmt = self.connection.prepare_cached(&sql)?;
         // Materialize before stmt drops (E0597 — stmt lifetime).
         let rows = stmt
-            .query_map([sanitized.as_str()], |row| {
+            .query_map(params_from_iter(bindings.iter()), |row| {
                 Ok(ChunkResult {
                     memory_id: MemoryId::new(row.get::<_, String>(0)?),
                     text: row.get(1)?,
@@ -874,34 +897,39 @@ impl Index {
     /// encrypted-memory chunks (`metadata_only = 1`) and rows disabled for
     /// passive recall (`passive_recall = 0`), matching [`Self::query_chunks`]
     /// so both retrieval paths apply the identical row-exclusion contract.
+    #[allow(clippy::too_many_arguments)]
     pub fn query_vector_chunks(
         &self,
         triple: &EmbeddingTriple,
         vector: &[f32],
         limit: usize,
+        namespaces: Option<&[String]>,
     ) -> Result<Vec<ChunkResult>, VectorError> {
         crate::index::sqlite_vec::validate_dimension(triple, vector)?;
         let table = crate::index::sqlite_vec::vector_table_name(triple);
         if is_dropped_triple(&self.connection, triple)? || !table_exists(&self.connection, &table)? {
             return Err(VectorError::UnknownEmbeddingTriple(triple.clone()));
         }
+        let (ns_clause, ns_bindings) = namespace_clause(namespaces);
         let sql = format!(
             "SELECT memory_chunks.memory_id, memory_chunks.text, {table}.distance
              FROM {table}
              JOIN memory_chunks ON memory_chunks.chunk_rowid = {table}.rowid
              JOIN memories      ON memories.id = memory_chunks.memory_id
-             WHERE embedding MATCH ?1
-               AND k = ?2
+             WHERE embedding MATCH ?
+               AND k = ?
                AND memories.metadata_only = 0
                AND memories.passive_recall = 1
-               AND memories.status IN ('active','pinned')
+               AND memories.status IN ('active','pinned'){ns_clause}
              ORDER BY {table}.distance"
         );
         let blob = crate::index::sqlite_vec::serialize_f32(vector);
+        let mut bindings = vec![Value::Blob(blob), Value::Integer(limit as i64)];
+        bindings.extend(ns_bindings);
         let mut stmt = self.connection.prepare_cached(&sql)?;
         // Materialize before stmt drops (E0597 — stmt lifetime).
         let rows = stmt
-            .query_map(params![blob, limit as i64], |row| {
+            .query_map(params_from_iter(bindings.iter()), |row| {
                 Ok(ChunkResult {
                     memory_id: MemoryId::new(row.get::<_, String>(0)?),
                     text: row.get(1)?,
@@ -920,15 +948,17 @@ impl Index {
     /// BM25 rank and vector cosine evidence so memoryd can perform RRF later.
     /// `limit` is lane-local because applying one final limit here would itself
     /// require a fusion policy.
+    #[allow(clippy::too_many_arguments)]
     pub fn query_hybrid_chunks(
         &self,
         text: &str,
         vector_query: Option<HybridVectorQuery<'_>>,
         limit: usize,
+        namespaces: Option<&[String]>,
     ) -> Result<Vec<HybridMemoryCandidate>, VectorError> {
-        let bm25_hits = self.query_hybrid_bm25_memories(text, limit)?;
+        let bm25_hits = self.query_hybrid_bm25_memories(text, limit, namespaces)?;
         let vector_hits = if let Some(query) = vector_query {
-            self.query_hybrid_vector_memories(query.triple, query.vector, limit)?
+            self.query_hybrid_vector_memories(query.triple, query.vector, limit, namespaces)?
         } else {
             Vec::new()
         };
@@ -969,19 +999,24 @@ impl Index {
         Ok(out)
     }
 
-    fn query_hybrid_bm25_memories(&self, text: &str, limit: usize) -> Result<Vec<Bm25MemoryRank>, VectorError> {
+    fn query_hybrid_bm25_memories(
+        &self,
+        text: &str,
+        limit: usize,
+        namespaces: Option<&[String]>,
+    ) -> Result<Vec<Bm25MemoryRank>, VectorError> {
         let sanitized = sanitize_fts_query(text);
         if sanitized.is_empty() || limit == 0 {
             return Ok(Vec::new());
         }
 
-        let mut collapsed = collapse_bm25_memory_hits(self.query_hybrid_bm25_chunks(&sanitized, None)?);
+        let mut collapsed = collapse_bm25_memory_hits(self.query_hybrid_bm25_chunks(&sanitized, None, namespaces)?);
         collapsed.truncate(limit);
 
         let strict_len = collapsed.len();
         let relaxed = sanitize_relaxed_fts_query(text);
         if collapsed.len() < limit && !relaxed.is_empty() && relaxed != sanitized {
-            let relaxed_hits = self.query_hybrid_bm25_chunks_memory_collapsed(&relaxed, limit)?;
+            let relaxed_hits = self.query_hybrid_bm25_chunks_memory_collapsed(&relaxed, limit, namespaces)?;
             let mut seen = collapsed.iter().map(|hit| hit.memory_id.clone()).collect::<BTreeSet<_>>();
             for hit in relaxed_hits {
                 if collapsed.len() >= limit {
@@ -1012,32 +1047,39 @@ impl Index {
         &self,
         fts_query: &str,
         row_limit: Option<usize>,
+        namespaces: Option<&[String]>,
     ) -> Result<Vec<Bm25ChunkHit>, VectorError> {
-        const SQL_BASE: &str =
+        let (ns_clause, ns_bindings) = namespace_clause(namespaces);
+        let sql_base = format!(
             "SELECT memory_chunks.memory_id, memory_chunks.text, memory_chunks.chunk_rowid, bm25(memory_chunks_fts) AS score,
                     memories.updated_at, memories.observed_at
              FROM memory_chunks_fts
              JOIN memory_chunks ON memory_chunks_fts.rowid = memory_chunks.chunk_rowid
              JOIN memories      ON memories.id = memory_chunks.memory_id
-             WHERE memory_chunks_fts MATCH ?1
+             WHERE memory_chunks_fts MATCH ?
                AND memories.metadata_only = 0
                AND memories.passive_recall = 1
-               AND memories.status IN ('active', 'pinned')
-             ORDER BY score, memory_chunks.memory_id, memory_chunks.chunk_rowid";
+               AND memories.status IN ('active', 'pinned'){ns_clause}
+             ORDER BY score, memory_chunks.memory_id, memory_chunks.chunk_rowid"
+        );
+        // Bindings in textual order: MATCH, namespace clause, then LIMIT.
+        let mut bindings = vec![Value::Text(fts_query.to_owned())];
+        bindings.extend(ns_bindings);
 
         if let Some(row_limit) = row_limit {
-            let sql_limited = format!("{SQL_BASE}\n             LIMIT ?2");
+            let sql_limited = format!("{sql_base}\n             LIMIT ?");
+            bindings.push(Value::Integer(row_limit as i64));
             let mut stmt = self.connection.prepare_cached(&sql_limited)?;
             let rows = stmt
-                .query_map(params![fts_query, row_limit as i64], bm25_chunk_hit_from_row)?
+                .query_map(params_from_iter(bindings.iter()), bm25_chunk_hit_from_row)?
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .map_err(Into::into);
             return rows;
         }
 
-        let mut stmt = self.connection.prepare_cached(SQL_BASE)?;
+        let mut stmt = self.connection.prepare_cached(&sql_base)?;
         let rows = stmt
-            .query_map([fts_query], bm25_chunk_hit_from_row)?
+            .query_map(params_from_iter(bindings.iter()), bm25_chunk_hit_from_row)?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(Into::into);
         rows
@@ -1047,8 +1089,11 @@ impl Index {
         &self,
         fts_query: &str,
         memory_limit: usize,
+        namespaces: Option<&[String]>,
     ) -> Result<Vec<Bm25ChunkHit>, VectorError> {
-        const SQL: &str = "SELECT memory_id, text, chunk_rowid, score, updated_at, observed_at FROM (
+        let (ns_clause, ns_bindings) = namespace_clause(namespaces);
+        let sql = format!(
+            "SELECT memory_id, text, chunk_rowid, score, updated_at, observed_at FROM (
                SELECT memory_id, text, chunk_rowid, score, updated_at, observed_at,
                       ROW_NUMBER() OVER (PARTITION BY memory_id ORDER BY score, chunk_rowid) AS rn
                FROM (
@@ -1057,29 +1102,36 @@ impl Index {
                  FROM memory_chunks_fts
                  JOIN memory_chunks ON memory_chunks_fts.rowid = memory_chunks.chunk_rowid
                  JOIN memories      ON memories.id = memory_chunks.memory_id
-                 WHERE memory_chunks_fts MATCH ?1
+                 WHERE memory_chunks_fts MATCH ?
                    AND memories.metadata_only = 0
                    AND memories.passive_recall = 1
-                   AND memories.status IN ('active', 'pinned')
+                   AND memories.status IN ('active', 'pinned'){ns_clause}
                )
              )
              WHERE rn = 1
              ORDER BY score, memory_id
-             LIMIT ?2";
+             LIMIT ?"
+        );
 
-        let mut stmt = self.connection.prepare_cached(SQL)?;
+        // Bindings in textual order: MATCH, namespace clause, then LIMIT.
+        let mut bindings = vec![Value::Text(fts_query.to_owned())];
+        bindings.extend(ns_bindings);
+        bindings.push(Value::Integer(memory_limit as i64));
+        let mut stmt = self.connection.prepare_cached(&sql)?;
         let rows = stmt
-            .query_map(params![fts_query, memory_limit as i64], bm25_chunk_hit_from_row)?
+            .query_map(params_from_iter(bindings.iter()), bm25_chunk_hit_from_row)?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(Into::into);
         rows
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn query_hybrid_vector_memories(
         &self,
         triple: &EmbeddingTriple,
         vector: &[f32],
         limit: usize,
+        namespaces: Option<&[String]>,
     ) -> Result<Vec<VectorMemoryScore>, VectorError> {
         crate::index::sqlite_vec::validate_dimension(triple, vector)?;
         let table = crate::index::sqlite_vec::vector_table_name(triple);
@@ -1099,23 +1151,26 @@ impl Index {
         // MAX_CHUNK_BYTES each) only to drop most of them. Instead we project the
         // tiny `(memory_id, chunk_rowid, distance, recency)` tuple, collapse and
         // truncate, then fetch text only for the surviving nearest chunks below.
+        let (ns_clause, ns_bindings) = namespace_clause(namespaces);
         let sql = format!(
             "SELECT memory_chunks.memory_id, memory_chunks.chunk_rowid, {table}.distance,
                     memories.updated_at, memories.observed_at
              FROM {table}
              JOIN memory_chunks ON memory_chunks.chunk_rowid = {table}.rowid
              JOIN memories      ON memories.id = memory_chunks.memory_id
-             WHERE embedding MATCH ?1
-               AND k = ?2
+             WHERE embedding MATCH ?
+               AND k = ?
                AND memories.metadata_only = 0
                AND memories.passive_recall = 1
-               AND memories.status IN ('active', 'pinned')
+               AND memories.status IN ('active', 'pinned'){ns_clause}
              ORDER BY {table}.distance, memory_chunks.memory_id, memory_chunks.chunk_rowid"
         );
         let blob = crate::index::sqlite_vec::serialize_f32(vector);
+        let mut bindings = vec![Value::Blob(blob), Value::Integer(knn_k as i64)];
+        bindings.extend(ns_bindings);
         let mut stmt = self.connection.prepare_cached(&sql)?;
         let rows = stmt
-            .query_map(params![blob, knn_k as i64], vector_chunk_ref_from_row)?
+            .query_map(params_from_iter(bindings.iter()), vector_chunk_ref_from_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
         let mut collapsed = super::search::collapse_vector_chunk_refs(rows);
@@ -1643,6 +1698,23 @@ pub fn query_events_log_mirror_health(
     })
 }
 
+/// Namespace scoping for recall-serving chunk/vector queries (spec stream-e
+/// §6: candidates must be visible from the active namespace set). `None` is
+/// unscoped (governance/eval surfaces); `Some` renders an `AND (...)` fragment
+/// plus bindings via [`namespace_set_predicate`]. The fragment uses bare-`?`
+/// placeholders, so every enclosing query must be all-bare-`?` with bindings
+/// supplied in textual order — mixing with `?N` placeholders misassigns
+/// indices (`?` takes largest-assigned-so-far + 1 at its parse position).
+fn namespace_clause(namespaces: Option<&[String]>) -> (String, Vec<Value>) {
+    match namespaces {
+        None => (String::new(), Vec::new()),
+        Some(set) => {
+            let (predicate, bindings) = namespace_set_predicate(set);
+            (format!("\n               AND {predicate}"), bindings)
+        }
+    }
+}
+
 fn mirror_event_row(connection: &Connection, event: &Event) -> rusqlite::Result<()> {
     let payload_json =
         serde_json::to_string(&event.kind).map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?;
@@ -1804,6 +1876,7 @@ mod tests {
         let hits = index.query_hybrid_bm25_memories(
             "relaxedanchor bravoextra charlieextra deltaextra echoextra foxtrotextra golfextra",
             limit,
+            None,
         )?;
 
         assert_eq!(hits.len(), limit, "relaxed fallback should fill the lane with distinct memories");
@@ -1850,6 +1923,7 @@ mod tests {
         let hits = index.query_hybrid_bm25_memories(
             "rankanchor bravoextra charlieextra deltaextra echoextra foxtrotextra golfextra",
             limit,
+            None,
         )?;
 
         assert_eq!(hits.len(), limit);

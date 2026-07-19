@@ -93,6 +93,41 @@ fn append_namespace_filter(
     Ok(())
 }
 
+/// Render an OR predicate over `memories` restricting rows to a namespace set
+/// (same grammar as `namespace_prefix`: `me`, `agent`, `project:<id>`,
+/// `org:<id>`). Placeholders are emitted as bare `?` — callers append the
+/// returned bindings in textual order and must use bare-`?` numbering
+/// throughout the enclosing SQL (mixing with `?N` misassigns indices).
+///
+/// Recall scoping fails closed: an invalid entry is skipped with a warning
+/// (narrowing the OR), and an empty or all-invalid set yields a no-rows
+/// predicate. This surface serves passive recall, where "serve less" is always
+/// safe and "serve other namespaces' memories" never is.
+pub(super) fn namespace_set_predicate(namespaces: &[String]) -> (String, Vec<rusqlite::types::Value>) {
+    let mut clauses = Vec::new();
+    let mut bindings = Vec::new();
+    for namespace in namespaces {
+        match parse_namespace_prefix(namespace) {
+            Ok(NamespaceFilter::Scope(scope)) => {
+                clauses.push("memories.scope = ?".to_string());
+                bindings.push(rusqlite::types::Value::Text(scope.to_string()));
+            }
+            Ok(NamespaceFilter::ScopeAndCanonicalId { scope, canonical_id }) => {
+                clauses.push("(memories.scope = ? AND memories.canonical_namespace_id = ?)".to_string());
+                bindings.push(rusqlite::types::Value::Text(scope.to_string()));
+                bindings.push(rusqlite::types::Value::Text(canonical_id));
+            }
+            Err(error) => {
+                tracing::warn!(namespace, %error, "recall namespace filter: skipping invalid namespace (fail-closed)");
+            }
+        }
+    }
+    if clauses.is_empty() {
+        return ("0".to_string(), Vec::new());
+    }
+    (format!("({})", clauses.join(" OR ")), bindings)
+}
+
 pub(super) fn append_match_term_filters(
     query: &RecallIndexQuery,
     filters: &mut Vec<String>,

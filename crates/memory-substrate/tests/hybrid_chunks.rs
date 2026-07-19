@@ -32,7 +32,12 @@ async fn hybrid_chunks_filters_recall_membership_in_both_lanes() {
     set_status(&roots, &tombstoned.frontmatter.id, "tombstoned");
 
     let hits = substrate
-        .query_hybrid_chunks("filterneedle", Some(HybridVectorQuery { triple: &triple, vector: &[1.0, 0.0, 0.0] }), 10)
+        .query_hybrid_chunks(
+            "filterneedle",
+            Some(HybridVectorQuery { triple: &triple, vector: &[1.0, 0.0, 0.0] }),
+            10,
+            None,
+        )
         .await
         .expect("hybrid query");
 
@@ -65,6 +70,7 @@ async fn hybrid_chunks_collapses_chunks_to_best_memory_candidate() {
             "collapseneedle",
             Some(HybridVectorQuery { triple: &triple, vector: &[1.0, 0.0, 0.0] }),
             10,
+            None,
         )
         .await
         .expect("hybrid query");
@@ -122,6 +128,7 @@ async fn hybrid_chunks_return_representative_chunk_text() {
             "bestbm25needle",
             Some(HybridVectorQuery { triple: &triple, vector: &[1.0, 0.0, 0.0] }),
             10,
+            None,
         )
         .await
         .expect("hybrid query");
@@ -158,7 +165,12 @@ async fn hybrid_chunks_tolerates_partial_vector_coverage_in_both_directions() {
     embed_first_chunk(&substrate, &vector_only, &triple, vec![0.0, 1.0, 0.0]).await;
 
     let hits = substrate
-        .query_hybrid_chunks("partialneedle", Some(HybridVectorQuery { triple: &triple, vector: &[1.0, 0.0, 0.0] }), 10)
+        .query_hybrid_chunks(
+            "partialneedle",
+            Some(HybridVectorQuery { triple: &triple, vector: &[1.0, 0.0, 0.0] }),
+            10,
+            None,
+        )
         .await
         .expect("hybrid query");
 
@@ -181,7 +193,12 @@ async fn hybrid_chunks_unknown_triple_is_typed_error() {
     let unknown = test_triple("absent");
 
     let err = substrate
-        .query_hybrid_chunks("anything", Some(HybridVectorQuery { triple: &unknown, vector: &[1.0, 0.0, 0.0] }), 10)
+        .query_hybrid_chunks(
+            "anything",
+            Some(HybridVectorQuery { triple: &unknown, vector: &[1.0, 0.0, 0.0] }),
+            10,
+            None,
+        )
         .await
         .expect_err("unknown triple must not silently return empty results");
 
@@ -212,6 +229,7 @@ async fn hybrid_chunks_are_deterministic_and_tie_break_by_memory_id() {
                 "nonmatchingneedle",
                 Some(HybridVectorQuery { triple: &triple, vector: &[0.5, 0.5, 0.70710677] }),
                 10,
+                None,
             )
             .await
             .expect("hybrid query");

@@ -10,7 +10,7 @@ async fn external_edit_to_same_path_is_indexed_by_reindex() {
 
     let count = substrate.reindex().await.expect("reindex");
     let hits = substrate
-        .query_chunks(ChunkQuery { text: Some("externalneedle".to_string()), triple: None, vector: None })
+        .query_chunks(ChunkQuery { text: Some("externalneedle".to_string()), triple: None, vector: None, namespaces: None })
         .await
         .expect("query external edit");
 
@@ -141,7 +141,7 @@ async fn mass_changes_converge_to_fresh_reindex_state() {
 
     let reindexed = substrate.reindex().await.expect("reindex");
     let hits = substrate
-        .query_chunks(ChunkQuery { text: Some("massneedle".to_string()), triple: None, vector: None })
+        .query_chunks(ChunkQuery { text: Some("massneedle".to_string()), triple: None, vector: None, namespaces: None })
         .await
         .expect("query mass fixtures");
 

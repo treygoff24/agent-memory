@@ -33,7 +33,7 @@ async fn fresh_open_indexes_plaintext_and_encrypted() {
 
     // Plaintext is body-indexed and queryable.
     let hits = reopened
-        .query_chunks(ChunkQuery { text: Some("body".to_string()), triple: None, vector: None })
+        .query_chunks(ChunkQuery { text: Some("body".to_string()), triple: None, vector: None, namespaces: None })
         .await
         .expect("query plaintext");
     assert!(!hits.is_empty(), "plaintext memory should be body-indexed at fresh open");
@@ -74,7 +74,7 @@ async fn warm_open_reindexes_only_modified_plaintext() {
     assert_eq!(reopened.startup_reconcile_report().reindexed_memories, 1, "only the modified file should reindex");
 
     let hits = reopened
-        .query_chunks(ChunkQuery { text: Some("warmeditneedle".to_string()), triple: None, vector: None })
+        .query_chunks(ChunkQuery { text: Some("warmeditneedle".to_string()), triple: None, vector: None, namespaces: None })
         .await
         .expect("query edited");
     assert_eq!(hits.len(), 1, "edited body should be searchable after open");
@@ -121,6 +121,7 @@ async fn warm_open_reindexes_large_plaintext_drift_set() {
                 text: Some(format!("batchdriftneedle_{offset:03}")),
                 triple: None,
                 vector: None,
+                namespaces: None,
             })
             .await
             .expect("query reindexed edit");
@@ -220,7 +221,7 @@ async fn warm_open_rolls_back_reindex_transaction_when_later_stale_file_is_malfo
     );
     for offset in [0, 63, 64, DRIFTED_MEMORY_COUNT - 1] {
         let hits = reopened
-            .query_chunks(ChunkQuery { text: Some(format!("rollbackneedle_{offset:03}")), triple: None, vector: None })
+            .query_chunks(ChunkQuery { text: Some(format!("rollbackneedle_{offset:03}")), triple: None, vector: None, namespaces: None })
             .await
             .expect("query reindexed edit");
         assert_eq!(hits.len(), 1, "edited body should be searchable after repaired open for offset {offset}");
@@ -387,7 +388,7 @@ async fn open_tolerates_dream_journal_and_non_stream_a_markdown() {
 
     // The canonical memory is still indexed and recallable.
     let hits = reopened
-        .query_chunks(ChunkQuery { text: Some("body".to_string()), triple: None, vector: None })
+        .query_chunks(ChunkQuery { text: Some("body".to_string()), triple: None, vector: None, namespaces: None })
         .await
         .expect("query plaintext");
     assert!(!hits.is_empty(), "canonical memory still indexed alongside prose artifacts");
@@ -423,7 +424,7 @@ async fn two_memories_with_identical_body_both_index_and_are_recallable() {
 
     // The shared text is body-indexed and the FTS query returns BOTH memories.
     let hits = substrate
-        .query_chunks(ChunkQuery { text: Some("verbatim".to_string()), triple: None, vector: None })
+        .query_chunks(ChunkQuery { text: Some("verbatim".to_string()), triple: None, vector: None, namespaces: None })
         .await
         .expect("query chunks");
     let ids: std::collections::HashSet<&str> = hits.iter().map(|hit| hit.memory_id.as_str()).collect();
@@ -463,7 +464,7 @@ async fn v5_migration_forces_chunk_reindex_on_open() {
     // rechunks every memory → the emptied chunks come back.
     let reopened = Substrate::open(roots.clone()).await.expect("reopen");
     let hits = reopened
-        .query_chunks(ChunkQuery { text: Some("rebuilt".to_string()), triple: None, vector: None })
+        .query_chunks(ChunkQuery { text: Some("rebuilt".to_string()), triple: None, vector: None, namespaces: None })
         .await
         .expect("query chunks");
     assert!(!hits.is_empty(), "v5 migration must force a reindex that repopulates memory_chunks");

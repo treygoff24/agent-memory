@@ -33,7 +33,7 @@ fn auxiliary_vectors_are_stale_fenced_queryable_and_invalidated_on_hash_change()
             vector: vec![1.0, 0.0, 0.0],
         })
         .expect("update");
-    assert_eq!(index.query_abstraction_vectors(&triple, &[1.0, 0.0, 0.0], 3).expect("query").len(), 1);
+    assert_eq!(index.query_abstraction_vectors(&triple, &[1.0, 0.0, 0.0], 3, None).expect("query").len(), 1);
     assert_eq!(
         index.all_abstraction_vectors(&triple).expect("enumerate vectors"),
         vec![AbstractionVectorRow { memory_id: memory.frontmatter.id.clone(), vector: vec![1.0, 0.0, 0.0] }]
@@ -47,7 +47,7 @@ fn auxiliary_vectors_are_stale_fenced_queryable_and_invalidated_on_hash_change()
             vector: vec![0.0, 1.0, 0.0],
         })
         .expect("cue update");
-    assert_eq!(index.query_cue_vectors(&triple, &[0.0, 1.0, 0.0], 3).expect("cue query").len(), 1);
+    assert_eq!(index.query_cue_vectors(&triple, &[0.0, 1.0, 0.0], 3, None).expect("cue query").len(), 1);
     let chunk = index
         .pending_embedding_jobs(1, EmbeddingLaneEligibility::AllTiers)
         .expect("chunk jobs")
@@ -67,10 +67,10 @@ fn auxiliary_vectors_are_stale_fenced_queryable_and_invalidated_on_hash_change()
     index.upsert_memory(&memory, false).expect("direct operator-override upgrade");
     assert_eq!(index.vector_count(&triple).expect("chunk vector count"), 0);
     assert!(index
-        .query_abstraction_vectors(&triple, &[1.0, 0.0, 0.0], 3)
+        .query_abstraction_vectors(&triple, &[1.0, 0.0, 0.0], 3, None)
         .expect("revoked abstraction query")
         .is_empty());
-    assert!(index.query_cue_vectors(&triple, &[0.0, 1.0, 0.0], 3).expect("revoked cue query").is_empty());
+    assert!(index.query_cue_vectors(&triple, &[0.0, 1.0, 0.0], 3, None).expect("revoked cue query").is_empty());
     assert!(!index
         .pending_aux_embedding_jobs(10, EmbeddingLaneEligibility::AllTiers)
         .expect("local override jobs")
@@ -114,7 +114,7 @@ fn auxiliary_vectors_are_stale_fenced_queryable_and_invalidated_on_hash_change()
 
     memory.frontmatter.abstraction = Some("Rotated token policy".into());
     index.upsert_memory(&memory, false).expect("changed upsert");
-    assert!(index.query_abstraction_vectors(&triple, &[1.0, 0.0, 0.0], 3).expect("query").is_empty());
+    assert!(index.query_abstraction_vectors(&triple, &[1.0, 0.0, 0.0], 3, None).expect("query").is_empty());
     assert!(index
         .pending_aux_embedding_jobs(10, EmbeddingLaneEligibility::AllTiers)
         .expect("replacement job")
@@ -161,7 +161,7 @@ fn auxiliary_vectors_are_stale_fenced_queryable_and_invalidated_on_hash_change()
             vector: vec![1.0, 0.0, 0.0],
         })
         .expect("drain re-materialized abstraction");
-    assert_eq!(index.query_abstraction_vectors(&triple, &[1.0, 0.0, 0.0], 3).unwrap().len(), 1);
+    assert_eq!(index.query_abstraction_vectors(&triple, &[1.0, 0.0, 0.0], 3, None).unwrap().len(), 1);
 }
 
 #[test]
@@ -339,7 +339,7 @@ async fn dropped_triple_returns_unknown_and_cannot_be_recreated_by_stale_worker(
     assert_eq!(substrate.drop_embedding_model_report(triple.clone()).await.expect("drop").vectors_removed, 1);
 
     let query_err = substrate
-        .query_chunks(ChunkQuery { text: None, triple: Some(triple.clone()), vector: Some(vec![1.0, 0.0, 0.0]) })
+        .query_chunks(ChunkQuery { text: None, triple: Some(triple.clone()), vector: Some(vec![1.0, 0.0, 0.0]), namespaces: None })
         .await
         .expect_err("dropped query is unknown");
     assert!(matches!(query_err, SubstrateError::Vector(VectorError::UnknownEmbeddingTriple(_))));
@@ -444,7 +444,7 @@ async fn query_chunks_uses_sqlite_vec_nearest_neighbors() {
     }
 
     let hits = substrate
-        .query_chunks(ChunkQuery { text: None, triple: Some(triple), vector: Some(vec![1.0, 0.0, 0.0]) })
+        .query_chunks(ChunkQuery { text: None, triple: Some(triple), vector: Some(vec![1.0, 0.0, 0.0]), namespaces: None })
         .await
         .expect("vector query");
 

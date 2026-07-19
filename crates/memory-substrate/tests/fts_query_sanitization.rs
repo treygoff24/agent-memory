@@ -26,7 +26,7 @@ async fn query_chunks_accepts_hyphenated_user_text() {
     //   "sqlite error: no such column: to"
     // because FTS5 read `end-to-end` as `end NOT to NOT end`.
     let hits = substrate
-        .query_chunks(ChunkQuery { text: Some("end-to-end".to_string()), triple: None, vector: None })
+        .query_chunks(ChunkQuery { text: Some("end-to-end".to_string()), triple: None, vector: None, namespaces: None })
         .await
         .expect("hyphenated query must not error out of FTS5");
 
@@ -43,7 +43,7 @@ async fn query_chunks_accepts_fts5_operator_keywords_as_plain_terms() {
     // plain phrase tokens so user queries containing them don't blow up the
     // expression parser.
     let hits = substrate
-        .query_chunks(ChunkQuery { text: Some("AND operator".to_string()), triple: None, vector: None })
+        .query_chunks(ChunkQuery { text: Some("AND operator".to_string()), triple: None, vector: None, namespaces: None })
         .await
         .expect("operator keywords as plain terms must not error");
 
@@ -59,7 +59,7 @@ async fn query_chunks_accepts_double_quotes_in_user_text() {
     // A stray double-quote in user text would unbalance the FTS5 phrase quoter
     // if not escaped. The sanitizer doubles the quote per FTS5 rules.
     let hits = substrate
-        .query_chunks(ChunkQuery { text: Some("she said \"hello\"".to_string()), triple: None, vector: None })
+        .query_chunks(ChunkQuery { text: Some("she said \"hello\"".to_string()), triple: None, vector: None, namespaces: None })
         .await
         .expect("double-quoted user text must not unbalance FTS5 phrase parsing");
 
@@ -75,7 +75,7 @@ async fn query_chunks_returns_empty_for_punctuation_only_query() {
     // empty MATCH (which is a syntax error in FTS5), the sanitizer
     // short-circuits to an empty result set.
     let hits = substrate
-        .query_chunks(ChunkQuery { text: Some("--- !@#".to_string()), triple: None, vector: None })
+        .query_chunks(ChunkQuery { text: Some("--- !@#".to_string()), triple: None, vector: None, namespaces: None })
         .await
         .expect("punctuation-only query must not error");
 
@@ -91,7 +91,7 @@ async fn query_chunks_still_finds_plain_single_word_queries() {
     write_memory(&substrate, memory_id, "regression sentinel needle term").await;
 
     let hits = substrate
-        .query_chunks(ChunkQuery { text: Some("needle".to_string()), triple: None, vector: None })
+        .query_chunks(ChunkQuery { text: Some("needle".to_string()), triple: None, vector: None, namespaces: None })
         .await
         .expect("plain word query");
 
