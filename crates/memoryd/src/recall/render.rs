@@ -415,14 +415,27 @@ fn render_delta_frame_inner(
             break;
         }
         let scaffold_tokens = estimated_tokens(&render_delta_item(&item.id, ""));
-        // Conservative text budget: escaping can expand bytes, so verify with
-        // the real push below rather than trusting the arithmetic.
-        let text_budget_bytes =
+        let allowed_bytes = remaining_tokens.saturating_mul(TOKEN_ESTIMATOR_BYTES_PER_TOKEN);
+        let mut text_budget_bytes =
             remaining_tokens.saturating_sub(scaffold_tokens).saturating_mul(TOKEN_ESTIMATOR_BYTES_PER_TOKEN);
-        let truncated = truncate_utf8_bytes(&text, text_budget_bytes);
-        let rendered = render_delta_item(&item.id, &truncated.value);
-        if push_if_within_budget(&mut body, rendered, budget_tokens, &mut used_tokens) {
-            included_item_ids.push(item.id.clone());
+        // XML escaping expands `&`/`<`/quote-heavy text past the raw-byte
+        // estimate, so verify with the real push and shrink proportionally on
+        // overflow rather than giving up (an escape-heavy top item used to
+        // fail the single attempt and empty the whole frame).
+        for _ in 0..4 {
+            let truncated = truncate_utf8_bytes(&text, text_budget_bytes);
+            let rendered = render_delta_item(&item.id, &truncated.value);
+            let rendered_bytes = rendered.len();
+            if push_if_within_budget(&mut body, rendered, budget_tokens, &mut used_tokens) {
+                included_item_ids.push(item.id.clone());
+                break;
+            }
+            // Shrink by the observed expansion ratio, with a small margin.
+            text_budget_bytes =
+                text_budget_bytes.saturating_mul(allowed_bytes).checked_div(rendered_bytes).unwrap_or(0) * 9 / 10;
+            if text_budget_bytes < DELTA_ITEM_MIN_TOKENS * TOKEN_ESTIMATOR_BYTES_PER_TOKEN / 2 {
+                break;
+            }
         }
         break;
     }
@@ -717,6 +730,24 @@ mod tests {
         // Below the minimum-useful floor the frame still closes empty.
         let tiny = render_delta_frame(&items, DELTA_ITEM_MIN_TOKENS - 1, None);
         assert_eq!(tiny.block, "<memory-delta empty=\"true\" />\n");
+    }
+
+    /// Escape-heavy variant (live regression, 2026-07-19): XML escaping expands
+    /// `&`/`<`/quote-dense text past the raw-byte estimate, so a single
+    /// truncate-then-verify attempt failed and emptied the frame. The renderer
+    /// must shrink and retry until the escaped render fits.
+    #[test]
+    fn oversized_escape_heavy_delta_item_still_renders_truncated() {
+        let items = vec![DeltaRecallItem {
+            id: "mem_escapes".to_owned(),
+            text: "<tag> & \"quote\" 'tick' needle ".repeat(120),
+        }];
+
+        let frame = render_delta_frame(&items, 400, None);
+
+        assert_ne!(frame.block, "<memory-delta empty=\"true\" />\n", "escape-heavy item must not empty the frame");
+        assert_eq!(frame.included_item_ids, vec!["mem_escapes".to_owned()]);
+        assert!(frame.budget_used_tokens > 0 && frame.budget_used_tokens <= 400);
     }
 
     #[test]
