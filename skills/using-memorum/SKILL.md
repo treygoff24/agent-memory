@@ -71,7 +71,7 @@ memoryd search "delegate droid alias" --socket "$MEMORUM_SOCKET"
 memoryd search "onboarding" --limit 5 --include-body --socket "$MEMORUM_SOCKET"
 ```
 
-`search` returns bounded summaries by default; `--include-body` inlines full bodies. An empty result is still exit 0 with `data.hits: []` and a broadening hint in `meta.warnings` — widen the query rather than treating it as an error.
+`search` returns bounded summaries by default; `--include-body` inlines full bodies. Results are scoped to the namespaces visible from your current directory (me + project + agent), matching passive recall; pass `--all-namespaces` to search the whole store — reach for it when hunting a memory you know belongs to another project. An empty result is still exit 0 with `data.hits: []` and a broadening hint in `meta.warnings` — widen the query (or add `--all-namespaces`) rather than treating it as an error.
 
 To read one memory in full, follow a hit's id into `get`:
 

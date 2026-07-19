@@ -2278,6 +2278,17 @@ The exact struct/field names are the implementer's to finalize; the contract is 
 4. **Credentials.** API keys live in device-local runtime state (env `MEMORUM_GEMINI_API_KEY` or 0600 key file), never in synced config — same rationale as device IDs (invariant 4).
 5. **Non-goals.** No hot lane-swap (restart required); no cross-triple vector reuse; old triple tables remain until explicitly dropped (§10.2.2 unchanged).
 
+### 2026-07-19 — Namespace scoping on recall-serving chunk/vector queries
+
+**Touches:** `ChunkQuery` (additive field), `query_chunks`, `query_vector_chunks`, `query_hybrid_chunks`, `query_abstraction_vectors`, `query_cue_vectors` (additive parameter). No version bump: additive surface; unscoped behavior is unchanged when the filter is absent.
+
+Motivated by a live cross-namespace leak: the Stream E delta path is required (Stream E v0.7 §6) to serve candidates "visible from the active namespace set", but every chunk/vector retrieval lane was namespace-blind, so any project's memory could win BM25/vector ranking and surface in an unrelated session.
+
+1. **Additive filter.** Each recall-serving chunk/vector query accepts an optional namespace set (`Option<&[String]>`; `ChunkQuery` gains `namespaces: Option<Vec<String>>`). Entries use the `namespace_prefix` grammar (`me`, `agent`, `project:<id>`, `org:<id>`) and map to the same `memories.scope` / `canonical_namespace_id` predicate as `MemoryQuery.namespace_prefix`, ORed across the set.
+2. **`None` = unscoped.** Absent filter preserves store-wide behavior for governance, eval, and operator surfaces (`knn_active_memories` keeps its own scope parameter and is unaffected).
+3. **Fail-closed.** An empty set serves no rows; an invalid entry is skipped with a warning (narrowing the OR), never widened. Recall scoping must degrade toward serving less, never toward serving other namespaces' memories.
+4. **Callers.** memoryd's passive-recall delta passes the session binding's `namespaces_in_scope`; `memory_search` scopes when the request carries a `cwd` (additive protocol field, absent-when-none on the wire) and stays store-wide for the frozen MCP tool surface and the web dashboard.
+
 ---
 
 *End of Stream A — Core Substrate Spec v1.2.*

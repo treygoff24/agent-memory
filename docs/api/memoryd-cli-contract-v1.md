@@ -108,8 +108,10 @@ Side-effect class: `read_only` (no mutation), `mutating` (creates/updates memory
 
 ### `search` — `read_only`
 
-`memoryd search <QUERY> [--limit N=10] [--include-body] [--socket PATH]`
+`memoryd search <QUERY> [--limit N=10] [--include-body] [--all-namespaces] [--socket PATH]`
 `data`: `{ "hits": [SearchHit], "total": int, "guidance": string }`. Empty result → exit 0, `data.hits: []`, `meta.warnings` carries a broadening hint. `--include-body` opts into full bodies (default: bounded summaries). Byte-stable across identical calls.
+
+Scoping (2026-07-19, additive): by default the CLI sends its invoking directory as the request `cwd` and the daemon restricts hits to the namespaces visible from it (me + project + agent), matching passive-recall scoping. `--all-namespaces` omits `cwd` and restores store-wide search. An unresolvable `cwd` is `invalid_request`, not a silent store-wide search.
 
 ### `get` — `read_only`
 
