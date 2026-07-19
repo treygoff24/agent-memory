@@ -161,6 +161,28 @@ fn fire_reality_check_due_on_startup(substrate: &Substrate, state: &HandlerState
     state.fire_reality_check_due_if_due(&daemon_state.reality_check, chrono::Utc::now());
 }
 
+/// Idle-unload window for the API embedding lane: warm by default.
+///
+/// Dormancy exists to reclaim the multi-GB footprint of a local model; the API
+/// provider holds an HTTP client and a key handle, so unloading it saves ~KB
+/// while costing a degraded (FTS-only) prompt after every idle window. An
+/// explicitly set `MEMORUM_EMBED_IDLE_UNLOAD_SECS` still wins (`0` = never
+/// unload, same as the local-lane contract).
+fn api_lane_idle_window(env_value: Option<String>) -> crate::embedding::EmbeddingIdleWindow {
+    use std::time::Duration;
+    match env_value {
+        Some(raw) => match raw.parse::<u64>() {
+            Ok(0) => crate::embedding::EmbeddingIdleWindow::from_duration(None, "env"),
+            Ok(secs) => crate::embedding::EmbeddingIdleWindow::from_duration(Some(Duration::from_secs(secs)), "env"),
+            Err(error) => {
+                tracing::warn!(value = %raw, %error, "invalid MEMORUM_EMBED_IDLE_UNLOAD_SECS; API lane stays warm");
+                crate::embedding::EmbeddingIdleWindow::from_duration(None, "api_lane_default")
+            }
+        },
+        None => crate::embedding::EmbeddingIdleWindow::from_duration(None, "api_lane_default"),
+    }
+}
+
 /// Spawn the background embedding worker.
 ///
 /// The provider lifecycle is configured here but starts dormant: the real model
@@ -168,6 +190,8 @@ fn fire_reality_check_due_on_startup(substrate: &Substrate, state: &HandlerState
 /// request). If the model cannot load — no weights, no network on first use,
 /// unsupported device — the lifecycle keeps the existing slow retry backoff
 /// while recall degrades to FTS-only; status/doctor expose the state.
+/// Exception: the API lane eager-loads and stays warm (see
+/// [`api_lane_idle_window`]) — its "load" is a key read + HTTP client build.
 fn spawn_embedding_worker(
     substrate: Arc<Substrate>,
     provider_slot: crate::embedding::EmbeddingProviderSlot,
@@ -217,7 +241,12 @@ fn spawn_embedding_worker(
             );
             return;
         }
-        let idle_window = crate::embedding::EmbeddingIdleWindow::from_env();
+        // The API provider is an HTTP client + key handle (~KB), not a local
+        // model (~GB), so the dormancy machinery buys nothing and its cost is
+        // real: every idle-unload makes the next prompt's recall degrade to
+        // FTS-only while the slot reloads. Stay warm by default; the env knob
+        // still forces a window for anyone who explicitly sets one.
+        let idle_window = api_lane_idle_window(std::env::var("MEMORUM_EMBED_IDLE_UNLOAD_SECS").ok());
         provider_slot.configure_loader(triple.clone(), idle_window, move || {
             let provider = crate::embedding::ApiEmbeddingProvider::load_for_runtime(&runtime_root, triple.clone())?;
             tracing::info!(
@@ -228,6 +257,10 @@ fn spawn_embedding_worker(
             );
             Ok(Arc::new(provider))
         });
+        // Eager-load so the first prompt after daemon start gets vector
+        // recall instead of a Dormant marker; loading is a key read + client
+        // build, not a model load.
+        provider_slot.ensure_loaded_in_background();
     } else {
         tracing::warn!(
             provider = %triple.provider,
@@ -683,6 +716,17 @@ mod tests {
     use crate::protocol::{ResponseEnvelope, ResponsePayload, ResponseResult};
     use crate::recall::{DeltaResponse, StartupResponse};
     use serial_test::serial;
+
+    #[test]
+    fn api_lane_idle_window_defaults_to_always_warm() {
+        assert_eq!(super::api_lane_idle_window(None).seconds(), None);
+        assert_eq!(super::api_lane_idle_window(None).source(), "api_lane_default");
+        // Explicit env override still wins, with the local-lane semantics.
+        assert_eq!(super::api_lane_idle_window(Some("300".to_string())).seconds(), Some(300));
+        assert_eq!(super::api_lane_idle_window(Some("0".to_string())).seconds(), None);
+        // Garbage input fails toward warm, never toward a surprise unload.
+        assert_eq!(super::api_lane_idle_window(Some("banana".to_string())).seconds(), None);
+    }
 
     async fn substrate_with_active_embedding(
         triple: memory_substrate::EmbeddingTriple,
