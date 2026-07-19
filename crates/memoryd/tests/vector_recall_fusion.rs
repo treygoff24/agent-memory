@@ -17,7 +17,7 @@ use memoryd::recall::{
 };
 
 #[tokio::test]
-async fn healthy_vector_delta_surfaces_paraphrase_that_fts_misses() {
+async fn healthy_vector_delta_and_relaxed_fts_both_surface_partial_token_match() {
     let fixture = TestRepo::new("dev_vecdeltahealthy").await;
     let provider = fixture.provider();
     fixture
@@ -38,9 +38,21 @@ async fn healthy_vector_delta_surfaces_paraphrase_that_fts_misses() {
         .await;
     drain_all(&fixture.substrate, &provider).await;
 
+    // "deploy production" shares only one token with the corpus. The strict-AND
+    // fallback used to serve empty here; since the 2026-07-19 relaxed-BM25
+    // fallback, the FTS-only delta surfaces the partial-token match too.
     let fts_only =
         build_delta_response(&fixture.substrate, fixture.delta_request("deploy production")).await.expect("fts delta");
-    assert_eq!(fts_only.delta_block, "<memory-delta empty=\"true\" />\n");
+    assert!(
+        fts_only.delta_block.contains("mem_20260610_0000000000000001_000001"),
+        "relaxed FTS fallback should surface the single-token match: {}",
+        fts_only.delta_block
+    );
+    assert!(
+        !fts_only.delta_block.contains("mem_20260610_0000000000000002_000002"),
+        "zero-token-overlap memory must not surface: {}",
+        fts_only.delta_block
+    );
 
     let fused = build_delta_response_with_vector_recall(
         &fixture.substrate,
