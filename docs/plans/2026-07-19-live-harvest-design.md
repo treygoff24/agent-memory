@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-19
 **Author:** Claude (coordinator), foundry build loop
-**Status:** Draft for design review
+**Status:** Amended after design review (Sol xhigh, 2026-07-19) — ready to implement
 
 ## Thesis and provenance
 
@@ -77,12 +77,19 @@ here.
 
 A tokio background task in `memoryd` (same shape as `spawn_reality_check_scheduler`):
 
-- First tick **2 minutes after daemon startup** (settle window), then every
-  `interval_minutes` (default **30**).
-- Each tick: cheap change-detection pre-scan (below); if changed, call
-  `run_import_session` with `SocketDaemonClient` pointed at the daemon's **own socket**,
-  `FixedDispositionBackend(DeriveProject)`, `quiet`, `dry_run: false`.
-- `MissedTickBehavior::Skip`; task exits on daemon shutdown signal.
+- Each iteration **re-reads the device-local config** (F8: enable/disable/interval
+  take effect at the next tick, no restart, no watcher). Disabled → sleep a recheck
+  interval (5 min) and loop.
+- Due computation: run when `now >= last_success_at + interval` per
+  `harvest-state.json`, or when the state file records no prior success. Startup is
+  not special-cased (F7): a restart only harvests if a run is actually overdue.
+- A due tick calls `run_import_session` with `SocketDaemonClient` pointed at the
+  daemon's **own socket**, `FixedDispositionBackend(DeriveProject)`, `quiet`,
+  `dry_run: false` — wrapped in `tokio::time::timeout` (10 min bound) and raced
+  against the shutdown signal in the task's `select!` (F2): shutdown drops the
+  in-flight future; the importer is crash-safe by construction (atomic state saves +
+  daemon dedup), so cancellation mid-import is recoverable, not corrupting.
+- Default interval **30 minutes**, clamp 5–1440.
 
 Why not lifecycle hooks (SessionEnd) or a launchd timer: hooks require wiring into
 every harness profile (9+ configs on this machine), fire on every session everywhere,
@@ -92,50 +99,70 @@ The daemon is already always-on (API embedding lane made always-warm the default
 2026-07-19); one internal task covers all sources with zero external wiring, and the
 importer's flock already arbitrates against concurrent manual `memoryd import`.
 
-### Change detection: mtime fingerprint pre-scan
+### Change detection: none in v1 (review F1)
 
-Before invoking the pipeline, scan the discovered source roots (Claude memory dirs
-across profiles + Codex memory root) and compute a fingerprint: max `(mtime, path
-count)` over the candidate files the adapters would read. If equal to the previous
-tick's fingerprint (held **in memory** — a daemon restart just re-runs one cheap
-idempotent harvest), skip the tick entirely. This keeps steady-state cost at one
-directory walk per interval, no parsing, no socket traffic.
+The originally proposed mtime fingerprint pre-scan was cut as the review's blocker:
+an aggregate `(max mtime, file count)` is not a valid change detector (same-second
+rewrites, non-max-file changes, delete/add substitutions can all alias), and a wrong
+skip suppresses harvests indefinitely. The idempotent no-op pipeline run is already
+sub-second at this corpus scale, so every due tick simply runs it. If corpus growth
+ever makes that expensive, the correct future mechanism is a per-file content
+manifest updated only after clean runs — not an aggregate fingerprint.
 
-### Locking and re-entrancy
+### Locking and re-entrancy (review F3)
 
-- The harvest tick calls `run_import_session`, which takes the existing flock. If a
-  manual import holds it, the tick logs at debug and skips (`AnotherImportInProgress`
-  is expected contention, not an error).
+- Scheduled runs acquire the import flock with a **zero timeout**
+  (`ImportLockGuard::acquire_with_timeout(…, Duration::ZERO)` threaded through a
+  scheduler-facing session entrypoint): contention with a manual `memoryd import`
+  means log-at-debug and skip the tick — never a 5-second blocking sleep loop on a
+  tokio worker.
 - The self-socket client means harvest writes flow through the identical handler path
   as any client — privacy, governance, events, commit-on-write (F1) all apply. No new
-  write path, importer invariant 2 preserved.
+  write path, importer invariant 2 preserved. (Traced in review: no lock cycle exists
+  between the harvest task, connection handlers, the governance mutex, or the git
+  commit worker.)
+- Per-harness failure isolation (review F10): a discovery failure in one harness
+  (e.g. a half-written Claude settings.json) is recorded as that harness's error for
+  the tick and must not abort the other harness's plan.
 
-### Config: `harvest` section in synced `config.yaml`
+### Config: `harvest` section in the **device-local** config (review F4/F7)
+
+Harness stores, harvest cost, and cadence are per-device concerns; the synced
+`config.yaml` is the wrong scope (one laptop's `disable` must not propagate to the
+desktop). The `harvest` section therefore lives in the device-local config
+(`LocalDeviceConfig` idiom, `#[serde(default)]`):
 
 ```yaml
 harvest:
-  enabled: true        # default ON — the loop should close by default
+  enabled: true        # ABSENT = disabled (upgrade-safe: existing installs opt in)
   interval_minutes: 30 # clamp: min 5, max 1440
 ```
 
-Struct `HarvestConfig` following the `DreamConfig` idiom (serde, `Default` impl,
-validation on load). Default **on**: harvest is read-only against sources, idempotent,
-and fully fenced by classification/governance; a memory system that only harvests when
-the operator remembers to ask recreates the exact gap this build closes. Machine-local
-runtime data (last-run info) does NOT go in the synced config (invariant 4 discipline).
+Default for an absent section is **disabled** — upgrading the daemon changes nothing
+until the operator runs the explicit ceremony. Rationale for the reversal from the
+draft's default-on: autonomous writes appearing after a routine upgrade is a consent
+problem, and the runtime-loop "close by default" philosophy is satisfied by fresh
+onboarding opting in explicitly instead (deferred to a future `memoryd init` pass —
+out of scope here).
 
-CLI: `memoryd config harvest enable|disable [--interval-minutes N]`, emitting the v1
-agent envelope like the embedding-lane ceremony. Additive amendment to
-`docs/api/memoryd-cli-contract-v1.md`.
+CLI ceremony: `memoryd config harvest enable|disable [--interval-minutes N]`, editing
+the local config and emitting the v1 agent envelope like the embedding-lane ceremony.
+Takes effect at the next scheduler iteration (config re-read per tick — no
+`restart_required`). Additive amendment to `docs/api/memoryd-cli-contract-v1.md`.
 
-### Observability
+### Observability (review F9/F11)
 
-- `DaemonState` (local runtime state) gains a `harvest` block: `last_run_at`,
-  `last_outcome` (`imported {n}` / `skipped_unchanged` / `skipped_locked` / error
-  string), `last_imported_count`.
-- `memoryd doctor` reports it: enabled flag, interval, last run, last outcome. Doctor
-  stays a raw daemon frame (no envelope change).
-- Per-tick tracing: info on writes > 0, debug on skip.
+- New `harvest-state.json` in the runtime root, written **only** by the scheduler
+  task (single writer, atomic tmp-with-unique-name + rename). `DaemonState` is not
+  touched — its whole-file load/modify/save pattern would race a periodic writer
+  (lost snoozes).
+- Contents (bounded): `last_attempt_at`, `last_success_at`, `next_due`, per-harness
+  `{parsed, written, refused, quarantined, skipped}`, bounded `last_error` string,
+  `active_embedding_lane` at last run.
+- `memoryd doctor` reports the block (enabled flag + interval from local config,
+  history from harvest-state.json) — answering "why wasn't my memory harvested"
+  without log spelunking. Doctor stays a raw daemon frame.
+- Per-tick tracing: info on writes > 0, debug on skip/contention.
 
 ### Spec surface
 
@@ -146,21 +173,29 @@ convention) in:
 - `docs/api/memoryd-cli-contract-v1.md` — `config harvest` subcommand.
 - `docs/runbooks/` — short operator note (how to disable, how to read doctor output).
 
-## Cost basis (measured)
+## Cost basis (measured; embedding economics per review F12)
 
 - Source corpus today: 13 Claude project memory dirs (largest file ~40KB), Codex
-  `MEMORY.md` 42KB + notes. A full no-op pipeline run is sub-second; the fingerprint
-  pre-scan reduces steady state to a directory walk (tens of files) every 30 min.
+  `MEMORY.md` 42KB + notes. A full no-op pipeline run is sub-second; steady state is
+  48 sub-second idempotent runs/day at the default interval.
 - Write volume: bounded by what harnesses author — historically single-digit
   files/day on this machine. Classification volume rises accordingly; the quarantine
   review flow (`memoryd review`) is the existing relief valve and doctor already
   surfaces quarantine counts.
+- Embedding: on the API lane (this machine's live config, always-warm HTTP client at
+  11–17MB) per-memory cost is one embed call — negligible. On a **local-lane** install
+  with the 15-min idle unload, a trickle of one new memory per tick can cycle the
+  6.2GB model once per interval; the runbook documents this and recommends local-lane
+  installs choose an interval ≥ their unload window or accept the reload cost.
+  `active_embedding_lane` in harvest-state makes the operative lane visible.
 
 ## Testing strategy
 
-- Unit: `HarvestConfig` defaults/validation/clamps; fingerprint scan (change → run,
-  no change → skip, missing roots → skip quietly); scheduler tick gating with a mock
-  client; lock-contention tick skips without error.
+- Unit: `HarvestConfig` defaults/validation/clamps + absent-section-is-disabled;
+  due computation (never-run → due; recent success → not due; overdue after restart →
+  due); config re-read picks up disable/interval mid-loop; lock-contention tick skips
+  without error and without blocking; per-harness discovery-failure isolation;
+  harvest-state.json atomic write + bounded error truncation.
 - Integration (existing harness patterns in `memoryd` tests): end-to-end tick against
   a temp repo + fake source dir → memory lands with import provenance; second tick
   no-ops; source file edit → supersession path (already covered by importer tests,
@@ -189,9 +224,11 @@ convention) in:
 Single implementation wave (the change is one scheduler + config + doctor surface,
 ~4 files touched plus tests):
 
-1. **Wave 1 (Codex Sol, `work`):** `HarvestConfig` + config plumbing + CLI subcommand;
-   scheduler task in `server.rs`; fingerprint pre-scan; `DaemonState.harvest` block +
-   doctor; unit/integration tests; doc amendments.
+1. **Wave 1 (Codex Sol, `work`):** `HarvestConfig` in the device-local config + CLI
+   ceremony; scheduler task in `server.rs` (due-based, config re-read per tick,
+   zero-timeout lock, shutdown race, per-tick timeout); per-harness discovery
+   containment; single-writer `harvest-state.json` + doctor rendering;
+   unit/integration tests; doc amendments.
 2. **Review round:** coordinator riskiest-file read (scheduler + self-socket client
    interaction) + native Opus adversarial review (reduced-foundry config: Codex
    authored, Claude-family reviews). Fix round on accepted findings; re-review until dry.
@@ -199,3 +236,23 @@ Single implementation wave (the change is one scheduler + config + doctor surfac
 
 Constraints inherited from the repo: CPU discipline (scoped gates only, one final
 `scripts/check.sh`), commits ungated / push gated, bench baselines untouched.
+
+## Design-review dispositions (Sol xhigh via delegate, 2026-07-19)
+
+13 findings (1 blocker, 12 major). Every finding triaged in writing:
+
+| # | Finding | Disposition |
+| --- | --- | --- |
+| 1 | Fingerprint pre-scan can suppress harvests indefinitely (aggregate mtime aliases) | **Accept — cut the feature.** Every due tick runs the sub-second idempotent pipeline. |
+| 2 | Self-socket lifecycle/shutdown ordering | **Accept-reduced.** Tick future raced against shutdown in `select!` (drop = cancel; importer is crash-safe) + 10-min per-tick timeout. No full drain choreography. |
+| 3 | 5s blocking flock poll on a tokio worker | **Accept.** Zero-timeout acquisition for scheduled runs → true skip-on-contention. Parse work is ms at measured corpus scale; no executor offload. |
+| 4 | Synced config is the wrong scope for a per-device behavior | **Accept.** `harvest` moves to the device-local config. |
+| 5 | Cross-device dedup not guaranteed for overlapping sources | **Waived for v1.** Single-device live deployment; `source_identity` is profile-relative by design; residual multi-device duplicates are bounded and consolidated by governance/dreaming. Revisit before multi-device GA. |
+| 6 | `DeriveProject` mints junk/unstable namespaces for weird cwds | **Accept-reduced.** Keep DeriveProject (shipped non-interactive default; `Skip` would permanently orphan non-git dirs — the exact gap this build closes). Persisted per-source bindings in import state stabilize re-runs. Watch item. |
+| 7 | Default-on is unsafe for upgrades; unconditional startup tick defeats cadence | **Accept.** Absent section = disabled; explicit enable ceremony; due-based scheduling (restart only harvests if overdue). |
+| 8 | CLI config command lacks an effective-runtime contract | **Accept — dissolved.** Scheduler re-reads local config each tick; changes take effect next tick, no restart semantics needed. |
+| 9 | Harvest fields in `DaemonState` create lost-update/temp-file races | **Accept.** Separate single-writer `harvest-state.json` with unique-temp atomic rename. |
+| 10 | One harness's discovery failure suppresses the other | **Accept-reduced.** Per-harness containment: record the error, continue the other harness. |
+| 11 | Observability can't answer "why wasn't this harvested" | **Accept-reduced.** Bounded harvest-state block (per-harness counts, last error, next due, lane) + doctor rendering. Not a full report ledger. |
+| 12 | Cost model omitted embedding/resident-model behavior | **Accept as documentation.** API lane (live config) ≈ zero; local-lane cadence guidance in runbook; lane surfaced in harvest-state. |
+| 13 | Amendment misclassified — autonomous ingestion warrants a spec version bump | **Accept-reduced.** With default-off-on-upgrade, absent config changes no behavior, so dated amendments stand; Sol's v0.4-bump argument is flagged to Trey (version bumps are his call by standing repo rule). |
