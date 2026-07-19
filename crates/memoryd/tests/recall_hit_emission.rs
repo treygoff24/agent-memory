@@ -105,9 +105,15 @@ async fn test_delta_recall_emits_recall_hit_per_memory() {
         recall_hit_ids.into_iter().collect::<BTreeSet<_>>(),
         sorted_set([expected_ids[0], expected_ids[1], duplicate_id])
     );
-    assert!(
-        response.delta_block.matches(duplicate_id).count() > 1,
-        "fixture should cheaply prove duplicate rendered items for one memory"
+    // Since the 2026-07-19 relaxed-BM25 fallback, delta FTS collapses to one
+    // candidate per memory, so a multi-chunk match renders exactly one item —
+    // duplicate rendered items are structurally impossible on this path.
+    // (Within-response RecallHit dedup itself is pinned by
+    // `test_recall_hit_deduped_within_response`.)
+    assert_eq!(
+        response.delta_block.matches(duplicate_id).count(),
+        1,
+        "a multi-chunk matching memory must render exactly one delta item"
     );
 }
 
