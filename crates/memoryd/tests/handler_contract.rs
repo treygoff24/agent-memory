@@ -56,6 +56,89 @@ fn with_project_identity(mut meta: serde_json::Value) -> serde_json::Value {
 }
 
 #[tokio::test]
+async fn search_with_cwd_scopes_to_visible_namespaces() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));
+    let substrate = init_substrate(roots).await;
+
+    let in_scope = sample_memory("mem_20260719_a1b2c3d4e5f60718_310001", "nsscopeneedle in-scope agent fact");
+    let mut project = sample_memory("mem_20260719_a1b2c3d4e5f60718_310002", "nsscopeneedle other-project fact");
+    project.frontmatter.scope = Scope::Project;
+    project.frontmatter.namespace = Some("project".to_string());
+    project.frontmatter.canonical_namespace_id = Some("proj_elsewhere".to_string());
+    project.frontmatter.retrieval_policy.max_scope = Scope::Project;
+
+    for memory in [in_scope.clone(), project.clone()] {
+        substrate
+            .write_memory(WriteRequest {
+                operation_id: None,
+                memory,
+                expected_base_hash: None,
+                write_mode: WriteMode::CreateNew,
+                index_projection: None,
+                event_context: EventContext::default(),
+                allow_best_effort_durability: true,
+                classification: ClassificationOutcome::Trusted,
+            })
+            .await
+            .expect("write memory through Stream A");
+    }
+
+    let search = |cwd: Option<String>| {
+        let substrate = &substrate;
+        async move {
+            let response = handle_request(
+                substrate,
+                RequestEnvelope::new(
+                    "req-scoped-search",
+                    RequestPayload::Search { query: "nsscopeneedle".to_string(), limit: Some(10), include_body: false, cwd },
+                ),
+            )
+            .await;
+            let ResponseResult::Success(ResponsePayload::Search(search)) = response.result else {
+                panic!("expected search success, got {:?}", response.result);
+            };
+            let mut ids = search.hits.iter().map(|hit| hit.id.clone()).collect::<Vec<_>>();
+            ids.sort();
+            ids
+        }
+    };
+
+    // No cwd keeps the store-wide pre-scoping behavior (frozen MCP surface).
+    assert_eq!(
+        search(None).await,
+        vec![in_scope.frontmatter.id.as_str().to_string(), project.frontmatter.id.as_str().to_string()]
+    );
+
+    // A cwd with no git remote resolves to me + agent, so the other project's
+    // memory is filtered even though it matches the query.
+    let cwd_dir = tempfile::tempdir().expect("cwd tempdir");
+    assert_eq!(
+        search(Some(cwd_dir.path().to_string_lossy().into_owned())).await,
+        vec![in_scope.frontmatter.id.as_str().to_string()]
+    );
+
+    // An unresolvable cwd is a caller error, never a silent store-wide search.
+    let invalid = handle_request(
+        &substrate,
+        RequestEnvelope::new(
+            "req-invalid-cwd-search",
+            RequestPayload::Search {
+                query: "nsscopeneedle".to_string(),
+                limit: Some(10),
+                include_body: false,
+                cwd: Some("/nonexistent/memorum-search-cwd".to_string()),
+            },
+        ),
+    )
+    .await;
+    let ResponseResult::Error(error) = invalid.result else {
+        panic!("expected invalid-cwd search to fail, got {:?}", invalid.result);
+    };
+    assert_eq!(error.code, "invalid_request");
+}
+
+#[tokio::test]
 async fn search_and_get_return_bounded_protocol_responses_from_substrate() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));

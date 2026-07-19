@@ -240,6 +240,86 @@ async fn hybrid_chunks_are_deterministic_and_tie_break_by_memory_id() {
     assert_eq!(observed[0], vec![earlier_id.as_str().to_string(), later_id.as_str().to_string()]);
 }
 
+#[tokio::test]
+async fn hybrid_chunks_namespace_scoping_filters_both_lanes() {
+    let (_temp, _roots, substrate) = new_substrate().await;
+    let triple = test_triple("namespace");
+
+    let mut me_memory = sample_memory("mem_20260424_a1b2c3d4e5f60718_050000");
+    me_memory.body = "scopeneedle me-visible fact".to_string();
+    me_memory.frontmatter.scope = Scope::User;
+
+    let mut agent_memory = sample_memory("mem_20260424_a1b2c3d4e5f60718_050001");
+    agent_memory.body = "scopeneedle agent-visible fact".to_string();
+
+    let mut project_memory = sample_memory("mem_20260424_a1b2c3d4e5f60718_050002");
+    project_memory.body = "scopeneedle project-visible fact".to_string();
+    project_memory.frontmatter.scope = Scope::Project;
+    project_memory.frontmatter.namespace = Some("project".to_string());
+    project_memory.frontmatter.canonical_namespace_id = Some("proj_alpha".to_string());
+    project_memory.frontmatter.retrieval_policy.max_scope = Scope::Project;
+
+    for memory in [&me_memory, &agent_memory, &project_memory] {
+        write_memory(&substrate, memory.clone()).await;
+        embed_first_chunk(&substrate, memory, &triple, vec![1.0, 0.0, 0.0]).await;
+    }
+
+    let query = |namespaces: Option<Vec<String>>| {
+        let substrate = &substrate;
+        let triple = &triple;
+        async move {
+            let hits = substrate
+                .query_hybrid_chunks(
+                    "scopeneedle",
+                    Some(HybridVectorQuery { triple, vector: &[1.0, 0.0, 0.0] }),
+                    10,
+                    namespaces.as_deref(),
+                )
+                .await
+                .expect("hybrid query");
+            let mut hit_ids = ids(&hits);
+            hit_ids.sort();
+            hit_ids
+        }
+    };
+
+    let me_id = me_memory.frontmatter.id.as_str().to_string();
+    let agent_id = agent_memory.frontmatter.id.as_str().to_string();
+    let project_id = project_memory.frontmatter.id.as_str().to_string();
+
+    // Unscoped keeps the store-wide behavior.
+    assert_eq!(query(None).await, vec![me_id.clone(), agent_id.clone(), project_id.clone()]);
+
+    // The no-project session set (the leak regression): a project memory must
+    // not surface from a me+agent-only session even as the best lexical and
+    // vector match.
+    assert_eq!(query(Some(vec!["me".to_string(), "agent".to_string()])).await, vec![me_id.clone(), agent_id.clone()]);
+
+    // Project-scoped sessions see exactly their project.
+    assert_eq!(query(Some(vec!["project:proj_alpha".to_string()])).await, vec![project_id]);
+    assert!(query(Some(vec!["project:proj_other".to_string()])).await.is_empty());
+
+    // Fail-closed: an empty or all-invalid set serves nothing rather than
+    // falling open to every namespace.
+    assert!(query(Some(Vec::new())).await.is_empty());
+    assert!(query(Some(vec!["bogus".to_string()])).await.is_empty());
+
+    // The plain FTS surface (`query_chunks`) applies the same predicate.
+    let fts_hits = substrate
+        .query_chunks(ChunkQuery {
+            text: Some("scopeneedle".to_string()),
+            triple: None,
+            vector: None,
+            namespaces: Some(vec!["me".to_string()]),
+        })
+        .await
+        .expect("fts query");
+    assert_eq!(
+        fts_hits.iter().map(|hit| hit.memory_id.as_str().to_string()).collect::<Vec<_>>(),
+        vec![me_id]
+    );
+}
+
 async fn new_substrate() -> (tempfile::TempDir, Roots, Substrate) {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = Roots::new(temp.path().join("repo"), temp.path().join("runtime"));

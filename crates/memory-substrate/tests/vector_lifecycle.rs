@@ -34,6 +34,18 @@ fn auxiliary_vectors_are_stale_fenced_queryable_and_invalidated_on_hash_change()
         })
         .expect("update");
     assert_eq!(index.query_abstraction_vectors(&triple, &[1.0, 0.0, 0.0], 3, None).expect("query").len(), 1);
+    // Namespace scoping: the aux lanes share the recall namespace predicate.
+    // The fixture memory is agent-scoped, so `agent` sees it and `me` must not.
+    let agent_ns = vec!["agent".to_string()];
+    let me_ns = vec!["me".to_string()];
+    assert_eq!(
+        index.query_abstraction_vectors(&triple, &[1.0, 0.0, 0.0], 3, Some(&agent_ns)).expect("scoped query").len(),
+        1
+    );
+    assert!(index
+        .query_abstraction_vectors(&triple, &[1.0, 0.0, 0.0], 3, Some(&me_ns))
+        .expect("scoped query")
+        .is_empty());
     assert_eq!(
         index.all_abstraction_vectors(&triple).expect("enumerate vectors"),
         vec![AbstractionVectorRow { memory_id: memory.frontmatter.id.clone(), vector: vec![1.0, 0.0, 0.0] }]
@@ -48,6 +60,8 @@ fn auxiliary_vectors_are_stale_fenced_queryable_and_invalidated_on_hash_change()
         })
         .expect("cue update");
     assert_eq!(index.query_cue_vectors(&triple, &[0.0, 1.0, 0.0], 3, None).expect("cue query").len(), 1);
+    assert_eq!(index.query_cue_vectors(&triple, &[0.0, 1.0, 0.0], 3, Some(&agent_ns)).expect("cue query").len(), 1);
+    assert!(index.query_cue_vectors(&triple, &[0.0, 1.0, 0.0], 3, Some(&me_ns)).expect("cue query").is_empty());
     let chunk = index
         .pending_embedding_jobs(1, EmbeddingLaneEligibility::AllTiers)
         .expect("chunk jobs")

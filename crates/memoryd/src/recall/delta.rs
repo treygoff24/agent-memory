@@ -485,6 +485,32 @@ mod tests {
         assert!(!rendered.contains("onclick=\"evil"));
     }
 
+    /// The cross-namespace leak regression (2026-07-19, observed live): a
+    /// project-scoped memory that is the best BM25 match for the message must
+    /// not surface in a session whose namespace set does not include that
+    /// project — the fixture cwd has no git remote, so its session binding
+    /// resolves to me + agent only.
+    #[tokio::test]
+    async fn delta_excludes_project_memories_outside_session_namespaces() {
+        let fixture = DeltaFixture::new("dev_nsleak").await;
+        fixture
+            .write_project_memory("mem_20260619_bbbbbbbbbbbbbbbb_000001", "nsleakneedle atlas phase review", "proj_atlas")
+            .await;
+        fixture.write_memory("mem_20260619_bbbbbbbbbbbbbbbb_000002", "nsleakneedle in-scope me fact").await;
+
+        let response = fixture.delta("nsleakneedle", true).await;
+        assert!(
+            response.delta_block.contains("mem_20260619_bbbbbbbbbbbbbbbb_000002"),
+            "in-scope memory must surface: {}",
+            response.delta_block
+        );
+        assert!(
+            !response.delta_block.contains("mem_20260619_bbbbbbbbbbbbbbbb_000001"),
+            "out-of-scope project memory leaked into the delta: {}",
+            response.delta_block
+        );
+    }
+
     #[tokio::test]
     async fn passive_delta_leaves_store_byte_unchanged_while_active_delta_writes() {
         let fixture = DeltaFixture::new("dev_passivedelta").await;
@@ -540,8 +566,22 @@ mod tests {
         }
 
         async fn write_memory(&self, id: &str, body: &str) {
+            self.write(self.base_memory(id, body)).await;
+        }
+
+        async fn write_project_memory(&self, id: &str, body: &str, canonical_id: &str) {
+            let mut memory = self.base_memory(id, body);
+            memory.frontmatter.scope = Scope::Project;
+            memory.frontmatter.namespace = Some("project".to_owned());
+            memory.frontmatter.canonical_namespace_id = Some(canonical_id.to_owned());
+            memory.frontmatter.retrieval_policy.max_scope = Scope::Project;
+            memory.path = Some(RepoPath::new(format!("agent/patterns/{id}.md")));
+            self.write(memory).await;
+        }
+
+        fn base_memory(&self, id: &str, body: &str) -> Memory {
             let updated_at = chrono::Utc::now();
-            let memory = Memory {
+            Memory {
                 frontmatter: Frontmatter {
                     schema_version: 1,
                     id: MemoryId::new(id),
@@ -606,7 +646,10 @@ mod tests {
                 },
                 body: body.to_owned(),
                 path: Some(RepoPath::new(format!("me/{id}.md"))),
-            };
+            }
+        }
+
+        async fn write(&self, memory: Memory) {
             self.substrate
                 .write_memory(WriteRequest {
                     operation_id: None,
