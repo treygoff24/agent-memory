@@ -8,7 +8,7 @@ use memorum_coordination::{
     RelevanceGate, SessionContext,
 };
 use memory_privacy::{safe_plaintext_fragment, DeterministicPrivacyClassifier, SafeFragmentDecision};
-use memory_substrate::{AuxScope, ChunkQuery, MemoryStatus, RecallIndexQuery, RecallIndexRow, Substrate};
+use memory_substrate::{AuxScope, MemoryStatus, RecallIndexQuery, RecallIndexRow, Substrate};
 
 use crate::recall::error::RecallError;
 use crate::recall::hybrid::{collect_hybrid_recall, HybridRecallDecision, VectorRecallContext};
@@ -27,6 +27,7 @@ use crate::recall::types::{
 };
 
 const DELTA_PEER_PRESENCE_CAP: usize = 4;
+const DELTA_FTS_LIMIT: usize = 20;
 const AUDIT_SUMMARY_MAX_BYTES: usize = 240;
 
 #[derive(Clone, Copy)]
@@ -163,17 +164,15 @@ async fn fts_delta_items(
     message: &str,
     namespaces: &[String],
 ) -> Result<Vec<DeltaRecallItem>, RecallError> {
-    let chunks = substrate
-        .query_chunks(ChunkQuery {
-            text: Some(message.to_owned()),
-            triple: None,
-            vector: None,
-            namespaces: Some(namespaces.to_vec()),
-        })
+    let candidates = substrate
+        .query_hybrid_chunks(message, None, DELTA_FTS_LIMIT, Some(namespaces))
         .await
         .map_err(|error| RecallError::substrate_error(error.to_string()))?;
 
-    Ok(chunks.into_iter().map(|chunk| DeltaRecallItem { id: chunk.memory_id.to_string(), text: chunk.text }).collect())
+    Ok(candidates
+        .into_iter()
+        .map(|candidate| DeltaRecallItem { id: candidate.memory_id.as_str().to_owned(), text: candidate.text })
+        .collect())
 }
 
 #[derive(Default)]
@@ -483,6 +482,31 @@ mod tests {
         assert!(rendered.contains("id=\"mem&quot; onclick=&quot;evil\""));
         assert!(rendered.contains("safe &lt;text&gt;"));
         assert!(!rendered.contains("onclick=\"evil"));
+    }
+
+    #[tokio::test]
+    async fn delta_relaxed_fts_matches_partial_tokens_only_in_session_namespaces() {
+        let fixture = DeltaFixture::new("dev_relaxedfts").await;
+        fixture.write_memory("mem_20260619_cccccccccccccccc_000001", "relaxedneedle fact body").await;
+        fixture
+            .write_project_memory(
+                "mem_20260619_cccccccccccccccc_000002",
+                "relaxedneedle project-only fact",
+                "proj_hidden",
+            )
+            .await;
+
+        let response = fixture.delta("relaxedneedle plus several words that match nothing", true).await;
+        assert!(
+            response.delta_block.contains("mem_20260619_cccccccccccccccc_000001"),
+            "relaxed FTS must surface a partial-match in-scope memory: {}",
+            response.delta_block
+        );
+        assert!(
+            !response.delta_block.contains("mem_20260619_cccccccccccccccc_000002"),
+            "relaxed FTS leaked an out-of-scope project memory: {}",
+            response.delta_block
+        );
     }
 
     /// The cross-namespace leak regression (2026-07-19, observed live): a
