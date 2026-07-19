@@ -45,7 +45,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use memory_substrate::{ChunkQuery, EmbeddingTriple, HybridVectorQuery, InitOptions, Roots, Substrate};
+use memory_substrate::{
+    AuxScope, ChunkQuery, EmbeddingTriple, HybridVectorQuery, InitOptions, MemoryStatus, RecallIndexQuery, Roots,
+    Substrate,
+};
 use memoryd::embedding::{worker, EmbeddingProvider, FastembedProvider, FixtureProvider};
 use memoryd::recall::{
     collect_recall_candidates_from_index, fuse_rrf, select_ranked_candidates, CandidateCollection, RankingContext,
@@ -317,10 +320,21 @@ impl GoldenCorpus {
     /// (`Substrate::query_chunks`) and reduce chunk hits to a per-memory
     /// ranking, preserving the engine's score order (first chunk wins per
     /// memory). This is the exact engine the daemon's search handler uses.
-    async fn rank_via_search(&self, query: &str) -> Result<Vec<String>, QualityError> {
+    ///
+    /// Namespace-scoped (2026-07-19): production retrieval filters candidates
+    /// to the session's visible namespace set, so the seam does too — a
+    /// single-project corpus can't distinguish scoped from global search,
+    /// which is exactly how the cross-namespace recall leak evaded every eval.
+    async fn rank_via_search(&self, query: &str, scope: &[String]) -> Result<Vec<String>, QualityError> {
+        let prefixes = self.resolve_namespace_prefixes(scope);
         let chunks = self
             .substrate
-            .query_chunks(ChunkQuery { text: Some(query.to_string()), triple: None, vector: None, namespaces: None })
+            .query_chunks(ChunkQuery {
+                text: Some(query.to_string()),
+                triple: None,
+                vector: None,
+                namespaces: Some(prefixes),
+            })
             .await
             .map_err(|e| QualityError::Substrate(format!("query_chunks: {e:?}")))?;
 
@@ -340,7 +354,7 @@ impl GoldenCorpus {
     /// surface, and apply memoryd's exported RRF helper. This is deliberately a
     /// separate path until the lockstep baseline re-arm switches the default
     /// `rank_via_search` seam.
-    async fn rank_via_fused_search(&self, query: &str) -> Result<Vec<String>, QualityError> {
+    async fn rank_via_fused_search(&self, query: &str, scope: &[String]) -> Result<Vec<String>, QualityError> {
         let active_triple = self
             .substrate
             .active_embedding_triple()
@@ -354,6 +368,8 @@ impl GoldenCorpus {
             .map_err(|e| QualityError::Embedding(format!("embed_query join failed: {e}")))?
             .map_err(|e| QualityError::Embedding(format!("embed_query: {e}")))?;
 
+        // Namespace-scoped like the bm25 seam: mirrors production retrieval.
+        let prefixes = self.resolve_namespace_prefixes(scope);
         let config = VectorRecallConfig::default();
         let candidates = self
             .substrate
@@ -361,7 +377,7 @@ impl GoldenCorpus {
                 query,
                 Some(HybridVectorQuery { triple: &active_triple, vector: &vector }),
                 config.knn_limit,
-                None,
+                Some(&prefixes),
             )
             .await
             .map_err(|e| QualityError::Substrate(format!("query_hybrid_chunks: {e:?}")))?;
@@ -370,6 +386,30 @@ impl GoldenCorpus {
             .into_iter()
             .map(|candidate| candidate.memory_id.as_str().to_string())
             .collect())
+    }
+
+    /// Every servable memory id visible from `prefixes`, via the recall index —
+    /// the membership oracle for [`run_namespace_scoping_gate`].
+    async fn allowed_ids_for_prefixes(&self, prefixes: &[String]) -> Result<BTreeSet<String>, QualityError> {
+        let mut allowed = BTreeSet::new();
+        for prefix in prefixes {
+            let rows = self
+                .substrate
+                .query_recall_index(RecallIndexQuery {
+                    namespace_prefix: Some(prefix.clone()),
+                    statuses: vec![MemoryStatus::Active, MemoryStatus::Pinned],
+                    passive_recall_only: false,
+                    updated_since: None,
+                    match_terms: Vec::new(),
+                    hydrate: AuxScope::None,
+                    source_identity: false,
+                    exclude_merge_non_servable: false,
+                })
+                .await
+                .map_err(|e| QualityError::Substrate(format!("query_recall_index: {e:?}")))?;
+            allowed.extend(rows.into_iter().map(|row| row.id.as_str().to_owned()));
+        }
+        Ok(allowed)
     }
 
     /// **Startup-block assembly seam.** Select candidates by calling the same
@@ -768,7 +808,7 @@ pub async fn run_fused_quality_report_for_root(
     let mut abstention_count = 0usize;
 
     for case in &cases {
-        let fused_ranked = corpus.rank_via_fused_search(&case.query).await?;
+        let fused_ranked = corpus.rank_via_fused_search(&case.query, &case.namespace_scope).await?;
         if case.is_abstention() {
             abstention_count += 1;
         }
@@ -790,6 +830,43 @@ pub async fn run_fused_quality_report_for_root(
         metrics: fused_acc.finish(),
         abstentions,
     })
+}
+
+/// Namespace-scoping leak gate over the golden corpus.
+///
+/// For every query case, runs the scoped bm25 and fused seams and asserts set
+/// membership: each returned id must be visible from the case's
+/// `namespace_scope` (per the recall index). Returns the violations; empty
+/// means no leak.
+///
+/// This exists because metric scores alone cannot see a scoping regression —
+/// on a single-project corpus, global and scoped retrieval return identical
+/// rankings, which is precisely how the 2026-07-19 cross-namespace recall
+/// leak evaded every eval. Membership is a hard gate, not a score.
+pub async fn run_namespace_scoping_gate() -> Result<Vec<String>, QualityError> {
+    let corpus = GoldenCorpus::load().await?;
+    let cases = GoldenCorpus::load_queries()?;
+
+    let mut violations = Vec::new();
+    for case in &cases {
+        let prefixes = corpus.resolve_namespace_prefixes(&case.namespace_scope);
+        let allowed = corpus.allowed_ids_for_prefixes(&prefixes).await?;
+        let seams = [
+            ("search", corpus.rank_via_search(&case.query, &case.namespace_scope).await?),
+            ("fused_search", corpus.rank_via_fused_search(&case.query, &case.namespace_scope).await?),
+        ];
+        for (seam, ranked) in seams {
+            for id in ranked {
+                if !allowed.contains(&id) {
+                    violations.push(format!(
+                        "case {} seam {seam}: {id} is outside namespace scope {:?}",
+                        case.id, case.namespace_scope
+                    ));
+                }
+            }
+        }
+    }
+    Ok(violations)
 }
 
 /// Per-case outcome detail emitted alongside the aggregate report — what each
@@ -828,7 +905,7 @@ pub async fn run_quality_report_with_cases_for_root(
     let mut outcomes = Vec::with_capacity(cases.len());
 
     for case in &cases {
-        let search_ranked = corpus.rank_via_search(&case.query).await?;
+        let search_ranked = corpus.rank_via_search(&case.query, &case.namespace_scope).await?;
         let startup_ranked = corpus.rank_via_startup(&case.namespace_scope).await?;
 
         outcomes.push(CaseOutcome {
@@ -1076,12 +1153,11 @@ mod tests {
             .vector_count(active_triple.clone())
             .await
             .map_err(|e| QualityError::Substrate(format!("test vector_count: {e:?}")))?;
-        let query = GoldenCorpus::load_queries()?
+        let case = GoldenCorpus::load_queries()?
             .into_iter()
             .find(|case| !case.is_abstention())
-            .expect("golden corpus has a scored query")
-            .query;
-        let ranked_ids = corpus.rank_via_fused_search(&query).await?;
+            .expect("golden corpus has a scored query");
+        let ranked_ids = corpus.rank_via_fused_search(&case.query, &case.namespace_scope).await?;
         Ok(FusedFixtureProbe { active_triple, vector_count, ranked_ids })
     }
 
