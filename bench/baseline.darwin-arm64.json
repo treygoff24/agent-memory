@@ -4,7 +4,7 @@
     "model_ref": "stream-a-test",
     "provider": "synthetic"
   },
-  "corpus_sha256": "sha256:35962f9e33069efe60e5c50b56933e1b40689d29a75df91da515fef6bd2a86f7",
+  "corpus_sha256": "sha256:0f793e0140035525561baa1954f5d57d1ce2fea15baac5ee8eae17663cfef170",
   "corpus_size": 10000,
   "corpus_variants": [
     "long_bodies",
@@ -18,35 +18,34 @@
   ],
   "metrics": {
     "cold_reindex": {
-      "p50_ms": 7292.838,
-      "p95_ms": 7791.395,
-      "p99_ms": 7791.395
+      "p50_ms": 7399.861,
+      "p95_ms": 8177.413,
+      "p99_ms": 8177.413
     },
     "filtered_metadata_query": {
-      "p50_ms": 1.895,
-      "p95_ms": 23.307,
-      "p99_ms": 23.307
+      "p50_ms": 1.627,
+      "p95_ms": 1.847,
+      "p99_ms": 1.847
     },
     "fts_chunk_query": {
-      "p50_ms": 0.062,
-      "p95_ms": 0.115,
-      "p99_ms": 0.115
+      "p50_ms": 0.063,
+      "p95_ms": 0.105,
+      "p99_ms": 0.105
     },
     "query_by_id": {
-      "p50_ms": 0.018,
-      "p95_ms": 0.037,
-      "p99_ms": 0.037,
-      "noise_floor_ms": 0.01
+      "p50_ms": 0.014,
+      "p95_ms": 0.052,
+      "p99_ms": 0.052
     },
     "tree_validator": {
-      "p50_ms": 499.003,
-      "p95_ms": 529.687,
-      "p99_ms": 529.687
+      "p50_ms": 532.265,
+      "p95_ms": 574.81,
+      "p99_ms": 574.81
     },
     "vector_chunk_query": {
-      "p50_ms": 0.07,
-      "p95_ms": 5.952,
-      "p99_ms": 5.952
+      "p50_ms": 0.068,
+      "p95_ms": 0.077,
+      "p99_ms": 0.077
     }
   },
   "profile": "darwin-arm64",
@@ -54,7 +53,5 @@
   "schema": 1,
   "seed": "0xa175e1ea5e",
   "tier": "release",
-  "vector_dimension": 32,
-  "captured_at": "2026-05-08T12:30:00-05:00",
-  "captured_method": "characterization run on darwin-arm64. covers cumulative perf shape after Streams E (recall index columns), F (dreaming), G/H/I (events_log mirror + recall_index column additions, FTS5 sanitization), and the 2026-05-07 dogfood-readiness run. previous baseline captured 2026-04-27 predated 5 already-merged index commits and no longer reflected what shipped on main."
+  "vector_dimension": 32
 }
