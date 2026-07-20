@@ -32,12 +32,22 @@ impl ImportEngine {
         // multi-profile machine is covered without the operator naming each
         // root. Codex stays single-root.
         let claude_roots = if options.harness_filter.is_none_or(|f| matches!(f, HarnessFilter::Claude)) {
-            discover_claude_memory_roots(&options.from_claude)?
+            contain_discovery_error(
+                "claude-code",
+                discover_claude_memory_roots(&options.from_claude),
+                Vec::new(),
+                &mut parse_errors,
+            )
         } else {
             Vec::new()
         };
         let codex_root = if options.harness_filter.is_none_or(|f| matches!(f, HarnessFilter::Codex)) {
-            discover_codex_memory_root(options.from_codex.as_deref())?
+            contain_discovery_error(
+                "codex",
+                discover_codex_memory_root(options.from_codex.as_deref()),
+                None,
+                &mut parse_errors,
+            )
         } else {
             None
         };
@@ -212,6 +222,16 @@ impl ImportEngine {
             claude_roots_used,
             state,
         })
+    }
+}
+
+fn contain_discovery_error<T>(harness: &str, result: ImportResult<T>, fallback: T, errors: &mut Vec<ImportError>) -> T {
+    match result {
+        Ok(value) => value,
+        Err(error) => {
+            errors.push(ImportError::Parse { source_key: format!("<{harness}-discovery>"), reason: error.to_string() });
+            fallback
+        }
     }
 }
 
@@ -390,6 +410,25 @@ mod tests {
     use std::collections::BTreeMap;
     use std::path::PathBuf;
 
+    #[test]
+    fn discovery_failure_is_recorded_without_aborting_the_other_harness() {
+        let mut errors = Vec::new();
+        let claude: Vec<PathBuf> = contain_discovery_error(
+            "claude-code",
+            Err(ImportError::Parse { source_key: "settings.json".into(), reason: "half-written".into() }),
+            Vec::new(),
+            &mut errors,
+        );
+        let codex = contain_discovery_error("codex", Ok(Some(PathBuf::from("/codex"))), None, &mut errors);
+
+        assert!(claude.is_empty());
+        assert_eq!(codex, Some(PathBuf::from("/codex")));
+        assert!(matches!(
+            errors.as_slice(),
+            [ImportError::Parse { source_key, reason }]
+                if source_key == "<claude-code-discovery>" && reason.contains("half-written")
+        ));
+    }
     fn codex_candidate(source_key: &str, body: &str) -> ParsedMemory {
         let mut hint = BTreeMap::new();
         hint.insert("name".to_string(), serde_json::Value::String("foo".to_string()));

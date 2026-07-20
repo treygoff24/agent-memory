@@ -1,5 +1,5 @@
-//! Embedding-lane selection. The daemon reads the triple while opening, so a
-//! running daemon must be restarted after this command succeeds.
+//! Device-local and repository config ceremonies. Embedding-lane changes need
+//! a daemon restart; harvest changes are picked up on the next scheduler wake.
 
 use std::io::IsTerminal;
 
@@ -7,7 +7,7 @@ use anyhow::Context;
 use memory_substrate::{EmbeddingTriple, Roots, Substrate};
 use serde::Serialize;
 
-use crate::cli::{ConfigArgs, ConfigCommand, EmbeddingLane, EmbeddingLaneArgs};
+use crate::cli::{ConfigArgs, ConfigCommand, EmbeddingLane, EmbeddingLaneArgs, HarvestArgs, HarvestCommand};
 
 /// Gemini embedding price per the ratified plan's scout table ($0.20/M standard
 /// tier; batch is $0.10/M). Verify against the live price sheet during T4.1.
@@ -32,7 +32,45 @@ pub async fn run(args: ConfigArgs) -> anyhow::Result<()> {
             };
             print_report(&report, agent_mode)
         }
+        ConfigCommand::Harvest(args) => {
+            let agent_mode = !std::io::stdout().is_terminal();
+            let report = match update_harvest(args) {
+                Ok(report) => report,
+                Err(error) if agent_mode => crate::cli::output::emit_client_error_and_exit(
+                    "config_update_failed",
+                    error.to_string(),
+                    65,
+                    Some("repair local-device.yaml and retry `memoryd config harvest`".into()),
+                ),
+                Err(error) => return Err(error),
+            };
+            print_report(&report, agent_mode)
+        }
     }
+}
+
+fn update_harvest(args: HarvestArgs) -> anyhow::Result<memory_substrate::config::HarvestConfig> {
+    let (_, runtime) = crate::paths::resolve_repo_runtime_paths(args.repo, args.runtime);
+    let current = memory_substrate::config::load_local_device_config(&runtime)
+        .map_err(anyhow::Error::msg)?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "{} is missing; initialize or adopt the Memorum runtime first",
+                runtime.join("local-device.yaml").display()
+            )
+        })?
+        .harvest
+        .unwrap_or_default();
+    let next = match args.command {
+        HarvestCommand::Enable(enable) => memory_substrate::config::HarvestConfig {
+            enabled: true,
+            interval_minutes: enable.interval_minutes.unwrap_or(current.interval_minutes),
+        }
+        .normalized(),
+        HarvestCommand::Disable => memory_substrate::config::HarvestConfig { enabled: false, ..current },
+    };
+    memory_substrate::config::store_harvest_config(&runtime, next).map_err(anyhow::Error::msg)?;
+    Ok(next)
 }
 
 pub async fn configure_init(args: &crate::cli::InitArgs) -> anyhow::Result<()> {
@@ -91,7 +129,7 @@ async fn switch_lane(args: EmbeddingLaneArgs, agent_mode: bool) -> anyhow::Resul
     })
 }
 
-fn print_report(report: &LaneSwitchReport, agent_mode: bool) -> anyhow::Result<()> {
+fn print_report(report: &impl Serialize, agent_mode: bool) -> anyhow::Result<()> {
     let data = serde_json::to_value(report)?;
     if agent_mode {
         let render = crate::cli::output::render_local_success(data, Vec::new());
@@ -155,6 +193,7 @@ fn print_consent(estimate: &CostEstimate) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::{HarvestCommand, HarvestEnableArgs};
     #[test]
     fn cost_estimate_uses_four_bytes_per_token() {
         let e = CostEstimate::from_corpus(2, 9);
@@ -183,6 +222,47 @@ mod tests {
         let value = serde_json::to_value(render.envelope).expect("agent envelope JSON");
         assert_eq!(value["ok"], true);
         assert_eq!(value["data"]["active_embedding"]["provider"], "gemini-api");
+        assert_eq!(value["meta"]["schema_version"], "1.0");
+    }
+
+    #[test]
+    fn harvest_update_creates_section_preserves_device_and_clamps_interval() {
+        let temp = tempfile::tempdir().expect("temp");
+        let runtime = temp.path().join("runtime");
+        std::fs::create_dir_all(&runtime).expect("runtime");
+        std::fs::write(
+            runtime.join("local-device.yaml"),
+            "schema_version: 1\ndevice:\n  id: dev_test\n  name: test\n  shard: test\npaths: {}\nprivacy: {}\noperator_key: keep\n",
+        )
+        .expect("config");
+
+        let report = update_harvest(HarvestArgs {
+            repo: Some(temp.path().join("repo")),
+            runtime: Some(runtime.clone()),
+            command: HarvestCommand::Enable(HarvestEnableArgs { interval_minutes: Some(2) }),
+        })
+        .expect("update");
+
+        assert_eq!(report, memory_substrate::config::HarvestConfig { enabled: true, interval_minutes: 5 });
+        let yaml = std::fs::read_to_string(runtime.join("local-device.yaml")).expect("read");
+        assert!(yaml.contains("operator_key: keep"));
+        let loaded = memory_substrate::config::load_local_device_config(&runtime).expect("load").expect("present");
+        assert_eq!(loaded.device.id, "dev_test");
+        assert_eq!(loaded.harvest, Some(report));
+    }
+
+    #[test]
+    fn harvest_agent_report_uses_the_v1_envelope_without_restart_field() {
+        let render = crate::cli::output::render_local_success(
+            serde_json::to_value(memory_substrate::config::HarvestConfig { enabled: true, interval_minutes: 30 })
+                .expect("report JSON"),
+            Vec::new(),
+        );
+        let value = serde_json::to_value(render.envelope).expect("agent envelope JSON");
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["data"]["enabled"], true);
+        assert_eq!(value["data"]["interval_minutes"], 30);
+        assert!(value["data"].get("restart_required").is_none());
         assert_eq!(value["meta"]["schema_version"], "1.0");
     }
 }

@@ -1,11 +1,11 @@
 use std::path::Path;
 
 use chrono::{DateTime, Duration, Utc};
-use memory_substrate::config::{DreamsConfig, SubstrateConfig};
+use memory_substrate::config::{DreamsConfig, HarvestConfig, SubstrateConfig};
 use memory_substrate::Substrate;
 
 use crate::handlers::HandlerState;
-use crate::protocol::{DoctorFinding, DoctorResponse, DoctorSeverity, PassStatus};
+use crate::protocol::{DoctorFinding, DoctorResponse, DoctorSeverity, HarvestDoctorStatus, PassStatus};
 
 fn fatal_finding(code: &str, message: String, repair: Option<String>) -> DoctorFinding {
     DoctorFinding { code: code.to_string(), message, repair, severity: DoctorSeverity::Fatal }
@@ -68,14 +68,72 @@ pub(super) async fn doctor_response(substrate: &Substrate, state: &HandlerState)
             ));
         }
     }
+    let harvest = harvest_status(substrate, &mut findings);
     DoctorResponse {
         healthy: doctor_is_healthy(&findings, enabled_harness_count, authenticated_harness_count),
         findings,
-        guidance: "Doctor reflects Memorum substrate validation, repair state, dreaming harness availability, and the runtime loop (dream freshness, sync, uncommitted substrate, recall budget)."
+        guidance: "Doctor reflects Memorum substrate validation, repair state, dreaming harness availability, live harvest, and the runtime loop (dream freshness, sync, uncommitted substrate, recall budget)."
             .to_string(),
         embedding_counts: embedding_row_kind_counts(substrate),
         merge_proposal_counts,
+        harvest,
     }
+}
+
+fn harvest_status(substrate: &Substrate, findings: &mut Vec<DoctorFinding>) -> HarvestDoctorStatus {
+    let runtime = &substrate.roots().runtime;
+    let config = match memory_substrate::config::load_local_device_config(runtime) {
+        Ok(local) => local.and_then(|config| config.harvest).unwrap_or_default(),
+        Err(error) => {
+            findings.push(advisory_finding(
+                "harvest_config_unreadable",
+                format!("device-local harvest config is unreadable: {error}"),
+                Some("Repair local-device.yaml; harvest stays disabled until it loads cleanly.".to_string()),
+            ));
+            HarvestConfig::default()
+        }
+    };
+    let mut status = HarvestDoctorStatus {
+        enabled: config.enabled,
+        interval_minutes: config.interval_minutes,
+        ..HarvestDoctorStatus::default()
+    };
+    match crate::harvest::read_harvest_state(runtime) {
+        Ok(Some(state)) => {
+            status.never_run = false;
+            status.last_attempt_at = Some(state.last_attempt_at);
+            status.last_success_at = state.last_success_at;
+            // Recompute from the *current* interval rather than echoing the
+            // persisted value: an operator who edits the interval mid-cycle
+            // should see the wake the scheduler will actually honor.
+            status.next_due = Some(state.last_attempt_at + Duration::minutes(i64::from(config.interval_minutes)));
+            status.harnesses = state.harnesses;
+            if let Some(last_error) = &state.last_error {
+                findings.push(advisory_finding(
+                    "harvest_last_run_error",
+                    format!("the last harvest attempt recorded an error: {last_error}"),
+                    Some(
+                        "Harvest retries on its normal cadence; run `memoryd import` manually to reproduce interactively."
+                            .to_string(),
+                    ),
+                ));
+            }
+            status.last_error = state.last_error;
+            status.active_embedding_lane = state.active_embedding_lane;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            findings.push(advisory_finding(
+                "harvest_state_unreadable",
+                error,
+                Some(
+                    "Inspect or replace harvest-state.json; the scheduler overwrites it after the next attempt."
+                        .to_string(),
+                ),
+            ));
+        }
+    }
+    status
 }
 
 fn merge_health(substrate: &Substrate) -> (std::collections::BTreeMap<String, u64>, Vec<DoctorFinding>) {
@@ -680,6 +738,55 @@ mod tests {
     struct TestSubstrate {
         _temp: tempfile::TempDir,
         substrate: memory_substrate::Substrate,
+    }
+
+    #[tokio::test]
+    async fn harvest_status_reports_config_history_and_never_run_honestly() {
+        let fixture = substrate_with_active_embedding(
+            crate::embedding::lane_test_support::local_test_triple(),
+            "dev_doctorharvest",
+        )
+        .await;
+        memory_substrate::config::store_harvest_config(
+            &fixture.substrate.roots().runtime,
+            memory_substrate::config::HarvestConfig { enabled: true, interval_minutes: 45 },
+        )
+        .expect("harvest config");
+
+        let mut findings = Vec::new();
+        let never = super::harvest_status(&fixture.substrate, &mut findings);
+        assert!(never.enabled);
+        assert_eq!(never.interval_minutes, 45);
+        assert!(never.never_run);
+        assert!(never.harnesses.is_empty(), "missing state must not invent zero-count runs");
+
+        let attempted = chrono::Utc::now();
+        let state = crate::harvest::HarvestState {
+            schema_version: 1,
+            last_attempt_at: attempted,
+            last_success_at: Some(attempted),
+            next_due: Some(attempted + chrono::Duration::minutes(45)),
+            harnesses: [(
+                "claude-code".to_string(),
+                crate::protocol::HarvestHarnessCounts { parsed: 2, written: 1, refused: 0, quarantined: 0, skipped: 1 },
+            )]
+            .into_iter()
+            .collect(),
+            last_error: None,
+            active_embedding_lane: Some("fastembed-candle".to_string()),
+        };
+        std::fs::write(
+            fixture.substrate.roots().runtime.join("harvest-state.json"),
+            serde_json::to_vec_pretty(&state).expect("state json"),
+        )
+        .expect("state write");
+
+        let status = super::harvest_status(&fixture.substrate, &mut findings);
+        assert!(!status.never_run);
+        assert_eq!(status.last_attempt_at, Some(attempted));
+        assert_eq!(status.harnesses["claude-code"].written, 1);
+        assert_eq!(status.active_embedding_lane.as_deref(), Some("fastembed-candle"));
+        assert!(findings.is_empty());
     }
 
     #[tokio::test]

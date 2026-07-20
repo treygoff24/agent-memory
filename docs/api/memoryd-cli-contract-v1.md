@@ -217,3 +217,14 @@ For each selected memory, the report retains `old_id`, `source`, `outcome`, `new
 | `validation_skipped` | absent | `validation_failed` | `skipped` |
 
 Stream A refusal reasons are wire-stable snake_case spellings of the closed typed refusal set. `secret_refused` is the CLI rendering of `WriteFailureKind::SecretRefused`. `validation_skipped` with `validation_failed` is a job-local harness-output skip before `metadata_amend`, not a Stream A refusal variant. Harness-output validation checks malformed generated output before apply; `metadata_amendment_validation_failed` is Stream A validation of a proposed amendment. No other refusal reason or outcome is valid for this command; it never reports a supersede or a new id for a metadata amendment.
+
+## 9. Amendment 2026-07-19 — device-local harvest configuration
+
+The following covered mutating commands edit only `<runtime>/local-device.yaml` and emit the v1 agent envelope when stdout is not a terminal:
+
+- `memoryd config harvest enable [--interval-minutes N] [--repo PATH] [--runtime PATH]`
+- `memoryd config harvest disable [--repo PATH] [--runtime PATH]`
+
+`data` is the effective `{ "enabled": bool, "interval_minutes": number }` config. Intervals are clamped to 5–1440 minutes. Enable preserves the prior interval when the option is omitted; disable preserves it while setting `enabled: false`. Other local YAML keys survive the atomic rewrite. The scheduler re-reads local config on its next wake, so this payload deliberately has no `restart_required` field. Missing or invalid `local-device.yaml` returns the standard error envelope with `error.code = "config_update_failed"` and exit 65.
+
+`memoryd doctor` remains a raw daemon frame. Its `doctor.harvest` block contains `enabled`, `interval_minutes`, `never_run`, attempt/success/due timestamps, per-harness `{parsed,written,refused,quarantined,skipped}` counts, bounded `last_error`, and `active_embedding_lane`.

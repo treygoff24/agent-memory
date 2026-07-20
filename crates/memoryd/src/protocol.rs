@@ -963,6 +963,47 @@ pub struct DoctorResponse {
     pub embedding_counts: BTreeMap<String, u64>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub merge_proposal_counts: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub harvest: HarvestDoctorStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarvestDoctorStatus {
+    pub enabled: bool,
+    pub interval_minutes: u32,
+    pub never_run: bool,
+    pub last_attempt_at: Option<DateTime<Utc>>,
+    pub last_success_at: Option<DateTime<Utc>>,
+    pub next_due: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub harnesses: BTreeMap<String, HarvestHarnessCounts>,
+    pub last_error: Option<String>,
+    pub active_embedding_lane: Option<String>,
+}
+
+impl Default for HarvestDoctorStatus {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interval_minutes: 30,
+            never_run: true,
+            last_attempt_at: None,
+            last_success_at: None,
+            next_due: None,
+            harnesses: BTreeMap::new(),
+            last_error: None,
+            active_embedding_lane: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarvestHarnessCounts {
+    pub parsed: usize,
+    pub written: usize,
+    pub refused: usize,
+    pub quarantined: usize,
+    pub skipped: usize,
 }
 
 /// Severity of a doctor finding (F4 / I-F4.2). `Fatal` findings flip `healthy`

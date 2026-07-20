@@ -163,6 +163,10 @@ fn cli_contract_clap_parses_all_subcommands() {
     Cli::try_parse_from(["memoryd", "mcp", "--socket", "/tmp/test.sock"]).expect("mcp with socket parses");
 
     Cli::try_parse_from(["memoryd", "doctor"]).expect("doctor parses");
+    Cli::try_parse_from(["memoryd", "config", "harvest", "enable", "--interval-minutes", "60"])
+        .expect("harvest enable parses");
+    Cli::try_parse_from(["memoryd", "config", "harvest", "disable", "--runtime", "/tmp/rt"])
+        .expect("harvest disable parses");
 
     Cli::try_parse_from([
         "memoryd",

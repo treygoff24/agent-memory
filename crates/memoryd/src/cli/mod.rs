@@ -213,6 +213,8 @@ pub struct ConfigArgs {
 #[derive(Debug, Subcommand)]
 pub enum ConfigCommand {
     EmbeddingLane(EmbeddingLaneArgs),
+    /// Configure daemon-scheduled harness auto-memory imports on this device.
+    Harvest(HarvestArgs),
 }
 #[derive(Debug, Args)]
 pub struct EmbeddingLaneArgs {
@@ -230,6 +232,33 @@ pub struct EmbeddingLaneArgs {
 pub enum EmbeddingLane {
     Local,
     GeminiApi,
+}
+
+#[derive(Debug, Args)]
+pub struct HarvestArgs {
+    /// Canonical Memorum repo root (used to resolve the default runtime).
+    #[arg(long, global = true)]
+    pub repo: Option<PathBuf>,
+    /// Local per-device runtime directory containing local-device.yaml.
+    #[arg(long, global = true)]
+    pub runtime: Option<PathBuf>,
+    #[command(subcommand)]
+    pub command: HarvestCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum HarvestCommand {
+    /// Enable scheduled imports, optionally changing their cadence.
+    Enable(HarvestEnableArgs),
+    /// Disable scheduled imports while preserving the configured cadence.
+    Disable,
+}
+
+#[derive(Debug, Args)]
+pub struct HarvestEnableArgs {
+    /// Successful-run cadence in minutes (effective range 5 through 1440).
+    #[arg(long)]
+    pub interval_minutes: Option<u32>,
 }
 
 /// Daemon arrangement for `memoryd init --daemon`.

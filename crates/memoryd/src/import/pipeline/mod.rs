@@ -18,6 +18,7 @@ mod plan;
 mod report_build;
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use crate::import::project_map::PromptBackend;
 use crate::import::state::{ImportLockGuard, ImportState};
@@ -53,10 +54,25 @@ impl ImportEngine {
 #[expect(clippy::too_many_arguments, reason = "task contract keeps session dependencies explicit")]
 pub async fn run_import_session<C: DaemonClient>(
     repo_root: &Path,
+    options: ImportOptions,
+    prompts: &mut dyn PromptBackend,
+    client: &mut C,
+    execute_options: ExecuteOptions,
+) -> ImportResult<ExecuteResult> {
+    run_import_session_with_lock_timeout(repo_root, options, prompts, client, execute_options, None).await
+}
+
+/// Scheduler-facing import session with an explicit lock-acquisition timeout.
+/// Passing `Duration::ZERO` makes a scheduled tick skip immediately when a
+/// manual import owns the flock. `None` preserves the CLI's five-second wait.
+#[expect(clippy::too_many_arguments, reason = "task contract keeps session dependencies explicit")]
+pub(crate) async fn run_import_session_with_lock_timeout<C: DaemonClient>(
+    repo_root: &Path,
     mut options: ImportOptions,
     prompts: &mut dyn PromptBackend,
     client: &mut C,
     execute_options: ExecuteOptions,
+    lock_timeout: Option<Duration>,
 ) -> ImportResult<ExecuteResult> {
     let engine = ImportEngine::new(repo_root);
     // A dry-run plans and counts without issuing daemon writes or persisting
@@ -65,7 +81,14 @@ pub async fn run_import_session<C: DaemonClient>(
     // so only take the lock for a real run. Loading state is read-only (missing
     // file → default), so it is safe either way and keeps the dry-run plan
     // idempotent against already-imported sources.
-    let _lock = if execute_options.dry_run { None } else { Some(ImportLockGuard::acquire(&engine.state_path)?) };
+    let _lock = if execute_options.dry_run {
+        None
+    } else {
+        Some(match lock_timeout {
+            Some(timeout) => ImportLockGuard::acquire_with_timeout(&engine.state_path, timeout)?,
+            None => ImportLockGuard::acquire(&engine.state_path)?,
+        })
+    };
     options.state = ImportState::load(&engine.state_path)?;
     // Planning never writes `.memory-project.yaml`; `execute` is what gates the
     // materialization on `!dry_run`, so the same plan is correct for both modes.

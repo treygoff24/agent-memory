@@ -12,6 +12,7 @@ pub mod embedding;
 pub mod export;
 pub mod first_write;
 pub mod handlers;
+pub(crate) mod harvest;
 pub mod import;
 pub mod mcp;
 pub mod mcp_stdio;

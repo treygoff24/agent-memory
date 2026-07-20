@@ -71,6 +71,36 @@ pub struct LocalDeviceConfig {
     /// Per-device runtime privacy enforcement switches. Never synced.
     #[serde(default)]
     pub privacy: PrivacyEnforcement,
+    /// Device-local scheduled import configuration. Absent means disabled.
+    #[serde(default)]
+    pub harvest: Option<HarvestConfig>,
+}
+
+/// Device-local scheduled harness-memory import configuration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HarvestConfig {
+    /// Whether the daemon scheduler may import harness auto-memory.
+    pub enabled: bool,
+    /// Successful-run cadence in minutes, clamped to 5 minutes through 24 hours.
+    pub interval_minutes: u32,
+}
+
+impl HarvestConfig {
+    pub const MIN_INTERVAL_MINUTES: u32 = 5;
+    pub const MAX_INTERVAL_MINUTES: u32 = 1440;
+
+    /// Return the effective config after applying the supported cadence bounds.
+    pub fn normalized(mut self) -> Self {
+        self.interval_minutes = self.interval_minutes.clamp(Self::MIN_INTERVAL_MINUTES, Self::MAX_INTERVAL_MINUTES);
+        self
+    }
+}
+
+impl Default for HarvestConfig {
+    fn default() -> Self {
+        Self { enabled: false, interval_minutes: 30 }
+    }
 }
 
 /// Local device identity; never read from synced config.
@@ -357,7 +387,35 @@ pub fn load_local_device_config(runtime: &Path) -> Result<Option<LocalDeviceConf
         return Ok(None);
     }
     let text = std::fs::read_to_string(path).map_err(|err| err.to_string())?;
-    serde_yaml::from_str(&text).map(Some).map_err(|err| err.to_string())
+    let mut config: LocalDeviceConfig = serde_yaml::from_str(&text).map_err(|err| err.to_string())?;
+    config.harvest = config.harvest.map(HarvestConfig::normalized);
+    Ok(Some(config))
+}
+
+/// Atomically replace the device-local `harvest` block while preserving all
+/// other YAML keys, including keys unknown to this binary.
+pub fn store_harvest_config(runtime: &Path, harvest: HarvestConfig) -> Result<(), String> {
+    let harvest = serde_yaml::to_value(harvest.normalized()).map_err(|err| err.to_string())?;
+    update_local_device_config_document(runtime, |mapping| {
+        mapping.insert(serde_yaml::Value::String("harvest".to_string()), harvest);
+        Ok(())
+    })
+}
+
+fn update_local_device_config_document(
+    runtime: &Path,
+    update: impl FnOnce(&mut serde_yaml::Mapping) -> Result<(), String>,
+) -> Result<(), String> {
+    let path = runtime.join("local-device.yaml");
+    let text = std::fs::read_to_string(&path).map_err(|err| format!("read {}: {err}", path.display()))?;
+    let mut document: serde_yaml::Value =
+        serde_yaml::from_str(&text).map_err(|err| format!("parse {}: {err}", path.display()))?;
+    let mapping = document.as_mapping_mut().ok_or_else(|| format!("{} must contain a YAML mapping", path.display()))?;
+    update(mapping)?;
+    let rendered = serde_yaml::to_string(&document).map_err(|err| format!("serialize {}: {err}", path.display()))?;
+    let temp = path.with_extension("yaml.tmp");
+    std::fs::write(&temp, rendered).map_err(|err| format!("write {}: {err}", temp.display()))?;
+    std::fs::rename(&temp, &path).map_err(|err| format!("rename {} -> {}: {err}", temp.display(), path.display()))
 }
 
 /// Load config and apply roots precedence: explicit, environment, local, synced defaults.
@@ -617,5 +675,68 @@ mod active_embedding_tests {
         assert!(load_api_embedding_consent(temp.path()));
         // Missing file is fail-closed too.
         assert!(!load_api_embedding_consent(&temp.path().join("nowhere")));
+    }
+}
+
+#[cfg(test)]
+mod harvest_tests {
+    use super::*;
+
+    fn write_local(runtime: &Path, extra: &str) {
+        std::fs::create_dir_all(runtime).expect("runtime"); // expect-justified: test-only
+        std::fs::write(
+            runtime.join("local-device.yaml"),
+            format!(
+                "schema_version: 1\ndevice:\n  id: dev_test\n  name: test\n  shard: test\npaths: {{}}\nprivacy: {{}}\n{extra}"
+            ),
+        )
+        .expect("local config"); // expect-justified: test-only
+    }
+
+    #[test]
+    fn harvest_defaults_disabled_at_thirty_minutes() {
+        assert_eq!(HarvestConfig::default(), HarvestConfig { enabled: false, interval_minutes: 30 });
+    }
+
+    #[test]
+    fn absent_harvest_section_stays_absent_and_disabled() {
+        let temp = tempfile::tempdir().expect("temp"); // expect-justified: test-only
+        write_local(temp.path(), "");
+        let local = load_local_device_config(temp.path()).expect("load").expect("present"); // expect-justified: test-only
+        assert_eq!(local.harvest, None);
+    }
+
+    #[test]
+    fn harvest_interval_is_clamped_on_load() {
+        let temp = tempfile::tempdir().expect("temp"); // expect-justified: test-only
+        write_local(temp.path(), "harvest:\n  enabled: true\n  interval_minutes: 1\n");
+        let local = load_local_device_config(temp.path()).expect("load").expect("present"); // expect-justified: test-only
+        assert_eq!(local.harvest.expect("harvest").interval_minutes, 5); // expect-justified: test-only
+
+        write_local(temp.path(), "harvest:\n  enabled: true\n  interval_minutes: 9999\n");
+        let local = load_local_device_config(temp.path()).expect("load").expect("present"); // expect-justified: test-only
+        assert_eq!(local.harvest.expect("harvest").interval_minutes, 1440); // expect-justified: test-only
+    }
+
+    #[test]
+    fn harvest_section_uses_field_defaults_when_values_are_absent() {
+        let temp = tempfile::tempdir().expect("temp"); // expect-justified: test-only
+        write_local(temp.path(), "harvest:\n  enabled: true\n");
+        let local = load_local_device_config(temp.path()).expect("load").expect("present"); // expect-justified: test-only
+        assert_eq!(local.harvest, Some(HarvestConfig { enabled: true, interval_minutes: 30 }));
+    }
+
+    #[test]
+    fn store_harvest_config_preserves_unknown_local_keys() {
+        let temp = tempfile::tempdir().expect("temp"); // expect-justified: test-only
+        write_local(temp.path(), "operator_key: keep-me\n");
+        store_harvest_config(temp.path(), HarvestConfig { enabled: true, interval_minutes: 2 }).expect("store"); // expect-justified: test-only
+
+        let value: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(temp.path().join("local-device.yaml")).expect("read")) // expect-justified: test-only
+                .expect("yaml"); // expect-justified: test-only
+        assert_eq!(value["operator_key"], "keep-me");
+        assert_eq!(value["harvest"]["enabled"], true);
+        assert_eq!(value["harvest"]["interval_minutes"], 5);
     }
 }

@@ -67,6 +67,7 @@ pub async fn serve_substrate_with(
     options: ServerOptions,
     shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
+    let socket_path = socket_path.as_ref().to_path_buf();
     let state = Arc::new(state_for_substrate(&substrate)?);
     let substrate = Arc::new(substrate);
     spawn_notification_dispatcher(&state);
@@ -100,6 +101,12 @@ pub async fn serve_substrate_with(
     spawn_coordination_cleanup_for_state(state.clone(), shutdown.clone());
     fire_reality_check_due_on_startup(&substrate, &state);
     spawn_reality_check_scheduler(substrate.clone(), state.clone(), shutdown.clone());
+    crate::harvest::spawn_harvest_scheduler(
+        substrate.roots().runtime.clone(),
+        substrate.roots().repo.clone(),
+        socket_path.clone(),
+        shutdown.clone(),
+    );
     spawn_embedding_worker(substrate.clone(), state.embedding_provider_slot(), shutdown.clone());
     // The commit worker runs until the server loop returns. Give it a dedicated
     // shutdown channel we own rather than the global one: the global `shutdown` sender
@@ -108,8 +115,7 @@ pub async fn serve_substrate_with(
     // channel would block forever. Signalling here covers the graceful AND error paths.
     let (worker_shutdown_tx, worker_shutdown_rx) = watch::channel(false);
     let commit_worker = spawn_substrate_commit_worker(substrate.clone(), worker_shutdown_rx);
-    let result =
-        serve_with_dispatcher(socket_path.as_ref(), Dispatch::Substrate { substrate, state }, options, shutdown).await;
+    let result = serve_with_dispatcher(&socket_path, Dispatch::Substrate { substrate, state }, options, shutdown).await;
     // Tell the worker to drain-and-exit (it runs a final `flush_substrate_commits` on
     // its way out), then join so that last commit lands before the process exits.
     // `JoinHandle::join` blocks, so hand it to the blocking pool; a worker panic is

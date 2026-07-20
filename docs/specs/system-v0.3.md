@@ -1098,3 +1098,19 @@ If during dogfood it becomes clear the name actively confuses users (very low pr
 ---
 
 **End of v0.2 release contract.** Streams A–F shipped; Streams G/H/I are the remaining v1 work with their own spec contracts; v1 ships after a 1-week multi-machine dogfood gate as Memorum 1.0.0 under Apache 2.0.
+
+## Amendment 2026-07-19 — device-local live harvest (additive, opt-in)
+
+`memoryd serve` may schedule the existing importer against Claude Code and Codex auto-memory. The feature is disabled when `local-device.yaml` or its `harvest` section is absent. The device-local section is:
+
+```yaml
+harvest:
+  enabled: true
+  interval_minutes: 30
+```
+
+The daemon clamps the interval to 5–1440 minutes and re-reads this file on every scheduler wake. A successful run schedules the next run from `last_success_at + interval`; startup is not itself a trigger. Never-run or overdue state is due immediately (with a one-second minimum sleep). Disabled configurations recheck every five minutes.
+
+Scheduled imports use the daemon's own socket and the shipped importer pipeline, including governance, privacy, provenance, duplicate detection, and crash-safe importer state. They use non-interactive project derivation, a zero-timeout importer lock, a ten-minute timeout, and cancellation-by-drop on daemon shutdown. Lock contention leaves harvest state untouched. Discovery failure in one harness is reported without suppressing discovery and import of the other harness.
+
+The scheduler is the sole writer of device-local `harvest-state.json`. It atomically records attempt/success/due timestamps, bounded last error, active embedding lane, and per-harness counts derived from `ImportReport`. `memoryd doctor` exposes config plus this history and reports missing state as `never_run: true` without synthetic run counts. No MCP tool is added.

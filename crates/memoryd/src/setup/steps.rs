@@ -1779,6 +1779,7 @@ mod tests {
                     guidance: String::new(),
                     embedding_counts: std::collections::BTreeMap::new(),
                     merge_proposal_counts: std::collections::BTreeMap::new(),
+                    harvest: Default::default(),
                 }),
             ))
             .status,
